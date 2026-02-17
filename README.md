@@ -1,0 +1,2 @@
+# OpenKyrozen
+Self learning AI
