@@ -7,7 +7,7 @@ import subprocess
 import re
 from typing import Any
 
-from googlesearch import search
+from duckduckgo_search import DDGS
 
 
 # ---- Safety: block dangerous shell commands ----
@@ -103,36 +103,29 @@ def search_web(args: str) -> str:
     """
     Search the internet for real-time information.
     Args format: "query" (e.g., "latest bitcoin price", "who won the super bowl").
-    Returns a summary of the top 3 search results (title, description, URL).
-    Use whenever the user asks for current events, prices, or facts you don't know.
+    Returns Title + Snippet for top 3 results. Use for current events, prices, or unknown facts.
     """
+    query = (args or "").strip()
+    if not query:
+        return "Search Error: query is empty."
+
     try:
-        query = (args or "").strip()
-        if not query:
-            return "Search Error: query is empty."
-
-        # Try advanced search first (returns objects with .title, .description, .url)
-        try:
-            results = list(search(query, num_results=3, advanced=True))
-            if not results:
-                raise ValueError("No results")
-            lines = []
-            for result in results:
-                title = getattr(result, "title", "") or ""
-                description = getattr(result, "description", "") or ""
-                url = getattr(result, "url", "") or ""
-                lines.append(f"- Title: {title}\n  Description: {description}\n  URL: {url}")
-            return "\n\n".join(lines)
-        except (AttributeError, TypeError, ValueError):
-            # Fallback: standard search returns URL strings only
-            results = list(search(query, num_results=3))
-            if not results:
-                return "No results found."
-            lines = [f"- URL: {u}" for u in results]
-            return "\n\n".join(lines)
-
+        ddgs = DDGS()
+        results = list(ddgs.text(query, max_results=3))
     except Exception as e:
-        return f"Search Error: {str(e)}"
+        # Log to console; do not crash. Return a clear message for the agent.
+        print(f"[search_web] DDGS error (rate limit/network): {e}", flush=True)
+        return f"Search temporarily unavailable: {e}. Please try again or rephrase the query."
+
+    if not results:
+        return "No search results found. Please try a different query."
+
+    lines = []
+    for r in results:
+        title = r.get("title", "")
+        snippet = r.get("body", "")
+        lines.append(f"- Title: {title}\n  Snippet: {snippet}")
+    return "\n\n".join(lines)
 
 
 AVAILABLE_TOOLS: dict[str, Any] = {
