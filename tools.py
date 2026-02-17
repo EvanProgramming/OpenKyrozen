@@ -1,5 +1,7 @@
 import os
 import subprocess
+import importlib.util
+import sys
 
 # --- 1. 定义具体的工具函数 ---
 
@@ -51,6 +53,33 @@ AVAILABLE_TOOLS = {
     "read_file": read_file,
     "run_cmd": run_cmd
 }
+
+def load_new_tool(file_path):
+    """
+    黑科技：动态加载一个 Python 文件作为工具。
+    参数：file_path (例如 'my_tools/bitcoin.py')
+    """
+    try:
+        # 1. 从文件路径加载模块
+        module_name = os.path.basename(file_path).replace(".py", "")
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        
+        # 2. 假设这个文件里有一个叫 'main' 的函数作为入口
+        if hasattr(module, 'main'):
+            # 3. 把它注册到我们的工具表里！
+            AVAILABLE_TOOLS[module_name] = module.main
+            return f"成功：新工具 '{module_name}' 已加载！现在可以使用了。"
+        else:
+            return "失败：新工具文件里必须包含一个叫 'main(args)' 的函数。"
+            
+    except Exception as e:
+        return f"加载工具失败: {str(e)}"
+
+# 别忘了把这个元工具也注册进去，让 Agent 可以调用它！
+AVAILABLE_TOOLS["load_tool"] = load_new_tool
 
 def execute_tool(tool_name, tool_args):
     """统一执行入口"""

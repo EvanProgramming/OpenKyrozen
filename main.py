@@ -5,7 +5,7 @@ from tools import execute_tool, AVAILABLE_TOOLS
 
 # 初始化
 memory = MemoryBank()
-MODEL_NAME = "qwen3-coder:30b"  # 确保你ollama里有这个模型
+MODEL_NAME = "gpt-oss:20b"  # 确保你ollama里有这个模型
 
 def chat_with_llm(user_input, past_memories):
     """
@@ -17,6 +17,14 @@ def chat_with_llm(user_input, past_memories):
     
     # --- 核心 Prompt (最重要的部分) ---
     system_prompt = f"""
+    你是一个可以自我编程的超级 AI。
+
+【你的超能力】：
+    如果你发现缺少某个工具（比如查天气、查股价），你可以使用以下步骤：
+1. 使用 'write_file' 编写一个 Python 脚本（必须包含 def main(args): 函数，并使用 print 输出结果）。
+2. 使用 'load_tool' 加载这个脚本。
+3. 然后直接调用这个新工具的名字！
+    
     你是一个拥有自主学习能力的 AI Agent。
     
     【可用工具列表】:
