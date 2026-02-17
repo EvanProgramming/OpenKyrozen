@@ -3,41 +3,41 @@ import json
 from memory import MemoryBank
 from tools import execute_tool, AVAILABLE_TOOLS
 
-# 初始化
+# Initialize
 memory = MemoryBank()
-MODEL_NAME = "gpt-oss:20b"  # 确保你ollama里有这个模型
+MODEL_NAME = "gpt-oss:20b"  # Make sure you have this model in ollama
 
 def chat_with_llm(user_input, past_memories):
     """
-    构造Prompt并调用Ollama。
+    Build the prompt and call Ollama.
     """
     
-    # 动态生成工具列表说明
+    # Dynamically generate tool list description
     tools_desc = "\n".join([f"- {k}" for k in AVAILABLE_TOOLS.keys()])
     
-    # --- 核心 Prompt (最重要的部分) ---
+    # --- Core Prompt (most important part) ---
     system_prompt = f"""
-    你是一个可以自我编程的超级 AI。
+    You are a super AI that can self-program.
 
-【你的超能力】：
-    如果你发现缺少某个工具（比如查天气、查股价），你可以使用以下步骤：
-1. 使用 'write_file' 编写一个 Python 脚本（必须包含 def main(args): 函数，并使用 print 输出结果）。
-2. 使用 'load_tool' 加载这个脚本。
-3. 然后直接调用这个新工具的名字！
-    
-    你是一个拥有自主学习能力的 AI Agent。
-    
-    【可用工具列表】:
+[Your superpower]:
+    If you find that a tool is missing (e.g. check weather, check stock price), you can:
+1. Use 'write_file' to write a Python script (must include def main(args): and use print for output).
+2. Use 'load_tool' to load that script.
+3. Then call the new tool by name directly!
+
+    You are an AI Agent with self-learning capabilities.
+
+    [Available tools]:
     {tools_desc}
-    
-    【你的记忆/经验】(参考这些经验来决定如何行动):
+
+    [Your memory/experience] (use these to decide how to act):
     {past_memories}
-    
-    【指令】:
-    1. 如果用户问题简单，直接回答。
-    2. 如果需要使用工具，请**务必**只输出一个 JSON 对象，格式如下：
-       {{ "action": "工具名", "args": "参数字符串" }}
-    3. 不要输出 markdown 代码块（如 ```json），直接输出 JSON 字符串。
+
+    [Instructions]:
+    1. If the user's question is simple, answer directly.
+    2. If you need to use a tool, you **must** output only a single JSON object in this format:
+       {{ "action": "tool_name", "args": "argument_string" }}
+    3. Do not wrap in markdown code blocks (e.g. ```json). Output raw JSON only.
     """
 
     messages = [
@@ -45,35 +45,35 @@ def chat_with_llm(user_input, past_memories):
         {'role': 'user', 'content': user_input}
     ]
 
-    print("   [思考中] ...")
+    print("   [Thinking] ...")
     response = ollama.chat(model=MODEL_NAME, messages=messages)
     return response['message']['content']
 
 def main():
-    print(f"🤖 Agent 已启动 ({MODEL_NAME})。输入 'exit' 退出。")
+    print(f"🤖 Agent started ({MODEL_NAME}). Type 'exit' to quit.")
     
     while True:
-        user_input = input("\n你: ")
+        user_input = input("\nYou: ")
         if user_input.lower() == "exit":
             break
 
-        # --- 步骤 1: 回忆 (Recall) ---
-        # 在回答之前，先去脑子里搜一下：我以前遇到过类似问题吗？怎么解决的？
+        # --- Step 1: Recall ---
+        # Before answering, search memory: have I seen a similar question before? How did I solve it?
         relevant_memory = memory.recall(user_input)
-        context_str = "\n".join(relevant_memory) if relevant_memory else "暂无相关记忆。"
+        context_str = "\n".join(relevant_memory) if relevant_memory else "No relevant memory yet."
         
-        # --- 步骤 2: 思考 (Think) ---
+        # --- Step 2: Think ---
         response = chat_with_llm(user_input, context_str)
         
-        # --- 步骤 3: 解析与行动 (Parse & Act) ---
-        # 我们尝试解析模型是不是输出了 JSON
+        # --- Step 3: Parse & Act ---
+        # Try to parse whether the model output JSON
         try:
-            # 清理一下字符串，防止模型输出前后有空格
+            # Trim the string to avoid leading/trailing whitespace from the model
             cleaned_response = response.strip()
             
-            # 简单的启发式判断：看起来像 JSON 吗？
+            # Simple heuristic: does it look like JSON?
             if "{" in cleaned_response and "}" in cleaned_response:
-                # 提取 JSON 部分
+                # Extract the JSON portion
                 start = cleaned_response.find("{")
                 end = cleaned_response.rfind("}") + 1
                 json_str = cleaned_response[start:end]
@@ -82,30 +82,30 @@ def main():
                 action = command.get("action")
                 args = command.get("args")
                 
-                print(f"   [检测到动作] 工具: {action} | 参数: {args}")
+                print(f"   [Action detected] Tool: {action} | Args: {args}")
                 
-                # 执行工具
+                # Execute tool
                 result = execute_tool(action, args)
-                print(f"   [工具输出] {result}")
+                print(f"   [Tool output] {result}")
                 
-                # --- 步骤 4: 进化 (Learn) ---
-                # 如果工具执行成功（没有返回错误），我们就把这次经验存起来！
-                # 下次遇到类似问题，步骤1就能查到这个记录。
-                if "错误" not in result and "失败" not in result:
-                    learning_log = f"用户问题: '{user_input}' -> 我使用了工具 '{action}' 参数 '{args}' -> 结果成功。"
+                # --- Step 4: Learn ---
+                # If the tool succeeded (no error in result), store this experience.
+                # Step 1 will recall it when similar questions come up.
+                if "error" not in result.lower() and "fail" not in result.lower():
+                    learning_log = f"User asked: '{user_input}' -> I used tool '{action}' with args '{args}' -> success."
                     memory.add_log(learning_log)
                 
-                print(f"Agent: 任务已完成。执行结果: {result}")
+                print(f"Agent: Task completed. Result: {result}")
                 
             else:
-                # 只是普通对话
+                # Normal conversation reply
                 print(f"Agent: {response}")
 
         except json.JSONDecodeError:
-            # 模型尝试输出 JSON 但格式错了，或者只是普通文本包含大括号
+            # Model tried to output JSON but format was wrong, or it's just text with braces
             print(f"Agent: {response}")
         except Exception as e:
-            print(f"   [系统错误] {e}")
+            print(f"   [System error] {e}")
 
 if __name__ == "__main__":
     main()

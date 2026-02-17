@@ -3,51 +3,51 @@ import subprocess
 import importlib.util
 import sys
 
-# --- 1. 定义具体的工具函数 ---
+# --- 1. Tool function definitions ---
 
 def write_file(args):
     """
-    功能：写文件。
-    参数格式：filename|content (文件名|内容)
+    Write to a file.
+    Args format: filename|content
     """
     try:
-        # 分割文件名和内容
+        # Split filename and content
         if "|" not in args:
-            return "错误：参数格式必须是 '文件名|内容'"
+            return "Error: args must be 'filename|content'"
         
         filename, content = args.split("|", 1)
         with open(filename, "w", encoding="utf-8") as f:
             f.write(content)
-        return f"成功：文件 '{filename}' 已写入。"
+        return f"Success: file '{filename}' written."
     except Exception as e:
-        return f"写入失败: {str(e)}"
+        return f"Write failed: {str(e)}"
 
 def read_file(args):
     """
-    功能：读文件。
-    参数格式：filename
+    Read a file.
+    Args format: filename
     """
     try:
         if os.path.exists(args):
             with open(args, "r", encoding="utf-8") as f:
                 return f.read()
-        return "错误：文件不存在。"
+        return "Error: file does not exist."
     except Exception as e:
-        return f"读取失败: {str(e)}"
+        return f"Read failed: {str(e)}"
 
 def run_cmd(args):
     """
-    功能：执行系统命令 (慎用！但在本地玩很有趣)
-    参数格式：command (如 'dir' 或 'ping baidu.com')
+    Run a system command (use with care; useful for local experimentation).
+    Args format: command (e.g. 'dir' or 'ping example.com')
     """
     try:
         result = subprocess.run(args, shell=True, capture_output=True, text=True)
         return result.stdout if result.stdout else result.stderr
     except Exception as e:
-        return f"命令执行失败: {str(e)}"
+        return f"Command execution failed: {str(e)}"
 
-# --- 2. 工具注册表 ---
-# 这个字典把字符串（模型输出的指令）映射到真正的函数上
+# --- 2. Tool registry ---
+# Maps tool names (model output) to the actual functions
 AVAILABLE_TOOLS = {
     "write_file": write_file,
     "read_file": read_file,
@@ -56,33 +56,33 @@ AVAILABLE_TOOLS = {
 
 def load_new_tool(file_path):
     """
-    黑科技：动态加载一个 Python 文件作为工具。
-    参数：file_path (例如 'my_tools/bitcoin.py')
+    Dynamically load a Python file as a tool.
+    Args: file_path (e.g. 'my_tools/bitcoin.py')
     """
     try:
-        # 1. 从文件路径加载模块
+        # 1. Load module from file path
         module_name = os.path.basename(file_path).replace(".py", "")
         spec = importlib.util.spec_from_file_location(module_name, file_path)
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
         
-        # 2. 假设这个文件里有一个叫 'main' 的函数作为入口
+        # 2. Expect a 'main' function as the entry point
         if hasattr(module, 'main'):
-            # 3. 把它注册到我们的工具表里！
+            # 3. Register it in the tool table
             AVAILABLE_TOOLS[module_name] = module.main
-            return f"成功：新工具 '{module_name}' 已加载！现在可以使用了。"
+            return f"Success: new tool '{module_name}' loaded. You can use it now."
         else:
-            return "失败：新工具文件里必须包含一个叫 'main(args)' 的函数。"
+            return "Failed: the tool file must define a 'main(args)' function."
             
     except Exception as e:
-        return f"加载工具失败: {str(e)}"
+        return f"Load tool failed: {str(e)}"
 
-# 别忘了把这个元工具也注册进去，让 Agent 可以调用它！
+# Register this meta-tool so the Agent can call it
 AVAILABLE_TOOLS["load_tool"] = load_new_tool
 
 def execute_tool(tool_name, tool_args):
-    """统一执行入口"""
+    """Unified execution entry point"""
     if tool_name in AVAILABLE_TOOLS:
         return AVAILABLE_TOOLS[tool_name](tool_args)
-    return f"错误：找不到工具 '{tool_name}'"
+    return f"Error: tool '{tool_name}' not found"
