@@ -20,7 +20,7 @@ SHORT_TERM_CAP = 10  # last N conversation turns
 MAX_TOOL_RETRIES = 3
 
 SYSTEM_PROMPT = """
-        You are a powerful, autonomous AI Agent.
+        You are a helpful AI Assistant with access to external tools.
         
         [AVAILABLE TOOLS]:
         {tools_list}
@@ -28,20 +28,20 @@ SYSTEM_PROMPT = """
         [MEMORY]:
         {memory_context}
         
-        [INSTRUCTIONS]:
-        1. FIRST, think about what you need to do. Output "Thought: ...".
-        2. THEN, if you need to act, output JSON: {{ "action": "tool_name", "args": "value" }}
+        [RESPONSE FORMAT]
+        Use this structure when you need to call a tool:
         
-        [CRITICAL RULES]:
-        - If the user asks for **Real-time Info** (prices, news, weather), you MUST use `search_web`.
-        - Do NOT say "I cannot search". You HAVE the `search_web` tool. Use it!
-        - Example: User asks for Bitcoin price -> Action: {{ "action": "search_web", "args": "bitcoin price" }}
-        - Full example:
-          User: "Price of Bitcoin?"
-          Thought: User wants current price. I need to search.
-          Action: ```json
-          {{ "action": "search_web", "args": "current bitcoin price USD" }}
-          ```
+        Thinking Process:
+        1. First, I will analyze the user's request.
+        2. I need to use [Tool Name] to solve this.
+        
+        Tool Action:
+        ```json
+        {{ "action": "search_web", "args": "bitcoin price" }}
+        ```
+        
+        It is OKAY to print the JSON block. This is required for the system to work.
+        If the user asks for real-time info (prices, news, weather), use search_web. If you do not need a tool, reply in normal language.
         """
 
 
@@ -88,13 +88,12 @@ def _build_messages(user_input: str) -> list[dict[str, str]]:
 
 def parse_json_from_response(text: str) -> dict | None:
     """
-    Extract tool-call JSON only from a ```json ... ``` code block in the response.
-    Ignores "Thought:" and any other text; if there is no valid json block with
-    action/args, returns None (so Thought-only responses are normal conversation).
+    Extract tool-call JSON from a ```json ... ``` or ``` ... ``` code block in the response.
+    Robust to lots of text before the block. Returns None if no valid action/args JSON.
     """
     text = (text or "").strip()
-    # Only look inside a block explicitly labeled as json (CoT format)
-    code_match = re.search(r"```json\s*([\s\S]*?)\s*```", text)
+    # Match ```json ... ``` or ``` ... ``` so we catch the block even with much text before it
+    code_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
     if not code_match:
         return None
     raw = code_match.group(1).strip()
@@ -149,7 +148,7 @@ def _chat_turn(user_input: str) -> str:
         print("[Warning] Empty response received. Retrying with explicit instruction...")
         messages.append({
             "role": "user",
-            "content": "System Alert: You returned an empty response. You MUST output your Thought process and then the JSON Action. Do not be silent.",
+            "content": "System Notification: Please start your response with 'Thinking Process:' and then provide the JSON Action block.",
         })
         response_text = _get_llm_response(messages).strip()
         print(f"[DEBUG RAW]: {repr(response_text)}")
