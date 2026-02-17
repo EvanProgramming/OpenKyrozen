@@ -1,88 +1,110 @@
 import os
 import subprocess
-import importlib.util
-import sys
+from duckduckgo_search import DDGS
+import ast
 
-# --- 1. Tool function definitions ---
+# --- Safety Check Function ---
+def is_safe_command(command_str):
+    """
+    Simple keyword-based safety check. 
+    You can expand this with AST analysis for Python code.
+    """
+    # Blacklist of dangerous commands/keywords
+    blacklist = [
+        "rm -rf", "format", "mkfs", ":(){:|:&};:",  # System destruction
+        "os.system", "shutil.rmtree"                # Python risky ops
+    ]
+    
+    for word in blacklist:
+        if word in command_str:
+            print(f"   [SAFETY ALERT] Blocked dangerous command: {word}")
+            return False
+    return True
+
+# --- Tool Definitions ---
 
 def write_file(args):
     """
-    Write to a file.
-    Args format: filename|content
+    Args format: "filename|content"
     """
     try:
-        # Split filename and content
         if "|" not in args:
-            return "Error: args must be 'filename|content'"
+            return "Error: Arguments must be 'filename|content'"
         
         filename, content = args.split("|", 1)
+        
+        # Safety: Don't overwrite critical files (basic check)
+        if filename.endswith(".py") or filename == "main.py":
+            user_input = input(f"\n⚠️ [SAFETY] Agent wants to modify/create '{filename}'. Allow? (y/n): ")
+            if user_input.lower() != 'y':
+                return "Error: User denied permission to write this file."
+
         with open(filename, "w", encoding="utf-8") as f:
             f.write(content)
-        return f"Success: file '{filename}' written."
+        return f"Success: File '{filename}' written."
     except Exception as e:
-        return f"Write failed: {str(e)}"
+        return f"Error writing file: {str(e)}"
 
 def read_file(args):
     """
-    Read a file.
-    Args format: filename
+    Args format: "filename"
     """
     try:
         if os.path.exists(args):
             with open(args, "r", encoding="utf-8") as f:
                 return f.read()
-        return "Error: file does not exist."
+        return "Error: File not found."
     except Exception as e:
-        return f"Read failed: {str(e)}"
+        return f"Error reading file: {str(e)}"
 
 def run_cmd(args):
     """
-    Run a system command (use with care; useful for local experimentation).
-    Args format: command (e.g. 'dir' or 'ping example.com')
+    Args format: "command" (e.g., 'dir', 'python --version')
+    """
+    if not is_safe_command(args):
+        return "Error: Command blocked by safety filter."
+    
+    # Double check with user for ANY shell command
+    print(f"\n⚠️ [SAFETY] Agent wants to run shell command: {args}")
+    # Uncomment the next two lines to force manual approval for every command
+    # if input("Allow? (y/n): ").lower() != 'y':
+    #     return "Error: User denied permission."
+
+    try:
+        # shell=True is risky, but necessary for complex commands. Sandbox is crucial.
+        result = subprocess.run(args, shell=True, capture_output=True, text=True)
+        output = result.stdout if result.stdout else result.stderr
+        return output.strip()
+    except Exception as e:
+        return f"Error executing command: {str(e)}"
+
+def search_web(args):
+    """
+    Args format: "search_query"
+    Uses DuckDuckGo to find info/docs for error fixing.
     """
     try:
-        result = subprocess.run(args, shell=True, capture_output=True, text=True)
-        return result.stdout if result.stdout else result.stderr
+        print(f"   [Tools] Searching web for: {args}")
+        with DDGS() as ddgs:
+            # Get top 3 results
+            results = [r for r in ddgs.text(args, max_results=3)]
+            if not results:
+                return "No search results found."
+            
+            summary = "\n".join([f"- Title: {r['title']}\n  Snippet: {r['body']}" for r in results])
+            return summary
     except Exception as e:
-        return f"Command execution failed: {str(e)}"
+        return f"Search Error: {str(e)}"
 
-# --- 2. Tool registry ---
-# Maps tool names (model output) to the actual functions
+# --- Registry ---
 AVAILABLE_TOOLS = {
     "write_file": write_file,
     "read_file": read_file,
-    "run_cmd": run_cmd
+    "run_cmd": run_cmd,
+    "search_web": search_web
 }
 
-def load_new_tool(file_path):
-    """
-    Dynamically load a Python file as a tool.
-    Args: file_path (e.g. 'my_tools/bitcoin.py')
-    """
-    try:
-        # 1. Load module from file path
-        module_name = os.path.basename(file_path).replace(".py", "")
-        spec = importlib.util.spec_from_file_location(module_name, file_path)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
-        
-        # 2. Expect a 'main' function as the entry point
-        if hasattr(module, 'main'):
-            # 3. Register it in the tool table
-            AVAILABLE_TOOLS[module_name] = module.main
-            return f"Success: new tool '{module_name}' loaded. You can use it now."
-        else:
-            return "Failed: the tool file must define a 'main(args)' function."
-            
-    except Exception as e:
-        return f"Load tool failed: {str(e)}"
-
-# Register this meta-tool so the Agent can call it
-AVAILABLE_TOOLS["load_tool"] = load_new_tool
-
 def execute_tool(tool_name, tool_args):
-    """Unified execution entry point"""
     if tool_name in AVAILABLE_TOOLS:
         return AVAILABLE_TOOLS[tool_name](tool_args)
-    return f"Error: tool '{tool_name}' not found"
+    return f"Error: Tool '{tool_name}' not found."
