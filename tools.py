@@ -7,7 +7,7 @@ import subprocess
 import re
 from typing import Any
 
-from duckduckgo_search import DDGS
+from googlesearch import search
 
 
 # ---- Safety: block dangerous shell commands ----
@@ -103,7 +103,7 @@ def search_web(args: str) -> str:
     """
     Search the internet for real-time information.
     Args format: "query" (e.g., "latest bitcoin price", "who won the super bowl").
-    Returns a summary of the top 3 search results (title + snippet).
+    Returns a summary of the top 3 search results (title, description, URL).
     Use whenever the user asks for current events, prices, or facts you don't know.
     """
     try:
@@ -111,18 +111,25 @@ def search_web(args: str) -> str:
         if not query:
             return "Search Error: query is empty."
 
-        ddgs = DDGS()
-        results = list(ddgs.text(query, max_results=3))
-
-        if not results:
-            return "No results found."
-
-        lines = []
-        for r in results:
-            title = r.get("title", "")
-            body = r.get("body", "")
-            lines.append(f"- Title: {title}\n  Snippet: {body}")
-        return "\n\n".join(lines)
+        # Try advanced search first (returns objects with .title, .description, .url)
+        try:
+            results = list(search(query, num_results=3, advanced=True))
+            if not results:
+                raise ValueError("No results")
+            lines = []
+            for result in results:
+                title = getattr(result, "title", "") or ""
+                description = getattr(result, "description", "") or ""
+                url = getattr(result, "url", "") or ""
+                lines.append(f"- Title: {title}\n  Description: {description}\n  URL: {url}")
+            return "\n\n".join(lines)
+        except (AttributeError, TypeError, ValueError):
+            # Fallback: standard search returns URL strings only
+            results = list(search(query, num_results=3))
+            if not results:
+                return "No results found."
+            lines = [f"- URL: {u}" for u in results]
+            return "\n\n".join(lines)
 
     except Exception as e:
         return f"Search Error: {str(e)}"

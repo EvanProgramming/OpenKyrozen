@@ -1,11 +1,12 @@
 """
 AI Agent: core loop with Ollama, long/short-term memory, and tool use.
-Fixes: Amnesia (context from RAG + last 10 turns), Blank responses (re-prompt after tool).
+Uses modular Markdown prompts from prompts/ for system context.
 """
 
 import json
 import re
 import sys
+from pathlib import Path
 
 from ollama import chat as ollama_chat
 from ollama import Client as OllamaClient
@@ -19,30 +20,23 @@ MODEL = "gpt-oss:20b"
 SHORT_TERM_CAP = 10  # last N conversation turns
 MAX_TOOL_RETRIES = 3
 
-SYSTEM_PROMPT = """
-        You are a helpful AI Assistant with access to external tools.
-        
-        [AVAILABLE TOOLS]:
-        {tools_list}
-        
-        [MEMORY]:
-        {memory_context}
-        
-        [RESPONSE FORMAT]
-        Use this structure when you need to call a tool:
-        
-        Thinking Process:
-        1. First, I will analyze the user's request.
-        2. I need to use [Tool Name] to solve this.
-        
-        Tool Action:
-        ```json
-        {{ "action": "search_web", "args": "bitcoin price" }}
-        ```
-        
-        It is OKAY to print the JSON block. This is required for the system to work.
-        If the user asks for real-time info (prices, news, weather), use search_web. If you do not need a tool, reply in normal language.
-        """
+# Prompts directory (next to main.py)
+PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
+
+
+def _load_prompt(filename: str) -> str:
+    """Load a Markdown prompt file from prompts/; return empty string if missing."""
+    path = PROMPTS_DIR / filename
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except (OSError, IOError):
+        return ""
+
+
+# Load modular prompts at startup
+ROLE_CONTENT = _load_prompt("role.md")
+INSTRUCTIONS_CONTENT = _load_prompt("instructions.md")
+EXAMPLES_CONTENT = _load_prompt("examples.md")
 
 
 def _build_tools_list() -> str:
@@ -58,10 +52,25 @@ def _build_tools_list() -> str:
 TOOLS_LIST = _build_tools_list()
 
 
+def _build_system_prompt(tools_list: str, memory_context: str) -> str:
+    """Build system prompt from modular sections: ROLE + TOOLS + INSTRUCTIONS + EXAMPLES + MEMORY."""
+    sections = [
+        "[ROLE]\n" + ROLE_CONTENT,
+        "[TOOLS]\n" + tools_list,
+        "[INSTRUCTIONS]\n" + INSTRUCTIONS_CONTENT,
+        "[EXAMPLES]\n" + EXAMPLES_CONTENT,
+        "[MEMORY]\n" + memory_context,
+    ]
+    return "\n\n".join(sections)
+
+
 # ---- Shared state (outside main loop to avoid amnesia) ----
 ollama = OllamaClient()
 memory_bank = MemoryBank()
-short_term_memory: list[dict[str, str]] = []
+short_term_memory: list[dict[str, str]] = [
+    {"role": "user", "content": "Hello, are you ready to help me?"},
+    {"role": "assistant", "content": "Yes! I am a powerful Agent. I can use tools like search_web and write_file. How can I help you today?"},
+]
 
 
 def _build_messages(user_input: str) -> list[dict[str, str]]:
@@ -72,8 +81,8 @@ def _build_messages(user_input: str) -> list[dict[str, str]]:
     recalled = memory_bank.recall(user_input, n_results=2)
     memory_context = ("Relevant past context:\n" + "\n---\n".join(recalled)) if recalled else "(none)"
 
-    # 2. System prompt (with tools_list and memory_context filled in)
-    system_content = SYSTEM_PROMPT.format(tools_list=TOOLS_LIST, memory_context=memory_context)
+    # 2. System prompt from modular Markdown prompts
+    system_content = _build_system_prompt(TOOLS_LIST, memory_context)
     messages.append({"role": "system", "content": system_content})
 
     # 3. Last N turns (keep pairs: user + assistant)
