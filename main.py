@@ -20,34 +20,28 @@ SHORT_TERM_CAP = 10  # last N conversation turns
 MAX_TOOL_RETRIES = 3
 
 SYSTEM_PROMPT = """
-        You are a powerful, autonomous AI Agent running LOCALLY on the user's computer.
-        You have FULL PERMISSION to create, read, and modify files on this system.
+        You are a powerful, autonomous AI Agent.
         
         [AVAILABLE TOOLS]:
         {tools_list}
         
-        [Current Context]:
+        [MEMORY]:
         {memory_context}
         
         [INSTRUCTIONS]:
-        1. When the user asks to create a file, DO IT using the `write_file` tool.
-        2. Do NOT say "I cannot do that". You CAN.
-        3. Do NOT provide shell commands for the user to run. RUN THEM YOURSELF using the tools.
-        4. For file paths:
-           - Use `~/Desktop/filename.txt` for the user's desktop.
-           - Use `.` for the current directory.
+        1. FIRST, think about what you need to do. Output "Thought: ...".
+        2. THEN, if you need to act, output JSON: {{ "action": "tool_name", "args": "value" }}
         
-        [RESPONSE FORMAT]:
-        You must first output your thought process, then the tool usage JSON.
-        
-        Example:
-        Thought: The user wants to create a file on the desktop. I will use the write_file tool.
-        Action: ```json
-        {{
-          "action": "write_file",
-          "args": "~/Desktop/test.txt|Content here"
-        }}
-        ```
+        [CRITICAL RULES]:
+        - If the user asks for **Real-time Info** (prices, news, weather), you MUST use `search_web`.
+        - Do NOT say "I cannot search". You HAVE the `search_web` tool. Use it!
+        - Example: User asks for Bitcoin price -> Action: {{ "action": "search_web", "args": "bitcoin price" }}
+        - Full example:
+          User: "Price of Bitcoin?"
+          Thought: User wants current price. I need to search.
+          Action: ```json
+          {{ "action": "search_web", "args": "current bitcoin price USD" }}
+          ```
         """
 
 
@@ -149,6 +143,17 @@ def _chat_turn(user_input: str) -> str:
     messages = _build_messages(user_input)
     response_text = _get_llm_response(messages).strip()
 
+    # Retry once if LLM returned empty (avoid silent failure on complex tasks)
+    print(f"[DEBUG RAW]: {repr(response_text)}")
+    if not response_text or not response_text.strip():
+        print("[Warning] Empty response received. Retrying with explicit instruction...")
+        messages.append({
+            "role": "user",
+            "content": "System Alert: You returned an empty response. You MUST output your Thought process and then the JSON Action. Do not be silent.",
+        })
+        response_text = _get_llm_response(messages).strip()
+        print(f"[DEBUG RAW]: {repr(response_text)}")
+
     for attempt in range(MAX_TOOL_RETRIES + 1):
         # Step A: Parse JSON (only from ```json ... ``` block; ignore Thought:)
         tool_call = parse_json_from_response(response_text)
@@ -216,7 +221,7 @@ def main() -> None:
         reply = _chat_turn(user_input)
 
         # Debug: raw LLM output (repr shows hidden newlines/spaces)
-        print(f"   [Raw LLM Output]: {repr(reply)}")
+        print(f"[DEBUG RAW]: {repr(reply)}")
 
         # Relaxed empty check: Thought-only or short noise is not "empty"
         if len(reply.strip()) < 5:

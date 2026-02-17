@@ -100,24 +100,32 @@ def run_cmd(args: str) -> str:
 
 
 def search_web(args: str) -> str:
-    """Search the web. Args: query string. Returns top 3 results."""
+    """
+    Search the internet for real-time information.
+    Args format: "query" (e.g., "latest bitcoin price", "who won the super bowl").
+    Returns a summary of the top 3 search results (title + snippet).
+    Use whenever the user asks for current events, prices, or facts you don't know.
+    """
     try:
-        query = args.strip()
+        query = (args or "").strip()
         if not query:
-            return "Error: search_web requires a query"
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=3))
+            return "Search Error: query is empty."
+
+        ddgs = DDGS()
+        results = list(ddgs.text(query, max_results=3))
+
         if not results:
             return "No results found."
+
         lines = []
-        for i, r in enumerate(results, 1):
+        for r in results:
             title = r.get("title", "")
-            href = r.get("href", "")
             body = r.get("body", "")
-            lines.append(f"{i}. {title}\n   {href}\n   {body}")
+            lines.append(f"- Title: {title}\n  Snippet: {body}")
         return "\n\n".join(lines)
+
     except Exception as e:
-        return f"Error searching web: {e}"
+        return f"Search Error: {str(e)}"
 
 
 AVAILABLE_TOOLS: dict[str, Any] = {
