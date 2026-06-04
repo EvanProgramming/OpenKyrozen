@@ -83,8 +83,6 @@ def run_cmd(args: str) -> str:
         return "Error: run_cmd requires a command"
     if _is_dangerous(cmd):
         return "Error: command blocked for safety (e.g. rm -rf or similar)."
-    # Escape parentheses so paths like OneDrive-Personal(2) don't cause shell errors
-    cmd = cmd.replace('(', r'\(').replace(')', r'\)')
     try:
         result = subprocess.run(
             cmd,

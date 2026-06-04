@@ -374,10 +374,23 @@ def _get_llm_response(messages: list[dict[str, str]]) -> str:
         return f"[DeepSeek Error] {e}"
 
 
-def _chat_turn(user_input: str) -> str:
-    """One user turn: build context, get LLM reply, execute any tool calls once,
-    then produce a final natural answer based on the results."""
+def _is_tool_error(result: str) -> bool:
+    """Return True if the tool result indicates a failure."""
+    low = result.strip().lower()
+    return (
+        low.startswith("error") or
+        low.startswith("exit code") or
+        "no such file" in low or
+        "syntax error" in low or
+        "not found" in low
+    )
 
+
+def _chat_turn(user_input: str) -> str:
+    """One user turn: build context, get LLM reply, execute tool calls
+    with automatic retries on failure."""
+
+    MAX_RETRIES = 3
     messages = _build_messages(user_input)
     response_text = _get_llm_response(messages).strip()
 
@@ -411,38 +424,95 @@ def _chat_turn(user_input: str) -> str:
         results.append(f"- `{action}({args!r})` returned:\n{result[:2000]}")
     tool_results_text = "\n".join(results)
 
-    # Build a dedicated summary prompt (no tool‑calling instructions)
-    summary_messages: list[dict[str, str]] = [
-        {
-            "role": "system",
-            "content": (
-                "You are Kyrozen, an intelligent AI assistant. "
-                "You have just obtained the following information by running tools. "
-                "Now produce a clear, natural answer to the user's original request. "
-                "Do **not** output any Action, JSON, or tool calls – only plain text."
-            )
-        },
-        {
-            "role": "system",
-            "content": f"You are working inside {os.getcwd()}."
-        },
-        {"role": "user", "content": user_input},
-        {"role": "assistant", "content": response_text},
-        {
-            "role": "user",
-            "content": (
-                f"The tools returned:\n{tool_results_text}\n\n"
-                "Please respond directly with the analysis the user asked for."
-            )
-        }
-    ]
+    # Check if any tool failed
+    all_ok = not any(_is_tool_error(r) for r in results)
 
-    final_response = _get_llm_response(summary_messages).strip()
-    if not final_response or len(final_response) < 10:
-        # fallback: just present the raw results
-        final_response = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
+    if not all_ok:
+        # Retry loop
+        for attempt in range(MAX_RETRIES):
+            # Feed failure back to LLM
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"The previous tool attempt result(s):\n{tool_results_text}\n\n"
+                    "The tool(s) failed. Please **try a different approach** "
+                    "(e.g., quote the path, escape parentheses, or use a different command). "
+                    "Output a new Thought and Action block."
+                )
+            })
+            response_text = _get_llm_response(messages).strip()
+            if not response_text or not response_text.strip():
+                # Empty response – stop retrying
+                break
 
-    return final_response
+            # Check for new tool definition
+            if _attempt_define_tool(response_text):
+                return "New tool defined. It will be available for future interactions."
+
+            new_tool_calls = _collect_tool_calls(response_text)
+            if not new_tool_calls:
+                # LLM chose to answer without tools
+                return response_text
+
+            # Execute new round of tools
+            new_results: list[str] = []
+            for tc2 in new_tool_calls:
+                action = tc2.get("action", "")
+                args = tc2.get("args", "")
+                if not isinstance(args, str):
+                    args = str(args)
+                result2 = _run_tool(action, args)
+                print(f"[Tool] {action}({args!r}) → {result2[:200]}...")
+                new_results.append(f"- `{action}({args!r})` returned:\n{result2[:2000]}")
+            tool_results_text = "\n".join(new_results)
+
+            if not any(_is_tool_error(r) for r in new_results):
+                # Success – now produce a natural answer
+                all_ok = True
+                break
+            # Continue loop to retry again
+
+    if all_ok:
+        # Build a summary prompt for the final answer
+        summary_messages: list[dict[str, str]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Kyrozen, an intelligent AI assistant. "
+                    "You have just obtained the following information by running tools. "
+                    "Now produce a clear, natural answer to the user's original request. "
+                    "Do **not** output any Action, JSON, or tool calls – only plain text."
+                )
+            },
+            {
+                "role": "system",
+                "content": f"You are working inside {os.getcwd()}."
+            },
+            {"role": "user", "content": user_input},
+            {"role": "assistant", "content": response_text},
+            {
+                "role": "user",
+                "content": (
+                    f"The tools returned:\n{tool_results_text}\n\n"
+                    "Please respond directly with the analysis the user asked for."
+                )
+            }
+        ]
+        final_response = _get_llm_response(summary_messages).strip()
+        if not final_response or len(final_response) < 10:
+            final_response = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
+        return final_response
+    else:
+        # All retries exhausted – produce a helpful failure message
+        return (
+            f"After {MAX_RETRIES} attempts the tool(s) still failed. "
+            f"Last output:\n{tool_results_text}\n\n"
+            "Suggestions:\n"
+            "- Make sure the path is enclosed in double quotes (e.g. `cd \"a( b)\"`).\n"
+            "- Check that the directory exists.\n"
+            "- Run a simpler command first (`pwd`, `ls`) to verify location.\n"
+            "- Use `/quit` to exit, fix the issue, then restart."
+        )
 
 
 
