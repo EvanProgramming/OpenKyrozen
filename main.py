@@ -120,6 +120,9 @@ def _system_prompt(tools_list: str) -> str:
 ## Available Tools:
 {tools_list}
 
+## Current working directory
+You are currently inside the project root directory of the repository the user is working in.  Relative paths (like "README.md") will be resolved correctly.  You can use `read_file`, `write_file`, `list_dir`, `find_files`, `run_cmd`, etc. without needing the full absolute path.
+
 ## How to use a tool:
 When you need to perform an action, you must output a Thought followed by an Action in JSON format enclosed in triple backticks.
 
@@ -187,23 +190,44 @@ def _build_messages(user_input: str) -> list[dict[str, str]]:
 
 def parse_json_from_response(text: str) -> dict | None:
     """
-    Extract tool-call JSON. Prefer 'Action: ```json ... ```' then any ```json ... ``` block.
+    Extract tool-call JSON.  Tries several patterns:
+    1.  Action: ```json ... ```  (preferred)
+    2.  Action:  (without backticks) followed by a JSON object on the next line(s)
+    3.  Any ```json ... ``` block
+    4.  Any JSON object that contains an "action" key (relaxed fallback)
     """
     text = (text or "").strip()
-    # Prefer pattern: Action: ```json ... ```
+    # Pattern 1: Action: ```json ... ```
     for pattern in (
         r"Action:\s*```(?:json)?\s*([\s\S]*?)\s*```",
+        r"Action:\s*(\{[\s\S]*?\})\s*(?:```|$)",
         r"```(?:json)?\s*([\s\S]*?)\s*```",
     ):
-        code_match = re.search(pattern, text)
-        if code_match:
-            raw = code_match.group(1).strip()
+        for match in re.finditer(pattern, text):
+            raw = match.group(1).strip()
+            # Sometimes the raw still has stray ```` at the end; strip them
+            raw = raw.rstrip("`").strip()
             try:
                 data = json.loads(raw)
                 if isinstance(data, dict) and "action" in data and data.get("action") in AVAILABLE_TOOLS:
                     return data
             except json.JSONDecodeError:
                 continue
+
+    # Fallback: scan the whole text for any { ... } that might be valid JSON with "action"
+    try:
+        # Naive: find first { ... } pair
+        start = text.find("{")
+        if start != -1:
+            end = text.rfind("}")
+            if end != -1 and end > start:
+                raw = text[start:end + 1]
+                data = json.loads(raw)
+                if isinstance(data, dict) and "action" in data and data.get("action") in AVAILABLE_TOOLS:
+                    return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+
     return None
 
 
@@ -308,6 +332,9 @@ def _chat_turn(user_input: str) -> str:
         args = tool_call.get("args", "") if isinstance(tool_call.get("args"), str) else str(tool_call.get("args", ""))
 
         result = _run_tool(action, args)
+
+        # Immediately inform the user (and the LLM on the next turn) what happened
+        print(f"[Tool] {action}({args!r}) → {result[:200]}...")
 
         if result.strip().lower().startswith("error") and attempt < MAX_TOOL_RETRIES:
             retry_messages = _build_messages(user_input)
