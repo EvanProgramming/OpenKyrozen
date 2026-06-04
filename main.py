@@ -1295,6 +1295,7 @@ def main() -> None:
     if deepseek_client is None:
         console.print("Cannot start without an API key.", style="red")
         sys.exit(1)
+    console.print("[yellow]Loading project files...[/yellow]")
     _load_project_files_into_memory()
     console.print("[green]Project files loaded.[/green]")
 
