@@ -84,3 +84,18 @@ class MemoryBank:
                 return []
             recent = self._in_memory[-n_results:]
             return [text for _, text, _ in recent]
+
+    def get_recent(self, n: int = 10) -> list[str]:
+        """Return the n most recent logs (without relevance ranking)."""
+        if _CHROMADB_AVAILABLE and self._collection is not None:
+            try:
+                result = self._collection.get(limit=n, offset=0)
+                docs = result.get("documents", [])
+                return docs if docs else []
+            except Exception:
+                return []
+        else:
+            if not self._in_memory:
+                return []
+            recent = self._in_memory[-n:]
+            return [text for _, text, _ in recent]

@@ -540,19 +540,43 @@ def _split_reply(text: str) -> tuple[str, str]:
         return "", text
 
 
+def _auto_learn_conversations() -> None:
+    """Use LLM to extract important facts from recent conversation logs and store them."""
+    recent = memory_bank.get_recent(20)
+    if not recent:
+        return
+    # Filter out any self‑generated facts to avoid feedback loops
+    recent = [log for log in recent if not log.startswith("FACT:")]
+    if not recent:
+        return
+    learn_prompt = (
+        "You are Kyrozen's self‑learning module. Read the following recent conversation logs "
+        "and extract any important facts, user preferences, or new skills that should be "
+        "remembered for future interactions. Output a bullet list of facts. "
+        "If nothing important, output only '—'.\n\n"
+        + "\n".join(recent)
+    )
+    messages = [{"role": "system", "content": learn_prompt}]
+    try:
+        fact_text = _get_llm_response(messages).strip()
+        if fact_text and fact_text not in ("—", ""):
+            for line in fact_text.split("\n"):
+                line = line.strip().lstrip("-* ").strip()
+                if line:
+                    memory_bank.add_log(f"FACT: {line}")
+    except Exception as e:
+        console.print(f"[dim]Auto‑learn conversation error: {e}[/dim]")
+
+
 def _background_learning_loop() -> None:
-    """Daemon thread that periodically rescans project files and stores any new code changes."""
-    last_file_load = time.time()
+    """Daemon thread that periodically learns from conversations and rescans project files."""
     while True:
-        time.sleep(300)  # every 5 minutes
-        now = time.time()
-        if now - last_file_load > 240:
-            try:
-                _load_project_files_into_memory()
-                console.print("[dim]Auto‑learn: project files refreshed.[/dim]")
-                last_file_load = now
-            except Exception as e:
-                console.print(f"[dim]Auto‑learn error: {e}[/dim]")
+        time.sleep(120)  # every 2 minutes
+        try:
+            _auto_learn_conversations()
+            _load_project_files_into_memory()
+        except Exception as e:
+            console.print(f"[dim]Auto‑learn error: {e}[/dim]")
 
 
 def main() -> None:
