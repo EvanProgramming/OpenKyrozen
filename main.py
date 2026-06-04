@@ -555,19 +555,6 @@ def _background_learning_loop() -> None:
                 console.print(f"[dim]Auto‑learn error: {e}[/dim]")
 
 
-def _handle_remember_command(text: str) -> str | None:
-    """If the input starts with /remember, store the rest as a fact and return a confirmation."""
-    prefix = "/remember "
-    if text.lower().startswith(prefix):
-        fact = text[len(prefix):].strip()
-        if fact:
-            memory_bank.add_log(f"FACT: {fact}")
-            return f"Remembered: {fact}"
-        else:
-            return "Please provide something to remember after /remember."
-    return None
-
-
 def main() -> None:
     global deepseek_client, DEEPSEEK_MODEL
     banner_text = r"""
@@ -580,7 +567,7 @@ def main() -> None:
 """
     console.print(Panel.fit(banner_text, title="OPEN KYROZEN", subtitle="self‑learning AI agent", border_style="cyan"))
     console.print(f"Kyrozen (DeepSeek + Tools). Model: {MODEL_NAME}", style="cyan")
-    console.print("Commands: /quit or /exit to exit, /save to long‑term memory, /learn to reload project files, /remember <fact> to store a fact, /api_key to change API key.\n", style="yellow")
+    console.print("Commands: /quit or /exit to exit, /learn to reload project files, /api_key to change API key.\n", style="yellow")
 
     _prompt_and_init_deepseek()
     if deepseek_client is None:
@@ -603,21 +590,6 @@ def main() -> None:
         if user_input.lower() in ("/quit", "/exit"):
             console.print("[red]Goodbye.[/red]")
             break
-        if user_input.lower() == "/save":
-            memory_bank.add_log(
-                "Conversation: " + "; ".join(
-                    m.get("content", "")[:200] for m in short_term_memory[-6:] if m.get("content")
-                )
-            )
-            console.print("[green]Saved to long‑term memory.[/green]")
-            continue
-        if user_input.lower() == "/remember":
-            console.print("[yellow]Usage: /remember <fact>[/yellow]")
-            continue
-        remember_result = _handle_remember_command(user_input)
-        if remember_result:
-            console.print(f"[green]{remember_result}[/green]")
-            continue
         if user_input.lower() == "/learn":
             _load_project_files_into_memory()
             console.print("[green]Project files re‑learned and stored in memory.[/green]")
