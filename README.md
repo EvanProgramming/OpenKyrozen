@@ -17,7 +17,7 @@
 
 ### 📦 Install with Make (recommended)
 ```bash
-git clone https://github.com/your-username/OpenKyrozen.git
+git clone https://github.com/EvanProgramming/OpenKyrozen.git
 cd OpenKyrozen
 make install
 ```
