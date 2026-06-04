@@ -560,12 +560,18 @@ def _prompt_and_init_deepseek() -> None:
     if not key:
         key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not key:
-        key = input("\nDeepSeek API key not set. Enter your API key: ").strip()
+        try:
+            key = input("\nDeepSeek API key not set. Enter your API key: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            deepseek_client = None
+            DEEPSEEK_MODEL = "deepseek-chat"
+            sys.exit(0)
         if not key:
             print("No API key entered – use /quit to exit.")
             deepseek_client = None
             DEEPSEEK_MODEL = "deepseek-chat"
-            return
+            sys.exit(0)
         _save_config_key(key)
     os.environ["DEEPSEEK_API_KEY"] = key
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
@@ -589,6 +595,9 @@ def _load_project_files_into_memory() -> None:
             rel_path = str(py_file.relative_to(project_root))
             log_text = f"FILE: {rel_path}\n```python\n{content}\n```"
             memory_bank.add_log(log_text)
+        except KeyboardInterrupt:
+            print("\nFile loading interrupted. Exiting.")
+            sys.exit(0)
         except Exception as e:
             print(f"Could not read {py_file}: {e}")
 
