@@ -458,7 +458,7 @@ def _split_reply(text: str) -> tuple[str, str]:
         # Also strip any leftover Action blocks (they should have been executed, but LLM may keep them)
         answer = re.sub(r"Action:\s*```(?:json)?[\s\S]*?```", "", answer).strip()
         answer = re.sub(r"\{[\s\S]*?\}", "", answer).strip()  # remove stray JSON objects
-        answer = answer.lstrip(""""'").strip()
+        answer = answer.lstrip('"').lstrip("'").strip()
         # If after stripping there's nothing, fallback to original
         if not answer:
             answer = text
