@@ -3,8 +3,11 @@ AI Agent: optimized for low-memory (7B) models. Ollama + tools + short prompt.
 """
 
 import json
+import os
 import re
 import sys
+
+from openai import OpenAI
 
 from ollama import chat as ollama_chat
 from ollama import Client as OllamaClient
@@ -17,6 +20,15 @@ from tools import AVAILABLE_TOOLS
 MODEL_NAME = "qwen2.5-coder:7b"
 SHORT_TERM_CAP = 8  # fewer turns to save context window
 MAX_TOOL_RETRIES = 3
+
+# ---- DeepSeek API support ----
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+if DEEPSEEK_API_KEY:
+    DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+    deepseek_client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+else:
+    deepseek_client = None
 
 
 def _build_tools_list() -> str:
@@ -122,19 +134,32 @@ def _run_tool(action: str, args: str) -> str:
 
 
 def _get_llm_response(messages: list[dict[str, str]]) -> str:
-    """Call Ollama; return assistant content. Debug-prints messages."""
-    print("[DEBUG] Messages sent to ollama.chat:")
+    """Call DeepSeek API or local Ollama; return assistant content. Debug-prints messages."""
+    print("[DEBUG] Messages sent to LLM:")
     for i, m in enumerate(messages):
         role = m.get("role", "?")
         content = m.get("content", "")
         preview = content[:80] + "..." if len(content) > 80 else content
         print(f"  [{i}] role={role!r} content={preview!r}")
     print()
-    try:
-        response = ollama_chat(model=MODEL_NAME, messages=messages)
-        return (response.message and getattr(response.message, "content", None)) or ""
-    except Exception as e:
-        return f"[LLM Error] {e}"
+    if deepseek_client is not None:
+        # Use DeepSeek API (OpenAI compatible)
+        try:
+            response = deepseek_client.chat.completions.create(
+                model=DEEPSEEK_MODEL,
+                messages=messages,
+            )
+            text = response.choices[0].message.content or ""
+            return text.strip()
+        except Exception as e:
+            return f"[DeepSeek Error] {e}"
+    else:
+        # Fallback to local Ollama
+        try:
+            response = ollama_chat(model=MODEL_NAME, messages=messages)
+            return (response.message and getattr(response.message, "content", None)) or ""
+        except Exception as e:
+            return f"[Ollama Error] {e}"
 
 
 def _chat_turn(user_input: str) -> str:
@@ -185,21 +210,32 @@ def _chat_turn(user_input: str) -> str:
     return response_text
 
 
+def _color(text: str, code: str) -> str:
+    return f"\033[{code}m{text}\033[0m"
+
 def main() -> None:
-    print("AI Agent (Ollama + Tools). Model:", MODEL_NAME)
-    print("Commands: /quit exit, /save save to long-term memory.\n")
+    banner = r"""
+   ___  ___   __   ____  _  _  _  _   ___
+  / _ \|_ _| /_ | |___ \| || || || | / _ \
+ | | | | |   | |   __) | || |_| || || | | |
+ | |_| | |   | |  / __/|__   _|__   _| |_| |
+  \___/|___| |_| |_____|  |_|   |_|  \___/
+"""
+    print(banner)
+    print(_color("AI Agent (DeepSeek + Tools). Model:", "36"), MODEL_NAME)
+    print(_color("Commands: /quit exit, /save save to long-term memory.\n", "33"))
 
     while True:
         try:
-            user_input = input("You: ").strip()
+            user_input = input(_color("You: ", "36")).strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye.")
+            print(_color("\nGoodbye.", "31"))
             sys.exit(0)
 
         if not user_input:
             continue
         if user_input.lower() == "/quit":
-            print("Goodbye.")
+            print(_color("Goodbye.", "31"))
             break
         if user_input.lower() == "/save":
             memory_bank.add_log(
@@ -207,22 +243,22 @@ def main() -> None:
                     m.get("content", "")[:200] for m in short_term_memory[-6:] if m.get("content")
                 )
             )
-            print("Saved to long-term memory.")
+            print(_color("Saved to long-term memory.", "32"))
             continue
 
         reply = _chat_turn(user_input)
 
-        print(f"[DEBUG RAW]: {repr(reply)}")
+        print(_color(f"[DEBUG RAW]: {repr(reply)}", "2"))
 
         if len(reply.strip()) < 5:
-            print("[Error] Received empty response from LLM")
+            print(_color("[Error] Received empty response from LLM", "31"))
             continue
 
         short_term_memory.append({"role": "user", "content": user_input})
         short_term_memory.append({"role": "assistant", "content": reply})
         memory_bank.add_log(f"User: {user_input}\nAssistant: {reply}")
 
-        print("Agent:", reply, "\n")
+        print(_color("Agent:", "32"), reply, "\n")
 
 
 if __name__ == "__main__":
