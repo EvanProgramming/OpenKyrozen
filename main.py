@@ -581,6 +581,22 @@ def _background_learning_loop() -> None:
 
 def main() -> None:
     global deepseek_client, DEEPSEEK_MODEL
+
+    # --init flag for one‑time setup
+    if "--init" in sys.argv:
+        console.print("[cyan]OpenKyrozen initialisation[/cyan]")
+        try:
+            import openai  # noqa: F401
+        except ImportError:
+            console.print("[red]openai not installed. Run: pip install -r requirements.txt[/red]")
+            sys.exit(1)
+        _prompt_and_init_deepseek()
+        _load_project_files_into_memory()
+        if deepseek_client is not None:
+            console.print("[green]API key configured and saved to ~/.kyrozen_config.json[/green]")
+        console.print("[green]Initialisation finished. Run `python main.py` to start the agent.[/green]")
+        sys.exit(0)
+
     banner_text = r"""
    ██████╗ ██████╗ ███████╗███╗   ██╗    ██╗  ██╗██╗   ██╗██████╗  ██████╗ ███████╗███████╗███╗   ██╗
   ██╔═══██╗██╔══██╗██╔════╝████╗  ██║    ██║ ██╔╝╚██╗ ██╔╝██╔══██╗██╔═══██╗╚══███╔╝╚══███╔╝████╗  ██║
