@@ -174,6 +174,12 @@ def _build_messages(user_input: str) -> list[dict[str, str]]:
     # 1. Single minimal system prompt (no file I/O)
     messages.append({"role": "system", "content": _system_prompt(TOOLS_LIST)})
 
+    # 1b. Tell the assistant where it is
+    messages.append({
+        "role": "system",
+        "content": f"You are currently working inside the directory:\n{os.getcwd()}\n\nYou can use relative paths like '.' or 'main.py' directly.  Do not ask the user for a local path or a remote URL unless you intend to clone an external repository."
+    })
+
     # 2. Optional: one short memory hint if we have RAG results (saves tokens)
     recalled = memory_bank.recall(user_input, n_results=4)
     if recalled:
@@ -353,9 +359,18 @@ def _chat_turn(user_input: str) -> str:
                 args = str(args)
             result = _run_tool(action, args)
             print(f"[Tool] {action}({args!r}) → {result[:200]}...")
-            results.append(f"- {action}({args!r}) → {result[:200]}")
-        # Return a summary of all executed tools
-        return "I executed the following tools:\n" + "\n".join(results)
+            results.append(f"- `{action}({args!r})` → {result[:200]}")
+        tool_results_text = "\n".join(results)
+        # Feed the tool results back into the conversation and ask the LLM
+        # to produce a natural language answer.
+        messages.append({
+            "role": "system",
+            "content": f"The following tools were executed:\n{tool_results_text}\nNow please reply to the user’s original request in a natural, helpful way."
+        })
+        final_response = _get_llm_response(messages).strip()
+        if not final_response or len(final_response) < 5:
+            final_response = "I have performed the requested actions. You can ask me more questions."
+        return final_response
 
     # No tool calls – return the assistant's plain text
     return response_text
