@@ -96,6 +96,19 @@ If no action is required, respond naturally in plain text.
 You are not limited to coding tasks; you can assist with any topic. Use the tools when appropriate, but feel free to engage in general conversation. Always try to provide thorough, helpful answers.
 
 You have stored knowledge of the project's code files as well as previous conversations. Use that knowledge to improve your answers and learn over time.
+
+You can also teach yourself new skills. If you want to create a new tool, output a **DefineTool:** block with a JSON definition. For example:
+
+DefineTool:
+```json
+{{
+  "name": "example_tool",
+  "description": "what it does",
+  "code": "def example_tool(args):\\n    return 'result'"
+}}
+```
+
+After such definition the new tool will be available for future use.
 """
 
 
@@ -163,6 +176,54 @@ def _run_tool(action: str, args: str) -> str:
         return f"Error: {e}"
 
 
+def _attempt_define_tool(text: str) -> bool:
+    """If the LLM output contains a DefineTool block, parse it, create the function and add it to AVAILABLE_TOOLS."""
+    pattern = r"DefineTool:\s*```(?:json)?\s*([\s\S]*?)\s*```"
+    match = re.search(pattern, text)
+    if not match:
+        return False
+    raw = match.group(1).strip()
+    try:
+        definition = json.loads(raw)
+    except json.JSONDecodeError:
+        return False
+
+    name = definition.get("name", "").strip()
+    description = definition.get("description", "").strip()
+    code = definition.get("code", "").strip()
+
+    if not name or not code:
+        return False
+
+    # Create a restricted namespace for exec
+    local_vars: dict = {}
+    try:
+        exec(code, {"__builtins__": __builtins__}, local_vars)
+    except Exception:
+        return False
+
+    # The function bearing the same name must have been defined
+    if name not in local_vars:
+        return False
+
+    new_tool = local_vars[name] = local_vars.pop(name)
+    if not callable(new_tool):
+        return False
+
+    # Add to the global tool registry
+    AVAILABLE_TOOLS[name] = new_tool
+
+    # Also store the definition in long‑term memory for future recall
+    memory_bank.add_log(
+        f"New tool defined: {name}\n"
+        f"Description: {description}\n"
+        f"Code:\n```python\n{code}\n```"
+    )
+
+    print(f"[DefineTool] Added new tool '{name}' to AVAILABLE_TOOLS.")
+    return True
+
+
 def _get_llm_response(messages: list[dict[str, str]]) -> str:
     """Call DeepSeek API; return assistant content."""
     if deepseek_client is None:
@@ -191,6 +252,10 @@ def _chat_turn(user_input: str) -> str:
             "content": "System: You returned nothing. Please output your Thought and JSON Action now.",
         })
         response_text = _get_llm_response(messages).strip()
+
+    # Attempt to define a new tool if present
+    if _attempt_define_tool(response_text):
+        return "New tool defined. It will be available for future interactions."
 
     for attempt in range(MAX_TOOL_RETRIES + 1):
         tool_call = parse_json_from_response(response_text)
