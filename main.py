@@ -561,7 +561,7 @@ def _prompt_and_init_deepseek() -> None:
     if not key:
         key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not key:
-        console.print("\nDeepSeek API key not set. Enter your API key: ", end="")
+        print("\nDeepSeek API key not set. Enter your API key: ", end="", flush=True)
         try:
             key = input().strip()
         except (EOFError, KeyboardInterrupt):
@@ -1296,12 +1296,13 @@ def main() -> None:
         console.print("Cannot start without an API key.", style="red")
         sys.exit(1)
     _load_project_files_into_memory()
+    console.print("[green]Project files loaded.[/green]")
 
     # Start background learning daemon
     threading.Thread(target=_background_learning_loop, daemon=True).start()
 
     while True:
-        console.print("[bold cyan]You: [/bold cyan]", end="")
+        print("[bold cyan]You: [/bold cyan]", end="", flush=True)
         try:
             user_input = input().strip()
         except (EOFError, KeyboardInterrupt):
