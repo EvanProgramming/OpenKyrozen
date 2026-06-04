@@ -5,6 +5,7 @@ Agent capabilities: file I/O, shell commands, web search.
 import os
 import subprocess
 import re
+import glob
 from typing import Any
 
 from duckduckgo_search import DDGS
@@ -128,9 +129,94 @@ def search_web(args: str) -> str:
     return "\n\n".join(lines)
 
 
+def find_files(args: str) -> str:
+    """
+    Find files matching a pattern. Args format: "pattern" or "pattern|directory".
+    Supports ~ for user home. Returns newline-separated list of relative paths.
+    """
+    try:
+        parts = args.split("|", 1)
+        pattern = parts[0].strip()
+        directory = "."
+        if len(parts) > 1:
+            directory = parts[1].strip()
+        pattern = os.path.expanduser(pattern)
+        directory = os.path.expanduser(directory)
+        # Ensure pattern is absolute if directory is not "."?
+        if not os.path.isabs(directory):
+            directory = os.path.abspath(directory)
+        full_path = os.path.join(directory, pattern)
+        matches = glob.glob(full_path, recursive=True)
+        if not matches:
+            return "No files found."
+        return "\n".join(matches)
+    except Exception as e:
+        return f"Error finding files: {e}"
+
+
+def list_dir(args: str) -> str:
+    """
+    List contents of a directory. Args format: "path" (default ".").
+    Supports ~ for user home.
+    """
+    try:
+        dir_path = args.strip() or "."
+        dir_path = os.path.expanduser(dir_path)
+        abs_path = os.path.abspath(dir_path)
+        entries = os.listdir(abs_path)
+        return "\n".join(sorted(entries))
+    except Exception as e:
+        return f"Error listing directory: {e}"
+
+
+def git_clone(args: str) -> str:
+    """
+    Clone a git repository. Args format: "url" or "url|destination".
+    Supports ~ for user home.
+    """
+    try:
+        parts = args.split("|", 1)
+        url = parts[0].strip()
+        dest = ""
+        if len(parts) > 1:
+            dest = parts[1].strip()
+            dest = os.path.expanduser(dest)
+        cmd = ["git", "clone", url]
+        if dest:
+            cmd.append(dest)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            return f"Git clone failed:\n{result.stderr}"
+        return f"Repository cloned successfully:\n{result.stdout}"
+    except Exception as e:
+        return f"Error during git clone: {e}"
+
+
+def git_status(args: str) -> str:
+    """
+    Show git status of a repository. Args format: "path" (default ".").
+    Supports ~ for user home.
+    """
+    try:
+        dir_path = args.strip() or "."
+        dir_path = os.path.expanduser(dir_path)
+        abs_path = os.path.abspath(dir_path)
+        cmd = ["git", "-C", abs_path, "status"]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return f"Git status failed:\n{result.stderr}"
+        return result.stdout.strip() or "(clean)"
+    except Exception as e:
+        return f"Error running git status: {e}"
+
+
 AVAILABLE_TOOLS: dict[str, Any] = {
     "write_file": write_file,
     "read_file": read_file,
     "run_cmd": run_cmd,
     "search_web": search_web,
+    "find_files": find_files,
+    "list_dir": list_dir,
+    "git_clone": git_clone,
+    "git_status": git_status,
 }
