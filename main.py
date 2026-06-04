@@ -54,6 +54,11 @@ def _retrieve_failure(query: str, n: int = 3) -> list[str]:
 
 # -------- Tool Performance Tracking --------
 _tool_stats: dict[str, dict] = {}  # {tool_name: {"calls":int,"successes":int,"avg_time":float,"total_time":float}}
+_total_prompt_tokens: int = 0
+_total_completion_tokens: int = 0
+_last_prompt_tokens: int = 0
+_last_completion_tokens: int = 0
+_turn_cost_log: list[dict] = []  # {"tokens":int, "time":float, "tool_calls":int}
 
 def _track_tool_performance(action: str, result: str, elapsed: float) -> None:
     stats = _tool_stats.setdefault(action, {"calls":0,"successes":0,"total_time":0.0})
@@ -76,9 +81,18 @@ def _maybe_trigger_reflection() -> None:
     recent = memory_bank.get_recent(20)
     if not recent:
         return
+    # Compute token cost of recent turns
+    recent_tokens = sum(
+        entry.get("tokens", 0) for entry in _turn_cost_log[-5:]
+    )
+    recent_time = sum(
+        entry.get("time", 0) for entry in _turn_cost_log[-5:]
+    )
+    cost_summary = f"Recent token count: {recent_tokens}, recent runtime: {recent_time:.1f}s" if _turn_cost_log else ""
     reflect_prompt = (
         "You are Kyrozen's reflection module. Read the recent interactions and find a non‑trivial task "
         "that took several steps. Analyse whether a more efficient approach exists. "
+        f"{cost_summary}\n"
         "Output the optimised strategy as a numbered list. If nothing to improve, output '—'.\n\n"
         + "\n".join(recent[-10:])
     )
@@ -90,6 +104,34 @@ def _maybe_trigger_reflection() -> None:
             console.print("[dim]Post‑task reflection stored.[/dim]")
     except Exception as e:
         console.print(f"[dim]Reflection error: {e}[/dim]")
+
+
+def _maybe_strategy_distillation() -> None:
+    """If recent turns consumed many tokens, attempt to compress logic into a DefineTool."""
+    if len(_turn_cost_log) < 3:
+        return
+    recent_total = sum(entry.get("tokens", 0) for entry in _turn_cost_log[-5:])
+    if recent_total < 5000:
+        return  # not worth distilling
+    # Ask LLM to propose a compressed tool that encapsulates the common pattern
+    recent_logs = memory_bank.get_recent(10)
+    if not recent_logs:
+        return
+    distill_prompt = (
+        "You are Kyrozen's cost optimiser. The recent tasks consumed many tokens. "
+        "Identify a repeated pattern that could be turned into a reusable tool via DefineTool. "
+        "If possible, output a **DefineTool:** block with a single Python function that automates "
+        "the pattern. If nothing suitable, output '—'.\n\n"
+        + "\n".join(recent_logs[-5:]) +
+        f"\nTotal tokens used in last 5 turns: {recent_total}"
+    )
+    try:
+        messages = [{"role": "system", "content": distill_prompt}]
+        answer = _get_llm_response(messages).strip()
+        if answer and answer not in ("—", ""):
+            _attempt_define_tool(answer)
+    except Exception as e:
+        console.print(f"[dim]Strategy distillation error: {e}[/dim]")
 
 
 # -------- Sleep & Consolidation (Dream Cycle) --------
@@ -549,6 +591,7 @@ def _attempt_define_tool(text: str) -> bool:
 
 
 def _get_llm_response(messages: list[dict[str, str]]) -> str:
+    global _last_prompt_tokens, _last_completion_tokens, _total_prompt_tokens, _total_completion_tokens
     if deepseek_client is None:
         return "[DeepSeek Error] DEEPSEEK_API_KEY environment variable not set"
     try:
@@ -557,6 +600,16 @@ def _get_llm_response(messages: list[dict[str, str]]) -> str:
             messages=messages,
         )
         text = response.choices[0].message.content or ""
+        # Track token usage if available
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            _last_prompt_tokens = usage.prompt_tokens or 0
+            _last_completion_tokens = usage.completion_tokens or 0
+            _total_prompt_tokens += _last_prompt_tokens
+            _total_completion_tokens += _last_completion_tokens
+        else:
+            _last_prompt_tokens = 0
+            _last_completion_tokens = 0
         return text.strip()
     except Exception as e:
         return f"[DeepSeek Error] {e}"
@@ -580,9 +633,15 @@ def _chat_turn(user_input: str) -> str:
     global _last_user_interaction
     _last_user_interaction = time.time()
 
+    turn_start = time.time()
+    turn_prompt_total = 0
+    turn_completion_total = 0
+
     MAX_RETRIES = 3
     messages = _build_messages(user_input)
     response_text = _get_llm_response(messages).strip()
+    turn_prompt_total += _last_prompt_tokens
+    turn_completion_total += _last_completion_tokens
 
     if not response_text or not response_text.strip():
         messages.append({
@@ -590,12 +649,27 @@ def _chat_turn(user_input: str) -> str:
             "content": "System: You returned nothing. Please output your Thought and JSON Action now.",
         })
         response_text = _get_llm_response(messages).strip()
+        turn_prompt_total += _last_prompt_tokens
+        turn_completion_total += _last_completion_tokens
 
     if _attempt_define_tool(response_text):
+        # Still record turn cost before returning
+        elapsed = time.time() - turn_start
+        _turn_cost_log.append({
+            "tokens": turn_prompt_total + turn_completion_total,
+            "time": elapsed,
+            "tool_calls": 0
+        })
         return "New tool defined. It will be available for future interactions."
 
     tool_calls = _collect_tool_calls(response_text)
     if not tool_calls:
+        elapsed = time.time() - turn_start
+        _turn_cost_log.append({
+            "tokens": turn_prompt_total + turn_completion_total,
+            "time": elapsed,
+            "tool_calls": 0
+        })
         # No tools needed – return plain answer (maybe trigger reflection)
         return response_text
 
@@ -627,14 +701,28 @@ def _chat_turn(user_input: str) -> str:
                 )
             })
             response_text = _get_llm_response(messages).strip()
+            turn_prompt_total += _last_prompt_tokens
+            turn_completion_total += _last_completion_tokens
             if not response_text or not response_text.strip():
                 break
 
             if _attempt_define_tool(response_text):
+                elapsed = time.time() - turn_start
+                _turn_cost_log.append({
+                    "tokens": turn_prompt_total + turn_completion_total,
+                    "time": elapsed,
+                    "tool_calls": len(tool_calls)
+                })
                 return "New tool defined. It will be available for future interactions."
 
             new_tool_calls = _collect_tool_calls(response_text)
             if not new_tool_calls:
+                elapsed = time.time() - turn_start
+                _turn_cost_log.append({
+                    "tokens": turn_prompt_total + turn_completion_total,
+                    "time": elapsed,
+                    "tool_calls": len(tool_calls)
+                })
                 return response_text
 
             new_results: list[str] = []
@@ -682,6 +770,8 @@ def _chat_turn(user_input: str) -> str:
             }
         ]
         final_response = _get_llm_response(summary_messages).strip()
+        turn_prompt_total += _last_prompt_tokens
+        turn_completion_total += _last_completion_tokens
         if not final_response or len(final_response) < 10:
             final_response = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
 
@@ -694,11 +784,23 @@ def _chat_turn(user_input: str) -> str:
                 "User indicated previous answer was wrong",
                 final_response[:200] + "..."
             )
+        elapsed = time.time() - turn_start
+        _turn_cost_log.append({
+            "tokens": turn_prompt_total + turn_completion_total,
+            "time": elapsed,
+            "tool_calls": len(tool_calls)
+        })
         return final_response
     else:
         # Store failure in memory
         first_error = results[0] if results else "(no output)"
         _store_failure(user_input, response_text[:200], first_error, "After retries, gave suggestions")
+        elapsed = time.time() - turn_start
+        _turn_cost_log.append({
+            "tokens": turn_prompt_total + turn_completion_total,
+            "time": elapsed,
+            "tool_calls": len(tool_calls)
+        })
         return (
             f"After {MAX_RETRIES} attempts the tool(s) still failed. "
             f"Last output:\n{tool_results_text}\n\n"
@@ -817,6 +919,7 @@ def _background_learning_loop() -> None:
                 _review_tools()
                 _targeted_inquiry()
                 _maybe_trigger_reflection()
+                _maybe_strategy_distillation()
         except Exception as e:
             console.print(f"[dim]Auto‑learn error: {e}[/dim]")
 
