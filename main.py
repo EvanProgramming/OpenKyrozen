@@ -73,7 +73,7 @@ TOOLS_LIST = _build_tools_list()
 
 def _system_prompt(tools_list: str) -> str:
     """Minimalist system prompt for 7B models (no external files)."""
-    return f"""You are a helpful AI Assistant with access to tools and the ability to learn from project files and past conversations.
+    return f"""You are Kyrozen, a helpful AI Assistant with access to tools and the ability to learn from project files and past conversations.
 
 ## Tools Available:
 {tools_list}
@@ -234,7 +234,7 @@ def main() -> None:
   \___/|___| |_| |_____|  |_|   |_|  \___/
 """
     print(banner)
-    print(_color("AI Agent (DeepSeek + Tools). Model:", "36"), MODEL_NAME)
+    print(_color("Kyrozen (DeepSeek + Tools). Model:", "36"), MODEL_NAME)
     print(_color("Commands: /quit exit, /save save to long-term memory.\n", "33"))
 
     _prompt_and_init_deepseek()
