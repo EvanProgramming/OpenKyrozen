@@ -1145,7 +1145,7 @@ def _background_learning_loop() -> None:
 
 
 def main() -> None:
-    global deepseek_client, DEEPSEEK_MODEL
+    global deepseek_client, DEEPSEEK_MODEL, _pending_inquiry
 
     if "--init" in sys.argv:
         console.print("[cyan]OpenKyrozen initialisation[/cyan]")
