@@ -210,6 +210,13 @@ def git_status(args: str) -> str:
         return f"Error running git status: {e}"
 
 
+def execute_terminal_command(args: str) -> str:
+    """
+    Execute a terminal command. This is an alias for run_cmd.
+    """
+    return run_cmd(args)
+
+
 AVAILABLE_TOOLS: dict[str, Any] = {
     "write_file": write_file,
     "read_file": read_file,
@@ -219,4 +226,5 @@ AVAILABLE_TOOLS: dict[str, Any] = {
     "list_dir": list_dir,
     "git_clone": git_clone,
     "git_status": git_status,
+    "execute_terminal_command": execute_terminal_command,
 }
