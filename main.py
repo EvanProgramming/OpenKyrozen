@@ -562,14 +562,14 @@ def _prompt_and_init_deepseek() -> None:
         key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not key:
         try:
-            key = input("\nDeepSeek API key not set. Enter your API key: ").strip()
+            key = console.input("\nDeepSeek API key not set. Enter your API key: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nCancelled.")
+            console.print("\nCancelled.")
             deepseek_client = None
             DEEPSEEK_MODEL = "deepseek-chat"
             sys.exit(0)
         if not key:
-            print("No API key entered – use /quit to exit.")
+            console.print("No API key entered – use /quit to exit.")
             deepseek_client = None
             DEEPSEEK_MODEL = "deepseek-chat"
             sys.exit(0)
