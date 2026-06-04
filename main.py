@@ -6,6 +6,7 @@ Kyrozen: self-learning AI Agent powered by DeepSeek API + tools.
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
