@@ -406,10 +406,11 @@ def _review_tools() -> None:
 
 # -------- Active Exploration (Targeted Inquiry) --------
 _last_inquiry_time = time.time()
+_pending_inquiry: str | None = None  # stores the question, cleared after user answers
 
 def _targeted_inquiry() -> None:
     """Scan project files for undocumented functions and print a prompt."""
-    global _last_inquiry_time
+    global _last_inquiry_time, _pending_inquiry
     now = time.time()
     if now - _last_inquiry_time < 600:  # once per 10 min
         return
@@ -426,7 +427,9 @@ def _targeted_inquiry() -> None:
             # check if first non‑comment line after func_def is docstring
             after = content.split(func_def,1)[-1].split("\n",1)[-1]
             if not after.lstrip().startswith('"""') and not after.lstrip().startswith("'''"):
-                console.print(f"[italic yellow]Hey, I noticed function '{m}' in {py_file.name} has no docstring – what does it do? (You can tell me and I'll remember.)[/italic yellow]")
+                question = f"I noticed function '{m}' in {py_file.name} has no docstring – what does it do? (You can tell me and I'll remember.)"
+                console.print(f"[italic yellow]{question}[/italic yellow]")
+                _pending_inquiry = question
                 return  # one inquiry per cycle
 
 
@@ -437,9 +440,17 @@ def _auto_patch_new_technology(user_input: str) -> None:
     # extract potential library names from user input
     words = user_input.split()
     for w in words:
+        # Pattern 1: suffix based detection (lib, py, framework, package)
         if w.endswith(("lib","py","framework","package")) and w not in _known_libraries:
             _known_libraries.add(w)
             threading.Thread(target=_fetch_library_info, args=(w,), daemon=True).start()
+    # Pattern 2: detect "use <Library>" or "using <Library>" phrases
+    use_match = re.search(r"(?:use|using)\s+([A-Za-z_]\w*)", user_input, re.IGNORECASE)
+    if use_match:
+        lib = use_match.group(1)
+        if lib not in _known_libraries:
+            _known_libraries.add(lib)
+            threading.Thread(target=_fetch_library_info, args=(lib,), daemon=True).start()
 
 
 def _fetch_library_info(lib_name: str) -> None:
@@ -1202,6 +1213,12 @@ def main() -> None:
 
         # Auto‑patching: detect new technology mentions
         _auto_patch_new_technology(user_input)
+
+        # If there was a pending inquiry and the user answered, store the answer immediately
+        if _pending_inquiry is not None:
+            # Store the user's input as a fact
+            memory_bank.add_log(f"FACT: User answered inquiry – {user_input}")
+            _pending_inquiry = None
 
         reply = _chat_turn(user_input)
 
