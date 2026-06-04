@@ -143,14 +143,7 @@ def _run_tool(action: str, args: str) -> str:
 
 
 def _get_llm_response(messages: list[dict[str, str]]) -> str:
-    """Call DeepSeek API; return assistant content. Debug-prints messages."""
-    print("[DEBUG] Messages sent to LLM:")
-    for i, m in enumerate(messages):
-        role = m.get("role", "?")
-        content = m.get("content", "")
-        preview = content[:80] + "..." if len(content) > 80 else content
-        print(f"  [{i}] role={role!r} content={preview!r}")
-    print()
+    """Call DeepSeek API; return assistant content."""
     if deepseek_client is None:
         return "[DeepSeek Error] DEEPSEEK_API_KEY environment variable not set"
     # Use DeepSeek API (OpenAI compatible)
@@ -170,16 +163,13 @@ def _chat_turn(user_input: str) -> str:
     messages = _build_messages(user_input)
     response_text = _get_llm_response(messages).strip()
 
-    # Robust retry for empty response
-    print(f"[DEBUG RAW]: {repr(response_text)}")
+    # Retry if empty response
     if not response_text or not response_text.strip():
-        print("[Warning] Empty response. Retrying with explicit instruction...")
         messages.append({
             "role": "user",
             "content": "System: You returned nothing. Please output your Thought and JSON Action now.",
         })
         response_text = _get_llm_response(messages).strip()
-        print(f"[DEBUG RAW]: {repr(response_text)}")
 
     for attempt in range(MAX_TOOL_RETRIES + 1):
         tool_call = parse_json_from_response(response_text)
@@ -255,8 +245,6 @@ def main() -> None:
             continue
 
         reply = _chat_turn(user_input)
-
-        print(_color(f"[DEBUG RAW]: {repr(reply)}", "2"))
 
         if len(reply.strip()) < 5:
             print(_color("[Error] Received empty response from LLM", "31"))
