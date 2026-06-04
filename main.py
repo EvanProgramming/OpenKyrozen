@@ -362,19 +362,12 @@ def _chat_turn(user_input: str) -> str:
                 args = str(args)
             result = _run_tool(action, args)
             print(f"[Tool] {action}({args!r}) → {result[:200]}...")
-            results.append(f"- `{action}({args!r})` → {result[:200]}")
+            results.append(f"- `{action}({args!r})` returned:\n{result[:2000]}")
         tool_results_text = "\n".join(results)
 
-        # Append tool results to the existing conversation and ask for a final reply
-        messages.append({
-            "role": "user",
-            "content": f"The tools returned:\n{tool_results_text}\nNow please reply to the user's original request based on this information."
-        })
-
-        final_response = _get_llm_response(messages).strip()
-        if not final_response or len(final_response) < 5:
-            final_response = "I processed your request. Let me know if you need more details."
-        return final_response
+        # Return the tool results directly as the final answer,
+        # so the user sees what happened immediately.
+        return f"I executed your request. Here are the results:\n\n{tool_results_text}"
 
     # No tool calls – return the assistant's plain text
     return response_text
