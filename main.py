@@ -25,6 +25,7 @@ console = Console()
 MODEL_NAME = "deepseek-chat"  # fallback, actual model set by DEEPSEEK_MODEL env
 SHORT_TERM_CAP = 16  # larger context window for DeepSeek
 MAX_TOOL_RETRIES = 3
+CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
 
 def _load_config_key() -> str | None:
     """Return the API key stored in config file, or None."""
