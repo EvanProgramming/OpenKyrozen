@@ -602,6 +602,28 @@ def _load_project_files_into_memory() -> None:
             print(f"Could not read {py_file}: {e}")
 
 
+def _self_update() -> str:
+    """Pull the latest version from the git remote."""
+    try:
+        result = subprocess.run(
+            ["git", "pull"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        out = result.stdout.strip() or ""
+        err = result.stderr.strip() or ""
+        if result.returncode != 0:
+            return f"Update failed:\n{err}"
+        return f"Updated successfully:\n{out}"
+    except subprocess.TimeoutExpired:
+        return "Update timed out."
+    except FileNotFoundError:
+        return "Error: git not installed or not inside a git repository."
+    except Exception as e:
+        return f"Error during update: {e}"
+
+
 def _remove_stale_file_entries(project_root: Path) -> None:
     """Delete old FILE entries that no longer correspond to existing .py files."""
     if memory_bank._collection is None:
@@ -1259,7 +1281,7 @@ def main() -> None:
 """
     console.print(Panel.fit(banner_text, title="OPEN KYROZEN", subtitle="self‑learning AI agent", border_style="cyan"))
     console.print(f"Kyrozen (DeepSeek + Tools). Model: {MODEL_NAME}", style="cyan")
-    console.print("Commands: /quit or /exit to exit, /learn to reload project files, /api_key to change API key.\n", style="yellow")
+    console.print("Commands: /quit or /exit to exit, /update to pull latest version, /learn to reload project files, /api_key to change API key.\n", style="yellow")
 
     _prompt_and_init_deepseek()
     if deepseek_client is None:
@@ -1297,6 +1319,11 @@ def main() -> None:
                 console.print("[green]API key updated and saved for future sessions.[/green]")
             else:
                 console.print("[red]No key provided – key unchanged.[/red]")
+            continue
+        if user_input.lower() == "/update":
+            console.print("[yellow]Updating OpenKyrozen from git...[/yellow]")
+            update_result = _self_update()
+            console.print(Panel(update_result, title="Update", border_style="blue"))
             continue
 
         # Auto‑patching: detect new technology mentions
