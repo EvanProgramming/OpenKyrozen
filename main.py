@@ -561,8 +561,9 @@ def _prompt_and_init_deepseek() -> None:
     if not key:
         key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not key:
+        console.print("\nDeepSeek API key not set. Enter your API key: ", end="")
         try:
-            key = console.input("\nDeepSeek API key not set. Enter your API key: ").strip()
+            key = input().strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\nCancelled.")
             deepseek_client = None
@@ -1294,8 +1295,9 @@ def main() -> None:
     threading.Thread(target=_background_learning_loop, daemon=True).start()
 
     while True:
+        console.print("[bold cyan]You: [/bold cyan]", end="")
         try:
-            user_input = console.input("[bold cyan]You: [/bold cyan]").strip()
+            user_input = input().strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[red]Goodbye.[/red]")
             sys.exit(0)
