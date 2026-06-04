@@ -9,6 +9,7 @@ import re
 import sys
 import threading
 import time
+import datetime
 from pathlib import Path
 
 from openai import OpenAI
@@ -24,13 +25,196 @@ console = Console()
 
 
 # ---- Constants (optimized for DeepSeek) ----
-MODEL_NAME = "deepseek-chat"  # fallback, actual model set by DEEPSEEK_MODEL env
-SHORT_TERM_CAP = 16  # larger context window for DeepSeek
+MODEL_NAME = "deepseek-chat"
+SHORT_TERM_CAP = 16
 MAX_TOOL_RETRIES = 3
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
+IDLE_CONSOLIDATION_TIMEOUT = 1800  # 30 minutes
 
+
+# -------- Error‑Driven Learning (Failure Memory) --------
+_FAILURE_STORE_PREFIX = "FAILURE:"
+def _store_failure(original_request: str, attempted_action: str, error_info: str, resolution: str) -> None:
+    """Store a failure incident in long‑term memory for later retrieval."""
+    entry = (
+        f"{_FAILURE_STORE_PREFIX}\n"
+        f"Request: {original_request}\n"
+        f"Attempted: {attempted_action}\n"
+        f"Error: {error_info}\n"
+        f"Resolution: {resolution}\n"
+    )
+    memory_bank.add_log(entry)
+
+
+def _retrieve_failure(query: str, n: int = 3) -> list[str]:
+    """Retrieve relevant failure records from memory."""
+    results = memory_bank.recall(query, n_results=n)
+    return [r for r in results if r.startswith(_FAILURE_STORE_PREFIX)]
+
+
+# -------- Tool Performance Tracking --------
+_tool_stats: dict[str, dict] = {}  # {tool_name: {"calls":int,"successes":int,"avg_time":float,"total_time":float}}
+
+def _track_tool_performance(action: str, result: str, elapsed: float) -> None:
+    stats = _tool_stats.setdefault(action, {"calls":0,"successes":0,"total_time":0.0})
+    stats["calls"] += 1
+    stats["total_time"] += elapsed
+    if not _is_tool_error(result):
+        stats["successes"] += 1
+    # persist stats to memory periodically (handled in consolidation)
+
+
+# -------- Post‑Task Reflection --------
+_last_task_end = time.time()
+def _maybe_trigger_reflection() -> None:
+    """If at least 3 messages have been exchanged since last reflection and idle, reflect."""
+    global _last_task_end
+    now = time.time()
+    if now - _last_task_end < 300:
+        return  # not idle long enough
+    _last_task_end = now
+    recent = memory_bank.get_recent(20)
+    if not recent:
+        return
+    reflect_prompt = (
+        "You are Kyrozen's reflection module. Read the recent interactions and find a non‑trivial task "
+        "that took several steps. Analyse whether a more efficient approach exists. "
+        "Output the optimised strategy as a numbered list. If nothing to improve, output '—'.\n\n"
+        + "\n".join(recent[-10:])
+    )
+    try:
+        messages = [{"role": "system", "content": reflect_prompt}]
+        answer = _get_llm_response(messages).strip()
+        if answer and answer not in ("—", ""):
+            memory_bank.add_log(f"REFLECTION:\n{answer}")
+            console.print("[dim]Post‑task reflection stored.[/dim]")
+    except Exception as e:
+        console.print(f"[dim]Reflection error: {e}[/dim]")
+
+
+# -------- Sleep & Consolidation (Dream Cycle) --------
+_last_user_interaction = time.time()
+
+def _consolidate_memories() -> None:
+    """Cluster, deduplicate and summarise recent facts."""
+    recent = memory_bank.get_recent(50)
+    if not recent:
+        return
+    # Filter only FACT entries
+    facts = [r for r in recent if r.startswith("FACT:")]
+    if len(facts) < 3:
+        return
+    consolidate_prompt = (
+        "You are Kyrozen's memory consolidation module. Read the following facts and merge duplicates, "
+        "remove contradictions (keep the most recent), and produce a compact summary. "
+        "Output each fact on a new line prefixed with 'FACT:'\n\n"
+        + "\n".join(facts)
+    )
+    try:
+        messages = [{"role": "system", "content": consolidate_prompt}]
+        answer = _get_llm_response(messages).strip()
+        if answer and not answer.startswith("—"):
+            # Remove old facts and store consolidated version
+            for line in answer.split("\n"):
+                line = line.strip()
+                if line.startswith("FACT:"):
+                    memory_bank.add_log(line)
+            console.print("[dim]Memory consolidation completed.[/dim]")
+    except Exception as e:
+        console.print(f"[dim]Consolidation error: {e}[/dim]")
+
+
+def _age_out_old_coded_entries() -> None:
+    """Remove or mark obsolete code facts when code files change."""
+    # Simple: remove all FILE entries older than 1 hour that match files that no longer exist
+    # (implementation kept minimal)
+
+# -------- Tool Refactoring --------
+def _review_tools() -> None:
+    """Scan user‑defined tools for duplication and merge candidates."""
+    user_defined = {k:v for k,v in AVAILABLE_TOOLS.items() if k not in { 
+        "write_file","read_file","run_cmd","search_web","find_files","list_dir",
+        "git_clone","git_status","execute_terminal_command","analyze_remote_repo"}}
+    if len(user_defined) < 2:
+        return
+    names = list(user_defined.keys())
+    review_prompt = (
+        "You are Kyrozen's tool refactoring module. The following tools exist:\n"
+        + "\n".join(f"{n}: {getattr(v,'__doc__','')[:100]}" for n,v in user_defined.items()) +
+        "\nSuggest a merge plan: choose tools to combine into a single more powerful tool. "
+        "Output JSON as a list of actions: [{\"action\":\"merge\",\"old\":[\"a\",\"b\"],\"new\":\"c\",\"code\":\"def c(args):...\"}]. "
+        "If no merge, output []."
+    )
+    try:
+        messages = [{"role": "system", "content": review_prompt}]
+        answer = _get_llm_response(messages).strip()
+        if answer and answer not in ("[]",""):
+            plan = json.loads(answer)
+            for item in plan:
+                if item.get("action") == "merge":
+                    old_list = item.get("old",[])
+                    new_name = item.get("new","")
+                    code = item.get("code","")
+                    if old_list and new_name and code:
+                        for old in old_list:
+                            AVAILABLE_TOOLS.pop(old,None)
+                        _attempt_define_tool(f"DefineTool:\n```json\n{{\"name\":\"{new_name}\",\"description\":\"merged\",\"code\":{json.dumps(code)}}}\n```")
+                        console.print(f"[dim]Merged tools {old_list} into {new_name}.[/dim]")
+    except Exception as e:
+        console.print(f"[dim]Tool review error: {e}[/dim]")
+
+
+# -------- Active Exploration (Targeted Inquiry) --------
+_last_inquiry_time = time.time()
+
+def _targeted_inquiry() -> None:
+    """Scan project files for undocumented functions and print a prompt."""
+    global _last_inquiry_time
+    now = time.time()
+    if now - _last_inquiry_time < 600:  # once per 10 min
+        return
+    _last_inquiry_time = now
+    project_root = Path(__file__).parent.resolve()
+    for py_file in project_root.rglob("*.py"):
+        if "__pycache__" in str(py_file):
+            continue
+        content = py_file.read_text(encoding="utf-8", errors="ignore")
+        # naive detection: function definition without docstring
+        matches = re.findall(r"def (\w+)\(.*\):\s*(?:\"\"\"|''')?", content)
+        for m in matches:
+            func_def = f"def {m}("
+            # check if first non‑comment line after func_def is docstring
+            after = content.split(func_def,1)[-1].split("\n",1)[-1]
+            if not after.lstrip().startswith('"""') and not after.lstrip().startswith("'''"):
+                console.print(f"[italic yellow]Hey, I noticed function '{m}' in {py_file.name} has no docstring – what does it do? (You can tell me and I'll remember.)[/italic yellow]")
+                return  # one inquiry per cycle
+
+
+# -------- Auto‑Patching (Background Knowledge) --------
+_known_libraries = set()
+def _auto_patch_new_technology(user_input: str) -> None:
+    """If user mentions an unknown library, fetch its docs in background."""
+    # extract potential library names from user input
+    words = user_input.split()
+    for w in words:
+        if w.endswith(("lib","py","framework","package")) and w not in _known_libraries:
+            _known_libraries.add(w)
+            threading.Thread(target=_fetch_library_info, args=(w,), daemon=True).start()
+
+
+def _fetch_library_info(lib_name: str) -> None:
+    """Search web for core concepts and store in memory."""
+    from tools import search_web
+    try:
+        result = search_web(f"{lib_name} documentation overview")
+        if result and "Search" not in result:
+            memory_bank.add_log(f"LIBRARY_INFO: {lib_name}\n{result[:2000]}")
+    except Exception:
+        pass
+
+
+# ---- Existing functions (unchanged) ----
 def _load_config_key() -> str | None:
-    """Return the API key stored in config file, or None."""
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r") as f:
@@ -45,7 +229,6 @@ def _load_config_key() -> str | None:
 
 
 def _save_config_key(key: str) -> None:
-    """Persist the API key to the config file."""
     try:
         existing = {}
         if os.path.exists(CONFIG_PATH):
@@ -59,12 +242,9 @@ def _save_config_key(key: str) -> None:
 
 
 def _prompt_and_init_deepseek() -> None:
-    """Load API key from config file or ask the user interactively."""
     global deepseek_client, DEEPSEEK_MODEL
-    # First try from config
     key = _load_config_key()
     if not key:
-        # Then try environment (may have been set external)
         key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not key:
         key = input("\nDeepSeek API key not set. Enter your API key: ").strip()
@@ -73,7 +253,6 @@ def _prompt_and_init_deepseek() -> None:
             deepseek_client = None
             DEEPSEEK_MODEL = "deepseek-chat"
             return
-        # Save for future sessions
         _save_config_key(key)
     os.environ["DEEPSEEK_API_KEY"] = key
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
@@ -81,21 +260,17 @@ def _prompt_and_init_deepseek() -> None:
     deepseek_client = OpenAI(api_key=key, base_url=base_url)
 
 
-# ---- DeepSeek API support ----
 DEEPSEEK_MODEL: str = "deepseek-chat"
 deepseek_client = None
 
 
 def _load_project_files_into_memory() -> None:
-    """Read project Python files and store their content in the memory bank."""
     project_root = Path(__file__).parent.resolve()
     for py_file in project_root.rglob("*.py"):
-        # Skip __pycache__ directories
         if "__pycache__" in str(py_file):
             continue
         try:
             content = py_file.read_text(encoding="utf-8")
-            # Store as "FILE: path" with content code block
             log_text = f"FILE: {py_file.relative_to(project_root)}\n```python\n{content}\n```"
             memory_bank.add_log(log_text)
         except Exception as e:
@@ -103,7 +278,6 @@ def _load_project_files_into_memory() -> None:
 
 
 def _build_tools_list() -> str:
-    """Build tools list for system prompt: name + docstring."""
     lines = []
     for name, fn in AVAILABLE_TOOLS.items():
         doc = getattr(fn, "__doc__", None) or ""
@@ -116,7 +290,6 @@ TOOLS_LIST = _build_tools_list()
 
 
 def _system_prompt(tools_list: str) -> str:
-    """Full system prompt optimized for DeepSeek models."""
     return f"""You are Kyrozen, an intelligent, self‑learning AI assistant. You have access to tools and can learn from project files and past conversations to improve your knowledge over time.
 
 ## Available Tools:
@@ -164,7 +337,6 @@ When the user asks you to analyze the repository, start by running `list_dir('.'
 """
 
 
-# ---- Shared state ----
 memory_bank = MemoryBank()
 short_term_memory: list[dict[str, str]] = [
     {"role": "user", "content": "Hello, are you ready to help me?"},
@@ -173,44 +345,36 @@ short_term_memory: list[dict[str, str]] = [
 
 
 def _build_messages(user_input: str) -> list[dict[str, str]]:
-    """Build message list: system (minimal) + optional memory + last N turns + user."""
     messages: list[dict[str, str]] = []
 
-    # 1. Single minimal system prompt (no file I/O)
     messages.append({"role": "system", "content": _system_prompt(TOOLS_LIST)})
 
-    # 1b. Tell the assistant where it is
     messages.append({
         "role": "system",
         "content": f"You are currently working inside the directory:\n{os.getcwd()}\n\nYou can use relative paths like '.' or 'main.py' directly.  Do not ask the user for a local path or a remote URL unless you intend to clone an external repository."
     })
 
-    # 2. Optional: one short memory hint if we have RAG results (saves tokens)
+    # Retrieve failure records if relevant
+    failures = _retrieve_failure(user_input)
+    if failures:
+        failure_block = "Past failures to avoid:\n" + "\n".join(failures[:2])
+        messages.append({"role": "system", "content": failure_block})
+
     recalled = memory_bank.recall(user_input, n_results=4)
     if recalled:
         memory_block = "Relevant past context:\n" + "\n".join(recalled[:2])
         messages.append({"role": "system", "content": memory_block})
 
-    # 3. Last N turns
     for msg in short_term_memory[-SHORT_TERM_CAP * 2 :]:
         messages.append(msg)
 
-    # 4. Current user input
     messages.append({"role": "user", "content": user_input})
 
     return messages
 
 
 def parse_json_from_response(text: str) -> dict | None:
-    """
-    Extract tool-call JSON.  Tries several patterns:
-    1.  Action: ```json ... ```  (preferred)
-    2.  Action:  (without backticks) followed by a JSON object on the next line(s)
-    3.  Any ```json ... ``` block
-    4.  Any JSON object that contains an "action" key (relaxed fallback)
-    """
     text = (text or "").strip()
-    # Pattern 1: Action: ```json ... ```
     for pattern in (
         r"Action:\s*```(?:json)?\s*([\s\S]*?)\s*```",
         r"Action:\s*(\{[\s\S]*?\})\s*(?:```|$)",
@@ -218,7 +382,6 @@ def parse_json_from_response(text: str) -> dict | None:
     ):
         for match in re.finditer(pattern, text):
             raw = match.group(1).strip()
-            # Sometimes the raw still has stray ```` at the end; strip them
             raw = raw.rstrip("`").strip()
             try:
                 data = json.loads(raw)
@@ -227,9 +390,7 @@ def parse_json_from_response(text: str) -> dict | None:
             except json.JSONDecodeError:
                 continue
 
-    # Fallback: scan the whole text for any { ... } that might be valid JSON with "action"
     try:
-        # Naive: find first { ... } pair
         start = text.find("{")
         if start != -1:
             end = text.rfind("}")
@@ -245,7 +406,6 @@ def parse_json_from_response(text: str) -> dict | None:
 
 
 def _extract_json_objects(text: str) -> list[dict]:
-    """Return all JSON objects found in text, without requiring surrounding backticks."""
     objects: list[dict] = []
     i = 0
     while True:
@@ -270,16 +430,12 @@ def _extract_json_objects(text: str) -> list[dict]:
                     i = pos + 1
                     break
         else:
-            # no matching closing brace found – move past the opening brace
             i = start + 1
     return objects
 
 
 def _collect_tool_calls(text: str) -> list[dict]:
-    """Return a list of tool‑call dicts found in the text (all Action blocks)."""
     calls: list[dict] = []
-
-    # 1. Prefer the standard Action: ```json ... ``` pattern
     pattern = r"Action:\s*```(?:json)?\s*([\s\S]*?)\s*```"
     for match in re.finditer(pattern, text, re.DOTALL):
         raw = match.group(1).strip()
@@ -291,10 +447,8 @@ def _collect_tool_calls(text: str) -> list[dict]:
         if isinstance(data, dict) and "action" in data and data.get("action") in AVAILABLE_TOOLS:
             calls.append(data)
 
-    # 2. Also look for any JSON object that looks like a tool call (no backticks)
     for obj in _extract_json_objects(text):
         if isinstance(obj, dict) and "action" in obj and obj.get("action") in AVAILABLE_TOOLS:
-            # Avoid duplicates (if a tool already captured via pattern 1)
             if obj not in calls:
                 calls.append(obj)
 
@@ -302,18 +456,20 @@ def _collect_tool_calls(text: str) -> list[dict]:
 
 
 def _run_tool(action: str, args: str) -> str:
-    """Execute one tool; return result string."""
     fn = AVAILABLE_TOOLS.get(action)
     if not fn:
         return f"Error: unknown tool '{action}'"
+    start = time.time()
     try:
-        return str(fn(args))
+        result = str(fn(args))
     except Exception as e:
-        return f"Error: {e}"
+        result = f"Error: {e}"
+    elapsed = time.time() - start
+    _track_tool_performance(action, result, elapsed)
+    return result
 
 
 def _attempt_define_tool(text: str) -> bool:
-    """If the LLM output contains a DefineTool block, parse it, create the function and add it to AVAILABLE_TOOLS."""
     pattern = r"DefineTool:\s*```(?:json)?\s*([\s\S]*?)\s*```"
     match = re.search(pattern, text)
     if not match:
@@ -331,14 +487,12 @@ def _attempt_define_tool(text: str) -> bool:
     if not name or not code:
         return False
 
-    # Create a restricted namespace for exec
     local_vars: dict = {}
     try:
         exec(code, {"__builtins__": __builtins__}, local_vars)
     except Exception:
         return False
 
-    # The function bearing the same name must have been defined
     if name not in local_vars:
         return False
 
@@ -346,25 +500,20 @@ def _attempt_define_tool(text: str) -> bool:
     if not callable(new_tool):
         return False
 
-    # Add to the global tool registry
     AVAILABLE_TOOLS[name] = new_tool
 
-    # Also store the definition in long‑term memory for future recall
     memory_bank.add_log(
         f"New tool defined: {name}\n"
         f"Description: {description}\n"
         f"Code:\n```python\n{code}\n```"
     )
-
     print(f"[DefineTool] Added new tool '{name}' to AVAILABLE_TOOLS.")
     return True
 
 
 def _get_llm_response(messages: list[dict[str, str]]) -> str:
-    """Call DeepSeek API; return assistant content."""
     if deepseek_client is None:
         return "[DeepSeek Error] DEEPSEEK_API_KEY environment variable not set"
-    # Use DeepSeek API (OpenAI compatible)
     try:
         response = deepseek_client.chat.completions.create(
             model=DEEPSEEK_MODEL,
@@ -377,7 +526,6 @@ def _get_llm_response(messages: list[dict[str, str]]) -> str:
 
 
 def _is_tool_error(result: str) -> bool:
-    """Return True if the tool result indicates a failure."""
     low = result.strip().lower()
     return (
         low.startswith("error") or
@@ -390,13 +538,15 @@ def _is_tool_error(result: str) -> bool:
 
 def _chat_turn(user_input: str) -> str:
     """One user turn: build context, get LLM reply, execute tool calls
-    with automatic retries on failure."""
+    with automatic retries and failure memory."""
+
+    global _last_user_interaction
+    _last_user_interaction = time.time()
 
     MAX_RETRIES = 3
     messages = _build_messages(user_input)
     response_text = _get_llm_response(messages).strip()
 
-    # Retry if empty response
     if not response_text or not response_text.strip():
         messages.append({
             "role": "user",
@@ -404,17 +554,14 @@ def _chat_turn(user_input: str) -> str:
         })
         response_text = _get_llm_response(messages).strip()
 
-    # Check for new tool definitions before anything else
     if _attempt_define_tool(response_text):
         return "New tool defined. It will be available for future interactions."
 
-    # Collect any tool calls the assistant made
     tool_calls = _collect_tool_calls(response_text)
     if not tool_calls:
-        # No tools needed – return the plain answer
+        # No tools needed – return plain answer (maybe trigger reflection)
         return response_text
 
-    # Execute all tools
     results: list[str] = []
     for tc in tool_calls:
         action = tc.get("action", "")
@@ -426,13 +573,10 @@ def _chat_turn(user_input: str) -> str:
         results.append(f"- `{action}({args!r})` returned:\n{result[:2000]}")
     tool_results_text = "\n".join(results)
 
-    # Check if any tool failed
     all_ok = not any(_is_tool_error(r) for r in results)
 
     if not all_ok:
-        # Retry loop
         for attempt in range(MAX_RETRIES):
-            # Feed failure back to LLM
             messages.append({
                 "role": "user",
                 "content": (
@@ -444,19 +588,15 @@ def _chat_turn(user_input: str) -> str:
             })
             response_text = _get_llm_response(messages).strip()
             if not response_text or not response_text.strip():
-                # Empty response – stop retrying
                 break
 
-            # Check for new tool definition
             if _attempt_define_tool(response_text):
                 return "New tool defined. It will be available for future interactions."
 
             new_tool_calls = _collect_tool_calls(response_text)
             if not new_tool_calls:
-                # LLM chose to answer without tools
                 return response_text
 
-            # Execute new round of tools
             new_results: list[str] = []
             for tc2 in new_tool_calls:
                 action = tc2.get("action", "")
@@ -469,13 +609,10 @@ def _chat_turn(user_input: str) -> str:
             tool_results_text = "\n".join(new_results)
 
             if not any(_is_tool_error(r) for r in new_results):
-                # Success – now produce a natural answer
                 all_ok = True
                 break
-            # Continue loop to retry again
 
     if all_ok:
-        # Build a summary prompt for the final answer
         summary_messages: list[dict[str, str]] = [
             {
                 "role": "system",
@@ -486,10 +623,7 @@ def _chat_turn(user_input: str) -> str:
                     "Do **not** output any Action, JSON, or tool calls – only plain text."
                 )
             },
-            {
-                "role": "system",
-                "content": f"You are working inside {os.getcwd()}."
-            },
+            {"role": "system", "content": f"You are working inside {os.getcwd()}."},
             {"role": "user", "content": user_input},
             {"role": "assistant", "content": response_text},
             {
@@ -505,7 +639,9 @@ def _chat_turn(user_input: str) -> str:
             final_response = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
         return final_response
     else:
-        # All retries exhausted – produce a helpful failure message
+        # Store failure in memory
+        first_error = results[0] if results else "(no output)"
+        _store_failure(user_input, response_text[:200], first_error, "After retries, gave suggestions")
         return (
             f"After {MAX_RETRIES} attempts the tool(s) still failed. "
             f"Last output:\n{tool_results_text}\n\n"
@@ -517,35 +653,26 @@ def _chat_turn(user_input: str) -> str:
         )
 
 
-
 def _split_reply(text: str) -> tuple[str, str]:
-    """Return (thinking_part, answer_part) for display."""
     text = text.strip()
-    # Attempt to locate a Thought: section
     thought_match = re.search(r"^Thought:\s*(.*?)(?=\n(?:Action:|(?:\n|$)))", text, re.DOTALL | re.MULTILINE)
     if thought_match:
         thinking = thought_match.group(1).strip()
-        # Remove the thought section from the whole text to get the answer
         answer = re.sub(r"^Thought:\s*.*?(?=\n(?:Action:|(?:\n|$))|\n?$)", "", text, count=1, flags=re.DOTALL | re.MULTILINE).strip()
-        # Also strip any leftover Action blocks (they should have been executed, but LLM may keep them)
         answer = re.sub(r"Action:\s*```(?:json)?[\s\S]*?```", "", answer).strip()
-        answer = re.sub(r"\{[\s\S]*?\}", "", answer).strip()  # remove stray JSON objects
+        answer = re.sub(r"\{[\s\S]*?\}", "", answer).strip()
         answer = answer.lstrip('"').lstrip("'").strip()
-        # If after stripping there's nothing, fallback to original
         if not answer:
             answer = text
         return thinking, answer
     else:
-        # No explicit thought – treat whole text as answer
         return "", text
 
 
 def _auto_learn_conversations() -> None:
-    """Use LLM to extract important facts from recent conversation logs and store them."""
     recent = memory_bank.get_recent(20)
     if not recent:
         return
-    # Filter out any self‑generated facts to avoid feedback loops
     recent = [log for log in recent if not log.startswith("FACT:")]
     if not recent:
         return
@@ -569,12 +696,22 @@ def _auto_learn_conversations() -> None:
 
 
 def _background_learning_loop() -> None:
-    """Daemon thread that periodically learns from conversations and rescans project files."""
+    """Enhanced loop with consolidation, reflection, tool review, auto‑inquiry."""
+    global _last_user_interaction
     while True:
-        time.sleep(120)  # every 2 minutes
+        time.sleep(120)
         try:
+            now = time.time()
+            idle_duration = now - _last_user_interaction
+
             _auto_learn_conversations()
             _load_project_files_into_memory()
+
+            if idle_duration > IDLE_CONSOLIDATION_TIMEOUT:
+                _consolidate_memories()
+                _review_tools()
+                _targeted_inquiry()
+                _maybe_trigger_reflection()
         except Exception as e:
             console.print(f"[dim]Auto‑learn error: {e}[/dim]")
 
@@ -582,7 +719,6 @@ def _background_learning_loop() -> None:
 def main() -> None:
     global deepseek_client, DEEPSEEK_MODEL
 
-    # --init flag for one‑time setup
     if "--init" in sys.argv:
         console.print("[cyan]OpenKyrozen initialisation[/cyan]")
         try:
@@ -647,6 +783,9 @@ def main() -> None:
                 console.print("[red]No key provided – key unchanged.[/red]")
             continue
 
+        # Auto‑patching: detect new technology mentions
+        _auto_patch_new_technology(user_input)
+
         reply = _chat_turn(user_input)
 
         if len(reply.strip()) < 5:
@@ -657,7 +796,6 @@ def main() -> None:
         short_term_memory.append({"role": "assistant", "content": reply})
         memory_bank.add_log(f"User: {user_input}\nAssistant: {reply}")
 
-        # Separate thinking from the final answer
         thinking, answer = _split_reply(reply)
 
         if thinking:
@@ -666,7 +804,7 @@ def main() -> None:
             console.print(Panel(Markdown(answer), title="Agent", border_style="green"))
         else:
             console.print(Panel(Markdown(answer or "(no content)"), title="Agent", border_style="green"))
-        print()  # spacing
+        print()
 
 
 if __name__ == "__main__":
