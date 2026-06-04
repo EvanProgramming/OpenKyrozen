@@ -333,6 +333,7 @@ def _chat_turn(user_input: str) -> str:
 
 
 def main() -> None:
+    global deepseek_client, DEEPSEEK_MODEL
     banner_text = r"""
    ___   ___   ___   ___    _   _  __   ___
   / _ \ | _ \ / _ \ | _ \  | \ | | \ \ / / _ \
