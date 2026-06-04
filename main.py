@@ -589,8 +589,11 @@ def _load_project_files_into_memory() -> None:
     project_root = Path(__file__).parent.resolve()
     # Before adding new versions, remove any stale FILE entries from ChromaDB
     _remove_stale_file_entries(project_root)
+    # Skip directories that can contain many files (e.g., virtual environment)
+    skip_dirs = {".venv", "chroma_memory", "__pycache__", ".git"}
     for py_file in project_root.rglob("*.py"):
-        if "__pycache__" in str(py_file):
+        # Skip files inside skipped directories
+        if any(part in py_file.parts for part in skip_dirs):
             continue
         try:
             content = py_file.read_text(encoding="utf-8")
@@ -630,10 +633,13 @@ def _remove_stale_file_entries(project_root: Path) -> None:
     """Delete old FILE entries that no longer correspond to existing .py files."""
     if memory_bank._collection is None:
         return
+    skip_dirs = {".venv", "chroma_memory", "__pycache__", ".git"}
     existing_py_files = set()
     for py_file in project_root.rglob("*.py"):
-        if "__pycache__" not in str(py_file):
-            existing_py_files.add(str(py_file.relative_to(project_root)))
+        # Skip files inside skipped directories
+        if any(part in py_file.parts for part in skip_dirs):
+            continue
+        existing_py_files.add(str(py_file.relative_to(project_root)))
     try:
         all_logs = memory_bank._collection.get()
         ids = all_logs.get("ids", [])
