@@ -540,14 +540,8 @@ def _split_reply(text: str) -> tuple[str, str]:
 
 def main() -> None:
     global deepseek_client, DEEPSEEK_MODEL
-    banner_text = r"""
-   ___   ___   ___   ___    _   _  __   ___
-  / _ \ | _ \ / _ \ | _ \  | \ | | \ \ / / _ \
- | | | ||  _/ | | | ||  _/  |  \| |  \ V /| | | |
- | |_| || |   | |_| || |    | |\  |   | | | |_| |
-  \___/ |_|    \___/ |_|    |_| \_|   |_|  \___/
-"""
-    console.print(Panel.fit(banner_text, title="OPENKYROZEN", subtitle="self‑learning AI agent", border_style="cyan"))
+    banner_text = "OpenKyrozen – Self‑learning AI Agent"
+    console.print(Panel.fit(banner_text, title="OPEN KYROZEN", subtitle="self‑learning AI agent", border_style="cyan"))
     console.print(f"Kyrozen (DeepSeek + Tools). Model: {MODEL_NAME}", style="cyan")
     console.print("Commands: /quit or /exit to exit, /save to long‑term memory, /learn to reload project files, /api_key to change API key.\n", style="yellow")
 
