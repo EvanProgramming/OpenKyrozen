@@ -19,14 +19,26 @@ MODEL_NAME = "qwen2.5-coder:7b"
 SHORT_TERM_CAP = 8  # fewer turns to save context window
 MAX_TOOL_RETRIES = 3
 
-# ---- DeepSeek API support ----
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
-if DEEPSEEK_API_KEY:
-    DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+def _prompt_and_init_deepseek() -> None:
+    """If DEEPSEEK_API_KEY is not in the environment, ask the user interactively."""
+    global deepseek_client, DEEPSEEK_MODEL
+    key = os.environ.get("DEEPSEEK_API_KEY")
+    if not key:
+        key = input("\nDeepSeek API key not set. Enter your API key: ").strip()
+        if not key:
+            print("No API key entered – use /quit to exit.")
+            deepseek_client = None
+            DEEPSEEK_MODEL = "deepseek-chat"
+            return
+        os.environ["DEEPSEEK_API_KEY"] = key
+    base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
     DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
-    deepseek_client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
-else:
-    deepseek_client = None
+    deepseek_client = OpenAI(api_key=key, base_url=base_url)
+
+
+# ---- DeepSeek API support ----
+DEEPSEEK_MODEL: str = "deepseek-chat"
+deepseek_client = None
 
 
 def _build_tools_list() -> str:
@@ -215,6 +227,11 @@ def main() -> None:
     print(banner)
     print(_color("AI Agent (DeepSeek + Tools). Model:", "36"), MODEL_NAME)
     print(_color("Commands: /quit exit, /save save to long-term memory.\n", "33"))
+
+    _prompt_and_init_deepseek()
+    if deepseek_client is None:
+        print(_color("Cannot start without an API key.", "31"))
+        sys.exit(1)
 
     while True:
         try:
