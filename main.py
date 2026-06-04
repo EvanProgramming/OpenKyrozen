@@ -7,6 +7,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 from pathlib import Path
 
 from openai import OpenAI
@@ -538,6 +540,34 @@ def _split_reply(text: str) -> tuple[str, str]:
         return "", text
 
 
+def _background_learning_loop() -> None:
+    """Daemon thread that periodically rescans project files and stores any new code changes."""
+    last_file_load = time.time()
+    while True:
+        time.sleep(300)  # every 5 minutes
+        now = time.time()
+        if now - last_file_load > 240:
+            try:
+                _load_project_files_into_memory()
+                console.print("[dim]Auto‑learn: project files refreshed.[/dim]")
+                last_file_load = now
+            except Exception as e:
+                console.print(f"[dim]Auto‑learn error: {e}[/dim]")
+
+
+def _handle_remember_command(text: str) -> str | None:
+    """If the input starts with /remember, store the rest as a fact and return a confirmation."""
+    prefix = "/remember "
+    if text.lower().startswith(prefix):
+        fact = text[len(prefix):].strip()
+        if fact:
+            memory_bank.add_log(f"FACT: {fact}")
+            return f"Remembered: {fact}"
+        else:
+            return "Please provide something to remember after /remember."
+    return None
+
+
 def main() -> None:
     global deepseek_client, DEEPSEEK_MODEL
     banner_text = r"""
@@ -550,13 +580,16 @@ def main() -> None:
 """
     console.print(Panel.fit(banner_text, title="OPEN KYROZEN", subtitle="self‑learning AI agent", border_style="cyan"))
     console.print(f"Kyrozen (DeepSeek + Tools). Model: {MODEL_NAME}", style="cyan")
-    console.print("Commands: /quit or /exit to exit, /save to long‑term memory, /learn to reload project files, /api_key to change API key.\n", style="yellow")
+    console.print("Commands: /quit or /exit to exit, /save to long‑term memory, /learn to reload project files, /remember <fact> to store a fact, /api_key to change API key.\n", style="yellow")
 
     _prompt_and_init_deepseek()
     if deepseek_client is None:
         console.print("Cannot start without an API key.", style="red")
         sys.exit(1)
     _load_project_files_into_memory()
+
+    # Start background learning daemon
+    threading.Thread(target=_background_learning_loop, daemon=True).start()
 
     while True:
         try:
@@ -577,6 +610,13 @@ def main() -> None:
                 )
             )
             console.print("[green]Saved to long‑term memory.[/green]")
+            continue
+        if user_input.lower() == "/remember":
+            console.print("[yellow]Usage: /remember <fact>[/yellow]")
+            continue
+        remember_result = _handle_remember_command(user_input)
+        if remember_result:
+            console.print(f"[green]{remember_result}[/green]")
             continue
         if user_input.lower() == "/learn":
             _load_project_files_into_memory()
