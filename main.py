@@ -361,15 +361,31 @@ def _chat_turn(user_input: str) -> str:
             print(f"[Tool] {action}({args!r}) → {result[:200]}...")
             results.append(f"- `{action}({args!r})` → {result[:200]}")
         tool_results_text = "\n".join(results)
-        # Feed the tool results back into the conversation and ask the LLM
-        # to produce a natural language answer.
-        messages.append({
+
+        # Build a clean context to generate a natural answer
+        follow_up_messages: list[dict[str, str]] = []
+        follow_up_messages.append({"role": "system", "content": _system_prompt(TOOLS_LIST)})
+        follow_up_messages.append({
             "role": "system",
-            "content": f"The following tools were executed:\n{tool_results_text}\nNow please reply to the user’s original request in a natural, helpful way."
+            "content": f"You are working inside {os.getcwd()}. Relative paths work."
         })
-        final_response = _get_llm_response(messages).strip()
+        recalled = memory_bank.recall(user_input, n_results=2)
+        if recalled:
+            follow_up_messages.append({
+                "role": "system",
+                "content": "Relevant past:\n" + "\n".join(recalled[:2])
+            })
+        follow_up_messages.append({"role": "user", "content": user_input})
+        # Include the assistant's previous turn so it knows what tools were called
+        follow_up_messages.append({"role": "assistant", "content": response_text})
+        follow_up_messages.append({
+            "role": "user",
+            "content": f"The tools returned:\n{tool_results_text}\nPlease reply to my original request now based on this information."
+        })
+
+        final_response = _get_llm_response(follow_up_messages).strip()
         if not final_response or len(final_response) < 5:
-            final_response = "I have performed the requested actions. You can ask me more questions."
+            final_response = "I processed your request. Let me know if you need more details."
         return final_response
 
     # No tool calls – return the assistant's plain text
