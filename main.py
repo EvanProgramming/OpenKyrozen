@@ -446,6 +446,28 @@ def _chat_turn(user_input: str) -> str:
 
 
 
+def _split_reply(text: str) -> tuple[str, str]:
+    """Return (thinking_part, answer_part) for display."""
+    text = text.strip()
+    # Attempt to locate a Thought: section
+    thought_match = re.search(r"^Thought:\s*(.*?)(?=\n(?:Action:|(?:\n|$)))", text, re.DOTALL | re.MULTILINE)
+    if thought_match:
+        thinking = thought_match.group(1).strip()
+        # Remove the thought section from the whole text to get the answer
+        answer = re.sub(r"^Thought:\s*.*?(?=\n(?:Action:|(?:\n|$))|\n?$)", "", text, count=1, flags=re.DOTALL | re.MULTILINE).strip()
+        # Also strip any leftover Action blocks (they should have been executed, but LLM may keep them)
+        answer = re.sub(r"Action:\s*```(?:json)?[\s\S]*?```", "", answer).strip()
+        answer = re.sub(r"\{[\s\S]*?\}", "", answer).strip()  # remove stray JSON objects
+        answer = answer.lstrip(""""'").strip()
+        # If after stripping there's nothing, fallback to original
+        if not answer:
+            answer = text
+        return thinking, answer
+    else:
+        # No explicit thought – treat whole text as answer
+        return "", text
+
+
 def main() -> None:
     global deepseek_client, DEEPSEEK_MODEL
     banner_text = r"""
@@ -512,8 +534,15 @@ def main() -> None:
         short_term_memory.append({"role": "assistant", "content": reply})
         memory_bank.add_log(f"User: {user_input}\nAssistant: {reply}")
 
-        # Render markdown in a panel
-        console.print(Panel(Markdown(reply), title="Agent", border_style="green"))
+        # Separate thinking from the final answer
+        thinking, answer = _split_reply(reply)
+
+        if thinking:
+            console.print(Panel(thinking, title="Thinking", border_style="dim white"))
+        if answer:
+            console.print(Panel(Markdown(answer), title="Agent", border_style="green"))
+        else:
+            console.print(Panel(Markdown(answer or "(no content)"), title="Agent", border_style="green"))
         print()  # spacing
 
 
