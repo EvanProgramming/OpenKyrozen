@@ -29,14 +29,19 @@ class MemoryBank:
         self._in_memory: list[tuple[str, str, str]] = []  # (id, text, timestamp)
         self._collection = None
         if _CHROMADB_AVAILABLE:
-            self._client = chromadb.PersistentClient(
-                path=self._path,
-                settings=Settings(anonymized_telemetry=False),
-            )
-            self._collection = self._client.get_or_create_collection(
-                name=self.COLLECTION_NAME,
-                metadata={"description": "Agent interaction logs"},
-            )
+            try:
+                self._client = chromadb.PersistentClient(
+                    path=self._path,
+                    settings=Settings(anonymized_telemetry=False),
+                )
+                self._collection = self._client.get_or_create_collection(
+                    name=self.COLLECTION_NAME,
+                    metadata={"description": "Agent interaction logs"},
+                )
+            except Exception as _e:
+                print(f"[Memory] ChromaDB init error: {_e} – falling back to in‑memory storage.")
+                self._client = None
+                self._collection = None
 
     def add_log(self, text: str) -> str:
         """Save a text log with a timestamp‑based ID. Returns the assigned ID."""
