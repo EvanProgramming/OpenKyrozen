@@ -179,6 +179,39 @@ def _track_tool_performance(action: str, result: str, elapsed: float) -> None:
 
 # -------- Post‑Task Reflection --------
 _last_task_end = time.time()
+def _maybe_trigger_reflection_after_complex_task(num_tool_calls: int) -> None:
+    """Trigger reflection after a multi‑tool task ends (not idle)."""
+    global _last_task_end
+    now = time.time()
+    if now - _last_task_end < 60:
+        return  # at most once per minute
+    _last_task_end = now
+    # Only reflect on tasks that required several tool calls
+    if num_tool_calls < 2:
+        return
+    recent = memory_bank.get_recent(20)
+    if not recent:
+        return
+    recent_tokens = sum(entry.get("tokens", 0) for entry in _turn_cost_log[-5:])
+    recent_time = sum(entry.get("time", 0) for entry in _turn_cost_log[-5:])
+    cost_summary = f"Recent token count: {recent_tokens}, recent runtime: {recent_time:.1f}s" if _turn_cost_log else ""
+    reflect_prompt = (
+        "You are Kyrozen's reflection module. The last task used {num_tool_calls} tool calls. "
+        "Analyse whether a more efficient approach exists. "
+        f"{cost_summary}\n"
+        "Output the optimised strategy as a numbered list. If nothing to improve, output '—'.\n\n"
+        + "\n".join(recent[-10:])
+    )
+    try:
+        messages = [{"role": "system", "content": reflect_prompt}]
+        answer = _get_llm_response(messages).strip()
+        if answer and answer not in ("—", ""):
+            memory_bank.add_log(f"REFLECTION:\n{answer}")
+            console.print("[dim]Post‑task reflection stored.[/dim]")
+    except Exception as e:
+        console.print(f"[dim]Reflection error: {e}[/dim]")
+
+
 def _maybe_trigger_reflection() -> None:
     """If at least 3 messages have been exchanged since last reflection and idle, reflect."""
     global _last_task_end
@@ -907,6 +940,7 @@ def _chat_turn(user_input: str) -> str:
             "time": elapsed,
             "tool_calls": len(tool_calls)
         })
+        _maybe_trigger_reflection_after_complex_task(len(tool_calls))
         return final_response
     else:
         # Store failure in memory
