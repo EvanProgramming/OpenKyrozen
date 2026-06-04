@@ -29,7 +29,7 @@ MODEL_NAME = "deepseek-chat"
 SHORT_TERM_CAP = 16
 MAX_TOOL_RETRIES = 3
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
-IDLE_CONSOLIDATION_TIMEOUT = 1800  # 30 minutes
+IDLE_CONSOLIDATION_TIMEOUT = 300  # 5 minutes
 
 
 # -------- Error‑Driven Learning (Failure Memory) --------
@@ -94,6 +94,43 @@ def _maybe_trigger_reflection() -> None:
 
 # -------- Sleep & Consolidation (Dream Cycle) --------
 _last_user_interaction = time.time()
+_last_code_scan_time = 0
+
+def _age_out_old_coded_entries() -> None:
+    """Remove or mark obsolete code facts when code files change."""
+    global _last_code_scan_time
+    now = time.time()
+    if now - _last_code_scan_time < 3600:  # once per hour
+        return
+    _last_code_scan_time = now
+
+    project_root = Path(__file__).parent.resolve()
+    existing_py_files = set()
+    for py_file in project_root.rglob("*.py"):
+        if "__pycache__" not in str(py_file):
+            existing_py_files.add(str(py_file.relative_to(project_root)))
+
+    # Fetch all FILE entries from memory
+    if memory_bank._collection is not None:
+        try:
+            all_logs = memory_bank._collection.get()
+            ids = all_logs.get("ids", [])
+            documents = all_logs.get("documents", [])
+            metadatas = all_logs.get("metadatas", [])
+            to_delete = []
+            for i, doc in enumerate(documents):
+                if doc and doc.startswith("FILE:"):
+                    # extract path
+                    lines = doc.split("\n")
+                    if len(lines) >= 1:
+                        # lines[0] = "FILE: path"
+                        file_rel = lines[0].replace("FILE: ", "").strip()
+                        if file_rel not in existing_py_files:
+                            to_delete.append(ids[i])
+            if to_delete:
+                memory_bank._collection.delete(ids=to_delete)
+        except Exception:
+            pass
 
 def _consolidate_memories() -> None:
     """Cluster, deduplicate and summarise recent facts."""
@@ -575,7 +612,10 @@ def _chat_turn(user_input: str) -> str:
 
     all_ok = not any(_is_tool_error(r) for r in results)
 
+    # Track whether this is a success after previous failure (error‑driven learning)
+    original_error = None
     if not all_ok:
+        original_error = tool_results_text
         for attempt in range(MAX_RETRIES):
             messages.append({
                 "role": "user",
@@ -610,6 +650,13 @@ def _chat_turn(user_input: str) -> str:
 
             if not any(_is_tool_error(r) for r in new_results):
                 all_ok = True
+                # Store the successful resolution for error‑driven learning
+                _store_failure(
+                    user_input,
+                    f"Attempt {attempt+1} success",
+                    original_error or "(first error)",
+                    f"Correct approach found:\n{tool_results_text}"
+                )
                 break
 
     if all_ok:
@@ -637,6 +684,16 @@ def _chat_turn(user_input: str) -> str:
         final_response = _get_llm_response(summary_messages).strip()
         if not final_response or len(final_response) < 10:
             final_response = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
+
+        # Also detect user correction (e.g., "not correct", "you misunderstood")
+        correction_keywords = ["not correct", "you misunderstood", "wrong", "incorrect", "fix it"]
+        if any(kw in user_input.lower() for kw in correction_keywords):
+            _store_failure(
+                user_input,
+                response_text[:200],
+                "User indicated previous answer was wrong",
+                final_response[:200] + "..."
+            )
         return final_response
     else:
         # Store failure in memory
@@ -695,6 +752,52 @@ def _auto_learn_conversations() -> None:
         console.print(f"[dim]Auto‑learn conversation error: {e}[/dim]")
 
 
+def _auto_debug_tool() -> None:
+    """Check tool stats for poorly performing user‑defined tools and attempt auto‑debug."""
+    user_defined = {k: v for k, v in AVAILABLE_TOOLS.items()
+                    if k not in {"write_file","read_file","run_cmd","search_web",
+                                 "find_files","list_dir","git_clone","git_status",
+                                 "execute_terminal_command","analyze_remote_repo"}}
+    for name, func in user_defined.items():
+        stats = _tool_stats.get(name)
+        if stats is None or stats["calls"] < 3:
+            continue
+        success_rate = stats["successes"] / stats["calls"]
+        if success_rate < 0.5:
+            # Debug mode: ask LLM to fix the tool code
+            code = getattr(func, "__code__", None)
+            source = None
+            if code:
+                try:
+                    import inspect
+                    source = inspect.getsource(func)
+                except Exception:
+                    pass
+            if not source:
+                continue
+            debug_prompt = (
+                f"The tool '{name}' has a success rate of {success_rate:.0%} "
+                f"over {stats['calls']} calls. Its current code:\n```python\n{source}\n```\n"
+                "Please rewrite the code to fix the most common errors. "
+                "Output the corrected code as a Python function alone (no extra text)."
+            )
+            try:
+                message = [{"role": "system", "content": debug_prompt}]
+                new_code = _get_llm_response(message).strip()
+                # Remove any markdown fences if present
+                new_code = re.sub(r"^```python\s*", "", new_code)
+                new_code = re.sub(r"\s*```", "", new_code)
+                # Attempt to replace the tool
+                local_vars: dict = {}
+                exec(new_code, {"__builtins__": __builtins__}, local_vars)
+                if name in local_vars and callable(local_vars[name]):
+                    AVAILABLE_TOOLS[name] = local_vars[name]
+                    console.print(f"[dim]Auto‑debugged tool '{name}'.[/dim]")
+                    memory_bank.add_log(f"AUTO_DEBUG: {name}\nNew code:\n```python\n{new_code}\n```")
+            except Exception as e:
+                console.print(f"[dim]Auto‑debug tool error: {e}[/dim]")
+
+
 def _background_learning_loop() -> None:
     """Enhanced loop with consolidation, reflection, tool review, auto‑inquiry."""
     global _last_user_interaction
@@ -706,6 +809,8 @@ def _background_learning_loop() -> None:
 
             _auto_learn_conversations()
             _load_project_files_into_memory()
+            _age_out_old_coded_entries()
+            _auto_debug_tool()
 
             if idle_duration > IDLE_CONSOLIDATION_TIMEOUT:
                 _consolidate_memories()
