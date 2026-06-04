@@ -334,10 +334,9 @@ def _get_llm_response(messages: list[dict[str, str]]) -> str:
 
 
 def _chat_turn(user_input: str) -> str:
-    """One user turn: build context, get LLM reply, handle tool calls in a loop
-    until the assistant stops calling tools, then return a natural answer."""
+    """One user turn: build context, get LLM reply, execute any tool calls once,
+    then produce a final natural answer based on the results."""
 
-    MAX_TOOL_ROUNDS = 8
     messages = _build_messages(user_input)
     response_text = _get_llm_response(messages).strip()
 
@@ -353,41 +352,56 @@ def _chat_turn(user_input: str) -> str:
     if _attempt_define_tool(response_text):
         return "New tool defined. It will be available for future interactions."
 
-    # Main tool execution loop
-    for round_num in range(MAX_TOOL_ROUNDS):
-        tool_calls = _collect_tool_calls(response_text)
-        if not tool_calls:
-            # No more tool calls – the assistant's plain text is the final answer
-            return response_text
+    # Collect any tool calls the assistant made
+    tool_calls = _collect_tool_calls(response_text)
+    if not tool_calls:
+        # No tools needed – return the plain answer
+        return response_text
 
-        # Execute all tool calls found in this round
-        results: list[str] = []
-        for tc in tool_calls:
-            action = tc.get("action", "")
-            args = tc.get("args", "")
-            if not isinstance(args, str):
-                args = str(args)
-            result = _run_tool(action, args)
-            print(f"[Tool] {action}({args!r}) → {result[:200]}...")
-            results.append(f"- `{action}({args!r})` returned:\n{result[:2000]}")
-        tool_results_text = "\n".join(results)
+    # Execute all tools
+    results: list[str] = []
+    for tc in tool_calls:
+        action = tc.get("action", "")
+        args = tc.get("args", "")
+        if not isinstance(args, str):
+            args = str(args)
+        result = _run_tool(action, args)
+        print(f"[Tool] {action}({args!r}) → {result[:200]}...")
+        results.append(f"- `{action}({args!r})` returned:\n{result[:2000]}")
+    tool_results_text = "\n".join(results)
 
-        # Append tool results as a user message so the LLM can reason further
-        messages.append({"role": "assistant", "content": response_text})
-        messages.append({
+    # Build a dedicated summary prompt (no tool‑calling instructions)
+    summary_messages: list[dict[str, str]] = [
+        {
+            "role": "system",
+            "content": (
+                "You are Kyrozen, an intelligent AI assistant. "
+                "You have just obtained the following information by running tools. "
+                "Now produce a clear, natural answer to the user's original request. "
+                "Do **not** output any Action, JSON, or tool calls – only plain text."
+            )
+        },
+        {
+            "role": "system",
+            "content": f"You are working inside {os.getcwd()}."
+        },
+        {"role": "user", "content": user_input},
+        {"role": "assistant", "content": response_text},
+        {
             "role": "user",
-            "content": f"The tools returned the following results:\n{tool_results_text}\n\nPlease continue with a natural answer. You may call more tools if needed."
-        })
+            "content": (
+                f"The tools returned:\n{tool_results_text}\n\n"
+                "Please respond directly with the analysis the user asked for."
+            )
+        }
+    ]
 
-        # Get the LLM's next response
-        response_text = _get_llm_response(messages).strip()
+    final_response = _get_llm_response(summary_messages).strip()
+    if not final_response or len(final_response) < 10:
+        # fallback: just present the raw results
+        final_response = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
 
-        # Safety: if the last response is empty, treat as end of turn
-        if not response_text or not response_text.strip():
-            return f"I executed the tools. Here is what happened:\n\n{tool_results_text}"
-
-    # After max rounds, return whatever we have
-    return response_text
+    return final_response
 
 
 
