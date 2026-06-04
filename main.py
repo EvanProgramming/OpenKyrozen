@@ -295,8 +295,6 @@ def _chat_turn(user_input: str) -> str:
     return response_text
 
 
-def _color(text: str, code: str) -> str:
-    return f"\033[{code}m{text}\033[0m"
 
 def main() -> None:
     banner_text = r"""
@@ -318,7 +316,7 @@ def main() -> None:
 
     while True:
         try:
-            user_input = input("[bold cyan]You: [/bold cyan]").strip()
+            user_input = console.input("[bold cyan]You: [/bold cyan]").strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[red]Goodbye.[/red]")
             sys.exit(0)
