@@ -931,6 +931,15 @@ def _chat_turn(user_input: str) -> str:
         turn_prompt_total += _last_prompt_tokens
         turn_completion_total += _last_completion_tokens
 
+    # Process task blocks from the LLM
+    tasks.from_llm_block(response_text)
+    tasks.mark_done_from_text(response_text)
+    # Remove task blocks from the displayed text
+    response_text_clean = re.sub(r'(?:TaskList:\s*```(?:json)?[\s\S]*?```|TaskDone:\s*\d+)', '', response_text).strip()
+    if not response_text_clean:
+        response_text_clean = response_text
+    response_text = response_text_clean
+
     if _attempt_define_tool(response_text):
         # Still record turn cost before returning
         elapsed = time.time() - turn_start
