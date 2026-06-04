@@ -242,9 +242,42 @@ def parse_json_from_response(text: str) -> dict | None:
     return None
 
 
+def _extract_json_objects(text: str) -> list[dict]:
+    """Return all JSON objects found in text, without requiring surrounding backticks."""
+    objects: list[dict] = []
+    i = 0
+    while True:
+        start = text.find("{", i)
+        if start == -1:
+            break
+        depth = 0
+        for pos in range(start, len(text)):
+            char = text[pos]
+            if char == '{':
+                depth += 1
+            elif char == '}':
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:pos + 1]
+                    try:
+                        obj = json.loads(candidate)
+                        if isinstance(obj, dict):
+                            objects.append(obj)
+                    except json.JSONDecodeError:
+                        pass
+                    i = pos + 1
+                    break
+        else:
+            # no matching closing brace found – move past the opening brace
+            i = start + 1
+    return objects
+
+
 def _collect_tool_calls(text: str) -> list[dict]:
     """Return a list of tool‑call dicts found in the text (all Action blocks)."""
     calls: list[dict] = []
+
+    # 1. Prefer the standard Action: ```json ... ``` pattern
     pattern = r"Action:\s*```(?:json)?\s*([\s\S]*?)\s*```"
     for match in re.finditer(pattern, text, re.DOTALL):
         raw = match.group(1).strip()
@@ -255,6 +288,14 @@ def _collect_tool_calls(text: str) -> list[dict]:
             continue
         if isinstance(data, dict) and "action" in data and data.get("action") in AVAILABLE_TOOLS:
             calls.append(data)
+
+    # 2. Also look for any JSON object that looks like a tool call (no backticks)
+    for obj in _extract_json_objects(text):
+        if isinstance(obj, dict) and "action" in obj and obj.get("action") in AVAILABLE_TOOLS:
+            # Avoid duplicates (if a tool already captured via pattern 1)
+            if obj not in calls:
+                calls.append(obj)
+
     return calls
 
 
