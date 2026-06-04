@@ -1,5 +1,5 @@
 """
-AI Agent: optimized for low-memory (7B) models. Ollama + tools + short prompt.
+AI Agent: supports DeepSeek API + tools.
 (Run `python main.py` to launch the agent)
 """
 
@@ -9,9 +9,6 @@ import re
 import sys
 
 from openai import OpenAI
-
-from ollama import chat as ollama_chat
-from ollama import Client as OllamaClient
 
 from memory import MemoryBank
 from tools import AVAILABLE_TOOLS
@@ -70,7 +67,6 @@ ALWAYS start with "Thought:" if you are solving a task.
 
 
 # ---- Shared state ----
-ollama = OllamaClient()
 memory_bank = MemoryBank()
 short_term_memory: list[dict[str, str]] = [
     {"role": "user", "content": "Hello, are you ready to help me?"},
@@ -135,7 +131,7 @@ def _run_tool(action: str, args: str) -> str:
 
 
 def _get_llm_response(messages: list[dict[str, str]]) -> str:
-    """Call DeepSeek API or local Ollama; return assistant content. Debug-prints messages."""
+    """Call DeepSeek API; return assistant content. Debug-prints messages."""
     print("[DEBUG] Messages sent to LLM:")
     for i, m in enumerate(messages):
         role = m.get("role", "?")
@@ -143,24 +139,18 @@ def _get_llm_response(messages: list[dict[str, str]]) -> str:
         preview = content[:80] + "..." if len(content) > 80 else content
         print(f"  [{i}] role={role!r} content={preview!r}")
     print()
-    if deepseek_client is not None:
-        # Use DeepSeek API (OpenAI compatible)
-        try:
-            response = deepseek_client.chat.completions.create(
-                model=DEEPSEEK_MODEL,
-                messages=messages,
-            )
-            text = response.choices[0].message.content or ""
-            return text.strip()
-        except Exception as e:
-            return f"[DeepSeek Error] {e}"
-    else:
-        # Fallback to local Ollama
-        try:
-            response = ollama_chat(model=MODEL_NAME, messages=messages)
-            return (response.message and getattr(response.message, "content", None)) or ""
-        except Exception as e:
-            return f"[Ollama Error] {e}"
+    if deepseek_client is None:
+        return "[DeepSeek Error] DEEPSEEK_API_KEY environment variable not set"
+    # Use DeepSeek API (OpenAI compatible)
+    try:
+        response = deepseek_client.chat.completions.create(
+            model=DEEPSEEK_MODEL,
+            messages=messages,
+        )
+        text = response.choices[0].message.content or ""
+        return text.strip()
+    except Exception as e:
+        return f"[DeepSeek Error] {e}"
 
 
 def _chat_turn(user_input: str) -> str:
