@@ -121,10 +121,10 @@ def _system_prompt(tools_list: str) -> str:
 {tools_list}
 
 ## Current working directory
-You are currently inside the project root directory of the repository the user is working in.  Relative paths (like "README.md") will be resolved correctly.  You can use `read_file`, `write_file`, `list_dir`, `find_files`, `run_cmd`, etc. without needing the full absolute path.
+You are currently inside the project root directory of the repository the user is working in.  Relative paths (like "README.md" or "main.py") will be resolved correctly.  You can use `read_file`, `write_file`, `list_dir`, `find_files`, `run_cmd`, etc. **without needing the user to provide a path**.  Do **not** ask the user to supply a local path or a remote URL unless you intend to use the `analyze_remote_repo` tool to clone an external repository.
 
-## How to use a tool:
-When you need to perform an action, you must output a Thought followed by an Action in JSON format enclosed in triple backticks.
+## How to use tools
+When you need to perform an action, you **must** output a Thought followed by **exactly one** Action in JSON format enclosed in triple backticks.
 
 **Format:**
 Thought: (explain your reasoning)
@@ -135,6 +135,8 @@ Action:
   "args": "arguments"
 }}
 ```
+
+If you need to run several tools in sequence, run **one per message** – the system will then ask you for the next step.
 
 If no action is required, respond naturally in plain text.
 
@@ -231,6 +233,22 @@ def parse_json_from_response(text: str) -> dict | None:
     return None
 
 
+def _collect_tool_calls(text: str) -> list[dict]:
+    """Return a list of tool‑call dicts found in the text (all Action blocks)."""
+    calls: list[dict] = []
+    pattern = r"Action:\s*```(?:json)?\s*([\s\S]*?)\s*```"
+    for match in re.finditer(pattern, text, re.DOTALL):
+        raw = match.group(1).strip()
+        raw = raw.rstrip("`").strip()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and "action" in data and data.get("action") in AVAILABLE_TOOLS:
+            calls.append(data)
+    return calls
+
+
 def _run_tool(action: str, args: str) -> str:
     """Execute one tool; return result string."""
     fn = AVAILABLE_TOOLS.get(action)
@@ -307,7 +325,8 @@ def _get_llm_response(messages: list[dict[str, str]]) -> str:
 
 
 def _chat_turn(user_input: str) -> str:
-    """One user turn: build context, get LLM reply, handle tool call and retry if empty."""
+    """One user turn: build context, get LLM reply, handle tool calls and retry if empty."""
+
     messages = _build_messages(user_input)
     response_text = _get_llm_response(messages).strip()
 
@@ -319,42 +338,26 @@ def _chat_turn(user_input: str) -> str:
         })
         response_text = _get_llm_response(messages).strip()
 
-    # Attempt to define a new tool if present
+    # Check for new tool definitions before anything else
     if _attempt_define_tool(response_text):
         return "New tool defined. It will be available for future interactions."
 
-    for attempt in range(MAX_TOOL_RETRIES + 1):
-        tool_call = parse_json_from_response(response_text)
-        if not tool_call:
-            return response_text
+    # Attempt to execute all tool calls present in this response
+    tool_calls = _collect_tool_calls(response_text)
+    if tool_calls:
+        results: list[str] = []
+        for tc in tool_calls:
+            action = tc.get("action", "")
+            args = tc.get("args", "")
+            if not isinstance(args, str):
+                args = str(args)
+            result = _run_tool(action, args)
+            print(f"[Tool] {action}({args!r}) → {result[:200]}...")
+            results.append(f"- {action}({args!r}) → {result[:200]}")
+        # Return a summary of all executed tools
+        return "I executed the following tools:\n" + "\n".join(results)
 
-        action = tool_call.get("action", "")
-        args = tool_call.get("args", "") if isinstance(tool_call.get("args"), str) else str(tool_call.get("args", ""))
-
-        result = _run_tool(action, args)
-
-        # Immediately inform the user (and the LLM on the next turn) what happened
-        print(f"[Tool] {action}({args!r}) → {result[:200]}...")
-
-        if result.strip().lower().startswith("error") and attempt < MAX_TOOL_RETRIES:
-            retry_messages = _build_messages(user_input)
-            retry_messages.append({
-                "role": "user",
-                "content": f"Tool failed. Result: {result}. Try again with different action/args (output Thought then JSON).",
-            })
-            response_text = _get_llm_response(retry_messages).strip()
-            continue
-
-        tool_feedback = (
-            f"System: Tool executed. Result: {result}. "
-            "Summarize what you did for the user."
-        )
-        follow_up = _build_messages(user_input)
-        follow_up.append({"role": "assistant", "content": response_text})
-        follow_up.append({"role": "user", "content": tool_feedback})
-        response_text = _get_llm_response(follow_up).strip() or result
-        break
-
+    # No tool calls – return the assistant's plain text
     return response_text
 
 
