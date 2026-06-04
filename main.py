@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 
 from openai import OpenAI
 
@@ -41,6 +42,22 @@ DEEPSEEK_MODEL: str = "deepseek-chat"
 deepseek_client = None
 
 
+def _load_project_files_into_memory() -> None:
+    """Read project Python files and store their content in the memory bank."""
+    project_root = Path(__file__).parent.resolve()
+    for py_file in project_root.rglob("*.py"):
+        # Skip __pycache__ directories
+        if "__pycache__" in str(py_file):
+            continue
+        try:
+            content = py_file.read_text(encoding="utf-8")
+            # Store as "FILE: path" with content code block
+            log_text = f"FILE: {py_file.relative_to(project_root)}\n```python\n{content}\n```"
+            memory_bank.add_log(log_text)
+        except Exception as e:
+            print(f"Could not read {py_file}: {e}")
+
+
 def _build_tools_list() -> str:
     """Build tools list for system prompt: name + docstring."""
     lines = []
@@ -56,7 +73,7 @@ TOOLS_LIST = _build_tools_list()
 
 def _system_prompt(tools_list: str) -> str:
     """Minimalist system prompt for 7B models (no external files)."""
-    return f"""You are a helpful AI Assistant with access to tools.
+    return f"""You are a helpful AI Assistant with access to tools and the ability to learn from project files and past conversations.
 
 ## Tools Available:
 {tools_list}
@@ -75,6 +92,8 @@ Action:
 
 If no tool is needed, just reply normally.
 ALWAYS start with "Thought:" if you are solving a task.
+
+You have stored knowledge of the project's code files and previous conversations. Use that knowledge to improve your answers.
 """
 
 
@@ -94,7 +113,7 @@ def _build_messages(user_input: str) -> list[dict[str, str]]:
     messages.append({"role": "system", "content": _system_prompt(TOOLS_LIST)})
 
     # 2. Optional: one short memory hint if we have RAG results (saves tokens)
-    recalled = memory_bank.recall(user_input, n_results=2)
+    recalled = memory_bank.recall(user_input, n_results=4)
     if recalled:
         memory_block = "Relevant past context:\n" + "\n".join(recalled[:2])
         messages.append({"role": "system", "content": memory_block})
@@ -222,6 +241,8 @@ def main() -> None:
     if deepseek_client is None:
         print(_color("Cannot start without an API key.", "31"))
         sys.exit(1)
+    # Load project code into memory for self‑learning
+    _load_project_files_into_memory()
 
     while True:
         try:
@@ -242,6 +263,10 @@ def main() -> None:
                 )
             )
             print(_color("Saved to long-term memory.", "32"))
+            continue
+        if user_input.lower() == "/learn":
+            _load_project_files_into_memory()
+            print(_color("Project files re‑learned and stored in memory.", "32"))
             continue
 
         reply = _chat_turn(user_input)
