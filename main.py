@@ -32,6 +32,68 @@ MAX_TOOL_RETRIES = 3
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
 IDLE_CONSOLIDATION_TIMEOUT = 300  # 5 minutes
 
+
+# -------- Task Manager for multi‑step tasks --------
+class TaskManager:
+    """Manage a list of tasks with states: pending, in_progress, done."""
+    def __init__(self) -> None:
+        self.tasks: list[dict] = []
+
+    def add_task(self, description: str) -> int:
+        idx = len(self.tasks)
+        self.tasks.append({"description": description, "status": "pending"})
+        return idx
+
+    def set_status(self, idx: int, status: str) -> None:
+        if 0 <= idx < len(self.tasks):
+            self.tasks[idx]["status"] = status
+
+    def mark_done(self, idx: int) -> None:
+        self.set_status(idx, "done")
+
+    def format(self) -> str:
+        if not self.tasks:
+            return "No tasks."
+        lines = []
+        for i, t in enumerate(self.tasks):
+            status_icon = {
+                "pending": "○",
+                "in_progress": "◷",
+                "done": "✓",
+            }.get(t["status"], "?")
+            lines.append(f"  {status_icon}  {t['description']}")
+        return "\n".join(lines)
+
+    def from_llm_block(self, text: str) -> None:
+        """Parse a TaskList block and populate tasks."""
+        pattern = r"TaskList:\s*```(?:json)?\s*([\s\S]*?)\s*```"
+        match = re.search(pattern, text)
+        if not match:
+            return
+        raw = match.group(1).strip()
+        try:
+            raw_tasks = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(raw_tasks, list):
+            return
+        self.tasks = []
+        for item in raw_tasks:
+            if isinstance(item, str):
+                self.add_task(item)
+            elif isinstance(item, dict) and "description" in item:
+                self.add_task(item["description"])
+
+    def mark_done_from_text(self, text: str) -> None:
+        """Parse TaskDone: index blocks."""
+        pattern = r"TaskDone:\s*(\d+)"
+        for match in re.finditer(pattern, text):
+            idx = int(match.group(1))
+            self.mark_done(idx)
+
+
+tasks = TaskManager()
+
 # -------- Regression Testing --------
 # Core test suite covering the most important built‑in tools
 _CORE_TESTS = [
@@ -611,6 +673,14 @@ DefineTool:
 ```
 
 After such definition the new tool will be available for future use.
+
+### Task management
+When a request involves multiple steps, you **must** output a `TaskList:` block before the first Action. For example:
+TaskList:
+```json
+["Read file", "Analyse data", "Write report"]
+```
+Each index starts at 0. When you complete a step, output `TaskDone: 0` (replace 0 with the step index) **before** the next Action. This lets the system keep the user updated on progress.
 
 ### Important reminder
 When the user asks you to analyze the repository, start by running `list_dir('.')` to see the files.  Do **not** ask for a local path or remote URL – you are already in the correct directory.
@@ -1239,6 +1309,11 @@ def main() -> None:
         else:
             console.print(Panel(Markdown(answer or "(no content)"), title="Agent", border_style="green"))
         print()
+
+        # Show tasks panel if any tasks exist
+        if tasks.tasks:
+            console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
+            print()
 
 
 if __name__ == "__main__":
