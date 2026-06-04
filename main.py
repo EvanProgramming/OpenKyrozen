@@ -10,9 +10,15 @@ import sys
 from pathlib import Path
 
 from openai import OpenAI
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich import print as rprint
 
 from memory import MemoryBank
 from tools import AVAILABLE_TOOLS
+
+console = Console()
 
 
 # ---- Constants (optimized for DeepSeek) ----
@@ -293,35 +299,34 @@ def _color(text: str, code: str) -> str:
     return f"\033[{code}m{text}\033[0m"
 
 def main() -> None:
-    banner = r"""
-   ___  ___   __   ____  _  _  _  _   ___
-  / _ \|_ _| /_ | |___ \| || || || | / _ \
- | | | | |   | |   __) | || |_| || || | | |
- | |_| | |   | |  / __/|__   _|__   _| |_| |
-  \___/|___| |_| |_____|  |_|   |_|  \___/
+    banner_text = r"""
+   ___   ___   ___   ___    _   _  __   ___
+  / _ \ | _ \ / _ \ | _ \  | \ | | \ \ / / _ \
+ | | | ||  _/ | | | ||  _/  |  \| |  \ V /| | | |
+ | |_| || |   | |_| || |    | |\  |   | | | |_| |
+  \___/ |_|    \___/ |_|    |_| \_|   |_|  \___/
 """
-    print(banner)
-    print(_color("Kyrozen (DeepSeek + Tools). Model:", "36"), MODEL_NAME)
-    print(_color("Commands: /quit exit, /save save to long-term memory.\n", "33"))
+    console.print(Panel.fit(banner_text, title="OPENKYROZEN", subtitle="self‑learning AI agent", border_style="cyan"))
+    console.print(f"Kyrozen (DeepSeek + Tools). Model: {MODEL_NAME}", style="cyan")
+    console.print("Commands: /quit or /exit to exit, /save to long‑term memory, /learn to reload project files.\n", style="yellow")
 
     _prompt_and_init_deepseek()
     if deepseek_client is None:
-        print(_color("Cannot start without an API key.", "31"))
+        console.print("Cannot start without an API key.", style="red")
         sys.exit(1)
-    # Load project code into memory for self‑learning
     _load_project_files_into_memory()
 
     while True:
         try:
-            user_input = input(_color("You: ", "36")).strip()
+            user_input = input("[bold cyan]You: [/bold cyan]").strip()
         except (EOFError, KeyboardInterrupt):
-            print(_color("\nGoodbye.", "31"))
+            console.print("\n[red]Goodbye.[/red]")
             sys.exit(0)
 
         if not user_input:
             continue
-        if user_input.lower() == "/quit":
-            print(_color("Goodbye.", "31"))
+        if user_input.lower() in ("/quit", "/exit"):
+            console.print("[red]Goodbye.[/red]")
             break
         if user_input.lower() == "/save":
             memory_bank.add_log(
@@ -329,24 +334,26 @@ def main() -> None:
                     m.get("content", "")[:200] for m in short_term_memory[-6:] if m.get("content")
                 )
             )
-            print(_color("Saved to long-term memory.", "32"))
+            console.print("[green]Saved to long‑term memory.[/green]")
             continue
         if user_input.lower() == "/learn":
             _load_project_files_into_memory()
-            print(_color("Project files re‑learned and stored in memory.", "32"))
+            console.print("[green]Project files re‑learned and stored in memory.[/green]")
             continue
 
         reply = _chat_turn(user_input)
 
         if len(reply.strip()) < 5:
-            print(_color("[Error] Received empty response from LLM", "31"))
+            console.print("[red][Error] Received empty response from LLM[/red]")
             continue
 
         short_term_memory.append({"role": "user", "content": user_input})
         short_term_memory.append({"role": "assistant", "content": reply})
         memory_bank.add_log(f"User: {user_input}\nAssistant: {reply}")
 
-        print(_color("Agent:", "32"), reply, "\n")
+        # Render markdown in a panel
+        console.print(Panel(Markdown(reply), title="Agent", border_style="green"))
+        print()  # spacing
 
 
 if __name__ == "__main__":
