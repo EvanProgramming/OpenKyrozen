@@ -31,6 +31,113 @@ MAX_TOOL_RETRIES = 3
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
 IDLE_CONSOLIDATION_TIMEOUT = 300  # 5 minutes
 
+# -------- Regression Testing --------
+# Core test suite covering the most important built‑in tools
+_CORE_TESTS = [
+    {
+        "description": "list_dir returns a non‑empty string",
+        "action": "list_dir",
+        "args": ".",
+        "check": "nonempty"
+    },
+    {
+        "description": "read_file returns content of main.py (contains 'Kyrozen')",
+        "action": "read_file",
+        "args": "main.py",
+        "check": "contains",
+        "expected": "Kyrozen"
+    },
+    {
+        "description": "find_files finds all .py files in top level",
+        "action": "find_files",
+        "args": "*.py",
+        "check": "nonempty"
+    },
+    {
+        "description": "run_cmd echoes a simple message",
+        "action": "run_cmd",
+        "args": "echo 'regression_test_ok'",
+        "check": "contains",
+        "expected": "regression_test_ok"
+    },
+    {
+        "description": "write_file creates a test file and read_file reads it back",
+        "action": "write_file",
+        "args": "_test_regression_tmp.txt|hello from regression",
+        "check": "nonempty"
+    },
+    {
+        "description": "execute_terminal_command works (alias for run_cmd)",
+        "action": "execute_terminal_command",
+        "args": "echo 'alias_ok'",
+        "check": "contains",
+        "expected": "alias_ok"
+    },
+    {
+        "description": "list_dir on non‑existent folder returns error",
+        "action": "list_dir",
+        "args": "_nonexistent_xyz",
+        "check": "error"
+    },
+]
+
+# Snapshot management for user‑defined tools
+_BUILTIN_TOOL_NAMES = {
+    "write_file","read_file","run_cmd","search_web","find_files","list_dir",
+    "git_clone","git_status","execute_terminal_command","analyze_remote_repo"
+}
+_saved_user_tools: dict[str, Any] = {}
+
+def _take_tool_snapshot() -> None:
+    global _saved_user_tools
+    _saved_user_tools = {k: v for k, v in AVAILABLE_TOOLS.items() if k not in _BUILTIN_TOOL_NAMES}
+
+
+def _restore_tool_snapshot() -> None:
+    global _saved_user_tools
+    # Remove current user‑defined tools
+    keys_to_remove = [k for k in AVAILABLE_TOOLS if k not in _BUILTIN_TOOL_NAMES]
+    for k in keys_to_remove:
+        del AVAILABLE_TOOLS[k]
+    # Restore from snapshot
+    AVAILABLE_TOOLS.update(_saved_user_tools)
+
+
+def _run_regression_tests() -> bool:
+    """Execute the core test suite and return True iff all tests pass."""
+    all_pass = True
+    for test in _CORE_TESTS:
+        action = test["action"]
+        args = test["args"]
+        expected = test.get("expected", "")
+        check_type = test["check"]
+
+        fn = AVAILABLE_TOOLS.get(action)
+        if fn is None:
+            console.print(f"[red]Regression FAIL: tool '{action}' not found[/red]")
+            all_pass = False
+            continue
+        try:
+            result = fn(args)
+        except Exception as e:
+            result = f"Error: {e}"
+
+        passed = False
+        if check_type == "nonempty":
+            passed = bool(result.strip())
+        elif check_type == "contains":
+            passed = expected in result
+        elif check_type == "error":
+            passed = result.strip().lower().startswith("error")
+
+        if not passed:
+            console.print(f"[red]Regression FAIL: {test['description']}[/red]")
+            console.print(f"  result: {result[:200]}")
+            all_pass = False
+        else:
+            console.print(f"[green]Regression PASS: {test['description']}[/green]")
+    return all_pass
+
 
 # -------- Error‑Driven Learning (Failure Memory) --------
 _FAILURE_STORE_PREFIX = "FAILURE:"
@@ -175,6 +282,8 @@ def _age_out_old_coded_entries() -> None:
             pass
 
 def _consolidate_memories() -> None:
+    global _saved_user_tools
+    _take_tool_snapshot()
     """Cluster, deduplicate and summarise recent facts."""
     recent = memory_bank.get_recent(50)
     if not recent:
@@ -211,9 +320,8 @@ def _age_out_old_coded_entries() -> None:
 # -------- Tool Refactoring --------
 def _review_tools() -> None:
     """Scan user‑defined tools for duplication and merge candidates."""
-    user_defined = {k:v for k,v in AVAILABLE_TOOLS.items() if k not in { 
-        "write_file","read_file","run_cmd","search_web","find_files","list_dir",
-        "git_clone","git_status","execute_terminal_command","analyze_remote_repo"}}
+    _take_tool_snapshot()
+    user_defined = {k:v for k,v in AVAILABLE_TOOLS.items() if k not in _BUILTIN_TOOL_NAMES}
     if len(user_defined) < 2:
         return
     names = list(user_defined.keys())
@@ -549,6 +657,8 @@ def _run_tool(action: str, args: str) -> str:
 
 
 def _attempt_define_tool(text: str) -> bool:
+    global _saved_user_tools
+    _take_tool_snapshot()
     pattern = r"DefineTool:\s*```(?:json)?\s*([\s\S]*?)\s*```"
     match = re.search(pattern, text)
     if not match:
@@ -580,6 +690,12 @@ def _attempt_define_tool(text: str) -> bool:
         return False
 
     AVAILABLE_TOOLS[name] = new_tool
+
+    # Quick regression check – if it fails, rollback
+    if not _run_regression_tests():
+        console.print(f"[red]Regression failed after DefineTool – reverting '{name}'[/red]")
+        _restore_tool_snapshot()
+        return False
 
     memory_bank.add_log(
         f"New tool defined: {name}\n"
@@ -856,10 +972,9 @@ def _auto_learn_conversations() -> None:
 
 def _auto_debug_tool() -> None:
     """Check tool stats for poorly performing user‑defined tools and attempt auto‑debug."""
+    _take_tool_snapshot()
     user_defined = {k: v for k, v in AVAILABLE_TOOLS.items()
-                    if k not in {"write_file","read_file","run_cmd","search_web",
-                                 "find_files","list_dir","git_clone","git_status",
-                                 "execute_terminal_command","analyze_remote_repo"}}
+                    if k not in _BUILTIN_TOOL_NAMES}
     for name, func in user_defined.items():
         stats = _tool_stats.get(name)
         if stats is None or stats["calls"] < 3:
@@ -893,7 +1008,12 @@ def _auto_debug_tool() -> None:
                 local_vars: dict = {}
                 exec(new_code, {"__builtins__": __builtins__}, local_vars)
                 if name in local_vars and callable(local_vars[name]):
+                    old_tool = AVAILABLE_TOOLS.get(name)
                     AVAILABLE_TOOLS[name] = local_vars[name]
+                    if not _run_regression_tests():
+                        console.print(f"[red]Regression failed after auto‑debug – rolling back '{name}'[/red]")
+                        _restore_tool_snapshot()
+                        return
                     console.print(f"[dim]Auto‑debugged tool '{name}'.[/dim]")
                     memory_bank.add_log(f"AUTO_DEBUG: {name}\nNew code:\n```python\n{new_code}\n```")
             except Exception as e:
@@ -916,7 +1036,13 @@ def _background_learning_loop() -> None:
 
             if idle_duration > IDLE_CONSOLIDATION_TIMEOUT:
                 _consolidate_memories()
+                if not _run_regression_tests():
+                    console.print("[red]Regression tests failed after memory consolidation – rolling back.[/red]")
+                    _restore_tool_snapshot()
                 _review_tools()
+                if not _run_regression_tests():
+                    console.print("[red]Regression tests failed after tool review – rolling back.[/red]")
+                    _restore_tool_snapshot()
                 _targeted_inquiry()
                 _maybe_trigger_reflection()
                 _maybe_strategy_distillation()
