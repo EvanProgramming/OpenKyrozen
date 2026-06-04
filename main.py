@@ -286,70 +286,63 @@ def _age_out_old_coded_entries() -> None:
     if now - _last_code_scan_time < 3600:  # once per hour
         return
     _last_code_scan_time = now
-
-    project_root = Path(__file__).parent.resolve()
-    existing_py_files = set()
-    for py_file in project_root.rglob("*.py"):
-        if "__pycache__" not in str(py_file):
-            existing_py_files.add(str(py_file.relative_to(project_root)))
-
-    # Fetch all FILE entries from memory
-    if memory_bank._collection is not None:
-        try:
-            all_logs = memory_bank._collection.get()
-            ids = all_logs.get("ids", [])
-            documents = all_logs.get("documents", [])
-            metadatas = all_logs.get("metadatas", [])
-            to_delete = []
-            for i, doc in enumerate(documents):
-                if doc and doc.startswith("FILE:"):
-                    # extract path
-                    lines = doc.split("\n")
-                    if len(lines) >= 1:
-                        # lines[0] = "FILE: path"
-                        file_rel = lines[0].replace("FILE: ", "").strip()
-                        if file_rel not in existing_py_files:
-                            to_delete.append(ids[i])
-            if to_delete:
-                memory_bank._collection.delete(ids=to_delete)
-        except Exception:
-            pass
+    _remove_stale_file_entries(Path(__file__).parent.resolve())
 
 def _consolidate_memories() -> None:
     global _saved_user_tools
     _take_tool_snapshot()
-    """Cluster, deduplicate and summarise recent facts."""
+    """Cluster, deduplicate and summarise recent facts and logs."""
     recent = memory_bank.get_recent(50)
     if not recent:
         return
-    # Filter only FACT entries
-    facts = [r for r in recent if r.startswith("FACT:")]
-    if len(facts) < 3:
+
+    # Keep only non‑trivial logs
+    non_trivial = [r for r in recent if not r.startswith("FILE:")]
+    if len(non_trivial) < 3:
         return
+
     consolidate_prompt = (
-        "You are Kyrozen's memory consolidation module. Read the following facts and merge duplicates, "
-        "remove contradictions (keep the most recent), and produce a compact summary. "
-        "Output each fact on a new line prefixed with 'FACT:'\n\n"
-        + "\n".join(facts)
+        "You are Kyrozen's memory consolidation module. Read the following recent logs "
+        "and merge duplicates, remove contradictions (keeping the most recent), "
+        "and extract a minimal set of important facts. "
+        "Output each consolidated fact on a new line prefixed with 'FACT:'. "
+        "If nothing important, output only '—'.\n\n"
+        + "\n".join(non_trivial)
     )
     try:
         messages = [{"role": "system", "content": consolidate_prompt}]
         answer = _get_llm_response(messages).strip()
         if answer and not answer.startswith("—"):
-            # Remove old facts and store consolidated version
+            # Store consolidated facts
             for line in answer.split("\n"):
                 line = line.strip()
                 if line.startswith("FACT:"):
                     memory_bank.add_log(line)
+            # Remove the original logs that were just consolidated (to avoid duplication)
+            # We can delete them via ChromaDB if available
+            _remove_consolidated_entries(non_trivial)
             console.print("[dim]Memory consolidation completed.[/dim]")
     except Exception as e:
         console.print(f"[dim]Consolidation error: {e}[/dim]")
 
 
-def _age_out_old_coded_entries() -> None:
-    """Remove or mark obsolete code facts when code files change."""
-    # Simple: remove all FILE entries older than 1 hour that match files that no longer exist
-    # (implementation kept minimal)
+def _remove_consolidated_entries(logs: list[str]) -> None:
+    """Try to delete exact matching logs from ChromaDB."""
+    if memory_bank._collection is None:
+        return
+    try:
+        # Get all documents, find those that match exactly any of logs
+        all_logs = memory_bank._collection.get()
+        ids = all_logs.get("ids", [])
+        docs = all_logs.get("documents", [])
+        to_delete = []
+        for i, doc in enumerate(docs):
+            if doc in logs:
+                to_delete.append(ids[i])
+        if to_delete:
+            memory_bank._collection.delete(ids=to_delete)
+    except Exception:
+        pass
 
 # -------- Tool Refactoring --------
 def _review_tools() -> None:
@@ -487,15 +480,44 @@ deepseek_client = None
 
 def _load_project_files_into_memory() -> None:
     project_root = Path(__file__).parent.resolve()
+    # Before adding new versions, remove any stale FILE entries from ChromaDB
+    _remove_stale_file_entries(project_root)
     for py_file in project_root.rglob("*.py"):
         if "__pycache__" in str(py_file):
             continue
         try:
             content = py_file.read_text(encoding="utf-8")
-            log_text = f"FILE: {py_file.relative_to(project_root)}\n```python\n{content}\n```"
+            rel_path = str(py_file.relative_to(project_root))
+            log_text = f"FILE: {rel_path}\n```python\n{content}\n```"
             memory_bank.add_log(log_text)
         except Exception as e:
             print(f"Could not read {py_file}: {e}")
+
+
+def _remove_stale_file_entries(project_root: Path) -> None:
+    """Delete old FILE entries that no longer correspond to existing .py files."""
+    if memory_bank._collection is None:
+        return
+    existing_py_files = set()
+    for py_file in project_root.rglob("*.py"):
+        if "__pycache__" not in str(py_file):
+            existing_py_files.add(str(py_file.relative_to(project_root)))
+    try:
+        all_logs = memory_bank._collection.get()
+        ids = all_logs.get("ids", [])
+        documents = all_logs.get("documents", [])
+        to_delete = []
+        for i, doc in enumerate(documents):
+            if doc and doc.startswith("FILE:"):
+                lines = doc.split("\n")
+                if len(lines) >= 1:
+                    file_rel = lines[0].replace("FILE: ", "").strip()
+                    if file_rel not in existing_py_files:
+                        to_delete.append(ids[i])
+        if to_delete:
+            memory_bank._collection.delete(ids=to_delete)
+    except Exception:
+        pass
 
 
 def _build_tools_list() -> str:
