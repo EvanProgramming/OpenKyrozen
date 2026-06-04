@@ -26,10 +26,43 @@ MODEL_NAME = "deepseek-chat"  # fallback, actual model set by DEEPSEEK_MODEL env
 SHORT_TERM_CAP = 16  # larger context window for DeepSeek
 MAX_TOOL_RETRIES = 3
 
+def _load_config_key() -> str | None:
+    """Return the API key stored in config file, or None."""
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r") as f:
+                data = json.load(f)
+            key = data.get("api_key")
+            if key and isinstance(key, str) and key.strip():
+                os.environ["DEEPSEEK_API_KEY"] = key.strip()
+                return key.strip()
+        except (json.JSONDecodeError, OSError):
+            pass
+    return None
+
+
+def _save_config_key(key: str) -> None:
+    """Persist the API key to the config file."""
+    try:
+        existing = {}
+        if os.path.exists(CONFIG_PATH):
+            with open(CONFIG_PATH, "r") as f:
+                existing = json.load(f)
+        existing["api_key"] = key.strip()
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(existing, f, indent=2)
+    except OSError:
+        console.print("[yellow]Warning: could not save API key to config file.[/yellow]")
+
+
 def _prompt_and_init_deepseek() -> None:
-    """If DEEPSEEK_API_KEY is not in the environment, ask the user interactively."""
+    """Load API key from config file or ask the user interactively."""
     global deepseek_client, DEEPSEEK_MODEL
-    key = os.environ.get("DEEPSEEK_API_KEY")
+    # First try from config
+    key = _load_config_key()
+    if not key:
+        # Then try environment (may have been set external)
+        key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not key:
         key = input("\nDeepSeek API key not set. Enter your API key: ").strip()
         if not key:
@@ -37,7 +70,9 @@ def _prompt_and_init_deepseek() -> None:
             deepseek_client = None
             DEEPSEEK_MODEL = "deepseek-chat"
             return
-        os.environ["DEEPSEEK_API_KEY"] = key
+        # Save for future sessions
+        _save_config_key(key)
+    os.environ["DEEPSEEK_API_KEY"] = key
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
     DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
     deepseek_client = OpenAI(api_key=key, base_url=base_url)
@@ -306,7 +341,7 @@ def main() -> None:
 """
     console.print(Panel.fit(banner_text, title="OPENKYROZEN", subtitle="self‑learning AI agent", border_style="cyan"))
     console.print(f"Kyrozen (DeepSeek + Tools). Model: {MODEL_NAME}", style="cyan")
-    console.print("Commands: /quit or /exit to exit, /save to long‑term memory, /learn to reload project files.\n", style="yellow")
+    console.print("Commands: /quit or /exit to exit, /save to long‑term memory, /learn to reload project files, /api_key to change API key.\n", style="yellow")
 
     _prompt_and_init_deepseek()
     if deepseek_client is None:
@@ -337,6 +372,18 @@ def main() -> None:
         if user_input.lower() == "/learn":
             _load_project_files_into_memory()
             console.print("[green]Project files re‑learned and stored in memory.[/green]")
+            continue
+        if user_input.lower() == "/api_key":
+            new_key = console.input("[bold yellow]Enter new DeepSeek API key: [/bold yellow]").strip()
+            if new_key:
+                _save_config_key(new_key)
+                os.environ["DEEPSEEK_API_KEY"] = new_key
+                base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+                DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+                deepseek_client = OpenAI(api_key=new_key, base_url=base_url)
+                console.print("[green]API key updated and saved for future sessions.[/green]")
+            else:
+                console.print("[red]No key provided – key unchanged.[/red]")
             continue
 
         reply = _chat_turn(user_input)
