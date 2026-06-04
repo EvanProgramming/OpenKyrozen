@@ -1,5 +1,6 @@
 """
 AI Agent: optimized for low-memory (7B) models. Ollama + tools + short prompt.
+(Run `python main.py` to launch the agent)
 """
 
 import json
