@@ -1,5 +1,5 @@
 """
-AI Agent: supports DeepSeek API + tools.
+Kyrozen: self-learning AI Agent powered by DeepSeek API + tools.
 (Run `python main.py` to launch the agent)
 """
 
@@ -15,9 +15,9 @@ from memory import MemoryBank
 from tools import AVAILABLE_TOOLS
 
 
-# ---- Constants (tuned for 7B) ----
-MODEL_NAME = "qwen2.5-coder:7b"
-SHORT_TERM_CAP = 8  # fewer turns to save context window
+# ---- Constants (optimized for DeepSeek) ----
+MODEL_NAME = "deepseek-chat"  # fallback, actual model set by DEEPSEEK_MODEL env
+SHORT_TERM_CAP = 16  # larger context window for DeepSeek
 MAX_TOOL_RETRIES = 3
 
 def _prompt_and_init_deepseek() -> None:
