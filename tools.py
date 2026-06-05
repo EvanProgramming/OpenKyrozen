@@ -110,76 +110,119 @@ def search_web(args: str) -> str:
     Returns Title + Snippet for top 5 results. Use for current events, prices, or unknown facts.
     """
     import re
-    import requests
     import html
+    from urllib.parse import quote
+    import requests
 
     query = (args or "").strip()
     if not query:
         return "Search Error: query is empty."
 
+    # ---- attempt 1: ddgs library (rename warning ignored) ----
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            from ddgs import DDGS
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/133.0.6943.126 Safari/537.36"
+            )
+        }
+        ddgs = DDGS(headers=headers)
+        results = list(ddgs.text(query, max_results=5, backend="html"))
+        if results:
+            lines = []
+            for r in results:
+                title = r.get("title", "")
+                snippet = r.get("body", "")
+                lines.append(f"- Title: {title}")
+                if snippet:
+                    lines.append(f"  Snippet: {snippet}")
+            return "\n".join(lines)
+    except Exception:
+        pass
+
+    # ---- attempt 2: DuckDuckGo Lite HTML (GET) ----
+    lite_url = f"https://lite.duckduckgo.com/lite/?q={quote(query)}"
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/133.0.6943.126 Safari/537.36"
-        )
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
     }
+    try:
+        resp = requests.get(lite_url, headers=headers, timeout=10)
+        resp.raise_for_status()
+    except Exception as e:
+        return f"No search results found. Please try a different query. (request error: {e})"
 
-    endpoints = [
-        "https://html.duckduckgo.com/html/",
-        "https://lite.duckduckgo.com/lite/",
-    ]
+    # parse Lite results
+    titles = re.findall(
+        r'<a[^>]*rel="nofollow"[^>]*>(.*?)</a>',
+        resp.text,
+        re.DOTALL,
+    )
+    snippets = re.findall(
+        r'<td class="result-snippet"[^>]*>(.*?)</td>',
+        resp.text,
+        re.DOTALL,
+    )
+    if titles:
+        lines = []
+        for i, title_html in enumerate(titles[:5]):
+            title = re.sub(r"<[^>]*>", "", title_html).strip()
+            title = html.unescape(title)
+            snippet = ""
+            if i < len(snippets):
+                snip_html = snippets[i]
+                snippet = re.sub(r"<[^>]*>", "", snip_html).strip()
+                snippet = html.unescape(snippet)
+            lines.append(f"- Title: {title}")
+            if snippet:
+                lines.append(f"  Snippet: {snippet}")
+        return "\n".join(lines)
 
-    last_error = ""
-    for ep in endpoints:
-        try:
-            data = {"q": query}
-            resp = requests.post(ep, data=data, headers=headers, timeout=10)
-            resp.raise_for_status()
-        except Exception as e:
-            last_error = str(e)
-            continue
+    # ---- attempt 3: DuckDuckGo HTML (POST) ----
+    html_url = "https://html.duckduckgo.com/html/"
+    try:
+        data = {"q": query}
+        resp = requests.post(html_url, data=data, headers=headers, timeout=10)
+        resp.raise_for_status()
+    except Exception as e:
+        return f"No search results found. Please try a different query. (request error: {e})"
 
-        # parse results
-        if "lite" in ep:
-            titles = re.findall(
-                r'<a[^>]*class="result__a"[^>]*>(.*?)</a>',
-                resp.text,
-                re.DOTALL,
-            )
-            snippets = re.findall(
-                r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
-                resp.text,
-                re.DOTALL,
-            )
-        else:
-            titles = re.findall(
-                r'<a[^>]*class="result__a"[^>]*>(.*?)</a>',
-                resp.text,
-                re.DOTALL,
-            )
-            snippets = re.findall(
-                r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
-                resp.text,
-                re.DOTALL,
-            )
+    titles = re.findall(
+        r'<a[^>]*class="result__a"[^>]*>(.*?)</a>',
+        resp.text,
+        re.DOTALL,
+    )
+    snippets = re.findall(
+        r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
+        resp.text,
+        re.DOTALL,
+    )
+    if titles:
+        lines = []
+        for i, title_html in enumerate(titles[:5]):
+            title = re.sub(r"<[^>]*>", "", title_html).strip()
+            title = html.unescape(title)
+            snippet = ""
+            if i < len(snippets):
+                snip_html = snippets[i]
+                snippet = re.sub(r"<[^>]*>", "", snip_html).strip()
+                snippet = html.unescape(snippet)
+            lines.append(f"- Title: {title}")
+            if snippet:
+                lines.append(f"  Snippet: {snippet}")
+        return "\n".join(lines)
 
-        if titles:
-            lines = []
-            for i, title_html in enumerate(titles[:5]):
-                title = re.sub(r"<[^>]*>", "", title_html).strip()
-                title = html.unescape(title)
-                snippet = ""
-                if i < len(snippets):
-                    snip_html = snippets[i]
-                    snippet = re.sub(r"<[^>]*>", "", snip_html).strip()
-                    snippet = html.unescape(snippet)
-                lines.append(f"- Title: {title}")
-                if snippet:
-                    lines.append(f"  Snippet: {snippet}")
-            return "\n".join(lines)
-
-    return f"No search results found. Please try a different query. (last error: {last_error})"
+    return "No search results found. Please try a different query."
 
 
 def find_files(args: str) -> str:
