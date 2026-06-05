@@ -1039,12 +1039,15 @@ def _is_tool_error(result: str) -> bool:
     )
 
 
-def _chat_turn(user_input: str) -> str:
+def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     """One user turn: build context, get LLM reply, execute tool calls
     with automatic retries and failure memory."""
 
     global _last_user_interaction
     _last_user_interaction = time.time()
+
+    if clear_tasks:
+        tasks.tasks.clear()
 
     turn_start = time.time()
     turn_prompt_total = 0
@@ -1522,7 +1525,7 @@ def main() -> None:
             _pending_inquiry = None
 
         try:
-            reply = _chat_turn(user_input)
+            reply = _chat_turn(user_input, clear_tasks=True)
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
             reply = f"Error: {e}"
