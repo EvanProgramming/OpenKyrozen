@@ -1112,7 +1112,7 @@ def _chat_turn(user_input: str) -> str:
                     "Output a new Thought and Action block."
                 )
             })
-            response_text = _get_llm_response(messages).strip()
+            response_text = _call_llm_with_spinner(messages).strip()
             turn_prompt_total += _last_prompt_tokens
             turn_completion_total += _last_completion_tokens
             if not response_text or not response_text.strip():
