@@ -1070,6 +1070,15 @@ def _is_question(text: str) -> bool:
     return any(phrase in low for phrase in question_phrases)
 
 
+def _remove_task_blocks(text: str) -> str:
+    """Remove TaskList and TaskDone blocks from a string."""
+    return re.sub(
+        r"(?:TaskList:\s*```(?:json)?[\s\S]*?```|TaskDone:\s*\d+)",
+        "",
+        text
+    ).strip()
+
+
 def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     """One user turn: build context, get LLM reply, execute tool calls
     with automatic retries and failure memory."""
@@ -1282,8 +1291,8 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             if _is_tool_error(result2):
                 has_errors = True
         tool_results_text = "\n".join(next_results)
-        # Update the LLM's previous output so the next iteration sees the new results
-        current_reply = step_reply
+        # Update the LLM's previous output so the next iteration sees the new results (remove task blocks)
+        current_reply = _remove_task_blocks(step_reply)
 
     if final_answer is None:
         # Fallback if the loop exited without a final answer
@@ -1307,6 +1316,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         "tool_calls": len(tool_calls)
     })
     _maybe_trigger_reflection_after_complex_task(len(tool_calls))
+    final_answer = _remove_task_blocks(final_answer)
     return final_answer
 
 
@@ -1547,7 +1557,8 @@ def main() -> None:
             continue
 
         short_term_memory.append({"role": "user", "content": user_input})
-        short_term_memory.append({"role": "assistant", "content": reply})
+        cleaned_reply = _remove_task_blocks(reply)
+        short_term_memory.append({"role": "assistant", "content": cleaned_reply})
         memory_bank.add_log(f"User: {user_input}\nAssistant: {reply}")
 
         thinking, answer = _split_reply(reply)
