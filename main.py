@@ -551,6 +551,42 @@ def _fetch_library_info(lib_name: str) -> None:
         pass
 
 
+# ---- Spinner for LLM waiting ----
+_SPINNER_STOP = threading.Event()
+_SPINNER_THREAD: threading.Thread | None = None
+
+_SPINNER_FRAMES = [
+    "[ . . . ===> \\ / ===> @ @ @ ]",
+    "[ : . . . ===> / \\ ===> # @ @ ]",
+    "[ : : . . ===> \\ / ===> ## @ ]",
+    "[ : : : . ===> / \\ ===> @@@ ]",
+    "[ . . . . ===> \\ / ===> @@@ ]",
+]
+
+def _spinner_worker(stop_event: threading.Event) -> None:
+    while not stop_event.is_set():
+        for frame in _SPINNER_FRAMES:
+            if stop_event.is_set():
+                break
+            sys.stdout.write("\r" + frame + " ")
+            sys.stdout.flush()
+            time.sleep(0.25)
+
+def _call_llm_with_spinner(messages: list[dict]) -> str:
+    global _SPINNER_STOP, _SPINNER_THREAD
+    _SPINNER_STOP.clear()
+    _SPINNER_THREAD = threading.Thread(target=_spinner_worker, args=(_SPINNER_STOP,), daemon=True)
+    _SPINNER_THREAD.start()
+    try:
+        result = _get_llm_response(messages)
+    finally:
+        _SPINNER_STOP.set()
+        if _SPINNER_THREAD:
+            _SPINNER_THREAD.join(timeout=2)
+        sys.stdout.write("\r" + " " * 70 + "\r")
+        sys.stdout.flush()
+    return result
+
 # ---- Existing functions (unchanged) ----
 def _load_config_key() -> str | None:
     if os.path.exists(CONFIG_PATH):
@@ -997,7 +1033,7 @@ def _chat_turn(user_input: str) -> str:
 
     MAX_RETRIES = 3
     messages = _build_messages(user_input)
-    response_text = _get_llm_response(messages).strip()
+    response_text = _call_llm_with_spinner(messages).strip()
     turn_prompt_total += _last_prompt_tokens
     turn_completion_total += _last_completion_tokens
 
@@ -1006,7 +1042,7 @@ def _chat_turn(user_input: str) -> str:
             "role": "user",
             "content": "System: You returned nothing. Please output your Thought and JSON Action now.",
         })
-        response_text = _get_llm_response(messages).strip()
+        response_text = _call_llm_with_spinner(messages).strip()
         turn_prompt_total += _last_prompt_tokens
         turn_completion_total += _last_completion_tokens
 
@@ -1144,7 +1180,7 @@ def _chat_turn(user_input: str) -> str:
                 )
             }
         ]
-        final_response = _get_llm_response(summary_messages).strip()
+        final_response = _call_llm_with_spinner(summary_messages).strip()
         turn_prompt_total += _last_prompt_tokens
         turn_completion_total += _last_completion_tokens
         if not final_response or len(final_response) < 10:
