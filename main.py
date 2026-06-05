@@ -23,6 +23,9 @@ import sys
 import threading
 import time
 import datetime
+# Patch datetime.UTC for Python <3.11
+if not hasattr(datetime, 'UTC'):
+    datetime.UTC = datetime.timezone.utc
 UTC = datetime.timezone.utc
 from pathlib import Path
 from typing import Any
@@ -1283,10 +1286,11 @@ def _auto_debug_tool() -> None:
 def _background_learning_loop() -> None:
     """Enhanced loop with consolidation, reflection, tool review, auto‑inquiry."""
     global _last_user_interaction
-    # Suppress stdout in background thread to keep terminal clean
+    # Suppress stdout and stderr in background thread to keep terminal clean
     import sys as _sys
     import os as _os
     _sys.stdout = open(_os.devnull, 'w')
+    _sys.stderr = open(_os.devnull, 'w')
     while True:
         time.sleep(120)
         try:
