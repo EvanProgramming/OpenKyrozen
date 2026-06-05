@@ -306,9 +306,9 @@ def _maybe_trigger_reflection() -> None:
         answer = _get_llm_response(messages).strip()
         if answer and answer not in ("—", ""):
             memory_bank.add_log(f"REFLECTION:\n{answer}")
-            console.print("[dim]Post‑task reflection stored.[/dim]")
+            bg_console.print("[dim]Post‑task reflection stored.[/dim]")
     except Exception as e:
-        console.print(f"[dim]Reflection error: {e}[/dim]")
+        bg_console.print(f"[dim]Reflection error: {e}[/dim]")
 
 
 def _maybe_strategy_distillation() -> None:
@@ -461,11 +461,11 @@ def _review_tools() -> None:
                         for old in old_list:
                             AVAILABLE_TOOLS.pop(old, None)
                         if _register_tool(new_name, code, description="merged"):
-                            console.print(f"[dim]Merged tools {old_list} into {new_name}.[/dim]")
+                            bg_console.print(f"[dim]Merged tools {old_list} into {new_name}.[/dim]")
                         else:
-                            console.print(f"[red]Failed to register merged tool '{new_name}' – rolling back.[/red]")
+                            bg_console.print(f"[red]Failed to register merged tool '{new_name}' – rolling back.[/red]")
     except Exception as e:
-        console.print(f"[dim]Tool review error: {e}[/dim]")
+        bg_console.print(f"[dim]Tool review error: {e}[/dim]")
 
 
 # -------- Active Exploration (Targeted Inquiry) --------
