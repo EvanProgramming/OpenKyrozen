@@ -1098,7 +1098,7 @@ def _chat_turn(user_input: str) -> str:
         if not isinstance(args, str):
             args = str(args)
         result = _run_tool(action, args)
-        # tool call result suppressed
+        console.print(Panel(result[:2000], title=f"Result of {action}", border_style="yellow"))
         results.append(f"- `{action}({args!r})` returned:\n{result[:2000]}")
     tool_results_text = "\n".join(results)
 
@@ -1158,6 +1158,7 @@ def _chat_turn(user_input: str) -> str:
                 if not isinstance(args, str):
                     args = str(args)
                 result2 = _run_tool(action, args)
+                console.print(Panel(result2[:2000], title=f"Result of {action}", border_style="yellow"))
                 new_results.append(f"- `{action}({args!r})` returned:\n{result2[:2000]}")
             tool_results_text = "\n".join(new_results)
 
