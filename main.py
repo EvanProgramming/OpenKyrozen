@@ -1493,14 +1493,39 @@ def main() -> None:
             console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
             print()
 
-        # If the assistant’s reply itself contains further Action blocks, auto‑continue
-        # (limited to avoid infinite loops)
-        if not user_input.startswith("/"):  # skip meta‑commands
+        # auto‑continue: process further Action blocks without user input
+        _auto_continue_limit = 5
+        _original_user_input = user_input
+        while _auto_continue_limit > 0 and not _original_user_input.startswith("/"):
             potential_actions = _collect_tool_calls(reply)
-            if potential_actions:
-                # treat the reply as a new user input (the LLM is effectively speaking for itself)
-                user_input = reply
-                continue
+            if not potential_actions:
+                break
+            # treat reply as new user input for the next LLM call
+            user_input = reply
+            _auto_continue_limit -= 1
+            try:
+                reply = _chat_turn(user_input)
+            except Exception as e:
+                console.print(f"[red]Error: {e}[/red]")
+                reply = f"Error: {e}"
+                break
+            if len(reply.strip()) < 5:
+                console.print("[red][Error] Received empty response from LLM[/red]")
+                break
+            short_term_memory.append({"role": "user", "content": user_input})
+            short_term_memory.append({"role": "assistant", "content": reply})
+            memory_bank.add_log(f"User: {user_input}\nAssistant: {reply}")
+            thinking, answer = _split_reply(reply)
+            if thinking:
+                console.print(Panel(thinking, title="Thinking", border_style="dim white"))
+            if answer:
+                console.print(Panel(Markdown(answer), title="Agent", border_style="green"))
+            else:
+                console.print(Panel(Markdown(answer or "(no content)"), title="Agent", border_style="green"))
+            print()
+            if tasks.tasks:
+                console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
+                print()
 
 
 if __name__ == "__main__":
