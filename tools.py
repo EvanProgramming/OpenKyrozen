@@ -10,7 +10,7 @@ import tempfile
 import shutil
 from typing import Any
 
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 
 # ---- Safety: block dangerous shell commands ----
