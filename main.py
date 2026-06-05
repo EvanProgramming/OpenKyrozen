@@ -931,19 +931,21 @@ def _collect_tool_calls(text: str) -> list[dict]:
 def _run_tool(action: str, args: str) -> str:
     # Map aliases
     action = TOOL_ALIASES.get(action, action)
+    # Handle dict arguments for tools that expect a simple string
+    if isinstance(args, dict):
+        if action in ("run_cmd", "execute_terminal_command"):
+            cmd = args.get("cmd") or args.get("command") or ""
+            args = cmd
+        elif action == "write_file":
+            path = args.get("file_path") or args.get("path") or ""
+            content = args.get("content", "")
+            args = f"{path}|{content}"
+        else:
+            import json
+            args = json.dumps(args)
     fn = AVAILABLE_TOOLS.get(action)
     if not fn:
         return f"Error: unknown tool '{action}'"
-    # If args is a dict (e.g., from LLM using JSON object), convert appropriately
-    if isinstance(args, dict):
-        if action in ("run_cmd", "execute_terminal_command"):
-            # Extract the command string from common keys
-            cmd = args.get("cmd") or args.get("command") or ""
-            args = cmd
-        else:
-            # fallback: convert dict to its JSON representation (may not work)
-            import json
-            args = json.dumps(args)
     start = time.time()
     try:
         result = str(fn(args))
@@ -1253,23 +1255,41 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
 
         # if there are no more tool calls, the LLM gave its final answer
         if not next_tool_calls:
-            if not _is_question(step_reply):
-                final_answer = step_reply
-                break
-            # re‑prompt if the LLM asked a question instead of acting
-            summary_messages.append({
-                "role": "user",
-                "content": "System: Do not ask the user. Output the next Action block now."
-            })
-            step_reply = _call_llm_with_spinner(summary_messages).strip()
-            turn_prompt_total += _last_prompt_tokens
-            turn_completion_total += _last_completion_tokens
-            if not step_reply:
-                break
-            tasks.from_llm_block(step_reply)
-            tasks.mark_done_from_text(step_reply)
-            next_tool_calls = _collect_tool_calls(step_reply)
-            if not next_tool_calls:
+            # If there are still pending tasks, do NOT finish — keep asking
+            if tasks.tasks and any(t["status"] != "done" for t in tasks.tasks):
+                summary_messages.append({
+                    "role": "user",
+                    "content": "System: There are still incomplete tasks. Output the next Action block now."
+                })
+                step_reply = _call_llm_with_spinner(summary_messages).strip()
+                turn_prompt_total += _last_prompt_tokens
+                turn_completion_total += _last_completion_tokens
+                if not step_reply:
+                    break
+                tasks.from_llm_block(step_reply)
+                tasks.mark_done_from_text(step_reply)
+                next_tool_calls = _collect_tool_calls(step_reply)
+                if not next_tool_calls:
+                    final_answer = step_reply
+                    break
+            elif _is_question(step_reply):
+                # re‑prompt if the LLM asked a question instead of acting
+                summary_messages.append({
+                    "role": "user",
+                    "content": "System: Do not ask the user. Output the next Action block now."
+                })
+                step_reply = _call_llm_with_spinner(summary_messages).strip()
+                turn_prompt_total += _last_prompt_tokens
+                turn_completion_total += _last_completion_tokens
+                if not step_reply:
+                    break
+                tasks.from_llm_block(step_reply)
+                tasks.mark_done_from_text(step_reply)
+                next_tool_calls = _collect_tool_calls(step_reply)
+                if not next_tool_calls:
+                    final_answer = step_reply
+                    break
+            else:
                 final_answer = step_reply
                 break
 
