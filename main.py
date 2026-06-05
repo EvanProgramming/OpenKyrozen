@@ -1094,7 +1094,6 @@ def _chat_turn(user_input: str) -> str:
                 if not isinstance(args, str):
                     args = str(args)
                 result2 = _run_tool(action, args)
-                print(f"[Tool] {action}({args!r}) → {result2[:200]}...")
                 new_results.append(f"- `{action}({args!r})` returned:\n{result2[:2000]}")
             tool_results_text = "\n".join(new_results)
 
