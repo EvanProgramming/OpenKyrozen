@@ -1212,7 +1212,8 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                     "Please continue if there are remaining steps, or respond with the final answer.\n"
                     "If you have completed a task, you **must** output `TaskDone: <index>` "
                     "(replace index with the zero‑based index) **before** the next Action block. "
-                    "Do not omit the `TaskDone:` line."
+                    "Do not omit the `TaskDone:` line.\n"
+                    "Never ask the user for permission to continue. Automatically decide."
                 )
             }
         ]
@@ -1231,8 +1232,25 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
 
         # if there are no more tool calls, the LLM gave its final answer
         if not next_tool_calls:
-            final_answer = step_reply
-            break
+            if not _is_question(step_reply):
+                final_answer = step_reply
+                break
+            # re‑prompt if the LLM asked a question instead of acting
+            summary_messages.append({
+                "role": "user",
+                "content": "System: Do not ask the user. Output the next Action block now."
+            })
+            step_reply = _call_llm_with_spinner(summary_messages).strip()
+            turn_prompt_total += _last_prompt_tokens
+            turn_completion_total += _last_completion_tokens
+            if not step_reply:
+                break
+            tasks.from_llm_block(step_reply)
+            tasks.mark_done_from_text(step_reply)
+            next_tool_calls = _collect_tool_calls(step_reply)
+            if not next_tool_calls:
+                final_answer = step_reply
+                break
 
         # execute all new tool calls
         round_count += 1
