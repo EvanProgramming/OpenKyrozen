@@ -144,10 +144,11 @@ def search_web(args: str) -> str:
 
     # ---- attempt 1: duckduckgo_search (original package) ----
     try:
-        # Try the new `ddgs` package first (it does not emit the rename warning)
-        from ddgs import DDGS
-        ddgs = DDGS(headers=headers)
-        results = list(ddgs.text(query, region="wt-wt", safesearch="off", max_results=5))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            from ddgs import DDGS
+            ddgs = DDGS(headers=headers)
+            results = list(ddgs.text(query, region="wt-wt", safesearch="off", max_results=5))
         if results:
             return _fmt(results)
     except ImportError:
