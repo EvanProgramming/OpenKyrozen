@@ -1362,7 +1362,7 @@ def main() -> None:
     threading.Thread(target=_background_learning_loop, daemon=True).start()
 
     while True:
-        print("[bold cyan]You: [/bold cyan]", end="", flush=True)
+        console.print("[bold cyan]You: [/bold cyan]", end="")
         try:
             user_input = input().strip()
         except (EOFError, KeyboardInterrupt):
@@ -1405,7 +1405,11 @@ def main() -> None:
             memory_bank.add_log(f"FACT: User answered inquiry – {user_input}")
             _pending_inquiry = None
 
-        reply = _chat_turn(user_input)
+        try:
+            reply = _chat_turn(user_input)
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            reply = f"Error: {e}"
 
         if len(reply.strip()) < 5:
             console.print("[red][Error] Received empty response from LLM[/red]")
