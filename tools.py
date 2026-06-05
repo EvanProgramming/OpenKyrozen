@@ -114,7 +114,6 @@ def search_web(args: str) -> str:
     import html
     from urllib.parse import quote
     import requests
-    import warnings
 
     query = (args or "").strip()
     if not query:
@@ -142,36 +141,11 @@ def search_web(args: str) -> str:
         ),
     }
 
-    # ---- attempt 1: duckduckgo_search (original package) ----
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            from ddgs import DDGS
-            ddgs = DDGS(headers=headers)
-            results = list(ddgs.text(query, region="wt-wt", safesearch="off", max_results=5))
-        if results:
-            return _fmt(results)
-    except ImportError:
-        pass
-    except Exception:
-        pass
-
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            from duckduckgo_search import DDGS
-            ddgs = DDGS(headers=headers)
-            results = list(ddgs.text(query, region="wt-wt", safesearch="off", max_results=5))
-        if results:
-            return _fmt(results)
-    except Exception:
-        pass
-
-    # ---- attempt 2: Google via googlesearch-python (no API key) ----
+    # ---- attempt 1: Google via googlesearch-python (no API key) ----
     try:
         from googlesearch import search as google_search
         urls = list(google_search(query, num_results=5, lang="en"))
-    except Exception as e:
+    except Exception:
         pass
     else:
         if urls:
@@ -198,7 +172,7 @@ def search_web(args: str) -> str:
             if results:
                 return _fmt(results)
 
-    # ---- attempt 3: DuckDuckGo Lite HTML (GET) ----
+    # ---- attempt 2: DuckDuckGo Lite HTML (GET) ----
     lite_url = f"https://lite.duckduckgo.com/lite/?q={quote(query)}"
     try:
         resp = requests.get(lite_url, headers=headers, timeout=10)
@@ -221,7 +195,7 @@ def search_web(args: str) -> str:
     except Exception:
         pass
 
-    # ---- attempt 4: DuckDuckGo HTML (POST) ----
+    # ---- attempt 3: DuckDuckGo HTML (POST) ----
     html_url = "https://html.duckduckgo.com/html/"
     try:
         resp = requests.post(html_url, data={"q": query}, headers=headers, timeout=10)
