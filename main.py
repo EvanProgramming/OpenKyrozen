@@ -32,7 +32,7 @@ MODEL_NAME = "deepseek-chat"
 SHORT_TERM_CAP = 16
 MAX_TOOL_RETRIES = 3
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
-IDLE_CONSOLIDATION_TIMEOUT = 300  # 5 minutes
+IDLE_CONSOLIDATION_TIMEOUT = 60   # 1 minute
 
 
 # -------- Task Manager for multi‑step tasks --------
@@ -1252,8 +1252,8 @@ def _background_learning_loop() -> None:
             now = time.time()
             idle_duration = now - _last_user_interaction
 
-            # Skip heavy background work if the user has been active within the last 5 minutes
-            if idle_duration < 300:
+            # Skip heavy background work if the user has been active within the last 1 minute
+            if idle_duration < 60:
                 continue
 
             _auto_learn_conversations()
