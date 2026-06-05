@@ -790,6 +790,8 @@ When you finish a task **before** taking the next Action, output `TaskDone: <ind
 Do **not** forget to output `TaskDone:` – the system uses it to update the progress display.
 Never ask the user whether to continue. Automatically proceed.
 
+Prefer built‑in tools (`write_file`, `read_file`, `run_cmd`, `search_web`, `find_files`, `list_dir`, `read_webpage`, `git_clone`, `git_status`) over self‑created tools. Only define a new tool if none of the existing tools can accomplish the required task.
+
 ### Important reminder
 When the user asks you to analyze the repository, start by running `list_dir('.')` to see the files.  Do **not** ask for a local path or remote URL – you are already in the correct directory.
 """
@@ -975,6 +977,28 @@ def _attempt_define_tool(text: str) -> bool:
 
     if not name or not code:
         return False
+
+    # Reject if a built‑in tool with a similar name or purpose already exists
+    builtin_similar_names = {
+        "write_file":  {"write","save","file","store"},
+        "read_file":   {"read","open","load"},
+        "run_cmd":     {"bash","shell","command","execute","terminal"},
+        "search_web":  {"search","web","internet","query"},
+        "find_files":  {"find","glob","file matching"},
+        "list_dir":    {"list","directory","ls"},
+        "git_clone":   {"clone","git"},
+        "git_status":  {"status","git"},
+        "read_webpage":{"read","webpage","url","html"},
+    }
+    if name in builtin_similar_names:
+        return False
+    # also check description for keywords
+    for builtin, keywords in builtin_similar_names.items():
+        if any(k in description.lower() for k in keywords):
+            memory_bank.add_log(
+                f"IGNORED_DEFINE_TOOL: {name} – built‑in '{builtin}' can handle the same task."
+            )
+            return False
 
     local_vars: dict = {}
     try:
@@ -1212,6 +1236,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         if has_errors:
             error_hint = (
                 "The tool returned an error. The action name may be wrong. "
+                "If you used a self‑created tool, try using a built‑in tool instead. "
                 "Use one of the following actions: "
                 + ", ".join(sorted(AVAILABLE_TOOLS.keys())) + ".\n"
             )
