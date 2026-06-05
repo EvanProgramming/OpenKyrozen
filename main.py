@@ -1291,6 +1291,10 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             if _is_tool_error(result2):
                 has_errors = True
         tool_results_text = "\n".join(next_results)
+        # Check if all pending tasks are done; if so, stop (no need to ask LLM for more steps)
+        if tasks.tasks and all(t["status"] != "pending" for t in tasks.tasks):
+            final_answer = current_reply
+            break
         # Update the LLM's previous output so the next iteration sees the new results (remove task blocks)
         current_reply = _remove_task_blocks(step_reply)
 
