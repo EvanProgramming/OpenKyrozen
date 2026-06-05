@@ -2,8 +2,11 @@
 Long-term memory for the AI agent (ChromaDB if available, else in‑memory).
 """
 
+import warnings
 import uuid
 from datetime import datetime
+
+warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*datetime.utcnow.*")
 
 try:
     import chromadb
