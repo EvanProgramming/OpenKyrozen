@@ -788,6 +788,7 @@ For **every** request that requires multiple steps (e.g., searching, comparing, 
 If a request can be done in a single step, you do not need a TaskList.
 When you finish a task **before** taking the next Action, output `TaskDone: <index>` (where <index> is the zero‑based index of the completed task) **exactly** once, on its own line.
 Do **not** forget to output `TaskDone:` – the system uses it to update the progress display.
+Never ask the user whether to continue. Automatically proceed.
 
 ### Important reminder
 When the user asks you to analyze the repository, start by running `list_dir('.')` to see the files.  Do **not** ask for a local path or remote URL – you are already in the correct directory.
@@ -1056,6 +1057,17 @@ def _is_tool_error(result: str) -> bool:
         "no search results" in low or
         "search temporarily unavailable" in low
     )
+
+
+def _is_question(text: str) -> bool:
+    low = text.strip().lower()
+    if "?" in low:
+        return True
+    question_phrases = [
+        "shall i", "should i", "do you want me", "would you like me", "continue",
+        "proceed", "next step",
+    ]
+    return any(phrase in low for phrase in question_phrases)
 
 
 def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
