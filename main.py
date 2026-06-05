@@ -1311,11 +1311,7 @@ def _background_learning_loop() -> None:
 
 
 def main() -> None:
-    # Clear stale bytecode cache to avoid DeprecationWarnings from cached .pyc files
-    import shutil
-    import pathlib
-    for p in pathlib.Path(__file__).parent.rglob("__pycache__"):
-        shutil.rmtree(p, ignore_errors=True)
+    # Bytecode cache cleared already at module level (see top of file)
     global deepseek_client, DEEPSEEK_MODEL, _pending_inquiry
 
     if "--init" in sys.argv:
