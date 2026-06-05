@@ -44,6 +44,7 @@ TOOL_ALIASES: dict[str, str] = {
     "bash": "run_cmd",
     "shell": "run_cmd",
     "sh": "run_cmd",
+    "browse_summary": "read_webpage",
 }
 
 def _is_valid_action(name: str | None) -> bool:
@@ -1172,200 +1173,111 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
     tool_results_text = "\n".join(results)
 
-    all_ok = not any(_is_tool_error(r) for r in results)
+    # Unified multi‑step loop – always runs, can handle early errors
+    round_limit = MAX_STEPS_PER_TURN
+    round_count = 0
+    final_answer: str | None = None
+    current_reply = response_text
+    has_errors = any(_is_tool_error(r) for r in results)
+    # Remember the first tool-call block for the context
+    initial_response = response_text
 
-    # Track whether this is a success after previous failure (error‑driven learning)
-    original_error = None
-    if not all_ok:
-        original_error = tool_results_text
-        for attempt in range(MAX_RETRIES):
-            # Detect search‑specific failure and instruct the LLM to generate a new
-            # query automatically, not ask the user for one.
-            search_failure_hint = (
-                "If the tool was `search_web` that returned no results, "
-                "output a **different search query** (Action block with `search_web` and a new query). "
-                "Do **not** ask the user for a new query – just output the Action block yourself."
+    while round_count < round_limit:
+        # Build the summary messages. If the last tool call failed, include guidance.
+        error_hint = ""
+        if has_errors:
+            error_hint = (
+                "The tool returned an error. The action name may be wrong. "
+                "Use one of the following actions: "
+                + ", ".join(sorted(AVAILABLE_TOOLS.keys())) + ".\n"
             )
-            messages.append({
+        summary_messages: list[dict[str, str]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Kyrozen, an intelligent AI assistant. "
+                    "You have just obtained the following information by running tools. "
+                    "If more steps are needed to satisfy the user request, output the next Action block. "
+                    "Otherwise, output only a plain final answer."
+                )
+            },
+            {"role": "system", "content": f"You are working inside {os.getcwd()}."},
+            {"role": "user", "content": user_input},
+            {"role": "assistant", "content": current_reply},
+            {
                 "role": "user",
                 "content": (
-                    f"The previous tool attempt result(s):\n{tool_results_text}\n\n"
-                    "The tool(s) failed. "
-                    + search_failure_hint +
-                    " Otherwise, try a different command. "
-                    "Output a new Thought and Action block."
+                    f"The tools returned:\n{tool_results_text}\n\n"
+                    + error_hint +
+                    "Please continue if there are remaining steps, or respond with the final answer.\n"
+                    "If you have completed a task, you **must** output `TaskDone: <index>` "
+                    "(replace index with the zero‑based index) **before** the next Action block. "
+                    "Do not omit the `TaskDone:` line."
                 )
-            })
-            response_text = _call_llm_with_spinner(messages).strip()
-            turn_prompt_total += _last_prompt_tokens
-            turn_completion_total += _last_completion_tokens
-            if not response_text or not response_text.strip():
-                break
+            }
+        ]
+        step_reply = _call_llm_with_spinner(summary_messages).strip()
+        turn_prompt_total += _last_prompt_tokens
+        turn_completion_total += _last_completion_tokens
+        if not step_reply:
+            break
 
-            if _attempt_define_tool(response_text):
-                elapsed = time.time() - turn_start
-                _turn_cost_log.append({
-                    "tokens": turn_prompt_total + turn_completion_total,
-                    "time": elapsed,
-                    "tool_calls": len(tool_calls)
-                })
-                return "New tool defined. It will be available for future interactions."
+        # let the tasks manager know about any TaskDone/TaskList in this reply
+        tasks.from_llm_block(step_reply)
+        tasks.mark_done_from_text(step_reply)
 
-            new_tool_calls = _collect_tool_calls(response_text)
-            # If LLM didn't output any TaskList, create default tasks from the tool calls
-            if not tasks.tasks and new_tool_calls:
-                for tc2 in new_tool_calls:
-                    tasks.add_task(f"Execute {tc2.get('action','?')}: {tc2.get('args','')[:50]}")
-            if not new_tool_calls:
-                elapsed = time.time() - turn_start
-                _turn_cost_log.append({
-                    "tokens": turn_prompt_total + turn_completion_total,
-                    "time": elapsed,
-                    "tool_calls": len(tool_calls)
-                })
-                return response_text
+        # extract tool calls for the next step
+        next_tool_calls = _collect_tool_calls(step_reply)
 
-            new_results: list[str] = []
-            for tc2 in new_tool_calls:
-                action = tc2.get("action", "")
-                args = tc2.get("args", "")
-                if not isinstance(args, str):
-                    args = str(args)
-                result2 = _run_tool(action, args)
-                console.print(Panel(result2[:2000], title=f"Result of {action}", border_style="yellow"))
-                new_results.append(f"- `{action}({args!r})` returned:\n{result2[:2000]}")
-                tasks.mark_first_pending_done()
-                if tasks.tasks:
-                    console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
-            tool_results_text = "\n".join(new_results)
+        # if there are no more tool calls, the LLM gave its final answer
+        if not next_tool_calls:
+            final_answer = step_reply
+            break
 
-            if not any(_is_tool_error(r) for r in new_results):
-                all_ok = True
-                # Store the successful resolution for error‑driven learning
-                _store_failure(
-                    user_input,
-                    f"Attempt {attempt+1} success",
-                    original_error or "(first error)",
-                    f"Correct approach found:\n{tool_results_text}"
-                )
-                break
+        # execute all new tool calls
+        round_count += 1
+        next_results: list[str] = []
+        has_errors = False
+        for tc2 in next_tool_calls:
+            action = tc2.get("action", "")
+            args = tc2.get("args", "")
+            if not isinstance(args, str):
+                args = str(args)
+            result2 = _run_tool(action, args)
+            console.print(Panel(result2[:2000], title=f"Result of {action}", border_style="yellow"))
+            next_results.append(f"- `{action}({args!r})` returned:\n{result2[:2000]}")
+            tasks.mark_first_pending_done()
+            if tasks.tasks:
+                console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
+            if _is_tool_error(result2):
+                has_errors = True
+        tool_results_text = "\n".join(next_results)
+        # Update the LLM's previous output so the next iteration sees the new results
+        current_reply = step_reply
 
-    if all_ok:
-        # multi‑step loop: keep asking LLM for next action until it's done
-        round_limit = MAX_STEPS_PER_TURN
-        round_count = 0
-        final_answer: str | None = None
+    if final_answer is None:
+        # Fallback if the loop exited without a final answer
+        final_answer = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
+    elif len(final_answer.strip()) < 10:
+        final_answer = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
 
-        while round_count < round_limit:
-            summary_messages: list[dict[str, str]] = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are Kyrozen, an intelligent AI assistant. "
-                        "You have just obtained the following information by running tools. "
-                        "If more steps are needed to satisfy the user request, output the next Action block. "
-                        "Otherwise, output only a plain final answer."
-                    )
-                },
-                {"role": "system", "content": f"You are working inside {os.getcwd()}."},
-                {"role": "user", "content": user_input},
-                {"role": "assistant", "content": response_text},
-                {
-                    "role": "user",
-                    "content": (
-                        f"The tools returned:\n{tool_results_text}\n\n"
-                        "Please continue if there are remaining steps, or respond with the final answer.\n"
-                        "If you have completed a task, you **must** output `TaskDone: <index>` "
-                        "(replace index with the zero‑based index) **before** the next Action block. "
-                        "Do not omit the `TaskDone:` line."
-                    )
-                }
-            ]
-            step_reply = _call_llm_with_spinner(summary_messages).strip()
-            turn_prompt_total += _last_prompt_tokens
-            turn_completion_total += _last_completion_tokens
-            if not step_reply:
-                break
-
-            # let the tasks manager know about any TaskDone/TaskList in this reply
-            tasks.from_llm_block(step_reply)
-            tasks.mark_done_from_text(step_reply)
-
-            # extract tool calls for the next step
-            next_tool_calls = _collect_tool_calls(step_reply)
-
-            # if there are no more tool calls, the LLM gave its final answer
-            if not next_tool_calls:
-                final_answer = step_reply
-                break
-
-            # execute all new tool calls
-            round_count += 1
-            next_results: list[str] = []
-            for tc2 in next_tool_calls:
-                action = tc2.get("action", "")
-                args = tc2.get("args", "")
-                if not isinstance(args, str):
-                    args = str(args)
-                result2 = _run_tool(action, args)
-                console.print(Panel(result2[:2000], title=f"Result of {action}", border_style="yellow"))
-                next_results.append(f"- `{action}({args!r})` returned:\n{result2[:2000]}")
-                tasks.mark_first_pending_done()
-                if tasks.tasks:
-                    console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
-            tool_results_text = "\n".join(next_results)
-            # Update the LLM's previous output so the next iteration sees the new results
-            response_text = step_reply
-
-        if final_answer is None:
-            # Fallback if the loop exited without a final answer
-            final_answer = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
-        elif len(final_answer.strip()) < 10:
-            final_answer = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
-
-        # Also detect user correction (e.g., "not correct", "you misunderstood")
-        correction_keywords = ["not correct", "you misunderstood", "wrong", "incorrect", "fix it"]
-        if any(kw in user_input.lower() for kw in correction_keywords):
-            _store_failure(
-                user_input,
-                response_text[:200],
-                "User indicated previous answer was wrong",
-                final_answer[:200] + "..."
-            )
-        elapsed = time.time() - turn_start
-        _turn_cost_log.append({
-            "tokens": turn_prompt_total + turn_completion_total,
-            "time": elapsed,
-            "tool_calls": len(tool_calls)
-        })
-        _maybe_trigger_reflection_after_complex_task(len(tool_calls))
-        return final_answer
-    else:
-        # Store failure in memory
-        first_error = results[0] if results else "(no output)"
-        _store_failure(user_input, response_text[:200], first_error, "After retries, gave suggestions")
-        elapsed = time.time() - turn_start
-        _turn_cost_log.append({
-            "tokens": turn_prompt_total + turn_completion_total,
-            "time": elapsed,
-            "tool_calls": len(tool_calls)
-        })
-        if tool_was_search:
-            suggestions = (
-                "Try a different query (rephrase the question)."
-            )
-        else:
-            suggestions = (
-                "Suggestions:\n"
-                "- Make sure the path is enclosed in double quotes (e.g. `cd \"a( b)\"`).\n"
-                "- Check that the directory exists.\n"
-                "- Run a simpler command first (`pwd`, `ls`) to verify location.\n"
-                "- Use `/quit` to exit, fix the issue, then restart."
-            )
-        return (
-            f"After {MAX_RETRIES} attempts the tool(s) still failed. "
-            f"Last output:\n{tool_results_text}\n\n{suggestions}"
+    # Also detect user correction (e.g., "not correct", "you misunderstood")
+    correction_keywords = ["not correct", "you misunderstood", "wrong", "incorrect", "fix it"]
+    if any(kw in user_input.lower() for kw in correction_keywords):
+        _store_failure(
+            user_input,
+            current_reply[:200],
+            "User indicated previous answer was wrong",
+            final_answer[:200] + "..."
         )
+    elapsed = time.time() - turn_start
+    _turn_cost_log.append({
+        "tokens": turn_prompt_total + turn_completion_total,
+        "time": elapsed,
+        "tool_calls": len(tool_calls)
+    })
+    _maybe_trigger_reflection_after_complex_task(len(tool_calls))
+    return final_answer
 
 
 def _split_reply(text: str) -> tuple[str, str]:
