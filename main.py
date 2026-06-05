@@ -6,6 +6,10 @@ Kyrozen: self-learning AI Agent powered by DeepSeek API + tools.
 import pathlib
 import shutil
 import sys
+import warnings
+
+# Suppress DeprecationWarning for datetime.utcnow()
+warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*datetime.utcnow.*")
 
 # Delete stale __pycache__ before any imports to avoid loading deprecated bytecode
 for p in pathlib.Path(__file__).parent.rglob("__pycache__"):
@@ -200,7 +204,6 @@ def _run_regression_tests() -> bool:
 
         fn = AVAILABLE_TOOLS.get(action)
         if fn is None:
-            console.print(f"[red]Regression FAIL: tool '{action}' not found[/red]")
             all_pass = False
             continue
         try:
@@ -1280,7 +1283,6 @@ def _auto_debug_tool() -> None:
 def _background_learning_loop() -> None:
     """Enhanced loop with consolidation, reflection, tool review, auto‑inquiry."""
     global _last_user_interaction
-    bg_console.print("[dim]Background learning started.[/dim]")
     while True:
         time.sleep(120)
         try:
@@ -1291,6 +1293,7 @@ def _background_learning_loop() -> None:
             if idle_duration < 60:
                 continue
 
+            bg_console.print("[dim]Learning...[/dim]")
             _auto_learn_conversations()
             _load_project_files_into_memory()
             _age_out_old_coded_entries()

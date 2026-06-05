@@ -2,8 +2,11 @@
 Long-term memory for the AI agent (ChromaDB if available, else in‑memory).
 """
 
+import warnings
 import uuid
 from datetime import datetime
+
+warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*datetime.utcnow.*")
 
 try:
     import chromadb
@@ -79,7 +82,10 @@ class MemoryBank:
                 )
                 docs = result.get("documents")
                 if docs and len(docs) > 0:
-                    return list(docs[0]) if isinstance(docs[0], list) else [docs[0]]
+                    first = docs[0]
+                    if first is None:
+                        return []
+                    return list(first) if isinstance(first, list) else [first]
                 return []
             except Exception:
                 return []
