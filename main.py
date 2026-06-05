@@ -3,6 +3,14 @@ Kyrozen: self-learning AI Agent powered by DeepSeek API + tools.
 (Run `python main.py` to launch the agent)
 """
 
+import pathlib
+import shutil
+import sys
+
+# Delete stale __pycache__ before any imports to avoid loading deprecated bytecode
+for p in pathlib.Path(__file__).parent.rglob("__pycache__"):
+    shutil.rmtree(p, ignore_errors=True)
+
 import json
 import os
 import re
