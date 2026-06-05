@@ -1241,6 +1241,10 @@ def _background_learning_loop() -> None:
             now = time.time()
             idle_duration = now - _last_user_interaction
 
+            # Skip heavy background work if the user has been active within the last minute
+            if idle_duration < 60:
+                continue
+
             _auto_learn_conversations()
             _load_project_files_into_memory()
             _age_out_old_coded_entries()
@@ -1295,9 +1299,8 @@ def main() -> None:
     if deepseek_client is None:
         console.print("Cannot start without an API key.", style="red")
         sys.exit(1)
-    console.print("[yellow]Loading project files...[/yellow]")
-    _load_project_files_into_memory()
-    console.print("[green]Project files loaded.[/green]")
+    threading.Thread(target=_load_project_files_into_memory, daemon=True).start()
+    console.print("[yellow]Loading project files in background...[/yellow]")
 
     # Start background learning daemon
     threading.Thread(target=_background_learning_loop, daemon=True).start()
