@@ -10,11 +10,9 @@ import tempfile
 import shutil
 from typing import Any
 
+import requests
 import warnings
-
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", category=RuntimeWarning)
-    from ddgs import DDGS
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
 # ---- Safety: block dangerous shell commands ----
@@ -115,47 +113,39 @@ def search_web(args: str) -> str:
     if not query:
         return "Search Error: query is empty."
 
-    # Try primary backend first, fall back to HTML scraping
-    for backend in (None, "html"):
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", RuntimeWarning)
-                ddgs = DDGS(
-                    headers={
-                        "User-Agent": (
-                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Chrome/133.0.6943.126 Safari/537.36"
-                        )
-                    }
-                )
-                results = list(
-                    ddgs.text(
-                        query,
-                        region="wt-wt",
-                        safesearch="off",
-                        backend=backend,
-                        max_results=5,
-                    )
-                )
-            if results:
-                break
-        except Exception:
-            results = []
-            continue
-    else:
-        # Both backends failed
-        return "Search temporarily unavailable. Please try again or rephrase the query."
+    url = "https://api.duckduckgo.com/"
+    params = {
+        "q": query,
+        "format": "json",
+        "no_html": 1,
+        "skip_disambig": 1,
+    }
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        return f"Search temporarily unavailable: {e}. Please try again or rephrase the query."
 
+    results = []
+    abstract = data.get("AbstractText", "")
+    source = data.get("AbstractSource", "")
+    if abstract:
+        results.append(f"Abstract: {abstract}")
+        if source:
+            results.append(f"Source: {source}")
+    for topic in data.get("RelatedTopics", []):
+        if isinstance(topic, dict):
+            text = topic.get("Text", "")
+            url2 = topic.get("FirstURL", "")
+            if text:
+                results.append(f"- {text}")
+                if url2:
+                    results.append(f"  URL: {url2}")
     if not results:
         return "No search results found. Please try a different query."
 
-    lines = []
-    for r in results:
-        title = r.get("title", "")
-        snippet = r.get("body", "")
-        lines.append(f"- Title: {title}\n  Snippet: {snippet}")
-    return "\n\n".join(lines)
+    return "\n".join(results)
 
 
 def find_files(args: str) -> str:
