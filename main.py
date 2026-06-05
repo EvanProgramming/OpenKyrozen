@@ -887,6 +887,7 @@ def _extract_json_objects(text: str) -> list[dict]:
 
 def _collect_tool_calls(text: str) -> list[dict]:
     calls: list[dict] = []
+    # 1. standard triple‑backtick block
     pattern = r"Action:\s*```(?:json)?\s*([\s\S]*?)\s*```"
     for match in re.finditer(pattern, text, re.DOTALL):
         raw = match.group(1).strip()
@@ -898,6 +899,19 @@ def _collect_tool_calls(text: str) -> list[dict]:
         if isinstance(data, dict) and "action" in data and _is_valid_action(data.get("action")):
             calls.append(data)
 
+    # 2. plain “Action: { … }” without backticks
+    plain_pattern = r"Action:\s*(?:\n)?\s*(\{[\s\S]*?\})"
+    for match in re.finditer(plain_pattern, text, re.DOTALL):
+        raw = match.group(1).strip()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and "action" in data and _is_valid_action(data.get("action")):
+            if data not in calls:
+                calls.append(data)
+
+    # 3. extract any JSON dictionary from anywhere (fallback)
     for obj in _extract_json_objects(text):
         if isinstance(obj, dict) and "action" in obj and _is_valid_action(obj.get("action")):
             if obj not in calls:
@@ -1165,8 +1179,8 @@ def _chat_turn(user_input: str) -> str:
                 "content": (
                     "You are Kyrozen, an intelligent AI assistant. "
                     "You have just obtained the following information by running tools. "
-                    "Now produce a clear, natural answer to the user's original request. "
-                    "Do **not** output any Action, JSON, or tool calls – only plain text."
+                    "If more steps are needed to satisfy the user request, output the next Action block. "
+                    "Otherwise, output only a plain final answer."
                 )
             },
             {"role": "system", "content": f"You are working inside {os.getcwd()}."},
@@ -1176,7 +1190,7 @@ def _chat_turn(user_input: str) -> str:
                 "role": "user",
                 "content": (
                     f"The tools returned:\n{tool_results_text}\n\n"
-                    "Please respond directly with the analysis the user asked for."
+                    "Please continue if there are remaining steps, or respond with the final answer."
                 )
             }
         ]
@@ -1478,6 +1492,15 @@ def main() -> None:
         if tasks.tasks:
             console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
             print()
+
+        # If the assistant’s reply itself contains further Action blocks, auto‑continue
+        # (limited to avoid infinite loops)
+        if not user_input.startswith("/"):  # skip meta‑commands
+            potential_actions = _collect_tool_calls(reply)
+            if potential_actions:
+                # treat the reply as a new user input (the LLM is effectively speaking for itself)
+                user_input = reply
+                continue
 
 
 if __name__ == "__main__":
