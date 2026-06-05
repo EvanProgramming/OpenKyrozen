@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 import datetime
+UTC = datetime.timezone.utc
 from pathlib import Path
 from typing import Any
 
