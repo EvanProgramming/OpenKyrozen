@@ -60,6 +60,7 @@ bg_console = Console(stderr=True)
 MODEL_NAME = "deepseek-chat"
 SHORT_TERM_CAP = 16
 MAX_TOOL_RETRIES = 3
+MAX_STEPS_PER_TURN = 5           # how many tool‑call rounds the LLM may perform in one user turn
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
 IDLE_CONSOLIDATION_TIMEOUT = 60   # 1 minute
 
@@ -1248,35 +1249,77 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 break
 
     if all_ok:
-        summary_messages: list[dict[str, str]] = [
-            {
-                "role": "system",
-                "content": (
-                    "You are Kyrozen, an intelligent AI assistant. "
-                    "You have just obtained the following information by running tools. "
-                    "If more steps are needed to satisfy the user request, output the next Action block. "
-                    "Otherwise, output only a plain final answer."
-                )
-            },
-            {"role": "system", "content": f"You are working inside {os.getcwd()}."},
-            {"role": "user", "content": user_input},
-            {"role": "assistant", "content": response_text},
-            {
-                "role": "user",
-                "content": (
-                    f"The tools returned:\n{tool_results_text}\n\n"
-                    "Please continue if there are remaining steps, or respond with the final answer.\n"
-                    "If you have completed a task, you **must** output `TaskDone: <index>` "
-                    "(replace index with the zero‑based index) **before** the next Action block. "
-                    "Do not omit the `TaskDone:` line."
-                )
-            }
-        ]
-        final_response = _call_llm_with_spinner(summary_messages).strip()
-        turn_prompt_total += _last_prompt_tokens
-        turn_completion_total += _last_completion_tokens
-        if not final_response or len(final_response) < 10:
-            final_response = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
+        # multi‑step loop: keep asking LLM for next action until it's done
+        round_limit = MAX_STEPS_PER_TURN
+        round_count = 0
+        final_answer: str | None = None
+
+        while round_count < round_limit:
+            summary_messages: list[dict[str, str]] = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Kyrozen, an intelligent AI assistant. "
+                        "You have just obtained the following information by running tools. "
+                        "If more steps are needed to satisfy the user request, output the next Action block. "
+                        "Otherwise, output only a plain final answer."
+                    )
+                },
+                {"role": "system", "content": f"You are working inside {os.getcwd()}."},
+                {"role": "user", "content": user_input},
+                {"role": "assistant", "content": response_text},
+                {
+                    "role": "user",
+                    "content": (
+                        f"The tools returned:\n{tool_results_text}\n\n"
+                        "Please continue if there are remaining steps, or respond with the final answer.\n"
+                        "If you have completed a task, you **must** output `TaskDone: <index>` "
+                        "(replace index with the zero‑based index) **before** the next Action block. "
+                        "Do not omit the `TaskDone:` line."
+                    )
+                }
+            ]
+            step_reply = _call_llm_with_spinner(summary_messages).strip()
+            turn_prompt_total += _last_prompt_tokens
+            turn_completion_total += _last_completion_tokens
+            if not step_reply:
+                break
+
+            # let the tasks manager know about any TaskDone/TaskList in this reply
+            tasks.from_llm_block(step_reply)
+            tasks.mark_done_from_text(step_reply)
+
+            # extract tool calls for the next step
+            next_tool_calls = _collect_tool_calls(step_reply)
+
+            # if there are no more tool calls, the LLM gave its final answer
+            if not next_tool_calls:
+                final_answer = step_reply
+                break
+
+            # execute all new tool calls
+            round_count += 1
+            next_results: list[str] = []
+            for tc2 in next_tool_calls:
+                action = tc2.get("action", "")
+                args = tc2.get("args", "")
+                if not isinstance(args, str):
+                    args = str(args)
+                result2 = _run_tool(action, args)
+                console.print(Panel(result2[:2000], title=f"Result of {action}", border_style="yellow"))
+                next_results.append(f"- `{action}({args!r})` returned:\n{result2[:2000]}")
+                tasks.mark_first_pending_done()
+                if tasks.tasks:
+                    console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
+            tool_results_text = "\n".join(next_results)
+            # Update the LLM's previous output so the next iteration sees the new results
+            response_text = step_reply
+
+        if final_answer is None:
+            # Fallback if the loop exited without a final answer
+            final_answer = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
+        elif len(final_answer.strip()) < 10:
+            final_answer = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
 
         # Also detect user correction (e.g., "not correct", "you misunderstood")
         correction_keywords = ["not correct", "you misunderstood", "wrong", "incorrect", "fix it"]
@@ -1285,7 +1328,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 user_input,
                 response_text[:200],
                 "User indicated previous answer was wrong",
-                final_response[:200] + "..."
+                final_answer[:200] + "..."
             )
         elapsed = time.time() - turn_start
         _turn_cost_log.append({
@@ -1294,7 +1337,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             "tool_calls": len(tool_calls)
         })
         _maybe_trigger_reflection_after_complex_task(len(tool_calls))
-        return final_response
+        return final_answer
     else:
         # Store failure in memory
         first_error = results[0] if results else "(no output)"
