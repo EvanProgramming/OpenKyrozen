@@ -1435,6 +1435,13 @@ def main() -> None:
 
         if not user_input:
             continue
+
+        _is_auto_continue = False
+
+        # clear tasks for a new user request (skip during auto‑continue)
+        if not _is_auto_continue and not user_input.startswith("/"):
+            tasks.tasks.clear()
+
         if user_input.lower() in ("/quit", "/exit"):
             console.print("[red]Goodbye.[/red]")
             break
@@ -1499,6 +1506,7 @@ def main() -> None:
             print()
 
         # auto‑continue: process further Action blocks without user input
+        _is_auto_continue = True
         _auto_continue_limit = 5
         _original_user_input = user_input
         while _auto_continue_limit > 0 and not _original_user_input.startswith("/"):
@@ -1532,6 +1540,7 @@ def main() -> None:
                 console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
                 print()
 
+        _is_auto_continue = False
 
 if __name__ == "__main__":
     main()

@@ -352,6 +352,35 @@ def analyze_remote_repo(args: str) -> str:
         return f"Error analyzing repository: {e}"
 
 
+def read_webpage(args: str) -> str:
+    """
+    Fetch the content of a web page and return its plain‑text body.
+    Args format: "URL" (e.g., "https://example.com/page")
+    """
+    import html
+    import re
+    import requests
+    url = args.strip()
+    if not url.startswith("http"):
+        return "Error: read_webpage requires a valid URL."
+    try:
+        headers = {"User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/133.0.6943.126 Safari/537.36"
+        )}
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        text = re.sub(r"<[^>]*>", "", resp.text)
+        text = html.unescape(text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) > 5000:
+            text = text[:5000] + "\n[...truncated...]"
+        return text
+    except requests.RequestException as e:
+        return f"Error fetching webpage: {e}"
+
+
 AVAILABLE_TOOLS: dict[str, Any] = {
     "write_file": write_file,
     "read_file": read_file,
@@ -363,4 +392,5 @@ AVAILABLE_TOOLS: dict[str, Any] = {
     "git_status": git_status,
     "execute_terminal_command": execute_terminal_command,
     "analyze_remote_repo": analyze_remote_repo,
+    "read_webpage": read_webpage,
 }
