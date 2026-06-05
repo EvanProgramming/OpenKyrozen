@@ -1182,37 +1182,6 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             # No tools needed – return plain answer (maybe trigger reflection)
             return response_text
 
-    # ---- Validate action names (block unknown tools) ----
-    _VALID_ACTIONS = set(AVAILABLE_TOOLS.keys()) | set(TOOL_ALIASES.keys())
-    if tool_calls:
-        _unknown = [tc.get("action","") for tc in tool_calls if tc.get("action","") not in _VALID_ACTIONS]
-        if _unknown:
-            messages.append({
-                "role": "user",
-                "content": (
-                    f"The following action name(s) are not valid: {', '.join(_unknown)}. "
-                    f"The only valid actions are: {', '.join(sorted(_VALID_ACTIONS))}. "
-                    "Please output a corrected Action block now."
-                )
-            })
-            response_text = _call_llm_with_spinner(messages).strip()
-            turn_prompt_total += _last_prompt_tokens
-            turn_completion_total += _last_completion_tokens
-            if not response_text or not response_text.strip():
-                messages.append({
-                    "role": "user",
-                    "content": "System: You returned nothing. Please output a JSON Action block now."
-                })
-                response_text = _call_llm_with_spinner(messages).strip()
-                turn_prompt_total += _last_prompt_tokens
-                turn_completion_total += _last_completion_tokens
-            tasks.from_llm_block(response_text)
-            tasks.mark_done_from_text(response_text)
-            response_text_clean = re.sub(r'(?:TaskList:\s*```(?:json)?[\s\S]*?```|TaskDone:\s*\d+)', '', response_text).strip()
-            if not response_text_clean:
-                response_text_clean = response_text
-            response_text = response_text_clean
-            tool_calls = _collect_tool_calls(response_text)
 
     results: list[str] = []
     for tc in tool_calls:
@@ -1285,26 +1254,6 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         # extract tool calls for the next step
         next_tool_calls = _collect_tool_calls(step_reply)
 
-        # ---- Validate action names (block unknown tools) ----
-        if next_tool_calls:
-            _unknown = [tc.get("action","") for tc in next_tool_calls if tc.get("action","") not in _VALID_ACTIONS]
-            if _unknown:
-                summary_messages.append({
-                    "role": "user",
-                    "content": (
-                        f"The following action name(s) are not valid: {', '.join(_unknown)}. "
-                        f"The only valid actions are: {', '.join(sorted(_VALID_ACTIONS))}. "
-                        "Please output a corrected Action block now."
-                    )
-                })
-                step_reply = _call_llm_with_spinner(summary_messages).strip()
-                turn_prompt_total += _last_prompt_tokens
-                turn_completion_total += _last_completion_tokens
-                if not step_reply:
-                    break
-                tasks.from_llm_block(step_reply)
-                tasks.mark_done_from_text(step_reply)
-                next_tool_calls = _collect_tool_calls(step_reply)
 
         # if there are no more tool calls, the LLM gave its final answer
         if not next_tool_calls:
