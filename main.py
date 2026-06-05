@@ -23,6 +23,19 @@ from rich import print as rprint
 from memory import MemoryBank
 from tools import AVAILABLE_TOOLS
 
+# aliases for flexible action recognition
+TOOL_ALIASES: dict[str, str] = {
+    "bash": "run_cmd",
+    "shell": "run_cmd",
+    "sh": "run_cmd",
+}
+
+def _is_valid_action(name: str | None) -> bool:
+    if not name:
+        return False
+    return name in AVAILABLE_TOOLS or name in TOOL_ALIASES
+
+
 console = Console()
 bg_console = Console(stderr=True)
 
@@ -672,6 +685,8 @@ def _system_prompt(tools_list: str) -> str:
 ## Available Tools:
 {tools_list}
 
+🌐 **Action name rules:** The only defined action names are those listed above. Do **not** use `"bash"`, `"shell"`, or any other name – always use `"run_cmd"` for command execution.
+
 ## Current working directory
 You are currently inside the project root directory of the repository the user is working in.  Relative paths (like "README.md" or "main.py") will be resolved correctly.  You can use `read_file`, `write_file`, `list_dir`, `find_files`, `run_cmd`, etc. **without needing the user to provide a path**.  Do **not** ask the user to supply a local path or a remote URL unless you intend to use the `analyze_remote_repo` tool to clone an external repository.
 
@@ -771,7 +786,7 @@ def parse_json_from_response(text: str) -> dict | None:
             raw = raw.rstrip("`").strip()
             try:
                 data = json.loads(raw)
-                if isinstance(data, dict) and "action" in data and data.get("action") in AVAILABLE_TOOLS:
+                if isinstance(data, dict) and "action" in data and _is_valid_action(data.get("action")):
                     return data
             except json.JSONDecodeError:
                 continue
@@ -783,7 +798,7 @@ def parse_json_from_response(text: str) -> dict | None:
             if end != -1 and end > start:
                 raw = text[start:end + 1]
                 data = json.loads(raw)
-                if isinstance(data, dict) and "action" in data and data.get("action") in AVAILABLE_TOOLS:
+                if isinstance(data, dict) and "action" in data and _is_valid_action(data.get("action")):
                     return data
     except (json.JSONDecodeError, ValueError):
         pass
@@ -830,11 +845,11 @@ def _collect_tool_calls(text: str) -> list[dict]:
             data = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        if isinstance(data, dict) and "action" in data and data.get("action") in AVAILABLE_TOOLS:
+        if isinstance(data, dict) and "action" in data and _is_valid_action(data.get("action")):
             calls.append(data)
 
     for obj in _extract_json_objects(text):
-        if isinstance(obj, dict) and "action" in obj and obj.get("action") in AVAILABLE_TOOLS:
+        if isinstance(obj, dict) and "action" in obj and _is_valid_action(obj.get("action")):
             if obj not in calls:
                 calls.append(obj)
 
@@ -842,9 +857,21 @@ def _collect_tool_calls(text: str) -> list[dict]:
 
 
 def _run_tool(action: str, args: str) -> str:
+    # Map aliases
+    action = TOOL_ALIASES.get(action, action)
     fn = AVAILABLE_TOOLS.get(action)
     if not fn:
         return f"Error: unknown tool '{action}'"
+    # If args is a dict (e.g., from LLM using JSON object), convert appropriately
+    if isinstance(args, dict):
+        if action in ("run_cmd", "execute_terminal_command"):
+            # Extract the command string from common keys
+            cmd = args.get("cmd") or args.get("command") or ""
+            args = cmd
+        else:
+            # fallback: convert dict to its JSON representation (may not work)
+            import json
+            args = json.dumps(args)
     start = time.time()
     try:
         result = str(fn(args))
