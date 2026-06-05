@@ -978,7 +978,9 @@ def _is_tool_error(result: str) -> bool:
         low.startswith("exit code") or
         "no such file" in low or
         "syntax error" in low or
-        "not found" in low
+        "not found" in low or
+        "no search results" in low or
+        "search temporarily unavailable" in low
     )
 
 

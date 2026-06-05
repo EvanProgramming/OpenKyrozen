@@ -11,9 +11,10 @@ import shutil
 from typing import Any
 
 import warnings
-warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-from ddgs import DDGS
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", category=RuntimeWarning)
+    from ddgs import DDGS
 
 
 # ---- Safety: block dangerous shell commands ----
@@ -119,7 +120,15 @@ def search_web(args: str) -> str:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", RuntimeWarning)
-                ddgs = DDGS()
+                ddgs = DDGS(
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/133.0.6943.126 Safari/537.36"
+                        )
+                    }
+                )
                 results = list(
                     ddgs.text(
                         query,
