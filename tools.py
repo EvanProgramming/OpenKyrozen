@@ -45,7 +45,6 @@ def write_file(args: str) -> str:
         raw_path, content = parts[0].strip(), parts[1]
         path = os.path.expanduser(raw_path)
         abs_path = os.path.abspath(path)
-        print(f"[write_file] absolute path: {abs_path}")
         os.makedirs(os.path.dirname(abs_path) or ".", exist_ok=True)
         with open(abs_path, "w", encoding="utf-8") as f:
             f.write(content)

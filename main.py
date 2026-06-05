@@ -382,7 +382,7 @@ def _consolidate_memories() -> None:
         return
 
     # Keep only non‑trivial logs
-    non_trivial = [r for r in recent if not r.startswith("FILE:")]
+    non_trivial = [r for r in recent if r and not r.startswith("FILE:")]
     if len(non_trivial) < 3:
         return
 
@@ -625,6 +625,9 @@ def _load_project_files_into_memory() -> None:
             sys.exit(0)
         except Exception:
             pass
+    # restore stdout (unreachable, but for safety)
+    sys.stdout.close()
+    sys.stdout = _old_stdout
 
 
 def _self_update() -> str:
@@ -1203,7 +1206,7 @@ def _auto_learn_conversations() -> None:
         return
     # Remove system‑internal logs that shouldn't be learned
     recent = [
-        log for log in recent
+        log for log in recent if log
         if not log.startswith("FACT:")
         and not log.startswith("LEARNED:")
         and not log.startswith("FILE:")
@@ -1283,6 +1286,9 @@ def _auto_debug_tool() -> None:
 def _background_learning_loop() -> None:
     """Enhanced loop with consolidation, reflection, tool review, auto‑inquiry."""
     global _last_user_interaction
+    # suppress stdout in background thread to keep terminal clean
+    _old_stdout = sys.stdout
+    sys.stdout = open(os.devnull, 'w')
     while True:
         time.sleep(120)
         try:
@@ -1387,6 +1393,10 @@ def main() -> None:
             update_result = _self_update()
             console.print(Panel(update_result, title="Update", border_style="blue"))
             continue
+
+import os
+import io
+import contextlib
 
         # Auto‑patching: detect new technology mentions
         _auto_patch_new_technology(user_input)
