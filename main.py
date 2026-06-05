@@ -1026,6 +1026,23 @@ def _get_llm_response(messages: list[dict[str, str]]) -> str:
         return f"[DeepSeek Error] {e}"
 
 
+def _requires_tool_action(text: str) -> bool:
+    """Return True if the user text looks like a request that needs tool execution (search, write, etc.)."""
+    indicators = [
+        "search", "research", "find", "compare", "write", "save", "run", "execute",
+        "create", "make", "table", "file", "folder", "open", "read", "list", "download",
+        "clone", "update", "pull", "edit", "modify", "move", "copy", "delete",
+        "show", "check", "get", "fetch", "web", "internet", "online", "price",
+        "spec", "specification", "review", "information", "about", "difference",
+        "cost", "taobao", "jd", "how", "what", "which", "where", "why", "when",
+    ]
+    text_lower = text.lower()
+    # Skip very short commands or greetings
+    if len(text.split()) < 2:
+        return False
+    return any(ind in text_lower for ind in indicators)
+
+
 def _is_tool_error(result: str) -> bool:
     low = result.strip().lower()
     return (
