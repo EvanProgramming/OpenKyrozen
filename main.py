@@ -1241,8 +1241,8 @@ def _background_learning_loop() -> None:
             now = time.time()
             idle_duration = now - _last_user_interaction
 
-            # Skip heavy background work if the user has been active within the last minute
-            if idle_duration < 60:
+            # Skip heavy background work if the user has been active within the last 5 minutes
+            if idle_duration < 300:
                 continue
 
             _auto_learn_conversations()
