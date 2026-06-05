@@ -1042,7 +1042,7 @@ def _chat_turn(user_input: str) -> str:
         if not isinstance(args, str):
             args = str(args)
         result = _run_tool(action, args)
-        print(f"[Tool] {action}({args!r}) → {result[:200]}...")
+        # tool call result suppressed
         results.append(f"- `{action}({args!r})` returned:\n{result[:2000]}")
     tool_results_text = "\n".join(results)
 
@@ -1293,7 +1293,7 @@ def _background_learning_loop() -> None:
             if idle_duration < 60:
                 continue
 
-            bg_console.print("[dim]Learning...[/dim]")
+            # silently learning
             _auto_learn_conversations()
             _load_project_files_into_memory()
             _age_out_old_coded_entries()
