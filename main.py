@@ -331,9 +331,8 @@ def _maybe_trigger_reflection() -> None:
         answer = _get_llm_response(messages).strip()
         if answer and answer not in ("—", ""):
             memory_bank.add_log(f"REFLECTION:\n{answer}")
-            bg_console.print("[dim]Post‑task reflection stored.[/dim]")
-    except Exception as e:
-        bg_console.print(f"[dim]Reflection error: {e}[/dim]")
+    except Exception:
+        pass
 
 
 def _maybe_strategy_distillation() -> None:
@@ -1286,11 +1285,6 @@ def _auto_debug_tool() -> None:
 def _background_learning_loop() -> None:
     """Enhanced loop with consolidation, reflection, tool review, auto‑inquiry."""
     global _last_user_interaction
-    # Suppress stdout and stderr in background thread to keep terminal clean
-    import sys as _sys
-    import os as _os
-    _sys.stdout = open(_os.devnull, 'w')
-    _sys.stderr = open(_os.devnull, 'w')
     while True:
         time.sleep(120)
         try:
@@ -1362,9 +1356,8 @@ def main() -> None:
     threading.Thread(target=_background_learning_loop, daemon=True).start()
 
     while True:
-        console.print("[bold cyan]You: [/bold cyan]", end="")
         try:
-            user_input = input().strip()
+            user_input = console.input("[bold cyan]You: [/bold cyan]").strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[red]Goodbye.[/red]")
             sys.exit(0)
