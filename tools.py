@@ -108,17 +108,24 @@ def search_web(args: str) -> str:
     """
     Search the internet for real-time information.
     Args format: "query" (e.g., "latest bitcoin price", "who won the super bowl").
-    Returns Title + Snippet for top 3 results. Use for current events, prices, or unknown facts.
+    Returns Title + Snippet for top 5 results. Use for current events, prices, or unknown facts.
     """
     query = (args or "").strip()
     if not query:
         return "Search Error: query is empty."
 
     try:
-        ddgs = DDGS()
-        results = list(ddgs.text(query, max_results=3))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            ddgs = DDGS(headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/133.0.6943.126 Safari/537.36"
+                )
+            })
+        results = list(ddgs.text(query, max_results=5))
     except Exception as e:
-        # Do not log to console; return a clear message for the agent.
         return f"Search temporarily unavailable: {e}. Please try again or rephrase the query."
 
     if not results:
