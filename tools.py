@@ -118,109 +118,132 @@ def search_web(args: str) -> str:
     if not query:
         return "Search Error: query is empty."
 
+    # ---- helper to format result dicts ----
+    def _fmt(results: list[dict]) -> str:
+        lines = []
+        for r in results:
+            title = r.get("title", "")
+            snippet = r.get("body", "")
+            url = r.get("url", "")
+            line = f"- Title: {title}"
+            if snippet:
+                line += f"\n  Snippet: {snippet}"
+            if url:
+                line += f"\n  URL: {url}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    header_details = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/133.0.6943.126 Safari/537.36"
+        ),
+    }
+
     # ---- attempt 1: ddgs library (rename warning ignored) ----
     try:
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             from ddgs import DDGS
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/133.0.6943.126 Safari/537.36"
-            )
-        }
-        ddgs = DDGS(headers=headers)
+        ddgs = DDGS(headers=header_details)
         results = list(ddgs.text(query, max_results=5, backend="html"))
         if results:
-            lines = []
-            for r in results:
-                title = r.get("title", "")
-                snippet = r.get("body", "")
-                lines.append(f"- Title: {title}")
-                if snippet:
-                    lines.append(f"  Snippet: {snippet}")
-            return "\n".join(lines)
+            return _fmt(results)
     except Exception:
         pass
 
     # ---- attempt 2: DuckDuckGo Lite HTML (GET) ----
     lite_url = f"https://lite.duckduckgo.com/lite/?q={quote(query)}"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/133.0.6943.126 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-    }
     try:
-        resp = requests.get(lite_url, headers=headers, timeout=10)
+        resp = requests.get(lite_url, headers=header_details, timeout=10)
         resp.raise_for_status()
-    except Exception as e:
-        return f"No search results found. Please try a different query. (request error: {e})"
-
-    # parse Lite results
-    titles = re.findall(
-        r'<a[^>]*rel="nofollow"[^>]*>(.*?)</a>',
-        resp.text,
-        re.DOTALL,
-    )
-    snippets = re.findall(
-        r'<td class="result-snippet"[^>]*>(.*?)</td>',
-        resp.text,
-        re.DOTALL,
-    )
-    if titles:
-        lines = []
-        for i, title_html in enumerate(titles[:5]):
-            title = re.sub(r"<[^>]*>", "", title_html).strip()
-            title = html.unescape(title)
-            snippet = ""
-            if i < len(snippets):
-                snip_html = snippets[i]
-                snippet = re.sub(r"<[^>]*>", "", snip_html).strip()
-                snippet = html.unescape(snippet)
-            lines.append(f"- Title: {title}")
-            if snippet:
-                lines.append(f"  Snippet: {snippet}")
-        return "\n".join(lines)
+    except Exception:
+        pass
+    else:
+        titles = re.findall(
+            r'<a[^>]*rel="nofollow"[^>]*>(.*?)</a>',
+            resp.text, re.DOTALL
+        )
+        snippets = re.findall(
+            r'<td class="result-snippet"[^>]*>(.*?)</td>',
+            resp.text, re.DOTALL
+        )
+        if titles:
+            results = []
+            for i, title_html in enumerate(titles[:5]):
+                title = re.sub(r"<[^>]*>", "", title_html).strip()
+                title = html.unescape(title)
+                snippet = ""
+                if i < len(snippets):
+                    snip_html = snippets[i]
+                    snippet = re.sub(r"<[^>]*>", "", snip_html).strip()
+                    snippet = html.unescape(snippet)
+                results.append({"title": title, "body": snippet, "url": ""})
+            if results:
+                return _fmt(results)
 
     # ---- attempt 3: DuckDuckGo HTML (POST) ----
     html_url = "https://html.duckduckgo.com/html/"
     try:
-        data = {"q": query}
-        resp = requests.post(html_url, data=data, headers=headers, timeout=10)
+        resp = requests.post(html_url, data={"q": query}, headers=header_details, timeout=10)
         resp.raise_for_status()
-    except Exception as e:
-        return f"No search results found. Please try a different query. (request error: {e})"
+    except Exception:
+        pass
+    else:
+        titles = re.findall(
+            r'<a[^>]*class="result__a"[^>]*>(.*?)</a>',
+            resp.text, re.DOTALL
+        )
+        snippets = re.findall(
+            r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
+            resp.text, re.DOTALL
+        )
+        if titles:
+            results = []
+            for i, title_html in enumerate(titles[:5]):
+                title = re.sub(r"<[^>]*>", "", title_html).strip()
+                title = html.unescape(title)
+                snippet = ""
+                if i < len(snippets):
+                    snip_html = snippets[i]
+                    snippet = re.sub(r"<[^>]*>", "", snip_html).strip()
+                    snippet = html.unescape(snippet)
+                results.append({"title": title, "body": snippet, "url": ""})
+            if results:
+                return _fmt(results)
 
-    titles = re.findall(
-        r'<a[^>]*class="result__a"[^>]*>(.*?)</a>',
-        resp.text,
-        re.DOTALL,
-    )
-    snippets = re.findall(
-        r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
-        resp.text,
-        re.DOTALL,
-    )
-    if titles:
-        lines = []
-        for i, title_html in enumerate(titles[:5]):
-            title = re.sub(r"<[^>]*>", "", title_html).strip()
-            title = html.unescape(title)
-            snippet = ""
-            if i < len(snippets):
-                snip_html = snippets[i]
-                snippet = re.sub(r"<[^>]*>", "", snip_html).strip()
-                snippet = html.unescape(snippet)
-            lines.append(f"- Title: {title}")
-            if snippet:
-                lines.append(f"  Snippet: {snippet}")
-        return "\n".join(lines)
+    # ---- attempt 4: Google search via googlesearch-python ----
+    try:
+        from googlesearch import search as google_search
+        urls = list(google_search(query, num_results=5))
+        if urls:
+            results = []
+            for url in urls:
+                try:
+                    resp = requests.get(url, headers=header_details, timeout=5)
+                    resp.raise_for_status()
+                except Exception:
+                    results.append({"title": url, "body": "", "url": url})
+                    continue
+                # extract <title> tag
+                title = ""
+                m = re.search(r'<title[^>]*>(.*?)</title>', resp.text, re.DOTALL|re.IGNORECASE)
+                if m:
+                    title = html.unescape(re.sub(r"<[^>]*>", "", m.group(1))).strip()
+                snippet = ""
+                m2 = re.search(
+                    r'<meta\s+name\s*=\s*["\']description["\'][^>]*content\s*=\s*["\']([^"\']*)["\']',
+                    resp.text, re.IGNORECASE
+                )
+                if m2:
+                    snippet = html.unescape(m2.group(1)).strip()
+                results.append({"title": title, "body": snippet, "url": url})
+            if results:
+                return _fmt(results)
+    except Exception:
+        pass
 
     return "No search results found. Please try a different query."
 
