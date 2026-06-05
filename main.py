@@ -82,6 +82,13 @@ class TaskManager:
     def mark_done(self, idx: int) -> None:
         self.set_status(idx, "done")
 
+    def mark_first_pending_done(self) -> None:
+        """Mark the first task whose status is pending as done."""
+        for t in self.tasks:
+            if t["status"] == "pending":
+                t["status"] = "done"
+                break
+
     def format(self) -> str:
         if not self.tasks:
             return "No tasks."
@@ -775,12 +782,10 @@ DefineTool:
 After such definition the new tool will be available for future use.
 
 ### Task management
-When a request involves multiple steps, you **must** output a `TaskList:` block before the first Action. For example:
-TaskList:
-```json
-["Read file", "Analyse data", "Write report"]
-```
-Each index starts at 0. When you complete a step, output `TaskDone: 0` (replace 0 with the step index) **before** the next Action. This lets the system keep the user updated on progress.
+For **every** request that requires multiple steps (e.g., searching, comparing, saving files), you **must** first output a `TaskList:` block containing a JSON array of task descriptions.
+If a request can be done in a single step, you do not need a TaskList.
+When you finish a task **before** taking the next Action, output `TaskDone: <index>` (where <index> is the zero‑based index of the completed task) **exactly** once, on its own line.
+Do **not** forget to output `TaskDone:` – the system uses it to update the progress display.
 
 ### Important reminder
 When the user asks you to analyze the repository, start by running `list_dir('.')` to see the files.  Do **not** ask for a local path or remote URL – you are already in the correct directory.
@@ -1100,6 +1105,7 @@ def _chat_turn(user_input: str) -> str:
         result = _run_tool(action, args)
         console.print(Panel(result[:2000], title=f"Result of {action}", border_style="yellow"))
         results.append(f"- `{action}({args!r})` returned:\n{result[:2000]}")
+        tasks.mark_first_pending_done()
         if tasks.tasks:
             console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
     tool_results_text = "\n".join(results)
@@ -1162,6 +1168,7 @@ def _chat_turn(user_input: str) -> str:
                 result2 = _run_tool(action, args)
                 console.print(Panel(result2[:2000], title=f"Result of {action}", border_style="yellow"))
                 new_results.append(f"- `{action}({args!r})` returned:\n{result2[:2000]}")
+                tasks.mark_first_pending_done()
                 if tasks.tasks:
                     console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
             tool_results_text = "\n".join(new_results)
@@ -1195,7 +1202,10 @@ def _chat_turn(user_input: str) -> str:
                 "role": "user",
                 "content": (
                     f"The tools returned:\n{tool_results_text}\n\n"
-                    "Please continue if there are remaining steps, or respond with the final answer."
+                    "Please continue if there are remaining steps, or respond with the final answer.\n"
+                    "If you have completed a task, you **must** output `TaskDone: <index>` "
+                    "(replace index with the zero‑based index) **before** the next Action block. "
+                    "Do not omit the `TaskDone:` line."
                 )
             }
         ]
