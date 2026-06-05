@@ -48,8 +48,8 @@ class MemoryBank:
 
     def add_log(self, text: str) -> str:
         """Save a text log with a timestamp‑based ID. Returns the assigned ID."""
-        log_id = f"{datetime.now(datetime.UTC).isoformat()}Z_{uuid.uuid4().hex[:8]}"
-        now_ts = datetime.now(datetime.UTC).isoformat()
+        log_id = f"{datetime.now(datetime.timezone.utc).isoformat()}Z_{uuid.uuid4().hex[:8]}"
+        now_ts = datetime.now(datetime.timezone.utc).isoformat()
         if _CHROMADB_AVAILABLE and self._collection is not None:
             try:
                 self._collection.add(
