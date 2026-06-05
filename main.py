@@ -1030,6 +1030,7 @@ def _chat_turn(user_input: str) -> str:
         return "New tool defined. It will be available for future interactions."
 
     tool_calls = _collect_tool_calls(response_text)
+    tool_was_search = any(tc.get("action") == "search_web" for tc in tool_calls)
     if not tool_calls:
         elapsed = time.time() - turn_start
         _turn_cost_log.append({
@@ -1176,14 +1177,21 @@ def _chat_turn(user_input: str) -> str:
             "time": elapsed,
             "tool_calls": len(tool_calls)
         })
+        if tool_was_search:
+            suggestions = (
+                "Try a different query (rephrase the question)."
+            )
+        else:
+            suggestions = (
+                "Suggestions:\n"
+                "- Make sure the path is enclosed in double quotes (e.g. `cd \"a( b)\"`).\n"
+                "- Check that the directory exists.\n"
+                "- Run a simpler command first (`pwd`, `ls`) to verify location.\n"
+                "- Use `/quit` to exit, fix the issue, then restart."
+            )
         return (
             f"After {MAX_RETRIES} attempts the tool(s) still failed. "
-            f"Last output:\n{tool_results_text}\n\n"
-            "Suggestions:\n"
-            "- Make sure the path is enclosed in double quotes (e.g. `cd \"a( b)\"`).\n"
-            "- Check that the directory exists.\n"
-            "- Run a simpler command first (`pwd`, `ls`) to verify location.\n"
-            "- Use `/quit` to exit, fix the issue, then restart."
+            f"Last output:\n{tool_results_text}\n\n{suggestions}"
         )
 
 

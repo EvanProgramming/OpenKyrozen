@@ -109,84 +109,77 @@ def search_web(args: str) -> str:
     Args format: "query" (e.g., "latest bitcoin price", "who won the super bowl").
     Returns Title + Snippet for top 5 results. Use for current events, prices, or unknown facts.
     """
-    import datetime
+    import re
+    import requests
+    import html
+
     query = (args or "").strip()
     if not query:
         return "Search Error: query is empty."
 
-    # Build a list of query variations (including the original) to try automatically.
-    current_year = datetime.datetime.now().year
-    base_queries = [query]
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/133.0.6943.126 Safari/537.36"
+        )
+    }
 
-    # Add common derivatives that tend to yield more web results
-    deriv = [
-        f"{query} {current_year}",
-        f"{query} news",
-        f"{query} today",
-        f"{query} {current_year} news",
+    endpoints = [
+        "https://html.duckduckgo.com/html/",
+        "https://lite.duckduckgo.com/lite/",
     ]
-    for d in deriv:
-        if d not in base_queries:
-            base_queries.append(d)
 
-    for q in base_queries:
-        # Try the ddgs library first (it provides real web search)
+    last_error = ""
+    for ep in endpoints:
         try:
-            # Import inside function to avoid startup failures
-            from ddgs import DDGS
-            ddgs = DDGS(headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/133.0.6943.126 Safari/537.36"
-                )
-            })
-            results = list(ddgs.text(q, max_results=5))
-            if results:
-                lines = []
-                for r in results:
-                    title = r.get("title", "")
-                    snippet = r.get("body", "")
-                    lines.append(f"- Title: {title}\n  Snippet: {snippet}")
-                return "\n\n".join(lines)
-        except Exception:
-            pass  # fall through to next engine/variant
+            data = {"q": query}
+            resp = requests.post(ep, data=data, headers=headers, timeout=10)
+            resp.raise_for_status()
+        except Exception as e:
+            last_error = str(e)
+            continue
 
-        # Fallback to the DuckDuckGo Instant Answer API (limited results)
-        import requests
-        url = "https://api.duckduckgo.com/"
-        params = {
-            "q": q,
-            "format": "json",
-            "no_html": 1,
-            "skip_disambig": 1,
-        }
-        try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            local_results = []
-            abstract = data.get("AbstractText", "")
-            source = data.get("AbstractSource", "")
-            if abstract:
-                local_results.append(f"Abstract: {abstract}")
-                if source:
-                    local_results.append(f"Source: {source}")
-            for topic in data.get("RelatedTopics", []):
-                if isinstance(topic, dict):
-                    text = topic.get("Text", "")
-                    url2 = topic.get("FirstURL", "")
-                    if text:
-                        local_results.append(f"- {text}")
-                        if url2:
-                            local_results.append(f"  URL: {url2}")
-            if local_results:
-                return "\n".join(local_results)
-        except Exception:
-            continue  # try next variant
+        # parse results
+        if "lite" in ep:
+            titles = re.findall(
+                r'<a[^>]*class="result__a"[^>]*>(.*?)</a>',
+                resp.text,
+                re.DOTALL,
+            )
+            snippets = re.findall(
+                r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
+                resp.text,
+                re.DOTALL,
+            )
+        else:
+            titles = re.findall(
+                r'<a[^>]*class="result__a"[^>]*>(.*?)</a>',
+                resp.text,
+                re.DOTALL,
+            )
+            snippets = re.findall(
+                r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
+                resp.text,
+                re.DOTALL,
+            )
 
-    # All variations failed
-    return "No search results found. Please try a different query."
+        if titles:
+            lines = []
+            for i, title_html in enumerate(titles[:5]):
+                title = re.sub(r"<[^>]*>", "", title_html).strip()
+                title = html.unescape(title)
+                snippet = ""
+                if i < len(snippets):
+                    snip_html = snippets[i]
+                    snippet = re.sub(r"<[^>]*>", "", snip_html).strip()
+                    snippet = html.unescape(snippet)
+                lines.append(f"- Title: {title}")
+                if snippet:
+                    lines.append(f"  Snippet: {snippet}")
+            return "\n".join(lines)
+
+    return f"No search results found. Please try a different query. (last error: {last_error})"
 
 
 def find_files(args: str) -> str:
