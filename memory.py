@@ -104,3 +104,13 @@ class MemoryBank:
                 return []
             recent = self._in_memory[-n:]
             return [text for _, text, _ in recent]
+
+    def count_logs(self) -> int:
+        """Return the total number of stored logs."""
+        if _CHROMADB_AVAILABLE and self._collection is not None:
+            try:
+                return self._collection.count()
+            except Exception:
+                return 0
+        else:
+            return len(self._in_memory)

@@ -723,6 +723,7 @@ When the user asks you to analyze the repository, start by running `list_dir('.'
 
 
 memory_bank = MemoryBank()
+_logs_count_at_last_learn = 0
 short_term_memory: list[dict[str, str]] = [
     {"role": "user", "content": "Hello, are you ready to help me?"},
     {"role": "assistant", "content": "Yes! I can use tools like search_web and write_file. How can I help?"},
@@ -1153,11 +1154,24 @@ def _split_reply(text: str) -> tuple[str, str]:
 
 
 def _auto_learn_conversations() -> None:
-    recent = memory_bank.get_recent(20)
+    global _logs_count_at_last_learn
+    new_count = memory_bank.count_logs()
+    if new_count == _logs_count_at_last_learn:
+        return  # no new logs to process
+    num_new = new_count - _logs_count_at_last_learn
+    recent = memory_bank.get_recent(num_new)
     if not recent:
+        _logs_count_at_last_learn = new_count
         return
-    recent = [log for log in recent if not log.startswith("FACT:")]
+    # Remove system‑internal logs that shouldn't be learned
+    recent = [
+        log for log in recent
+        if not log.startswith("FACT:")
+        and not log.startswith("LEARNED:")
+        and not log.startswith("FILE:")
+    ]
     if not recent:
+        _logs_count_at_last_learn = new_count
         return
     learn_prompt = (
         "You are Kyrozen's self‑learning module. Read the following recent conversation logs "
@@ -1176,6 +1190,8 @@ def _auto_learn_conversations() -> None:
                     memory_bank.add_log(f"FACT: {line}")
     except Exception:
         pass
+    finally:
+        _logs_count_at_last_learn = new_count
 
 
 def _auto_debug_tool() -> None:
