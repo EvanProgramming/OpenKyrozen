@@ -13,6 +13,7 @@ from typing import Any
 import requests
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
+warnings.filterwarnings("ignore", message="This package.*has been renamed")
 
 
 # ---- Safety: block dangerous shell commands ----
