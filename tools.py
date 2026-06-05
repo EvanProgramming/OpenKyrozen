@@ -146,8 +146,8 @@ def search_web(args: str) -> str:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             from duckduckgo_search import DDGS
-        ddgs = DDGS(headers=headers)
-        results = list(ddgs.text(query, max_results=5))
+            ddgs = DDGS(headers=headers)
+            results = list(ddgs.text(query, region="wt-wt", safesearch="off", max_results=5))
         if results:
             return _fmt(results)
     except Exception:
