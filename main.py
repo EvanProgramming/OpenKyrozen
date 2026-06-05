@@ -24,6 +24,7 @@ from memory import MemoryBank
 from tools import AVAILABLE_TOOLS
 
 console = Console()
+bg_console = Console(stderr=True)
 
 
 # ---- Constants (optimized for DeepSeek) ----
@@ -195,11 +196,11 @@ def _run_regression_tests() -> bool:
             passed = result.strip().lower().startswith("error")
 
         if not passed:
-            console.print(f"[red]Regression FAIL: {test['description']}[/red]")
-            console.print(f"  result: {result[:200]}")
+            bg_console.print(f"[red]Regression FAIL: {test['description']}[/red]")
+            bg_console.print(f"  result: {result[:200]}")
             all_pass = False
         else:
-            console.print(f"[green]Regression PASS: {test['description']}[/green]")
+            bg_console.print(f"[green]Regression PASS: {test['description']}[/green]")
     return all_pass
 
 
@@ -270,9 +271,9 @@ def _maybe_trigger_reflection_after_complex_task(num_tool_calls: int) -> None:
         answer = _get_llm_response(messages).strip()
         if answer and answer not in ("—", ""):
             memory_bank.add_log(f"REFLECTION:\n{answer}")
-            console.print("[dim]Post‑task reflection stored.[/dim]")
+            bg_console.print("[dim]Post‑task reflection stored.[/dim]")
     except Exception as e:
-        console.print(f"[dim]Reflection error: {e}[/dim]")
+        bg_console.print(f"[dim]Reflection error: {e}[/dim]")
 
 
 def _maybe_trigger_reflection() -> None:
@@ -335,7 +336,7 @@ def _maybe_strategy_distillation() -> None:
         if answer and answer not in ("—", ""):
             _attempt_define_tool(answer)
     except Exception as e:
-        console.print(f"[dim]Strategy distillation error: {e}[/dim]")
+        bg_console.print(f"[dim]Strategy distillation error: {e}[/dim]")
 
 
 # -------- Sleep & Consolidation (Dream Cycle) --------
@@ -384,9 +385,9 @@ def _consolidate_memories() -> None:
             # Remove the original logs that were just consolidated (to avoid duplication)
             # We can delete them via ChromaDB if available
             _remove_consolidated_entries(non_trivial)
-            console.print("[dim]Memory consolidation completed.[/dim]")
+            bg_console.print("[dim]Memory consolidation completed.[/dim]")
     except Exception as e:
-        console.print(f"[dim]Consolidation error: {e}[/dim]")
+        bg_console.print(f"[dim]Consolidation error: {e}[/dim]")
 
 
 def _remove_consolidated_entries(logs: list[str]) -> None:
@@ -491,7 +492,7 @@ def _targeted_inquiry() -> None:
             after = content.split(func_def,1)[-1].split("\n",1)[-1]
             if not after.lstrip().startswith('"""') and not after.lstrip().startswith("'''"):
                 question = f"I noticed function '{m}' in {py_file.name} has no docstring – what does it do? (You can tell me and I'll remember.)"
-                console.print(f"[italic yellow]{question}[/italic yellow]")
+                bg_console.print(f"[italic yellow]{question}[/italic yellow]")
                 _pending_inquiry = question
                 return  # one inquiry per cycle
 
@@ -1179,7 +1180,7 @@ def _auto_learn_conversations() -> None:
                 if line:
                     memory_bank.add_log(f"FACT: {line}")
     except Exception as e:
-        console.print(f"[dim]Auto‑learn conversation error: {e}[/dim]")
+        bg_console.print(f"[dim]Auto‑learn conversation error: {e}[/dim]")
 
 
 def _auto_debug_tool() -> None:
@@ -1223,13 +1224,13 @@ def _auto_debug_tool() -> None:
                     old_tool = AVAILABLE_TOOLS.get(name)
                     AVAILABLE_TOOLS[name] = local_vars[name]
                     if not _run_regression_tests():
-                        console.print(f"[red]Regression failed after auto‑debug – rolling back '{name}'[/red]")
+                        bg_console.print(f"[red]Regression failed after auto‑debug – rolling back '{name}'[/red]")
                         _restore_tool_snapshot()
                         return
-                    console.print(f"[dim]Auto‑debugged tool '{name}'.[/dim]")
+                    bg_console.print(f"[dim]Auto‑debugged tool '{name}'.[/dim]")
                     memory_bank.add_log(f"AUTO_DEBUG: {name}\nNew code:\n```python\n{new_code}\n```")
             except Exception as e:
-                console.print(f"[dim]Auto‑debug tool error: {e}[/dim]")
+                bg_console.print(f"[dim]Auto‑debug tool error: {e}[/dim]")
 
 
 def _background_learning_loop() -> None:
@@ -1251,19 +1252,21 @@ def _background_learning_loop() -> None:
             _auto_debug_tool()
 
             if idle_duration > IDLE_CONSOLIDATION_TIMEOUT:
+                bg_console.print("[dim]Memory consolidation completed.[/dim]")
+                # The above line replaces the later one; will be edited further
                 _consolidate_memories()
                 if not _run_regression_tests():
-                    console.print("[red]Regression tests failed after memory consolidation – rolling back.[/red]")
+                    bg_console.print("[red]Regression tests failed after memory consolidation – rolling back.[/red]")
                     _restore_tool_snapshot()
                 _review_tools()
                 if not _run_regression_tests():
-                    console.print("[red]Regression tests failed after tool review – rolling back.[/red]")
+                    bg_console.print("[red]Regression tests failed after tool review – rolling back.[/red]")
                     _restore_tool_snapshot()
                 _targeted_inquiry()
                 _maybe_trigger_reflection()
                 _maybe_strategy_distillation()
         except Exception as e:
-            console.print(f"[dim]Auto‑learn error: {e}[/dim]")
+            bg_console.print(f"[dim]Auto‑learn error: {e}[/dim]")
 
 
 def main() -> None:
