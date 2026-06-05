@@ -8,8 +8,8 @@ import shutil
 import sys
 import warnings
 
-# Suppress DeprecationWarning for datetime.utcnow()
-warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*datetime.utcnow.*")
+# Suppress all DeprecationWarnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # Delete stale __pycache__ before any imports to avoid loading deprecated bytecode
 for p in pathlib.Path(__file__).parent.rglob("__pycache__"):
@@ -625,9 +625,6 @@ def _load_project_files_into_memory() -> None:
             sys.exit(0)
         except Exception:
             pass
-    # restore stdout (unreachable, but for safety)
-    sys.stdout.close()
-    sys.stdout = _old_stdout
 
 
 def _self_update() -> str:
@@ -1286,9 +1283,6 @@ def _auto_debug_tool() -> None:
 def _background_learning_loop() -> None:
     """Enhanced loop with consolidation, reflection, tool review, auto‑inquiry."""
     global _last_user_interaction
-    # suppress stdout in background thread to keep terminal clean
-    _old_stdout = sys.stdout
-    sys.stdout = open(os.devnull, 'w')
     while True:
         time.sleep(120)
         try:
