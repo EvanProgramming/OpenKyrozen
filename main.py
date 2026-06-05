@@ -1351,15 +1351,27 @@ def main() -> None:
         console.print("[green]Initialisation finished. Run `python main.py` to start the agent.[/green]")
         sys.exit(0)
 
-    banner_text = r"""
-   ██████╗ ██████╗ ███████╗███╗   ██╗    ██╗  ██╗██╗   ██╗██████╗  ██████╗ ███████╗███████╗███╗   ██╗
+    banner_text = r"""   ██████╗ ██████╗ ███████╗███╗   ██╗    ██╗  ██╗██╗   ██╗██████╗  ██████╗ ███████╗███████╗███╗   ██╗
   ██╔═══██╗██╔══██╗██╔════╝████╗  ██║    ██║ ██╔╝╚██╗ ██╔╝██╔══██╗██╔═══██╗╚══███╔╝╚══███╔╝████╗  ██║
   ██║   ██║██████╔╝█████╗  ██╔██╗ ██║    █████╔╝  ╚████╔╝ ██████╔╝██║   ██║  ███╔╝   ███╔╝ ██╔██╗ ██║
   ██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║    ██╔═██╗   ╚██╔╝  ██╔══██╗██║   ██║ ███╔╝   ███╔╝  ██║╚██╗██║
   ╚██████╔╝██║     ███████╗██║ ╚████║    ██║  ██╗   ██║   ██║  ██║╚██████╔╝███████╗███████╗██║ ╚████║
-   ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝    ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═══╝
-"""
-    console.print(Panel.fit(banner_text, title="OPEN KYROZEN", subtitle="self‑learning AI agent", border_style="cyan"))
+   ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝    ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═══╝"""
+    meditation_art_lines = [
+        "      ___   ",
+        "     /   \\  ",
+        "    |  O  | ",
+        "     \\___/  ",
+        "    /   \\   ",
+        "   /_____\\  ",
+    ]
+    banner_lines = banner_text.split("\n")
+    max_banner = max(len(l) for l in banner_lines)
+    combined_lines = []
+    for banner_line, med_line in zip(banner_lines, meditation_art_lines):
+        combined_lines.append(banner_line.ljust(max_banner) + "   " + med_line)
+    combined_text = "\n".join(combined_lines)
+    console.print(Panel.fit(combined_text, title="OPEN KYROZEN", subtitle="self‑learning AI agent", border_style="cyan"))
     console.print(f"Kyrozen (DeepSeek + Tools). Model: {MODEL_NAME}", style="cyan")
     console.print("Commands: /quit or /exit to exit, /update to pull latest version, /learn to reload project files, /api_key to change API key.\n", style="yellow")
 
