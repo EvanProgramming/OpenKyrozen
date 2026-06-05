@@ -1056,12 +1056,20 @@ def _chat_turn(user_input: str) -> str:
     if not all_ok:
         original_error = tool_results_text
         for attempt in range(MAX_RETRIES):
+            # Detect search‑specific failure and instruct the LLM to generate a new
+            # query automatically, not ask the user for one.
+            search_failure_hint = (
+                "If the tool was `search_web` that returned no results, "
+                "output a **different search query** (Action block with `search_web` and a new query). "
+                "Do **not** ask the user for a new query – just output the Action block yourself."
+            )
             messages.append({
                 "role": "user",
                 "content": (
                     f"The previous tool attempt result(s):\n{tool_results_text}\n\n"
-                    "The tool(s) failed. Please **try a different approach** "
-                    "(e.g., quote the path, escape parentheses, or use a different command). "
+                    "The tool(s) failed. "
+                    + search_failure_hint +
+                    " Otherwise, try a different command. "
                     "Output a new Thought and Action block."
                 )
             })

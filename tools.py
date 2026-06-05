@@ -13,7 +13,7 @@ from typing import Any
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 
 # ---- Safety: block dangerous shell commands ----
@@ -114,19 +114,29 @@ def search_web(args: str) -> str:
     if not query:
         return "Search Error: query is empty."
 
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            ddgs = DDGS(headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/133.0.6943.126 Safari/537.36"
+    # Try primary backend first, fall back to HTML scraping
+    for backend in (None, "html"):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                ddgs = DDGS()
+                results = list(
+                    ddgs.text(
+                        query,
+                        region="wt-wt",
+                        safesearch="off",
+                        backend=backend,
+                        max_results=5,
+                    )
                 )
-            })
-        results = list(ddgs.text(query, max_results=5))
-    except Exception as e:
-        return f"Search temporarily unavailable: {e}. Please try again or rephrase the query."
+            if results:
+                break
+        except Exception:
+            results = []
+            continue
+    else:
+        # Both backends failed
+        return "Search temporarily unavailable. Please try again or rephrase the query."
 
     if not results:
         return "No search results found. Please try a different query."
