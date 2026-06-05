@@ -435,7 +435,7 @@ def _register_tool(name: str, code: str, description: str = "") -> bool:
     _take_tool_snapshot()
     local_vars: dict = {}
     try:
-        exec(code, {"__builtins__": __builtins__}, local_vars)
+        exec(code, {"__builtins__": __builtins__, "datetime": datetime, "UTC": datetime.timezone.utc}, local_vars)
     except Exception:
         return False
     if name not in local_vars or not callable(local_vars[name]):
@@ -1268,7 +1268,7 @@ def _auto_debug_tool() -> None:
                 new_code = re.sub(r"\s*```", "", new_code)
                 # Attempt to replace the tool
                 local_vars: dict = {}
-                exec(new_code, {"__builtins__": __builtins__}, local_vars)
+                exec(new_code, {"__builtins__": __builtins__, "datetime": datetime, "UTC": datetime.timezone.utc}, local_vars)
                 if name in local_vars and callable(local_vars[name]):
                     old_tool = AVAILABLE_TOOLS.get(name)
                     AVAILABLE_TOOLS[name] = local_vars[name]
