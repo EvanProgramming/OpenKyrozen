@@ -10,7 +10,10 @@ import tempfile
 import shutil
 from typing import Any
 
-from ddgs import DDGS
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+from duckduckgo_search import DDGS
 
 
 # ---- Safety: block dangerous shell commands ----
