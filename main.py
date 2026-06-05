@@ -1100,6 +1100,8 @@ def _chat_turn(user_input: str) -> str:
         result = _run_tool(action, args)
         console.print(Panel(result[:2000], title=f"Result of {action}", border_style="yellow"))
         results.append(f"- `{action}({args!r})` returned:\n{result[:2000]}")
+        if tasks.tasks:
+            console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
     tool_results_text = "\n".join(results)
 
     all_ok = not any(_is_tool_error(r) for r in results)
@@ -1160,6 +1162,8 @@ def _chat_turn(user_input: str) -> str:
                 result2 = _run_tool(action, args)
                 console.print(Panel(result2[:2000], title=f"Result of {action}", border_style="yellow"))
                 new_results.append(f"- `{action}({args!r})` returned:\n{result2[:2000]}")
+                if tasks.tasks:
+                    console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
             tool_results_text = "\n".join(new_results)
 
             if not any(_is_tool_error(r) for r in new_results):
