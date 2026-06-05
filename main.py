@@ -1087,14 +1087,49 @@ def _chat_turn(user_input: str) -> str:
     tool_calls = _collect_tool_calls(response_text)
     tool_was_search = any(tc.get("action") == "search_web" for tc in tool_calls)
     if not tool_calls:
-        elapsed = time.time() - turn_start
-        _turn_cost_log.append({
-            "tokens": turn_prompt_total + turn_completion_total,
-            "time": elapsed,
-            "tool_calls": 0
-        })
-        # No tools needed – return plain answer (maybe trigger reflection)
-        return response_text
+        # If the user request seems to ask for action (search, research, write, save, compare, etc.)
+        # and the assistant didn't produce any tool call, re‑prompt with a strong reminder.
+        if _requires_tool_action(user_input):
+            messages.append({
+                "role": "user",
+                "content": (
+                    "System: You did not output an Action block. "
+                    "You **must** now output a JSON Action block to perform the actual work. "
+                    "Do not explain; just output the Action block."
+                )
+            })
+            response_text = _call_llm_with_spinner(messages).strip()
+            turn_prompt_total += _last_prompt_tokens
+            turn_completion_total += _last_completion_tokens
+            if not response_text or not response_text.strip():
+                messages.append({
+                    "role": "user",
+                    "content": "System: You returned nothing. Please output a JSON Action block now."
+                })
+                response_text = _call_llm_with_spinner(messages).strip()
+                turn_prompt_total += _last_prompt_tokens
+                turn_completion_total += _last_completion_tokens
+            # Re‑process task blocks and tool calls
+            tasks.from_llm_block(response_text)
+            tasks.mark_done_from_text(response_text)
+            if _attempt_define_tool(response_text):
+                elapsed = time.time() - turn_start
+                _turn_cost_log.append({
+                    "tokens": turn_prompt_total + turn_completion_total,
+                    "time": elapsed,
+                    "tool_calls": 0
+                })
+                return "New tool defined. It will be available for future interactions."
+            tool_calls = _collect_tool_calls(response_text)
+        if not tool_calls:
+            elapsed = time.time() - turn_start
+            _turn_cost_log.append({
+                "tokens": turn_prompt_total + turn_completion_total,
+                "time": elapsed,
+                "tool_calls": 0
+            })
+            # No tools needed – return plain answer (maybe trigger reflection)
+            return response_text
 
     results: list[str] = []
     for tc in tool_calls:
