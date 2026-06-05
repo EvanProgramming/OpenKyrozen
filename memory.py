@@ -4,7 +4,7 @@ Long-term memory for the AI agent (ChromaDB if available, else in‑memory).
 
 import warnings
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*datetime.utcnow.*")
 
@@ -48,8 +48,8 @@ class MemoryBank:
 
     def add_log(self, text: str) -> str:
         """Save a text log with a timestamp‑based ID. Returns the assigned ID."""
-        log_id = f"{datetime.now(datetime.timezone.utc).isoformat()}Z_{uuid.uuid4().hex[:8]}"
-        now_ts = datetime.now(datetime.timezone.utc).isoformat()
+        log_id = f"{datetime.now(timezone.utc).isoformat()}Z_{uuid.uuid4().hex[:8]}"
+        now_ts = datetime.now(timezone.utc).isoformat()
         if _CHROMADB_AVAILABLE and self._collection is not None:
             try:
                 self._collection.add(
