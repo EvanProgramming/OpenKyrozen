@@ -1394,10 +1394,6 @@ def main() -> None:
             console.print(Panel(update_result, title="Update", border_style="blue"))
             continue
 
-import os
-import io
-import contextlib
-
         # Auto‑patching: detect new technology mentions
         _auto_patch_new_technology(user_input)
 

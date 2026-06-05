@@ -115,8 +115,7 @@ def search_web(args: str) -> str:
         ddgs = DDGS()
         results = list(ddgs.text(query, max_results=3))
     except Exception as e:
-        # Log to console; do not crash. Return a clear message for the agent.
-        print(f"[search_web] DDGS error (rate limit/network): {e}", flush=True)
+        # Do not log to console; return a clear message for the agent.
         return f"Search temporarily unavailable: {e}. Please try again or rephrase the query."
 
     if not results:
