@@ -1105,6 +1105,10 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         return "New tool defined. It will be available for future interactions."
 
     tool_calls = _collect_tool_calls(response_text)
+    # If LLM didn't output any TaskList, create default tasks from the tool calls
+    if not tasks.tasks and tool_calls:
+        for tc in tool_calls:
+            tasks.add_task(f"Execute {tc.get('action','?')}: {tc.get('args','')[:50]}")
     tool_was_search = any(tc.get("action") == "search_web" for tc in tool_calls)
     if not tool_calls:
         # If the user request seems to ask for action (search, research, write, save, compare, etc.)
@@ -1205,6 +1209,10 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 return "New tool defined. It will be available for future interactions."
 
             new_tool_calls = _collect_tool_calls(response_text)
+            # If LLM didn't output any TaskList, create default tasks from the tool calls
+            if not tasks.tasks and new_tool_calls:
+                for tc2 in new_tool_calls:
+                    tasks.add_task(f"Execute {tc2.get('action','?')}: {tc2.get('args','')[:50]}")
             if not new_tool_calls:
                 elapsed = time.time() - turn_start
                 _turn_cost_log.append({
