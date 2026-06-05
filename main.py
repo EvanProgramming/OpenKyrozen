@@ -1106,8 +1106,10 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         return "New tool defined. It will be available for future interactions."
 
     tool_calls = _collect_tool_calls(response_text)
-    # If LLM didn't output any TaskList, create default tasks from the tool calls
-    if not tasks.tasks and tool_calls:
+    # If LLM didn't output its own TaskList block, replace tasks with the tool calls just extracted
+    _llm_has_tasklist = bool(re.search(r"TaskList:", response_text))
+    if not _llm_has_tasklist and tool_calls:
+        tasks.tasks.clear()
         for tc in tool_calls:
             tasks.add_task(f"Execute {tc.get('action','?')}: {tc.get('args','')[:50]}")
     tool_was_search = any(tc.get("action") == "search_web" for tc in tool_calls)
