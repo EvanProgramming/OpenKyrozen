@@ -118,8 +118,10 @@ def search_web(args: str) -> str:
     if not query:
         return "Search Error: query is empty."
 
-    # ---- helper to format result dicts ----
-    def _fmt(results: list[dict]) -> str:
+    errors = []
+
+    # inline helper
+    def _fmt(results):
         lines = []
         for r in results:
             title = r.get("title", "")
@@ -133,7 +135,7 @@ def search_web(args: str) -> str:
             lines.append(line)
         return "\n".join(lines)
 
-    header_details = {
+    headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -141,27 +143,24 @@ def search_web(args: str) -> str:
         ),
     }
 
-    # ---- attempt 1: ddgs library (rename warning ignored) ----
+    # ---- attempt 1: ddgs library ----
     try:
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             from ddgs import DDGS
-        ddgs = DDGS(headers=header_details)
-        results = list(ddgs.text(query, max_results=5, backend="html"))
+        ddgs = DDGS(headers=headers)
+        results = list(ddgs.text(query, max_results=5))
         if results:
             return _fmt(results)
-    except Exception:
-        pass
+    except Exception as e:
+        errors.append(f"ddgs: {e}")
 
-    # ---- attempt 2: DuckDuckGo Lite HTML (GET) ----
+    # ---- attempt 2: DuckDuckGo Lite (GET) ----
     lite_url = f"https://lite.duckduckgo.com/lite/?q={quote(query)}"
     try:
-        resp = requests.get(lite_url, headers=header_details, timeout=10)
+        resp = requests.get(lite_url, headers=headers, timeout=10)
         resp.raise_for_status()
-    except Exception:
-        pass
-    else:
         titles = re.findall(
             r'<a[^>]*rel="nofollow"[^>]*>(.*?)</a>',
             resp.text, re.DOTALL
@@ -181,17 +180,15 @@ def search_web(args: str) -> str:
                     snippet = re.sub(r"<[^>]*>", "", snip_html).strip()
                     snippet = html.unescape(snippet)
                 results.append({"title": title, "body": snippet, "url": ""})
-            if results:
-                return _fmt(results)
+            return _fmt(results)
+    except Exception as e:
+        errors.append(f"lite: {e}")
 
     # ---- attempt 3: DuckDuckGo HTML (POST) ----
     html_url = "https://html.duckduckgo.com/html/"
     try:
-        resp = requests.post(html_url, data={"q": query}, headers=header_details, timeout=10)
+        resp = requests.post(html_url, data={"q": query}, headers=headers, timeout=10)
         resp.raise_for_status()
-    except Exception:
-        pass
-    else:
         titles = re.findall(
             r'<a[^>]*class="result__a"[^>]*>(.*?)</a>',
             resp.text, re.DOTALL
@@ -211,23 +208,23 @@ def search_web(args: str) -> str:
                     snippet = re.sub(r"<[^>]*>", "", snip_html).strip()
                     snippet = html.unescape(snippet)
                 results.append({"title": title, "body": snippet, "url": ""})
-            if results:
-                return _fmt(results)
+            return _fmt(results)
+    except Exception as e:
+        errors.append(f"html: {e}")
 
-    # ---- attempt 4: Google search via googlesearch-python ----
+    # ---- attempt 4: Google via googlesearch-python ----
     try:
         from googlesearch import search as google_search
-        urls = list(google_search(query, num_results=5))
+        urls = list(google_search(query, num_results=5, lang="en"))
         if urls:
             results = []
             for url in urls:
                 try:
-                    resp = requests.get(url, headers=header_details, timeout=5)
+                    resp = requests.get(url, headers=headers, timeout=5)
                     resp.raise_for_status()
                 except Exception:
                     results.append({"title": url, "body": "", "url": url})
                     continue
-                # extract <title> tag
                 title = ""
                 m = re.search(r'<title[^>]*>(.*?)</title>', resp.text, re.DOTALL|re.IGNORECASE)
                 if m:
@@ -242,9 +239,12 @@ def search_web(args: str) -> str:
                 results.append({"title": title, "body": snippet, "url": url})
             if results:
                 return _fmt(results)
-    except Exception:
-        pass
+    except Exception as e:
+        errors.append(f"google: {e}")
 
+    # All attempts failed
+    if errors:
+        return f"No search results found. (errors: {'; '.join(errors)})"
     return "No search results found. Please try a different query."
 
 
