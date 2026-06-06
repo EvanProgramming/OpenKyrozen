@@ -773,6 +773,8 @@ When the user asks you to analyze the repository, start by running `list_dir('.'
 
 ### Memory retrieval
 When the user asks about what you remember or what you have learned, **always** use the `search_memory` tool (listed in Available Tools) to search for relevant learned facts. `search_memory` performs a semantic search across stored memories and returns the most relevant results. You can also use `check_stored_data` to get a raw listing of recent non‑file entries. Do **not** read the memory.py source file directly – it will not show you the learned facts.
+
+In general, relevant memories are automatically provided to you in the conversation context. Use them as background knowledge when completing tasks.
 """
 
 
@@ -841,6 +843,18 @@ def _search_memory(args: str) -> str:
         return f"Error searching memory: {e}"
 
 
+def _build_memory_context(query: str, n: int = 3) -> str:
+    """Return a formatted string of the top n relevant memories for the given query."""
+    recalled = memory_bank.recall(query, n_results=n)
+    if not recalled:
+        return ""
+    lines = ["Remembered facts that may be relevant:"]
+    for r in recalled:
+        snippet = r[:300].replace("\n", " ")
+        lines.append(f"- {snippet}")
+    return "\n".join(lines)
+
+
 AVAILABLE_TOOLS["check_stored_data"] = _check_stored_data
 AVAILABLE_TOOLS["search_memory"] = _search_memory
 TOOLS_LIST = _build_tools_list()
@@ -868,10 +882,9 @@ def _build_messages(user_input: str) -> list[dict[str, str]]:
         failure_block = "Past failures to avoid:\n" + "\n".join(failures[:2])
         messages.append({"role": "system", "content": failure_block})
 
-    recalled = memory_bank.recall(user_input, n_results=4)
-    if recalled:
-        memory_block = "Relevant past context:\n" + "\n".join(recalled[:2])
-        messages.append({"role": "system", "content": memory_block})
+    mem_ctx = _build_memory_context(user_input)
+    if mem_ctx:
+        messages.append({"role": "system", "content": mem_ctx})
 
     for msg in short_term_memory[-SHORT_TERM_CAP * 2 :]:
         messages.append(msg)
@@ -1326,6 +1339,10 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 )
             },
             {"role": "system", "content": f"You are working inside {os.getcwd()}."},
+            {
+                "role": "system",
+                "content": _build_memory_context(user_input),
+            },
             {"role": "user", "content": user_input},
             {"role": "assistant", "content": current_reply},
             {
