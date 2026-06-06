@@ -1190,7 +1190,8 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     if not _llm_has_tasklist and tool_calls:
         tasks.tasks.clear()
         for tc in tool_calls:
-            tasks.add_task(f"Execute {tc.get('action','?')}: {tc.get('args','')[:50]}")
+            safe_args = str(tc.get('args') or '')[:50]
+            tasks.add_task(f"Execute {tc.get('action','?')}: {safe_args}")
     tool_was_search = any(tc.get("action") == "search_web" for tc in tool_calls)
     if not tool_calls:
         # If the user request seems to ask for action (search, research, write, save, compare, etc.)
@@ -1252,8 +1253,9 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         if not isinstance(args, str):
             args = str(args)
         result = _run_tool(action, args)
-        console.print(Panel(result[:2000], title=f"Result of {action}", border_style="yellow"))
-        results.append(f"- `{action}({args!r})` returned:\n{result[:2000]}")
+        safe_result = str(result)[:2000]
+        console.print(Panel(safe_result, title=f"Result of {action}", border_style="yellow"))
+        results.append(f"- `{action}({args!r})` returned:\n{safe_result}")
         tasks.mark_first_pending_done()
         if tasks.tasks:
             console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
@@ -1384,8 +1386,9 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             if not isinstance(args, str):
                 args = str(args)
             result2 = _run_tool(action, args)
-            console.print(Panel(result2[:2000], title=f"Result of {action}", border_style="yellow"))
-            next_results.append(f"- `{action}({args!r})` returned:\n{result2[:2000]}")
+            safe_result2 = str(result2)[:2000]
+            console.print(Panel(safe_result2, title=f"Result of {action}", border_style="yellow"))
+            next_results.append(f"- `{action}({args!r})` returned:\n{safe_result2}")
             tasks.mark_first_pending_done()
             if tasks.tasks:
                 console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
