@@ -1217,8 +1217,9 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         tool_calls = _collect_tool_calls(response_text)
     # Enforce planning phase before any tool execution
     _llm_has_plan = bool(re.search(r"Plan:", response_text))
-    if not _llm_has_plan and tool_calls:
-        # Ask LLM to produce a Plan first (up to two attempts)
+    plan_attempts = 0
+    while not _llm_has_plan and tool_calls and plan_attempts < 3:
+        plan_attempts += 1
         plan_prompt = (
             "System: You must first output a **Plan** block (numbered steps) before any Action. "
             "Output a Plan:\n1. ...\n..."
@@ -1232,19 +1233,9 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         tasks.mark_done_from_text(response_text)
         tool_calls = _collect_tool_calls(response_text)
         _llm_has_plan = bool(re.search(r"Plan:", response_text))
-        if not _llm_has_plan and tool_calls:
-            # second attempt
-            plan_prompt2 = (
-                "System: Still no Plan block detected. Please output a Plan: block now. "
-                "After the plan you can include TaskList and Actions."
-            )
-            messages.append({"role": "user", "content": plan_prompt2})
-            response_text = _call_llm_with_spinner(messages).strip()
-            turn_prompt_total += _last_prompt_tokens
-            turn_completion_total += _last_completion_tokens
-            tasks.from_llm_block(response_text)
-            tasks.mark_done_from_text(response_text)
-            tool_calls = _collect_tool_calls(response_text)
+    if not _llm_has_plan and tool_calls:
+        # After 3 attempts still no plan, reject
+        return "I cannot proceed without producing a Plan block first. Please rephrase your request."
 
     # Enforce that a TaskList is output before any tool execution
     _llm_has_tasklist = bool(re.search(r"TaskList:", response_text))
