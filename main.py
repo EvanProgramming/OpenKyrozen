@@ -46,6 +46,7 @@ TOOL_ALIASES: dict[str, str] = {
     "sh": "run_cmd",
     "browse_summary": "read_webpage",
     "run_terminal_command": "execute_terminal_command",
+    "run_command": "run_cmd",
 }
 
 def _is_valid_action(name: str | None) -> bool:
@@ -346,31 +347,13 @@ def _maybe_trigger_reflection() -> None:
 
 
 def _maybe_strategy_distillation() -> None:
-    """If recent turns consumed many tokens, attempt to compress logic into a DefineTool."""
+    """If recent turns consumed many tokens, log a note (tool creation disabled)."""
     if len(_turn_cost_log) < 3:
         return
     recent_total = sum(entry.get("tokens", 0) for entry in _turn_cost_log[-5:])
     if recent_total < 5000:
-        return  # not worth distilling
-    # Ask LLM to propose a compressed tool that encapsulates the common pattern
-    recent_logs = memory_bank.get_recent(10)
-    if not recent_logs:
         return
-    distill_prompt = (
-        "You are Kyrozen's cost optimiser. The recent tasks consumed many tokens. "
-        "Identify a repeated pattern that could be turned into a reusable tool via DefineTool. "
-        "If possible, output a **DefineTool:** block with a single Python function that automates "
-        "the pattern. If nothing suitable, output '—'.\n\n"
-        + "\n".join(recent_logs[-5:]) +
-        f"\nTotal tokens used in last 5 turns: {recent_total}"
-    )
-    try:
-        messages = [{"role": "system", "content": distill_prompt}]
-        answer = _get_llm_response(messages).strip()
-        if answer and answer not in ("—", ""):
-            _attempt_define_tool(answer)
-    except Exception:
-        pass
+    memory_bank.add_log(f"COST_NOTE: Recent token total {recent_total}. Pattern compression skipped.")
 
 
 # -------- Sleep & Consolidation (Dream Cycle) --------
@@ -771,20 +754,7 @@ You are not limited to coding tasks; you can assist with any topic. Use the tool
 
 You have stored knowledge of the project's code files as well as previous conversations. Use that knowledge to improve your answers and learn over time.
 
-You can also teach yourself new skills. If you want to create a new tool, output a **DefineTool:** block with a JSON definition. For example:
-
-DefineTool:
-```json
-{{
-  "name": "example_tool",
-  "description": "what it does",
-  "code": "def example_tool(args):\\n    return 'result'"
-}}
-```
-
-After such definition the new tool will be available for future use.
-
-**Important**: Do **not** define a tool whose name already exists in the list of Available Tools. Use the built‑in tools directly via the Action block.
+You cannot define new tools. You must use only the built-in tools listed in the Available Tools section.
 
 ### Always verify file paths
 When you create a file using `write_file`, the tool returns its **absolute path** (e.g. `Wrote 800 characters to /Users/.../Testing/matrix_calculator.py`).  
@@ -1158,7 +1128,6 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     MAX_RETRIES = 3
     messages = _build_messages(user_input)
     response_text = _call_llm_with_spinner(messages).strip()
-    _attempted_define_tool = "DefineTool:" in response_text
     turn_prompt_total += _last_prompt_tokens
     turn_completion_total += _last_completion_tokens
 
@@ -1180,16 +1149,6 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         response_text_clean = response_text
     response_text = response_text_clean
 
-    if _attempt_define_tool(response_text):
-        # Still record turn cost before returning
-        elapsed = time.time() - turn_start
-        _turn_cost_log.append({
-            "tokens": turn_prompt_total + turn_completion_total,
-            "time": elapsed,
-            "tool_calls": 0
-        })
-        return "New tool defined. It will be available for future interactions."
-
     tool_calls = _collect_tool_calls(response_text)
     # If LLM didn't output its own TaskList block, replace tasks with the tool calls just extracted
     _llm_has_tasklist = bool(re.search(r"TaskList:", response_text))
@@ -1203,17 +1162,11 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         # If the user request seems to ask for action (search, research, write, save, compare, etc.)
         # and the assistant didn't produce any tool call, re‑prompt with a strong reminder.
         if _requires_tool_action(user_input):
-            if _attempted_define_tool:
-                reminder_msg = (
-                    "System: You tried to define a new tool, but a built‑in tool with that name already exists. "
-                    'Use the built‑in tool directly by outputting an Action block (e.g., {"action":"write_file","args":"path|content"}).'
-                )
-            else:
-                reminder_msg = (
-                    "System: You did not output an Action block. "
-                    "You **must** now output a JSON Action block to perform the actual work. "
-                    "Do not explain; just output the Action block."
-                )
+            reminder_msg = (
+                "System: You did not output an Action block. "
+                "You **must** now output a JSON Action block to perform the actual work. "
+                "Do not explain; just output the Action block."
+            )
             messages.append({
                 "role": "user",
                 "content": reminder_msg,
@@ -1232,14 +1185,6 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             # Re‑process task blocks and tool calls
             tasks.from_llm_block(response_text)
             tasks.mark_done_from_text(response_text)
-            if _attempt_define_tool(response_text):
-                elapsed = time.time() - turn_start
-                _turn_cost_log.append({
-                    "tokens": turn_prompt_total + turn_completion_total,
-                    "time": elapsed,
-                    "tool_calls": 0
-                })
-                return "New tool defined. It will be available for future interactions."
             tool_calls = _collect_tool_calls(response_text)
         if not tool_calls:
             elapsed = time.time() - turn_start
