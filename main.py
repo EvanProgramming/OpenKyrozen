@@ -1325,7 +1325,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         next_tool_calls = _collect_tool_calls(step_reply)
 
 
-        # if there are no more tool calls, the LLM gave its final answer
+        # if there are no more tool calls, the LLM might still be planning
         if not next_tool_calls:
             # If there are still pending tasks, do NOT finish — keep asking
             if tasks.tasks and any(t["status"] != "done" for t in tasks.tasks):
@@ -1362,8 +1362,24 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                     final_answer = step_reply
                     break
             else:
-                final_answer = step_reply
-                break
+                # The LLM may have announced intent without outputting an Action block.
+                # Prompt it to issue the next Action block.
+                summary_messages.append({
+                    "role": "user",
+                    "content": "System: You have not output an Action block. "
+                               "Output the next JSON Action block now to continue."
+                })
+                step_reply = _call_llm_with_spinner(summary_messages).strip()
+                turn_prompt_total += _last_prompt_tokens
+                turn_completion_total += _last_completion_tokens
+                if not step_reply:
+                    break
+                tasks.from_llm_block(step_reply)
+                tasks.mark_done_from_text(step_reply)
+                next_tool_calls = _collect_tool_calls(step_reply)
+                if not next_tool_calls:
+                    final_answer = step_reply
+                    break
 
         # execute all new tool calls
         round_count += 1
