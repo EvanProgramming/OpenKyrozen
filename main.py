@@ -809,9 +809,23 @@ def _search_memory(args: str) -> str:
         query = args.strip() if args else ""
         if not query:
             return "Search Error: provide a query."
+        # First attempt: semantic search via ChromaDB/memory recall
         results = memory_bank.recall(query, n_results=5)
         if not results:
-            return "No relevant memories found."
+            # Fallback: scan recent non‑FILE entries for keyword matches
+            recent = memory_bank.get_recent(200)
+            keywords = query.lower().split()
+            matched = []
+            for doc in recent:
+                if doc.startswith("FILE:"):
+                    continue
+                if any(kw in doc.lower() for kw in keywords):
+                    matched.append(doc)
+            if matched:
+                results = matched[:5]
+            else:
+                # No results even after fallback
+                return "No relevant memories found."
         lines = [f"Relevant memories ({len(results)}):"]
         for i, doc in enumerate(results):
             # Don't show file entries in this search either
