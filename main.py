@@ -123,6 +123,7 @@ _SELF_LEARNING_FLAGS: dict[str, bool] = {
     "maybe_trigger_reflection": True,
     "maybe_strategy_distillation": True,
     "auto_patch_new_technology": True,
+    "invent_skills": True,
 }
 
 
@@ -1634,6 +1635,8 @@ def _background_learning_loop() -> None:
                     _maybe_trigger_reflection()
                 if _SELF_LEARNING_FLAGS["maybe_strategy_distillation"]:
                     _maybe_strategy_distillation()
+                if _SELF_LEARNING_FLAGS["invent_skills"]:
+                    _invent_skills()
         except Exception:
             pass
 
@@ -1651,6 +1654,7 @@ def _show_self_learning_menu() -> None:
         ("maybe_trigger_reflection",      "Idle reflection"),
         ("maybe_strategy_distillation",   "Strategy distillation"),
         ("auto_patch_new_technology",     "Auto‑patch new technology info"),
+        ("invent_skills",                 "Invent reusable skills from past conversations"),
     ]
     while True:
         console.print("[bold cyan]Self‑Learning Features[/bold cyan]")
