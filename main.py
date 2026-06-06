@@ -47,7 +47,12 @@ TOOL_ALIASES: dict[str, str] = {
     "sh": "run_cmd",
     "browse_summary": "read_webpage",
     "run_terminal_command": "execute_terminal_command",
+    "run_terminal": "execute_terminal_command",
+    "terminal": "execute_terminal_command",
     "run_command": "run_cmd",
+    "cmd": "run_cmd",
+    "exec": "run_cmd",
+    "execute": "run_cmd",
 }
 
 def _is_valid_action(name: str | None) -> bool:
@@ -74,6 +79,7 @@ MODEL_NAME = "deepseek-chat"
 SHORT_TERM_CAP = 16
 MAX_TOOL_RETRIES = 3
 MAX_STEPS_PER_TURN = 5           # how many tool‑call rounds the LLM may perform in one user turn
+MAX_UNKNOWN_TOOL_RETRIES = 3     # how many times to re‑prompt when LLM uses an unrecognised action name
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
 IDLE_CONSOLIDATION_TIMEOUT = 60   # 1 minute
 
@@ -1178,12 +1184,17 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
 
     tool_calls = _collect_tool_calls(response_text)
     # detect unknown action in response
-    unknown_action = _detect_unknown_action(response_text)
-    if unknown_action:
+    _unknown_retries = 0
+    while _unknown_retries < MAX_UNKNOWN_TOOL_RETRIES:
+        unknown_action = _detect_unknown_action(response_text)
+        if not unknown_action:
+            break
+        _unknown_retries += 1
         msg = (
             f"System: Action '{unknown_action}' is not recognized. "
             "You must use one of the following actions: "
-            + ", ".join(sorted(AVAILABLE_TOOLS.keys())) + "."
+            + ", ".join(sorted(AVAILABLE_TOOLS.keys())) + ".\n"
+            "Do not invent new action names. Pick from the list and output an Action block."
         )
         messages.append({"role": "user", "content": msg})
         response_text = _call_llm_with_spinner(messages).strip()
