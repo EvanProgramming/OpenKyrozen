@@ -929,6 +929,16 @@ def _collect_tool_calls(text: str) -> list[dict]:
             if obj not in calls:
                 calls.append(obj)
 
+    # 4. XML‑style <tool_name>args</tool_name>
+    xml_pattern = r'<(\w+)>\s*(.*?)\s*</\1>'
+    for match in re.finditer(xml_pattern, text, re.DOTALL):
+        action = match.group(1)
+        args = match.group(2).strip()
+        if _is_valid_action(action):
+            new_call = {"action": action, "args": args}
+            if new_call not in calls:
+                calls.append(new_call)
+
     return calls
 
 
@@ -963,14 +973,39 @@ def _run_tool(action: str, args: str) -> str:
 def _attempt_define_tool(text: str) -> bool:
     global _saved_user_tools
     _take_tool_snapshot()
-    pattern = r"DefineTool:\s*```(?:json)?\s*([\s\S]*?)\s*```"
-    match = re.search(pattern, text)
-    if not match:
-        return False
-    raw = match.group(1).strip()
-    try:
-        definition = json.loads(raw)
-    except json.JSONDecodeError:
+
+    # Try JSON‑style DefineTool block first
+    def _parse_definition(raw: str) -> dict | None:
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+
+    definition: dict | None = None
+
+    # pattern 1: standard markdown block
+    pattern1 = r"DefineTool:\s*```(?:json)?\s*([\s\S]*?)\s*```"
+    match = re.search(pattern1, text)
+    if match:
+        raw = match.group(1).strip()
+        definition = _parse_definition(raw)
+
+    # pattern 2: XML‑style <DefineTool>...</DefineTool>
+    if definition is None:
+        xml_pattern = r'<DefineTool>\s*(.*?)\s*</DefineTool>'
+        xml_match = re.search(xml_pattern, text, re.DOTALL)
+        if xml_match:
+            raw = xml_match.group(1).strip()
+            # raw may be JSON directly or wrapped in backticks
+            # try stripping backticks first
+            inner = raw
+            # remove surrounding ```json ... ``` if present
+            inner = re.sub(r'^```(?:json)?\s*', '', inner)
+            inner = re.sub(r'\s*```$', '', inner)
+            inner = inner.strip()
+            definition = _parse_definition(inner)
+
+    if definition is None:
         return False
 
     name = definition.get("name", "").strip()
