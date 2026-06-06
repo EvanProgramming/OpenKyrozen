@@ -53,6 +53,8 @@ TOOL_ALIASES: dict[str, str] = {
     "cmd": "run_cmd",
     "exec": "run_cmd",
     "execute": "run_cmd",
+    "list_tree": "list_tree",
+    "tree": "list_tree",
 }
 
 def _is_valid_action(name: str | None) -> bool:
@@ -1270,6 +1272,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             _tasks_from_plan(response_text)
             if tasks.tasks:
                 _llm_has_tasklist = True  # treat as if TaskList existed
+                console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
         if not _llm_has_tasklist and tool_calls:
             # Ask LLM to produce a TaskList first
             plan_prompt = (

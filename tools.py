@@ -381,6 +381,34 @@ def read_webpage(args: str) -> str:
         return f"Error fetching webpage: {e}"
 
 
+def list_tree(args: str) -> str:
+    """
+    Recursively list the directory tree of the given path. Args format: "path" (default ".").
+    Returns a tree‑like textual representation of the directory structure.
+    """
+    import os
+    import pathlib
+    try:
+        path = args.strip() or "."
+        path = os.path.expanduser(path)
+        root = pathlib.Path(path).resolve()
+        if not root.is_dir():
+            return f"Error: '{path}' is not a directory"
+        lines = [f"{root.name}/"]
+        for dirpath, dirnames, filenames in os.walk(root):
+            # skip hidden dirs
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            depth = len(pathlib.Path(dirpath).relative_to(root).parts)
+            prefix = "│   " * (depth - 1) + "├── " if depth > 0 else ""
+            for d in sorted(dirnames):
+                lines.append(f"{prefix}{d}/")
+            for f in sorted(filenames):
+                lines.append(f"{prefix}{f}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error listing tree: {e}"
+
+
 AVAILABLE_TOOLS: dict[str, Any] = {
     "write_file": write_file,
     "read_file": read_file,
