@@ -824,7 +824,7 @@ Prefer built‑in tools (`write_file`, `read_file`, `run_cmd`, `search_web`, `fi
 When the user asks you to analyze the repository, start by running `list_dir('.')` to see the files.  Do **not** ask for a local path or remote URL – you are already in the correct directory.
 
 ### Memory retrieval
-When the user asks about what you remember or what you have learned, **always** use the `check_stored_data` tool (listed in Available Tools) to retrieve stored facts rather than reading the memory.py source file directly. Reading memory.py will not show you the learned facts.
+When the user asks about what you remember or what you have learned, **always** use the `search_memory` tool (listed in Available Tools) to search for relevant learned facts. `search_memory` performs a semantic search across stored memories and returns the most relevant results. You can also use `check_stored_data` to get a raw listing of recent non‑file entries. Do **not** read the memory.py source file directly – it will not show you the learned facts.
 """
 
 
@@ -854,7 +854,33 @@ def _check_stored_data(args: str) -> str:
     except Exception as e:
         return f"Error reading memory: {e}"
 
+
+def _search_memory(args: str) -> str:
+    """Search stored memories for facts relevant to the query. Args: "query" """
+    try:
+        query = args.strip() if args else ""
+        if not query:
+            return "Search Error: provide a query."
+        results = memory_bank.recall(query, n_results=5)
+        if not results:
+            return "No relevant memories found."
+        lines = [f"Relevant memories ({len(results)}):"]
+        for i, doc in enumerate(results):
+            # Don't show file entries in this search either
+            if doc.startswith("FILE:"):
+                continue
+            snippet = doc[:500].replace("\n", " ")
+            lines.append(f"\n--- Result {i+1} ---\n{snippet}")
+        ret = "\n".join(lines)
+        if ret.strip() == f"Relevant memories ({len(results)}):":
+            return "No non‑file facts found for that query."
+        return ret
+    except Exception as e:
+        return f"Error searching memory: {e}"
+
+
 AVAILABLE_TOOLS["check_stored_data"] = _check_stored_data
+AVAILABLE_TOOLS["search_memory"] = _search_memory
 TOOLS_LIST = _build_tools_list()
 
 _logs_count_at_last_learn = 0
