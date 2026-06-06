@@ -813,7 +813,7 @@ When the user asks you to research multiple GitHub repositories, gather statisti
 Below is the mandatory procedure.  **You may NOT skip any step.**  
 
 1. **Explore** – First try `search_web` for broad results. If it returns nothing useful, switch to the **GitHub search API** via `run_cmd`:  
-   `curl -s "https://api.github.com/search/repositories?q=ai+agent+framework&sort=stars&order=desc&per_page=5" | python3 -c "import sys,json; data=json.load(sys.stdin); [print(f'{i+1}. {item[\"full_name\"]} - ⭐{item[\"stargazers_count\"]} - 🍴{item[\"forks_count\"]}') for i,item in enumerate(data['items'])]"`  
+   `curl -s "https://api.github.com/search/repositories?q=ai+agent+framework&sort=stars&order=desc&per_page=5" | python3 -c "import sys,json; data=json.load(sys.stdin); [print(f'{i+1}. {item["full_name"]} - ⭐{item["stargazers_count"]} - 🍴{item["forks_count"]}') for i,item in enumerate(data['items'])]"`  
    Pick the **top 3** that are actual AI agent frameworks.
 
 2. **Extract star/fork counts** – For each of the 3 chosen repositories, run:  
