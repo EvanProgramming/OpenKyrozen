@@ -1509,6 +1509,14 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 "role": "system",
                 "content": _build_memory_context(user_input),
             },
+            {
+                "role": "system",
+                "content": (
+                    "Here are the tools you can use. "
+                    "Make sure to pick an action name exactly as listed:\n"
+                    + TOOLS_LIST
+                )
+            },
             {"role": "user", "content": user_input},
             {"role": "assistant", "content": current_reply},
             {
