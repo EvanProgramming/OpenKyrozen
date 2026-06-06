@@ -1298,6 +1298,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     # Unified multi‑step loop – always runs, can handle early errors
     round_limit = MAX_STEPS_PER_TURN
     round_count = 0
+    incomplete_prompt_attempts = 0
     final_answer: str | None = None
     current_reply = response_text
     has_errors = any(_is_tool_error(r) for r in results)
@@ -1358,6 +1359,14 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         if not next_tool_calls:
             # If there are still pending tasks, do NOT finish — keep asking
             if tasks.tasks and any(t["status"] != "done" for t in tasks.tasks):
+                incomplete_prompt_attempts += 1
+                if incomplete_prompt_attempts >= 3:
+                    # Force complete remaining tasks to avoid infinite loop
+                    for t in tasks.tasks:
+                        if t["status"] == "pending":
+                            t["status"] = "done"
+                    console.print(f"[yellow]Auto‑completed remaining tasks after {incomplete_prompt_attempts} prompts.[/yellow]")
+                    break
                 summary_messages.append({
                     "role": "user",
                     "content": "System: There are still incomplete tasks. Output the next Action block now."
@@ -1371,7 +1380,11 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 tasks.mark_done_from_text(step_reply)
                 next_tool_calls = _collect_tool_calls(step_reply)
                 if not next_tool_calls:
-                    final_answer = step_reply
+                    # After retry still no action, mark incomplete tasks as done and exit
+                    for t in tasks.tasks:
+                        if t["status"] == "pending":
+                            t["status"] = "done"
+                    console.print("[yellow]Auto‑completed remaining tasks (no action after retry).[/yellow]")
                     break
             elif _is_question(step_reply):
                 # re‑prompt if the LLM asked a question instead of acting
