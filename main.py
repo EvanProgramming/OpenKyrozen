@@ -1445,9 +1445,17 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     for tc in tool_calls:
         action = tc.get("action", "")
         args = tc.get("args", "")
-        if not isinstance(args, str):
-            args = str(args)
-        result = _run_tool(action, args)
+        if isinstance(args, dict):
+            result = (
+                f"Error: `{action}` requires a plain string as the `args` field.\n"
+                "You passed a JSON object. Convert to a plain string.\n"
+                "Example: `\"args\": \"python3 process_logs.py\"`\n"
+                "Do NOT use `\"args\": {\"cmd\": ...}`.\n"
+            )
+        else:
+            if not isinstance(args, str):
+                args = str(args)
+            result = _run_tool(action, args)
         safe_result = str(result)[:2000]
         console.print(Panel(safe_result, title=f"Result of {action}", border_style="yellow"))
         results.append(f"- `{action}({args!r})` returned:\n{safe_result}")
@@ -1622,9 +1630,17 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         for tc2 in next_tool_calls:
             action = tc2.get("action", "")
             args = tc2.get("args", "")
-            if not isinstance(args, str):
-                args = str(args)
-            result2 = _run_tool(action, args)
+            if isinstance(args, dict):
+                result2 = (
+                    f"Error: `{action}` requires a plain string as the `args` field.\n"
+                    "You passed a JSON object. Convert to a plain string.\n"
+                    "Example: `\"args\": \"python3 process_logs.py\"`\n"
+                    "Do NOT use `\"args\": {\"cmd\": ...}`.\n"
+                )
+            else:
+                if not isinstance(args, str):
+                    args = str(args)
+                result2 = _run_tool(action, args)
             safe_result2 = str(result2)[:2000]
             console.print(Panel(safe_result2, title=f"Result of {action}", border_style="yellow"))
             next_results.append(f"- `{action}({args!r})` returned:\n{safe_result2}")
