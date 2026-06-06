@@ -1146,7 +1146,7 @@ def _run_tool(action: str, args: str) -> str:
             args = cmd
         elif action == "write_file":
             path = args.get("file_path") or args.get("path") or ""
-            content = args.get("content", "")
+            content = args.get("content") or args.get("text") or ""
             args = f"{path}|{content}"
         else:
             args = json.dumps(args)
@@ -1160,7 +1160,7 @@ def _run_tool(action: str, args: str) -> str:
                     args = cmd
                 elif action == "write_file":
                     path = parsed.get("file_path") or parsed.get("path") or ""
-                    content = parsed.get("content", "")
+                    content = parsed.get("content") or parsed.get("text") or ""
                     args = f"{path}|{content}"
                 else:
                     args = json.dumps(parsed)
