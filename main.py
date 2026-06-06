@@ -55,6 +55,7 @@ TOOL_ALIASES: dict[str, str] = {
     "execute": "run_cmd",
     "list_tree": "list_tree",
     "tree": "list_tree",
+    "check_memory": "check_stored_data",
 }
 
 def _is_valid_action(name: str | None) -> bool:
@@ -831,14 +832,24 @@ memory_bank = MemoryBank()
 
 # ---- Tool to let agent examine its own memory ----
 def _check_stored_data(args: str) -> str:
-    """Return a summary of stored memories from ChromaDB (or in‑memory fallback)."""
+    """Return a summary of stored memories from ChromaDB (or in‑memory fallback).
+    Only facts (non‑file entries) are shown; source code copies are hidden to reduce noise."""
     try:
         total = memory_bank.count_logs()
-        recent = memory_bank.get_recent(5)
+        # Retrieve enough logs to find non‑FILE entries.
+        recent_all = memory_bank.get_recent(200)
+        # Filter out FILE entries
+        fact_entries = [log for log in recent_all if not log.startswith("FILE:")]
+        # Show only the most recent 5 non‑FILE logs
+        displayed = fact_entries[:5]
         lines = [f"Total stored logs: {total}"]
-        for i, log in enumerate(recent):
-            snippet = log[:300]
-            lines.append(f"\n--- Log {i+1} ---\n{snippet}")
+        if displayed:
+            for i, log in enumerate(displayed):
+                snippet = log[:300]
+                lines.append(f"\n--- Log {i+1} (FACT) ---\n{snippet}")
+        else:
+            lines.append("\n(No non‑file facts have been learned yet.)")
+        lines.append(f"\nTotal non‑file fact entries: {len(fact_entries)}")
         return "\n".join(lines)
     except Exception as e:
         return f"Error reading memory: {e}"
