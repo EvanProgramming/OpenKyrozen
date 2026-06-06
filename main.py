@@ -1755,6 +1755,7 @@ def main() -> None:
         console.print(f"[dim]Self‑learning features enabled: {', '.join(enabled)}.[/dim]")
     else:
         console.print("[dim]All self‑learning features are disabled (use /self‑learning to enable).[/dim]")
+    console.print("[dim]Learning results are stored in `chroma_memory/` (ChromaDB persistent storage). You can also see them by asking the agent what it remembers.[/dim]")
 
     _prompt_and_init_deepseek()
     if deepseek_client is None:
