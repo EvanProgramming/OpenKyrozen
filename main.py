@@ -520,6 +520,62 @@ def _targeted_inquiry() -> None:
                 return  # one inquiry per cycle
 
 
+def _invent_skills() -> None:
+    """Examine recent conversation logs and create a reusable skill
+    (workflow) that the agent can later call via memory retrieval."""
+    recent = memory_bank.get_recent(40)
+    if not recent:
+        return
+    # Exclude system‑internal logs (FILE, FACT, SKILL, LEARNED)
+    logs = [
+        r for r in recent
+        if not r.startswith("FILE:")
+        and not r.startswith("FACT:")
+        and not r.startswith("LEARNED:")
+        and not r.startswith("SKILL:")
+    ]
+    if len(logs) < 5:
+        return
+
+    prompt = (
+        "You are Kyrozen's skill invention module. Read the following recent "
+        "conversation logs and extract a reusable skill (workflow) that the "
+        "agent could follow in the future to accomplish similar tasks more "
+        "efficiently.\n\n"
+        "Output exactly in this format, nothing else:\n\n"
+        "Skill Name: <short name>\n"
+        "Description: <short description>\n"
+        "Steps:\n"
+        "1. <step>\n"
+        "2. <step>\n"
+        "...\n\n"
+        "If you cannot identify a useful skill, output only the single character '—'.\n\n"
+        + "\n".join(logs[-20:])
+    )
+    try:
+        messages = [{"role": "system", "content": prompt}]
+        answer = _get_llm_response(messages).strip()
+        if answer in ("—", ""):
+            return
+        # Parse the answer
+        name_match = re.search(r"Skill Name:\s*(.+)", answer, re.IGNORECASE)
+        desc_match = re.search(r"Description:\s*(.+)", answer, re.IGNORECASE)
+        steps_match = re.search(r"Steps:\s*(.+)", answer, re.DOTALL | re.IGNORECASE)
+        skill_name = name_match.group(1).strip() if name_match else "unknown"
+        description = desc_match.group(1).strip() if desc_match else ""
+        steps_text = steps_match.group(1).strip() if steps_match else ""
+        lines = steps_text.split("\n")
+        steps_clean = [line.strip() for line in lines if line.strip() and line.strip()[:1].isdigit()]
+        steps_str = "\n".join(steps_clean)
+        stored = f"SKILL: {skill_name} | {description}\nSteps:\n{steps_str}"
+        memory_bank.add_log(stored)
+        # Also log a short FACT so the agent sees it quickly
+        memory_bank.add_log(f"FACT: Learned a reusable skill called '{skill_name}' "
+                            f"( {description} )")
+    except Exception:
+        pass
+
+
 # -------- Auto‑Patching (Background Knowledge) --------
 _known_libraries = set()
 def _auto_patch_new_technology(user_input: str) -> None:
