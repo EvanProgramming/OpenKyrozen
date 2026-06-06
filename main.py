@@ -808,18 +808,35 @@ def _system_prompt(tools_list: str) -> str:
 ## Available Tools:
 {tools_list}
 
-### 📌 Guidelines for multi‑step research tasks
-When the user asks you to research multiple GitHub repositories, gather statistics, run Python scripts, or produce a final report, **follow every single step** in order. Do **not** stop after the first search. Here is the recommended method:
+### 📌 Multi‑step research tasks – **you must complete ALL steps**
+When the user asks you to research multiple GitHub repositories, gather statistics, run Python scripts, or produce a final report, **you must follow every single step** and **never stop early**.  
+Below is the mandatory procedure.  **You may NOT skip any step.**  
 
-1. **Explore** – Use `search_web` to find candidate projects (e.g., “top AI agent frameworks GitHub 2025”). Follow the links returned.
-2. **Extract data** – For each candidate repository, use the **GitHub REST API** directly:  
-   `run_cmd('curl -s https://api.github.com/repos/owner/repo | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[\'stargazers_count\'], d[\'forks_count\'])"')`  
-   (This is the most reliable method; do **not** use `read_webpage` for API endpoints that return JSON with many embedded URLs.)
-   ⚠️ **Do not** fetch any of the extra URLs that appear inside the JSON (e.g. `keys_url`, `events_url`) – they will fail and waste turns.
-3. **Compute** – After you have the numbers, **write a Python script** using `write_file`, then **run it** with `run_cmd('python3 script.py')`. The script should calculate an activity score (e.g., `star*0.2+fork*0.3+commits*0.5`) and save a bar chart as `agent_audit_report.png`.
-4. **Finalize** – Use `write_file` to create a `README.md` summarizing your findings and embedding the chart image reference.
+1. **Explore** – First try `search_web` for broad results. If it returns nothing useful, switch to the **GitHub search API** via `run_cmd`:  
+   `curl -s "https://api.github.com/search/repositories?q=ai+agent+framework&sort=stars&order=desc&per_page=5" | python3 -c "import sys,json; data=json.load(sys.stdin); [print(f'{i+1}. {item[\"full_name\"]} - ⭐{item[\"stargazers_count\"]} - 🍴{item[\"forks_count\"]}') for i,item in enumerate(data['items'])]"`  
+   Pick the **top 3** that are actual AI agent frameworks.
 
-Always take **one step per message**. After each tool result, output the next Action block until all steps are finished. Use the `TaskList` and `TaskDone` system to track progress.
+2. **Extract star/fork counts** – For each of the 3 chosen repositories, run:  
+   `curl -s https://api.github.com/repos/OWNER/REPO | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['stargazers_count'], d['forks_count'])"`  
+   ⚠️ **Do NOT** use `read_webpage` on API endpoints.  
+   ⚠️ **Do NOT** fetch any extra URLs that appear inside the JSON response (e.g. `keys_url`, `events_url`, `hooks_url`) – they will fail and waste turns.  
+
+3. **Extract last‑month commit count** – For each repository, obtain the approximate commit count for the last 30 days. The most reliable approach is:  
+   `curl -s https://api.github.com/repos/OWNER/REPO/stats/commit_activity | python3 -c "import json,sys; weeks=json.load(sys.stdin); print(sum(w['total'] for w in weeks[-4:]))"`  
+   (If the endpoint is unavailable, fall back to parsing the commit count from the repo's `read_webpage` view.)
+
+4. **Compute and visualise** – After you have the numbers, **write a Python script** using `write_file`, then **run it** with `run_cmd('python3 script.py')`.  
+   The script must calculate an activity score (e.g. `score = star*0.2 + fork*0.3 + commits*0.5`) and save a bar chart as `agent_audit_report.png`.
+
+5. **Final report** – Use `write_file` to create a `README.md` that summarises your findings, includes the chart image reference, and recommends the most active project.
+
+**Important:**  
+- Always output a **Plan** block first, then a **TaskList** containing **all 5 steps** (as a JSON array with clear descriptions).  
+- After each tool call that finishes one of those tasks, output **`TaskDone: <zero‑based index>`** (e.g. `TaskDone: 0` when step 1 is complete).  
+- **Do not stop** after step 1 or step 2. Continue issuing Action blocks until every task in the TaskList is marked done.  
+- If you hit a GitHub API rate limit, wait 60 seconds and retry (you can use `time.sleep(60)` inside `run_cmd`).  
+- If you run out of the allowed number of tool calls, the system will **re‑prompt you** until you finish. You cannot escape by saying "I already did it".  
+- Do **not** ask the user for permission to continue – just proceed automatically.
 
 🌐 **Action name rules:** The only defined action names are those listed above. Do **not** use `"bash"`, `"shell"`, or any other name – always use `"run_cmd"` for command execution.  
 **Warning:** If you use an action name that is not listed above, the system will reject it and you will be forced to try again with a correct action. Do not invent new names.
