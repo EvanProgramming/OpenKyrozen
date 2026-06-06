@@ -73,6 +73,31 @@ def _detect_unknown_action(text: str) -> str | None:
     return None
 
 
+def _workspace_info() -> str:
+    """Return a message describing the current working location,
+    adjusting when the agent is inside an OpenKyrozen folder."""
+    cwd = os.getcwd()
+    parent = os.path.dirname(cwd)
+    if os.path.basename(cwd) == "OpenKyrozen":
+        return (
+            f"OpenKyrozen is installed inside `{cwd}`.\n"
+            f"Your workspace (the folder you are working on) is located one level above:\n"
+            f"{parent}\n\n"
+            "You should treat all file operations relative to your workspace.\n"
+            "For example, to list files in your workspace use `list_dir('.')`.\n"
+            "To read a file that is in your workspace (not inside OpenKyrozen), "
+            "use an absolute or relative path as usual – the agent is currently running "
+            "inside the OpenKyrozen folder, but your project files are in your workspace."
+        )
+    else:
+        return (
+            f"You are currently working inside the directory:\n{cwd}\n\n"
+            "You can use relative paths like '.' or 'main.py' directly.\n"
+            "Do not ask the user to supply a local path or a remote URL unless you intend to "
+            "use the `analyze_remote_repo` tool to clone an external repository."
+        )
+
+
 console = Console()
 bg_console = Console(stderr=True)
 
@@ -704,6 +729,23 @@ TOOLS_LIST = _build_tools_list()
 
 
 def _system_prompt(tools_list: str) -> str:
+    cwd = os.getcwd()
+    parent = os.path.dirname(cwd)
+    if os.path.basename(cwd) == "OpenKyrozen":
+        cwd_note = (
+            "## Current working directory\n"
+            f"OpenKyrozen is installed inside `{cwd}`.\n"
+            f"Your workspace (the folder you are working on) is located one level above:\n"
+            f"{parent}\n\n"
+            "All file operations should be relative to your workspace, not to the OpenKyrozen folder.\n"
+            "For example, `list_dir('.')` will list your workspace contents, and `read_file('main.py')` will refer to a file in your workspace.\n"
+            "Do not ask the user to supply a local path or a remote URL unless you intend to use the `analyze_remote_repo` tool to clone an external repository."
+        )
+    else:
+        cwd_note = (
+            "## Current working directory\n"
+            "You are currently inside the project root directory of the repository the user is working in.  Relative paths (like \"README.md\" or \"main.py\") will be resolved correctly.  You can use `read_file`, `write_file`, `list_dir`, `find_files`, `run_cmd`, etc. **without needing the user to provide a path**.  Do **not** ask the user to supply a local path or a remote URL unless you intend to use the `analyze_remote_repo` tool to clone an external repository."
+        )
     return f"""You are Kyrozen, an intelligent, self‑learning AI assistant. You have access to tools and can learn from project files and past conversations to improve your knowledge over time.
 
 ## Available Tools:
@@ -712,8 +754,7 @@ def _system_prompt(tools_list: str) -> str:
 🌐 **Action name rules:** The only defined action names are those listed above. Do **not** use `"bash"`, `"shell"`, or any other name – always use `"run_cmd"` for command execution.  
 **Warning:** If you use an action name that is not listed above, the system will reject it and you will be forced to try again with a correct action. Do not invent new names.
 
-## Current working directory
-You are currently inside the project root directory of the repository the user is working in.  Relative paths (like "README.md" or "main.py") will be resolved correctly.  You can use `read_file`, `write_file`, `list_dir`, `find_files`, `run_cmd`, etc. **without needing the user to provide a path**.  Do **not** ask the user to supply a local path or a remote URL unless you intend to use the `analyze_remote_repo` tool to clone an external repository.
+{cwd_note}
 
 ## How to use tools
 When you need to perform an action, you **must** output a Thought followed by **exactly one** Action in JSON format enclosed in triple backticks.
@@ -1338,7 +1379,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                     "Otherwise, output only a plain final answer."
                 )
             },
-            {"role": "system", "content": f"You are working inside {os.getcwd()}."},
+            {"role": "system", "content": _workspace_info()},
             {
                 "role": "system",
                 "content": _build_memory_context(user_input),
