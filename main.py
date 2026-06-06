@@ -863,6 +863,16 @@ Action:
 }}
 ```
 
+**CRITICAL ARGUMENT RULES:**
+- The `args` field **must** be a **single plain string**, never a JSON object (dict).  
+- If a tool requires two pieces of data (e.g. `write_file` needs a path and content), you **must** separate them with a pipe `|` (e.g. `"raw_logs.txt|hello world"`).  
+- Do **not** pass a JSON object like `{"path":...,"content":...}` – that will cause an error.  
+- For `run_cmd` and `execute_terminal_command`, the argument is the **complete shell command** as a single string. Do not leave it empty.  
+- For any tool, the argument must be **non‑empty** unless the tool explicitly tolerates an empty string (none do).  
+- You must never use an action name that is not listed in Available Tools (aliases such as `bash`, `shell`, `run_shell_command` are permitted – see the alias list).  
+
+If you output an empty argument or an incorrect format, the tool **will fail** and you will be forced to retry.
+
 If you need to run several tools in sequence, run **one per message** – the system will then ask you for the next step.
 
 If no action is required, respond naturally in plain text.
