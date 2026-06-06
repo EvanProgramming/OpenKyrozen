@@ -1443,6 +1443,14 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     final_answer: str | None = None
     current_reply = response_text
     has_errors = any(_is_tool_error(r) for r in results)
+    # check for missing arguments errors
+    _args_missing_errors = [
+        "requires a command",
+        "requires args in format path|content",
+    ]
+    _has_args_missing = any(
+        any(pat in r for pat in _args_missing_errors) for r in results
+    )
     # Remember the first tool-call block for the context
     initial_response = response_text
 
@@ -1451,7 +1459,18 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         error_hint = ""
         if has_errors:
             error_hint = (
-                "The tool returned an error. The action name may be wrong. "
+                "The tool returned an error. "
+            )
+            if _has_args_missing:
+                error_hint += (
+                    "You probably forgot to provide the argument string. "
+                    "For `write_file` the argument must be `path|content` (with a pipe separator). "
+                    "For `run_cmd` or `execute_terminal_command` the argument must be the command string. "
+                    "Do not leave the argument empty.\n"
+                )
+            else:
+                error_hint += "The action name may be wrong. "
+            error_hint += (
                 "If you used a self‑created tool, try using a built‑in tool instead. "
                 "Use one of the following actions: "
                 + ", ".join(sorted(AVAILABLE_TOOLS.keys())) + ".\n"
@@ -1587,6 +1606,12 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             if _is_tool_error(result2):
                 has_errors = True
         tool_results_text = "\n".join(next_results)
+        _has_args_missing = any(
+            any(pat in r for pat in [
+                "requires a command",
+                "requires args in format path|content",
+            ]) for r in next_results
+        )
         # Check if all pending tasks are done; if so, stop (no need to ask LLM for more steps)
         if tasks.tasks and all(t["status"] != "pending" for t in tasks.tasks):
             final_answer = current_reply
