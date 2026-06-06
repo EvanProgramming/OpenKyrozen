@@ -420,5 +420,6 @@ AVAILABLE_TOOLS: dict[str, Any] = {
     "git_status": git_status,
     "execute_terminal_command": execute_terminal_command,
     "analyze_remote_repo": analyze_remote_repo,
+    "list_tree": list_tree,
     "read_webpage": read_webpage,
 }
