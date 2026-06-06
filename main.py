@@ -825,6 +825,23 @@ When the user asks you to analyze the repository, start by running `list_dir('.'
 
 
 memory_bank = MemoryBank()
+
+# ---- Tool to let agent examine its own memory ----
+def _check_stored_data(args: str) -> str:
+    """Return a summary of stored memories from ChromaDB (or in‑memory fallback)."""
+    try:
+        total = memory_bank.count_logs()
+        recent = memory_bank.get_recent(5)
+        lines = [f"Total stored logs: {total}"]
+        for i, log in enumerate(recent):
+            snippet = log[:300]
+            lines.append(f"\n--- Log {i+1} ---\n{snippet}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error reading memory: {e}"
+
+AVAILABLE_TOOLS["check_stored_data"] = _check_stored_data
+
 _logs_count_at_last_learn = 0
 short_term_memory: list[dict[str, str]] = [
     {"role": "user", "content": "Hello, are you ready to help me?"},
