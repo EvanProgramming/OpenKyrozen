@@ -15,6 +15,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 for p in pathlib.Path(__file__).parent.rglob("__pycache__"):
     shutil.rmtree(p, ignore_errors=True)
 
+import ast
 import json
 import os
 import re
@@ -936,6 +937,22 @@ def _run_tool(action: str, args: str) -> str:
         else:
             import json
             args = json.dumps(args)
+    # also try to parse a string that looks like a Python dict literal
+    elif isinstance(args, str) and args.startswith("{"):
+        try:
+            parsed = ast.literal_eval(args)
+            if isinstance(parsed, dict):
+                if action in ("run_cmd", "execute_terminal_command"):
+                    cmd = parsed.get("cmd") or parsed.get("command") or ""
+                    args = cmd
+                elif action == "write_file":
+                    path = parsed.get("file_path") or parsed.get("path") or ""
+                    content = parsed.get("content", "")
+                    args = f"{path}|{content}"
+                else:
+                    args = json.dumps(parsed)
+        except (ValueError, SyntaxError):
+            pass
     fn = AVAILABLE_TOOLS.get(action)
     if not fn:
         return f"Error: unknown tool '{action}'"
