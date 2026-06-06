@@ -1298,6 +1298,8 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 for tc in tool_calls:
                     safe_args = str(tc.get('args') or '')[:50]
                     tasks.add_task(f"Execute {tc.get('action','?')}: {safe_args}")
+                if tasks.tasks:
+                    console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
     tool_was_search = any(tc.get("action") == "search_web" for tc in tool_calls)
     if not tool_calls:
         # If the user request seems to ask for action (search, research, write, save, compare, etc.)
