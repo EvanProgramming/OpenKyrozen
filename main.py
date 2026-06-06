@@ -1631,7 +1631,7 @@ def _background_learning_loop() -> None:
     """Enhanced loop with consolidation, reflection, tool review, auto‑inquiry."""
     global _last_user_interaction
     while True:
-        time.sleep(120)
+        time.sleep(30)
         try:
             now = time.time()
             idle_duration = now - _last_user_interaction
@@ -1639,6 +1639,8 @@ def _background_learning_loop() -> None:
             # Skip heavy background work if the user has been active within the last 1 minute
             if idle_duration < 60:
                 continue
+
+            console.print("[dim]Learning...[/dim]")
 
             # silently learning
             _auto_learn_conversations()
