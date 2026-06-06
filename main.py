@@ -785,6 +785,11 @@ After such definition the new tool will be available for future use.
 
 **Important**: Do **not** define a tool whose name already exists in the list of Available Tools. Use the built‑in tools directly via the Action block.
 
+### Always verify file paths
+When you create a file using `write_file`, the tool returns its **absolute path** (e.g. `Wrote 800 characters to /Users/.../Testing/matrix_calculator.py`).  
+**Always** read that path from the result and use the **absolute** path in any subsequent `run_cmd` or `read_file` call.  
+If you do not see the absolute path, run `read_file` on the relative path to make sure you have the correct location, then remember that absolute path for later use.
+
 **Format requirement**: Do **not** use raw XML tags (`<tool_name>args</tool_name>`) to invoke a tool. Only use the JSON Action block described above.
 
 ### Task management
