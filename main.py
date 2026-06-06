@@ -1749,6 +1749,12 @@ def main() -> None:
     console.print(Panel.fit(banner_text, title="OPEN KYROZEN", subtitle="self‑learning AI agent", border_style="cyan"))
     console.print(f"Kyrozen (DeepSeek + Tools). Model: {MODEL_NAME}", style="cyan")
     console.print("Commands: /quit or /exit to exit, /update to pull latest version, /learn to reload project files, /api_key to change API key, /self‑learning to toggle self‑learning features.\n", style="yellow")
+    # Show which self‑learning features are enabled
+    enabled = [name for name, val in _SELF_LEARNING_FLAGS.items() if val]
+    if enabled:
+        console.print(f"[dim]Self‑learning features enabled: {', '.join(enabled)}.[/dim]")
+    else:
+        console.print("[dim]All self‑learning features are disabled (use /self‑learning to enable).[/dim]")
 
     _prompt_and_init_deepseek()
     if deepseek_client is None:
