@@ -783,6 +783,8 @@ DefineTool:
 
 After such definition the new tool will be available for future use.
 
+**Important**: Do **not** define a tool whose name already exists in the list of Available Tools. Use the built‑in tools directly via the Action block.
+
 ### Task management
 For **every** request that requires multiple steps (e.g., searching, comparing, saving files), you **must** first output a `TaskList:` block containing a JSON array of task descriptions.
 If a request can be done in a single step, you do not need a TaskList.
@@ -1122,6 +1124,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     MAX_RETRIES = 3
     messages = _build_messages(user_input)
     response_text = _call_llm_with_spinner(messages).strip()
+    _attempted_define_tool = "DefineTool:" in response_text
     turn_prompt_total += _last_prompt_tokens
     turn_completion_total += _last_completion_tokens
 
@@ -1165,13 +1168,20 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         # If the user request seems to ask for action (search, research, write, save, compare, etc.)
         # and the assistant didn't produce any tool call, re‑prompt with a strong reminder.
         if _requires_tool_action(user_input):
-            messages.append({
-                "role": "user",
-                "content": (
+            if _attempted_define_tool:
+                reminder_msg = (
+                    "System: You tried to define a new tool, but a built‑in tool with that name already exists. "
+                    'Use the built‑in tool directly by outputting an Action block (e.g., {"action":"write_file","args":"path|content"}).'
+                )
+            else:
+                reminder_msg = (
                     "System: You did not output an Action block. "
                     "You **must** now output a JSON Action block to perform the actual work. "
                     "Do not explain; just output the Action block."
                 )
+            messages.append({
+                "role": "user",
+                "content": reminder_msg,
             })
             response_text = _call_llm_with_spinner(messages).strip()
             turn_prompt_total += _last_prompt_tokens
