@@ -106,7 +106,7 @@ bg_console = Console(stderr=True)
 MODEL_NAME = "deepseek-chat"
 SHORT_TERM_CAP = 16
 MAX_TOOL_RETRIES = 3
-MAX_STEPS_PER_TURN = 20          # how many tool‑call rounds the LLM may perform in one user turn
+MAX_STEPS_PER_TURN = 50          # how many tool‑call rounds the LLM may perform in one user turn
 MAX_UNKNOWN_TOOL_RETRIES = 3     # how many times to re‑prompt when LLM uses an unrecognised action name
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
 IDLE_CONSOLIDATION_TIMEOUT = 60   # 1 minute
@@ -1505,7 +1505,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             # If there are still pending tasks, do NOT finish — keep asking
             if tasks.tasks and any(t["status"] != "done" for t in tasks.tasks):
                 incomplete_prompt_attempts += 1
-                if incomplete_prompt_attempts >= 3:
+                if incomplete_prompt_attempts >= 15:
                     # Force complete remaining tasks to avoid infinite loop
                     for t in tasks.tasks:
                         if t["status"] == "pending":
