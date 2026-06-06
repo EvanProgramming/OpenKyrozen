@@ -1701,9 +1701,9 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
 
     if final_answer is None:
         # Fallback if the loop exited without a final answer
-        final_answer = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
+        final_answer = f"I executed your request. Here is the information I gathered:\n\n{_safe_fstring(tool_results_text)}"
     elif len(final_answer.strip()) < 10:
-        final_answer = f"I executed your request. Here is the information I gathered:\n\n{tool_results_text}"
+        final_answer = f"I executed your request. Here is the information I gathered:\n\n{_safe_fstring(tool_results_text)}"
 
     # Also detect user correction (e.g., "not correct", "you misunderstood")
     correction_keywords = ["not correct", "you misunderstood", "wrong", "incorrect", "fix it"]
