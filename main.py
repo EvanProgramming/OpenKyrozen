@@ -63,6 +63,7 @@ TOOL_ALIASES: dict[str, str] = {
     "shell_cmd": "run_cmd",
     "bash_cmd": "run_cmd",
     "command": "run_cmd",
+    "run": "run_cmd",
     "run_shell": "run_cmd",
     "write": "write_file",
 }
