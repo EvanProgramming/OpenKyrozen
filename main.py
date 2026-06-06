@@ -785,6 +785,8 @@ After such definition the new tool will be available for future use.
 
 **Important**: Do **not** define a tool whose name already exists in the list of Available Tools. Use the built‑in tools directly via the Action block.
 
+**Format requirement**: Do **not** use raw XML tags (`<tool_name>args</tool_name>`) to invoke a tool. Only use the JSON Action block described above.
+
 ### Task management
 For **every** request that requires multiple steps (e.g., searching, comparing, saving files), you **must** first output a `TaskList:` block containing a JSON array of task descriptions.
 If a request can be done in a single step, you do not need a TaskList.
@@ -929,15 +931,6 @@ def _collect_tool_calls(text: str) -> list[dict]:
             if obj not in calls:
                 calls.append(obj)
 
-    # 4. XML‑style <tool_name>args</tool_name>
-    xml_pattern = r'<(\w+)>\s*(.*?)\s*</\1>'
-    for match in re.finditer(xml_pattern, text, re.DOTALL):
-        action = match.group(1)
-        args = match.group(2).strip()
-        if _is_valid_action(action):
-            new_call = {"action": action, "args": args}
-            if new_call not in calls:
-                calls.append(new_call)
 
     return calls
 
