@@ -34,6 +34,7 @@ from typing import Any
 from openai import OpenAI
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich import print as rprint
 
@@ -1463,7 +1464,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 args = str(args)
             result = _run_tool(action, args)
         safe_result = str(result)[:2000]
-        console.print(Panel(safe_result, title=f"Result of {action}", border_style="yellow"))
+        console.print(Panel(rich_escape(safe_result), title=f"Result of {action}", border_style="yellow"))
         results.append(f"- `{action}({args!r})` returned:\n{_safe_fstring(safe_result)}")
         tasks.mark_first_pending_done()
         if tasks.tasks:
@@ -1677,7 +1678,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                     args = str(args)
                 result2 = _run_tool(action, args)
             safe_result2 = str(result2)[:2000]
-            console.print(Panel(safe_result2, title=f"Result of {action}", border_style="yellow"))
+            console.print(Panel(rich_escape(safe_result2), title=f"Result of {action}", border_style="yellow"))
             next_results.append(f"- `{action}({args!r})` returned:\n{_safe_fstring(safe_result2)}")
             tasks.mark_first_pending_done()
             if tasks.tasks:
@@ -1899,7 +1900,7 @@ def main() -> None:
     # Show which self‑learning features are enabled
     enabled = [name for name, val in _SELF_LEARNING_FLAGS.items() if val]
     if enabled:
-        console.print(f"[dim]Self‑learning features enabled: {', '.join(enabled)}.[/dim]")
+        console.print(f"[dim]Self‑learning features enabled: {rich_escape(', '.join(enabled))}.[/dim]")
     else:
         console.print("[dim]All self‑learning features are disabled (use /self‑learning to enable).[/dim]")
     console.print("[dim]Learning results are stored in `chroma_memory/` (ChromaDB persistent storage). You can also see them by asking the agent what it remembers.[/dim]")
@@ -1989,9 +1990,9 @@ def main() -> None:
         if thinking:
             console.print(Panel(thinking, title="Thinking", border_style="dim white"))
         if answer:
-            console.print(Panel(Markdown(answer), title="Agent", border_style="green"))
+            console.print(Panel(Markdown(rich_escape(answer)), title="Agent", border_style="green"))
         else:
-            console.print(Panel(Markdown(answer or "(no content)"), title="Agent", border_style="green"))
+            console.print(Panel(Markdown(rich_escape(answer or "(no content)")), title="Agent", border_style="green"))
         print()
 
         # Show tasks panel if any tasks exist
@@ -2026,9 +2027,9 @@ def main() -> None:
             if thinking:
                 console.print(Panel(thinking, title="Thinking", border_style="dim white"))
             if answer:
-                console.print(Panel(Markdown(answer), title="Agent", border_style="green"))
+                console.print(Panel(Markdown(rich_escape(answer)), title="Agent", border_style="green"))
             else:
-                console.print(Panel(Markdown(answer or "(no content)"), title="Agent", border_style="green"))
+                console.print(Panel(Markdown(rich_escape(answer or "(no content)")), title="Agent", border_style="green"))
             print()
             if tasks.tasks:
                 console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
