@@ -458,63 +458,11 @@ def _remove_consolidated_entries(logs: list[str]) -> None:
         pass
 
 def _register_tool(name: str, code: str, description: str = "") -> bool:
-    """Define a tool directly from code string, run regression, rollback on failure."""
-    global _saved_user_tools
-    _take_tool_snapshot()
-    local_vars: dict = {}
-    try:
-        exec(code, {"__builtins__": __builtins__, "datetime": datetime, "UTC": datetime.timezone.utc}, local_vars)
-    except Exception:
-        return False
-    if name not in local_vars or not callable(local_vars[name]):
-        return False
-    AVAILABLE_TOOLS[name] = local_vars[name]
-    if not _run_regression_tests():
-        _restore_tool_snapshot()
-        return False
-    memory_bank.add_log(
-        f"New tool defined: {name}\n"
-        f"Description: {description}\n"
-        f"Code:\n```python\n{code}\n```"
-    )
-    print(f"[DefineTool] Added new tool '{name}' to AVAILABLE_TOOLS.")
-    return True
+    return False
 
 # -------- Tool Refactoring --------
 def _review_tools() -> None:
-    """Scan user‑defined tools for duplication and merge candidates."""
-    _take_tool_snapshot()
-    user_defined = {k: v for k, v in AVAILABLE_TOOLS.items() if k not in _BUILTIN_TOOL_NAMES}
-    if len(user_defined) < 2:
-        return
-    names = list(user_defined.keys())
-    review_prompt = (
-        "You are Kyrozen's tool refactoring module. The following tools exist:\n"
-        + "\n".join(f"{n}: {getattr(v, '__doc__', '')[:100]}" for n, v in user_defined.items()) +
-        "\nSuggest a merge plan: choose tools to combine into a single more powerful tool. "
-        "Output JSON as a list of actions: [{\"action\":\"merge\",\"old\":[\"a\",\"b\"],\"new\":\"c\",\"code\":\"def c(args):...\"}]. "
-        "If no merge, output []."
-    )
-    try:
-        messages = [{"role": "system", "content": review_prompt}]
-        answer = _get_llm_response(messages).strip()
-        if answer and answer not in ("[]", ""):
-            plan = json.loads(answer)
-            for item in plan:
-                if item.get("action") == "merge":
-                    old_list = item.get("old", [])
-                    new_name = item.get("new", "")
-                    code = item.get("code", "")
-                    if old_list and new_name and code:
-                        # Remove old tools before registering new one
-                        for old in old_list:
-                            AVAILABLE_TOOLS.pop(old, None)
-                        if _register_tool(new_name, code, description="merged"):
-                            pass
-                        else:
-                            pass
-    except Exception:
-        pass
+    return
 
 
 # -------- Active Exploration (Targeted Inquiry) --------
@@ -1559,51 +1507,7 @@ def _auto_learn_conversations() -> None:
 
 
 def _auto_debug_tool() -> None:
-    """Check tool stats for poorly performing user‑defined tools and attempt auto‑debug."""
-    _take_tool_snapshot()
-    user_defined = {k: v for k, v in AVAILABLE_TOOLS.items()
-                    if k not in _BUILTIN_TOOL_NAMES}
-    for name, func in user_defined.items():
-        stats = _tool_stats.get(name)
-        if stats is None or stats["calls"] < 3:
-            continue
-        success_rate = stats["successes"] / stats["calls"]
-        if success_rate < 0.5:
-            # Debug mode: ask LLM to fix the tool code
-            code = getattr(func, "__code__", None)
-            source = None
-            if code:
-                try:
-                    import inspect
-                    source = inspect.getsource(func)
-                except Exception:
-                    pass
-            if not source:
-                continue
-            debug_prompt = (
-                f"The tool '{name}' has a success rate of {success_rate:.0%} "
-                f"over {stats['calls']} calls. Its current code:\n```python\n{source}\n```\n"
-                "Please rewrite the code to fix the most common errors. "
-                "Output the corrected code as a Python function alone (no extra text)."
-            )
-            try:
-                message = [{"role": "system", "content": debug_prompt}]
-                new_code = _get_llm_response(message).strip()
-                # Remove any markdown fences if present
-                new_code = re.sub(r"^```python\s*", "", new_code)
-                new_code = re.sub(r"\s*```", "", new_code)
-                # Attempt to replace the tool
-                local_vars: dict = {}
-                exec(new_code, {"__builtins__": __builtins__, "datetime": datetime, "UTC": datetime.timezone.utc}, local_vars)
-                if name in local_vars and callable(local_vars[name]):
-                    old_tool = AVAILABLE_TOOLS.get(name)
-                    AVAILABLE_TOOLS[name] = local_vars[name]
-                    if not _run_regression_tests():
-                        _restore_tool_snapshot()
-                        return
-                    memory_bank.add_log(f"AUTO_DEBUG: {name}\nNew code:\n```python\n{new_code}\n```")
-            except Exception as e:
-                pass
+    return
 
 
 def _background_learning_loop() -> None:
