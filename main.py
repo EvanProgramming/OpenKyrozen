@@ -56,6 +56,13 @@ TOOL_ALIASES: dict[str, str] = {
     "list_tree": "list_tree",
     "tree": "list_tree",
     "check_memory": "check_stored_data",
+    "run_shell_command": "run_cmd",
+    "run_shell": "run_cmd",
+    "shell_command": "run_cmd",
+    "execute_shell": "run_cmd",
+    "shell_cmd": "run_cmd",
+    "bash_cmd": "run_cmd",
+    "command": "run_cmd",
 }
 
 def _is_valid_action(name: str | None) -> bool:
