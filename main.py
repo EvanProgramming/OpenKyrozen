@@ -1385,7 +1385,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     if not tool_calls:
         # If the user request seems to ask for action (search, research, write, save, compare, etc.)
         # and the assistant didn't produce any tool call, re‑prompt with a strong reminder.
-        if _requires_tool_action(user_input):
+        if _requires_tool_action(user_input) or _llm_has_plan or _llm_has_tasklist:
             reminder_msg = (
                 "System: You did not output an Action block. "
                 "You **must** now output a JSON Action block to perform the actual work. "
