@@ -977,7 +977,6 @@ def _run_tool(action: str, args: str) -> str:
             content = args.get("content", "")
             args = f"{path}|{content}"
         else:
-            import json
             args = json.dumps(args)
     # also try to parse a string that looks like a Python dict literal
     elif isinstance(args, str) and args.startswith("{"):
