@@ -914,7 +914,7 @@ def _build_messages(user_input: str) -> list[dict[str, str]]:
 
     messages.append({
         "role": "system",
-        "content": f"You are currently working inside the directory:\n{os.getcwd()}\n\nYou can use relative paths like '.' or 'main.py' directly.  Do not ask the user for a local path or a remote URL unless you intend to clone an external repository."
+        "content": _workspace_info()
     })
 
     # Retrieve failure records if relevant
