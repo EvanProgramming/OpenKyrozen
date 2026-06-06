@@ -85,6 +85,20 @@ MAX_UNKNOWN_TOOL_RETRIES = 3     # how many times to re‑prompt when LLM uses a
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
 IDLE_CONSOLIDATION_TIMEOUT = 60   # 1 minute
 
+# -------- Self‑learning feature flags (toggled via /self‑learning) --------
+_SELF_LEARNING_FLAGS: dict[str, bool] = {
+    "auto_learn_conversations": True,
+    "load_project_files_into_memory": True,
+    "age_out_old_coded_entries": True,
+    "auto_debug_tool": True,
+    "consolidate_memories": True,
+    "review_tools": True,
+    "targeted_inquiry": True,
+    "maybe_trigger_reflection": True,
+    "maybe_strategy_distillation": True,
+    "auto_patch_new_technology": True,
+}
+
 
 # -------- Task Manager for multi‑step tasks --------
 class TaskManager:
@@ -1642,24 +1656,70 @@ def _background_learning_loop() -> None:
 
             console.print("[dim]Learning...[/dim]")
 
-            # silently learning
-            _auto_learn_conversations()
-            _load_project_files_into_memory()
-            _age_out_old_coded_entries()
-            _auto_debug_tool()
+            # silently learning (respect self‑learning flags)
+            if _SELF_LEARNING_FLAGS["auto_learn_conversations"]:
+                _auto_learn_conversations()
+            if _SELF_LEARNING_FLAGS["load_project_files_into_memory"]:
+                _load_project_files_into_memory()
+            if _SELF_LEARNING_FLAGS["age_out_old_coded_entries"]:
+                _age_out_old_coded_entries()
+            if _SELF_LEARNING_FLAGS["auto_debug_tool"]:
+                _auto_debug_tool()
 
             if idle_duration > IDLE_CONSOLIDATION_TIMEOUT:
-                _consolidate_memories()
+                if _SELF_LEARNING_FLAGS["consolidate_memories"]:
+                    _consolidate_memories()
                 if not _run_regression_tests():
                     _restore_tool_snapshot()
-                _review_tools()
+                if _SELF_LEARNING_FLAGS["review_tools"]:
+                    _review_tools()
                 if not _run_regression_tests():
                     _restore_tool_snapshot()
-                _targeted_inquiry()
-                _maybe_trigger_reflection()
-                _maybe_strategy_distillation()
+                if _SELF_LEARNING_FLAGS["targeted_inquiry"]:
+                    _targeted_inquiry()
+                if _SELF_LEARNING_FLAGS["maybe_trigger_reflection"]:
+                    _maybe_trigger_reflection()
+                if _SELF_LEARNING_FLAGS["maybe_strategy_distillation"]:
+                    _maybe_strategy_distillation()
         except Exception:
             pass
+
+
+def _show_self_learning_menu() -> None:
+    """Display an interactive menu to toggle self‑learning features."""
+    flag_names = [
+        ("auto_learn_conversations",      "Auto‑learn from conversations"),
+        ("load_project_files_into_memory","Scan project files into memory"),
+        ("age_out_old_coded_entries",     "Age out stale code entries"),
+        ("auto_debug_tool",               "Auto‑debug tools"),
+        ("consolidate_memories",          "Consolidate memories"),
+        ("review_tools",                  "Review and merge tools"),
+        ("targeted_inquiry",              "Targeted inquiry (ask about undocumented code)"),
+        ("maybe_trigger_reflection",      "Idle reflection"),
+        ("maybe_strategy_distillation",   "Strategy distillation"),
+        ("auto_patch_new_technology",     "Auto‑patch new technology info"),
+    ]
+    while True:
+        console.print("[bold cyan]Self‑Learning Features[/bold cyan]")
+        console.print("Enter the number of a feature to toggle it on/off, or 'done' to exit.\n")
+        for i, (key, desc) in enumerate(flag_names):
+            status = "✓" if _SELF_LEARNING_FLAGS[key] else "✗"
+            console.print(f"  {i+1}. [{status}] {desc}")
+        console.print()
+        choice = console.input("[bold yellow]Toggle (number) or 'done': [/bold yellow]").strip().lower()
+        if choice == "done":
+            console.print("[green]Self‑learning settings updated.[/green]")
+            break
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(flag_names):
+                key = flag_names[idx][0]
+                _SELF_LEARNING_FLAGS[key] = not _SELF_LEARNING_FLAGS[key]
+                console.print(f"[green]Toggled {flag_names[idx][1]} to {'enabled' if _SELF_LEARNING_FLAGS[key] else 'disabled'}.[/green]")
+            else:
+                console.print("[red]Invalid number.[/red]")
+        except ValueError:
+            console.print("[red]Please enter a number or 'done'.[/red]")
 
 
 def main() -> None:
@@ -1741,8 +1801,13 @@ def main() -> None:
             console.print(Panel(update_result, title="Update", border_style="blue"))
             continue
 
-        # Auto‑patching: detect new technology mentions
-        _auto_patch_new_technology(user_input)
+        if user_input.lower() == "/self-learning":
+            _show_self_learning_menu()
+            continue
+
+        # Auto‑patching: detect new technology mentions (if enabled)
+        if _SELF_LEARNING_FLAGS["auto_patch_new_technology"]:
+            _auto_patch_new_technology(user_input)
 
         # If there was a pending inquiry and the user answered, store the answer immediately
         if _pending_inquiry is not None:
