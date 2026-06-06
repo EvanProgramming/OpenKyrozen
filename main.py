@@ -172,7 +172,8 @@ class TaskManager:
                 "in_progress": "◷",
                 "done": "✓",
             }.get(t["status"], "?")
-            lines.append(f"  {status_icon}  {t['description']}")
+            desc_safe = _safe_fstring(t["description"])
+            lines.append(f"  {status_icon}  {desc_safe}")
         return "\n".join(lines)
 
     def from_llm_block(self, text: str) -> None:
@@ -943,7 +944,7 @@ def _check_stored_data(args: str) -> str:
         lines = [f"Total stored logs: {total}"]
         if displayed:
             for i, log in enumerate(displayed):
-                snippet = log[:300]
+                snippet = _safe_fstring(log[:300])
                 lines.append(f"\n--- Log {i+1} (FACT) ---\n{snippet}")
         else:
             lines.append("\n(No non‑file facts have been learned yet.)")
@@ -981,7 +982,7 @@ def _search_memory(args: str) -> str:
             # Don't show file entries in this search either
             if doc.startswith("FILE:"):
                 continue
-            snippet = doc[:500].replace("\n", " ")
+            snippet = _safe_fstring(doc[:500].replace("\n", " "))
             lines.append(f"\n--- Result {i+1} ---\n{snippet}")
         ret = "\n".join(lines)
         if ret.strip() == f"Relevant memories ({len(results)}):":
@@ -998,7 +999,7 @@ def _build_memory_context(query: str, n: int = 3) -> str:
         return ""
     lines = ["Remembered facts that may be relevant:"]
     for r in recalled:
-        snippet = r[:300].replace("\n", " ")
+        snippet = _safe_fstring(r[:300].replace("\n", " "))
         lines.append(f"- {snippet}")
     return "\n".join(lines)
 
@@ -1261,6 +1262,11 @@ def _remove_task_blocks(text: str) -> str:
     ).strip()
 
 
+def _safe_fstring(s: str) -> str:
+    """Escape curly braces so they do not interfere with f-string parsing."""
+    return s.replace('{', '{{').replace('}', '}}')
+
+
 def _tasks_from_plan(text: str) -> None:
     """Parse a Plan block and create pending tasks."""
     plan_match = re.search(
@@ -1458,7 +1464,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             result = _run_tool(action, args)
         safe_result = str(result)[:2000]
         console.print(Panel(safe_result, title=f"Result of {action}", border_style="yellow"))
-        results.append(f"- `{action}({args!r})` returned:\n{safe_result}")
+        results.append(f"- `{action}({args!r})` returned:\n{_safe_fstring(safe_result)}")
         tasks.mark_first_pending_done()
         if tasks.tasks:
             console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
@@ -1672,7 +1678,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 result2 = _run_tool(action, args)
             safe_result2 = str(result2)[:2000]
             console.print(Panel(safe_result2, title=f"Result of {action}", border_style="yellow"))
-            next_results.append(f"- `{action}({args!r})` returned:\n{safe_result2}")
+            next_results.append(f"- `{action}({args!r})` returned:\n{_safe_fstring(safe_result2)}")
             tasks.mark_first_pending_done()
             if tasks.tasks:
                 console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
