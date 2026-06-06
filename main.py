@@ -1554,6 +1554,35 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         # extract tool calls for the next step
         next_tool_calls = _collect_tool_calls(step_reply)
 
+        # ----- reject unknown action names and force re‑prompting -----
+        _unknown_tool_retries = 0
+        while _unknown_tool_retries < 3:
+            unknown_action = _detect_unknown_action(step_reply)
+            if not unknown_action:
+                break
+            _unknown_tool_retries += 1
+            msg = (
+                f"System: Action '{unknown_action}' is not recognized.\n"
+                "You **must** use one of the following action names exactly:\n"
+                + ", ".join(sorted(AVAILABLE_TOOLS.keys())) + "\n"
+                "Do not invent new names. Output an Action block now."
+            )
+            # re‑prompt the LLM
+            step_reply = _call_llm_with_spinner(
+                summary_messages + [{"role": "user", "content": msg}]
+            ).strip()
+            turn_prompt_total += _last_prompt_tokens
+            turn_completion_total += _last_completion_tokens
+            if not step_reply:
+                break
+            # re‑parse tasks and tool calls
+            tasks.from_llm_block(step_reply)
+            tasks.mark_done_from_text(step_reply)
+            next_tool_calls = _collect_tool_calls(step_reply)
+
+        # if after 3 retries the action is still unknown, clear the list to avoid a crash
+        if _unknown_tool_retries >= 3:
+            next_tool_calls = []
 
         # if there are no more tool calls, the LLM might still be planning
         if not next_tool_calls:
