@@ -781,8 +781,7 @@ If you do not see the absolute path, run `read_file` on the relative path to mak
 **Format requirement**: Do **not** use raw XML tags (`<tool_name>args</tool_name>`) to invoke a tool. Only use the JSON Action block described above.
 
 ### Task management
-For **every** request that requires multiple steps (e.g., searching, comparing, saving files), you **must** first output a `TaskList:` block containing a JSON array of task descriptions.
-If a request can be done in a single step, you do not need a TaskList.
+Any time you need to use one or more tools, you **must** first output a `TaskList:` block containing a JSON array of task descriptions.  Output the TaskList before the first Action block.
 When you finish a task **before** taking the next Action, output `TaskDone: <index>` (where <index> is the zero‑based index of the completed task) **exactly** once, on its own line.
 Do **not** forget to output `TaskDone:` – the system uses it to update the progress display.
 Never ask the user whether to continue. Automatically proceed.
@@ -1204,13 +1203,33 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         tasks.from_llm_block(response_text)
         tasks.mark_done_from_text(response_text)
         tool_calls = _collect_tool_calls(response_text)
-    # If LLM didn't output its own TaskList block, replace tasks with the tool calls just extracted
+    # Enforce that a TaskList is output before any tool execution
     _llm_has_tasklist = bool(re.search(r"TaskList:", response_text))
     if not _llm_has_tasklist and tool_calls:
-        tasks.tasks.clear()
-        for tc in tool_calls:
-            safe_args = str(tc.get('args') or '')[:50]
-            tasks.add_task(f"Execute {tc.get('action','?')}: {safe_args}")
+        # Ask LLM to produce a TaskList first
+        plan_prompt = (
+            "System: You must first output a TaskList block (a JSON array of task descriptions) "
+            "before using any tool. Please output your TaskList block now."
+        )
+        messages.append({"role": "user", "content": plan_prompt})
+        response_text = _call_llm_with_spinner(messages).strip()
+        turn_prompt_total += _last_prompt_tokens
+        turn_completion_total += _last_completion_tokens
+        # reparse
+        tasks.from_llm_block(response_text)
+        tasks.mark_done_from_text(response_text)
+        response_text_clean = re.sub(r'(?:TaskList:\s*```(?:json)?[\s\S]*?```|TaskDone:\s*\d+)', '', response_text).strip()
+        if not response_text_clean:
+            response_text_clean = response_text
+        response_text = response_text_clean
+        _llm_has_tasklist = bool(re.search(r"TaskList:", response_text))
+        tool_calls = _collect_tool_calls(response_text)
+        if not _llm_has_tasklist and tool_calls:
+            # fallback to auto-create tasks
+            tasks.tasks.clear()
+            for tc in tool_calls:
+                safe_args = str(tc.get('args') or '')[:50]
+                tasks.add_task(f"Execute {tc.get('action','?')}: {safe_args}")
     tool_was_search = any(tc.get("action") == "search_web" for tc in tool_calls)
     if not tool_calls:
         # If the user request seems to ask for action (search, research, write, save, compare, etc.)
