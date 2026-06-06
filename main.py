@@ -1158,6 +1158,28 @@ def _remove_task_blocks(text: str) -> str:
     ).strip()
 
 
+def _tasks_from_plan(text: str) -> None:
+    """Parse a Plan block and create pending tasks."""
+    plan_match = re.search(
+        r"Plan:\s*\n(.*?)(?=\n\s*(?:Action|TaskList|$))",
+        text,
+        re.DOTALL | re.IGNORECASE
+    )
+    if not plan_match:
+        return
+    plan_body = plan_match.group(1).strip()
+    for line in plan_body.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Remove leading numbering "1." or "1)" etc.
+        cleaned = re.sub(r"^\s*\d+[.)]?\s*", "", line).strip()
+        if cleaned:
+            tasks.add_task(cleaned)
+        else:
+            tasks.add_task(line)
+
+
 def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     """One user turn: build context, get LLM reply, execute tool calls
     with automatic retries and failure memory."""
@@ -1243,30 +1265,36 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     # Enforce that a TaskList is output before any tool execution
     _llm_has_tasklist = bool(re.search(r"TaskList:", response_text))
     if not _llm_has_tasklist and tool_calls:
-        # Ask LLM to produce a TaskList first
-        plan_prompt = (
-            "System: You must first output a TaskList block (a JSON array of task descriptions) "
-            "before using any tool. Please output your TaskList block now."
-        )
-        messages.append({"role": "user", "content": plan_prompt})
-        response_text = _call_llm_with_spinner(messages).strip()
-        turn_prompt_total += _last_prompt_tokens
-        turn_completion_total += _last_completion_tokens
-        # reparse
-        tasks.from_llm_block(response_text)
-        tasks.mark_done_from_text(response_text)
-        response_text_clean = re.sub(r'(?:TaskList:\s*```(?:json)?[\s\S]*?```|TaskDone:\s*\d+)', '', response_text).strip()
-        if not response_text_clean:
-            response_text_clean = response_text
-        response_text = response_text_clean
-        _llm_has_tasklist = bool(re.search(r"TaskList:", response_text))
-        tool_calls = _collect_tool_calls(response_text)
+        # If a Plan block exists, automatically create tasks from its steps
+        if _llm_has_plan:
+            _tasks_from_plan(response_text)
+            if tasks.tasks:
+                _llm_has_tasklist = True  # treat as if TaskList existed
         if not _llm_has_tasklist and tool_calls:
-            # fallback to auto-create tasks
-            tasks.tasks.clear()
-            for tc in tool_calls:
-                safe_args = str(tc.get('args') or '')[:50]
-                tasks.add_task(f"Execute {tc.get('action','?')}: {safe_args}")
+            # Ask LLM to produce a TaskList first
+            plan_prompt = (
+                "System: You must first output a TaskList block (a JSON array of task descriptions) "
+                "before using any tool. Please output your TaskList block now."
+            )
+            messages.append({"role": "user", "content": plan_prompt})
+            response_text = _call_llm_with_spinner(messages).strip()
+            turn_prompt_total += _last_prompt_tokens
+            turn_completion_total += _last_completion_tokens
+            # reparse
+            tasks.from_llm_block(response_text)
+            tasks.mark_done_from_text(response_text)
+            response_text_clean = re.sub(r'(?:TaskList:\s*```(?:json)?[\s\S]*?```|TaskDone:\s*\d+)', '', response_text).strip()
+            if not response_text_clean:
+                response_text_clean = response_text
+            response_text = response_text_clean
+            _llm_has_tasklist = bool(re.search(r"TaskList:", response_text))
+            tool_calls = _collect_tool_calls(response_text)
+            if not _llm_has_tasklist and tool_calls:
+                # fallback to auto-create tasks
+                tasks.tasks.clear()
+                for tc in tool_calls:
+                    safe_args = str(tc.get('args') or '')[:50]
+                    tasks.add_task(f"Execute {tc.get('action','?')}: {safe_args}")
     tool_was_search = any(tc.get("action") == "search_web" for tc in tool_calls)
     if not tool_calls:
         # If the user request seems to ask for action (search, research, write, save, compare, etc.)
