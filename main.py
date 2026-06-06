@@ -45,6 +45,7 @@ TOOL_ALIASES: dict[str, str] = {
     "shell": "run_cmd",
     "sh": "run_cmd",
     "browse_summary": "read_webpage",
+    "run_terminal_command": "execute_terminal_command",
 }
 
 def _is_valid_action(name: str | None) -> bool:
