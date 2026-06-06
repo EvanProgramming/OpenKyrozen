@@ -55,6 +55,15 @@ def _is_valid_action(name: str | None) -> bool:
     return name in AVAILABLE_TOOLS or name in TOOL_ALIASES
 
 
+def _detect_unknown_action(text: str) -> str | None:
+    """Return the first action name in the text that is not a valid tool."""
+    for obj in _extract_json_objects(text):
+        action = obj.get("action")
+        if action and not _is_valid_action(action):
+            return str(action)
+    return None
+
+
 console = Console()
 bg_console = Console(stderr=True)
 
@@ -728,7 +737,8 @@ def _system_prompt(tools_list: str) -> str:
 ## Available Tools:
 {tools_list}
 
-🌐 **Action name rules:** The only defined action names are those listed above. Do **not** use `"bash"`, `"shell"`, or any other name – always use `"run_cmd"` for command execution.
+🌐 **Action name rules:** The only defined action names are those listed above. Do **not** use `"bash"`, `"shell"`, or any other name – always use `"run_cmd"` for command execution.  
+**Warning:** If you use an action name that is not listed above, the system will reject it and you will be forced to try again with a correct action. Do not invent new names.
 
 ## Current working directory
 You are currently inside the project root directory of the repository the user is working in.  Relative paths (like "README.md" or "main.py") will be resolved correctly.  You can use `read_file`, `write_file`, `list_dir`, `find_files`, `run_cmd`, etc. **without needing the user to provide a path**.  Do **not** ask the user to supply a local path or a remote URL unless you intend to use the `analyze_remote_repo` tool to clone an external repository.
@@ -1150,6 +1160,22 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     response_text = response_text_clean
 
     tool_calls = _collect_tool_calls(response_text)
+    # detect unknown action in response
+    unknown_action = _detect_unknown_action(response_text)
+    if unknown_action:
+        msg = (
+            f"System: Action '{unknown_action}' is not recognized. "
+            "You must use one of the following actions: "
+            + ", ".join(sorted(AVAILABLE_TOOLS.keys())) + "."
+        )
+        messages.append({"role": "user", "content": msg})
+        response_text = _call_llm_with_spinner(messages).strip()
+        turn_prompt_total += _last_prompt_tokens
+        turn_completion_total += _last_completion_tokens
+        # re‑parse everything including tasks
+        tasks.from_llm_block(response_text)
+        tasks.mark_done_from_text(response_text)
+        tool_calls = _collect_tool_calls(response_text)
     # If LLM didn't output its own TaskList block, replace tasks with the tool calls just extracted
     _llm_has_tasklist = bool(re.search(r"TaskList:", response_text))
     if not _llm_has_tasklist and tool_calls:
