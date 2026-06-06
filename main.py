@@ -106,7 +106,7 @@ bg_console = Console(stderr=True)
 MODEL_NAME = "deepseek-chat"
 SHORT_TERM_CAP = 16
 MAX_TOOL_RETRIES = 3
-MAX_STEPS_PER_TURN = 5           # how many tool‑call rounds the LLM may perform in one user turn
+MAX_STEPS_PER_TURN = 10          # how many tool‑call rounds the LLM may perform in one user turn
 MAX_UNKNOWN_TOOL_RETRIES = 3     # how many times to re‑prompt when LLM uses an unrecognised action name
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
 IDLE_CONSOLIDATION_TIMEOUT = 60   # 1 minute
@@ -812,8 +812,10 @@ def _system_prompt(tools_list: str) -> str:
 When the user asks you to research multiple GitHub repositories, gather statistics, run Python scripts, or produce a final report, **follow every single step** in order. Do **not** stop after the first search. Here is the recommended method:
 
 1. **Explore** – Use `search_web` to find candidate projects (e.g., “top AI agent frameworks GitHub 2025”). Follow the links returned.
-2. **Extract data** – For each candidate repository, use `read_webpage` to fetch the actual GitHub page (URL like `https://github.com/owner/repo`). Parse the **star count**, **fork count**, and **recent commit count** from the page text. If the page is hard to parse, use `run_cmd` with `curl` and the **GitHub REST API**:  
-   `curl -s https://api.github.com/repos/owner/repo | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['stargazers_count'], d['forks_count'], d['subscribers_count'])"`
+2. **Extract data** – For each candidate repository, use the **GitHub REST API** directly:  
+   `run_cmd('curl -s https://api.github.com/repos/owner/repo | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[\'stargazers_count\'], d[\'forks_count\'])"')`  
+   (This is the most reliable method; do **not** use `read_webpage` for API endpoints that return JSON with many embedded URLs.)
+   ⚠️ **Do not** fetch any of the extra URLs that appear inside the JSON (e.g. `keys_url`, `events_url`) – they will fail and waste turns.
 3. **Compute** – After you have the numbers, **write a Python script** using `write_file`, then **run it** with `run_cmd('python3 script.py')`. The script should calculate an activity score (e.g., `star*0.2+fork*0.3+commits*0.5`) and save a bar chart as `agent_audit_report.png`.
 4. **Finalize** – Use `write_file` to create a `README.md` summarizing your findings and embedding the chart image reference.
 
