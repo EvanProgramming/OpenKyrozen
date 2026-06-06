@@ -780,12 +780,15 @@ If you do not see the absolute path, run `read_file` on the relative path to mak
 
 **Format requirement**: Do **not** use raw XML tags (`<tool_name>args</tool_name>`) to invoke a tool. Only use the JSON Action block described above.
 
-### Planning phase
-**Before any Action block**, you **must** first produce a **detailed plan**.
+### Planning phase (mandatory)
+**You MUST start with a Plan block before any Action block.**  
+The Plan block must appear **before any TaskList or Action**.  
+If you omit the Plan block, your output will be discarded and you will be forced to output a Plan.
+
 Use the following format:
 
 Plan:
-1. (step description, why and what)
+1. (step description – why and what)
 2. (step description)
 ...
 
