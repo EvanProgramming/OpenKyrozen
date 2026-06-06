@@ -780,6 +780,18 @@ If you do not see the absolute path, run `read_file` on the relative path to mak
 
 **Format requirement**: Do **not** use raw XML tags (`<tool_name>args</tool_name>`) to invoke a tool. Only use the JSON Action block described above.
 
+### Planning phase
+**Before any Action block**, you **must** first produce a **detailed plan**.
+Use the following format:
+
+Plan:
+1. (step description, why and what)
+2. (step description)
+...
+
+Dependencies between steps must be clear.  Do not output any Action until the plan is complete.
+After the plan, you **must** output a `TaskList:` block listing the tasks (see below).
+
 ### Task management
 Any time you need to use one or more tools, you **must** first output a `TaskList:` block containing a JSON array of task descriptions.  Output the TaskList before the first Action block.
 When you finish a task **before** taking the next Action, output `TaskDone: <index>` (where <index> is the zero‑based index of the completed task) **exactly** once, on its own line.
@@ -1203,6 +1215,37 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         tasks.from_llm_block(response_text)
         tasks.mark_done_from_text(response_text)
         tool_calls = _collect_tool_calls(response_text)
+    # Enforce planning phase before any tool execution
+    _llm_has_plan = bool(re.search(r"Plan:", response_text))
+    if not _llm_has_plan and tool_calls:
+        # Ask LLM to produce a Plan first (up to two attempts)
+        plan_prompt = (
+            "System: You must first output a **Plan** block (numbered steps) before any Action. "
+            "Output a Plan:\n1. ...\n..."
+        )
+        messages.append({"role": "user", "content": plan_prompt})
+        response_text = _call_llm_with_spinner(messages).strip()
+        turn_prompt_total += _last_prompt_tokens
+        turn_completion_total += _last_completion_tokens
+        # reparse tasks and re‑collect tool calls
+        tasks.from_llm_block(response_text)
+        tasks.mark_done_from_text(response_text)
+        tool_calls = _collect_tool_calls(response_text)
+        _llm_has_plan = bool(re.search(r"Plan:", response_text))
+        if not _llm_has_plan and tool_calls:
+            # second attempt
+            plan_prompt2 = (
+                "System: Still no Plan block detected. Please output a Plan: block now. "
+                "After the plan you can include TaskList and Actions."
+            )
+            messages.append({"role": "user", "content": plan_prompt2})
+            response_text = _call_llm_with_spinner(messages).strip()
+            turn_prompt_total += _last_prompt_tokens
+            turn_completion_total += _last_completion_tokens
+            tasks.from_llm_block(response_text)
+            tasks.mark_done_from_text(response_text)
+            tool_calls = _collect_tool_calls(response_text)
+
     # Enforce that a TaskList is output before any tool execution
     _llm_has_tasklist = bool(re.search(r"TaskList:", response_text))
     if not _llm_has_tasklist and tool_calls:
