@@ -59,9 +59,11 @@ class MemoryBank:
                 )
             except Exception as e:
                 log_id = f"err_{uuid.uuid4().hex[:8]}"
+                # Use safe concatenation to avoid f-string parsing of user data
+                safe_doc = "[add_log error] " + str(text) + " (error: " + str(e) + ")"
                 self._collection.add(
                     ids=[log_id],
-                    documents=[f"[add_log error] {text} (error: {e})"],
+                    documents=[safe_doc],
                     metadatas=[{"timestamp": now_ts}],
                 )
         else:
