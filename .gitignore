@@ -1,1 +1,21 @@
 .aider*
+# Byte‑compiled / cached files
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+.venv/
+
+# ChromaDB persistent memory (personal user data)
+chroma_memory/
+
+# Editor config
+.vscode/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Config files (should stay private)
+*.config.json
