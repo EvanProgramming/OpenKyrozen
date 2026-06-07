@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import sys
+import traceback
 import threading
 import time
 import datetime
@@ -2038,4 +2039,9 @@ def main() -> None:
         _is_auto_continue = False
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        print("=== CRITICAL SYSTEM TRACE ===", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
