@@ -114,42 +114,69 @@ console = Console()
 bg_console = Console(stderr=True)
 
 # ---- Fixed task status panel (bottom of terminal) ----
-_TASKS_PANEL_HEIGHT = 2  # reserved lines at bottom
+# Height is dynamic: 2 (header + footer) + number of tasks
+
+def _tasks_panel_height() -> int:
+    """Return how many terminal lines the task panel needs."""
+    if not tasks.tasks:
+        return 0
+    return min(len(tasks.tasks) + 3, 12)  # tasks + border lines, capped
+
+
+def _tasks_panel_content() -> str:
+    """Build the full task panel content as a string with ANSI colors."""
+    if not tasks.tasks:
+        return ""
+    total = len(tasks.tasks)
+    done = sum(1 for t in tasks.tasks if t["status"] == "done")
+    lines = []
+    # Header
+    bar_w = 20
+    filled = int(bar_w * done / max(total, 1))
+    bar = "█" * filled + "░" * (bar_w - filled)
+    lines.append(f"\033[44m\033[37m\033[1m ┌─ TASKS [{bar}] {done}/{total} \033[0m")
+    # Each task
+    for i, t in enumerate(tasks.tasks):
+        icon = "✓" if t["status"] == "done" else "○" if t["status"] == "pending" else "◷"
+        color = "\033[32m" if t["status"] == "done" else "\033[33m" if t["status"] == "pending" else "\033[36m"
+        desc = t["description"][:55]
+        lines.append(f"\033[44m\033[37m │ {color}{icon}\033[37m [{i}] {desc}\033[0m")
+    # Footer
+    pending = total - done
+    if pending > 0:
+        lines.append(f"\033[44m\033[37m └─ {pending} remaining — DO NOT STOP \033[0m")
+    else:
+        lines.append(f"\033[44m\033[37m └─ All tasks complete ✓ \033[0m")
+    return "\n".join(lines)
+
 
 def _update_tasks_panel() -> None:
-    """Render task progress in a fixed bar at the bottom of the terminal.
-    Uses ANSI cursor save/restore to avoid interfering with conversation flow."""
-    if not tasks.tasks:
+    """Render the full task list in a fixed panel at the bottom of the terminal."""
+    content = _tasks_panel_content()
+    if not content:
         return
     try:
         import shutil
         term_h = shutil.get_terminal_size().lines
-        total = len(tasks.tasks)
-        done = sum(1 for t in tasks.tasks if t["status"] == "done")
-        pending = sum(1 for t in tasks.tasks if t["status"] == "pending")
-        bar_width = min(30, term_h - 30) if term_h > 40 else 10
-        filled = int(bar_width * done / max(total, 1))
-        bar = "█" * filled + "░" * (bar_width - filled)
-        line = f" 📋 [{bar}] {done}/{total}"
-        # Show first pending task description
-        for t in tasks.tasks:
-            if t["status"] == "pending":
-                desc = t["description"][:60]
-                line += f"  ▶ {desc}"
-                break
-        # Pad to terminal width and apply colors via Rich markup
-        line = line.ljust(term_h if term_h > 0 else 80)[:term_h]
-        # Write directly to stdout bypassing Rich's render pipeline
+        term_w = shutil.get_terminal_size().columns
+        panel_h = _tasks_panel_height()
+        content_lines = content.split("\n")
+
         sys.stdout.write("\033[s")  # save cursor
-        for row in range(_TASKS_PANEL_HEIGHT):
-            sys.stdout.write(f"\033[{term_h - _TASKS_PANEL_HEIGHT + row + 1};1H")
-            sys.stdout.write("\033[2K")  # clear line
-        sys.stdout.write(f"\033[{term_h - 1};1H")  # second-to-last line
-        sys.stdout.write(f"\033[44m\033[37m\033[1m{line}\033[0m")
+        # Clear the reserved area
+        for row in range(panel_h):
+            sys.stdout.write(f"\033[{term_h - panel_h + row + 1};1H")
+            sys.stdout.write("\033[2K")
+        # Print content
+        for i, line in enumerate(content_lines):
+            sys.stdout.write(f"\033[{term_h - panel_h + i + 1};1H")
+            # Pad line to terminal width
+            padded = line.ljust(term_w)[:term_w]
+            sys.stdout.write(padded)
         sys.stdout.write("\033[u")  # restore cursor
         sys.stdout.flush()
     except Exception:
-        pass  # silent failure on non-TTY or small terminals
+        pass
 
 
 def _clear_tasks_panel() -> None:
@@ -157,9 +184,12 @@ def _clear_tasks_panel() -> None:
     try:
         import shutil
         term_h = shutil.get_terminal_size().lines
+        panel_h = _tasks_panel_height()
+        if panel_h == 0:
+            return
         sys.stdout.write("\033[s")
-        for row in range(_TASKS_PANEL_HEIGHT):
-            sys.stdout.write(f"\033[{term_h - _TASKS_PANEL_HEIGHT + row + 1};1H")
+        for row in range(panel_h):
+            sys.stdout.write(f"\033[{term_h - panel_h + row + 1};1H")
             sys.stdout.write("\033[2K")
         sys.stdout.write("\033[u")
         sys.stdout.flush()
@@ -1029,7 +1059,10 @@ def _system_prompt(tools_list: str) -> str:
         "- `args` is always a **plain string**, never a JSON object.\n"
         "- For `write_file`: use `\"path|content\"` (pipe‑separated).\n"
         "- For `run_cmd`: the full shell command as one string.\n"
-        "- Use only the action names listed above. Aliases like `bash`→`run_cmd` are accepted.\n\n"
+        "- Use only the action names listed above. Aliases like `bash`→`run_cmd` are accepted.\n"
+        "- **CRITICAL**: Use SINGLE braces `{` and `}` in JSON, NOT double `{{` or `}}`. "
+        "Correct: `{\"action\": \"read_file\", \"args\": \"main.py\"}`. "
+        "Wrong: `{{\"action\": \"read_file\", \"args\": \"main.py\"}}`.\n\n"
         "## Task complexity routing\n"
         "Classify every user request and follow the corresponding protocol:\n\n"
         "**SIMPLE** (greeting, factual Q&A, single tool call): "
