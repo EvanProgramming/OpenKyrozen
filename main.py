@@ -1666,29 +1666,40 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             if tasks.tasks:
                 _update_tasks_panel()
 
-    # ---- Missing action recovery ----
+    # ---- Missing action recovery (up to 3 attempts) ----
     if not tool_calls:
         if _requires_tool_action(user_input) or _llm_has_plan or _llm_has_tasklist:
-            reminder_msg = (
-                "System: You did not output an Action block. "
-                "You **must** now output a JSON Action block to perform the actual work. "
-                "Do not explain; just output the Action block."
-            )
-            messages.append({"role": "user", "content": reminder_msg})
-            response_text = _call_llm_with_spinner(messages).strip()
-            turn_prompt_total += _last_prompt_tokens
-            turn_completion_total += _last_completion_tokens
-            if not response_text or not response_text.strip():
-                messages.append({
-                    "role": "user",
-                    "content": "System: You returned nothing. Please output a JSON Action block now."
-                })
+            action_retries = 0
+            while not tool_calls and action_retries < 3:
+                action_retries += 1
+                if action_retries == 1:
+                    reminder = (
+                        "System: You output a Plan but no Action block. "
+                        "You **must** now output a JSON Action block to perform the work. "
+                        "Do not repeat the Plan — output ONLY: Thought + Action JSON."
+                    )
+                elif action_retries == 2:
+                    reminder = (
+                        "System: STILL no Action block. Output ONLY this now:\n\n"
+                        "Action:\n```json\n{\"action\": \"write_file\", \"args\": \"...\"}\n```\n\n"
+                        "Pick the first step from your Plan and execute it. No Plan, no TaskList."
+                    )
+                else:
+                    reminder = (
+                        "System: FINAL attempt. You have a Plan. Execute step 1. "
+                        "Output a single Action block. Nothing else.\n"
+                        "Action:\n```json\n"
+                    )
+                messages.append({"role": "user", "content": reminder})
                 response_text = _call_llm_with_spinner(messages).strip()
                 turn_prompt_total += _last_prompt_tokens
                 turn_completion_total += _last_completion_tokens
-            tasks.from_llm_block(response_text)
-            tasks.mark_done_from_text(response_text)
-            tool_calls = _collect_tool_calls(response_text)
+                if not response_text:
+                    continue
+                tool_calls = _collect_tool_calls(response_text)
+                if tool_calls:
+                    tasks.from_llm_block(response_text)
+                    tasks.mark_done_from_text(response_text)
         if not tool_calls:
             elapsed = time.time() - turn_start
             _turn_cost_log.append({
