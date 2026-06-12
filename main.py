@@ -113,6 +113,59 @@ def _workspace_info() -> str:
 console = Console()
 bg_console = Console(stderr=True)
 
+# ---- Fixed task status panel (bottom of terminal) ----
+_TASKS_PANEL_HEIGHT = 2  # reserved lines at bottom
+
+def _update_tasks_panel() -> None:
+    """Render task progress in a fixed bar at the bottom of the terminal.
+    Uses ANSI cursor save/restore to avoid interfering with conversation flow."""
+    if not tasks.tasks:
+        return
+    try:
+        import shutil
+        term_h = shutil.get_terminal_size().lines
+        total = len(tasks.tasks)
+        done = sum(1 for t in tasks.tasks if t["status"] == "done")
+        pending = sum(1 for t in tasks.tasks if t["status"] == "pending")
+        bar_width = min(30, term_h - 30) if term_h > 40 else 10
+        filled = int(bar_width * done / max(total, 1))
+        bar = "█" * filled + "░" * (bar_width - filled)
+        line = f" 📋 [{bar}] {done}/{total}"
+        # Show first pending task description
+        for t in tasks.tasks:
+            if t["status"] == "pending":
+                desc = t["description"][:60]
+                line += f"  ▶ {desc}"
+                break
+        # Pad to terminal width and apply colors via Rich markup
+        line = line.ljust(term_h if term_h > 0 else 80)[:term_h]
+        # Write directly to stdout bypassing Rich's render pipeline
+        sys.stdout.write("\033[s")  # save cursor
+        for row in range(_TASKS_PANEL_HEIGHT):
+            sys.stdout.write(f"\033[{term_h - _TASKS_PANEL_HEIGHT + row + 1};1H")
+            sys.stdout.write("\033[2K")  # clear line
+        sys.stdout.write(f"\033[{term_h - 1};1H")  # second-to-last line
+        sys.stdout.write(f"\033[44m\033[37m\033[1m{line}\033[0m")
+        sys.stdout.write("\033[u")  # restore cursor
+        sys.stdout.flush()
+    except Exception:
+        pass  # silent failure on non-TTY or small terminals
+
+
+def _clear_tasks_panel() -> None:
+    """Clear the fixed task panel area."""
+    try:
+        import shutil
+        term_h = shutil.get_terminal_size().lines
+        sys.stdout.write("\033[s")
+        for row in range(_TASKS_PANEL_HEIGHT):
+            sys.stdout.write(f"\033[{term_h - _TASKS_PANEL_HEIGHT + row + 1};1H")
+            sys.stdout.write("\033[2K")
+        sys.stdout.write("\033[u")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
 
 # ---- Constants (optimized for DeepSeek V4) ----
 MODEL_NAME = "deepseek-chat (V4 auto-select)"
@@ -1578,7 +1631,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             _tasks_from_plan(response_text)
             if tasks.tasks:
                 _llm_has_tasklist = True
-                console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
+                _update_tasks_panel()
         if not _llm_has_tasklist:
             # Auto‑generate TaskList from plan or tool calls
             tasks.tasks.clear()
@@ -1589,7 +1642,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                     safe_args = str(tc.get('args') or '')[:50]
                     tasks.add_task(f"Execute {tc.get('action','?')}: {safe_args}")
             if tasks.tasks:
-                console.print(Panel(tasks.format(), title="Tasks (auto)", border_style="blue"))
+                _update_tasks_panel()
 
     # ---- Missing action recovery ----
     if not tool_calls:
@@ -1644,7 +1697,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         results.append(f"- `{action}({args!r})` returned:\n{_safe_fstring(safe_result)}")
         tasks.mark_first_pending_done()
         if tasks.tasks:
-            console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
+            _update_tasks_panel()
     tool_results_text = "\n".join(results)
 
     # Unified multi-step loop - always runs, can handle early errors
@@ -1885,7 +1938,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             next_results.append(f"- `{action}({args!r})` returned:\n{_safe_fstring(safe_result2)}")
             tasks.mark_first_pending_done()
             if tasks.tasks:
-                console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
+                _update_tasks_panel()
             if _is_tool_error(result2):
                 has_errors = True
             # Track search_web failures to prevent infinite search loops
@@ -2202,8 +2255,10 @@ def main() -> None:
         # clear tasks for a new user request (skip during auto‑continue)
         if not _is_auto_continue and not user_input.startswith("/"):
             tasks.tasks.clear()
+            _clear_tasks_panel()
 
         if user_input.lower() in ("/quit", "/exit"):
+            _clear_tasks_panel()
             console.print("[red]Goodbye.[/red]")
             break
         if user_input.lower() == "/learn":
@@ -2267,7 +2322,7 @@ def main() -> None:
 
         # Show tasks panel if any tasks exist
         if tasks.tasks:
-            console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
+            _update_tasks_panel()
             print()
 
         # auto‑continue: process further Action blocks without user input
@@ -2302,7 +2357,7 @@ def main() -> None:
                 console.print(Panel(Markdown(rich_escape(answer or "(no content)")), title="Agent", border_style="green"))
             print()
             if tasks.tasks:
-                console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
+                _update_tasks_panel()
                 print()
 
         _is_auto_continue = False
