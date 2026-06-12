@@ -575,36 +575,74 @@ def _review_tools() -> None:
         pass
 
 
-# -------- Active Exploration (Targeted Inquiry) --------
+# -------- Active Exploration (Self‑Learning Code Analysis) --------
 _last_inquiry_time = time.time()
-_pending_inquiry: str | None = None  # stores the question, cleared after user answers
 
 def _targeted_inquiry() -> None:
-    """Scan project files for undocumented functions and print a prompt."""
-    global _last_inquiry_time, _pending_inquiry
+    """Scan project files for undocumented functions and infer their purpose via LLM.
+    This is self-learning: the agent analyses code itself, never asks the user."""
+    global _last_inquiry_time
     now = time.time()
-    # Only inquire after extended idle (5+ min) to avoid interrupting active sessions
     if now - _last_user_interaction < 300:
         return
     if now - _last_inquiry_time < 600:  # once per 10 min
         return
     _last_inquiry_time = now
+
     project_root = Path(__file__).parent.resolve()
     for py_file in project_root.rglob("*.py"):
-        if "__pycache__" in str(py_file):
+        if "__pycache__" in str(py_file) or py_file.name.startswith("test_"):
             continue
         content = py_file.read_text(encoding="utf-8", errors="ignore")
-        # naive detection: function definition without docstring
-        matches = re.findall(r"def (\w+)\(.*\):\s*(?:\"\"\"|''')?", content)
-        for m in matches:
-            func_def = f"def {m}("
-            # check if first non‑comment line after func_def is docstring
-            after = content.split(func_def,1)[-1].split("\n",1)[-1]
-            if not after.lstrip().startswith('"""') and not after.lstrip().startswith("'''"):
-                question = f"I noticed function '{m}' in {py_file.name} has no docstring – what does it do? (You can tell me and I'll remember.)"
-                bg_console.print(f"\n[bold yellow]🔍 {question}[/bold yellow]\n")
-                _pending_inquiry = question
-                return  # one inquiry per cycle
+        # Find function definitions without docstrings
+        for match in re.finditer(
+            r"def\s+(\w+)\s*\(([^)]*)\)\s*(?:->\s*\S+\s*)?:\s*\n(\s+)(\S.*)",
+            content
+        ):
+            func_name = match.group(1)
+            func_params = match.group(2)
+            indent = match.group(3)
+            first_line = match.group(4).strip()
+
+            # Skip if it already has a docstring
+            if first_line.startswith('"""') or first_line.startswith("'''"):
+                continue
+
+            # Extract function body (up to ~30 lines for context)
+            func_start = match.start()
+            body_start = content.index("\n", match.end(3)) + 1
+            lines = content[body_start:].split("\n")
+            body_lines = []
+            for line in lines:
+                if line.strip() and not line.startswith(indent):
+                    break
+                body_lines.append(line)
+                if len(body_lines) >= 30:
+                    break
+            body_text = "\n".join(body_lines)
+
+            # Use LLM to infer what this function does
+            analyze_prompt = (
+                "You are Kyrozen's code analysis module. Examine this Python "
+                f"function from {py_file.name} and infer its purpose.\n\n"
+                f"```python\ndef {func_name}({func_params}):\n{body_text}\n```\n\n"
+                "Output a single line starting with 'PURPOSE: ' followed by "
+                "a concise description of what this function does, its inputs, "
+                "and its outputs. If unclear, output 'PURPOSE: unclear'."
+            )
+            try:
+                messages = [{"role": "system", "content": analyze_prompt}]
+                answer = _get_llm_response(messages).strip()
+                if answer.startswith("PURPOSE: "):
+                    purpose = answer[len("PURPOSE: "):].strip()
+                    if purpose.lower() != "unclear":
+                        memory_bank.add_log(
+                            f"CODE_DOC: Function '{func_name}' in {py_file.name} "
+                            f"({func_params}) — {purpose}"
+                        )
+            except Exception:
+                pass
+            return  # one function per cycle
 
 
 def _invent_skills() -> None:
@@ -2106,7 +2144,7 @@ def _show_self_learning_menu() -> None:
 
 def main() -> None:
     # Bytecode cache cleared already at module level (see top of file)
-    global deepseek_client, DEEPSEEK_MODEL, _pending_inquiry
+    global deepseek_client, DEEPSEEK_MODEL
 
     if "--init" in sys.argv:
         console.print("[cyan]OpenKyrozen initialisation[/cyan]")
@@ -2197,13 +2235,6 @@ def main() -> None:
         # Auto‑patching: detect new technology mentions (if enabled)
         if _SELF_LEARNING_FLAGS["auto_patch_new_technology"]:
             _auto_patch_new_technology(user_input)
-
-        # If there was a pending inquiry and the user answered, store the answer immediately
-        if _pending_inquiry is not None and not user_input.startswith("/"):
-            # Only treat non‑command input as a genuine answer
-            if len(user_input.strip()) > 2:
-                memory_bank.add_log(f"FACT: User answered inquiry '{_pending_inquiry[:80]}...' with: {user_input}")
-            _pending_inquiry = None
 
         try:
             reply = _chat_turn(user_input, clear_tasks=True)
