@@ -2072,6 +2072,29 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     })
     _maybe_trigger_reflection_after_complex_task(len(tool_calls))
     final_answer = _remove_task_blocks(final_answer)
+
+    # If tasks were completed, generate a summary so the user knows what happened
+    total_tools_executed = len(tool_calls) + len(results)
+    if total_tools_executed >= 2:
+        summary_prompt = (
+            "You just completed a multi-step task. Summarise your work below.\n\n"
+            "## What was accomplished\n"
+            "- (2-4 bullet points: tools used, files created, key results)\n\n"
+            "Output only the completed summary in plain text (no Action blocks).\n\n"
+            f"Tool results:\n{tool_results_text[:1500]}"
+        )
+        try:
+            summary = _get_llm_response(
+                [{"role": "system", "content": summary_prompt}]
+            ).strip()
+            if summary and len(summary) > 30:
+                if len(final_answer.strip()) < 60:
+                    final_answer = summary
+                else:
+                    final_answer = final_answer + "\n\n---\n\n" + summary
+        except Exception:
+            pass
+
     return final_answer
 
 
