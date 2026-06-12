@@ -1613,6 +1613,8 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     final_answer: str | None = None
     current_reply = response_text
     has_errors = any(_is_tool_error(r) for r in results)
+    consecutive_search_failures = 0  # track failed search_web calls to prevent loops
+    total_search_calls = len([r for r in results if "search_web" in r])
     # check for missing arguments errors
     _args_missing_errors = [
         "requires a command",
@@ -1645,6 +1647,25 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 "Use one of the following actions: "
                 + ", ".join(sorted(AVAILABLE_TOOLS.keys())) + ".\n"
             )
+
+        # Search throttle: prevent infinite search loops
+        search_throttle = ""
+        if consecutive_search_failures >= 3:
+            search_throttle = (
+                f"\n⚠️  **Search throttle active:** {consecutive_search_failures} consecutive "
+                "search_web calls failed. The search backend is likely rate‑limited or "
+                "unavailable right now. **Stop using search_web.** Instead:\n"
+                "- If you have partial results from earlier searches, work with those.\n"
+                "- Use `read_webpage` on a known URL instead.\n"
+                "- Acknowledge the limitation and give the best answer you can with "
+                "available information.\n"
+            )
+        elif total_search_calls >= 5:
+            search_throttle = (
+                f"\n⚠️  **Search limit warning:** {total_search_calls} search_web calls "
+                "made this turn. Limit further searches to at most 1 more. Prefer "
+                "`read_webpage` on known URLs instead.\n"
+            )
         summary_messages: list[dict[str, str]] = [
             {
                 "role": "system",
@@ -1674,7 +1695,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 "role": "user",
                 "content": (
                     f"The tools returned:\n{tool_results_text}\n\n"
-                    + error_hint +
+                    + error_hint + search_throttle +
                     "Please continue if there are remaining steps, or respond with the final answer.\n"
                     "If you have completed a task, you **must** output `TaskDone: <index>` "
                     "(replace index with the zero-based index) **before** the next Action block. "
@@ -1823,6 +1844,13 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
             if _is_tool_error(result2):
                 has_errors = True
+            # Track search_web failures to prevent infinite search loops
+            if action == "search_web":
+                total_search_calls += 1
+                if _is_tool_error(result2) or "Search temporarily unavailable" in str(result2):
+                    consecutive_search_failures += 1
+                else:
+                    consecutive_search_failures = 0  # reset on success
         tool_results_text = "\n".join(next_results)
         _has_args_missing = any(
             any(pat in r for pat in [
@@ -1830,6 +1858,15 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 "requires args in format path|content",
             ]) for r in next_results
         )
+        # Hard limit: too many search_web calls → force stop
+        if total_search_calls >= 7:
+            final_answer = (
+                "Search limit reached (7+ search_web calls this turn). "
+                "The search backend appears to be unavailable or rate‑limited. "
+                "Here's what I found from the earlier searches: " + tool_results_text[:500]
+            )
+            console.print("[yellow]Search limit reached — forcing task completion.[/yellow]")
+            break
         # Check if all pending tasks are done; if so, stop (no need to ask LLM for more steps)
         if tasks.tasks and all(t["status"] != "pending" for t in tasks.tasks):
             final_answer = current_reply
