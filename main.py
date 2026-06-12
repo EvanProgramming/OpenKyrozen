@@ -583,6 +583,9 @@ def _targeted_inquiry() -> None:
     """Scan project files for undocumented functions and print a prompt."""
     global _last_inquiry_time, _pending_inquiry
     now = time.time()
+    # Only inquire after extended idle (5+ min) to avoid interrupting active sessions
+    if now - _last_user_interaction < 300:
+        return
     if now - _last_inquiry_time < 600:  # once per 10 min
         return
     _last_inquiry_time = now
@@ -929,7 +932,7 @@ def _system_prompt(tools_list: str) -> str:
         "Thought: <brief reasoning>\n"
         "Action:\n"
         "```json\n"
-        "{{\"action\": \"tool_name\", \"args\": \"arguments\"}}\n"
+        "{\"action\": \"tool_name\", \"args\": \"arguments\"}\n"
         "```\n\n"
         "**Args rules:**\n"
         "- `args` is always a **plain string**, never a JSON object.\n"
@@ -2031,8 +2034,6 @@ def _background_learning_loop() -> None:
             # Skip heavy background work if the user has been active within the last 1 minute
             if idle_duration < 60:
                 continue
-
-            console.print("[dim]Learning...[/dim]")
 
             # silently learning (respect self-learning flags)
             if _SELF_LEARNING_FLAGS["auto_learn_conversations"]:
