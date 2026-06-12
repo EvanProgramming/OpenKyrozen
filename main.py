@@ -113,14 +113,37 @@ def _workspace_info() -> str:
 console = Console()
 bg_console = Console(stderr=True)
 
-# ---- Fixed task status panel (bottom of terminal) ----
-# Height is dynamic: 2 (header + footer) + number of tasks
+# ---- Fixed task status panel (top of terminal, non-scrolling) ----
+# Uses ANSI scroll regions: top N lines reserved, conversation scrolls below.
 
 def _tasks_panel_height() -> int:
     """Return how many terminal lines the task panel needs."""
     if not tasks.tasks:
         return 0
     return min(len(tasks.tasks) + 3, 12)  # tasks + border lines, capped
+
+
+def _set_scroll_region(below_line: int) -> None:
+    """Set terminal scroll region to start at below_line (1-based).
+    Lines above below_line are fixed and won't scroll."""
+    try:
+        term_h = __import__('shutil').get_terminal_size().lines
+        if below_line <= term_h:
+            sys.stdout.write(f"\033[{below_line};{term_h}r")
+            # Move cursor into the scroll region
+            sys.stdout.write(f"\033[{below_line};1H")
+            sys.stdout.flush()
+    except Exception:
+        pass
+
+
+def _reset_scroll_region() -> None:
+    """Reset terminal scroll region to full screen."""
+    try:
+        sys.stdout.write("\033[r")
+        sys.stdout.flush()
+    except Exception:
+        pass
 
 
 def _tasks_panel_content() -> str:
@@ -130,18 +153,15 @@ def _tasks_panel_content() -> str:
     total = len(tasks.tasks)
     done = sum(1 for t in tasks.tasks if t["status"] == "done")
     lines = []
-    # Header
     bar_w = 20
     filled = int(bar_w * done / max(total, 1))
     bar = "█" * filled + "░" * (bar_w - filled)
     lines.append(f"\033[44m\033[37m\033[1m ┌─ TASKS [{bar}] {done}/{total} \033[0m")
-    # Each task
     for i, t in enumerate(tasks.tasks):
         icon = "✓" if t["status"] == "done" else "○" if t["status"] == "pending" else "◷"
         color = "\033[32m" if t["status"] == "done" else "\033[33m" if t["status"] == "pending" else "\033[36m"
         desc = t["description"][:55]
         lines.append(f"\033[44m\033[37m │ {color}{icon}\033[37m [{i}] {desc}\033[0m")
-    # Footer
     pending = total - done
     if pending > 0:
         lines.append(f"\033[44m\033[37m └─ {pending} remaining — DO NOT STOP \033[0m")
@@ -151,9 +171,11 @@ def _tasks_panel_content() -> str:
 
 
 def _update_tasks_panel() -> None:
-    """Render the full task list in a fixed panel at the bottom of the terminal."""
+    """Render the task list in a FIXED panel at the TOP of the terminal.
+    Sets a scroll region so conversation never overwrites it."""
     content = _tasks_panel_content()
     if not content:
+        _reset_scroll_region()
         return
     try:
         import shutil
@@ -162,37 +184,33 @@ def _update_tasks_panel() -> None:
         panel_h = _tasks_panel_height()
         content_lines = content.split("\n")
 
-        sys.stdout.write("\033[s")  # save cursor
-        # Clear the reserved area
+        # Lock the top panel_h lines — conversation scrolls below
+        _set_scroll_region(panel_h + 1)
+
+        # Redraw the panel at the top
+        sys.stdout.write("\033[s")
         for row in range(panel_h):
-            sys.stdout.write(f"\033[{term_h - panel_h + row + 1};1H")
-            sys.stdout.write("\033[2K")
-        # Print content
+            sys.stdout.write(f"\033[{row + 1};1H\033[2K")
         for i, line in enumerate(content_lines):
-            sys.stdout.write(f"\033[{term_h - panel_h + i + 1};1H")
-            # Pad line to terminal width
-            padded = line.ljust(term_w)[:term_w]
-            sys.stdout.write(padded)
-        sys.stdout.write("\033[u")  # restore cursor
+            sys.stdout.write(f"\033[{i + 1};1H")
+            sys.stdout.write(line.ljust(term_w)[:term_w])
+        sys.stdout.write("\033[u")
         sys.stdout.flush()
     except Exception:
         pass
 
 
 def _clear_tasks_panel() -> None:
-    """Clear the fixed task panel area."""
+    """Reset scroll region and clear top panel area."""
     try:
-        import shutil
-        term_h = shutil.get_terminal_size().lines
         panel_h = _tasks_panel_height()
-        if panel_h == 0:
-            return
-        sys.stdout.write("\033[s")
-        for row in range(panel_h):
-            sys.stdout.write(f"\033[{term_h - panel_h + row + 1};1H")
-            sys.stdout.write("\033[2K")
-        sys.stdout.write("\033[u")
-        sys.stdout.flush()
+        _reset_scroll_region()
+        if panel_h > 0:
+            sys.stdout.write("\033[s")
+            for row in range(panel_h):
+                sys.stdout.write(f"\033[{row + 1};1H\033[2K")
+            sys.stdout.write("\033[u")
+            sys.stdout.flush()
     except Exception:
         pass
 
@@ -2326,6 +2344,7 @@ def main() -> None:
   ██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║    ██╔═██╗   ╚██╔╝  ██╔══██╗██║   ██║ ███╔╝   ███╔╝  ██║╚██╗██║
   ╚██████╔╝██║     ███████╗██║ ╚████║    ██║  ██╗   ██║   ██║  ██║╚██████╔╝███████╗███████╗██║ ╚████║
    ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝    ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═══╝"""
+    _reset_scroll_region()  # ensure clean terminal state
     console.print(Panel.fit(banner_text, title="OPEN KYROZEN", subtitle="self-learning AI agent", border_style="cyan"))
     console.print(f"Kyrozen (DeepSeek + Tools). Model: {MODEL_NAME}", style="cyan")
     console.print("Commands: /quit or /exit to exit, /update to pull latest version, /learn to reload project files, /api_key to change API key, /self-learning to toggle self-learning features.\n", style="yellow")
@@ -2349,6 +2368,7 @@ def main() -> None:
 
     while True:
         try:
+            _reset_scroll_region()  # ensure full terminal for input
             user_input = console.input("[bold cyan]You: [/bold cyan]").strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[red]Goodbye.[/red]")
