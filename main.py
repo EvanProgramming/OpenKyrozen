@@ -1501,6 +1501,24 @@ def _tasks_from_plan(text: str) -> None:
             tasks.add_task(line)
 
 
+def _build_task_progress_hint() -> str:
+    """Build a concise task progress summary for the LLM feedback."""
+    if not tasks.tasks:
+        return ""
+    total = len(tasks.tasks)
+    done = sum(1 for t in tasks.tasks if t["status"] == "done")
+    pending_tasks = [t for t in tasks.tasks if t["status"] == "pending"]
+    lines = [f"📋 Task progress: {done}/{total} completed."]
+    for i, t in enumerate(tasks.tasks):
+        icon = "✓" if t["status"] == "done" else "○" if t["status"] == "pending" else "◷"
+        desc = t["description"][:80]
+        lines.append(f"  [{i}] {icon} {desc}")
+    if pending_tasks:
+        lines.append(f"⚠️  You MUST complete the remaining {len(pending_tasks)} task(s). "
+                      "Do not stop until all tasks are marked done.")
+    return "\n".join(lines) + "\n\n"
+
+
 def _classify_complexity(user_input: str) -> str:
     """Classify the user request as simple, medium, or complex.
     Returns 'simple', 'medium', or 'complex'."""
@@ -1797,6 +1815,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 "content": (
                     f"The tools returned:\n{tool_results_text}\n\n"
                     + error_hint + search_throttle +
+                    _build_task_progress_hint() +
                     "Please continue if there are remaining steps, or respond with the final answer.\n"
                     "If you have completed a task, you **must** output `TaskDone: <index>` "
                     "(replace index with the zero-based index) **before** the next Action block. "
@@ -1858,22 +1877,33 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         if _unknown_tool_retries >= 3:
             next_tool_calls = []
 
-        # if there are no more tool calls, the LLM might still be planning
+        # if there are no more tool calls, the LLM might be giving a natural reply
         if not next_tool_calls:
-            # If there are still pending tasks, do NOT finish — keep asking
+            # Find the next pending task to tell the LLM what to do
+            next_pending_desc = ""
+            for t in tasks.tasks:
+                if t["status"] == "pending":
+                    next_pending_desc = t["description"]
+                    break
+
             if tasks.tasks and any(t["status"] != "done" for t in tasks.tasks):
                 incomplete_prompt_attempts += 1
-                if incomplete_prompt_attempts >= 15:
-                    # Force complete remaining tasks to avoid infinite loop
+                if incomplete_prompt_attempts >= 12:
                     for t in tasks.tasks:
                         if t["status"] == "pending":
                             t["status"] = "done"
-                    console.print(f"[yellow]Auto‑completed remaining tasks after {incomplete_prompt_attempts} prompts.[/yellow]")
+                    console.print(f"[yellow]Auto‑completed remaining tasks after {incomplete_prompt_attempts} nudges.[/yellow]")
                     break
-                summary_messages.append({
-                    "role": "user",
-                    "content": "System: There are still incomplete tasks. Output the next Action block now."
-                })
+
+                # Build a specific nudge mentioning the exact next task
+                nudge = (
+                    f"System: You have {sum(1 for t in tasks.tasks if t['status'] == 'pending')} "
+                    "incomplete tasks remaining. "
+                )
+                if next_pending_desc:
+                    nudge += f"The next task is: \"{next_pending_desc}\". "
+                nudge += "Output the Action block for this task NOW. Do not explain or summarise — just act."
+                summary_messages.append({"role": "user", "content": nudge})
                 step_reply = _call_llm_with_spinner(summary_messages).strip()
                 turn_prompt_total += _last_prompt_tokens
                 turn_completion_total += _last_completion_tokens
@@ -1883,14 +1913,10 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 tasks.mark_done_from_text(step_reply)
                 next_tool_calls = _collect_tool_calls(step_reply)
                 if not next_tool_calls:
-                    # After retry still no action, mark incomplete tasks as done and exit
-                    for t in tasks.tasks:
-                        if t["status"] == "pending":
-                            t["status"] = "done"
-                    console.print("[yellow]Auto-completed remaining tasks (no action after retry).[/yellow]")
-                    break
+                    # Still no action — don't give up yet, loop will try again
+                    # (incomplete_prompt_attempts will eventually trigger the 12-nudge limit)
+                    pass
             elif _is_question(step_reply):
-                # re-prompt if the LLM asked a question instead of acting
                 summary_messages.append({
                     "role": "user",
                     "content": "System: Do not ask the user. Output the next Action block now."
@@ -1907,8 +1933,6 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                     final_answer = step_reply
                     break
             else:
-                # The LLM may have announced intent without outputting an Action block.
-                # Prompt it to issue the next Action block.
                 summary_messages.append({
                     "role": "user",
                     "content": "System: You have not output an Action block. "
