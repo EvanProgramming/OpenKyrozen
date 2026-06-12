@@ -2344,7 +2344,6 @@ def main() -> None:
   ██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║    ██╔═██╗   ╚██╔╝  ██╔══██╗██║   ██║ ███╔╝   ███╔╝  ██║╚██╗██║
   ╚██████╔╝██║     ███████╗██║ ╚████║    ██║  ██╗   ██║   ██║  ██║╚██████╔╝███████╗███████╗██║ ╚████║
    ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝    ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═══╝"""
-    _reset_scroll_region()  # ensure clean terminal state
     console.print(Panel.fit(banner_text, title="OPEN KYROZEN", subtitle="self-learning AI agent", border_style="cyan"))
     console.print(f"Kyrozen (DeepSeek + Tools). Model: {MODEL_NAME}", style="cyan")
     console.print("Commands: /quit or /exit to exit, /update to pull latest version, /learn to reload project files, /api_key to change API key, /self-learning to toggle self-learning features.\n", style="yellow")
@@ -2368,7 +2367,13 @@ def main() -> None:
 
     while True:
         try:
-            _reset_scroll_region()  # ensure full terminal for input
+            # Move cursor to bottom of scroll region so prompt always at bottom
+            try:
+                term_h = __import__('shutil').get_terminal_size().lines
+                sys.stdout.write(f"\033[{term_h};1H")
+                sys.stdout.flush()
+            except Exception:
+                pass
             user_input = console.input("[bold cyan]You: [/bold cyan]").strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[red]Goodbye.[/red]")
@@ -2386,6 +2391,7 @@ def main() -> None:
 
         if user_input.lower() in ("/quit", "/exit"):
             _clear_tasks_panel()
+            _reset_scroll_region()
             console.print("[red]Goodbye.[/red]")
             break
         if user_input.lower() == "/learn":
