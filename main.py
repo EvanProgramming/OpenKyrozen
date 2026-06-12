@@ -1502,21 +1502,27 @@ def _tasks_from_plan(text: str) -> None:
 
 
 def _build_task_progress_hint() -> str:
-    """Build a concise task progress summary for the LLM feedback."""
+    """Build a prominent task progress summary for the LLM feedback.
+    Placed at the TOP of feedback so the LLM never loses track."""
     if not tasks.tasks:
         return ""
     total = len(tasks.tasks)
     done = sum(1 for t in tasks.tasks if t["status"] == "done")
     pending_tasks = [t for t in tasks.tasks if t["status"] == "pending"]
-    lines = [f"📋 Task progress: {done}/{total} completed."]
+    lines = [
+        "=" * 40,
+        f"📋 YOUR TASK LIST ({done}/{total} done):",
+    ]
     for i, t in enumerate(tasks.tasks):
         icon = "✓" if t["status"] == "done" else "○" if t["status"] == "pending" else "◷"
         desc = t["description"][:80]
         lines.append(f"  [{i}] {icon} {desc}")
     if pending_tasks:
-        lines.append(f"⚠️  You MUST complete the remaining {len(pending_tasks)} task(s). "
-                      "Do not stop until all tasks are marked done.")
-    return "\n".join(lines) + "\n\n"
+        next_task = pending_tasks[0]["description"][:80]
+        lines.append(f"▶ NEXT TASK TO EXECUTE: \"{next_task}\"")
+        lines.append(f"⚠️  {len(pending_tasks)} tasks remain. DO NOT STOP. Output the next Action NOW.")
+    lines.append("=" * 40)
+    return "\n".join(lines) + "\n"
 
 
 def _classify_complexity(user_input: str) -> str:
@@ -1822,11 +1828,19 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             {"role": "user", "content": user_input},
             {"role": "assistant", "content": current_reply},
             {
+                "role": "system",
+                "content": (
+                    "REMINDER: The user's original request was:\n"
+                    f"---\n{user_input[:500]}\n---\n"
+                    "Complete ALL parts of this request before stopping."
+                )
+            },
+            {
                 "role": "user",
                 "content": (
+                    _build_task_progress_hint() +
                     f"The tools returned:\n{tool_results_text}\n\n"
                     + error_hint + search_throttle +
-                    _build_task_progress_hint() +
                     "Please continue if there are remaining steps, or respond with the final answer.\n"
                     "If you have completed a task, you **must** output `TaskDone: <index>` "
                     "(replace index with the zero-based index) **before** the next Action block. "
