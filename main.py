@@ -150,7 +150,7 @@ def _update_tasks_panel() -> None:
     if not content:
         return
     try:
-        console.print(Panel(Markdown(content), title="Tasks", border_style="blue"))
+        console.print(Panel(content, title="Tasks", border_style="blue"))
     except Exception:
         pass
 
