@@ -1879,6 +1879,12 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
 
         # if there are no more tool calls, the LLM might be giving a natural reply
         if not next_tool_calls:
+            # If all tasks are already done (or none were set), accept this as final answer
+            all_done = not tasks.tasks or all(t["status"] != "pending" for t in tasks.tasks)
+            if all_done:
+                final_answer = step_reply
+                break
+
             # Find the next pending task to tell the LLM what to do
             next_pending_desc = ""
             for t in tasks.tasks:
@@ -2009,9 +2015,15 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             )
             console.print("[yellow]Search limit reached — synthesizing final answer.[/yellow]")
             break
-        # Check if all pending tasks are done; if so, stop (no need to ask LLM for more steps)
-        if tasks.tasks and all(t["status"] != "pending" for t in tasks.tasks):
-            final_answer = current_reply
+        # Check if all pending tasks are done; if so, stop
+        # (also stops if no tasks were set — medium complexity just runs tools sequentially)
+        if not tasks.tasks or all(t["status"] != "pending" for t in tasks.tasks):
+            # If the LLM's latest reply was a natural-language answer without Action,
+            # use it as the final answer. Otherwise, synthesise from results.
+            if step_reply and not _collect_tool_calls(step_reply):
+                final_answer = step_reply
+            else:
+                final_answer = current_reply
             break
         # Update the LLM's previous output so the next iteration sees the new results (remove task blocks)
         current_reply = _remove_task_blocks(step_reply)
