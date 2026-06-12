@@ -114,16 +114,18 @@ console = Console()
 bg_console = Console(stderr=True)
 
 
-# ---- Constants (optimized for DeepSeek) ----
-MODEL_NAME = "deepseek-chat"
+# ---- Constants (optimized for DeepSeek V4) ----
+MODEL_NAME = "deepseek-chat (V4 auto-select)"
+DEEPSEEK_MODEL_SIMPLE = os.environ.get("DEEPSEEK_MODEL_SIMPLE", "deepseek-chat")      # fast, general-purpose (V4-level)
+DEEPSEEK_MODEL_COMPLEX = os.environ.get("DEEPSEEK_MODEL_COMPLEX", "deepseek-reasoner")  # deep reasoning for complex tasks
 SHORT_TERM_CAP = 16
 MAX_TOOL_RETRIES = 3
-MAX_STEPS_PER_TURN = 50          # how many tool‑call rounds the LLM may perform in one user turn
-MAX_UNKNOWN_TOOL_RETRIES = 3     # how many times to re‑prompt when LLM uses an unrecognised action name
+MAX_STEPS_PER_TURN = 50          # how many tool-call rounds the LLM may perform in one user turn
+MAX_UNKNOWN_TOOL_RETRIES = 3     # how many times to re-prompt when LLM uses an unrecognised action name
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
 IDLE_CONSOLIDATION_TIMEOUT = 60   # 1 minute
 
-# -------- Self‑learning feature flags (toggled via /self‑learning) --------
+# -------- Self-learning feature flags (toggled via /self-learning) --------
 _SELF_LEARNING_FLAGS: dict[str, bool] = {
     "auto_learn_conversations": True,
     "load_project_files_into_memory": True,
@@ -139,7 +141,7 @@ _SELF_LEARNING_FLAGS: dict[str, bool] = {
 }
 
 
-# -------- Task Manager for multi‑step tasks --------
+# -------- Task Manager for multi-step tasks --------
 class TaskManager:
     """Manage a list of tasks with states: pending, in_progress, done."""
     def __init__(self) -> None:
@@ -174,7 +176,9 @@ class TaskManager:
                 "in_progress": "◷",
                 "done": "✓",
             }.get(t["status"], "?")
-            desc_safe = _safe_fstring(t["description"])
+            desc = t["description"]
+            # Defensive: escape any curly braces in description
+            desc_safe = desc.replace('{', '{{').replace('}', '}}')
             lines.append(f"  {status_icon}  {desc_safe}")
         return "\n".join(lines)
 
@@ -209,10 +213,10 @@ class TaskManager:
 tasks = TaskManager()
 
 # -------- Regression Testing --------
-# Core test suite covering the most important built‑in tools
+# Core test suite covering the most important built-in tools
 _CORE_TESTS = [
     {
-        "description": "list_dir returns a non‑empty string",
+        "description": "list_dir returns a non-empty string",
         "action": "list_dir",
         "args": ".",
         "check": "nonempty"
@@ -641,13 +645,13 @@ def _spinner_worker(stop_event: threading.Event) -> None:
             sys.stdout.flush()
             time.sleep(0.25)
 
-def _call_llm_with_spinner(messages: list[dict]) -> str:
+def _call_llm_with_spinner(messages: list[dict], model: str | None = None) -> str:
     global _SPINNER_STOP, _SPINNER_THREAD
     _SPINNER_STOP.clear()
     _SPINNER_THREAD = threading.Thread(target=_spinner_worker, args=(_SPINNER_STOP,), daemon=True)
     _SPINNER_THREAD.start()
     try:
-        result = _get_llm_response(messages)
+        result = _get_llm_response(messages, model=model)
     finally:
         _SPINNER_STOP.set()
         if _SPINNER_THREAD:
@@ -696,21 +700,21 @@ def _prompt_and_init_deepseek() -> None:
         except (EOFError, KeyboardInterrupt):
             console.print("\nCancelled.")
             deepseek_client = None
-            DEEPSEEK_MODEL = "deepseek-chat"
+            DEEPSEEK_MODEL = DEEPSEEK_MODEL_SIMPLE
             sys.exit(0)
         if not key:
             console.print("No API key entered – use /quit to exit.")
             deepseek_client = None
-            DEEPSEEK_MODEL = "deepseek-chat"
+            DEEPSEEK_MODEL = DEEPSEEK_MODEL_SIMPLE
             sys.exit(0)
         _save_config_key(key)
     os.environ["DEEPSEEK_API_KEY"] = key
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-    DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+    DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", DEEPSEEK_MODEL_SIMPLE)
     deepseek_client = OpenAI(api_key=key, base_url=base_url)
 
 
-DEEPSEEK_MODEL: str = "deepseek-chat"
+DEEPSEEK_MODEL: str = DEEPSEEK_MODEL_SIMPLE
 deepseek_client = None
 
 
@@ -816,117 +820,89 @@ def _system_prompt(tools_list: str) -> str:
             "## Current working directory\n"
             "You are currently inside the project root directory of the repository the user is working in.  Relative paths (like \"README.md\" or \"main.py\") will be resolved correctly.  You can use `read_file`, `write_file`, `list_dir`, `find_files`, `run_cmd`, etc. **without needing the user to provide a path**.  Do **not** ask the user to supply a local path or a remote URL unless you intend to use the `analyze_remote_repo` tool to clone an external repository."
         )
-    return f"""You are Kyrozen, an intelligent, self‑learning AI assistant. You have access to tools and can learn from project files and past conversations to improve your knowledge over time.
-
-## Available Tools:
-{tools_list}
-
-### 📌 Multi‑step research tasks – **you must complete ALL steps**
-When the user asks you to research multiple GitHub repositories, gather statistics, run Python scripts, or produce a final report, **you must follow every single step** and **never stop early**.  
-Below is the mandatory procedure.  **You may NOT skip any step.**  
-
-1. **Explore** – First try `search_web` for broad results. If it returns nothing useful, switch to the **GitHub search API** via `run_cmd`:  
-   `curl -s "https://api.github.com/search/repositories?q=ai+agent+framework&sort=stars&order=desc&per_page=5" | python3 -c "import sys,json; data=json.load(sys.stdin); [print(f'{{i+1}}. {{item["full_name"]}} - ⭐{{item["stargazers_count"]}} - 🍴{{item["forks_count"]}}') for i,item in enumerate(data['items'])]"`  
-   Pick the **top 3** that are actual AI agent frameworks.
-
-2. **Extract star/fork counts** – For each of the 3 chosen repositories, run:  
-   `curl -s https://api.github.com/repos/OWNER/REPO | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['stargazers_count'], d['forks_count'])"`  
-   ⚠️ **Do NOT** use `read_webpage` on API endpoints.  
-   ⚠️ **Do NOT** fetch any extra URLs that appear inside the JSON response (e.g. `keys_url`, `events_url`, `hooks_url`) – they will fail and waste turns.  
-
-3. **Extract last‑month commit count** – For each repository, obtain the approximate commit count for the last 30 days. The most reliable approach is:  
-   `curl -s https://api.github.com/repos/OWNER/REPO/stats/commit_activity | python3 -c "import json,sys; weeks=json.load(sys.stdin); print(sum(w['total'] for w in weeks[-4:]))"`  
-   (If the endpoint is unavailable, fall back to parsing the commit count from the repo's `read_webpage` view.)
-
-4. **Compute and visualise** – After you have the numbers, **write a Python script** using `write_file`, then **run it** with `run_cmd('python3 script.py')`.  
-   The script must calculate an activity score (e.g. `score = star*0.2 + fork*0.3 + commits*0.5`) and save a bar chart as `agent_audit_report.png`.
-
-5. **Final report** – Use `write_file` to create a `README.md` that summarises your findings, includes the chart image reference, and recommends the most active project.
-
-**Important:**  
-- Always output a **Plan** block first, then a **TaskList** containing **all 5 steps** (as a JSON array with clear descriptions).  
-- After each tool call that finishes one of those tasks, output **`TaskDone: <zero‑based index>`** (e.g. `TaskDone: 0` when step 1 is complete).  
-- **Do not stop** after step 1 or step 2. Continue issuing Action blocks until every task in the TaskList is marked done.  
-- If you hit a GitHub API rate limit, wait 60 seconds and retry (you can use `time.sleep(60)` inside `run_cmd`).  
-- If you run out of the allowed number of tool calls, the system will **re‑prompt you** until you finish. You cannot escape by saying "I already did it".  
-- Do **not** ask the user for permission to continue – just proceed automatically.
-
-🌐 **Action name rules:** The only defined action names are those listed above. Do **not** use `"bash"`, `"shell"`, or any other name – always use `"run_cmd"` for command execution.  
-**Warning:** If you use an action name that is not listed above, the system will reject it and you will be forced to try again with a correct action. Do not invent new names.
-
-{cwd_note}
-
-## How to use tools
-When you need to perform an action, you **must** output a Thought followed by **exactly one** Action in JSON format enclosed in triple backticks.
-
-**Format:**
-Thought: (explain your reasoning)
-Action:
-```json
-{{
-  "action": "tool_name",
-  "args": "arguments"
-}}
-```
-
-**CRITICAL ARGUMENT RULES:**
-- The `args` field **must** be a **single plain string**, never a JSON object (dict).  
-- If a tool requires two pieces of data (e.g. `write_file` needs a path and content), you **must** separate them with a pipe `|` (e.g. `"raw_logs.txt|hello world"`).  
-- Do **not** pass a JSON object like `{"path":...,"content":...}` – that will cause an error.  
-- For `run_cmd` and `execute_terminal_command`, the argument is the **complete shell command** as a single string. Do not leave it empty.  
-- For any tool, the argument must be **non‑empty** unless the tool explicitly tolerates an empty string (none do).  
-- You must never use an action name that is not listed in Available Tools (aliases such as `bash`, `shell`, `run_shell_command` are permitted – see the alias list).  
-
-If you output an empty argument or an incorrect format, the tool **will fail** and you will be forced to retry.
-
-If you need to run several tools in sequence, run **one per message** – the system will then ask you for the next step.
-
-If no action is required, respond naturally in plain text.
-
-You are not limited to coding tasks; you can assist with any topic. Use the tools when appropriate, but feel free to engage in general conversation. Always try to provide thorough, helpful answers.
-
-You have stored knowledge of the project's code files as well as previous conversations. Use that knowledge to improve your answers and learn over time.
-
-You cannot define new tools. You must use only the built-in tools listed in the Available Tools section.
-
-### Always verify file paths
-When you create a file using `write_file`, the tool returns its **absolute path** (e.g. `Wrote 800 characters to /Users/.../Testing/matrix_calculator.py`).  
-**Always** read that path from the result and use the **absolute** path in any subsequent `run_cmd` or `read_file` call.  
-If you do not see the absolute path, run `read_file` on the relative path to make sure you have the correct location, then remember that absolute path for later use.
-
-**Format requirement**: Do **not** use raw XML tags (`<tool_name>args</tool_name>`) to invoke a tool. Only use the JSON Action block described above.
-
-### Planning phase (mandatory)
-**You MUST start with a Plan block before any Action block.**  
-The Plan block must appear **before any TaskList or Action**.  
-If you omit the Plan block, your output will be discarded and you will be forced to output a Plan.
-
-Use the following format:
-
-Plan:
-1. (step description – why and what)
-2. (step description)
-...
-
-Dependencies between steps must be clear.  Do not output any Action until the plan is complete.
-After the plan, you **must** output a `TaskList:` block listing the tasks (see below).
-
-### Task management
-Any time you need to use one or more tools, you **must** first output a `TaskList:` block containing a JSON array of task descriptions.  Output the TaskList before the first Action block.
-When you finish a task **before** taking the next Action, output `TaskDone: <index>` (where <index> is the zero‑based index of the completed task) **exactly** once, on its own line.
-Do **not** forget to output `TaskDone:` – the system uses it to update the progress display.
-Never ask the user whether to continue. Automatically proceed.
-
-Prefer built‑in tools (`write_file`, `read_file`, `run_cmd`, `search_web`, `find_files`, `list_dir`, `read_webpage`, `git_clone`, `git_status`) over self‑created tools. Only define a new tool if none of the existing tools can accomplish the required task.
-
-### Important reminder
-When the user asks you to analyze the repository, start by running `list_dir('.')` to see the files.  Do **not** ask for a local path or remote URL – you are already in the correct directory.
-
-### Memory retrieval
-When the user asks about what you remember or what you have learned, **always** use the `search_memory` tool (listed in Available Tools) to search for relevant learned facts. `search_memory` performs a semantic search across stored memories and returns the most relevant results. You can also use `check_stored_data` to get a raw listing of recent non‑file entries. Do **not** read the memory.py source file directly – it will not show you the learned facts.
-
-In general, relevant memories are automatically provided to you in the conversation context. Use them as background knowledge when completing tasks.
-"""
+    # 使用安全的字符串拼接而不是单个巨大的 f-string，避免格式说明符误解析
+    return (
+        "You are Kyrozen, an intelligent, self-learning AI assistant. You have access to tools and can learn from project files and past conversations to improve your knowledge over time.\n\n"
+        "## Available Tools:\n"
+        + tools_list + "\n\n"
+        "### 📌 Multi-step research tasks - **you must complete ALL steps**\n"
+        "When the user asks you to research multiple GitHub repositories, gather statistics, run Python scripts, or produce a final report, **you must follow every single step** and **never stop early**.  \n"
+        "Below is the mandatory procedure.  **You may NOT skip any step.**  \n\n"
+        "1. **Explore** - First try `search_web` for broad results. If it returns nothing useful, switch to the **GitHub search API** via `run_cmd`:  \n"
+        "   `curl -s \"https://api.github.com/search/repositories?q=ai+agent+framework&sort=stars&order=desc&per_page=5\" | python3 -c \"import sys,json; data=json.load(sys.stdin); [print(f'{i+1}. {item[\\\"full_name\\\"]} - ⭐{item[\\\"stargazers_count\\\"]} - 🍴{item[\\\"forks_count\\\"]}') for i,item in enumerate(data['items'])]\"`  \n"
+        "   Pick the **top 3** that are actual AI agent frameworks.\n\n"
+        "2. **Extract star/fork counts** - For each of the 3 chosen repositories, run:  \n"
+        "   `curl -s https://api.github.com/repos/OWNER/REPO | python3 -c \"import json,sys; d=json.load(sys.stdin); print(d['stargazers_count'], d['forks_count'])\"`  \n"
+        "   ⚠️ **Do NOT** use `read_webpage` on API endpoints.  \n"
+        "   ⚠️ **Do NOT** fetch any extra URLs that appear inside the JSON response (e.g. `keys_url`, `events_url`, `hooks_url`) - they will fail and waste turns.  \n\n"
+        "3. **Extract last-month commit count** - For each repository, obtain the approximate commit count for the last 30 days. The most reliable approach is:  \n"
+        "   `curl -s https://api.github.com/repos/OWNER/REPO/stats/commit_activity | python3 -c \"import json,sys; weeks=json.load(sys.stdin); print(sum(w['total'] for w in weeks[-4:]))\"`  \n"
+        "   (If the endpoint is unavailable, fall back to parsing the commit count from the repo's `read_webpage` view.)\n\n"
+        "4. **Compute and visualise** - After you have the numbers, **write a Python script** using `write_file`, then **run it** with `run_cmd('python3 script.py')`.  \n"
+        "   The script must calculate an activity score (e.g. `score = star*0.2 + fork*0.3 + commits*0.5`) and save a bar chart as `agent_audit_report.png`.\n\n"
+        "5. **Final report** - Use `write_file` to create a `README.md` that summarises your findings, includes the chart image reference, and recommends the most active project.\n\n"
+        "**Important:**  \n"
+        "- Always output a **Plan** block first, then a **TaskList** containing **all 5 steps** (as a JSON array with clear descriptions).  \n"
+        "- After each tool call that finishes one of those tasks, output **`TaskDone: <zero-based index>`** (e.g. `TaskDone: 0` when step 1 is complete).  \n"
+        "- **Do not stop** after step 1 or step 2. Continue issuing Action blocks until every task in the TaskList is marked done.  \n"
+        "- If you hit a GitHub API rate limit, wait 60 seconds and retry (you can use `time.sleep(60)` inside `run_cmd`).  \n"
+        "- If you run out of the allowed number of tool calls, the system will **re-prompt you** until you finish. You cannot escape by saying \"I already did it\".  \n"
+        "- Do **not** ask the user for permission to continue - just proceed automatically.\n\n"
+        "🌐 **Action name rules:** The only defined action names are those listed above. Do **not** use `\"bash\"`, `\"shell\"`, or any other name – always use `\"run_cmd\"` for command execution.  \n"
+        "**Warning:** If you use an action name that is not listed above, the system will reject it and you will be forced to try again with a correct action. Do not invent new names.\n\n"
+        + cwd_note + "\n\n"
+        "## How to use tools\n"
+        "When you need to perform an action, you **must** output a Thought followed by **exactly one** Action in JSON format enclosed in triple backticks.\n\n"
+        "**Format:**\n"
+        "Thought: (explain your reasoning)\n"
+        "Action:\n"
+        "```json\n"
+        "{{\n"
+        '  "action": "tool_name",\n'
+        '  "args": "arguments"\n'
+        "}}\n"
+        "```\n\n"
+        "**CRITICAL ARGUMENT RULES:**\n"
+        "- The `args` field **must** be a **single plain string**, never a JSON object (dict).  \n"
+        "- If a tool requires two pieces of data (e.g. `write_file` needs a path and content), you **must** separate them with a pipe `|` (e.g. `\"raw_logs.txt|hello world\"`).  \n"
+        "- Do **not** pass a JSON object like `{\"path\":...,\"content\":...}` - that will cause an error.  \n"
+        "- For `run_cmd` and `execute_terminal_command`, the argument is the **complete shell command** as a single string. Do not leave it empty.  \n"
+        "- For any tool, the argument must be **non-empty** unless the tool explicitly tolerates an empty string (none do).  \n"
+        "- You must never use an action name that is not listed in Available Tools (aliases such as `bash`, `shell`, `run_shell_command` are permitted – see the alias list).  \n\n"
+        "If you output an empty argument or an incorrect format, the tool **will fail** and you will be forced to retry.\n\n"
+        "If you need to run several tools in sequence, run **one per message** – the system will then ask you for the next step.\n\n"
+        "If no action is required, respond naturally in plain text.\n\n"
+        "You are not limited to coding tasks; you can assist with any topic. Use the tools when appropriate, but feel free to engage in general conversation. Always try to provide thorough, helpful answers.\n\n"
+        "You have stored knowledge of the project's code files as well as previous conversations. Use that knowledge to improve your answers and learn over time.\n\n"
+        "You cannot define new tools. You must use only the built-in tools listed in the Available Tools section.\n\n"
+        "### Always verify file paths\n"
+        "When you create a file using `write_file`, the tool returns its **absolute path** (e.g. `Wrote 800 characters to /Users/.../Testing/matrix_calculator.py`).  \n"
+        "**Always** read that path from the result and use the **absolute** path in any subsequent `run_cmd` or `read_file` call.  \n"
+        "If you do not see the absolute path, run `read_file` on the relative path to make sure you have the correct location, then remember that absolute path for later use.\n\n"
+        "**Format requirement**: Do **not** use raw XML tags (`<tool_name>args</tool_name>`) to invoke a tool. Only use the JSON Action block described above.\n\n"
+        "### Planning phase (mandatory)\n"
+        "**You MUST start with a Plan block before any Action block.**  \n"
+        "The Plan block must appear **before any TaskList or Action**.  \n"
+        "If you omit the Plan block, your output will be discarded and you will be forced to output a Plan.\n\n"
+        "Use the following format:\n\n"
+        "Plan:\n"
+        "1. (step description – why and what)\n"
+        "2. (step description)\n"
+        "...\n\n"
+        "Dependencies between steps must be clear.  Do not output any Action until the plan is complete.\n"
+        "After the plan, you **must** output a `TaskList:` block listing the tasks (see below).\n\n"
+        "### Task management\n"
+        "Any time you need to use one or more tools, you **must** first output a `TaskList:` block containing a JSON array of task descriptions.  Output the TaskList before the first Action block.\n"
+        "When you finish a task **before** taking the next Action, output `TaskDone: <index>` (where <index> is the zero-based index of the completed task) **exactly** once, on its own line.\n"
+        "Do **not** forget to output `TaskDone:` - the system uses it to update the progress display.\n"
+        "Never ask the user whether to continue. Automatically proceed.\n\n"
+        "Prefer built-in tools (`write_file`, `read_file`, `run_cmd`, `search_web`, `find_files`, `list_dir`, `read_webpage`, `git_clone`, `git_status`) over self-created tools. Only define a new tool if none of the existing tools can accomplish the required task.\n\n"
+        "### Important reminder\n"
+        "When the user asks you to analyze the repository, start by running `list_dir('.')` to see the files.  Do **not** ask for a local path or remote URL - you are already in the correct directory.\n\n"
+        "### Memory retrieval\n"
+        "When the user asks about what you remember or what you have learned, **always** use the `search_memory` tool (listed in Available Tools) to search for relevant learned facts. `search_memory` performs a semantic search across stored memories and returns the most relevant results. You can also use `check_stored_data` to get a raw listing of recent non-file entries. Do **not** read the memory.py source file directly - it will not show you the learned facts.\n\n"
+        "In general, relevant memories are automatically provided to you in the conversation context. Use them as background knowledge when completing tasks."
+    )
 
 
 memory_bank = MemoryBank()
@@ -1001,8 +977,10 @@ def _build_memory_context(query: str, n: int = 3) -> str:
         return ""
     lines = ["Remembered facts that may be relevant:"]
     for r in recalled:
-        snippet = _safe_fstring(r[:300].replace("\n", " "))
-        lines.append(f"- {snippet}")
+        snippet = r[:300].replace("\n", " ")
+        # Defensively escape any curly braces to prevent format spec injection
+        snippet = snippet.replace('{', '{{').replace('}', '}}')
+        lines.append("- " + snippet)
     return "\n".join(lines)
 
 
@@ -1189,13 +1167,65 @@ def _attempt_define_tool(text: str) -> bool:
     return False
 
 
-def _get_llm_response(messages: list[dict[str, str]]) -> str:
+def _select_model(user_input: str) -> str:
+    """Auto-select the best DeepSeek model based on task complexity.
+    Simple queries → fast model (deepseek-chat / V4).
+    Complex tasks → reasoning model (deepseek-reasoner / R1).
+    """
+    text = user_input.lower().strip()
+
+    # Complexity signals: length, multi-step, technical depth
+    complexity_score = 0
+
+    # Long inputs suggest complex tasks
+    if len(user_input) > 200:
+        complexity_score += 2
+    elif len(user_input) > 100:
+        complexity_score += 1
+
+    # Multi-step / numbered instructions
+    if re.search(r"\b(step|first|then|next|finally|after that)\b", text):
+        complexity_score += 2
+    if re.search(r"\d+[.)]\s", text):
+        complexity_score += 1
+
+    # Code-related tasks
+    code_keywords = [
+        "code", "debug", "fix", "refactor", "implement", "build a",
+        "write a program", "write a script", "function", "class",
+        "architecture", "design pattern", "optimize", "performance"
+    ]
+    if any(kw in text for kw in code_keywords):
+        complexity_score += 3  # code tasks are inherently complex
+
+    # Deep analysis / reasoning
+    analysis_keywords = [
+        "analyze", "explain how", "explain why", "compare", "evaluate",
+        "review this", "understand", "deep dive", "audit", "diagnose"
+    ]
+    if any(kw in text for kw in analysis_keywords):
+        complexity_score += 2
+
+    # Research / multi-source tasks
+    research_keywords = [
+        "research", "find all", "gather", "summarize", "comprehensive",
+        "report", "overview of", "investigate"
+    ]
+    if any(kw in text for kw in research_keywords):
+        complexity_score += 1
+
+    if complexity_score >= 3:
+        return DEEPSEEK_MODEL_COMPLEX
+    return DEEPSEEK_MODEL_SIMPLE
+
+
+def _get_llm_response(messages: list[dict[str, str]], model: str | None = None) -> str:
     global _last_prompt_tokens, _last_completion_tokens, _total_prompt_tokens, _total_completion_tokens
     if deepseek_client is None:
         return "[DeepSeek Error] DEEPSEEK_API_KEY environment variable not set"
     try:
         response = deepseek_client.chat.completions.create(
-            model=DEEPSEEK_MODEL,
+            model=model or DEEPSEEK_MODEL,
             messages=messages,
         )
         text = response.choices[0].message.content or ""
@@ -1295,11 +1325,14 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     """One user turn: build context, get LLM reply, execute tool calls
     with automatic retries and failure memory."""
 
-    global _last_user_interaction
+    global _last_user_interaction, DEEPSEEK_MODEL
     _last_user_interaction = time.time()
 
     if clear_tasks:
         tasks.tasks.clear()
+
+    # Auto-select the best model for this turn based on task complexity
+    DEEPSEEK_MODEL = _select_model(user_input)
 
     turn_start = time.time()
     turn_prompt_total = 0
@@ -1412,7 +1445,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     tool_was_search = any(tc.get("action") == "search_web" for tc in tool_calls)
     if not tool_calls:
         # If the user request seems to ask for action (search, research, write, save, compare, etc.)
-        # and the assistant didn't produce any tool call, re‑prompt with a strong reminder.
+        # and the assistant didn't produce any tool call, re-prompt with a strong reminder.
         if _requires_tool_action(user_input) or _llm_has_plan or _llm_has_tasklist:
             reminder_msg = (
                 "System: You did not output an Action block. "
@@ -1472,7 +1505,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
     tool_results_text = "\n".join(results)
 
-    # Unified multi‑step loop – always runs, can handle early errors
+    # Unified multi-step loop - always runs, can handle early errors
     round_limit = MAX_STEPS_PER_TURN
     round_count = 0
     incomplete_prompt_attempts = 0
@@ -1507,7 +1540,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             else:
                 error_hint += "The action name may be wrong. "
             error_hint += (
-                "If you used a self‑created tool, try using a built‑in tool instead. "
+                "If you used a self-created tool, try using a built-in tool instead. "
                 "Use one of the following actions: "
                 + ", ".join(sorted(AVAILABLE_TOOLS.keys())) + ".\n"
             )
@@ -1543,7 +1576,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                     + error_hint +
                     "Please continue if there are remaining steps, or respond with the final answer.\n"
                     "If you have completed a task, you **must** output `TaskDone: <index>` "
-                    "(replace index with the zero‑based index) **before** the next Action block. "
+                    "(replace index with the zero-based index) **before** the next Action block. "
                     "Do not omit the `TaskDone:` line.\n"
                     "Never ask the user for permission to continue. Automatically decide."
                 )
@@ -1562,7 +1595,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         # extract tool calls for the next step
         next_tool_calls = _collect_tool_calls(step_reply)
 
-        # ----- reject unknown action names and force re‑prompting -----
+        # ----- reject unknown action names and force re-prompting -----
         _unknown_tool_retries = 0
         while _unknown_tool_retries < 3:
             unknown_action = _detect_unknown_action(step_reply)
@@ -1575,7 +1608,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 + ", ".join(sorted(AVAILABLE_TOOLS.keys())) + "\n"
                 "Do not invent new names. Output an Action block now."
             )
-            # re‑prompt the LLM
+            # re-prompt the LLM
             step_reply = _call_llm_with_spinner(
                 summary_messages + [{"role": "user", "content": msg}]
             ).strip()
@@ -1621,10 +1654,10 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                     for t in tasks.tasks:
                         if t["status"] == "pending":
                             t["status"] = "done"
-                    console.print("[yellow]Auto‑completed remaining tasks (no action after retry).[/yellow]")
+                    console.print("[yellow]Auto-completed remaining tasks (no action after retry).[/yellow]")
                     break
             elif _is_question(step_reply):
-                # re‑prompt if the LLM asked a question instead of acting
+                # re-prompt if the LLM asked a question instead of acting
                 summary_messages.append({
                     "role": "user",
                     "content": "System: Do not ask the user. Output the next Action block now."
@@ -1763,7 +1796,7 @@ def _auto_learn_conversations() -> None:
         _logs_count_at_last_learn = new_count
         return
     learn_prompt = (
-        "You are Kyrozen's self‑learning module. Read the following recent conversation logs "
+        "You are Kyrozen's self-learning module. Read the following recent conversation logs "
         "and extract any important facts, user preferences, or new skills that should be "
         "remembered for future interactions. Output a bullet list of facts. "
         "If nothing important, output only '—'.\n\n"
@@ -1802,7 +1835,7 @@ def _background_learning_loop() -> None:
 
             console.print("[dim]Learning...[/dim]")
 
-            # silently learning (respect self‑learning flags)
+            # silently learning (respect self-learning flags)
             if _SELF_LEARNING_FLAGS["auto_learn_conversations"]:
                 _auto_learn_conversations()
             if _SELF_LEARNING_FLAGS["load_project_files_into_memory"]:
@@ -1834,12 +1867,12 @@ def _background_learning_loop() -> None:
 
 
 def _show_self_learning_menu() -> None:
-    """Display an interactive menu to toggle self‑learning features."""
+    """Display an interactive menu to toggle self-learning features."""
     flag_names = [
-        ("auto_learn_conversations",      "Auto‑learn from conversations"),
+        ("auto_learn_conversations",      "Auto-learn from conversations"),
         ("load_project_files_into_memory","Scan project files into memory"),
         ("age_out_old_coded_entries",     "Age out stale code entries"),
-        ("auto_debug_tool",               "Auto‑debug tools"),
+        ("auto_debug_tool",               "Auto-debug tools"),
         ("consolidate_memories",          "Consolidate memories"),
         ("review_tools",                  "Review and merge tools"),
         ("targeted_inquiry",              "Targeted inquiry (ask about undocumented code)"),
@@ -1895,15 +1928,15 @@ def main() -> None:
   ██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║    ██╔═██╗   ╚██╔╝  ██╔══██╗██║   ██║ ███╔╝   ███╔╝  ██║╚██╗██║
   ╚██████╔╝██║     ███████╗██║ ╚████║    ██║  ██╗   ██║   ██║  ██║╚██████╔╝███████╗███████╗██║ ╚████║
    ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝    ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═══╝"""
-    console.print(Panel.fit(banner_text, title="OPEN KYROZEN", subtitle="self‑learning AI agent", border_style="cyan"))
+    console.print(Panel.fit(banner_text, title="OPEN KYROZEN", subtitle="self-learning AI agent", border_style="cyan"))
     console.print(f"Kyrozen (DeepSeek + Tools). Model: {MODEL_NAME}", style="cyan")
-    console.print("Commands: /quit or /exit to exit, /update to pull latest version, /learn to reload project files, /api_key to change API key, /self‑learning to toggle self‑learning features.\n", style="yellow")
-    # Show which self‑learning features are enabled
+    console.print("Commands: /quit or /exit to exit, /update to pull latest version, /learn to reload project files, /api_key to change API key, /self-learning to toggle self-learning features.\n", style="yellow")
+    # Show which self-learning features are enabled
     enabled = [name for name, val in _SELF_LEARNING_FLAGS.items() if val]
     if enabled:
-        console.print(f"[dim]Self‑learning features enabled: {rich_escape(', '.join(enabled))}.[/dim]")
+        console.print(f"[dim]Self-learning features enabled: {rich_escape(', '.join(enabled))}.[/dim]")
     else:
-        console.print("[dim]All self‑learning features are disabled (use /self‑learning to enable).[/dim]")
+        console.print("[dim]All self-learning features are disabled (use /self-learning to enable).[/dim]")
     console.print("[dim]Learning results are stored in `chroma_memory/` (ChromaDB persistent storage). You can also see them by asking the agent what it remembers.[/dim]")
 
     _prompt_and_init_deepseek()
@@ -1945,7 +1978,7 @@ def main() -> None:
                 _save_config_key(new_key)
                 os.environ["DEEPSEEK_API_KEY"] = new_key
                 base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-                DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+                DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", DEEPSEEK_MODEL_SIMPLE)
                 deepseek_client = OpenAI(api_key=new_key, base_url=base_url)
                 console.print("[green]API key updated and saved for future sessions.[/green]")
             else:
@@ -1974,7 +2007,11 @@ def main() -> None:
         try:
             reply = _chat_turn(user_input, clear_tasks=True)
         except Exception as e:
-            console.print(f"[red]Error: {e}[/red]")
+            import traceback as _tb
+            console.print("[red]=== EXCEPTION IN _chat_turn ===[/red]")
+            _tb.print_exc(file=sys.stderr)
+            console.print(f"[red]Exception type: {type(e).__name__}[/red]")
+            console.print(f"[red]Exception message: {e}[/red]")
             reply = f"Error: {e}"
 
         if len(reply.strip()) < 5:

@@ -19,3 +19,8 @@ Thumbs.db
 
 # Config files (should stay private)
 *.config.json
+
+# Debug and test files
+main_debug.py
+test_chat_turn.py
+_test_regression_tmp.txt
