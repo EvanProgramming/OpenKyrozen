@@ -265,7 +265,8 @@ _CORE_TESTS = [
 # Snapshot management for user‑defined tools
 _BUILTIN_TOOL_NAMES = {
     "write_file","read_file","run_cmd","search_web","find_files","list_dir",
-    "git_clone","git_status","execute_terminal_command","analyze_remote_repo"
+    "git_clone","git_status","execute_terminal_command","analyze_remote_repo",
+    "list_tree","read_webpage","check_stored_data","search_memory"
 }
 _saved_user_tools: dict[str, Any] = {}
 
@@ -423,13 +424,41 @@ def _maybe_trigger_reflection() -> None:
 
 
 def _maybe_strategy_distillation() -> None:
-    """If recent turns consumed many tokens, log a note (tool creation disabled)."""
+    """If recent turns consumed many tokens, distill an efficient strategy."""
     if len(_turn_cost_log) < 3:
         return
     recent_total = sum(entry.get("tokens", 0) for entry in _turn_cost_log[-5:])
     if recent_total < 5000:
         return
-    memory_bank.add_log(f"COST_NOTE: Recent token total {recent_total}. Pattern compression skipped.")
+
+    # Gather recent conversation context for analysis
+    recent_logs = memory_bank.get_recent(30)
+    if not recent_logs:
+        return
+    # Filter out system‑internal entries
+    user_logs = [r for r in recent_logs if r and not r.startswith(("FILE:", "FACT:", "LEARNED:", "SKILL:", "DEBUG:", "TOOL_REVIEW:"))]
+    if len(user_logs) < 5:
+        return
+
+    distill_prompt = (
+        "You are Kyrozen's strategy distillation module. Recent turns consumed "
+        f"{recent_total} tokens. Analyse the conversation patterns below and "
+        "distill 1‑3 concise strategies the agent should adopt to work more "
+        "efficiently (fewer tool calls, less token waste, faster execution).\n\n"
+        "Output each strategy on a new line prefixed with 'STRATEGY:'.\n"
+        "If no clear improvement, output '—'.\n\n"
+        + "\n".join(user_logs[-15:])
+    )
+    try:
+        messages = [{"role": "system", "content": distill_prompt}]
+        answer = _get_llm_response(messages).strip()
+        if answer and answer not in ("—", ""):
+            for line in answer.split("\n"):
+                line = line.strip()
+                if line.startswith("STRATEGY:"):
+                    memory_bank.add_log(f"STRATEGY: {line}")
+    except Exception:
+        pass
 
 
 # -------- Sleep & Consolidation (Dream Cycle) --------
@@ -505,7 +534,45 @@ def _register_tool(name: str, code: str, description: str = "") -> bool:
 
 # -------- Tool Refactoring --------
 def _review_tools() -> None:
-    return
+    """Analyse tool usage patterns and suggest merges or improvements."""
+    if len(_tool_stats) < 3:
+        return  # not enough data
+
+    # Build a summary of tool usage
+    summary_lines = []
+    for name, stats in sorted(_tool_stats.items(),
+                              key=lambda x: x[1].get("calls", 0), reverse=True)[:10]:
+        calls = stats.get("calls", 0)
+        successes = stats.get("successes", 0)
+        avg_time = stats.get("total_time", 0) / max(calls, 1)
+        summary_lines.append(
+            f"  {name}: {calls} calls, {successes} successes, "
+            f"avg {avg_time:.2f}s per call"
+        )
+
+    if not summary_lines:
+        return
+
+    review_prompt = (
+        "You are Kyrozen's tool review module. Review the following tool usage "
+        "statistics and suggest improvements:\n"
+        "- Are there tools that could be merged (similar functionality)?\n"
+        "- Are any tools under‑used and candidates for removal?\n"
+        "- Could any tool be made faster or more robust?\n"
+        "Output each suggestion on a new line prefixed with 'TOOL_REVIEW:'.\n"
+        "If no improvements needed, output '—'.\n\n"
+        + "\n".join(summary_lines)
+    )
+    try:
+        messages = [{"role": "system", "content": review_prompt}]
+        answer = _get_llm_response(messages).strip()
+        if answer and answer not in ("—", ""):
+            for line in answer.split("\n"):
+                line = line.strip()
+                if line.startswith("TOOL_REVIEW:"):
+                    memory_bank.add_log(f"TOOL_REVIEW: {line}")
+    except Exception:
+        pass
 
 
 # -------- Active Exploration (Targeted Inquiry) --------
@@ -532,7 +599,7 @@ def _targeted_inquiry() -> None:
             after = content.split(func_def,1)[-1].split("\n",1)[-1]
             if not after.lstrip().startswith('"""') and not after.lstrip().startswith("'''"):
                 question = f"I noticed function '{m}' in {py_file.name} has no docstring – what does it do? (You can tell me and I'll remember.)"
-                # bg_console.print(f"[italic yellow]{question}[/italic yellow]")
+                bg_console.print(f"\n[bold yellow]🔍 {question}[/bold yellow]\n")
                 _pending_inquiry = question
                 return  # one inquiry per cycle
 
@@ -597,20 +664,51 @@ def _invent_skills() -> None:
 _known_libraries = set()
 def _auto_patch_new_technology(user_input: str) -> None:
     """If user mentions an unknown library, fetch its docs in background."""
-    # extract potential library names from user input
+    detected: set[str] = set()
+
     words = user_input.split()
     for w in words:
         # Pattern 1: suffix based detection (lib, py, framework, package)
         if w.endswith(("lib","py","framework","package")) and w not in _known_libraries:
-            _known_libraries.add(w)
-            threading.Thread(target=_fetch_library_info, args=(w,), daemon=True).start()
+            detected.add(w)
+
     # Pattern 2: detect "use <Library>" or "using <Library>" phrases
-    use_match = re.search(r"(?:use|using)\s+([A-Za-z_]\w*)", user_input, re.IGNORECASE)
-    if use_match:
-        lib = use_match.group(1)
-        if lib not in _known_libraries:
-            _known_libraries.add(lib)
-            threading.Thread(target=_fetch_library_info, args=(lib,), daemon=True).start()
+    for match in re.finditer(r"(?:use|using)\s+([A-Za-z_]\w*)", user_input, re.IGNORECASE):
+        lib = match.group(1)
+        if lib.lower() not in ("a","an","the","this","that","it","my","our","your"):
+            detected.add(lib)
+
+    # Pattern 3: import statements in code or conversation
+    for match in re.finditer(r"(?:import|from)\s+([A-Za-z_]\w*)", user_input):
+        lib = match.group(1)
+        if lib.lower() not in ("a","an","the","os","sys","re","json","time","math"):
+            detected.add(lib)
+
+    # Pattern 4: "pip install <lib>" or "install <lib>"
+    for match in re.finditer(r"(?:pip\s+install|install)\s+([A-Za-z_][\w.-]*)", user_input, re.IGNORECASE):
+        lib = match.group(1)
+        detected.add(lib)
+
+    # Pattern 5: well‑known library heuristics (capitalised or compound names)
+    well_known = {
+        "numpy","pandas","scipy","matplotlib","seaborn","plotly",
+        "sklearn","scikit-learn","tensorflow","keras","pytorch","torch",
+        "flask","django","fastapi","starlette","aiohttp","httpx","requests",
+        "sqlalchemy","alembic","pydantic","celery","redis","rabbitmq",
+        "pytest","unittest","mypy","ruff","black","isort","pre-commit",
+        "docker","kubernetes","nginx","postgresql","mysql","mongodb",
+        "react","vue","angular","svelte","next.js","tailwind","bootstrap",
+        "graphql","grpc","protobuf","websocket","openapi","swagger",
+    }
+    for w in words:
+        clean = w.strip('"\'`,.;:!?()[]{}').lower()
+        if clean in well_known and clean not in _known_libraries:
+            detected.add(clean)
+
+    # Spawn background fetches for new discoveries
+    for lib in detected:
+        _known_libraries.add(lib)
+        threading.Thread(target=_fetch_library_info, args=(lib,), daemon=True).start()
 
 
 def _fetch_library_info(lib_name: str) -> None:
@@ -1817,7 +1915,54 @@ def _auto_learn_conversations() -> None:
 
 
 def _auto_debug_tool() -> None:
-    return
+    """Analyse tool failures and error patterns, then log debugging insights."""
+    # Collect failing tools from performance stats
+    failing_tools = []
+    for tool_name, stats in _tool_stats.items():
+        if stats.get("calls", 0) > 2:
+            success_rate = stats.get("successes", 0) / max(stats["calls"], 1)
+            if success_rate < 0.5:
+                failing_tools.append((tool_name, stats))
+
+    # Collect recent failure entries from memory
+    recent = memory_bank.get_recent(30)
+    failures = [r for r in recent if r and r.startswith(_FAILURE_STORE_PREFIX)]
+
+    if not failing_tools and not failures:
+        return
+
+    # Build analysis prompt
+    parts = []
+    if failing_tools:
+        parts.append("Low‑success tools detected:")
+        for name, stats in failing_tools:
+            parts.append(
+                f"  - {name}: {stats['calls']} calls, "
+                f"{stats['successes']} successes "
+                f"({stats['successes']/max(stats['calls'],1)*100:.0f}% success rate)"
+            )
+    if failures:
+        parts.append("\nRecent failure records:")
+        for f in failures[-3:]:
+            parts.append(f"  {f[:300]}")
+
+    debug_prompt = (
+        "You are Kyrozen's auto‑debug module. Analyse the following tool "
+        "performance data and failure records. Identify the root cause of "
+        "failures and suggest concrete fixes. Output each finding on a new "
+        "line prefixed with 'DEBUG_FINDING:'.\n\n"
+        + "\n".join(parts)
+    )
+    try:
+        messages = [{"role": "system", "content": debug_prompt}]
+        answer = _get_llm_response(messages).strip()
+        if answer:
+            for line in answer.split("\n"):
+                line = line.strip()
+                if line.startswith("DEBUG_FINDING:") or line.startswith("FIX:"):
+                    memory_bank.add_log(f"DEBUG: {line}")
+    except Exception:
+        pass
 
 
 def _background_learning_loop() -> None:
@@ -1999,9 +2144,10 @@ def main() -> None:
             _auto_patch_new_technology(user_input)
 
         # If there was a pending inquiry and the user answered, store the answer immediately
-        if _pending_inquiry is not None:
-            # Store the user's input as a fact
-            memory_bank.add_log(f"FACT: User answered inquiry – {user_input}")
+        if _pending_inquiry is not None and not user_input.startswith("/"):
+            # Only treat non‑command input as a genuine answer
+            if len(user_input.strip()) > 2:
+                memory_bank.add_log(f"FACT: User answered inquiry '{_pending_inquiry[:80]}...' with: {user_input}")
             _pending_inquiry = None
 
         try:
