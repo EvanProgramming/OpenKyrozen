@@ -112,6 +112,7 @@ def search_web(args: str) -> str:
     """
     import re
     import html
+    import json
     from urllib.parse import quote
     import requests
 
@@ -218,7 +219,51 @@ def search_web(args: str) -> str:
     except Exception:
         pass
 
-    return "No search results found. Please try a different query."
+    # ---- attempt 4: DuckDuckGo Instant Answer API (JSON) ----
+    try:
+        api_url = f"https://api.duckduckgo.com/?q={quote(query)}&format=json&no_html=1&skip_disambig=1"
+        resp = requests.get(api_url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = json.loads(resp.text)
+        related = data.get("RelatedTopics", [])
+        if related:
+            results = []
+            for topic in related[:5]:
+                title = topic.get("Text", "") or ""
+                url = topic.get("FirstURL", "")
+                # Clean up title (remove description suffix)
+                if " - " in title:
+                    title = title.split(" - ")[0]
+                results.append({"title": title[:200], "body": "", "url": url})
+            if results:
+                return _fmt(results)
+    except Exception:
+        pass
+
+    # ---- attempt 5: direct Wikipedia search for fact-based queries ----
+    try:
+        wiki_url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={quote(query)}&limit=5&format=json"
+        resp = requests.get(wiki_url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = json.loads(resp.text)
+        if len(data) >= 4 and data[1]:
+            results = []
+            for i, title in enumerate(data[1][:5]):
+                desc = data[2][i] if i < len(data[2]) else ""
+                url = data[3][i] if i < len(data[3]) else ""
+                results.append({"title": title, "body": desc[:300], "url": url})
+            if results:
+                return _fmt(results)
+    except Exception:
+        pass
+
+    # All backends failed — return a useful error message
+    return (
+        "Search temporarily unavailable: all backends (Google, DuckDuckGo, Wikipedia) "
+        f"failed for query '{query[:80]}'. This may be due to rate-limiting or "
+        "network issues. Suggestions: try a shorter query, wait a few seconds and "
+        "retry, or use read_webpage on a known URL instead."
+    )
 
 
 def find_files(args: str) -> str:

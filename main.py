@@ -1225,6 +1225,8 @@ def _run_tool(action: str, args: str) -> str:
     start = time.time()
     try:
         result = str(fn(args))
+    except KeyboardInterrupt:
+        result = "Tool execution interrupted by user (Ctrl+C)."
     except Exception as e:
         result = f"Error: {e}"
     elapsed = time.time() - start
@@ -1809,7 +1811,10 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             else:
                 if not isinstance(args, str):
                     args = str(args)
-                result2 = _run_tool(action, args)
+                try:
+                    result2 = _run_tool(action, args)
+                except KeyboardInterrupt:
+                    result2 = "Tool execution interrupted by user (Ctrl+C)."
             safe_result2 = str(result2)[:2000]
             console.print(Panel(rich_escape(safe_result2), title=f"Result of {action}", border_style="yellow"))
             next_results.append(f"- `{action}({args!r})` returned:\n{_safe_fstring(safe_result2)}")
