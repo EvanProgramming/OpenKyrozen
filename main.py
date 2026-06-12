@@ -1046,9 +1046,13 @@ def _system_prompt(tools_list: str) -> str:
         "2. Second step – what and why\n"
         "...\n\n"
         "## TaskList format (complex tasks only)\n"
+        "Each task must be a **concrete, verifiable action** — specify which tool "
+        "and what outcome. Bad: \"start working\", \"continue\", \"finish up\". "
+        "Good: \"Use list_dir to explore project structure\", "
+        "\"Use read_file to read main.py\", \"Use write_file to save report.md\".\n\n"
         "TaskList:\n"
         "```json\n"
-        "[\"Task description 1\", \"Task description 2\", ...]\n"
+        "[\"Use list_dir to explore the directory\", \"Use read_file on README.md\", ...]\n"
         "```\n"
         "After completing a task, output `TaskDone: <index>` on its own line before the next Action.\n\n"
         "## General rules\n"
@@ -1695,7 +1699,6 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         safe_result = str(result)[:2000]
         console.print(Panel(rich_escape(safe_result), title=f"Result of {action}", border_style="yellow"))
         results.append(f"- `{action}({args!r})` returned:\n{_safe_fstring(safe_result)}")
-        tasks.mark_first_pending_done()
         if tasks.tasks:
             _update_tasks_panel()
     tool_results_text = "\n".join(results)
@@ -1709,6 +1712,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     has_errors = any(_is_tool_error(r) for r in results)
     consecutive_search_failures = 0  # track failed search_web calls to prevent loops
     total_search_calls = len([r for r in results if "search_web" in r])
+    rounds_without_taskdone = 0  # auto-mark safety net if LLM forgets TaskDone
     # check for missing arguments errors
     _args_missing_errors = [
         "requires a command",
@@ -1810,6 +1814,16 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         # let the tasks manager know about any TaskDone/TaskList in this reply
         tasks.from_llm_block(step_reply)
         tasks.mark_done_from_text(step_reply)
+
+        # Safety net: if LLM forgets TaskDone for 3 rounds, auto-mark one pending task
+        has_taskdone = bool(re.search(r"TaskDone:\s*\d+", step_reply))
+        if has_taskdone:
+            rounds_without_taskdone = 0
+        elif tasks.tasks and any(t["status"] == "pending" for t in tasks.tasks):
+            rounds_without_taskdone += 1
+            if rounds_without_taskdone >= 3:
+                tasks.mark_first_pending_done()
+                rounds_without_taskdone = 0
 
         # extract tool calls for the next step
         next_tool_calls = _collect_tool_calls(step_reply)
@@ -1936,7 +1950,6 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             safe_result2 = str(result2)[:2000]
             console.print(Panel(rich_escape(safe_result2), title=f"Result of {action}", border_style="yellow"))
             next_results.append(f"- `{action}({args!r})` returned:\n{_safe_fstring(safe_result2)}")
-            tasks.mark_first_pending_done()
             if tasks.tasks:
                 _update_tasks_panel()
             if _is_tool_error(result2):
