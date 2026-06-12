@@ -918,88 +918,52 @@ def _system_prompt(tools_list: str) -> str:
             "## Current working directory\n"
             "You are currently inside the project root directory of the repository the user is working in.  Relative paths (like \"README.md\" or \"main.py\") will be resolved correctly.  You can use `read_file`, `write_file`, `list_dir`, `find_files`, `run_cmd`, etc. **without needing the user to provide a path**.  Do **not** ask the user to supply a local path or a remote URL unless you intend to use the `analyze_remote_repo` tool to clone an external repository."
         )
-    # 使用安全的字符串拼接而不是单个巨大的 f-string，避免格式说明符误解析
+    # Build system prompt via safe concatenation (no f‑string to avoid format‑spec collisions)
     return (
-        "You are Kyrozen, an intelligent, self-learning AI assistant. You have access to tools and can learn from project files and past conversations to improve your knowledge over time.\n\n"
-        "## Available Tools:\n"
+        "You are Kyrozen, an intelligent, self-learning AI assistant with file access, "
+        "shell commands, and web search. Use tools when needed; converse naturally otherwise.\n\n"
+        "## Available Tools\n"
         + tools_list + "\n\n"
-        "### 📌 Multi-step research tasks - **you must complete ALL steps**\n"
-        "When the user asks you to research multiple GitHub repositories, gather statistics, run Python scripts, or produce a final report, **you must follow every single step** and **never stop early**.  \n"
-        "Below is the mandatory procedure.  **You may NOT skip any step.**  \n\n"
-        "1. **Explore** - First try `search_web` for broad results. If it returns nothing useful, switch to the **GitHub search API** via `run_cmd`:  \n"
-        "   `curl -s \"https://api.github.com/search/repositories?q=ai+agent+framework&sort=stars&order=desc&per_page=5\" | python3 -c \"import sys,json; data=json.load(sys.stdin); [print(f'{i+1}. {item[\\\"full_name\\\"]} - ⭐{item[\\\"stargazers_count\\\"]} - 🍴{item[\\\"forks_count\\\"]}') for i,item in enumerate(data['items'])]\"`  \n"
-        "   Pick the **top 3** that are actual AI agent frameworks.\n\n"
-        "2. **Extract star/fork counts** - For each of the 3 chosen repositories, run:  \n"
-        "   `curl -s https://api.github.com/repos/OWNER/REPO | python3 -c \"import json,sys; d=json.load(sys.stdin); print(d['stargazers_count'], d['forks_count'])\"`  \n"
-        "   ⚠️ **Do NOT** use `read_webpage` on API endpoints.  \n"
-        "   ⚠️ **Do NOT** fetch any extra URLs that appear inside the JSON response (e.g. `keys_url`, `events_url`, `hooks_url`) - they will fail and waste turns.  \n\n"
-        "3. **Extract last-month commit count** - For each repository, obtain the approximate commit count for the last 30 days. The most reliable approach is:  \n"
-        "   `curl -s https://api.github.com/repos/OWNER/REPO/stats/commit_activity | python3 -c \"import json,sys; weeks=json.load(sys.stdin); print(sum(w['total'] for w in weeks[-4:]))\"`  \n"
-        "   (If the endpoint is unavailable, fall back to parsing the commit count from the repo's `read_webpage` view.)\n\n"
-        "4. **Compute and visualise** - After you have the numbers, **write a Python script** using `write_file`, then **run it** with `run_cmd('python3 script.py')`.  \n"
-        "   The script must calculate an activity score (e.g. `score = star*0.2 + fork*0.3 + commits*0.5`) and save a bar chart as `agent_audit_report.png`.\n\n"
-        "5. **Final report** - Use `write_file` to create a `README.md` that summarises your findings, includes the chart image reference, and recommends the most active project.\n\n"
-        "**Important:**  \n"
-        "- Always output a **Plan** block first, then a **TaskList** containing **all 5 steps** (as a JSON array with clear descriptions).  \n"
-        "- After each tool call that finishes one of those tasks, output **`TaskDone: <zero-based index>`** (e.g. `TaskDone: 0` when step 1 is complete).  \n"
-        "- **Do not stop** after step 1 or step 2. Continue issuing Action blocks until every task in the TaskList is marked done.  \n"
-        "- If you hit a GitHub API rate limit, wait 60 seconds and retry (you can use `time.sleep(60)` inside `run_cmd`).  \n"
-        "- If you run out of the allowed number of tool calls, the system will **re-prompt you** until you finish. You cannot escape by saying \"I already did it\".  \n"
-        "- Do **not** ask the user for permission to continue - just proceed automatically.\n\n"
-        "🌐 **Action name rules:** The only defined action names are those listed above. Do **not** use `\"bash\"`, `\"shell\"`, or any other name – always use `\"run_cmd\"` for command execution.  \n"
-        "**Warning:** If you use an action name that is not listed above, the system will reject it and you will be forced to try again with a correct action. Do not invent new names.\n\n"
-        + cwd_note + "\n\n"
-        "## How to use tools\n"
-        "When you need to perform an action, you **must** output a Thought followed by **exactly one** Action in JSON format enclosed in triple backticks.\n\n"
-        "**Format:**\n"
-        "Thought: (explain your reasoning)\n"
+        "## Tool invocation format\n"
+        "Output exactly one Action per response:\n\n"
+        "Thought: <brief reasoning>\n"
         "Action:\n"
         "```json\n"
-        "{{\n"
-        '  "action": "tool_name",\n'
-        '  "args": "arguments"\n'
-        "}}\n"
+        "{{\"action\": \"tool_name\", \"args\": \"arguments\"}}\n"
         "```\n\n"
-        "**CRITICAL ARGUMENT RULES:**\n"
-        "- The `args` field **must** be a **single plain string**, never a JSON object (dict).  \n"
-        "- If a tool requires two pieces of data (e.g. `write_file` needs a path and content), you **must** separate them with a pipe `|` (e.g. `\"raw_logs.txt|hello world\"`).  \n"
-        "- Do **not** pass a JSON object like `{\"path\":...,\"content\":...}` - that will cause an error.  \n"
-        "- For `run_cmd` and `execute_terminal_command`, the argument is the **complete shell command** as a single string. Do not leave it empty.  \n"
-        "- For any tool, the argument must be **non-empty** unless the tool explicitly tolerates an empty string (none do).  \n"
-        "- You must never use an action name that is not listed in Available Tools (aliases such as `bash`, `shell`, `run_shell_command` are permitted – see the alias list).  \n\n"
-        "If you output an empty argument or an incorrect format, the tool **will fail** and you will be forced to retry.\n\n"
-        "If you need to run several tools in sequence, run **one per message** – the system will then ask you for the next step.\n\n"
-        "If no action is required, respond naturally in plain text.\n\n"
-        "You are not limited to coding tasks; you can assist with any topic. Use the tools when appropriate, but feel free to engage in general conversation. Always try to provide thorough, helpful answers.\n\n"
-        "You have stored knowledge of the project's code files as well as previous conversations. Use that knowledge to improve your answers and learn over time.\n\n"
-        "You cannot define new tools. You must use only the built-in tools listed in the Available Tools section.\n\n"
-        "### Always verify file paths\n"
-        "When you create a file using `write_file`, the tool returns its **absolute path** (e.g. `Wrote 800 characters to /Users/.../Testing/matrix_calculator.py`).  \n"
-        "**Always** read that path from the result and use the **absolute** path in any subsequent `run_cmd` or `read_file` call.  \n"
-        "If you do not see the absolute path, run `read_file` on the relative path to make sure you have the correct location, then remember that absolute path for later use.\n\n"
-        "**Format requirement**: Do **not** use raw XML tags (`<tool_name>args</tool_name>`) to invoke a tool. Only use the JSON Action block described above.\n\n"
-        "### Planning phase (mandatory)\n"
-        "**You MUST start with a Plan block before any Action block.**  \n"
-        "The Plan block must appear **before any TaskList or Action**.  \n"
-        "If you omit the Plan block, your output will be discarded and you will be forced to output a Plan.\n\n"
-        "Use the following format:\n\n"
+        "**Args rules:**\n"
+        "- `args` is always a **plain string**, never a JSON object.\n"
+        "- For `write_file`: use `\"path|content\"` (pipe‑separated).\n"
+        "- For `run_cmd`: the full shell command as one string.\n"
+        "- Use only the action names listed above. Aliases like `bash`→`run_cmd` are accepted.\n\n"
+        "## Task complexity routing\n"
+        "Classify every user request and follow the corresponding protocol:\n\n"
+        "**SIMPLE** (greeting, factual Q&A, single tool call): "
+        "Reply directly. No Plan or TaskList needed. Example: \"hi\" → just greet back.\n\n"
+        "**MEDIUM** (2‑3 related tool calls): "
+        "Output a short **Plan** block (numbered list), then execute Actions one by one. "
+        "No TaskList required. Example: \"list files and read README\" → Plan→list_dir→read_file→summarise.\n\n"
+        "**COMPLEX** (4+ tools, multi‑step analysis, code generation): "
+        "Output **Plan** → **TaskList** (JSON array) → Actions with **TaskDone: N** after each. "
+        "Complete ALL tasks. Never stop early. Example: \"audit this repo\" → full workflow.\n\n"
+        "## Planning format (medium/complex tasks only)\n"
         "Plan:\n"
-        "1. (step description – why and what)\n"
-        "2. (step description)\n"
+        "1. First step – what and why\n"
+        "2. Second step – what and why\n"
         "...\n\n"
-        "Dependencies between steps must be clear.  Do not output any Action until the plan is complete.\n"
-        "After the plan, you **must** output a `TaskList:` block listing the tasks (see below).\n\n"
-        "### Task management\n"
-        "Any time you need to use one or more tools, you **must** first output a `TaskList:` block containing a JSON array of task descriptions.  Output the TaskList before the first Action block.\n"
-        "When you finish a task **before** taking the next Action, output `TaskDone: <index>` (where <index> is the zero-based index of the completed task) **exactly** once, on its own line.\n"
-        "Do **not** forget to output `TaskDone:` - the system uses it to update the progress display.\n"
-        "Never ask the user whether to continue. Automatically proceed.\n\n"
-        "Prefer built-in tools (`write_file`, `read_file`, `run_cmd`, `search_web`, `find_files`, `list_dir`, `read_webpage`, `git_clone`, `git_status`) over self-created tools. Only define a new tool if none of the existing tools can accomplish the required task.\n\n"
-        "### Important reminder\n"
-        "When the user asks you to analyze the repository, start by running `list_dir('.')` to see the files.  Do **not** ask for a local path or remote URL - you are already in the correct directory.\n\n"
-        "### Memory retrieval\n"
-        "When the user asks about what you remember or what you have learned, **always** use the `search_memory` tool (listed in Available Tools) to search for relevant learned facts. `search_memory` performs a semantic search across stored memories and returns the most relevant results. You can also use `check_stored_data` to get a raw listing of recent non-file entries. Do **not** read the memory.py source file directly - it will not show you the learned facts.\n\n"
-        "In general, relevant memories are automatically provided to you in the conversation context. Use them as background knowledge when completing tasks."
+        "## TaskList format (complex tasks only)\n"
+        "TaskList:\n"
+        "```json\n"
+        "[\"Task description 1\", \"Task description 2\", ...]\n"
+        "```\n"
+        "After completing a task, output `TaskDone: <index>` on its own line before the next Action.\n\n"
+        "## General rules\n"
+        "- Never ask the user for permission to continue — decide and act.\n"
+        "- When analysing a repo, start with `list_dir('.')`.\n"
+        "- After `write_file`, use the absolute path returned in subsequent commands.\n"
+        "- For stored knowledge, use `search_memory` or `check_stored_data`.\n"
+        "- Do not invent tool names; use exactly the ones listed above.\n"
+        + cwd_note
     )
 
 
@@ -1183,20 +1147,28 @@ def _extract_json_objects(text: str) -> list[dict]:
 
 
 def _collect_tool_calls(text: str) -> list[dict]:
+    """Extract tool-call dicts from LLM response. Deduplicated by (action, args)."""
     calls: list[dict] = []
-    # 1. standard triple‑backtick block
+    seen: set[tuple[str, str]] = set()
+
+    def _add(data: dict) -> None:
+        key = (str(data.get("action", "")), str(data.get("args", "")))
+        if key not in seen:
+            seen.add(key)
+            calls.append(data)
+
+    # 1. standard triple‑backtick block: Action:\n```json\n{...}\n```
     pattern = r"Action:\s*```(?:json)?\s*([\s\S]*?)\s*```"
     for match in re.finditer(pattern, text, re.DOTALL):
-        raw = match.group(1).strip()
-        raw = raw.rstrip("`").strip()
+        raw = match.group(1).strip().rstrip("`").strip()
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
             continue
         if isinstance(data, dict) and "action" in data and _is_valid_action(data.get("action")):
-            calls.append(data)
+            _add(data)
 
-    # 2. plain “Action: { … }” without backticks
+    # 2. plain "Action: { … }" without backticks
     plain_pattern = r"Action:\s*(?:\n)?\s*(\{[\s\S]*?\})"
     for match in re.finditer(plain_pattern, text, re.DOTALL):
         raw = match.group(1).strip()
@@ -1205,15 +1177,14 @@ def _collect_tool_calls(text: str) -> list[dict]:
         except json.JSONDecodeError:
             continue
         if isinstance(data, dict) and "action" in data and _is_valid_action(data.get("action")):
-            if data not in calls:
-                calls.append(data)
+            _add(data)
 
-    # 3. extract any JSON dictionary from anywhere (fallback)
+    # 3. extract any JSON dict from anywhere (only if it matches tool format exactly)
     for obj in _extract_json_objects(text):
-        if isinstance(obj, dict) and "action" in obj and _is_valid_action(obj.get("action")):
-            if obj not in calls:
-                calls.append(obj)
-
+        if (isinstance(obj, dict) and "action" in obj and "args" in obj
+                and _is_valid_action(obj.get("action"))
+                and len(obj) <= 3):  # action, args + optionally one more key
+            _add(obj)
 
     return calls
 
@@ -1343,20 +1314,31 @@ def _get_llm_response(messages: list[dict[str, str]], model: str | None = None) 
 
 
 def _requires_tool_action(text: str) -> bool:
-    """Return True if the user text looks like a request that needs tool execution (search, write, etc.)."""
-    indicators = [
-        "search", "research", "find", "compare", "write", "save", "run", "execute",
-        "create", "make", "table", "file", "folder", "open", "read", "list", "download",
-        "clone", "update", "pull", "edit", "modify", "move", "copy", "delete",
-        "show", "check", "get", "fetch", "web", "internet", "online", "price",
-        "spec", "specification", "review", "information", "about", "difference",
-        "cost", "taobao", "jd", "how", "what", "which", "where", "why", "when",
-    ]
+    """Return True if the user text looks like a request that needs tool execution."""
     text_lower = text.lower()
-    # Skip very short commands or greetings
-    if len(text.split()) < 2:
+    if len(text.split()) <= 2:
         return False
-    return any(ind in text_lower for ind in indicators)
+    # Action verbs that strongly imply tool usage (word‑boundary match)
+    action_indicators = [
+        " search ", " research ", " find ", " compare ", " write ", " save ",
+        " run ", " execute ", " build ", " generate ", " download ",
+        " clone ", " edit ", " modify ", " move ", " copy ", " delete ", " remove ",
+        " fetch ", " pull ",
+        "create a", "create the", "make a", "make the",
+        "list all", "list the", "show me", "check the",
+        "table of", "chart", "graph", "visualize",
+    ]
+    if any(ind in " " + text_lower + " " for ind in action_indicators):
+        return True
+    # Context nouns that suggest tool-requiring tasks
+    context_indicators = [
+        "file", "folder", "directory", "repo", "repository", "github",
+        "web", "internet", "online", "price", "spec", "specification",
+        "report", "summary of", "overview of",
+    ]
+    if any(ind in text_lower for ind in context_indicators):
+        return True
+    return False
 
 
 def _is_tool_error(result: str) -> bool:
@@ -1419,6 +1401,44 @@ def _tasks_from_plan(text: str) -> None:
             tasks.add_task(line)
 
 
+def _classify_complexity(user_input: str) -> str:
+    """Classify the user request as simple, medium, or complex.
+    Returns 'simple', 'medium', or 'complex'."""
+    text = user_input.lower().strip()
+
+    # Simple: short greetings, trivial questions, single actions
+    simple_patterns = [
+        r"^(hi|hey|hello|yo|sup|good morning|good evening)\b",
+        r"^(thanks|thank you|ok|okay|got it|bye|goodbye)\b",
+        r"^(what is|who is|when is|where is|how are you|what can you)\b",
+        r"^(yes|no|maybe|sure|yep|nope)$",
+    ]
+    if any(re.search(p, text) for p in simple_patterns):
+        return "simple"
+    # Short inputs (≤3 words) without tool verbs are simple
+    _tool_verbs = {"read","list","find","search","write","run","create","clone","fetch","open","edit","delete","move","copy"}
+    words = set(user_input.lower().split())
+    if len(user_input.split()) <= 3 and not (words & _tool_verbs):
+        return "simple"
+
+    # Complex: multi-step, code generation, deep analysis
+    complex_indicators = [
+        r"\b(step|first|then|next|finally|after that)\b",
+        r"\d+[.)]\s+\w",  # numbered steps
+        r"\b(implement|refactor|migrate|audit|comprehensive)\b",
+        r"\b(write\s+(a|the)\s+(program|script|app|application|function|class))\b",
+        r"\b(analy[sz]e\s+(the|this|my|our)\s+(codebase|repo|project|architecture))\b",
+    ]
+    if any(re.search(p, text) for p in complex_indicators):
+        return "complex"
+    # Long inputs with multiple sentences suggest complexity
+    if len(user_input) > 250:
+        return "complex"
+
+    # Default: medium (most tool-using requests)
+    return "medium"
+
+
 def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     """One user turn: build context, get LLM reply, execute tool calls
     with automatic retries and failure memory."""
@@ -1431,6 +1451,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
 
     # Auto-select the best model for this turn based on task complexity
     DEEPSEEK_MODEL = _select_model(user_input)
+    complexity = _classify_complexity(user_input)
 
     turn_start = time.time()
     turn_prompt_total = 0
@@ -1454,14 +1475,14 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     # Process task blocks from the LLM
     tasks.from_llm_block(response_text)
     tasks.mark_done_from_text(response_text)
-    # Remove task blocks from the displayed text
     response_text_clean = re.sub(r'(?:TaskList:\s*```(?:json)?[\s\S]*?```|TaskDone:\s*\d+)', '', response_text).strip()
     if not response_text_clean:
         response_text_clean = response_text
     response_text = response_text_clean
 
     tool_calls = _collect_tool_calls(response_text)
-    # detect unknown action in response
+
+    # ---- Unknown action detection (all complexity levels) ----
     _unknown_retries = 0
     while _unknown_retries < MAX_UNKNOWN_TOOL_RETRIES:
         unknown_action = _detect_unknown_action(response_text)
@@ -1478,82 +1499,64 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
         response_text = _call_llm_with_spinner(messages).strip()
         turn_prompt_total += _last_prompt_tokens
         turn_completion_total += _last_completion_tokens
-        # re‑parse everything including tasks
         tasks.from_llm_block(response_text)
         tasks.mark_done_from_text(response_text)
         tool_calls = _collect_tool_calls(response_text)
-    # Enforce planning phase before any tool execution
-    _llm_has_plan = bool(re.search(r"Plan:", response_text))
-    plan_attempts = 0
-    while not _llm_has_plan and tool_calls and plan_attempts < 3:
-        plan_attempts += 1
-        plan_prompt = (
-            "System: You must first output a **Plan** block (numbered steps) before any Action. "
-            "Output a Plan:\n1. ...\n..."
-        )
-        messages.append({"role": "user", "content": plan_prompt})
-        response_text = _call_llm_with_spinner(messages).strip()
-        turn_prompt_total += _last_prompt_tokens
-        turn_completion_total += _last_completion_tokens
-        # reparse tasks and re‑collect tool calls
-        tasks.from_llm_block(response_text)
-        tasks.mark_done_from_text(response_text)
-        tool_calls = _collect_tool_calls(response_text)
-        _llm_has_plan = bool(re.search(r"Plan:", response_text))
-    if not _llm_has_plan and tool_calls:
-        # After 3 attempts still no plan, reject
-        return "I cannot proceed without producing a Plan block first. Please rephrase your request."
 
-    # Enforce that a TaskList is output before any tool execution
-    _llm_has_tasklist = bool(re.search(r"TaskList:", response_text))
-    if not _llm_has_tasklist and tool_calls:
-        # If a Plan block exists, automatically create tasks from its steps
-        if _llm_has_plan:
-            _tasks_from_plan(response_text)
-            if tasks.tasks:
-                _llm_has_tasklist = True  # treat as if TaskList existed
-                console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
-        if not _llm_has_tasklist and tool_calls:
-            # Ask LLM to produce a TaskList first
-            plan_prompt = (
-                "System: You must first output a TaskList block (a JSON array of task descriptions) "
-                "before using any tool. Please output your TaskList block now."
+    # ---- Plan enforcement: MEDIUM and COMPLEX only ----
+    _llm_has_plan = bool(re.search(r"Plan:", response_text))
+    if complexity in ("medium", "complex"):
+        plan_attempts = 0
+        while not _llm_has_plan and tool_calls and plan_attempts < 2:
+            plan_attempts += 1
+            plan_hint = (
+                "System: This is a {0} task. Output a Plan block first:\n"
+                "Plan:\n1. <first step – what and why>\n2. <second step>\n...".format(complexity)
             )
-            messages.append({"role": "user", "content": plan_prompt})
+            messages.append({"role": "user", "content": plan_hint})
             response_text = _call_llm_with_spinner(messages).strip()
             turn_prompt_total += _last_prompt_tokens
             turn_completion_total += _last_completion_tokens
-            # reparse
             tasks.from_llm_block(response_text)
             tasks.mark_done_from_text(response_text)
-            response_text_clean = re.sub(r'(?:TaskList:\s*```(?:json)?[\s\S]*?```|TaskDone:\s*\d+)', '', response_text).strip()
-            if not response_text_clean:
-                response_text_clean = response_text
-            response_text = response_text_clean
-            _llm_has_tasklist = bool(re.search(r"TaskList:", response_text))
             tool_calls = _collect_tool_calls(response_text)
-            if not _llm_has_tasklist and tool_calls:
-                # fallback to auto-create tasks
-                tasks.tasks.clear()
+            _llm_has_plan = bool(re.search(r"Plan:", response_text))
+        if not _llm_has_plan and tool_calls and plan_attempts >= 2:
+            # Auto‑generate a minimal plan from tool calls
+            plan_lines = ["Plan:"]
+            for i, tc in enumerate(tool_calls):
+                plan_lines.append(f"{i+1}. Execute {tc.get('action','?')}")
+            # Don't inject — just let it proceed without plan this time
+
+    # ---- TaskList enforcement: COMPLEX only ----
+    _llm_has_tasklist = bool(re.search(r"TaskList:", response_text))
+    if complexity == "complex" and tool_calls:
+        if not _llm_has_tasklist and _llm_has_plan:
+            _tasks_from_plan(response_text)
+            if tasks.tasks:
+                _llm_has_tasklist = True
+                console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
+        if not _llm_has_tasklist:
+            # Auto‑generate TaskList from plan or tool calls
+            tasks.tasks.clear()
+            if _llm_has_plan:
+                _tasks_from_plan(response_text)
+            if not tasks.tasks:
                 for tc in tool_calls:
                     safe_args = str(tc.get('args') or '')[:50]
                     tasks.add_task(f"Execute {tc.get('action','?')}: {safe_args}")
-                if tasks.tasks:
-                    console.print(Panel(tasks.format(), title="Tasks", border_style="blue"))
-    tool_was_search = any(tc.get("action") == "search_web" for tc in tool_calls)
+            if tasks.tasks:
+                console.print(Panel(tasks.format(), title="Tasks (auto)", border_style="blue"))
+
+    # ---- Missing action recovery ----
     if not tool_calls:
-        # If the user request seems to ask for action (search, research, write, save, compare, etc.)
-        # and the assistant didn't produce any tool call, re-prompt with a strong reminder.
         if _requires_tool_action(user_input) or _llm_has_plan or _llm_has_tasklist:
             reminder_msg = (
                 "System: You did not output an Action block. "
                 "You **must** now output a JSON Action block to perform the actual work. "
                 "Do not explain; just output the Action block."
             )
-            messages.append({
-                "role": "user",
-                "content": reminder_msg,
-            })
+            messages.append({"role": "user", "content": reminder_msg})
             response_text = _call_llm_with_spinner(messages).strip()
             turn_prompt_total += _last_prompt_tokens
             turn_completion_total += _last_completion_tokens
@@ -1565,7 +1568,6 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 response_text = _call_llm_with_spinner(messages).strip()
                 turn_prompt_total += _last_prompt_tokens
                 turn_completion_total += _last_completion_tokens
-            # Re‑process task blocks and tool calls
             tasks.from_llm_block(response_text)
             tasks.mark_done_from_text(response_text)
             tool_calls = _collect_tool_calls(response_text)
@@ -1576,7 +1578,6 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 "time": elapsed,
                 "tool_calls": 0
             })
-            # No tools needed – return plain answer (maybe trigger reflection)
             return response_text
 
 
