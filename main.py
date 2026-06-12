@@ -1648,23 +1648,26 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 + ", ".join(sorted(AVAILABLE_TOOLS.keys())) + ".\n"
             )
 
-        # Search throttle: prevent infinite search loops
+        # Search throttle: prevent infinite search loops WITHOUT stopping the task
         search_throttle = ""
         if consecutive_search_failures >= 3:
             search_throttle = (
-                f"\n⚠️  **Search throttle active:** {consecutive_search_failures} consecutive "
-                "search_web calls failed. The search backend is likely rate‑limited or "
-                "unavailable right now. **Stop using search_web.** Instead:\n"
-                "- If you have partial results from earlier searches, work with those.\n"
-                "- Use `read_webpage` on a known URL instead.\n"
-                "- Acknowledge the limitation and give the best answer you can with "
-                "available information.\n"
+                f"\n⚠️  **Search unavailable:** {consecutive_search_failures} consecutive "
+                "search_web calls failed (rate‑limited or backend down).\n"
+                "**Do NOT abort the task.** Continue by other means:\n"
+                "- Use `read_webpage` on URLs you already know.\n"
+                "- Work with partial/earlier search results you already have.\n"
+                "- Use `run_cmd` with curl to fetch known API endpoints.\n"
+                "- Write a script, read a file, or use any other tool.\n"
+                "- If truly stuck, explain what you could find and what's missing.\n"
+                "But **keep going** with the task — do not give up.\n"
             )
         elif total_search_calls >= 5:
             search_throttle = (
-                f"\n⚠️  **Search limit warning:** {total_search_calls} search_web calls "
-                "made this turn. Limit further searches to at most 1 more. Prefer "
-                "`read_webpage` on known URLs instead.\n"
+                f"\n⚠️  **Search rate warning:** {total_search_calls} search_web calls "
+                "made this turn. At most 1 more search is allowed. Prefer other "
+                "tools (read_webpage, run_cmd with curl, file operations) to "
+                "continue the task. **Do not stop** — complete the user's request.\n"
             )
         summary_messages: list[dict[str, str]] = [
             {
@@ -1858,14 +1861,22 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 "requires args in format path|content",
             ]) for r in next_results
         )
-        # Hard limit: too many search_web calls → force stop
-        if total_search_calls >= 7:
-            final_answer = (
-                "Search limit reached (7+ search_web calls this turn). "
-                "The search backend appears to be unavailable or rate‑limited. "
-                "Here's what I found from the earlier searches: " + tool_results_text[:500]
+        # Hard limit: too many search_web calls → one last chance to complete
+        if total_search_calls >= 7 and consecutive_search_failures >= 3:
+            final_msg = (
+                "System: Search is unavailable (7+ calls, {0} consecutive failures). "
+                "Stop searching now. Give your **best final answer** using whatever "
+                "information you already gathered from earlier tool results. "
+                "Do NOT output another Action block — just give the final answer "
+                "directly. Acknowledge any gaps honestly."
+            ).format(consecutive_search_failures)
+            step_reply = _call_llm_with_spinner(
+                summary_messages + [{"role": "user", "content": final_msg}]
+            ).strip()
+            final_answer = step_reply if step_reply else (
+                "Search limit reached. Here's what I gathered: " + tool_results_text[:500]
             )
-            console.print("[yellow]Search limit reached — forcing task completion.[/yellow]")
+            console.print("[yellow]Search limit reached — synthesizing final answer.[/yellow]")
             break
         # Check if all pending tasks are done; if so, stop (no need to ask LLM for more steps)
         if tasks.tasks and all(t["status"] != "pending" for t in tasks.tasks):
