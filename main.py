@@ -134,17 +134,17 @@ def _tasks_panel_content() -> str:
     bar_w = 20
     filled = int(bar_w * done / max(total, 1))
     bar = "█" * filled + "░" * (bar_w - filled)
-    lines = [f"[bold white on blue] ┌─ TASKS [{bar}] {done}/{total} [/]"]
+    lines = [f"[bold white on {_ACCENT_BG}] ┌─ TASKS [{bar}] {done}/{total} [/]"]
     for i, t in enumerate(tasks.tasks):
         icon = "✓" if t["status"] == "done" else "○" if t["status"] == "pending" else "◷"
-        color = "green" if t["status"] == "done" else "yellow" if t["status"] == "pending" else "cyan"
+        color = _SUCCESS if t["status"] == "done" else _WARNING if t["status"] == "pending" else _ACCENT
         desc = t["description"][:55]
-        lines.append(f"[white on blue] │ [{color}]{icon}[/] [{i}] {desc} [/]")
+        lines.append(f"[white on {_ACCENT_BG}] │ [{color}]{icon}[/{color}] [{_MUTED}]{i}[/{_MUTED}] {desc} [/]")
     pending = total - done
     if pending > 0:
-        lines.append(f"[bold white on blue] └─ {pending} remaining — DO NOT STOP [/]")
+        lines.append(f"[bold white on {_ACCENT_BG}] └─ {pending} remaining — DO NOT STOP [/]")
     else:
-        lines.append(f"[bold white on blue] └─ All tasks complete ✓ [/]")
+        lines.append(f"[bold white on {_ACCENT_BG}] └─ All tasks complete ✓ [/]")
     return "\n".join(lines)
 
 
@@ -154,7 +154,7 @@ def _update_tasks_panel() -> None:
     if not content:
         return
     try:
-        console.print(Panel(content, title="Tasks", border_style="blue"))
+        console.print(Panel(content, title="Tasks", border_style=_ACCENT))
     except Exception:
         pass
 
@@ -163,6 +163,15 @@ def _clear_tasks_panel() -> None:
     """No‑op — panel is inline, cleared naturally by new output."""
     pass
 
+
+# ---- Theme ----
+_ACCENT = "#00f0ff"           # primary brand colour
+_ACCENT_DIM = "#007788"       # muted variant for secondary elements
+_ACCENT_BG = "#001a1f"        # dark background tint
+_SUCCESS = "#00ff88"          # success green
+_WARNING = "#ffaa00"          # warning amber
+_ERROR = "#ff4466"            # error red
+_MUTED = "#445566"            # subtle grey
 
 # ---- Constants (optimized for DeepSeek V4) ----
 MODEL_NAME = "deepseek-chat (V4 auto-select)"
@@ -842,11 +851,12 @@ _SPINNER_STOP = threading.Event()
 _SPINNER_THREAD: threading.Thread | None = None
 
 _SPINNER_FRAMES = [
-    "[ . . . ===> \\ / ===> @ @ @ ]",
-    "[ : . . . ===> / \\ ===> # @ @ ]",
-    "[ : : . . ===> \\ / ===> ## @ ]",
-    "[ : : : . ===> / \\ ===> @@@ ]",
-    "[ . . . . ===> \\ / ===> @@@ ]",
+    "◜",
+    "◠",
+    "◝",
+    "◞",
+    "◡",
+    "◟",
 ]
 
 def _spinner_worker(stop_event: threading.Event) -> None:
@@ -898,7 +908,7 @@ def _save_config_key(key: str) -> None:
         with open(CONFIG_PATH, "w") as f:
             json.dump(existing, f, indent=2)
     except OSError:
-        console.print("[yellow]Warning: could not save API key to config file.[/yellow]")
+        console.print(f"[{_WARNING}]Warning: could not save API key to config file.[/{_WARNING}]")
 
 
 def _prompt_and_init_deepseek() -> None:
@@ -1881,7 +1891,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 args = str(args)
             result = _run_tool(action, args)
         safe_result = str(result)[:2000]
-        console.print(Panel(rich_escape(safe_result), title=f"Result of {action}", border_style="yellow"))
+        console.print(Panel(rich_escape(safe_result), title=f"Tool: {action}", border_style=_ACCENT_DIM, title_align="left"))
         results.append(f"- `{action}({args!r})` returned:\n{_safe_fstring(safe_result)}")
         if tasks.tasks:
             _update_tasks_panel()
@@ -2072,7 +2082,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                     for t in tasks.tasks:
                         if t["status"] == "pending":
                             t["status"] = "done"
-                    console.print(f"[yellow]Auto‑completed remaining tasks after {incomplete_prompt_attempts} nudges.[/yellow]")
+                    console.print(f"[{_WARNING}]Auto‑completed remaining tasks after {incomplete_prompt_attempts} nudges.[/{_WARNING}]")
                     break
 
                 # Build a specific nudge mentioning the exact next task
@@ -2152,7 +2162,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
                 except KeyboardInterrupt:
                     result2 = "Tool execution interrupted by user (Ctrl+C)."
             safe_result2 = str(result2)[:2000]
-            console.print(Panel(rich_escape(safe_result2), title=f"Result of {action}", border_style="yellow"))
+            console.print(Panel(rich_escape(safe_result2), title=f"Tool: {action}", border_style=_ACCENT_DIM, title_align="left"))
             next_results.append(f"- `{action}({args!r})` returned:\n{_safe_fstring(safe_result2)}")
             if tasks.tasks:
                 _update_tasks_panel()
@@ -2187,7 +2197,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
             final_answer = step_reply if step_reply else (
                 "Search limit reached. Here's what I gathered: " + tool_results_text[:500]
             )
-            console.print("[yellow]Search limit reached — synthesizing final answer.[/yellow]")
+            console.print(f"[{_WARNING}]Search limit reached — synthesizing final answer.[/{_WARNING}]")
             break
         # Check if all pending tasks are done; if so, stop
         # (also stops if no tasks were set — medium complexity just runs tools sequentially)
@@ -2419,29 +2429,31 @@ def _show_self_learning_menu() -> None:
         ("invent_skills",                 "Invent reusable skills from past conversations"),
     ]
     while True:
-        console.print("[bold cyan]Self‑Learning Features[/bold cyan]")
-        console.print("Enter the number of a feature to toggle it on/off, or 'done' to exit.\n")
+        console.print(f"\n[bold {_ACCENT}]═══ Self‑Learning Features ═══[/bold {_ACCENT}]")
+        console.print(f"[{_MUTED}]Enter a number to toggle, or 'done' to exit.[/{_MUTED}]\n")
         for i, (key, desc) in enumerate(flag_names):
-            status = "✓" if _SELF_LEARNING_FLAGS[key] else "✗"
-            console.print(f"  {i+1}. [{status}] {desc}")
+            enabled = _SELF_LEARNING_FLAGS[key]
+            icon = f"[{_SUCCESS}]●[/{_SUCCESS}]" if enabled else f"[{_MUTED}]○[/{_MUTED}]"
+            console.print(f"  [{_MUTED}]{i+1}.[/{_MUTED}] {icon} {desc}")
         console.print()
         choice = _prompt_input(
             "",
-            html_message="<b><ansiyellow>Toggle (number) or 'done':</ansiyellow></b> "
+            html_message="<b><ansicyan>Toggle (number) or 'done':</ansicyan></b> "
         ).lower()
         if choice == "done":
-            console.print("[green]Self‑learning settings updated.[/green]")
+            console.print(f"[{_SUCCESS}]Self‑learning settings updated.[/{_SUCCESS}]")
             break
         try:
             idx = int(choice) - 1
             if 0 <= idx < len(flag_names):
                 key = flag_names[idx][0]
                 _SELF_LEARNING_FLAGS[key] = not _SELF_LEARNING_FLAGS[key]
-                console.print(f"[green]Toggled {flag_names[idx][1]} to {'enabled' if _SELF_LEARNING_FLAGS[key] else 'disabled'}.[/green]")
+                state = "enabled" if _SELF_LEARNING_FLAGS[key] else "disabled"
+                console.print(f"[{_SUCCESS}]Toggled {flag_names[idx][1]} → {state}.[/{_SUCCESS}]")
             else:
-                console.print("[red]Invalid number.[/red]")
+                console.print(f"[{_ERROR}]Invalid number.[/{_ERROR}]")
         except ValueError:
-            console.print("[red]Please enter a number or 'done'.[/red]")
+            console.print(f"[{_ERROR}]Please enter a number or 'done'.[/{_ERROR}]")
 
 
 # ---- prompt_toolkit session (mouse support + line editing + history) ----
@@ -2487,42 +2499,62 @@ def main() -> None:
     global deepseek_client, DEEPSEEK_MODEL
 
     if "--init" in sys.argv:
-        console.print("[cyan]OpenKyrozen initialisation[/cyan]")
+        console.print(f"[{_ACCENT}]OpenKyrozen initialisation[/{_ACCENT}]")
         try:
             import openai  # noqa: F401
         except ImportError:
-            console.print("[red]openai not installed. Run: pip install -r requirements.txt[/red]")
+            console.print(f"[{_ERROR}]openai not installed. Run: pip install -r requirements.txt[/{_ERROR}]")
             sys.exit(1)
         _prompt_and_init_deepseek()
         _load_project_files_into_memory()
         if deepseek_client is not None:
-            console.print("[green]API key configured and saved to ~/.kyrozen_config.json[/green]")
-        console.print("[green]Initialisation finished. Run `python main.py` to start the agent.[/green]")
+            console.print(f"[{_SUCCESS}]API key configured and saved to ~/.kyrozen_config.json[/{_SUCCESS}]")
+        console.print(f"[{_SUCCESS}]Initialisation finished. Run `python main.py` to start the agent.[/{_SUCCESS}]")
         sys.exit(0)
 
-    banner_text = r"""   ██████╗ ██████╗ ███████╗███╗   ██╗    ██╗  ██╗██╗   ██╗██████╗  ██████╗ ███████╗███████╗███╗   ██╗
-  ██╔═══██╗██╔══██╗██╔════╝████╗  ██║    ██║ ██╔╝╚██╗ ██╔╝██╔══██╗██╔═══██╗╚══███╔╝╚══███╔╝████╗  ██║
-  ██║   ██║██████╔╝█████╗  ██╔██╗ ██║    █████╔╝  ╚████╔╝ ██████╔╝██║   ██║  ███╔╝   ███╔╝ ██╔██╗ ██║
-  ██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║    ██╔═██╗   ╚██╔╝  ██╔══██╗██║   ██║ ███╔╝   ███╔╝  ██║╚██╗██║
-  ╚██████╔╝██║     ███████╗██║ ╚████║    ██║  ██╗   ██║   ██║  ██║╚██████╔╝███████╗███████╗██║ ╚████║
-   ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝    ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═══╝"""
-    console.print(Panel.fit(banner_text, title="OPEN KYROZEN", subtitle="self-learning AI agent", border_style="cyan"))
-    console.print(f"Kyrozen (DeepSeek + Tools). Model: {MODEL_NAME}", style="cyan")
-    console.print("Commands: /quit or /exit to exit, /update to pull latest version, /learn to reload project files, /api_key to change API key, /self-learning to toggle self-learning features.\n", style="yellow")
+    banner_text = r"""╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║      ██████╗ ██████╗ ███████╗███╗   ██╗                     ║
+║     ██╔═══██╗██╔══██╗██╔════╝████╗  ██║                     ║
+║     ██║   ██║██████╔╝█████╗  ██╔██╗ ██║                     ║
+║     ██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║                     ║
+║     ╚██████╔╝██║     ███████╗██║ ╚████║                     ║
+║      ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝                     ║
+║                                                              ║
+║      ██╗  ██╗██╗   ██╗██████╗  ██████╗                      ║
+║      ██║ ██╔╝╚██╗ ██╔╝██╔══██╗██╔═══██╗                     ║
+║      █████╔╝  ╚████╔╝ ██████╔╝██║   ██║                     ║
+║      ██╔═██╗   ╚██╔╝  ██╔══██╗██║   ██║                     ║
+║      ██║  ██╗   ██║   ██║  ██║╚██████╔╝                     ║
+║      ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝                      ║
+║                                                              ║
+║      ███████╗███████╗███╗   ██╗                              ║
+║      ╚══███╔╝╚══███╔╝████╗  ██║                              ║
+║        ███╔╝   ███╔╝ ██╔██╗ ██║                              ║
+║       ███╔╝   ███╔╝  ██║╚██╗██║                              ║
+║      ███████╗███████╗██║ ╚████║                              ║
+║      ╚══════╝╚══════╝╚═╝  ╚═══╝                              ║
+║                                                              ║
+║              ══════  self‑learning AI agent  ══════          ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝"""
+    console.print(f"[{_ACCENT}]{banner_text}[/{_ACCENT}]")
+    console.print(f"[{_ACCENT}]Kyrozen[/{_ACCENT}] [{_MUTED}]DeepSeek + Tools · Model: {MODEL_NAME}[/{_MUTED}]")
+    console.print(f"[{_MUTED}]Commands:[/{_MUTED}] [{_ACCENT_DIM}]/quit  /exit  /update  /learn  /api_key  /self-learning[/{_ACCENT_DIM}]\n")
     # Show which self-learning features are enabled
     enabled = [name for name, val in _SELF_LEARNING_FLAGS.items() if val]
     if enabled:
-        console.print(f"[dim]Self-learning features enabled: {rich_escape(', '.join(enabled))}.[/dim]")
+        console.print(f"[{_MUTED}]Self-learning features enabled: {rich_escape(', '.join(enabled))}.[/{_MUTED}]")
     else:
-        console.print("[dim]All self-learning features are disabled (use /self-learning to enable).[/dim]")
-    console.print("[dim]Learning results are stored in `chroma_memory/` (ChromaDB persistent storage). You can also see them by asking the agent what it remembers.[/dim]")
+        console.print(f"[{_MUTED}]All self-learning features are disabled (use /self-learning to enable).[/{_MUTED}]")
+    console.print(f"[{_MUTED}]Memory: `chroma_memory/` (ChromaDB). Ask the agent what it remembers.[/{_MUTED}]")
 
     _prompt_and_init_deepseek()
     if deepseek_client is None:
-        console.print("Cannot start without an API key.", style="red")
+        console.print(f"[{_ERROR}]Cannot start without an API key.[/{_ERROR}]")
         sys.exit(1)
     threading.Thread(target=_load_project_files_into_memory, daemon=True).start()
-    console.print("[yellow]Loading project files in background...[/yellow]")
+    console.print(f"[{_MUTED}]Loading project files in background...[/{_MUTED}]")
 
     # Start background learning daemon
     threading.Thread(target=_background_learning_loop, daemon=True).start()
@@ -2534,7 +2566,7 @@ def main() -> None:
                 html_message="<b><ansicyan>You:</ansicyan></b> "
             )
         except (EOFError, KeyboardInterrupt):
-            console.print("\n[red]Goodbye.[/red]")
+            console.print(f"\n[{_ERROR}]Goodbye.[/{_ERROR}]")
             sys.exit(0)
 
         if not user_input:
@@ -2549,11 +2581,11 @@ def main() -> None:
 
         if user_input.lower() in ("/quit", "/exit"):
             _clear_tasks_panel()
-            console.print("[red]Goodbye.[/red]")
+            console.print(f"[{_ERROR}]Goodbye.[/{_ERROR}]")
             break
         if user_input.lower() == "/learn":
             _load_project_files_into_memory()
-            console.print("[green]Project files re‑learned and stored in memory.[/green]")
+            console.print(f"[{_SUCCESS}]Project files re‑learned and stored in memory.[/{_SUCCESS}]")
             continue
         if user_input.lower() == "/api_key":
             new_key = _prompt_input(
@@ -2566,14 +2598,14 @@ def main() -> None:
                 base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
                 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", DEEPSEEK_MODEL_SIMPLE)
                 deepseek_client = OpenAI(api_key=new_key, base_url=base_url)
-                console.print("[green]API key updated and saved for future sessions.[/green]")
+                console.print(f"[{_SUCCESS}]API key updated and saved for future sessions.[/{_SUCCESS}]")
             else:
-                console.print("[red]No key provided – key unchanged.[/red]")
+                console.print(f"[{_ERROR}]No key provided – key unchanged.[/{_ERROR}]")
             continue
         if user_input.lower() == "/update":
-            console.print("[yellow]Updating OpenKyrozen from git...[/yellow]")
+            console.print(f"[{_ACCENT}]Updating OpenKyrozen from git...[/{_ACCENT}]")
             update_result = _self_update()
-            console.print(Panel(update_result, title="Update", border_style="blue"))
+            console.print(Panel(update_result, title="Update", border_style=_ACCENT))
             continue
 
         if user_input.lower() == "/self-learning":
@@ -2588,14 +2620,14 @@ def main() -> None:
             reply = _chat_turn(user_input, clear_tasks=True)
         except Exception as e:
             import traceback as _tb
-            console.print("[red]=== EXCEPTION IN _chat_turn ===[/red]")
+            console.print(f"[{_ERROR}]=== EXCEPTION IN _chat_turn ===[/{_ERROR}]")
             _tb.print_exc(file=sys.stderr)
-            console.print(f"[red]Exception type: {type(e).__name__}[/red]")
-            console.print(f"[red]Exception message: {e}[/red]")
+            console.print(f"[{_ERROR}]Exception type: {type(e).__name__}[/{_ERROR}]")
+            console.print(f"[{_ERROR}]Exception message: {e}[/{_ERROR}]")
             reply = f"Error: {e}"
 
         if len(reply.strip()) < 5:
-            console.print("[red][Error] Received empty response from LLM[/red]")
+            console.print(f"[{_ERROR}][Error] Received empty response from LLM[/{_ERROR}]")
             continue
 
         short_term_memory.append({"role": "user", "content": user_input})
@@ -2606,11 +2638,11 @@ def main() -> None:
         thinking, answer = _split_reply(reply)
 
         if thinking:
-            console.print(Panel(thinking, title="Thinking", border_style="dim white"))
+            console.print(Panel(thinking, title="Thinking", border_style=_ACCENT_DIM))
         if answer:
-            console.print(Panel(Markdown(answer), title="Agent", border_style="green"))
+            console.print(Panel(Markdown(answer), title="Kyrozen", border_style=_ACCENT, title_align="left"))
         else:
-            console.print(Panel(Markdown(answer or "(no content)"), title="Agent", border_style="green"))
+            console.print(Panel(Markdown(answer or "(no content)"), title="Kyrozen", border_style=_ACCENT, title_align="left"))
         print()
 
         # Show tasks panel if any tasks exist
@@ -2632,22 +2664,22 @@ def main() -> None:
             try:
                 reply = _chat_turn(user_input)
             except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
+                console.print(f"[{_ERROR}]Error: {e}[/{_ERROR}]")
                 reply = f"Error: {e}"
                 break
             if len(reply.strip()) < 5:
-                console.print("[red][Error] Received empty response from LLM[/red]")
+                console.print(f"[{_ERROR}][Error] Received empty response from LLM[/{_ERROR}]")
                 break
             short_term_memory.append({"role": "user", "content": user_input})
             short_term_memory.append({"role": "assistant", "content": reply})
             memory_bank.add_log(f"User: {user_input}\nAssistant: {reply}")
             thinking, answer = _split_reply(reply)
             if thinking:
-                console.print(Panel(thinking, title="Thinking", border_style="dim white"))
+                console.print(Panel(thinking, title="Thinking", border_style=_ACCENT_DIM))
             if answer:
-                console.print(Panel(Markdown(answer), title="Agent", border_style="green"))
+                console.print(Panel(Markdown(answer), title="Kyrozen", border_style=_ACCENT, title_align="left"))
             else:
-                console.print(Panel(Markdown(answer or "(no content)"), title="Agent", border_style="green"))
+                console.print(Panel(Markdown(answer or "(no content)"), title="Kyrozen", border_style=_ACCENT, title_align="left"))
             print()
             if tasks.tasks:
                 _update_tasks_panel()
