@@ -2,6 +2,7 @@
 Long-term memory for the AI agent (ChromaDB if available, else in‑memory).
 """
 
+import threading
 import warnings
 import uuid
 from datetime import datetime, timezone
@@ -28,6 +29,7 @@ class MemoryBank:
     DEFAULT_PATH = "./chroma_memory"
 
     def __init__(self, path: str | None = None):
+        self._lock = threading.Lock()  # protect ChromaDB SQLite from concurrent access
         self._path = path or self.DEFAULT_PATH
         self._in_memory: list[tuple[str, str, str]] = []  # (id, text, timestamp)
         self._collection = None
@@ -50,75 +52,76 @@ class MemoryBank:
         """Save a text log with a timestamp‑based ID. Returns the assigned ID."""
         log_id = f"{datetime.now(timezone.utc).isoformat()}Z_{uuid.uuid4().hex[:8]}"
         now_ts = datetime.now(timezone.utc).isoformat()
-        if _CHROMADB_AVAILABLE and self._collection is not None:
-            try:
-                self._collection.add(
-                    ids=[log_id],
-                    documents=[text],
-                    metadatas=[{"timestamp": now_ts}],
-                )
-            except Exception as e:
-                log_id = f"err_{uuid.uuid4().hex[:8]}"
-                # Use safe concatenation to avoid f-string parsing of user data
-                safe_doc = "[add_log error] " + str(text) + " (error: " + str(e) + ")"
-                self._collection.add(
-                    ids=[log_id],
-                    documents=[safe_doc],
-                    metadatas=[{"timestamp": now_ts}],
-                )
-        else:
-            # In‑memory fallback: just append
-            self._in_memory.append((log_id, text, now_ts))
+        with self._lock:
+            if _CHROMADB_AVAILABLE and self._collection is not None:
+                try:
+                    self._collection.add(
+                        ids=[log_id],
+                        documents=[text],
+                        metadatas=[{"timestamp": now_ts}],
+                    )
+                except Exception as e:
+                    log_id = f"err_{uuid.uuid4().hex[:8]}"
+                    safe_doc = "[add_log error] " + str(text) + " (error: " + str(e) + ")"
+                    self._collection.add(
+                        ids=[log_id],
+                        documents=[safe_doc],
+                        metadatas=[{"timestamp": now_ts}],
+                    )
+            else:
+                self._in_memory.append((log_id, text, now_ts))
         return log_id
 
     def recall(self, query: str, n_results: int = 2) -> list[str]:
         """Retrieve the top n_results most relevant logs for the query."""
         if not query or not query.strip():
             return []
-        if _CHROMADB_AVAILABLE and self._collection is not None:
-            try:
-                count = self._collection.count()
-                result = self._collection.query(
-                    query_texts=[query.strip()],
-                    n_results=min(n_results, count or 1),
-                )
-                docs = result.get("documents")
-                if docs and len(docs) > 0:
-                    first = docs[0]
-                    if first is None:
-                        return []
-                    return list(first) if isinstance(first, list) else [first]
-                return []
-            except Exception:
-                return []
-        else:
-            # Naive fallback: return the n_results most recent logs (no real search)
-            if not self._in_memory:
-                return []
-            recent = self._in_memory[-n_results:]
-            return [text for _, text, _ in recent]
+        with self._lock:
+            if _CHROMADB_AVAILABLE and self._collection is not None:
+                try:
+                    count = self._collection.count()
+                    result = self._collection.query(
+                        query_texts=[query.strip()],
+                        n_results=min(n_results, count or 1),
+                    )
+                    docs = result.get("documents")
+                    if docs and len(docs) > 0:
+                        first = docs[0]
+                        if first is None:
+                            return []
+                        return list(first) if isinstance(first, list) else [first]
+                    return []
+                except Exception:
+                    return []
+            else:
+                if not self._in_memory:
+                    return []
+                recent = self._in_memory[-n_results:]
+                return [text for _, text, _ in recent]
 
     def get_recent(self, n: int = 10) -> list[str]:
         """Return the n most recent logs (without relevance ranking)."""
-        if _CHROMADB_AVAILABLE and self._collection is not None:
-            try:
-                result = self._collection.get(limit=n, offset=0)
-                docs = result.get("documents", [])
-                return docs if docs else []
-            except Exception:
-                return []
-        else:
-            if not self._in_memory:
-                return []
-            recent = self._in_memory[-n:]
-            return [text for _, text, _ in recent]
+        with self._lock:
+            if _CHROMADB_AVAILABLE and self._collection is not None:
+                try:
+                    result = self._collection.get(limit=n, offset=0)
+                    docs = result.get("documents", [])
+                    return docs if docs else []
+                except Exception:
+                    return []
+            else:
+                if not self._in_memory:
+                    return []
+                recent = self._in_memory[-n:]
+                return [text for _, text, _ in recent]
 
     def count_logs(self) -> int:
         """Return the total number of stored logs."""
-        if _CHROMADB_AVAILABLE and self._collection is not None:
-            try:
-                return self._collection.count()
-            except Exception:
-                return 0
-        else:
-            return len(self._in_memory)
+        with self._lock:
+            if _CHROMADB_AVAILABLE and self._collection is not None:
+                try:
+                    return self._collection.count()
+                except Exception:
+                    return 0
+            else:
+                return len(self._in_memory)
