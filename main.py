@@ -2498,10 +2498,9 @@ def main() -> None:
 
     while True:
         try:
-            # Use sys.stdin.readline — avoids Python 3.14 libedit SIGSEGV
             sys.stdout.write(f"\033[38;2;0;240;255m\033[1mYou:\033[0m ")
             sys.stdout.flush()
-            user_input = sys.stdin.readline().strip()
+            user_input = input().strip()
         except (EOFError, KeyboardInterrupt):
             console.print(f"\n[{_ERROR}]Goodbye.[/{_ERROR}]")
             sys.exit(0)
