@@ -11,6 +11,14 @@ import warnings
 # Suppress all DeprecationWarnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+# Guard: Python 3.14 has an import-system deadlock with openai 2.x
+if sys.version_info >= (3, 14):
+    sys.exit(
+        "OpenKyrozen does not support Python 3.14+ due to a known import deadlock "
+        "with the OpenAI SDK. Use Python 3.12 or 3.13 instead.\n"
+        "Rebuild the venv with:  make reinstall PYTHON=python3.12"
+    )
+
 # Delete stale __pycache__ before any imports to avoid loading deprecated bytecode
 for p in pathlib.Path(__file__).parent.rglob("__pycache__"):
     shutil.rmtree(p, ignore_errors=True)
