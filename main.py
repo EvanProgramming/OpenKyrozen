@@ -2512,33 +2512,16 @@ def main() -> None:
         console.print(f"[{_SUCCESS}]Initialisation finished. Run `python main.py` to start the agent.[/{_SUCCESS}]")
         sys.exit(0)
 
-    banner_text = r"""╔══════════════════════════════════════════════════════════════╗
-║                                                              ║
-║      ██████╗ ██████╗ ███████╗███╗   ██╗                     ║
-║     ██╔═══██╗██╔══██╗██╔════╝████╗  ██║                     ║
-║     ██║   ██║██████╔╝█████╗  ██╔██╗ ██║                     ║
-║     ██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║                     ║
-║     ╚██████╔╝██║     ███████╗██║ ╚████║                     ║
-║      ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝                     ║
-║                                                              ║
-║      ██╗  ██╗██╗   ██╗██████╗  ██████╗                      ║
-║      ██║ ██╔╝╚██╗ ██╔╝██╔══██╗██╔═══██╗                     ║
-║      █████╔╝  ╚████╔╝ ██████╔╝██║   ██║                     ║
-║      ██╔═██╗   ╚██╔╝  ██╔══██╗██║   ██║                     ║
-║      ██║  ██╗   ██║   ██║  ██║╚██████╔╝                     ║
-║      ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝                      ║
-║                                                              ║
-║      ███████╗███████╗███╗   ██╗                              ║
-║      ╚══███╔╝╚══███╔╝████╗  ██║                              ║
-║        ███╔╝   ███╔╝ ██╔██╗ ██║                              ║
-║       ███╔╝   ███╔╝  ██║╚██╗██║                              ║
-║      ███████╗███████╗██║ ╚████║                              ║
-║      ╚══════╝╚══════╝╚═╝  ╚═══╝                              ║
-║                                                              ║
-║              ══════  self‑learning AI agent  ══════          ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝"""
-    console.print(f"[{_ACCENT}]{banner_text}[/{_ACCENT}]")
+    # Narrow banner (48-char ASCII art) — fits 60-col terminals safely
+    banner_text = f"""[{_ACCENT}]
+ _  ___   __  ____   ___   ____  _____  _   _
+| |/ / | |  \\/  |  \\ / _ \\ |  _ \\| ____|| \\ | |
+| ' /| | | |\\/| | | | | | || |_) |  _|  |  \\| |
+| . \\| |_| |  | | |_| | |_||  _ <| |___ | |\\  |
+|_|\\_\\___/|_|  |_|\\___/ \\___/|_| \\_\\_____||_| \\_|
+[/{_ACCENT}]
+[{_MUTED}]OPEN  ·  self‑learning AI agent  ·  DeepSeek V4[/{_MUTED}]"""
+    console.print(Panel(banner_text.strip(), border_style=_ACCENT, padding=(1, 2)))
     console.print(f"[{_ACCENT}]Kyrozen[/{_ACCENT}] [{_MUTED}]DeepSeek + Tools · Model: {MODEL_NAME}[/{_MUTED}]")
     console.print(f"[{_MUTED}]Commands:[/{_MUTED}] [{_ACCENT_DIM}]/quit  /exit  /update  /learn  /api_key  /self-learning[/{_ACCENT_DIM}]\n")
     # Show which self-learning features are enabled
