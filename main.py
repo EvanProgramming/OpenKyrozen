@@ -979,19 +979,16 @@ def _self_update() -> str:
 
 def _remove_stale_file_entries(project_root: Path) -> None:
     """Delete old FILE entries that no longer correspond to existing .py files."""
-    if memory_bank._collection is None:
-        return
     skip_dirs = {".venv", "venv", "chroma_memory", "__pycache__", ".git"}
     existing_py_files = set()
     for py_file in project_root.rglob("*.py"):
-        # Skip files inside skipped directories
         if any(part in py_file.parts for part in skip_dirs):
             continue
         existing_py_files.add(str(py_file.relative_to(project_root)))
     try:
-        all_logs = memory_bank._collection.get()
-        ids = all_logs.get("ids", [])
-        documents = all_logs.get("documents", [])
+        ids, documents = memory_bank.get_all()
+        if not ids:
+            return
         to_delete = []
         for i, doc in enumerate(documents):
             if doc and doc.startswith("FILE:"):
@@ -1001,7 +998,7 @@ def _remove_stale_file_entries(project_root: Path) -> None:
                     if file_rel not in existing_py_files:
                         to_delete.append(ids[i])
         if to_delete:
-            memory_bank._collection.delete(ids=to_delete)
+            memory_bank.delete_logs(to_delete)
     except Exception:
         pass
 
@@ -2492,15 +2489,19 @@ def main() -> None:
     if deepseek_client is None:
         console.print(f"[{_ERROR}]Cannot start without an API key.[/{_ERROR}]")
         sys.exit(1)
-    threading.Thread(target=_load_project_files_into_memory, daemon=True).start()
-    console.print(f"[{_MUTED}]Loading project files in background...[/{_MUTED}]")
+    # Load project files synchronously to avoid ChromaDB thread conflicts
+    _load_project_files_into_memory()
+    console.print(f"[{_MUTED}]Project files loaded into memory.[/{_MUTED}]")
 
     # Start background learning daemon
     threading.Thread(target=_background_learning_loop, daemon=True).start()
 
     while True:
         try:
-            user_input = console.input("[bold cyan]You: [/bold cyan]").strip()
+            # Use sys.stdin.readline — avoids Python 3.14 libedit SIGSEGV
+            sys.stdout.write(f"\033[38;2;0;240;255m\033[1mYou:\033[0m ")
+            sys.stdout.flush()
+            user_input = sys.stdin.readline().strip()
         except (EOFError, KeyboardInterrupt):
             console.print(f"\n[{_ERROR}]Goodbye.[/{_ERROR}]")
             sys.exit(0)

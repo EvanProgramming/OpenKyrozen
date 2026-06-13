@@ -125,3 +125,35 @@ class MemoryBank:
                     return 0
             else:
                 return len(self._in_memory)
+
+    def get_all(self, limit: int = 2000) -> tuple[list[str], list[str]]:
+        """Return (ids, documents) for stored logs, up to ``limit``. Thread-safe."""
+        with self._lock:
+            if _CHROMADB_AVAILABLE and self._collection is not None:
+                try:
+                    total = self._collection.count()
+                    if total == 0:
+                        return ([], [])
+                    n = min(total, limit)
+                    result = self._collection.get(limit=n, offset=0,
+                                                  include=["documents"])
+                    return (result.get("ids", []), result.get("documents", []))
+                except Exception:
+                    return ([], [])
+            else:
+                ids = [item[0] for item in self._in_memory[:limit]]
+                docs = [item[1] for item in self._in_memory[:limit]]
+                return (ids, docs)
+
+    def delete_logs(self, ids: list[str]) -> None:
+        """Delete logs by ID. Thread-safe."""
+        if not ids:
+            return
+        with self._lock:
+            if _CHROMADB_AVAILABLE and self._collection is not None:
+                try:
+                    self._collection.delete(ids=ids)
+                except Exception:
+                    pass
+            else:
+                self._in_memory = [item for item in self._in_memory if item[0] not in ids]
