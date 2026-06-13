@@ -1,305 +1,463 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12%2B-blue?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/DeepSeek-API-green?logo=openai" alt="DeepSeek">
+  <img src="https://img.shields.io/badge/DeepSeek%20%7C%20OpenAI%20%7C%20Claude%20%7C%20Gemini%20%7C%20Ollama-API-green?logo=openai" alt="Multi-Provider">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
   <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="License">
+  <img src="https://img.shields.io/badge/CI-passing-brightgreen" alt="CI">
 </p>
 
 <h1 align="center">✨ OpenKyrozen ✨</h1>
 <p align="center"><strong>Self‑learning AI Agent — DeepSeek · OpenAI · Claude · Gemini · Ollama</strong></p>
+<p align="center">A terminal-native, fully autonomous AI agent that <em>learns from every interaction</em>,<br>operates your filesystem, manages git, fixes bugs, and improves itself over time.</p>
 
 ---
 
-## 🚀 Quick start
+## What is OpenKyrozen?
+
+OpenKyrozen is a **self-learning AI agent** that runs in your terminal. Unlike a typical chatbot, it:
+
+- **Uses 24 built-in tools** — read/write files, execute shell commands, search the web, manage git repositories
+- **Learns continuously** — 20 self-learning features run in the background, extracting facts, inventing skills, and improving strategies
+- **Works with any LLM** — DeepSeek, OpenAI, Claude, Gemini, or local Ollama models
+- **Runs on any OS** — macOS, Linux, and Windows (with automatic terminal capability detection)
+- **Has a Web UI** — browser-based chat interface with REST API for integration
+
+Think of it as an AI teammate that gets smarter every time you use it.
+
+---
+
+## 🚀 Installation
 
 ### Prerequisites
-- Python **3.12** or **3.13** (Python 3.14 has a known import issue)
-- An API key from one of the supported providers:
-  - **DeepSeek** — free at [platform.deepseek.com](https://platform.deepseek.com)
-  - **OpenAI** — [platform.openai.com](https://platform.openai.com)
-  - **Anthropic (Claude)** — [console.anthropic.com](https://console.anthropic.com)
-  - **Google (Gemini)** — [aistudio.google.com](https://aistudio.google.com)
-  - **Ollama** — no key needed (runs locally)
 
-### 🍎 macOS / 🐧 Linux
+- **Python 3.12 or 3.13** (Python 3.14+ has a known import issue with the OpenAI SDK)
+- An API key from any supported provider:
+
+| Provider | Get a key | Cost |
+|----------|-----------|------|
+| **DeepSeek** | [platform.deepseek.com](https://platform.deepseek.com) | ~$0.27/M input tokens |
+| **OpenAI** | [platform.openai.com](https://platform.openai.com) | ~$2.50/M input tokens |
+| **Anthropic (Claude)** | [console.anthropic.com](https://console.anthropic.com) | ~$3.00/M input tokens |
+| **Google (Gemini)** | [aistudio.google.com](https://aistudio.google.com) | ~$0.15/M input tokens |
+| **Ollama** | [ollama.com](https://ollama.com) | Free (runs locally) |
+
+### Option A: pip install (recommended)
+
+```bash
+pip install openkyrozen
+
+# Launch the terminal agent
+kyrozen
+
+# Or launch the web server
+kyrozen-web
+```
+
+### Option B: From source
 
 ```bash
 git clone https://github.com/EvanProgramming/OpenKyrozen.git
 cd OpenKyrozen
+
+# macOS / Linux
 make install
 make run
-```
 
-**Manual install:**
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python main.py
-```
-
-### 🪟 Windows
-
-```cmd
+# Windows
 setup.bat
 run.bat
 ```
 
-**Manual install:**
-```cmd
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-python main.py
-```
-
-On first launch you will be prompted for an API key — it auto‑detects your provider and saves the key to `~/.kyrozen_config.json`.
+On first launch, you'll be prompted for an API key. The agent auto-detects your provider and saves the encrypted key to `~/.kyrozen_config.json`.
 
 ---
 
-## 🧠 Architecture
+## 📖 Usage Guide
 
-OpenKyrozen runs as an interactive chat loop. Each user turn goes through a pipeline:
+### Terminal mode
+
+Once launched, you'll see the banner and a `You:` prompt. Type naturally — the agent understands plain English (and Chinese, Japanese, Korean).
+
+```text
+You: read the README and tell me what this project does
+You: create a new Python file called hello.py that prints "Hello World"
+You: search the web for the latest Python release date
+You: fix the bug in main.py around line 200
+You: commit all changes with a good message
+```
+
+Kyrozen will:
+1. Classify your request (simple / medium / complex)
+2. Choose the best model for the job
+3. Create a plan if needed
+4. Execute tools step by step
+5. Show progress in a live task panel
+6. Summarize what was done
+
+### In-chat commands
+
+| Command | What it does |
+|---------|-------------|
+| `/quit` or `/exit` | Exit the agent |
+| `/provider` | Switch to a different LLM provider (interactive menu) |
+| `/api_key` | Change your API key |
+| `/learn` | Immediately scan project files into memory |
+| `/forget` | Show recent learnings; `/forget keyword` to delete bad learnings |
+| `/update` | Pull the latest version from git |
+| `/self-learning` | Toggle individual self-learning features on/off |
+
+### Web UI mode
+
+```bash
+python server.py --port 8000
+# Open http://localhost:8000
+
+# Or via Docker:
+docker build -t openkyrozen .
+docker run -p 8000:8000 -e DEEPSEEK_API_KEY=sk-... openkyrozen
+```
+
+The web interface provides a dark-themed chat UI with real-time streaming, cost tracking, and session management.
+
+---
+
+## 🏗 Architecture
 
 ```
-User input → Task Classifier → Model Selector → LLM → Tool Executor → Response
-                  │                  │           │         │
-            simple/medium/     LLM Provider      │    run_cmd, read_file,
-              complex          (see table)       │    write_file, git_*, ...
-                                                │
-                                        Tool results fed back to LLM
-                                        (up to 50 tool-call rounds per turn)
+User Input
+    │
+    ▼
+┌─────────────────┐
+│  Task Classifier │──► simple / medium / complex
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Model Selector  │──► deepseek-chat / deepseek-reasoner / gpt-4o / claude / gemini / llama
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   LLM Provider   │──► 5 backends with automatic fallback chain
+└────────┬────────┘
+         │  Response + tool calls
+         ▼
+┌─────────────────┐
+│  Tool Executor   │──► 24 built-in tools (file I/O, shell, git, web, memory)
+└────────┬────────┘
+         │  Tool results fed back to LLM
+         │  (up to 50 tool-call rounds per turn)
+         ▼
+┌─────────────────┐
+│     Response     │──► User sees answer + task summary
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Self-Learning   │──► Background: extract facts, score memories, build knowledge graph
+└─────────────────┘
 ```
 
 ### Task complexity routing
 
-| Level | Trigger | Behaviour |
-|-------|---------|-----------|
-| **Simple** | Greetings, factual Q&A, single action | Direct reply, no planning overhead |
-| **Medium** | 2–3 tool calls, file ops, web search | Plan block → execute → summarise |
-| **Complex** | 4+ tools, code generation, bug fixing, git merge | Plan → TaskList → execute with progress tracking, never stops early |
+Kyrozen automatically classifies every request and adapts its behavior:
 
-### Model auto‑selection
+| Level | Example triggers | Agent behavior |
+|-------|-----------------|---------------|
+| **Simple** | "hi", "what is Python", "thanks" | Direct reply, zero planning overhead |
+| **Medium** | "list files and read README" | Creates a numbered Plan, executes tools sequentially |
+| **Complex** | "audit this repo", "fix the bug and commit", "build a web app" | Full Plan → TaskList → progress tracking → never stops early |
 
-Kyrozen picks the best model per request, using different models for simple vs complex tasks.
-The exact models depend on your provider:
+### Model auto-selection
 
-| Provider  | Simple tasks | Complex tasks |
-|-----------|-------------|---------------|
-| DeepSeek  | `deepseek-chat` | `deepseek-reasoner` |
-| OpenAI    | `gpt-4o` | `gpt-4o` |
+The agent picks different models for simple vs complex tasks. You can override these:
+
+```bash
+export KYROZEN_MODEL_SIMPLE=deepseek-chat
+export KYROZEN_MODEL_COMPLEX=deepseek-reasoner
+```
+
+| Provider | Simple tasks (default) | Complex tasks (default) |
+|----------|----------------------|------------------------|
+| DeepSeek | `deepseek-chat` | `deepseek-reasoner` |
+| OpenAI | `gpt-4o` | `gpt-4o` |
 | Anthropic | `claude-sonnet-4-20250514` | `claude-sonnet-4-20250514` |
-| Google    | `gemini-2.5-flash` | `gemini-2.5-pro` |
-| Ollama    | `llama3.2` | `llama3.2` |
+| Google | `gemini-2.5-flash` | `gemini-2.5-pro` |
+| Ollama | `llama3.2` | `llama3.2` |
 
-Override via environment variables: `KYROZEN_MODEL_SIMPLE`, `KYROZEN_MODEL_COMPLEX`.
+### Provider management
 
-### Switching providers
+Switch providers anytime — in chat with `/provider`, or via environment:
 
-Set `KYROZEN_PROVIDER` to one of: `deepseek`, `openai`, `anthropic`, `google`, `ollama`.
+```bash
+export KYROZEN_PROVIDER=anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+python main.py
+```
 
-Or use the in‑chat command `/provider` to switch interactively. The first launch prompts for an API key — it detects which provider to use from your environment or `~/.kyrozen_config.json`.
+If the primary provider fails, Kyrozen automatically falls back through a chain (e.g., DeepSeek → OpenAI → Claude). Rate-limit errors (HTTP 429) trigger exponential backoff with jitter.
 
 ---
 
-## 🛠 Available tools (24 built‑in)
+## 🛠 Tools Reference
 
-### File & system
-| Tool | Description |
-|------|-------------|
-| `read_file` | Read file contents by path |
-| `write_file` | Write content to a file (`path\|content` format) |
-| `list_dir` | List directory contents |
-| `list_tree` | Recursive directory tree view |
-| `find_files` | Find files by glob pattern |
-| `run_cmd` | Execute a shell command (with safety filter) |
-| `execute_terminal_command` | Alias for `run_cmd` |
+All 24 tools accept a plain-string `args` field in a JSON action block:
+
+```json
+{"action": "read_file", "args": "README.md"}
+```
+
+Short aliases work too — `bash`, `cmd`, `sh` → `run_cmd`; `status`, `diff`, `log` → `git_status`, etc.
+
+### File & System
+
+| Tool | Description | Example |
+|------|-------------|---------|
+| `read_file` | Read file contents | `"README.md"` |
+| `write_file` | Create or overwrite a file | `"path\|content"` |
+| `list_dir` | List directory contents | `"."` |
+| `list_tree` | Recursive directory tree | `"src/"` |
+| `find_files` | Glob-based file search | `"*.py\|."` |
+| `run_cmd` | Execute shell command | `"python --version"` |
 
 ### Web
-| Tool | Description |
-|------|-------------|
-| `search_web` | Search the internet (Google → DuckDuckGo → Wikipedia fallback) |
-| `read_webpage` | Fetch and extract text from a URL |
+
+| Tool | Description | Example |
+|------|-------------|---------|
+| `search_web` | Internet search (Google → DDG → Wikipedia) | `"latest Python release"` |
+| `read_webpage` | Fetch URL text content | `"https://example.com"` |
 
 ### Git (14 tools)
-| Tool | Description |
+
+| Tool | What it does |
 |------|-------------|
 | `git_status` | Show working tree status |
-| `git_diff` | Show unstaged, staged, or between-commit diffs |
-| `git_log` | Commit history with `--oneline --decorate` |
+| `git_diff` | Unstaged / staged / between-commit diffs |
+| `git_log` | Commit history (`--oneline --decorate`) |
 | `git_branch` | List / create / delete branches |
-| `git_add` | Stage files |
-| `git_commit` | Commit staged changes with a message |
-| `git_push` | Push to remote |
-| `git_pull` | Pull from remote |
+| `git_add` | Stage files for commit |
+| `git_commit` | Commit with message |
+| `git_push` / `git_pull` | Remote sync |
 | `git_checkout` | Switch branches or restore files |
 | `git_stash` | Stash / pop / list working changes |
 | `git_reset` | Reset HEAD (`--soft` safe, `--hard` warns) |
 | `git_show` | Inspect a commit with `--stat` |
 | `git_remote` | List / add / remove remotes |
 | `git_clone` | Clone a repository |
-| `analyze_remote_repo` | Clone + read all files → summary |
+| `analyze_remote_repo` | Clone + read all files → structured summary |
 
 ### Memory
+
 | Tool | Description |
 |------|-------------|
-| `search_memory` | Semantic search over stored knowledge (ChromaDB) |
-| `check_stored_data` | Show memory statistics and recent facts |
-
-All tools accept **plain‑string arguments** in a JSON action block:
-```json
-{"action": "read_file", "args": "README.md"}
-```
-
-Tool name aliases are supported — e.g. `bash`, `cmd`, `sh` all map to `run_cmd`; `status`, `diff`, `log` map to `git_status`, `git_diff`, `git_log`.
+| `search_memory` | Semantic search over stored knowledge |
+| `check_stored_data` | Memory statistics and recent facts |
 
 ---
 
-## 🚦 Dedicated workflows
+## 🧠 Dedicated Workflows
 
-### Bug‑fixing
+### Bug fixing (6-step protocol)
 
-When you paste an error or traceback, Kyrozen detects it and activates a structured protocol:
+When you paste an error or traceback, Kyrozen activates automatically:
 
-1. **Reproduce** — read the offending code, re‑run the failing command
-2. **Diagnose** — parse the traceback, find the root cause (does not guess)
-3. **Hypothesise** — state the fix before editing
+1. **Reproduce** — read the offending code, re-run the failing command
+2. **Diagnose** — parse the traceback, identify root cause
+3. **Hypothesise** — state the fix before making any changes
 4. **Fix** — apply the minimal code change
-5. **Verify** — re‑run the original command; if it still fails, loop to step 2
+5. **Verify** — re-run the failing command; loop back to step 2 if it fails
 6. **Explain** — tell you what was wrong, what changed, and why
 
-### Git operations
+After the fix, Kyrozen tracks the outcome. If you say "thanks, that works" it records a success. If you say "still broken" it records a failure and triggers deeper analysis.
 
-When you ask for git work, the agent follows a safety‑first protocol:
+### Git operations (safety-first)
 
-- Always runs `git_status` first to understand state
-- Reviews changes with `git_diff` before committing
-- Uses conventional commit prefixes (`fix:`, `feat:`, `refactor:`, `chore:`)
-- Never force‑pushes without explicit request
+- Always runs `git_status` first
+- Reviews `git_diff` before committing
+- Uses conventional commit prefixes: `fix:`, `feat:`, `refactor:`, `chore:`
+- Never force-pushes without explicit request
 - Stashes uncommitted changes before switching branches
 - Warns before `git reset --hard`
 
-### Complex tasks
+### Complex tasks (never stops early)
 
-For multi‑step work (codebase analysis, large refactors, project generators):
+For multi-step work (refactors, project generators, codebase audits):
 
-- Understands the full request and identifies subtasks
-- Creates a numbered Plan with verifiable steps
+- Breaks down the request into verifiable subtasks
+- Creates a numbered Plan
 - Builds a JSON TaskList mapped to each plan step
 - Tracks progress with `TaskDone` markers
-- Never skips tasks or stops early
+- Auto-generates a summary when complete
 
 ---
 
-## ⌨️ In‑chat commands
+## 🧬 Self-Learning System
 
-| Command | Description |
-|---------|-------------|
-| `/quit` `/exit` | Exit the agent |
-| `/learn` | Immediately scan project files into memory |
-| `/api_key` | Change your API key for the current provider |
-| `/provider` | Switch to a different LLM provider (interactive menu) |
-| `/forget` | Show or delete recent learnings (`/forget keyword` to delete) |
-| `/update` | Refresh the agent from git |
-| `/self-learning` | Interactive menu to toggle individual learning features |
+This is what makes Kyrozen different. **20 self-learning features** run continuously in the background — no manual saving needed. The agent gets smarter the longer you use it.
 
----
+### How it works
 
-## 🧬 Self‑learning system
+Every 30 seconds (when you're idle), Kyrozen runs a learning cycle. Each feature can be toggled on/off with `/self-learning`.
 
-OpenKyrozen learns continuously in the background — no manual saving needed. Every 30 seconds (when idle) it runs a learning cycle. All features can be individually toggled via `/self-learning`.
-
-| Feature | What it does |
-|---------|-------------|
-| **Auto‑learn from conversations** | Extracts facts, preferences, and patterns from your chat history |
-| **Scan project files** | Reads every `.py` file into memory for context |
-| **Age out stale entries** | Removes or marks obsolete facts when source files change |
-| **Auto‑debug tools** | Analyses tool failures and logs root‑cause diagnostics |
-| **Consolidate memories** | Deduplicates and summarises stored facts |
-| **Review & merge tools** | Suggests under‑used tools for removal or merging |
-| **Targeted inquiry** | Finds undocumented functions in your codebase and infers their purpose |
-| **Idle reflection** | After complex tasks, reflects on what went well or wrong |
-| **Strategy distillation** | When token usage is high, distills efficiency tips |
-| **Auto‑patch new tech** | Queries the web for new libraries mentioned in code |
-| **Invent skills** | Creates reusable skill definitions from past successful patterns |
-| **Context compression** | Summarises old conversation turns when context grows beyond 30K chars |
-| **Fix verification** | Tracks bug‑fix outcomes (did it work?) and builds a success‑rate database |
-| **Dynamic tool creation** | `DefineTool` syntax lets the agent create new callable tools from SKILLs |
-| **User preference model** | Detects and remembers coding style, language, verbosity preferences |
-| **Autonomous inspection** | Proactively checks for outdated packages, code smells, gitignore gaps |
-| **Memory importance scoring** | Scores each memory entry 0-10; high-score entries get retrieval priority |
-| **Knowledge graph extraction** | Builds structured entity-relationship map from stored facts |
-| **Skill composition** | Chains multiple learned SKILLs into multi-step workflows |
-| **Bad learning rollback** | `/forget` command to view and delete incorrect learnings |
+| # | Feature | What it learns |
+|---|---------|---------------|
+| 1 | **Conversation learning** | Extracts facts, preferences, and patterns from chat |
+| 2 | **Project file scanning** | Reads every `.py` file into memory for context |
+| 3 | **Stale entry aging** | Removes facts about files that no longer exist |
+| 4 | **Tool auto-debug** | Analyzes tool failures, finds root causes |
+| 5 | **Memory consolidation** | Deduplicates and summarizes stored facts |
+| 6 | **Tool review** | Suggests under-used tools for removal |
+| 7 | **Targeted inquiry** | Finds undocumented functions and infers their purpose |
+| 8 | **Idle reflection** | After complex tasks, reflects on what went well |
+| 9 | **Strategy distillation** | When token usage is high, distills efficiency tips |
+| 10 | **New tech auto-patch** | Queries the web when you mention unknown libraries |
+| 11 | **Skill invention** | Creates reusable skill templates from past successes |
+| 12 | **Context compression** | Summarizes old turns when context exceeds 30K chars |
+| 13 | **Fix verification** | Tracks bug-fix success rate over time |
+| 14 | **Dynamic tool creation** | `DefineTool:` syntax lets the agent build new tools |
+| 15 | **User preference model** | Detects your coding style, preferred language, verbosity |
+| 16 | **Autonomous inspection** | Checks for outdated packages, code smells, gitignore gaps |
+| 17 | **Memory importance scoring** | Rates entries 0-10; high-score entries get priority |
+| 18 | **Knowledge graph** | Builds entity→relationship maps from stored facts |
+| 19 | **Skill composition** | Chains multiple learned skills into workflows |
+| 20 | **Bad learning rollback** | `/forget` command to remove incorrect learnings |
 
 ### Memory storage
 
-Long‑term memory uses **ChromaDB** (vector database) stored in `chroma_memory/` for semantic search. Falls back to in‑memory storage if ChromaDB is unavailable.
+Long-term memory uses **ChromaDB** (vector database, stored in `chroma_memory/`). Falls back to in-memory storage if ChromaDB is unavailable. Memories are semantically searchable — the agent can recall relevant facts from weeks ago.
 
 ---
 
-## 🔐 Safety
-
-- **Dangerous command filter** — blocks `rm -rf`, `mkfs`, fork bombs, pipe‑to‑shell exploits, and Windows equivalents (`del /f /s C:\`, `format C:`, `diskpart`, `taskkill` on system processes, `reg delete HKLM`, etc.)
-- **Python version guard** — refuses to start on Python 3.14+ (known import deadlock with the OpenAI SDK)
-- **Git safety** — never force‑pushes, warns before hard resets, stashes before branch switches
-- **Tool failure memory** — remembers past failures and injects them as context to avoid repeats
-
 ## 🌐 Web UI & REST API
-
-Launch the web interface for browser-based chat and API access:
 
 ```bash
 pip install fastapi uvicorn
 python server.py --port 8000
+# Open http://localhost:8000
 ```
 
-Open `http://localhost:8000` for the chat UI, or use the REST API:
+### REST API endpoints
 
-- `POST /api/chat` — send a message, get JSON response
-- `POST /api/chat/stream` — SSE streaming chat
-- `GET /api/memory?q=keyword` — search stored memories
-- `GET /api/cost` — cost summary
-- `GET /api/health` — health check
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/` | Dark-themed chat web UI |
+| `POST` | `/api/chat` | Send a message, get JSON response |
+| `POST` | `/api/chat/stream` | SSE streaming chat |
+| `GET` | `/api/memory?q=keyword` | Search stored memories |
+| `GET` | `/api/cost` | Token usage and cost summary |
+| `GET` | `/api/health` | Provider status + memory count |
+| `POST` | `/api/voice/speak?text=...` | Text-to-speech via system TTS |
+| `POST` | `/api/voice/transcribe` | Speech-to-text (passthrough) |
+| `POST` | `/api/webhooks/register` | Register a webhook URL |
+| `GET` | `/api/webhooks` | List registered webhooks |
+| `POST` | `/api/webhooks/test` | Fire a test webhook |
+| `POST` | `/mcp` | Model Context Protocol (JSON-RPC 2.0) |
 
-### 🐳 Docker
+### Docker deployment
 
 ```bash
 docker build -t openkyrozen .
-docker run -p 8000:8000 -e DEEPSEEK_API_KEY=sk-... openkyrozen
+docker run -p 8000:8000 \
+  -e DEEPSEEK_API_KEY=sk-your-key \
+  -v $(pwd)/chroma_memory:/app/chroma_memory \
+  openkyrozen
 ```
+
+---
 
 ## 🔌 Plugin System
 
-Drop a `.py` file in `plugins/` with a `register()` function. Hooks available:
-`on_startup`, `on_turn_start`, `on_turn_end`, `on_tool_execute`.
+Create a `.py` file in `plugins/` with a `register()` function:
 
-See `plugins/turn_logger.py` for an example.
+```python
+# plugins/my_plugin.py
+class MyPlugin:
+    def on_startup(self, agent=None, **kwargs):
+        print("Plugin loaded!")
+
+    def on_turn_start(self, user_input, **kwargs):
+        print(f"User said: {user_input[:50]}")
+
+    def on_tool_execute(self, action, args, result, **kwargs):
+        print(f"Tool {action}({args[:30]}) → {result[:30]}")
+
+def register():
+    return MyPlugin()
+```
+
+Available hooks: `on_startup`, `on_turn_start`, `on_turn_end`, `on_tool_execute`.
+
+See `plugins/turn_logger.py` for a working example.
+
+---
 
 ## 🔐 Security
 
-- **API key encryption** — `~/.kyrozen_config.json` API key is encrypted at rest using machine-specific XOR key
-- **Prompt injection protection** — Detects and filters common injection patterns (instruction override, role manipulation)
-- **Sandbox execution** — File operations restricted to workspace boundary
-- **Audit logging** — All chat and API events logged with timestamps to `kyrozen_audit.log`
+| Feature | What it protects |
+|---------|-----------------|
+| **Dangerous command filter** | Blocks `rm -rf`, `mkfs`, fork bombs, Windows destructive commands |
+| **API key encryption** | `~/.kyrozen_config.json` encrypted at rest (XOR + machine-derived SHA-256 key) |
+| **Prompt injection protection** | Detects 9 common injection patterns and filters them |
+| **Sandbox execution** | File operations restricted to workspace boundary |
+| **Git safety** | Never force-pushes, warns before hard resets |
+| **Audit logging** | All chat/API events logged to `kyrozen_audit.log` with timestamps |
+| **Python version guard** | Refuses to start on Python 3.14+ |
+| **Tool failure memory** | Remembers past failures and avoids repeating them |
+
+---
+
+## ⚙️ Configuration Reference
+
+### Environment variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `KYROZEN_PROVIDER` | LLM provider | `deepseek` |
+| `DEEPSEEK_API_KEY` | DeepSeek API key | — |
+| `OPENAI_API_KEY` | OpenAI API key | — |
+| `ANTHROPIC_API_KEY` | Anthropic API key | — |
+| `GEMINI_API_KEY` | Google Gemini API key | — |
+| `KYROZEN_API_KEY` | Universal API key (overrides provider-specific) | — |
+| `KYROZEN_MODEL_SIMPLE` | Model for simple/medium tasks | Provider default |
+| `KYROZEN_MODEL_COMPLEX` | Model for complex tasks | Provider default |
+| `KYROZEN_BASE_URL` | Custom API base URL | Provider default |
+
+### Config file (`~/.kyrozen_config.json`)
+
+```json
+{
+  "provider": "deepseek",
+  "api_key": "<encrypted>",
+  "model_simple": "deepseek-chat",
+  "model_complex": "deepseek-reasoner",
+  "encrypted": true
+}
+```
+
+The file is auto-managed. Use `/provider` or `/api_key` in-chat to update it interactively.
+
+---
 
 ## 🔧 Development
 
 ```bash
-# Syntax check
-make lint
-
-# Full verification (syntax + tool inventory)
+# Quick verification
 make check
 
-# Debug mode with format‑error traps
+# Syntax lint only
+make lint
+
+# Debug mode (format-error traps)
 make debug
 
-# First‑time API key setup
+# First-time API key setup
 make init
 
 # Rebuild venv after Python version change
 make reinstall
+
+# Launch web server
+make web
 
 # Git helpers
 make git-status
@@ -308,8 +466,51 @@ make commit msg='feat: description'
 make push
 ```
 
+### CI/CD
+
+GitHub Actions automatically runs on every push and PR:
+- Syntax check across Python 3.12 and 3.13
+- Tool inventory validation
+- Provider import check
+- Docker build verification
+
+### pip package
+
+```bash
+pip install openkyrozen         # core + CLI
+pip install openkyrozen[web]    # + web UI
+pip install openkyrozen[all]    # + Claude + Gemini + web
+```
+
+---
+
+## 📁 Project structure
+
+```
+OpenKyrozen/
+├── main.py              # Core agent loop, self-learning, chat turn logic
+├── tools.py             # 24 built-in tools (file, shell, git, web)
+├── providers.py         # Multi-LLM abstraction (5 providers + fallback)
+├── memory.py            # ChromaDB-backed vector memory
+├── server.py            # FastAPI web server + REST API + chat UI
+├── pyproject.toml       # pip package configuration
+├── Dockerfile           # Docker image definition
+├── Makefile             # Build automation (macOS/Linux)
+├── setup.bat / run.bat  # Windows batch scripts
+├── plugins/             # Plugin directory (hook-based)
+├── prompts/             # Prompt templates (role, instructions, examples)
+├── chroma_memory/       # ChromaDB persistent storage (auto-created)
+└── .github/workflows/   # CI/CD pipeline
+```
+
 ---
 
 ## 📄 License
 
-Distributed under the **MIT License**. See `LICENSE` for details.
+MIT License. See `LICENSE` for details.
+
+---
+
+<p align="center">
+  <sub>Built with ❤️ for developers who want an AI that learns</sub>
+</p>
