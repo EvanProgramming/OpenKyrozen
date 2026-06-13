@@ -1,4 +1,4 @@
-.PHONY: install run clean lint test check git-status git-diff git-log
+.PHONY: install run clean lint test check git-status git-diff git-log web
 
 # Use a known-stable Python version (3.14 has import deadlocks with openai)
 PYTHON := python3.12
