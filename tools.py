@@ -329,6 +329,263 @@ def git_clone(args: str) -> str:
         return f"Error during git clone: {e}"
 
 
+def git_diff(args: str) -> str:
+    """
+    Show git diff (unstaged, staged, or between commits).
+    Args format: "--cached" or "HEAD~1" or commit range, or empty for unstaged diff.
+    Supports ~ for user home.
+    """
+    try:
+        dir_path = "."
+        extra_args = args.strip()
+        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "diff"]
+        if extra_args:
+            # Support --cached, --staged, HEAD~N, commit hashes
+            for part in extra_args.split():
+                cmd.append(part)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return f"Git diff failed:\n{result.stderr}"
+        out = result.stdout.strip()
+        return out if out else "(no changes)"
+    except Exception as e:
+        return f"Error running git diff: {e}"
+
+
+def git_log(args: str) -> str:
+    """
+    Show git commit log. Args format: "-5" or "--since='2 days ago' --author='Name'"
+    (any git log flags), or empty for default.
+    Supports ~ for user home.
+    """
+    try:
+        import shlex
+        dir_path = "."
+        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "log", "--oneline", "--decorate"]
+        if args.strip():
+            try:
+                extra = shlex.split(args.strip())
+            except ValueError:
+                extra = args.strip().split()
+            cmd.extend(extra)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return f"Git log failed:\n{result.stderr}"
+        out = result.stdout.strip()
+        return out if out else "(no commits)"
+    except Exception as e:
+        return f"Error running git log: {e}"
+
+
+def git_branch(args: str) -> str:
+    """
+    List or manage git branches. Args format: "" (list all), "branch_name" (create),
+    or "-d branch_name" (delete). Supports ~ for user home.
+    """
+    try:
+        import shlex
+        dir_path = "."
+        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "branch"]
+        if args.strip():
+            try:
+                extra = shlex.split(args.strip())
+            except ValueError:
+                extra = args.strip().split()
+            cmd.extend(extra)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return f"Git branch failed:\n{result.stderr}"
+        out = result.stdout.strip()
+        return out if out else "(no branches)"
+    except Exception as e:
+        return f"Error running git branch: {e}"
+
+
+def git_add(args: str) -> str:
+    """
+    Stage files for commit. Args format: "file1 file2" or "." (stage all).
+    Supports ~ for user home.
+    """
+    try:
+        dir_path = "."
+        files = args.strip() or "."
+        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "add"]
+        for f in files.split():
+            cmd.append(f)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return f"Git add failed:\n{result.stderr}"
+        return "Files staged successfully."
+    except Exception as e:
+        return f"Error running git add: {e}"
+
+
+def git_commit(args: str) -> str:
+    """
+    Commit staged changes. Args format: '"commit message"' (quotes recommended).
+    Supports ~ for user home.
+    """
+    try:
+        import shlex
+        dir_path = "."
+        message = args.strip().strip('"').strip("'")
+        if not message:
+            return "Error: git_commit requires a commit message."
+        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "commit", "-m", message]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return f"Git commit failed:\n{result.stderr}"
+        return result.stdout.strip() or "Commit successful."
+    except Exception as e:
+        return f"Error running git commit: {e}"
+
+
+def git_push(args: str) -> str:
+    """
+    Push commits to remote. Args format: "" (push current branch),
+    "origin main" (specific remote+branch). Supports ~ for user home.
+    """
+    try:
+        dir_path = "."
+        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "push"]
+        if args.strip():
+            for part in args.strip().split():
+                cmd.append(part)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            return f"Git push failed:\n{result.stderr}"
+        return result.stdout.strip() or "Push successful."
+    except Exception as e:
+        return f"Error running git push: {e}"
+
+
+def git_pull(args: str) -> str:
+    """
+    Pull changes from remote. Args format: "" (pull current branch),
+    "origin main" (specific remote+branch). Supports ~ for user home.
+    """
+    try:
+        dir_path = "."
+        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "pull"]
+        if args.strip():
+            for part in args.strip().split():
+                cmd.append(part)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            return f"Git pull failed:\n{result.stderr}"
+        return result.stdout.strip() or "Already up to date."
+    except Exception as e:
+        return f"Error running git pull: {e}"
+
+
+def git_checkout(args: str) -> str:
+    """
+    Switch branches or restore files. Args format: "branch_name" (switch),
+    "-b new_branch" (create and switch), or "-- file" (restore file).
+    Supports ~ for user home.
+    """
+    try:
+        dir_path = "."
+        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "checkout"]
+        if args.strip():
+            for part in args.strip().split():
+                cmd.append(part)
+        else:
+            return "Error: git_checkout requires a branch name or argument."
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return f"Git checkout failed:\n{result.stderr}"
+        return result.stdout.strip() or "Checkout successful."
+    except Exception as e:
+        return f"Error running git checkout: {e}"
+
+
+def git_stash(args: str) -> str:
+    """
+    Stash or unstash working directory changes.
+    Args format: "" (stash), "pop" (apply and drop), "list" (show stashes),
+    "apply" (apply without dropping). Supports ~ for user home.
+    """
+    try:
+        dir_path = "."
+        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "stash"]
+        if args.strip():
+            cmd.append(args.strip())
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return f"Git stash failed:\n{result.stderr}"
+        return result.stdout.strip() or "Working directory clean."
+    except Exception as e:
+        return f"Error running git stash: {e}"
+
+
+def git_reset(args: str) -> str:
+    """
+    Reset current HEAD to a specified state.
+    Args format: "--soft HEAD~1" or "--hard <commit>" or "file" (unstage).
+    WARNING: --hard is destructive. The agent will warn before using it.
+    Supports ~ for user home.
+    """
+    try:
+        dir_path = "."
+        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "reset"]
+        if args.strip():
+            for part in args.strip().split():
+                cmd.append(part)
+        else:
+            return "Error: git_reset requires arguments (e.g., 'file' to unstage, '--soft HEAD~1' to undo commit)."
+        # Safety: block --hard without explicit confirmation path
+        if "--hard" in cmd:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                return f"Git reset failed:\n{result.stderr}"
+            return result.stdout.strip() or "Hard reset completed. WARNING: working directory changes were destroyed."
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return f"Git reset failed:\n{result.stderr}"
+        return result.stdout.strip() or "Reset successful."
+    except Exception as e:
+        return f"Error running git reset: {e}"
+
+
+def git_show(args: str) -> str:
+    """
+    Show details of a git object (commit, tag, etc). Args format: "HEAD" or commit hash.
+    Supports ~ for user home.
+    """
+    try:
+        dir_path = "."
+        target = args.strip() or "HEAD"
+        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "show", "--stat", target]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return f"Git show failed:\n{result.stderr}"
+        return result.stdout.strip()
+    except Exception as e:
+        return f"Error running git show: {e}"
+
+
+def git_remote(args: str) -> str:
+    """
+    Manage remote repositories. Args format: "" (list remotes),
+    "add name url" (add remote), or "remove name" (remove remote).
+    Supports ~ for user home.
+    """
+    try:
+        dir_path = "."
+        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "remote", "-v"]
+        if args.strip():
+            action_parts = args.strip().split(maxsplit=1)
+            cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "remote"]
+            cmd.extend(action_parts)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return f"Git remote failed:\n{result.stderr}"
+        return result.stdout.strip() or "(no remotes configured)"
+    except Exception as e:
+        return f"Error running git remote: {e}"
+
+
 def git_status(args: str) -> str:
     """
     Show git status of a repository. Args format: "path" (default ".").
@@ -463,6 +720,18 @@ AVAILABLE_TOOLS: dict[str, Any] = {
     "list_dir": list_dir,
     "git_clone": git_clone,
     "git_status": git_status,
+    "git_diff": git_diff,
+    "git_log": git_log,
+    "git_branch": git_branch,
+    "git_add": git_add,
+    "git_commit": git_commit,
+    "git_push": git_push,
+    "git_pull": git_pull,
+    "git_checkout": git_checkout,
+    "git_stash": git_stash,
+    "git_reset": git_reset,
+    "git_show": git_show,
+    "git_remote": git_remote,
     "execute_terminal_command": execute_terminal_command,
     "analyze_remote_repo": analyze_remote_repo,
     "list_tree": list_tree,

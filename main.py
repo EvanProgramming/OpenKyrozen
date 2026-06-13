@@ -68,6 +68,21 @@ TOOL_ALIASES: dict[str, str] = {
     "run": "run_cmd",
     "run_shell": "run_cmd",
     "write": "write_file",
+    # Git aliases
+    "status": "git_status",
+    "diff": "git_diff",
+    "log": "git_log",
+    "branch": "git_branch",
+    "add": "git_add",
+    "commit": "git_commit",
+    "push": "git_push",
+    "pull": "git_pull",
+    "checkout": "git_checkout",
+    "stash": "git_stash",
+    "clone": "git_clone",
+    "reset": "git_reset",
+    "show": "git_show",
+    "remote": "git_remote",
 }
 
 def _is_valid_action(name: str | None) -> bool:
@@ -1084,7 +1099,39 @@ def _system_prompt(tools_list: str) -> str:
         "- When analysing a repo, start with `list_dir('.')`.\n"
         "- After `write_file`, use the absolute path returned in subsequent commands.\n"
         "- For stored knowledge, use `search_memory` or `check_stored_data`.\n"
-        "- Do not invent tool names; use exactly the ones listed above.\n"
+        "- Do not invent tool names; use exactly the ones listed above.\n\n"
+        "## Bug‑fixing workflow\n"
+        "When the user reports a bug, error, or unexpected behaviour, follow this protocol:\n"
+        "1. **REPRODUCE**: Read relevant code, run the failing command, capture error output.\n"
+        "2. **DIAGNOSE**: Analyse the error traceback / log. Identify the root cause — do NOT guess.\n"
+        "3. **HYPOTHESISE**: State what you believe is wrong and how to fix it BEFORE editing.\n"
+        "4. **FIX**: Apply the minimal code change. Use `write_file` only for the necessary lines.\n"
+        "5. **VERIFY**: Re‑run the original failing command. Confirm the fix works. If not, go to step 2.\n"
+        "6. **EXPLAIN**: Tell the user what was wrong, what you changed, and why.\n\n"
+        "## Git operations workflow\n"
+        "You have full git capabilities: `git_status`, `git_diff`, `git_log`, `git_branch`,\n"
+        "`git_add`, `git_commit`, `git_push`, `git_pull`, `git_checkout`, `git_stash`,\n"
+        "`git_reset`, `git_show`, `git_remote`, `git_clone`.\n"
+        "When performing git operations:\n"
+        "- Always check `git_status` first to understand current state.\n"
+        "- Before committing, run `git_diff` to review exactly what changed.\n"
+        "- Write meaningful commit messages (under 72 chars, imperative mood).\n"
+        "- NEVER force‑push (`--force`) unless the user explicitly requests it.\n"
+        "- NEVER use `git reset --hard` without first stashing or confirming with the user.\n"
+        "- Before switching branches with uncommitted changes, use `git_stash`.\n"
+        "- After `git_push`, confirm success. After `git_pull`, report what was merged.\n"
+        "- When creating a commit for a bug fix, prefix with \"fix: \".\n"
+        "- When implementing a feature, prefix with \"feat: \".\n\n"
+        "## Complex task decomposition\n"
+        "For complex multi‑step tasks (COMPLEX level):\n"
+        "1. **UNDERSTAND**: Read the full request. Identify all subtasks and dependencies.\n"
+        "2. **PLAN**: Output a numbered Plan with 3‑10 concrete steps. Each step must be verifiable.\n"
+        "3. **TASKLIST**: Create a JSON TaskList where each task maps to one Plan step.\n"
+        "4. **EXECUTE**: Work through tasks in order. After each: `TaskDone: N`.\n"
+        "5. **TRACK**: If a step fails, create a recovery sub‑task before continuing.\n"
+        "6. **SUMMARISE**: When all tasks complete, produce a concise summary of what was done.\n"
+        "CRITICAL: Never skip tasks, never stop early, never mark tasks done without executing them.\n"
+        "If you get stuck on a step, try an alternative approach — do NOT abandon the task.\n"
         + cwd_note
     )
 
@@ -1249,6 +1296,40 @@ def _build_messages(user_input: str) -> list[dict[str, str]]:
     if failures:
         failure_block = "Past failures to avoid:\n" + "\n".join(failures[:2])
         messages.append({"role": "system", "content": failure_block})
+
+    # Inject bug-fix workflow guidance when user reports a bug
+    if _is_bug_report(user_input):
+        bug_guidance = (
+            "BUG-FIX WORKFLOW ACTIVE: The user is reporting a bug or error. "
+            "Follow this protocol EXACTLY:\n"
+            "1. REPRODUCE: Read the relevant code and run the failing command. Capture error output.\n"
+            "2. DIAGNOSE: Analyse the traceback/error log. Identify the ROOT CAUSE — do not guess.\n"
+            "3. HYPOTHESISE: State what you believe is wrong and how to fix it BEFORE making any changes.\n"
+            "4. FIX: Apply the MINIMAL code change needed. Do not refactor unrelated code.\n"
+            "5. VERIFY: Re-run the original failing command. Confirm the fix works. If not, go back to step 2.\n"
+            "6. EXPLAIN: Tell the user what was wrong, what you changed, and why.\n"
+            "Output each step as a separate TaskList item. Do NOT skip any step."
+        )
+        messages.append({"role": "system", "content": bug_guidance})
+
+    # Inject git workflow guidance when user is doing git operations
+    git_indicators = ["git commit", "git push", "git pull", "git merge", "git rebase",
+                       "git branch", "git checkout", "commit this", "push this",
+                       "merge branch", "create a branch", "switch branch",
+                       "提交代码", "推送代码", "创建分支", "合并分支"]
+    if any(ind in user_input.lower() for ind in git_indicators):
+        git_guidance = (
+            "GIT WORKFLOW ACTIVE: The user is requesting git operations. "
+            "Follow this protocol:\n"
+            "1. Always run git_status first to understand current state.\n"
+            "2. Before committing, run git_diff to review exactly what changed.\n"
+            "3. Write meaningful commit messages (under 72 chars, imperative mood: 'fix: ...' or 'feat: ...').\n"
+            "4. NEVER force-push (--force) unless the user explicitly requests it.\n"
+            "5. NEVER use git reset --hard without first stashing or confirming with user.\n"
+            "6. Before switching branches with uncommitted changes, use git_stash.\n"
+            "7. After git_push, confirm success. After git_pull, report what was merged."
+        )
+        messages.append({"role": "system", "content": git_guidance})
 
     mem_ctx = _build_memory_context(user_input)
     if mem_ctx:
@@ -1450,13 +1531,16 @@ def _select_model(user_input: str) -> str:
     code_keywords = [
         "code", "debug", "fix", "refactor", "implement", "build a",
         "write a program", "write a script", "function", "class",
-        "architecture", "design pattern", "optimize", "performance"
+        "architecture", "design pattern", "optimize", "performance",
+        "bug", "error", "traceback", "exception", "crash", "broken",
+        "doesn't work", "not working", "fails", "failing"
     ]
     if any(kw in text for kw in code_keywords):
         complexity_score += 3  # code tasks are inherently complex
     # CJK code-related tasks
     _cjk_code_keywords = ["代码", "调试", "修复", "重构", "实现", "写一个程序",
-                           "写脚本", "函数", "架构", "优化", "性能", "编程"]
+                           "写脚本", "函数", "架构", "优化", "性能", "编程",
+                           "bug", "报错", "错误", "出错了", "崩溃", "不行"]
     if any(kw in user_input for kw in _cjk_code_keywords):
         complexity_score += 3
 
@@ -1471,6 +1555,20 @@ def _select_model(user_input: str) -> str:
     _cjk_analysis_keywords = ["分析", "解释", "比较", "评估", "审查", "理解",
                                "深度", "审计", "诊断", "分析一下", "帮我分析"]
     if any(kw in user_input for kw in _cjk_analysis_keywords):
+        complexity_score += 2
+
+    # Git-related tasks (English) — may need careful reasoning
+    git_keywords = [
+        "git commit", "git push", "git pull", "git merge", "git rebase",
+        "git branch", "git checkout", "commit this", "push this",
+        "merge branch", "create a branch", "switch branch"
+    ]
+    if any(kw in text for kw in git_keywords):
+        complexity_score += 2
+    # CJK git keywords
+    _cjk_git_keywords = ["git提交", "git推送", "git合并", "提交代码", "推送代码",
+                          "创建分支", "合并分支", "切换分支"]
+    if any(kw in user_input for kw in _cjk_git_keywords):
         complexity_score += 2
 
     # Research / multi-source tasks (English)
@@ -1553,6 +1651,8 @@ def _requires_tool_action(text: str) -> bool:
         "file", "folder", "directory", "repo", "repository", "github",
         "web", "internet", "online", "price", "spec", "specification",
         "report", "summary of", "overview of",
+        "git", "commit", "branch", "merge", "push", "pull",
+        "bug", "error", "traceback", "exception", "fix",
     ]
     if any(ind in text_lower for ind in context_indicators):
         return True
@@ -1568,8 +1668,44 @@ def _is_tool_error(result: str) -> bool:
         "syntax error" in low or
         "not found" in low or
         "no search results" in low or
-        "search temporarily unavailable" in low
+        "search temporarily unavailable" in low or
+        "traceback" in low or
+        "traceback (most recent call last)" in low or
+        "typeerror" in low or
+        "valueerror" in low or
+        "attributeerror" in low or
+        "importerror" in low or
+        "modulenotfounderror" in low or
+        "keyerror" in low or
+        "indexerror" in low or
+        "git" in low and ("failed" in low or "fatal" in low or "error" in low)
     )
+
+
+def _is_bug_report(text: str) -> bool:
+    """Detect if user input is reporting a bug, error, or unexpected behaviour."""
+    low = text.strip().lower()
+    bug_indicators = [
+        "bug", "error", "traceback", "exception", "crash", "broken",
+        "doesn't work", "not working", "fails", "failing", "didn't work",
+        "stack trace", "typeerror", "valueerror", "attributeerror",
+        "keyerror", "indexerror", "importerror", "modulenotfounderror",
+        "syntax error", "segfault", "segmentation fault", "null pointer",
+        "undefined is not", "cannot read", "unexpected",
+    ]
+    if any(ind in low for ind in bug_indicators):
+        return True
+    # CJK bug report indicators
+    _cjk_bug = ["报错", "错误", "出错了", "bug", "崩溃", "不行", "失败", "异常",
+                 "不工作", "没反应", "闪退", "卡住", "死机"]
+    if any(ind in text for ind in _cjk_bug):
+        return True
+    # Check for traceback patterns
+    if re.search(r"File\s+\".+?\",\s+line\s+\d+", text):
+        return True
+    if re.search(r"^\s*Traceback\s", text, re.MULTILINE):
+        return True
+    return False
 
 
 def _is_question(text: str) -> bool:
@@ -1686,19 +1822,24 @@ def _classify_complexity(user_input: str) -> str:
         if len(user_input.split()) <= 3 and not (words & _tool_verbs):
             return "simple"
 
-    # Complex: multi-step, code generation, deep analysis
+    # Complex: multi-step, code generation, deep analysis, bug fixing, git operations
     complex_indicators = [
         r"\b(step|first|then|next|finally|after that)\b",
         r"\d+[.)]\s+\w",  # numbered steps
         r"\b(implement|refactor|migrate|audit|comprehensive)\b",
         r"\b(write\s+(a|the)\s+(program|script|app|application|function|class))\b",
         r"\b(analy[sz]e\s+(the|this|my|our)\s+(codebase|repo|project|architecture))\b",
+        r"\b(debug|fix\s+(the|this|a|my)\s+(bug|error|issue|problem|crash))\b",
+        r"\b(traceback|stack\s*trace|exception|TypeError|ValueError|AttributeError)\b",
+        r"\b(git\s+(merge|rebase|cherry-pick|bisect))\b",
     ]
     if any(re.search(p, text) for p in complex_indicators):
         return "complex"
     # CJK complex indicators
     _cjk_complex = ["实现", "重构", "迁移", "审计", "审查代码", "写一个程序", "写脚本",
-                     "分析代码", "分析架构", "第一步", "第二步", "全面的"]
+                     "分析代码", "分析架构", "第一步", "第二步", "全面的",
+                     "调试", "修复bug", "修bug", "出错了", "报错", "错误",
+                     "git操作", "git合并", "提交代码", "推送", "拉取"]
     if any(ind in user_input for ind in _cjk_complex):
         return "complex"
     # Long inputs with multiple sentences suggest complexity
