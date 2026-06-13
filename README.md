@@ -508,6 +508,25 @@ OpenKyrozen/
 
 ---
 
+## 🙏 Standing on the Shoulders of Giants
+
+OpenKyrozen is built on top of incredible open-source work. We're grateful to every maintainer and contributor who made these projects possible.
+
+| Project | Repo | What we use it for |
+|---------|------|-------------------|
+| **Aider** | [paul-gauthier/aider](https://github.com/paul-gauthier/aider) | Inspired our multi-turn agent loop, tool-calling patterns, and git-safety conventions |
+| **CodeWhale** | [deepseek-ai/codewhale](https://github.com/deepseek-ai/codewhale) | Agent runtime architecture, sub-agent delegation, and verification discipline |
+| **Chroma** | [chroma-core/chroma](https://github.com/chroma-core/chroma) | Vector database powering our long-term memory and semantic recall |
+| **FastAPI** | [fastapi/fastapi](https://github.com/fastapi/fastapi) | Web server, REST API, and real-time streaming endpoints |
+| **Rich** | [Textualize/rich](https://github.com/Textualize/rich) | Terminal UI — panels, progress bars, syntax highlighting, and live displays |
+| **OpenAI Python** | [openai/openai-python](https://github.com/openai/openai-python) | Unified API client for DeepSeek, OpenAI, and Ollama providers |
+| **Uvicorn** | [encode/uvicorn](https://github.com/encode/uvicorn) | ASGI server for production web deployments |
+| **googlesearch-python** | [Nv7-GitHub/googlesearch](https://github.com/Nv7-GitHub/googlesearch) | Web search fallback when DuckDuckGo is unavailable |
+
+> *"If I have seen further, it is by standing on the shoulders of giants."* — Isaac Newton
+
+---
+
 ## 📄 License
 
 MIT License. See `LICENSE` for details.
