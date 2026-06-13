@@ -245,7 +245,36 @@ Long‑term memory uses **ChromaDB** (vector database) stored in `chroma_memory/
 - **Git safety** — never force‑pushes, warns before hard resets, stashes before branch switches
 - **Tool failure memory** — remembers past failures and injects them as context to avoid repeats
 
----
+## 🌐 Web UI & REST API
+
+Launch the web interface for browser-based chat and API access:
+
+```bash
+pip install fastapi uvicorn
+python server.py --port 8000
+```
+
+Open `http://localhost:8000` for the chat UI, or use the REST API:
+
+- `POST /api/chat` — send a message, get JSON response
+- `POST /api/chat/stream` — SSE streaming chat
+- `GET /api/memory?q=keyword` — search stored memories
+- `GET /api/cost` — cost summary
+- `GET /api/health` — health check
+
+### 🐳 Docker
+
+```bash
+docker build -t openkyrozen .
+docker run -p 8000:8000 -e DEEPSEEK_API_KEY=sk-... openkyrozen
+```
+
+## 🔌 Plugin System
+
+Drop a `.py` file in `plugins/` with a `register()` function. Hooks available:
+`on_startup`, `on_turn_start`, `on_turn_end`, `on_tool_execute`.
+
+See `plugins/turn_logger.py` for an example.
 
 ## 🔧 Development
 

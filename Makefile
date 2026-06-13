@@ -20,6 +20,10 @@ run:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' with $(PYTHON) installed."; exit 1; }
 	. venv/bin/activate && python main.py
 
+web:
+	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON)."; exit 1; }
+	. venv/bin/activate && pip install fastapi uvicorn -q && python server.py
+
 debug:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' first."; exit 1; }
 	. venv/bin/activate && python main_debug.py

@@ -25,3 +25,6 @@ Thumbs.db
 main_debug.py
 test_chat_turn.py
 _test_regression_tmp.txt
+kyrozen_audit.log
+kyrozen_turns.log
+*.log
