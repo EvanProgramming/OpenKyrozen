@@ -166,6 +166,7 @@ def _clear_tasks_panel() -> None:
 
 # ---- Theme ----
 _ACCENT = "#00f0ff"           # primary brand colour
+_SHADOW = "#9c9c9c"           # 3D shadow colour
 _ACCENT_DIM = "#007788"       # muted variant for secondary elements
 _ACCENT_BG = "#001a1f"        # dark background tint
 _SUCCESS = "#00ff88"          # success green
@@ -2494,6 +2495,35 @@ def _prompt_input(rich_message: str, *, html_message: str | None = None) -> str:
         raise
 
 
+def _print_3d_banner() -> None:
+    """Print a 3D layered ASCII-art banner with shadow effect.
+    Layer 1 (bottom): grey shadow, offset 2 columns right.
+    Layer 2 (top):   cyan foreground.
+    Uses ANSI cursor control (\033[N}A) to overlay the two layers."""
+    _ascii_lines = [
+        " _  ____   ______   ___ __________ _   _ ",
+        "| |/ /\\ \\ / /  _ \\ / _ \\__  / ____| \\ | |",
+        "| ' /  \\ V /| |_) | | | |/ /|  _| |  \\| |",
+        "| . \\   | | |  _ <| |_| / /_| |___| |\\  |",
+        "|_|\\_\\  |_| |_| \\_\\\\___/____|_____|_| \\_|",
+    ]
+    # Rich-escape backslashes so they render literally
+    safe = [ln.replace("\\", "\\\\") for ln in _ascii_lines]
+    n = len(safe)
+
+    # Layer 1: grey shadow (offset 2 spaces right)
+    for ln in safe:
+        console.print(f"  [{_SHADOW}]{ln}[/{_SHADOW}]")
+    # ANSI cursor-up to overlay
+    sys.stdout.write(f"\033[{n}A")
+    sys.stdout.flush()
+    # Layer 2: cyan foreground
+    for ln in safe:
+        console.print(f"[{_ACCENT}]{ln}[/{_ACCENT}]")
+    # Tagline (n+1 lines down from start)
+    console.print(f"  [{_MUTED}]OPEN  ·  self‑learning AI agent  ·  DeepSeek V4[/{_MUTED}]")
+
+
 def main() -> None:
     # Bytecode cache cleared already at module level (see top of file)
     global deepseek_client, DEEPSEEK_MODEL
@@ -2512,16 +2542,8 @@ def main() -> None:
         console.print(f"[{_SUCCESS}]Initialisation finished. Run `python main.py` to start the agent.[/{_SUCCESS}]")
         sys.exit(0)
 
-    # Narrow banner (48-char ASCII art) — fits 60-col terminals safely
-    banner_text = f"""[{_ACCENT}]
- _  ___   __  ____   ___   ____  _____  _   _
-| |/ / | |  \\/  |  \\ / _ \\ |  _ \\| ____|| \\ | |
-| ' /| | | |\\/| | | | | | || |_) |  _|  |  \\| |
-| . \\| |_| |  | | |_| | |_||  _ <| |___ | |\\  |
-|_|\\_\\___/|_|  |_|\\___/ \\___/|_| \\_\\_____||_| \\_|
-[/{_ACCENT}]
-[{_MUTED}]OPEN  ·  self‑learning AI agent  ·  DeepSeek V4[/{_MUTED}]"""
-    console.print(Panel(banner_text.strip(), border_style=_ACCENT, padding=(1, 2)))
+    # 3D banner: grey shadow + cyan foreground, 41 chars wide
+    _print_3d_banner()
     console.print(f"[{_ACCENT}]Kyrozen[/{_ACCENT}] [{_MUTED}]DeepSeek + Tools · Model: {MODEL_NAME}[/{_MUTED}]")
     console.print(f"[{_MUTED}]Commands:[/{_MUTED}] [{_ACCENT_DIM}]/quit  /exit  /update  /learn  /api_key  /self-learning[/{_ACCENT_DIM}]\n")
     # Show which self-learning features are enabled
