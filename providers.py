@@ -3,15 +3,24 @@ Multi-provider LLM abstraction for OpenKyrozen.
 Supports: DeepSeek, OpenAI, Anthropic (Claude), Google (Gemini), Ollama.
 
 Each provider exposes a unified .chat(messages, model) interface that returns
-(content: str, usage: dict | None).
+(content: str, usage: dict | None). OpenAI-compat providers also support
+.chat_stream() for real-time token streaming.
+
+Features:
+- Streaming responses (chat_stream)
+- Provider fallback chain
+- Rate-limit retry with exponential backoff
+- Per-provider cost tracking
 """
 
 from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass, field
-from typing import Any
+import time
+import random
+from dataclasses import dataclass
+from typing import Any, Iterator
 from abc import ABC, abstractmethod
 
 # ---------------------------------------------------------------------------
@@ -31,16 +40,94 @@ PROVIDER_ENV_VARS: dict[str, str] = {
     "openai":    "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "google":    "GEMINI_API_KEY",
-    "ollama":    "",   # Ollama needs no key locally
+    "ollama":    "",
 }
 
 PROVIDER_BASE_URLS: dict[str, str] = {
     "deepseek":  "https://api.deepseek.com/v1",
     "openai":    "https://api.openai.com/v1",
     "anthropic": "https://api.anthropic.com",
-    "google":    "",   # uses SDK default
+    "google":    "",
     "ollama":    "http://localhost:11434/v1",
 }
+
+# Fallback chain: if provider X fails, try these in order
+PROVIDER_FALLBACKS: dict[str, list[str]] = {
+    "deepseek":  ["openai", "anthropic"],
+    "openai":    ["deepseek", "anthropic"],
+    "anthropic": ["openai", "deepseek"],
+    "google":    ["openai", "deepseek"],
+    "ollama":    [],  # local, no fallback
+}
+
+# Approximate cost per 1M tokens (input, output) in USD
+PROVIDER_COSTS: dict[str, tuple[float, float]] = {
+    "deepseek":  (0.27, 1.10),
+    "openai":    (2.50, 10.00),
+    "anthropic": (3.00, 15.00),
+    "google":    (0.15, 0.60),
+    "ollama":    (0.0, 0.0),
+}
+
+# ---------------------------------------------------------------------------
+# Global cost tracking
+# ---------------------------------------------------------------------------
+
+_cost_tracker: dict[str, dict[str, int]] = {}  # {provider: {prompt_tokens, completion_tokens, cost_cents}}
+
+def _track_cost(provider: str, usage: dict | None) -> None:
+    """Accumulate token usage and estimated cost for a provider."""
+    if usage is None:
+        return
+    entry = _cost_tracker.setdefault(provider, {"prompt_tokens": 0, "completion_tokens": 0, "cost_cents": 0})
+    pt = usage.get("prompt_tokens", 0) or 0
+    ct = usage.get("completion_tokens", 0) or 0
+    entry["prompt_tokens"] += pt
+    entry["completion_tokens"] += ct
+    costs = PROVIDER_COSTS.get(provider, (0, 0))
+    entry["cost_cents"] += int((pt * costs[0] + ct * costs[1]) / 10000)
+
+def get_cost_summary() -> str:
+    """Return a human-readable cost summary."""
+    if not _cost_tracker:
+        return "No usage yet"
+    parts = []
+    for prov, data in _cost_tracker.items():
+        cents = data["cost_cents"]
+        pt = data["prompt_tokens"]
+        ct = data["completion_tokens"]
+        if cents >= 100:
+            cost_str = f"${cents/100:.2f}"
+        else:
+            cost_str = f"{cents}c"
+        parts.append(f"{prov}: {pt/1000:.0f}K in / {ct/1000:.0f}K out ~{cost_str}")
+    return " | ".join(parts)
+
+def reset_cost_tracker() -> None:
+    """Reset all cost tracking counters."""
+    _cost_tracker.clear()
+
+# ---------------------------------------------------------------------------
+# Retry helper
+# ---------------------------------------------------------------------------
+
+def _retry_with_backoff(fn, max_retries: int = 3, base_delay: float = 1.0):
+    """Call fn() with exponential backoff on rate-limit or server errors."""
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            msg = str(e).lower()
+            is_rate_limit = "429" in msg or "rate limit" in msg or "too many requests" in msg
+            is_server_error = "500" in msg or "502" in msg or "503" in msg or "server error" in msg
+            if (is_rate_limit or is_server_error) and attempt < max_retries:
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                time.sleep(delay)
+                continue
+            raise
+    raise last_exc  # type: ignore[misc]
 
 # ---------------------------------------------------------------------------
 # Config
@@ -62,6 +149,18 @@ class ProviderConfig:
         if not self.base_url:
             self.base_url = PROVIDER_BASE_URLS.get(self.provider, "")
 
+    def validate(self) -> list[str]:
+        """Validate the configuration. Returns a list of warnings/errors."""
+        issues: list[str] = []
+        if self.provider not in PROVIDER_DEFAULT_MODELS:
+            issues.append(f"Unknown provider '{self.provider}'")
+        if self.provider != "ollama" and not self.api_key:
+            env_var = PROVIDER_ENV_VARS.get(self.provider, "")
+            issues.append(f"No API key for {self.provider} (set {env_var} or KYROZEN_API_KEY)")
+        if self.model_simple and self.model_simple not in ("", "auto"):
+            pass  # model name is user-specified, can't validate here
+        return issues
+
 # ---------------------------------------------------------------------------
 # Abstract provider
 # ---------------------------------------------------------------------------
@@ -76,6 +175,11 @@ class LLMProvider(ABC):
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         """Send messages to the LLM. Returns (content, usage_dict_or_None)."""
         ...
+
+    def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
+        """Stream response tokens. Default: fall back to non-streaming chat()."""
+        text, _ = self.chat(messages, model)
+        yield text
 
     @property
     def name(self) -> str:
@@ -104,7 +208,12 @@ class OpenAICompatProvider(LLMProvider):
 
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         model = model or self.config.model_simple
-        response = self._client.chat.completions.create(model=model, messages=messages)
+
+        def _call():
+            response = self._client.chat.completions.create(model=model, messages=messages)
+            return response
+
+        response = _retry_with_backoff(_call)
         text = response.choices[0].message.content or ""
         usage = getattr(response, "usage", None)
         usage_dict = None
@@ -113,7 +222,28 @@ class OpenAICompatProvider(LLMProvider):
                 "prompt_tokens": usage.prompt_tokens or 0,
                 "completion_tokens": usage.completion_tokens or 0,
             }
+        _track_cost(self.config.provider, usage_dict)
         return text.strip(), usage_dict
+
+    def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
+        model = model or self.config.model_simple
+        collected: list[str] = []
+
+        def _call():
+            return self._client.chat.completions.create(
+                model=model, messages=messages, stream=True
+            )
+
+        stream = _retry_with_backoff(_call)
+        for chunk in stream:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta and delta.content:
+                collected.append(delta.content)
+                yield delta.content
+
+        # Estimate usage from collected text (rough: ~1 token per 4 chars)
+        # Real usage tracking happens in non-streaming chat() for accuracy
+        full_text = "".join(collected)
 
 # ---------------------------------------------------------------------------
 # Anthropic (Claude)
@@ -136,12 +266,7 @@ class AnthropicProvider(LLMProvider):
             kwargs["base_url"] = config.base_url
         self._client = anthropic.Anthropic(**kwargs)
 
-    def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
-        model = model or self.config.model_simple
-
-        # Claude's API requires messages in a different format:
-        # - system prompt must be passed separately
-        # - roles are "user" / "assistant" only (no "system" in messages)
+    def _prepare_messages(self, messages):
         system_prompts: list[str] = []
         claude_messages: list[dict] = []
         for msg in messages:
@@ -151,6 +276,11 @@ class AnthropicProvider(LLMProvider):
                 system_prompts.append(content)
             else:
                 claude_messages.append({"role": role, "content": content})
+        return system_prompts, claude_messages
+
+    def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
+        model = model or self.config.model_simple
+        system_prompts, claude_messages = self._prepare_messages(messages)
 
         kwargs: dict[str, Any] = {
             "model": model,
@@ -160,7 +290,10 @@ class AnthropicProvider(LLMProvider):
         if system_prompts:
             kwargs["system"] = "\n\n".join(system_prompts)
 
-        response = self._client.messages.create(**kwargs)
+        def _call():
+            return self._client.messages.create(**kwargs)
+
+        response = _retry_with_backoff(_call)
         text = ""
         for block in response.content:
             if hasattr(block, "text"):
@@ -172,6 +305,7 @@ class AnthropicProvider(LLMProvider):
                 "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
                 "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
             }
+        _track_cost(self.config.provider, usage_dict)
         return text.strip(), usage_dict
 
 # ---------------------------------------------------------------------------
@@ -196,9 +330,6 @@ class GoogleProvider(LLMProvider):
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         model = model or self.config.model_simple
 
-        # Gemini uses a different conversation format:
-        # - system prompt goes into system_instruction
-        # - messages become a flat history list
         system_instruction: str | None = None
         history: list[dict] = []
         user_content: str = ""
@@ -212,8 +343,8 @@ class GoogleProvider(LLMProvider):
                 else:
                     system_instruction += "\n\n" + content
             elif role == "user":
-                # If there's a pending assistant reply before this, push as history
-                pass
+                if user_content:
+                    history.append({"role": "user", "parts": [user_content]})
                 user_content = content
             elif role == "assistant":
                 if user_content:
@@ -221,28 +352,23 @@ class GoogleProvider(LLMProvider):
                     user_content = ""
                 history.append({"role": "model", "parts": [content]})
 
-        # If the last message is a user message, it becomes the current prompt
-        if user_content:
-            pass  # use as the prompt below
-        elif history:
-            user_content = "Continue."  # fallback
+        if not user_content:
+            user_content = "Continue."
 
-        client = self._genai.GenerativeModel(
-            model_name=model,
-            system_instruction=system_instruction,
-        )
+        def _call():
+            client = self._genai.GenerativeModel(
+                model_name=model,
+                system_instruction=system_instruction,
+            )
+            chat = client.start_chat(history=history if history else None)
+            try:
+                return chat.send_message(user_content)
+            except Exception:
+                return client.generate_content(user_content)
 
-        # Build conversation
-        chat = client.start_chat(history=history if history else None)
-        try:
-            response = chat.send_message(user_content or "Hello")
-            text = response.text or ""
-        except Exception:
-            # Fallback: try as a single prompt
-            response = client.generate_content(user_content or "Hello")
-            text = response.text or ""
+        response = _retry_with_backoff(_call)
+        text = response.text or ""
 
-        # Gemini doesn't provide token counts in the same way
         usage_dict = None
         try:
             meta = getattr(response, "usage_metadata", None)
@@ -253,7 +379,7 @@ class GoogleProvider(LLMProvider):
                 }
         except Exception:
             pass
-
+        _track_cost(self.config.provider, usage_dict)
         return text.strip(), usage_dict
 
 # ---------------------------------------------------------------------------
@@ -281,14 +407,73 @@ class OllamaNativeProvider(LLMProvider):
             resp.raise_for_status()
             data = resp.json()
             text = data.get("message", {}).get("content", "")
-            # Ollama reports eval_count / prompt_eval_count
             usage_dict = {
                 "prompt_tokens": data.get("prompt_eval_count", 0) or 0,
                 "completion_tokens": data.get("eval_count", 0) or 0,
             }
+            _track_cost(self.config.provider, usage_dict)
             return text.strip(), usage_dict
         except Exception as e:
             return f"[Ollama Error] {e}", None
+
+# ---------------------------------------------------------------------------
+# Fallback-aware provider wrapper
+# ---------------------------------------------------------------------------
+
+class FallbackProvider(LLMProvider):
+    """Wraps multiple providers and falls back on failure."""
+
+    def __init__(self, primary_config: ProviderConfig) -> None:
+        self._primary = get_provider(primary_config)
+        self._fallbacks: list[LLMProvider] = []
+        fallback_names = PROVIDER_FALLBACKS.get(primary_config.provider, [])
+        for fb_name in fallback_names:
+            fb_config = ProviderConfig(
+                provider=fb_name,
+                api_key=os.environ.get(PROVIDER_ENV_VARS.get(fb_name, ""), ""),
+            )
+            # Only add fallback if it has an API key or is Ollama
+            if fb_config.api_key or fb_name == "ollama":
+                try:
+                    self._fallbacks.append(get_provider(fb_config))
+                except Exception:
+                    pass
+
+    @property
+    def config(self) -> ProviderConfig:
+        return self._primary.config
+
+    def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
+        providers = [self._primary] + self._fallbacks
+        last_error = None
+        for i, prov in enumerate(providers):
+            try:
+                return prov.chat(messages, model)
+            except Exception as e:
+                last_error = e
+                if i < len(providers) - 1:
+                    continue  # try next
+        raise last_error or RuntimeError("All providers failed")
+
+    def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
+        providers = [self._primary] + self._fallbacks
+        last_error = None
+        for i, prov in enumerate(providers):
+            try:
+                yield from prov.chat_stream(messages, model)
+                return
+            except Exception as e:
+                last_error = e
+                if i < len(providers) - 1:
+                    continue
+        raise last_error or RuntimeError("All providers failed")
+
+    @property
+    def name(self) -> str:
+        fb_names = [p.name for p in self._fallbacks]
+        if fb_names:
+            return f"{self._primary.name} (fallback: {', '.join(fb_names)})"
+        return self._primary.name
 
 # ---------------------------------------------------------------------------
 # Factory
@@ -297,8 +482,8 @@ class OllamaNativeProvider(LLMProvider):
 _PROVIDER_CLASSES: dict[str, type[LLMProvider]] = {
     "deepseek":   OpenAICompatProvider,
     "openai":     OpenAICompatProvider,
-    "ollama":     OpenAICompatProvider,    # OpenAI-compatible endpoint
-    "ollama_native": OllamaNativeProvider, # native API (use provider="ollama_native")
+    "ollama":     OpenAICompatProvider,
+    "ollama_native": OllamaNativeProvider,
     "anthropic":  AnthropicProvider,
     "google":     GoogleProvider,
 }
@@ -317,6 +502,11 @@ def get_provider(config: ProviderConfig) -> LLMProvider:
     return cls(config)
 
 
+def get_fallback_provider(config: ProviderConfig) -> LLMProvider:
+    """Create a provider with automatic fallback chain."""
+    return FallbackProvider(config)
+
+
 def detect_provider() -> ProviderConfig:
     """Detect the provider from environment variables or config file.
     Priority: env vars > config file > defaults (deepseek)."""
@@ -324,7 +514,6 @@ def detect_provider() -> ProviderConfig:
 
     provider_name = os.environ.get("KYROZEN_PROVIDER", "").strip().lower()
 
-    # Read config file for stored preferences
     config_path = os.path.expanduser("~/.kyrozen_config.json")
     config_data: dict[str, Any] = {}
     if os.path.exists(config_path):
@@ -337,7 +526,6 @@ def detect_provider() -> ProviderConfig:
     if not provider_name:
         provider_name = config_data.get("provider", "").strip().lower()
     if not provider_name:
-        # Auto-detect from common env vars
         if os.environ.get("ANTHROPIC_API_KEY"):
             provider_name = "anthropic"
         elif os.environ.get("GEMINI_API_KEY"):
@@ -347,9 +535,8 @@ def detect_provider() -> ProviderConfig:
         elif os.environ.get("DEEPSEEK_API_KEY"):
             provider_name = "deepseek"
         else:
-            provider_name = "deepseek"  # default
+            provider_name = "deepseek"
 
-    # Get API key: explicit env > config > provider-specific env
     api_key = os.environ.get("KYROZEN_API_KEY", "")
     if not api_key:
         env_var = PROVIDER_ENV_VARS.get(provider_name, "")

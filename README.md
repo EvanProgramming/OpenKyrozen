@@ -199,6 +199,7 @@ For multi‑step work (codebase analysis, large refactors, project generators):
 | `/learn` | Immediately scan project files into memory |
 | `/api_key` | Change your API key for the current provider |
 | `/provider` | Switch to a different LLM provider (interactive menu) |
+| `/forget` | Show or delete recent learnings (`/forget keyword` to delete) |
 | `/update` | Refresh the agent from git |
 | `/self-learning` | Interactive menu to toggle individual learning features |
 
@@ -226,6 +227,10 @@ OpenKyrozen learns continuously in the background — no manual saving needed. E
 | **Dynamic tool creation** | `DefineTool` syntax lets the agent create new callable tools from SKILLs |
 | **User preference model** | Detects and remembers coding style, language, verbosity preferences |
 | **Autonomous inspection** | Proactively checks for outdated packages, code smells, gitignore gaps |
+| **Memory importance scoring** | Scores each memory entry 0-10; high-score entries get retrieval priority |
+| **Knowledge graph extraction** | Builds structured entity-relationship map from stored facts |
+| **Skill composition** | Chains multiple learned SKILLs into multi-step workflows |
+| **Bad learning rollback** | `/forget` command to view and delete incorrect learnings |
 
 ### Memory storage
 

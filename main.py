@@ -84,6 +84,7 @@ from tools import AVAILABLE_TOOLS
 from providers import (
     ProviderConfig, LLMProvider, get_provider, detect_provider,
     save_provider_config, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS,
+    get_fallback_provider, get_cost_summary, reset_cost_tracker,
 )
 
 # aliases for flexible action recognition
@@ -1002,8 +1003,14 @@ def _prompt_and_init_deepseek() -> None:
     DEEPSEEK_MODEL = DEEPSEEK_MODEL_SIMPLE
     MODEL_NAME = f"{_provider_config.provider} ({DEEPSEEK_MODEL_SIMPLE})"
 
-    # Create the provider instance
-    llm_provider = get_provider(_provider_config)
+    # Create the provider instance (with fallback chain)
+    llm_provider = get_fallback_provider(_provider_config)
+
+    # Validate configuration
+    issues = _provider_config.validate()
+    if issues:
+        for issue in issues:
+            console.print(f"[{_WARNING}]Config: {issue}[/{_WARNING}]")
 
 
 DEEPSEEK_MODEL: str = DEEPSEEK_MODEL_SIMPLE
@@ -1484,6 +1491,120 @@ def _autonomous_inspection() -> None:
 # ================================================================
 # End of new features
 # ================================================================
+
+
+# ================================================================
+# Feature 6: Memory Importance Scoring
+# ================================================================
+
+def _score_memory_importance(entry: str) -> int:
+    """Score a memory entry 0-10 based on its apparent importance."""
+    score = 1
+    if entry.startswith("FACT:"): score += 3
+    if entry.startswith("FAILURE:"): score += 5
+    if entry.startswith("FIX_OUTCOME:"): score += 4
+    if entry.startswith("STRATEGY:"): score += 4
+    if entry.startswith("PREF:"): score += 3
+    if entry.startswith("SKILL:"): score += 3
+    if entry.startswith("FILE:"): score -= 2
+    if len(entry) > 200: score += 1
+    if len(entry) > 500: score += 1
+    if any(kw in entry.lower() for kw in ["bug", "fix", "error", "critical", "important"]): score += 2
+    return max(0, min(10, score))
+
+# ================================================================
+# Feature 7: Bad Learning Rollback — /forget command
+# ================================================================
+
+def _forget_recent(prefix: str = "", count: int = 5) -> str:
+    """Show recent learnable entries and allow the user to delete them."""
+    recent = memory_bank.get_recent(100)
+    learnable = [r for r in recent if r and not r.startswith("FILE:")]
+    if prefix:
+        learnable = [r for r in learnable if prefix.lower() in r.lower()]
+    learnable = learnable[:count]
+    if not learnable:
+        return "No matching memories found."
+    lines = ["Recent learnings (most recent first):"]
+    for i, entry in enumerate(learnable):
+        score = _score_memory_importance(entry)
+        snippet = entry[:120].replace("\n", " ")
+        lines.append(f"  [{i}] (score:{score}) {snippet}")
+    return "\n".join(lines)
+
+# ================================================================
+# Feature 8: Knowledge Graph Extraction
+# ================================================================
+
+_knowledge_graph: dict[str, list[str]] = {}
+
+def _extract_knowledge_graph() -> None:
+    """Extract entities and relationships from memory for structured knowledge."""
+    recent = memory_bank.get_recent(50)
+    facts = [r for r in recent if r and r.startswith("FACT:")][:10]
+    if len(facts) < 3:
+        return
+    prompt = (
+        "Extract key entities and relationships from these facts. "
+        "Output in format 'entity -> related_entity' (one per line).\n\n"
+        + "\n".join(f"  - {f[:200]}" for f in facts)
+    )
+    try:
+        answer = _get_llm_response([{"role": "system", "content": prompt}]).strip()
+        for line in answer.split("\n"):
+            if "->" in line:
+                parts = line.split("->", 1)
+                src = parts[0].strip().lower()
+                dst = parts[1].strip().lower()
+                if src and dst:
+                    _knowledge_graph.setdefault(src, []).append(dst)
+                    memory_bank.add_log(f"GRAPH: {src} -> {dst}")
+    except Exception:
+        pass
+
+# ================================================================
+# Feature 9: Sandbox — Restrict file operations to workspace
+# ================================================================
+
+_workspace_root: str = ""
+
+def _set_workspace_root(path: str) -> None:
+    global _workspace_root
+    _workspace_root = os.path.abspath(os.path.expanduser(path))
+
+def _is_path_safe(path: str) -> bool:
+    if not _workspace_root:
+        return True
+    try:
+        resolved = os.path.abspath(os.path.expanduser(path))
+        return resolved.startswith(_workspace_root)
+    except Exception:
+        return False
+
+# ================================================================
+# Feature 10: Skill Composition — Chain SKILLs into workflows
+# ================================================================
+
+def _compose_skills(task_description: str) -> str | None:
+    """Find relevant SKILLs from memory and build a composed workflow."""
+    recent = memory_bank.get_recent(100)
+    skills = [r for r in recent if r and r.startswith("SKILL:")]
+    if not skills:
+        return None
+    skills_text = "\n".join(s[:300] for s in skills[-10:])
+    prompt = (
+        "Given this task and these available skills, compose a workflow. "
+        "Output steps as '1. <SkillName>: <what to do>'. "
+        "If no skills match, output '—'.\n\n"
+        f"Task: {task_description}\n\nSkills:\n{skills_text}"
+    )
+    try:
+        answer = _get_llm_response([{"role": "system", "content": prompt}]).strip()
+        if answer and answer != "—":
+            return answer
+    except Exception:
+        pass
+    return None
 
 
 def _remove_stale_file_entries(project_root: Path) -> None:
@@ -2084,20 +2205,31 @@ def _select_model(user_input: str) -> str:
     return DEEPSEEK_MODEL_SIMPLE
 
 
-def _get_llm_response(messages: list[dict[str, str]], model: str | None = None) -> str:
+def _get_llm_response(messages: list[dict[str, str]], model: str | None = None, stream: bool = False) -> str:
     global _last_prompt_tokens, _last_completion_tokens, _total_prompt_tokens, _total_completion_tokens
     if llm_provider is None:
-        return "[Error] LLM provider not initialised — no API key configured"
+        return "[Error] LLM provider not initialised"
     try:
-        text, usage_dict = llm_provider.chat(messages, model or DEEPSEEK_MODEL)
-        if usage_dict:
-            _last_prompt_tokens = usage_dict.get("prompt_tokens", 0)
-            _last_completion_tokens = usage_dict.get("completion_tokens", 0)
-            _total_prompt_tokens += _last_prompt_tokens
-            _total_completion_tokens += _last_completion_tokens
-        else:
+        if stream and hasattr(llm_provider, 'chat_stream'):
+            # Streaming mode: collect chunks and print in real-time
+            collected: list[str] = []
+            for chunk in llm_provider.chat_stream(messages, model or DEEPSEEK_MODEL):
+                collected.append(chunk)
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
+            text = "".join(collected).strip()
             _last_prompt_tokens = 0
-            _last_completion_tokens = 0
+            _last_completion_tokens = len(text) // 4  # rough estimate
+        else:
+            text, usage_dict = llm_provider.chat(messages, model or DEEPSEEK_MODEL)
+            if usage_dict:
+                _last_prompt_tokens = usage_dict.get("prompt_tokens", 0)
+                _last_completion_tokens = usage_dict.get("completion_tokens", 0)
+                _total_prompt_tokens += _last_prompt_tokens
+                _total_completion_tokens += _last_completion_tokens
+            else:
+                _last_prompt_tokens = 0
+                _last_completion_tokens = 0
         return text
     except Exception as e:
         return f"[LLM Error] {e}"
@@ -3035,6 +3167,8 @@ def _background_learning_loop() -> None:
                     _invent_skills()
                 # Autonomous codebase health inspection
                 _autonomous_inspection()
+                # Knowledge graph extraction (once per idle cycle)
+                _extract_knowledge_graph()
         except Exception:
             pass
 
@@ -3134,6 +3268,7 @@ def main() -> None:
     total_count = len(_SELF_LEARNING_FLAGS)
     console.print(f"[{_MUTED}]Self-learning:[/{_MUTED}] [{_ACCENT_DIM}]{enabled_count}/{total_count} features active (toggle with /self-learning)[/{_ACCENT_DIM}]")
     console.print(f"[{_MUTED}]Memory:[/{_MUTED}] [{_ACCENT_DIM}]ChromaDB (`chroma_memory/`) — ask me what I remember[/{_ACCENT_DIM}]")
+    console.print(f"[{_MUTED}]Cost:[/{_MUTED}] [{_ACCENT_DIM}]{get_cost_summary()}[/{_ACCENT_DIM}]")
     # Horizontal rule
     console.print(f"[{_ACCENT_DIM}]{_BOX_H * 50}[/{_ACCENT_DIM}]")
 
@@ -3141,6 +3276,8 @@ def main() -> None:
     if llm_provider is None:
         console.print(f"[{_ERROR}]Cannot start without an API key.[/{_ERROR}]")
         sys.exit(1)
+    # Set workspace root for sandbox
+    _set_workspace_root(os.getcwd())
     # Load project files synchronously to avoid ChromaDB thread conflicts
     _load_project_files_into_memory()
     console.print(f"[{_MUTED}]Project files loaded into memory.[/{_MUTED}]")
@@ -3197,6 +3334,20 @@ def main() -> None:
 
         if user_input.lower() == "/self-learning":
             _show_self_learning_menu()
+            continue
+
+        # /forget — show and optionally delete recent learnings
+        if user_input.lower().startswith("/forget"):
+            parts = user_input.split(maxsplit=1)
+            prefix = parts[1] if len(parts) > 1 else ""
+            console.print(Panel(_forget_recent(prefix), title="Forget", border_style=_WARNING))
+            if prefix:
+                # Auto-delete entries matching prefix (lowest score first)
+                recent = memory_bank.get_recent(100)
+                matched = [r for r in recent if r and prefix.lower() in r.lower() and not r.startswith("FILE:")]
+                if matched:
+                    memory_bank.delete_logs(matched[:3])
+                    console.print(f"[{_SUCCESS}]Deleted {min(3, len(matched))} entries matching '{prefix}'.[/{_SUCCESS}]")
             continue
 
         # Auto‑patching: detect new technology mentions (if enabled)
