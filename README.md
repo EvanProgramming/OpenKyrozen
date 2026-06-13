@@ -41,19 +41,7 @@ Think of it as an AI teammate that gets smarter every time you use it.
 | **Google (Gemini)** | [aistudio.google.com](https://aistudio.google.com) | ~$0.15/M input tokens |
 | **Ollama** | [ollama.com](https://ollama.com) | Free (runs locally) |
 
-### Option A: pip install (recommended)
-
-```bash
-pip install openkyrozen
-
-# Launch the terminal agent
-kyrozen
-
-# Or launch the web server
-kyrozen-web
-```
-
-### Option B: From source
+### Option A: From source (recommended)
 
 ```bash
 git clone https://github.com/EvanProgramming/OpenKyrozen.git
@@ -67,6 +55,20 @@ make run
 setup.bat
 run.bat
 ```
+
+### Option B: pip install from local directory
+
+```bash
+git clone https://github.com/EvanProgramming/OpenKyrozen.git
+cd OpenKyrozen
+pip install .
+
+# Then run anywhere:
+kyrozen          # terminal agent
+kyrozen-web      # web server
+```
+
+> **Note:** `pip install openkyrozen` from PyPI is coming soon. For now, install from the local directory or clone the repo.
 
 On first launch, you'll be prompted for an API key. The agent auto-detects your provider and saves the encrypted key to `~/.kyrozen_config.json`.
 
@@ -477,9 +479,10 @@ GitHub Actions automatically runs on every push and PR:
 ### pip package
 
 ```bash
-pip install openkyrozen         # core + CLI
-pip install openkyrozen[web]    # + web UI
-pip install openkyrozen[all]    # + Claude + Gemini + web
+# Install from local directory (PyPI publishing coming soon)
+pip install .                   # core + CLI
+pip install .[web]              # + web UI
+pip install .[all]              # + Claude + Gemini + web
 ```
 
 ---

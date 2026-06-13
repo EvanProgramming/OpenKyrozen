@@ -11,6 +11,12 @@ import warnings
 # Suppress all DeprecationWarnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+# Ensure the package directory is on sys.path (needed when installed via pip)
+import os as _os
+_PKG_DIR = _os.path.dirname(_os.path.abspath(__file__))
+if _PKG_DIR not in sys.path:
+    sys.path.insert(0, _PKG_DIR)
+
 # Guard: Python 3.14 has an import-system deadlock with openai 2.x
 if sys.version_info >= (3, 14):
     sys.exit(
