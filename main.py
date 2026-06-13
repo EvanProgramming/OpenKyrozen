@@ -39,9 +39,6 @@ from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich import print as rprint
 
-from prompt_toolkit import PromptSession, HTML
-from prompt_toolkit.history import FileHistory
-
 from memory import MemoryBank
 from tools import AVAILABLE_TOOLS
 
@@ -165,7 +162,6 @@ def _clear_tasks_panel() -> None:
 
 # ---- Theme ----
 _ACCENT = "#00f0ff"           # primary brand colour
-_SHADOW = "#9c9c9c"           # 3D shadow colour
 _ACCENT_DIM = "#007788"       # muted variant for secondary elements
 _ACCENT_BG = "#001a1f"        # dark background tint
 _SUCCESS = "#00ff88"          # success green
@@ -183,9 +179,6 @@ MAX_STEPS_PER_TURN = 50          # how many tool-call rounds the LLM may perform
 MAX_UNKNOWN_TOOL_RETRIES = 3     # how many times to re-prompt when LLM uses an unrecognised action name
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
 IDLE_CONSOLIDATION_TIMEOUT = 60   # 1 minute
-# prompt_toolkit history file (persistent input history across sessions)
-_INPUT_HISTORY_FILE = os.path.expanduser("~/.kyrozen_input_history")
-
 # -------- Self-learning feature flags (toggled via /self-learning) --------
 _SELF_LEARNING_FLAGS: dict[str, bool] = {
     "auto_learn_conversations": True,
@@ -919,10 +912,7 @@ def _prompt_and_init_deepseek() -> None:
     if not key:
         console.print("\nDeepSeek API key not set.")
         try:
-            key = _prompt_input(
-                "Enter API key: ",
-                html_message="<b><ansiyellow>Enter your DeepSeek API key:</ansiyellow></b> "
-            )
+            key = console.input("[bold yellow]Enter your DeepSeek API key: [/bold yellow]").strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\nCancelled.")
             deepseek_client = None
@@ -2436,10 +2426,7 @@ def _show_self_learning_menu() -> None:
             icon = f"[{_SUCCESS}]●[/{_SUCCESS}]" if enabled else f"[{_MUTED}]○[/{_MUTED}]"
             console.print(f"  [{_MUTED}]{i+1}.[/{_MUTED}] {icon} {desc}")
         console.print()
-        choice = _prompt_input(
-            "",
-            html_message="<b><ansicyan>Toggle (number) or 'done':</ansicyan></b> "
-        ).lower()
+        choice = console.input("[bold cyan]Toggle (number) or 'done': [/bold cyan]").strip().lower()
         if choice == "done":
             console.print(f"[{_SUCCESS}]Self‑learning settings updated.[/{_SUCCESS}]")
             break
@@ -2456,49 +2443,8 @@ def _show_self_learning_menu() -> None:
             console.print(f"[{_ERROR}]Please enter a number or 'done'.[/{_ERROR}]")
 
 
-# ---- prompt_toolkit session (mouse support + line editing + history) ----
-
-_prompt_session: PromptSession | None = None
-
-
-def _get_prompt_session() -> PromptSession:
-    """Lazy-init a persistent PromptSession with mouse support and command history."""
-    global _prompt_session
-    if _prompt_session is None:
-        try:
-            _prompt_session = PromptSession(
-                history=FileHistory(_INPUT_HISTORY_FILE),
-                mouse_support=False,
-                enable_history_search=False,
-            )
-        except Exception:
-            # Fallback: bare session without history if disk is unwritable
-            _prompt_session = PromptSession(mouse_support=False)
-    return _prompt_session
-
-
-def _prompt_input(rich_message: str, *, html_message: str | None = None) -> str:
-    """Read a line of user input with full mouse/line-editing support.
-
-    ``rich_message`` is the fallback prompt for Rich (used when prompt_toolkit
-    is unavailable). ``html_message`` is the prompt_toolkit HTML-styled prompt.
-
-    Mouse-click to position the cursor, arrows/emacs bindings for line editing,
-    Ctrl-R for history search, and history persisted to disk.
-    """
-    session = _get_prompt_session()
-    display = HTML(html_message) if html_message else rich_message
-    try:
-        return session.prompt(display).strip()
-    except (EOFError, KeyboardInterrupt):
-        raise
-
-
-def _print_3d_banner() -> None:
-    """Print a 3D layered ASCII-art banner with shadow effect.
-    Layer 1 (bottom): grey (#9c9c9c) shadow, offset 2 columns right.
-    Layer 2 (top):    cyan (#00f0ff) foreground, overlaid via ANSI cursor-up.
-    Keeps each layer as a single Rich span per line — no escaping issues."""
+def _print_banner() -> None:
+    """Print the OpenKyrozen ASCII-art banner in accent colour."""
     _ascii = [
         " _  ____   ______   ___ __________ _   _ ",
         "| |/ /\\ \\ / /  _ \\ / _ \\__  / ____| \\ | |",
@@ -2506,23 +2452,10 @@ def _print_3d_banner() -> None:
         "| . \\   | | |  _ <| |_| / /_| |___| |\\  |",
         "|_|\\_\\  |_| |_| \\_\\\\___/____|_____|_| \\_|",
     ]
-    # Rich-safe: double every backslash
     safe = [ln.replace("\\", "\\\\") for ln in _ascii]
-    n = len(safe)
-
-    # Layer 1: grey shadow (offset 2 columns right)
     for ln in safe:
-        console.print(f"  [{_SHADOW}]{ln}[/{_SHADOW}]")
-    # ANSI cursor-up — use console's file handle to stay in sync with Rich
-    console.file.write(f"\033[{n}A")
-    console.file.flush()
-    # Brief pause: let terminal process the escape before Rich writes again
-    time.sleep(0.02)
-    # Layer 2: cyan foreground (overwrites shadow on same lines)
-    for ln in safe:
-        console.print(f"[{_ACCENT}]{ln}[/{_ACCENT}]")
-    # Tagline
-    console.print(f"  [{_MUTED}]OPEN  ·  self‑learning AI agent  ·  DeepSeek V4[/{_MUTED}]")
+        console.print(f"  [{_ACCENT}]{ln}[/{_ACCENT}]")
+    console.print(f"  [{_MUTED}]OPEN  \u00b7  self\u2011learning AI agent  \u00b7  DeepSeek V4[/{_MUTED}]")
 
 
 def main() -> None:
@@ -2543,8 +2476,8 @@ def main() -> None:
         console.print(f"[{_SUCCESS}]Initialisation finished. Run `python main.py` to start the agent.[/{_SUCCESS}]")
         sys.exit(0)
 
-    # 3D banner: grey shadow + cyan foreground, 41 chars wide
-    _print_3d_banner()
+    # ASCII-art banner, 41 chars wide — fits 60-col terminals
+    _print_banner()
     console.print(f"[{_ACCENT}]Kyrozen[/{_ACCENT}] [{_MUTED}]DeepSeek + Tools · Model: {MODEL_NAME}[/{_MUTED}]")
     console.print(f"[{_MUTED}]Commands:[/{_MUTED}] [{_ACCENT_DIM}]/quit  /exit  /update  /learn  /api_key  /self-learning[/{_ACCENT_DIM}]\n")
     # Show which self-learning features are enabled
@@ -2567,10 +2500,7 @@ def main() -> None:
 
     while True:
         try:
-            user_input = _prompt_input(
-                "[bold cyan]You: [/bold cyan]",
-                html_message="<b><ansicyan>You:</ansicyan></b> "
-            )
+            user_input = console.input("[bold cyan]You: [/bold cyan]").strip()
         except (EOFError, KeyboardInterrupt):
             console.print(f"\n[{_ERROR}]Goodbye.[/{_ERROR}]")
             sys.exit(0)
@@ -2594,10 +2524,7 @@ def main() -> None:
             console.print(f"[{_SUCCESS}]Project files re‑learned and stored in memory.[/{_SUCCESS}]")
             continue
         if user_input.lower() == "/api_key":
-            new_key = _prompt_input(
-                "[bold yellow]Enter new DeepSeek API key: [/bold yellow]",
-                html_message="<b><ansiyellow>Enter new DeepSeek API key:</ansiyellow></b> "
-            )
+            new_key = console.input("[bold yellow]Enter new DeepSeek API key: [/bold yellow]").strip()
             if new_key:
                 _save_config_key(new_key)
                 os.environ["DEEPSEEK_API_KEY"] = new_key
