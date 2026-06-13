@@ -287,6 +287,141 @@ async def api_health():
     }
 
 
+# ---------------------------------------------------------------------------
+# MCP (Model Context Protocol) endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/mcp")
+async def mcp_endpoint(request: Request):
+    """MCP-compatible endpoint for AI tool interoperability."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+    method = body.get("method", "")
+    params = body.get("params", {})
+
+    if method == "tools/list":
+        return {
+            "jsonrpc": "2.0",
+            "result": {
+                "tools": [
+                    {"name": name, "description": (fn.__doc__ or "").strip().split("\n")[0]}
+                    for name, fn in _agent.AVAILABLE_TOOLS.items()
+                ]
+            }
+        }
+    elif method == "tools/call":
+        tool_name = params.get("name", "")
+        tool_args = params.get("arguments", "")
+        fn = _agent.AVAILABLE_TOOLS.get(tool_name)
+        if fn is None:
+            return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Tool '{tool_name}' not found"}}
+        try:
+            result = fn(str(tool_args))
+            return {"jsonrpc": "2.0", "result": {"content": [{"type": "text", "text": str(result)}]}}
+        except Exception as e:
+            return {"jsonrpc": "2.0", "error": {"code": -32603, "message": str(e)}}
+    elif method == "chat/send":
+        msg = params.get("message", "")
+        if not msg:
+            raise HTTPException(400, "Empty message")
+        reply = _agent._chat_turn(msg, clear_tasks=True)
+        return {"jsonrpc": "2.0", "result": {"content": reply}}
+    else:
+        return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown method: {method}"}}
+
+
+# ---------------------------------------------------------------------------
+# Voice endpoints (TTS / STT)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/voice/transcribe")
+async def api_transcribe(request: Request):
+    """Transcribe audio to text using system tools (macOS say, Linux espeak)."""
+    # This is a placeholder — real STT would use whisper or an API
+    body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+    text = body.get("text", "")
+    return {"text": text, "source": "passthrough", "note": "Use whisper or cloud STT for real transcription"}
+
+
+@app.get("/api/voice/speak")
+async def api_speak(text: str = ""):
+    """Text-to-speech using system TTS tools."""
+    if not text:
+        return {"error": "No text provided"}
+    import subprocess, platform
+    try:
+        system = platform.system()
+        if system == "Darwin":
+            subprocess.Popen(["say", text])
+        elif system == "Linux":
+            subprocess.Popen(["espeak", text])
+        elif system == "Windows":
+            subprocess.Popen(["powershell", "-c", f"Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{text}')"])
+        return {"status": "speaking", "text": text[:100]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Webhook system
+# ---------------------------------------------------------------------------
+
+_webhooks: list[dict] = []
+
+@app.post("/api/webhooks/register")
+async def register_webhook(request: Request):
+    """Register a webhook URL for event notifications."""
+    body = await request.json()
+    url = body.get("url", "").strip()
+    events = body.get("events", ["chat.completed"])
+    if not url:
+        raise HTTPException(400, "URL required")
+    hook = {"url": url, "events": events, "created": time.time()}
+    _webhooks.append(hook)
+    _audit("WEBHOOK_REGISTER", f"url={url} events={events}")
+    return {"status": "registered", "id": len(_webhooks) - 1}
+
+
+@app.get("/api/webhooks")
+async def list_webhooks():
+    """List registered webhooks."""
+    return {"webhooks": _webhooks}
+
+
+def _fire_webhooks(event: str, data: dict):
+    """Fire webhooks for a given event."""
+    import requests as _req
+    for hook in _webhooks:
+        if event in hook["events"]:
+            try:
+                _req.post(hook["url"], json={"event": event, "data": data}, timeout=5)
+            except Exception:
+                pass
+
+
+@app.post("/api/webhooks/test")
+async def test_webhook():
+    """Manually trigger a test webhook event."""
+    _fire_webhooks("test", {"message": "Webhook test from OpenKyrozen"})
+    return {"status": "fired", "hook_count": len(_webhooks)}
+
+
+# PWA manifest
+@app.get("/manifest.json")
+async def pwa_manifest():
+    return {
+        "name": "OpenKyrozen",
+        "short_name": "Kyrozen",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#0d1117",
+        "theme_color": "#00f0ff",
+        "icons": [{"src": "/static/icon.png", "sizes": "192x192", "type": "image/png"}]
+    }
+
+
 # Async sleep helper
 import asyncio as _asyncio
 async def asyncio_sleep(seconds: float):
@@ -363,3 +498,8 @@ if __name__ == "__main__":
     parser.add_argument("--reload", action="store_true", help="Auto-reload on code changes")
     args = parser.parse_args()
     uvicorn.run("server:app", host=args.host, port=args.port, reload=args.reload)
+
+
+def main_entry():
+    """Entry point for pyproject.toml console_scripts."""
+    uvicorn.run("server:app", host="0.0.0.0", port=8000)

@@ -276,6 +276,13 @@ Drop a `.py` file in `plugins/` with a `register()` function. Hooks available:
 
 See `plugins/turn_logger.py` for an example.
 
+## 🔐 Security
+
+- **API key encryption** — `~/.kyrozen_config.json` API key is encrypted at rest using machine-specific XOR key
+- **Prompt injection protection** — Detects and filters common injection patterns (instruction override, role manipulation)
+- **Sandbox execution** — File operations restricted to workspace boundary
+- **Audit logging** — All chat and API events logged with timestamps to `kyrozen_audit.log`
+
 ## 🔧 Development
 
 ```bash

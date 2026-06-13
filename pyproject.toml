@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openkyrozen"
+version = "1.0.0"
+description = "Self-learning AI Agent — DeepSeek · OpenAI · Claude · Gemini · Ollama"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.12,<3.14"
+authors = [
+    {name = "Evan", email = "evan@openkyrozen.dev"}
+]
+keywords = ["ai", "agent", "llm", "self-learning", "deepseek", "chatbot", "cli"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "chromadb>=0.4.0",
+    "googlesearch-python>=1.2.3",
+    "openai>=1.0.0",
+    "requests>=2.31.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+web = ["fastapi", "uvicorn"]
+claude = ["anthropic>=0.30.0"]
+gemini = ["google-generativeai>=0.8.0"]
+all = ["fastapi", "uvicorn", "anthropic>=0.30.0", "google-generativeai>=0.8.0"]
+
+[project.scripts]
+kyrozen = "main:main"
+kyrozen-web = "server:main_entry"
+
+[project.urls]
+Homepage = "https://github.com/EvanProgramming/OpenKyrozen"
+Repository = "https://github.com/EvanProgramming/OpenKyrozen"
+Issues = "https://github.com/EvanProgramming/OpenKyrozen/issues"
+
+[tool.setuptools.packages.find]
+include = ["*.py", "plugins/*.py", "prompts/*.md"]

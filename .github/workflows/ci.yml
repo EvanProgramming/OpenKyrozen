@@ -1,0 +1,47 @@
+name: OpenKyrozen CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install fastapi uvicorn
+
+    - name: Syntax check
+      run: |
+        python -c "compile(open('main.py').read(), 'main.py', 'exec'); print('main.py OK')"
+        python -c "compile(open('tools.py').read(), 'tools.py', 'exec'); print('tools.py OK')"
+        python -c "compile(open('memory.py').read(), 'memory.py', 'exec'); print('memory.py OK')"
+        python -c "compile(open('providers.py').read(), 'providers.py', 'exec'); print('providers.py OK')"
+        python -c "compile(open('server.py').read(), 'server.py', 'exec'); print('server.py OK')"
+
+    - name: Tool inventory check
+      run: |
+        python -c "from tools import AVAILABLE_TOOLS; assert len(AVAILABLE_TOOLS) >= 24, f'Expected >=24 tools, got {len(AVAILABLE_TOOLS)}'; print(f'{len(AVAILABLE_TOOLS)} tools OK')"
+
+    - name: Provider import check
+      run: |
+        python -c "from providers import *; print('All providers imported OK')"
+
+    - name: Docker build check
+      run: docker build -t openkyrozen-test .

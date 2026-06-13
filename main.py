@@ -85,6 +85,7 @@ from providers import (
     ProviderConfig, LLMProvider, get_provider, detect_provider,
     save_provider_config, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS,
     get_fallback_provider, get_cost_summary, reset_cost_tracker,
+    save_provider_config_encrypted, encrypt_api_key, decrypt_api_key,
 )
 
 # aliases for flexible action recognition
@@ -990,7 +991,7 @@ def _prompt_and_init_deepseek() -> None:
             llm_provider = None
             sys.exit(0)
         _provider_config.api_key = key
-        save_provider_config(_provider_config)
+        save_provider_config_encrypted(_provider_config)
 
     # Set provider-specific env var for subprocesses / SDK auto-detection
     env_var = PROVIDER_ENV_VARS.get(_provider_config.provider, "")
@@ -1051,7 +1052,7 @@ def _switch_provider() -> None:
                 if key:
                     _provider_config.api_key = key
 
-            save_provider_config(_provider_config)
+            save_provider_config_encrypted(_provider_config)
 
             # Re-initialize the provider
             env_var = PROVIDER_ENV_VARS.get(new_provider, "")
@@ -2303,6 +2304,37 @@ def _is_tool_error(result: str) -> bool:
     )
 
 
+# ---- Prompt injection protection ----
+
+_PROMPT_INJECTION_PATTERNS = [
+    r"ignore\s+(all\s+)?(previous|above|prior)\s+instructions",
+    r"you\s+are\s+now\s+(a\s+)?\w+\s+(bot|assistant|agent)",
+    r"system\s*:\s*new\s+(prompt|instruction)",
+    r"\[system\]\s*\(override\)",
+    r"<\|im_start\|>",
+    r"<\|system\|>",
+    r"forget\s+everything\s+(you\s+know|above)",
+    r"pretend\s+you\s+are",
+    r"act\s+as\s+if",
+]
+
+def _detect_prompt_injection(text: str) -> str | None:
+    """Return the matched injection pattern if detected, None otherwise."""
+    for pattern in _PROMPT_INJECTION_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            return pattern
+    return None
+
+def _sanitize_input(text: str) -> tuple[str, bool]:
+    """Sanitize user input for prompt injection. Returns (sanitized_text, was_flagged)."""
+    injection = _detect_prompt_injection(text)
+    if injection:
+        # Neutralize the injection by wrapping the suspicious part
+        sanitized = re.sub(injection, "[filtered]", text, flags=re.IGNORECASE)
+        return sanitized, True
+    return text, False
+
+
 def _is_bug_report(text: str) -> bool:
     """Detect if user input is reporting a bug, error, or unexpected behaviour."""
     low = text.strip().lower()
@@ -3314,7 +3346,7 @@ def main() -> None:
             new_key = console.input(f"[bold yellow]Enter new {_provider_config.provider.title()} API key: [/bold yellow]").strip()
             if new_key:
                 _provider_config.api_key = new_key
-                save_provider_config(_provider_config)
+                save_provider_config_encrypted(_provider_config)
                 env_var = PROVIDER_ENV_VARS.get(_provider_config.provider, "")
                 if env_var:
                     os.environ[env_var] = new_key
@@ -3353,6 +3385,11 @@ def main() -> None:
         # Auto‑patching: detect new technology mentions (if enabled)
         if _SELF_LEARNING_FLAGS["auto_patch_new_technology"]:
             _auto_patch_new_technology(user_input)
+
+        # Prompt injection check
+        sanitized, flagged = _sanitize_input(user_input)
+        if flagged:
+            console.print(f"[{_WARNING}]Prompt injection detected and filtered.[/{_WARNING}]")
 
         try:
             reply = _chat_turn(user_input, clear_tasks=True)

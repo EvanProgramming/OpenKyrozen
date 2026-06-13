@@ -544,6 +544,9 @@ def detect_provider() -> ProviderConfig:
             api_key = os.environ.get(env_var, "")
     if not api_key:
         api_key = config_data.get("api_key", "")
+    # Auto-decrypt if config was saved encrypted
+    if api_key and config_data.get("encrypted"):
+        api_key = decrypt_api_key(api_key)
 
     base_url = os.environ.get("KYROZEN_BASE_URL", "")
     if not base_url:
@@ -582,6 +585,62 @@ def save_provider_config(config: ProviderConfig) -> None:
     existing["api_key"] = config.api_key
     existing["model_simple"] = config.model_simple
     existing["model_complex"] = config.model_complex
+    try:
+        with open(config_path, "w") as f:
+            json.dump(existing, f, indent=2)
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# API key encryption at rest (simple XOR with machine-derived key)
+# ---------------------------------------------------------------------------
+
+def _get_encryption_key() -> bytes:
+    """Derive a machine-specific encryption key from hostname + platform."""
+    import hashlib, platform, socket
+    seed = f"{socket.gethostname()}:{platform.node()}:openkyrozen"
+    return hashlib.sha256(seed.encode()).digest()
+
+def encrypt_api_key(plaintext: str) -> str:
+    """Encrypt an API key using XOR with machine key. Returns base64 string."""
+    import base64
+    if not plaintext:
+        return ""
+    key = _get_encryption_key()
+    plain_bytes = plaintext.encode()
+    encrypted = bytes(p ^ key[i % len(key)] for i, p in enumerate(plain_bytes))
+    return base64.b64encode(encrypted).decode()
+
+def decrypt_api_key(ciphertext: str) -> str:
+    """Decrypt an API key. Returns original string or empty on failure."""
+    import base64
+    if not ciphertext:
+        return ""
+    try:
+        key = _get_encryption_key()
+        encrypted = base64.b64decode(ciphertext)
+        decrypted = bytes(e ^ key[i % len(key)] for i, e in enumerate(encrypted))
+        return decrypted.decode()
+    except Exception:
+        return ciphertext  # return as-is if not encrypted (backward compat)
+
+def save_provider_config_encrypted(config: ProviderConfig) -> None:
+    """Save provider settings with encrypted API key."""
+    import json
+    config_path = os.path.expanduser("~/.kyrozen_config.json")
+    existing: dict[str, Any] = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r") as f:
+                existing = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    existing["provider"] = config.provider
+    existing["api_key"] = encrypt_api_key(config.api_key)
+    existing["model_simple"] = config.model_simple
+    existing["model_complex"] = config.model_complex
+    existing["encrypted"] = True
     try:
         with open(config_path, "w") as f:
             json.dump(existing, f, indent=2)
