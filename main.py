@@ -25,6 +25,32 @@ _IS_WINDOWS = _PLATFORM == "win32"
 _IS_MACOS = _PLATFORM == "darwin"
 _IS_LINUX = _PLATFORM.startswith("linux")
 
+# Terminal capability detection (Windows cmd.exe has limited Unicode/ANSI support)
+def _terminal_supports_unicode() -> bool:
+    """Return True if the terminal can render Unicode box-drawing and special chars."""
+    if not _IS_WINDOWS:
+        return True
+    # Windows Terminal, VS Code terminal, and ConEmu all set WT_SESSION
+    if os.environ.get("WT_SESSION") or os.environ.get("TERM_PROGRAM") == "vscode":
+        return True
+    # PowerShell 6+ generally supports UTF-8
+    if "pwsh" in os.environ.get("TERM_PROGRAM", "").lower():
+        return True
+    # Check codepage — 65001 is UTF-8
+    try:
+        import ctypes
+        if ctypes.windll.kernel32.GetConsoleOutputCP() == 65001:
+            return True
+    except Exception:
+        pass
+    return False
+
+_UNICODE_OK = _terminal_supports_unicode()
+
+# Dual character sets: Unicode preferred, ASCII fallback for legacy terminals
+if _UNICODE_OK:    _SPINNER_FRAMES = ["◜", "◠", "◝", "◞", "◡", "◟"]; _BAR_FILL = "█"; _BAR_EMPTY = "░"; _CHECK = "✓"; _CIRCLE = "○"; _HALF = "◷"; _BOX_TL = "┌"; _BOX_H = "─"; _BOX_BL = "└"; _BOX_V = "│"; _DOT = "·"; _NBHYPHEN = "‑"
+else:               _SPINNER_FRAMES = ["/", "-", "\\", "|"];             _BAR_FILL = "#"; _BAR_EMPTY = "."; _CHECK = "+"; _CIRCLE = "o"; _HALF = ">"; _BOX_TL = "+"; _BOX_H = "-"; _BOX_BL = "+"; _BOX_V = "|"; _DOT = "."; _NBHYPHEN = "-"
+
 # Delete stale __pycache__ before any imports to avoid loading deprecated bytecode
 for p in pathlib.Path(__file__).parent.rglob("__pycache__"):
     shutil.rmtree(p, ignore_errors=True)
@@ -162,18 +188,18 @@ def _tasks_panel_content() -> str:
     done = sum(1 for t in tasks.tasks if t["status"] == "done")
     bar_w = 20
     filled = int(bar_w * done / max(total, 1))
-    bar = "█" * filled + "░" * (bar_w - filled)
-    lines = [f"[bold white on {_ACCENT_BG}] ┌─ TASKS [{bar}] {done}/{total} [/]"]
+    bar = _BAR_FILL * filled + _BAR_EMPTY * (bar_w - filled)
+    lines = [f"[bold white on {_ACCENT_BG}] {_BOX_TL}{_BOX_H}{_BOX_H} TASKS [{bar}] {done}/{total} [/]"]
     for i, t in enumerate(tasks.tasks):
-        icon = "✓" if t["status"] == "done" else "○" if t["status"] == "pending" else "◷"
+        icon = _CHECK if t["status"] == "done" else _CIRCLE if t["status"] == "pending" else _HALF
         color = _SUCCESS if t["status"] == "done" else _WARNING if t["status"] == "pending" else _ACCENT
         desc = t["description"][:55]
-        lines.append(f"[white on {_ACCENT_BG}] │ [{color}]{icon}[/{color}] [{_MUTED}]{i}[/{_MUTED}] {desc} [/]")
+        lines.append(f"[white on {_ACCENT_BG}] {_BOX_V} [{color}]{icon}[/{color}] [{_MUTED}]{i}[/{_MUTED}] {desc} [/]")
     pending = total - done
     if pending > 0:
-        lines.append(f"[bold white on {_ACCENT_BG}] └─ {pending} remaining — DO NOT STOP [/]")
+        lines.append(f"[bold white on {_ACCENT_BG}] {_BOX_BL}{_BOX_H}{_BOX_H} {pending} remaining — DO NOT STOP [/]")
     else:
-        lines.append(f"[bold white on {_ACCENT_BG}] └─ All tasks complete ✓ [/]")
+        lines.append(f"[bold white on {_ACCENT_BG}] {_BOX_BL}{_BOX_H}{_BOX_H} All tasks complete {_CHECK} [/]")
     return "\n".join(lines)
 
 
@@ -885,14 +911,7 @@ def _fetch_library_info(lib_name: str) -> None:
 _SPINNER_STOP = threading.Event()
 _SPINNER_THREAD: threading.Thread | None = None
 
-_SPINNER_FRAMES = [
-    "◜",
-    "◠",
-    "◝",
-    "◞",
-    "◡",
-    "◟",
-]
+# _SPINNER_FRAMES defined at module level (dual-set Unicode/ASCII)
 
 def _spinner_worker(stop_event: threading.Event) -> None:
     while not stop_event.is_set():
@@ -3072,7 +3091,7 @@ def _print_banner() -> None:
     safe = [ln.replace("\\", "\\\\") for ln in _ascii]
     for ln in safe:
         console.print(f"  [{_ACCENT}]{ln}[/{_ACCENT}]")
-    console.print(f"  [{_MUTED}]OPEN  \u00b7  self\u2011learning AI agent  \u00b7  DeepSeek V4[/{_MUTED}]")
+    console.print(f"  [{_MUTED}]OPEN  {_DOT}  self{_NBHYPHEN}learning AI agent  {_DOT}  DeepSeek V4[/{_MUTED}]")
     # Platform tag
     if _IS_WINDOWS:
         platform_tag = "Windows"
@@ -3082,7 +3101,7 @@ def _print_banner() -> None:
         platform_tag = "Linux"
     else:
         platform_tag = _PLATFORM
-    console.print(f"  [{_MUTED}]Platform: {platform_tag} \u00b7 Python {sys.version_info.major}.{sys.version_info.minor}[/{_MUTED}]")
+    console.print(f"  [{_MUTED}]Platform: {platform_tag} {_DOT} Python {sys.version_info.major}.{sys.version_info.minor}[/{_MUTED}]")
 
 
 def main() -> None:
@@ -3105,15 +3124,18 @@ def main() -> None:
 
     # ASCII-art banner, 41 chars wide — fits 60-col terminals
     _print_banner()
-    console.print(f"[{_ACCENT}]Kyrozen[/{_ACCENT}] [{_MUTED}]DeepSeek + Tools · Model: {MODEL_NAME}[/{_MUTED}]")
-    console.print(f"[{_MUTED}]Commands:[/{_MUTED}] [{_ACCENT_DIM}]/quit  /exit  /update  /learn  /api_key  /self-learning[/{_ACCENT_DIM}]\n")
-    # Show which self-learning features are enabled
-    enabled = [name for name, val in _SELF_LEARNING_FLAGS.items() if val]
-    if enabled:
-        console.print(f"[{_MUTED}]Self-learning features enabled: {rich_escape(', '.join(enabled))}.[/{_MUTED}]")
-    else:
-        console.print(f"[{_MUTED}]All self-learning features are disabled (use /self-learning to enable).[/{_MUTED}]")
-    console.print(f"[{_MUTED}]Memory: `chroma_memory/` (ChromaDB). Ask the agent what it remembers.[/{_MUTED}]")
+    provider_name = _provider_config.provider.title() if _provider_config else "DeepSeek"
+    model_name = DEEPSEEK_MODEL_SIMPLE
+    console.print(f"[{_ACCENT}]Kyrozen[/{_ACCENT}] [{_MUTED}]{_DOT} Provider: {provider_name} {_DOT} Model: {model_name}[/{_MUTED}]")
+    console.print(f"[{_MUTED}]Chat:[/{_MUTED}] [{_ACCENT_DIM}] /quit /exit /provider /api_key /learn /update /self-learning[/{_ACCENT_DIM}]")
+
+    # Compact self-learning summary
+    enabled_count = sum(1 for v in _SELF_LEARNING_FLAGS.values() if v)
+    total_count = len(_SELF_LEARNING_FLAGS)
+    console.print(f"[{_MUTED}]Self-learning:[/{_MUTED}] [{_ACCENT_DIM}]{enabled_count}/{total_count} features active (toggle with /self-learning)[/{_ACCENT_DIM}]")
+    console.print(f"[{_MUTED}]Memory:[/{_MUTED}] [{_ACCENT_DIM}]ChromaDB (`chroma_memory/`) — ask me what I remember[/{_ACCENT_DIM}]")
+    # Horizontal rule
+    console.print(f"[{_ACCENT_DIM}]{_BOX_H * 50}[/{_ACCENT_DIM}]")
 
     _prompt_and_init_deepseek()
     if llm_provider is None:
@@ -3128,9 +3150,7 @@ def main() -> None:
 
     while True:
         try:
-            sys.stdout.write(f"\033[38;2;0;240;255m\033[1mYou:\033[0m ")
-            sys.stdout.flush()
-            user_input = input().strip()
+            user_input = console.input(f"[bold {_ACCENT}]You:[/bold {_ACCENT}] ").strip()
         except (EOFError, KeyboardInterrupt):
             console.print(f"\n[{_ERROR}]Goodbye.[/{_ERROR}]")
             sys.exit(0)
