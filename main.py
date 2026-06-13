@@ -41,7 +41,6 @@ from rich import print as rprint
 
 from prompt_toolkit import PromptSession, HTML
 from prompt_toolkit.history import FileHistory
-from prompt_toolkit.styles import Style as PTStyle
 
 from memory import MemoryBank
 from tools import AVAILABLE_TOOLS
@@ -2466,15 +2465,15 @@ def _get_prompt_session() -> PromptSession:
     """Lazy-init a persistent PromptSession with mouse support and command history."""
     global _prompt_session
     if _prompt_session is None:
-        _prompt_session = PromptSession(
-            history=FileHistory(_INPUT_HISTORY_FILE),
-            mouse_support=True,
-            enable_history_search=True,
-            style=PTStyle.from_dict({
-                "prompt": "bold cyan",
-                "": "",  # default
-            }),
-        )
+        try:
+            _prompt_session = PromptSession(
+                history=FileHistory(_INPUT_HISTORY_FILE),
+                mouse_support=False,
+                enable_history_search=False,
+            )
+        except Exception:
+            # Fallback: bare session without history if disk is unwritable
+            _prompt_session = PromptSession(mouse_support=False)
     return _prompt_session
 
 
@@ -2497,30 +2496,32 @@ def _prompt_input(rich_message: str, *, html_message: str | None = None) -> str:
 
 def _print_3d_banner() -> None:
     """Print a 3D layered ASCII-art banner with shadow effect.
-    Layer 1 (bottom): grey shadow, offset 2 columns right.
-    Layer 2 (top):   cyan foreground.
-    Uses ANSI cursor control (\033[N}A) to overlay the two layers."""
-    _ascii_lines = [
+    Layer 1 (bottom): grey (#9c9c9c) shadow, offset 2 columns right.
+    Layer 2 (top):    cyan (#00f0ff) foreground, overlaid via ANSI cursor-up.
+    Keeps each layer as a single Rich span per line — no escaping issues."""
+    _ascii = [
         " _  ____   ______   ___ __________ _   _ ",
         "| |/ /\\ \\ / /  _ \\ / _ \\__  / ____| \\ | |",
         "| ' /  \\ V /| |_) | | | |/ /|  _| |  \\| |",
         "| . \\   | | |  _ <| |_| / /_| |___| |\\  |",
         "|_|\\_\\  |_| |_| \\_\\\\___/____|_____|_| \\_|",
     ]
-    # Rich-escape backslashes so they render literally
-    safe = [ln.replace("\\", "\\\\") for ln in _ascii_lines]
+    # Rich-safe: double every backslash
+    safe = [ln.replace("\\", "\\\\") for ln in _ascii]
     n = len(safe)
 
-    # Layer 1: grey shadow (offset 2 spaces right)
+    # Layer 1: grey shadow (offset 2 columns right)
     for ln in safe:
         console.print(f"  [{_SHADOW}]{ln}[/{_SHADOW}]")
-    # ANSI cursor-up to overlay
-    sys.stdout.write(f"\033[{n}A")
-    sys.stdout.flush()
-    # Layer 2: cyan foreground
+    # ANSI cursor-up — use console's file handle to stay in sync with Rich
+    console.file.write(f"\033[{n}A")
+    console.file.flush()
+    # Brief pause: let terminal process the escape before Rich writes again
+    time.sleep(0.02)
+    # Layer 2: cyan foreground (overwrites shadow on same lines)
     for ln in safe:
         console.print(f"[{_ACCENT}]{ln}[/{_ACCENT}]")
-    # Tagline (n+1 lines down from start)
+    # Tagline
     console.print(f"  [{_MUTED}]OPEN  ·  self‑learning AI agent  ·  DeepSeek V4[/{_MUTED}]")
 
 
