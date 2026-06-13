@@ -3,6 +3,11 @@
 # Use a known-stable Python version (3.14 has import deadlocks with openai)
 PYTHON := python3.12
 
+# Detect Windows (native cmd) and redirect to .bat files
+ifeq ($(OS),Windows_NT)
+$(error This Makefile is for macOS/Linux/WSL. On native Windows, use: setup.bat, run.bat)
+endif
+
 install:
 	@echo "Creating virtual environment with $(PYTHON)..."
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: $(PYTHON) not found. Install Python 3.12 first."; exit 1; }

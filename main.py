@@ -19,6 +19,12 @@ if sys.version_info >= (3, 14):
         "Rebuild the venv with:  make reinstall PYTHON=python3.12"
     )
 
+# Platform detection for cross-platform startup info
+_PLATFORM = sys.platform
+_IS_WINDOWS = _PLATFORM == "win32"
+_IS_MACOS = _PLATFORM == "darwin"
+_IS_LINUX = _PLATFORM.startswith("linux")
+
 # Delete stale __pycache__ before any imports to avoid loading deprecated bytecode
 for p in pathlib.Path(__file__).parent.rglob("__pycache__"):
     shutil.rmtree(p, ignore_errors=True)
@@ -2602,6 +2608,16 @@ def _print_banner() -> None:
     for ln in safe:
         console.print(f"  [{_ACCENT}]{ln}[/{_ACCENT}]")
     console.print(f"  [{_MUTED}]OPEN  \u00b7  self\u2011learning AI agent  \u00b7  DeepSeek V4[/{_MUTED}]")
+    # Platform tag
+    if _IS_WINDOWS:
+        platform_tag = "Windows"
+    elif _IS_MACOS:
+        platform_tag = "macOS"
+    elif _IS_LINUX:
+        platform_tag = "Linux"
+    else:
+        platform_tag = _PLATFORM
+    console.print(f"  [{_MUTED}]Platform: {platform_tag} \u00b7 Python {sys.version_info.major}.{sys.version_info.minor}[/{_MUTED}]")
 
 
 def main() -> None:

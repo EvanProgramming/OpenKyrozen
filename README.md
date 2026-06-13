@@ -12,28 +12,43 @@
 ## 🚀 Quick start
 
 ### Prerequisites
-- Python **3.10** or newer
+- Python **3.12** or **3.13** (Python 3.14 has a known import issue)
 - A **DeepSeek API key** – get one free at [platform.deepseek.com](https://platform.deepseek.com)
 
-### 📦 Install with Make (recommended)
+### 🍎 macOS / 🐧 Linux
+
+**Install with Make (recommended):**
 ```bash
 git clone https://github.com/EvanProgramming/OpenKyrozen.git
 cd OpenKyrozen
 make install
-```
-
-### ▶️ Run
-```bash
 make run
 ```
 
-The first time you launch, you will be prompted to enter your DeepSeek API key.  
-The key is automatically saved to `~/.kyrozen_config.json` and reused on future runs.
-
-### 🛠 Manual install (without Make)
+**Manual install:**
 ```bash
 python3 -m venv venv
 source venv/bin/activate
+pip install -r requirements.txt
+python main.py
+```
+
+### 🪟 Windows
+
+**One‑click setup:**
+```cmd
+setup.bat
+```
+
+**Run the agent:**
+```cmd
+run.bat
+```
+
+**Alternatively (manual):**
+```cmd
+python -m venv venv
+venv\Scripts\activate
 pip install -r requirements.txt
 python main.py
 ```
