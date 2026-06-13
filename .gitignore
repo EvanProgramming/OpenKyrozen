@@ -19,6 +19,7 @@ Thumbs.db
 
 # Config files (should stay private)
 *.config.json
+.kyrozen_*
 
 # Debug and test files
 main_debug.py
