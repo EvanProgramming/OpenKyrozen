@@ -6,7 +6,7 @@
 </p>
 
 <h1 align="center">✨ OpenKyrozen ✨</h1>
-<p align="center"><strong>Self‑learning AI Agent powered by DeepSeek API</strong></p>
+<p align="center"><strong>Self‑learning AI Agent — DeepSeek · OpenAI · Claude · Gemini · Ollama</strong></p>
 
 ---
 
@@ -14,7 +14,12 @@
 
 ### Prerequisites
 - Python **3.12** or **3.13** (Python 3.14 has a known import issue)
-- A **DeepSeek API key** – get one free at [platform.deepseek.com](https://platform.deepseek.com)
+- An API key from one of the supported providers:
+  - **DeepSeek** — free at [platform.deepseek.com](https://platform.deepseek.com)
+  - **OpenAI** — [platform.openai.com](https://platform.openai.com)
+  - **Anthropic (Claude)** — [console.anthropic.com](https://console.anthropic.com)
+  - **Google (Gemini)** — [aistudio.google.com](https://aistudio.google.com)
+  - **Ollama** — no key needed (runs locally)
 
 ### 🍎 macOS / 🐧 Linux
 
@@ -48,7 +53,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-On first launch you will be prompted for your DeepSeek API key — it is saved to your home directory and reused automatically.
+On first launch you will be prompted for an API key — it auto‑detects your provider and saves the key to `~/.kyrozen_config.json`.
 
 ---
 
@@ -59,8 +64,8 @@ OpenKyrozen runs as an interactive chat loop. Each user turn goes through a pipe
 ```
 User input → Task Classifier → Model Selector → LLM → Tool Executor → Response
                   │                  │           │         │
-            simple/medium/     deepseek-chat     │    run_cmd, read_file,
-              complex          deepseek-reasoner │    write_file, git_*, ...
+            simple/medium/     LLM Provider      │    run_cmd, read_file,
+              complex          (see table)       │    write_file, git_*, ...
                                                 │
                                         Tool results fed back to LLM
                                         (up to 50 tool-call rounds per turn)
@@ -76,12 +81,24 @@ User input → Task Classifier → Model Selector → LLM → Tool Executor → 
 
 ### Model auto‑selection
 
-Kyrozen picks the best model per request:
+Kyrozen picks the best model per request, using different models for simple vs complex tasks.
+The exact models depend on your provider:
 
-- **`deepseek-chat`** (V4) for simple and medium tasks — fast, low latency
-- **`deepseek-reasoner`** for complex tasks — deep reasoning for code, debugging, architecture
+| Provider  | Simple tasks | Complex tasks |
+|-----------|-------------|---------------|
+| DeepSeek  | `deepseek-chat` | `deepseek-reasoner` |
+| OpenAI    | `gpt-4o` | `gpt-4o` |
+| Anthropic | `claude-sonnet-4-20250514` | `claude-sonnet-4-20250514` |
+| Google    | `gemini-2.5-flash` | `gemini-2.5-pro` |
+| Ollama    | `llama3.2` | `llama3.2` |
 
-Override via environment variables: `DEEPSEEK_MODEL_SIMPLE`, `DEEPSEEK_MODEL_COMPLEX`.
+Override via environment variables: `KYROZEN_MODEL_SIMPLE`, `KYROZEN_MODEL_COMPLEX`.
+
+### Switching providers
+
+Set `KYROZEN_PROVIDER` to one of: `deepseek`, `openai`, `anthropic`, `google`, `ollama`.
+
+Or use the in‑chat command `/provider` to switch interactively. The first launch prompts for an API key — it detects which provider to use from your environment or `~/.kyrozen_config.json`.
 
 ---
 
@@ -180,7 +197,8 @@ For multi‑step work (codebase analysis, large refactors, project generators):
 |---------|-------------|
 | `/quit` `/exit` | Exit the agent |
 | `/learn` | Immediately scan project files into memory |
-| `/api_key` | Change your DeepSeek API key |
+| `/api_key` | Change your API key for the current provider |
+| `/provider` | Switch to a different LLM provider (interactive menu) |
 | `/update` | Refresh the agent from git |
 | `/self-learning` | Interactive menu to toggle individual learning features |
 

@@ -55,6 +55,10 @@ from rich import print as rprint
 
 from memory import MemoryBank
 from tools import AVAILABLE_TOOLS
+from providers import (
+    ProviderConfig, LLMProvider, get_provider, detect_provider,
+    save_provider_config, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS,
+)
 
 # aliases for flexible action recognition
 TOOL_ALIASES: dict[str, str] = {
@@ -198,16 +202,22 @@ _WARNING = "#ffaa00"          # warning amber
 _ERROR = "#ff4466"            # error red
 _MUTED = "#445566"            # subtle grey
 
-# ---- Constants (optimized for DeepSeek V4) ----
-MODEL_NAME = "deepseek-chat (V4 auto-select)"
-DEEPSEEK_MODEL_SIMPLE = os.environ.get("DEEPSEEK_MODEL_SIMPLE", "deepseek-chat")      # fast, general-purpose (V4-level)
-DEEPSEEK_MODEL_COMPLEX = os.environ.get("DEEPSEEK_MODEL_COMPLEX", "deepseek-reasoner")  # deep reasoning for complex tasks
+# ---- Constants ----
 SHORT_TERM_CAP = 16
 MAX_TOOL_RETRIES = 3
 MAX_STEPS_PER_TURN = 50          # how many tool-call rounds the LLM may perform in one user turn
 MAX_UNKNOWN_TOOL_RETRIES = 3     # how many times to re-prompt when LLM uses an unrecognised action name
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
 IDLE_CONSOLIDATION_TIMEOUT = 60   # 1 minute
+
+# ---- Provider (multi-LLM support) ----
+_provider_config: ProviderConfig | None = None
+llm_provider: LLMProvider | None = None
+
+# Backward-compatible aliases (used throughout the codebase)
+DEEPSEEK_MODEL_SIMPLE = "deepseek-chat"   # set at init time from provider
+DEEPSEEK_MODEL_COMPLEX = "deepseek-reasoner"
+MODEL_NAME = "deepseek-chat (V4 auto-select)"  # updated at init
 # -------- Self-learning feature flags (toggled via /self-learning) --------
 _SELF_LEARNING_FLAGS: dict[str, bool] = {
     "auto_learn_conversations": True,
@@ -934,33 +944,102 @@ def _save_config_key(key: str) -> None:
 
 
 def _prompt_and_init_deepseek() -> None:
-    global deepseek_client, DEEPSEEK_MODEL
-    key = _load_config_key()
-    if not key:
-        key = os.environ.get("DEEPSEEK_API_KEY", "")
-    if not key:
-        console.print("\nDeepSeek API key not set.")
+    """Detect provider, prompt for API key if needed, initialise the LLM client."""
+    global _provider_config, llm_provider, DEEPSEEK_MODEL, DEEPSEEK_MODEL_SIMPLE, DEEPSEEK_MODEL_COMPLEX, MODEL_NAME
+
+    _provider_config = detect_provider()
+
+    # If no API key is stored, prompt the user
+    if not _provider_config.api_key:
+        console.print(f"\n{_provider_config.provider.title()} API key not set.")
+        env_var = PROVIDER_ENV_VARS.get(_provider_config.provider, "")
+        hint = f" (set {env_var})" if env_var else ""
         try:
-            key = console.input("[bold yellow]Enter your DeepSeek API key: [/bold yellow]").strip()
+            key = console.input(
+                f"[bold yellow]Enter your {_provider_config.provider.title()} API key{hint}: [/bold yellow]"
+            ).strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\nCancelled.")
-            deepseek_client = None
-            DEEPSEEK_MODEL = DEEPSEEK_MODEL_SIMPLE
+            llm_provider = None
             sys.exit(0)
         if not key:
             console.print("No API key entered – use /quit to exit.")
-            deepseek_client = None
-            DEEPSEEK_MODEL = DEEPSEEK_MODEL_SIMPLE
+            llm_provider = None
             sys.exit(0)
-        _save_config_key(key)
-    os.environ["DEEPSEEK_API_KEY"] = key
-    base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-    DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", DEEPSEEK_MODEL_SIMPLE)
-    deepseek_client = OpenAI(api_key=key, base_url=base_url)
+        _provider_config.api_key = key
+        save_provider_config(_provider_config)
+
+    # Set provider-specific env var for subprocesses / SDK auto-detection
+    env_var = PROVIDER_ENV_VARS.get(_provider_config.provider, "")
+    if env_var:
+        os.environ[env_var] = _provider_config.api_key
+
+    # Set the model names from provider config
+    DEEPSEEK_MODEL_SIMPLE = _provider_config.model_simple
+    DEEPSEEK_MODEL_COMPLEX = _provider_config.model_complex
+    DEEPSEEK_MODEL = DEEPSEEK_MODEL_SIMPLE
+    MODEL_NAME = f"{_provider_config.provider} ({DEEPSEEK_MODEL_SIMPLE})"
+
+    # Create the provider instance
+    llm_provider = get_provider(_provider_config)
 
 
 DEEPSEEK_MODEL: str = DEEPSEEK_MODEL_SIMPLE
-deepseek_client = None
+
+
+def _switch_provider() -> None:
+    """Interactive menu to switch LLM provider at runtime."""
+    global _provider_config, llm_provider, DEEPSEEK_MODEL, DEEPSEEK_MODEL_SIMPLE, DEEPSEEK_MODEL_COMPLEX, MODEL_NAME
+
+    providers_list = list(PROVIDER_DEFAULT_MODELS.keys())
+    console.print(f"\n[bold {_ACCENT}]═══ Switch LLM Provider ═══[/bold {_ACCENT}]")
+    for i, p in enumerate(providers_list):
+        marker = " ●" if _provider_config.provider == p else "  "
+        console.print(f"  [{_MUTED}]{i+1}.[/{_MUTED}]{marker} {p.title()}")
+    console.print()
+
+    choice = console.input("[bold cyan]Choose provider (number) or 'cancel': [/bold cyan]").strip().lower()
+    if choice == "cancel":
+        return
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(providers_list):
+            new_provider = providers_list[idx]
+            if new_provider == _provider_config.provider:
+                console.print(f"[{_WARNING}]Already using {new_provider.title()}.[/{_WARNING}]")
+                return
+            _provider_config.provider = new_provider
+            _provider_config.model_simple = PROVIDER_DEFAULT_MODELS[new_provider][0]
+            _provider_config.model_complex = PROVIDER_DEFAULT_MODELS[new_provider][1]
+
+            # Prompt for API key if needed
+            env_var = PROVIDER_ENV_VARS.get(new_provider, "")
+            if env_var:
+                key = console.input(
+                    f"[bold yellow]Enter {new_provider.title()} API key "
+                    f"(or press Enter to use {env_var}): [/bold yellow]"
+                ).strip()
+                if key:
+                    _provider_config.api_key = key
+
+            save_provider_config(_provider_config)
+
+            # Re-initialize the provider
+            env_var = PROVIDER_ENV_VARS.get(new_provider, "")
+            if env_var and _provider_config.api_key:
+                os.environ[env_var] = _provider_config.api_key
+
+            DEEPSEEK_MODEL_SIMPLE = _provider_config.model_simple
+            DEEPSEEK_MODEL_COMPLEX = _provider_config.model_complex
+            DEEPSEEK_MODEL = DEEPSEEK_MODEL_SIMPLE
+            MODEL_NAME = f"{new_provider} ({DEEPSEEK_MODEL_SIMPLE})"
+            llm_provider = get_provider(_provider_config)
+
+            console.print(f"[{_SUCCESS}]Switched to {new_provider.title()} ({DEEPSEEK_MODEL_SIMPLE}).[/{_SUCCESS}]")
+        else:
+            console.print(f"[{_ERROR}]Invalid number.[/{_ERROR}]")
+    except ValueError:
+        console.print(f"[{_ERROR}]Please enter a number or 'cancel'.[/{_ERROR}]")
 
 
 def _load_project_files_into_memory() -> None:
@@ -1605,27 +1684,21 @@ def _select_model(user_input: str) -> str:
 
 def _get_llm_response(messages: list[dict[str, str]], model: str | None = None) -> str:
     global _last_prompt_tokens, _last_completion_tokens, _total_prompt_tokens, _total_completion_tokens
-    if deepseek_client is None:
-        return "[DeepSeek Error] DEEPSEEK_API_KEY environment variable not set"
+    if llm_provider is None:
+        return "[Error] LLM provider not initialised — no API key configured"
     try:
-        response = deepseek_client.chat.completions.create(
-            model=model or DEEPSEEK_MODEL,
-            messages=messages,
-        )
-        text = response.choices[0].message.content or ""
-        # Track token usage if available
-        usage = getattr(response, "usage", None)
-        if usage is not None:
-            _last_prompt_tokens = usage.prompt_tokens or 0
-            _last_completion_tokens = usage.completion_tokens or 0
+        text, usage_dict = llm_provider.chat(messages, model or DEEPSEEK_MODEL)
+        if usage_dict:
+            _last_prompt_tokens = usage_dict.get("prompt_tokens", 0)
+            _last_completion_tokens = usage_dict.get("completion_tokens", 0)
             _total_prompt_tokens += _last_prompt_tokens
             _total_completion_tokens += _last_completion_tokens
         else:
             _last_prompt_tokens = 0
             _last_completion_tokens = 0
-        return text.strip()
+        return text
     except Exception as e:
-        return f"[DeepSeek Error] {e}"
+        return f"[LLM Error] {e}"
 
 
 def _requires_tool_action(text: str) -> bool:
@@ -2622,7 +2695,7 @@ def _print_banner() -> None:
 
 def main() -> None:
     # Bytecode cache cleared already at module level (see top of file)
-    global deepseek_client, DEEPSEEK_MODEL
+    global _provider_config, llm_provider, DEEPSEEK_MODEL, DEEPSEEK_MODEL_SIMPLE, DEEPSEEK_MODEL_COMPLEX, MODEL_NAME
 
     if "--init" in sys.argv:
         console.print(f"[{_ACCENT}]OpenKyrozen initialisation[/{_ACCENT}]")
@@ -2633,8 +2706,8 @@ def main() -> None:
             sys.exit(1)
         _prompt_and_init_deepseek()
         _load_project_files_into_memory()
-        if deepseek_client is not None:
-            console.print(f"[{_SUCCESS}]API key configured and saved to ~/.kyrozen_config.json[/{_SUCCESS}]")
+        if llm_provider is not None:
+            console.print(f"[{_SUCCESS}]{_provider_config.provider.title()} API key configured and saved to ~/.kyrozen_config.json[/{_SUCCESS}]")
         console.print(f"[{_SUCCESS}]Initialisation finished. Run `python main.py` to start the agent.[/{_SUCCESS}]")
         sys.exit(0)
 
@@ -2651,7 +2724,7 @@ def main() -> None:
     console.print(f"[{_MUTED}]Memory: `chroma_memory/` (ChromaDB). Ask the agent what it remembers.[/{_MUTED}]")
 
     _prompt_and_init_deepseek()
-    if deepseek_client is None:
+    if llm_provider is None:
         console.print(f"[{_ERROR}]Cannot start without an API key.[/{_ERROR}]")
         sys.exit(1)
     # Load project files synchronously to avoid ChromaDB thread conflicts
@@ -2689,16 +2762,20 @@ def main() -> None:
             console.print(f"[{_SUCCESS}]Project files re‑learned and stored in memory.[/{_SUCCESS}]")
             continue
         if user_input.lower() == "/api_key":
-            new_key = console.input("[bold yellow]Enter new DeepSeek API key: [/bold yellow]").strip()
+            new_key = console.input(f"[bold yellow]Enter new {_provider_config.provider.title()} API key: [/bold yellow]").strip()
             if new_key:
-                _save_config_key(new_key)
-                os.environ["DEEPSEEK_API_KEY"] = new_key
-                base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-                DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", DEEPSEEK_MODEL_SIMPLE)
-                deepseek_client = OpenAI(api_key=new_key, base_url=base_url)
+                _provider_config.api_key = new_key
+                save_provider_config(_provider_config)
+                env_var = PROVIDER_ENV_VARS.get(_provider_config.provider, "")
+                if env_var:
+                    os.environ[env_var] = new_key
+                llm_provider = get_provider(_provider_config)
                 console.print(f"[{_SUCCESS}]API key updated and saved for future sessions.[/{_SUCCESS}]")
             else:
                 console.print(f"[{_ERROR}]No key provided – key unchanged.[/{_ERROR}]")
+            continue
+        if user_input.lower() == "/provider":
+            _switch_provider()
             continue
         if user_input.lower() == "/update":
             console.print(f"[{_ACCENT}]Updating OpenKyrozen from git...[/{_ACCENT}]")

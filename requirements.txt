@@ -1,5 +1,14 @@
+# Core dependencies (always required)
 chromadb>=0.4.0
 googlesearch-python>=1.2.3
 openai>=1.0.0
 requests>=2.31.0
 rich>=13.0.0
+
+# Optional: Anthropic Claude
+# pip install anthropic
+# anthropic>=0.30.0
+
+# Optional: Google Gemini
+# pip install google-generativeai
+# google-generativeai>=0.8.0

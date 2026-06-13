@@ -1,0 +1,46 @@
+# OpenKyrozen — Example Agent Configuration
+# This file demonstrates the agent.yaml config format used for defining
+# custom agent roles with specific toolsets and system prompts.
+
+# ---------------------------------------------------------------------------
+# Provider configuration (preferred method: environment variables)
+# ---------------------------------------------------------------------------
+# Set KYROZEN_PROVIDER to one of: deepseek, openai, anthropic, google, ollama
+# Set the corresponding API key env var:
+#   DeepSeek:  DEEPSEEK_API_KEY
+#   OpenAI:    OPENAI_API_KEY
+#   Anthropic: ANTHROPIC_API_KEY
+#   Google:    GEMINI_API_KEY
+#   Ollama:    (no key needed, runs locally)
+#
+# Or store in ~/.kyrozen_config.json:
+# {
+#   "provider": "deepseek",
+#   "api_key": "sk-your-key-here",
+#   "model_simple": "deepseek-chat",
+#   "model_complex": "deepseek-reasoner"
+# }
+
+# ---------------------------------------------------------------------------
+# Role definition (example: code reviewer)
+# ---------------------------------------------------------------------------
+[System]
+provider: deepseek
+model: deepseek-chat             # override for this role (optional)
+max_tokens: 4096
+
+[MainPrompt]
+role: You are an expert code reviewer. Analyse the provided code for bugs,
+      security issues, performance problems, and style violations.
+
+Context:
+- Provide specific, actionable feedback with line references.
+- Suggest fixes, not just problems.
+- Prioritise: security > correctness > performance > style.
+
+Chain-of-Thought:
+1. Read the code file(s) provided.
+2. Scan for common vulnerability patterns (injection, unsafe deserialization, etc.)
+3. Check for logic errors and edge cases.
+4. Review performance (unnecessary allocations, O(n²) patterns, etc.)
+5. Summarise findings with severity levels.
