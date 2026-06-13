@@ -39,6 +39,10 @@ from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich import print as rprint
 
+from prompt_toolkit import PromptSession, HTML
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.styles import Style as PTStyle
+
 from memory import MemoryBank
 from tools import AVAILABLE_TOOLS
 
@@ -170,6 +174,8 @@ MAX_STEPS_PER_TURN = 50          # how many tool-call rounds the LLM may perform
 MAX_UNKNOWN_TOOL_RETRIES = 3     # how many times to re-prompt when LLM uses an unrecognised action name
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
 IDLE_CONSOLIDATION_TIMEOUT = 60   # 1 minute
+# prompt_toolkit history file (persistent input history across sessions)
+_INPUT_HISTORY_FILE = os.path.expanduser("~/.kyrozen_input_history")
 
 # -------- Self-learning feature flags (toggled via /self-learning) --------
 _SELF_LEARNING_FLAGS: dict[str, bool] = {
@@ -753,26 +759,48 @@ def _auto_patch_new_technology(user_input: str) -> None:
     """If user mentions an unknown library, fetch its docs in background."""
     detected: set[str] = set()
 
-    words = user_input.split()
+    def _extract_words(text: str) -> list[str]:
+        """Split text into words, handling CJK by treating each CJK char as a word boundary."""
+        result: list[str] = []
+        buf: list[str] = []
+        for ch in text:
+            cp = ord(ch)
+            if (0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF or
+                0x20000 <= cp <= 0x2A6DF or 0x3040 <= cp <= 0x30FF or
+                0xAC00 <= cp <= 0xD7AF):
+                if buf:
+                    result.extend(''.join(buf).split())
+                    buf = []
+            elif ch.isspace() or ch in '"\'`,.;:!?()[]{}':
+                if buf:
+                    result.extend(''.join(buf).split())
+                    buf = []
+            else:
+                buf.append(ch)
+        if buf:
+            result.extend(''.join(buf).split())
+        return result or text.split()
+
+    words = _extract_words(user_input)
     for w in words:
         # Pattern 1: suffix based detection (lib, py, framework, package)
         if w.endswith(("lib","py","framework","package")) and w not in _known_libraries:
             detected.add(w)
 
     # Pattern 2: detect "use <Library>" or "using <Library>" phrases
-    for match in re.finditer(r"(?:use|using)\s+([A-Za-z_]\w*)", user_input, re.IGNORECASE):
+    for match in re.finditer(r"(?:use|using)\s+([A-Za-z_]\w*)", user_input, re.IGNORECASE | re.UNICODE):
         lib = match.group(1)
         if lib.lower() not in ("a","an","the","this","that","it","my","our","your"):
             detected.add(lib)
 
     # Pattern 3: import statements in code or conversation
-    for match in re.finditer(r"(?:import|from)\s+([A-Za-z_]\w*)", user_input):
+    for match in re.finditer(r"(?:import|from)\s+([A-Za-z_]\w*)", user_input, re.UNICODE):
         lib = match.group(1)
         if lib.lower() not in ("a","an","the","os","sys","re","json","time","math"):
             detected.add(lib)
 
     # Pattern 4: "pip install <lib>" or "install <lib>"
-    for match in re.finditer(r"(?:pip\s+install|install)\s+([A-Za-z_][\w.-]*)", user_input, re.IGNORECASE):
+    for match in re.finditer(r"(?:pip\s+install|install)\s+([A-Za-z_][\w.-]*)", user_input, re.IGNORECASE | re.UNICODE):
         lib = match.group(1)
         detected.add(lib)
 
@@ -879,9 +907,12 @@ def _prompt_and_init_deepseek() -> None:
     if not key:
         key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not key:
-        print("\nDeepSeek API key not set. Enter your API key: ", end="", flush=True)
+        console.print("\nDeepSeek API key not set.")
         try:
-            key = input().strip()
+            key = _prompt_input(
+                "Enter API key: ",
+                html_message="<b><ansiyellow>Enter your DeepSeek API key:</ansiyellow></b> "
+            )
         except (EOFError, KeyboardInterrupt):
             console.print("\nCancelled.")
             deepseek_client = None
@@ -1088,6 +1119,51 @@ def _check_stored_data(args: str) -> str:
         return f"Error reading memory: {e}"
 
 
+# ---- CJK (Chinese/Japanese/Korean) compatibility helpers ----
+
+def _has_cjk(text: str) -> bool:
+    """Return True if text contains any CJK character."""
+    for ch in text:
+        cp = ord(ch)
+        if (0x4E00 <= cp <= 0x9FFF or   # CJK Unified Ideographs
+            0x3400 <= cp <= 0x4DBF or    # CJK Ext-A
+            0x20000 <= cp <= 0x2A6DF or  # CJK Ext-B
+            0x3040 <= cp <= 0x309F or    # Hiragana
+            0x30A0 <= cp <= 0x30FF or    # Katakana
+            0xAC00 <= cp <= 0xD7AF):     # Hangul Syllables
+            return True
+    return False
+
+
+def _cjk_approximate_words(text: str) -> int:
+    """Return approximate semantic-unit count for text.
+    CJK characters count 1:1 as semantic units.
+    Non-CJK text is split on whitespace."""
+    count = 0
+    cjk_ranges = (
+        range(0x4E00, 0xA000), range(0x3400, 0x4DC0),
+        range(0x20000, 0x2A6E0), range(0x3040, 0x3100),
+        range(0xAC00, 0xD7B0),
+    )
+    buf: list[str] = []
+    for ch in text:
+        cp = ord(ch)
+        if any(cp in r for r in cjk_ranges):
+            if buf:
+                count += len(''.join(buf).split())
+                buf = []
+            count += 1
+        elif ch.isspace():
+            if buf:
+                count += len(''.join(buf).split())
+                buf = []
+        else:
+            buf.append(ch)
+    if buf:
+        count += len(''.join(buf).split())
+    return max(count, 1)
+
+
 def _search_memory(args: str) -> str:
     """Search stored memories for facts relevant to the query. Args: "query" """
     try:
@@ -1099,7 +1175,17 @@ def _search_memory(args: str) -> str:
         if not results:
             # Fallback: scan recent non‑FILE entries for keyword matches
             recent = memory_bank.get_recent(200)
-            keywords = query.lower().split()
+            # CJK-aware keyword splitting: use character bigrams for CJK queries
+            if _has_cjk(query):
+                keywords = []
+                norm = query.lower().strip()
+                for i in range(len(norm)):
+                    if i + 1 < len(norm):
+                        keywords.append(norm[i:i+2])
+                if not keywords:
+                    keywords = [norm]
+            else:
+                keywords = query.lower().split()
             matched = []
             for doc in recent:
                 if doc.startswith("FILE:"):
@@ -1348,13 +1434,22 @@ def _select_model(user_input: str) -> str:
     elif len(user_input) > 100:
         complexity_score += 1
 
-    # Multi-step / numbered instructions
+    # CJK: if input is CJK and longer than 50 chars, it's likely substantive
+    if _has_cjk(user_input) and len(user_input) > 50:
+        complexity_score += 1
+
+    # Multi-step / numbered instructions (English)
     if re.search(r"\b(step|first|then|next|finally|after that)\b", text):
+        complexity_score += 2
+    # CJK multi-step indicators
+    _cjk_step_markers = ["第一步", "第二步", "首先", "然后", "接着", "最后", "最終",
+                          "最初", "次に", "最後に", "まず", "다음", "마지막"]
+    if any(marker in user_input for marker in _cjk_step_markers):
         complexity_score += 2
     if re.search(r"\d+[.)]\s", text):
         complexity_score += 1
 
-    # Code-related tasks
+    # Code-related tasks (English)
     code_keywords = [
         "code", "debug", "fix", "refactor", "implement", "build a",
         "write a program", "write a script", "function", "class",
@@ -1362,21 +1457,36 @@ def _select_model(user_input: str) -> str:
     ]
     if any(kw in text for kw in code_keywords):
         complexity_score += 3  # code tasks are inherently complex
+    # CJK code-related tasks
+    _cjk_code_keywords = ["代码", "调试", "修复", "重构", "实现", "写一个程序",
+                           "写脚本", "函数", "架构", "优化", "性能", "编程"]
+    if any(kw in user_input for kw in _cjk_code_keywords):
+        complexity_score += 3
 
-    # Deep analysis / reasoning
+    # Deep analysis / reasoning (English)
     analysis_keywords = [
         "analyze", "explain how", "explain why", "compare", "evaluate",
         "review this", "understand", "deep dive", "audit", "diagnose"
     ]
     if any(kw in text for kw in analysis_keywords):
         complexity_score += 2
+    # CJK analysis keywords
+    _cjk_analysis_keywords = ["分析", "解释", "比较", "评估", "审查", "理解",
+                               "深度", "审计", "诊断", "分析一下", "帮我分析"]
+    if any(kw in user_input for kw in _cjk_analysis_keywords):
+        complexity_score += 2
 
-    # Research / multi-source tasks
+    # Research / multi-source tasks (English)
     research_keywords = [
         "research", "find all", "gather", "summarize", "comprehensive",
         "report", "overview of", "investigate"
     ]
     if any(kw in text for kw in research_keywords):
+        complexity_score += 1
+    # CJK research keywords
+    _cjk_research_keywords = ["研究", "搜索", "总结", "汇总", "综合", "报告",
+                               "调查", "全面", "概述", "搜集"]
+    if any(kw in user_input for kw in _cjk_research_keywords):
         complexity_score += 1
 
     if complexity_score >= 3:
@@ -1412,7 +1522,11 @@ def _get_llm_response(messages: list[dict[str, str]], model: str | None = None) 
 def _requires_tool_action(text: str) -> bool:
     """Return True if the user text looks like a request that needs tool execution."""
     text_lower = text.lower()
-    if len(text.split()) <= 2:
+    # Use CJK-aware word count instead of naive split
+    if _has_cjk(text):
+        if _cjk_approximate_words(text) <= 3:
+            return False
+    elif len(text.split()) <= 2:
         return False
     # Action verbs that strongly imply tool usage (word‑boundary match)
     action_indicators = [
@@ -1424,6 +1538,17 @@ def _requires_tool_action(text: str) -> bool:
         "list all", "list the", "show me", "check the",
         "table of", "chart", "graph", "visualize",
     ]
+    # Add CJK action indicators
+    _cjk_action_indicators = [
+        "搜索", "查找", "找到", "写", "写入", "保存", "运行", "执行",
+        "构建", "生成", "下载", "克隆", "编辑", "修改", "移动", "复制",
+        "删除", "创建", "列出", "显示", "查看", "读取", "安装", "分析",
+        "审查", "总结", "获取", "更新", "编译", "调试",
+        "調べる", "検索", "実行", "作成", "書く", "読む", "削除",
+        "검색", "찾기", "실행", "생성", "쓰기", "읽기", "삭제",
+    ]
+    if any(ind in text for ind in _cjk_action_indicators):
+        return True
     if any(ind in " " + text_lower + " " for ind in action_indicators):
         return True
     # Context nouns that suggest tool-requiring tasks
@@ -1453,6 +1578,13 @@ def _is_tool_error(result: str) -> bool:
 def _is_question(text: str) -> bool:
     low = text.strip().lower()
     if "?" in low:
+        return True
+    # CJK question markers (Chinese, Japanese, Korean)
+    _cjk_question_markers = [
+        "吗", "？", "呢", "吧", "么", "否", "如何", "怎么", "怎样",
+        "什么", "何时", "何地", "为何", "か", "？", "까", "니", "냐",
+    ]
+    if any(marker in text for marker in _cjk_question_markers):
         return True
     question_phrases = [
         "shall i", "should i", "do you want me", "would you like me", "continue",
@@ -1526,7 +1658,7 @@ def _classify_complexity(user_input: str) -> str:
     Returns 'simple', 'medium', or 'complex'."""
     text = user_input.lower().strip()
 
-    # Simple: short greetings, trivial questions, single actions
+    # Simple: short greetings, trivial questions, single actions (English)
     simple_patterns = [
         r"^(hi|hey|hello|yo|sup|good morning|good evening)\b",
         r"^(thanks|thank you|ok|okay|got it|bye|goodbye)\b",
@@ -1535,11 +1667,27 @@ def _classify_complexity(user_input: str) -> str:
     ]
     if any(re.search(p, text) for p in simple_patterns):
         return "simple"
-    # Short inputs (≤3 words) without tool verbs are simple
-    _tool_verbs = {"read","list","find","search","write","run","create","clone","fetch","open","edit","delete","move","copy"}
-    words = set(user_input.lower().split())
-    if len(user_input.split()) <= 3 and not (words & _tool_verbs):
+
+    # CJK simple greetings
+    _cjk_simple_patterns = [
+        r"^(你好|您好|嗨|早|哈喽|哈啰|喂|谢谢|再见|拜拜|好的|嗯|哦|知道了)",
+        r"^(こんにちは|もしもし|おはよう|こんばんは|さようなら|ありがとう|はい|いいえ)",
+        r"^(안녕|안녕하세요|감사합니다|네|아니요|잘가)",
+    ]
+    if any(re.search(p, user_input) for p in _cjk_simple_patterns):
         return "simple"
+
+    # Short inputs without tool verbs are simple (CJK-aware)
+    _tool_verbs = {"read","list","find","search","write","run","create","clone","fetch","open","edit","delete","move","copy"}
+    _cjk_tool_verbs = {"读","读取","查","查找","搜索","写","运行","创建","克隆","获取","编辑","删除","移动","复制","列出","安装","读文件","写文件","搜索网页","执行"}
+    if _has_cjk(user_input):
+        words = _cjk_approximate_words(user_input)
+        if words <= 4 and not any(tv in user_input for tv in _cjk_tool_verbs):
+            return "simple"
+    else:
+        words = set(user_input.lower().split())
+        if len(user_input.split()) <= 3 and not (words & _tool_verbs):
+            return "simple"
 
     # Complex: multi-step, code generation, deep analysis
     complex_indicators = [
@@ -1550,6 +1698,11 @@ def _classify_complexity(user_input: str) -> str:
         r"\b(analy[sz]e\s+(the|this|my|our)\s+(codebase|repo|project|architecture))\b",
     ]
     if any(re.search(p, text) for p in complex_indicators):
+        return "complex"
+    # CJK complex indicators
+    _cjk_complex = ["实现", "重构", "迁移", "审计", "审查代码", "写一个程序", "写脚本",
+                     "分析代码", "分析架构", "第一步", "第二步", "全面的"]
+    if any(ind in user_input for ind in _cjk_complex):
         return "complex"
     # Long inputs with multiple sentences suggest complexity
     if len(user_input) > 250:
@@ -2272,7 +2425,10 @@ def _show_self_learning_menu() -> None:
             status = "✓" if _SELF_LEARNING_FLAGS[key] else "✗"
             console.print(f"  {i+1}. [{status}] {desc}")
         console.print()
-        choice = console.input("[bold yellow]Toggle (number) or 'done': [/bold yellow]").strip().lower()
+        choice = _prompt_input(
+            "",
+            html_message="<b><ansiyellow>Toggle (number) or 'done':</ansiyellow></b> "
+        ).lower()
         if choice == "done":
             console.print("[green]Self‑learning settings updated.[/green]")
             break
@@ -2286,6 +2442,44 @@ def _show_self_learning_menu() -> None:
                 console.print("[red]Invalid number.[/red]")
         except ValueError:
             console.print("[red]Please enter a number or 'done'.[/red]")
+
+
+# ---- prompt_toolkit session (mouse support + line editing + history) ----
+
+_prompt_session: PromptSession | None = None
+
+
+def _get_prompt_session() -> PromptSession:
+    """Lazy-init a persistent PromptSession with mouse support and command history."""
+    global _prompt_session
+    if _prompt_session is None:
+        _prompt_session = PromptSession(
+            history=FileHistory(_INPUT_HISTORY_FILE),
+            mouse_support=True,
+            enable_history_search=True,
+            style=PTStyle.from_dict({
+                "prompt": "bold cyan",
+                "": "",  # default
+            }),
+        )
+    return _prompt_session
+
+
+def _prompt_input(rich_message: str, *, html_message: str | None = None) -> str:
+    """Read a line of user input with full mouse/line-editing support.
+
+    ``rich_message`` is the fallback prompt for Rich (used when prompt_toolkit
+    is unavailable). ``html_message`` is the prompt_toolkit HTML-styled prompt.
+
+    Mouse-click to position the cursor, arrows/emacs bindings for line editing,
+    Ctrl-R for history search, and history persisted to disk.
+    """
+    session = _get_prompt_session()
+    display = HTML(html_message) if html_message else rich_message
+    try:
+        return session.prompt(display).strip()
+    except (EOFError, KeyboardInterrupt):
+        raise
 
 
 def main() -> None:
@@ -2335,7 +2529,10 @@ def main() -> None:
 
     while True:
         try:
-            user_input = console.input("[bold cyan]You: [/bold cyan]").strip()
+            user_input = _prompt_input(
+                "[bold cyan]You: [/bold cyan]",
+                html_message="<b><ansicyan>You:</ansicyan></b> "
+            )
         except (EOFError, KeyboardInterrupt):
             console.print("\n[red]Goodbye.[/red]")
             sys.exit(0)
@@ -2359,7 +2556,10 @@ def main() -> None:
             console.print("[green]Project files re‑learned and stored in memory.[/green]")
             continue
         if user_input.lower() == "/api_key":
-            new_key = console.input("[bold yellow]Enter new DeepSeek API key: [/bold yellow]").strip()
+            new_key = _prompt_input(
+                "[bold yellow]Enter new DeepSeek API key: [/bold yellow]",
+                html_message="<b><ansiyellow>Enter new DeepSeek API key:</ansiyellow></b> "
+            )
             if new_key:
                 _save_config_key(new_key)
                 os.environ["DEEPSEEK_API_KEY"] = new_key
@@ -2408,9 +2608,9 @@ def main() -> None:
         if thinking:
             console.print(Panel(thinking, title="Thinking", border_style="dim white"))
         if answer:
-            console.print(Panel(Markdown(rich_escape(answer)), title="Agent", border_style="green"))
+            console.print(Panel(Markdown(answer), title="Agent", border_style="green"))
         else:
-            console.print(Panel(Markdown(rich_escape(answer or "(no content)")), title="Agent", border_style="green"))
+            console.print(Panel(Markdown(answer or "(no content)"), title="Agent", border_style="green"))
         print()
 
         # Show tasks panel if any tasks exist
@@ -2445,9 +2645,9 @@ def main() -> None:
             if thinking:
                 console.print(Panel(thinking, title="Thinking", border_style="dim white"))
             if answer:
-                console.print(Panel(Markdown(rich_escape(answer)), title="Agent", border_style="green"))
+                console.print(Panel(Markdown(answer), title="Agent", border_style="green"))
             else:
-                console.print(Panel(Markdown(rich_escape(answer or "(no content)")), title="Agent", border_style="green"))
+                console.print(Panel(Markdown(answer or "(no content)"), title="Agent", border_style="green"))
             print()
             if tasks.tasks:
                 _update_tasks_panel()
