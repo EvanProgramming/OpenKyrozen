@@ -221,6 +221,11 @@ OpenKyrozen learns continuously in the background — no manual saving needed. E
 | **Strategy distillation** | When token usage is high, distills efficiency tips |
 | **Auto‑patch new tech** | Queries the web for new libraries mentioned in code |
 | **Invent skills** | Creates reusable skill definitions from past successful patterns |
+| **Context compression** | Summarises old conversation turns when context grows beyond 30K chars |
+| **Fix verification** | Tracks bug‑fix outcomes (did it work?) and builds a success‑rate database |
+| **Dynamic tool creation** | `DefineTool` syntax lets the agent create new callable tools from SKILLs |
+| **User preference model** | Detects and remembers coding style, language, verbosity preferences |
+| **Autonomous inspection** | Proactively checks for outdated packages, code smells, gitignore gaps |
 
 ### Memory storage
 

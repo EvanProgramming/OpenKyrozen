@@ -359,7 +359,10 @@ _CORE_TESTS = [
 _BUILTIN_TOOL_NAMES = {
     "write_file","read_file","run_cmd","search_web","find_files","list_dir",
     "git_clone","git_status","execute_terminal_command","analyze_remote_repo",
-    "list_tree","read_webpage","check_stored_data","search_memory"
+    "list_tree","read_webpage","check_stored_data","search_memory",
+    "git_diff","git_log","git_branch","git_add","git_commit",
+    "git_push","git_pull","git_checkout","git_stash","git_reset",
+    "git_show","git_remote",
 }
 _saved_user_tools: dict[str, Any] = {}
 
@@ -1085,6 +1088,385 @@ def _self_update() -> str:
         return f"Error during update: {e}"
 
 
+# ================================================================
+# Feature 1: Context Compression
+# ================================================================
+
+_context_compression_size = 30000  # chars — above this, compress old turns
+_context_compression_target = 8000   # chars — compress down to this
+
+def _summarize_old_turns() -> None:
+    """Compress old conversation turns when short_term_memory grows too large.
+    Keeps the most recent messages and summarizes older ones into a compact note."""
+    global short_term_memory
+
+    total_chars = sum(len(msg.get("content", "")) for msg in short_term_memory)
+    if total_chars < _context_compression_size:
+        return
+
+    # Keep the last 4 messages (2 turns) as-is, summarize everything before
+    keep_count = min(4, len(short_term_memory))
+    to_summarize = short_term_memory[:-keep_count]
+
+    if len(to_summarize) < 4:
+        return  # not enough to compress meaningfully
+
+    # Build the text to summarize
+    summary_input = []
+    for msg in to_summarize:
+        role = msg.get("role", "?")
+        content = msg.get("content", "")[:500]  # truncate per-message
+        summary_input.append(f"[{role}]: {content}")
+
+    compress_prompt = (
+        "Summarize this conversation history into a tight bullet list. "
+        "Include: key decisions, files changed, bugs fixed, facts learned. "
+        "Omit greetings and filler. Output as plain text, max 800 chars.\n\n"
+        + "\n".join(summary_input[-20:])  # last 20 messages at most
+    )
+
+    try:
+        summary = _get_llm_response(
+            [{"role": "system", "content": compress_prompt}]
+        ).strip()
+    except Exception:
+        summary = "(conversation compressed)"
+
+    if not summary or len(summary) < 10:
+        summary = "(conversation compressed)"
+
+    # Replace old messages with a single summary message
+    compressed_msg = {
+        "role": "system",
+        "content": f"[Compressed history — {len(to_summarize)} earlier messages]:\n{summary}"
+    }
+    short_term_memory = [compressed_msg] + short_term_memory[-keep_count:]
+
+# ================================================================
+# Feature 2: Fix Verification Loop
+# ================================================================
+
+_fix_outcomes: list[dict] = []  # [{error_sig, fix_desc, success, timestamp}]
+
+def _track_fix_outcome(user_input: str, agent_reply: str) -> None:
+    """Track whether a bug fix was successful based on user feedback.
+    Call this after each turn to build a fix-outcome database."""
+    low_input = user_input.lower()
+    low_reply = agent_reply.lower()
+
+    # Detect positive feedback
+    positive = any(kw in low_input for kw in [
+        "thanks", "thank you", "that works", "it works", "worked",
+        "fixed", "solved", "great", "perfect", "awesome", "谢", "谢谢",
+        "好了", "可以了", "搞定", "没问题"
+    ])
+    # Detect negative feedback
+    negative = any(kw in low_input for kw in [
+        "not working", "still broken", "didn't work", "doesn't work",
+        "wrong", "incorrect", "not correct", "not fixed", "still fails",
+        "还不行", "还是错", "没好", "没解决", "不对"
+    ])
+
+    if not positive and not negative:
+        return  # no clear feedback signal
+
+    # Find the most recent bug-fix attempt from memory
+    recent = memory_bank.get_recent(5)
+    fix_context = ""
+    for r in recent:
+        if "FAILURE:" in r or "bug" in r.lower() or "fix" in r.lower() or "error" in r.lower():
+            fix_context = r[:500]
+            break
+
+    outcome = {
+        "timestamp": datetime.datetime.now(UTC).isoformat(),
+        "success": positive,
+        "user_feedback": user_input[:200],
+        "fix_context": fix_context[:300],
+    }
+    _fix_outcomes.append(outcome)
+    # Keep only last 20
+    if len(_fix_outcomes) > 20:
+        _fix_outcomes.pop(0)
+
+    # Store the outcome in long-term memory
+    verdict = "SUCCESS" if positive else "FAILURE"
+    memory_bank.add_log(
+        f"FIX_OUTCOME: {verdict} | User said: {user_input[:100]}\n"
+        f"Fix context: {fix_context[:300]}"
+    )
+
+    # If failure detected, trigger auto-debug
+    if negative:
+        _store_failure(
+            user_input,
+            "bug-fix-attempt",
+            f"User indicated fix did not work: {user_input[:200]}",
+            f"Agent replied: {agent_reply[:200]}"
+        )
+
+def _get_fix_success_rate() -> float:
+    """Return the success rate of recent bug fixes."""
+    if not _fix_outcomes:
+        return 1.0  # no data, assume success
+    successes = sum(1 for o in _fix_outcomes if o["success"])
+    return successes / len(_fix_outcomes)
+
+# ================================================================
+# Feature 3: DefineTool — Dynamic Tool Creation from SKILLs
+# ================================================================
+
+def _register_tool(name: str, code: str, description: str = "") -> bool:
+    """Register a new callable tool dynamically. Returns True on success."""
+    if not name or not code:
+        return False
+    # Validate: name must be a valid identifier
+    if not re.match(r"^[a-zA-Z_]\w*$", name):
+        return False
+
+    # Don't overwrite built-in tools
+    if name in _BUILTIN_TOOL_NAMES:
+        return False
+
+    # Compile the tool function
+    try:
+        local_ns: dict[str, Any] = {}
+        exec(code, {"__builtins__": __builtins__}, local_ns)
+        fn = local_ns.get(name)
+        if fn is None or not callable(fn):
+            # Try to find any top-level function
+            for v in local_ns.values():
+                if callable(v) and hasattr(v, "__name__"):
+                    fn = v
+                    break
+            if fn is None:
+                return False
+    except Exception:
+        return False
+
+    # Apply description
+    if description and hasattr(fn, "__doc__"):
+        pass  # uses its own docstring
+    elif description:
+        fn.__doc__ = description
+
+    # Register
+    AVAILABLE_TOOLS[name] = fn
+    # Rebuild tools list for system prompt
+    global TOOLS_LIST
+    TOOLS_LIST = _build_tools_list()
+
+    # Log the new tool
+    memory_bank.add_log(f"TOOL_CREATED: {name} — {description}")
+    return True
+
+
+def _attempt_define_tool(text: str) -> bool:
+    r"""Parse a DefineTool block from LLM output and register the tool.
+    Format:
+    DefineTool:
+    ```python
+    def tool_name(args: str) -> str:
+        '''Description'''
+        ...
+    ```
+    """
+    pattern = r"DefineTool:\s*```(?:python)?\s*([\s\S]*?)\s*```"
+    match = re.search(pattern, text)
+    if not match:
+        return False
+
+    code = match.group(1).strip()
+    if not code:
+        return False
+
+    # Extract function name and description
+    name_match = re.search(r"def\s+(\w+)\s*\(", code)
+    if not name_match:
+        return False
+    name = name_match.group(1)
+
+    desc_match = re.search(r'"""([^"]*)"""', code) or re.search(r"'''([^']*)'''", code)
+    description = desc_match.group(1).strip() if desc_match else ""
+
+    return _register_tool(name, code, description)
+
+# ================================================================
+# Feature 4: User Preference Model
+# ================================================================
+
+_user_preferences: dict[str, Any] = {
+    "language": "",           # preferred programming language
+    "naming_style": "",       # snake_case, camelCase, etc.
+    "comment_style": "",      # verbose, minimal, docstring-only
+    "indent": "",             # spaces-4, tabs, spaces-2
+    "formatter": "",          # black, ruff, none
+    "verbosity": "",          # concise, detailed, balanced
+    "prefers_tables": False,  # user likes table-format output
+    "code_first": False,      # user prefers code before explanation
+}
+
+def _detect_user_preferences(user_input: str) -> None:
+    """Detect implicit user preferences from their messages."""
+    low = user_input.lower()
+
+    # Language preference
+    lang_signals = {
+        "python": "python", "py": "python",
+        "javascript": "javascript", "js": "javascript",
+        "typescript": "typescript", "ts": "typescript",
+        "rust": "rust", "go": "go", "golang": "go",
+        "java": "java", "c++": "c++", "cpp": "c++",
+        "ruby": "ruby", "swift": "swift",
+    }
+    for signal, lang in lang_signals.items():
+        if re.search(rf"\b{signal}\b", low):
+            _user_preferences["language"] = lang
+            break
+
+    # Naming style
+    if re.search(r"\b[a-z]+_[a-z]+\b", user_input) and "rust" not in low:
+        _user_preferences["naming_style"] = "snake_case"
+    elif re.search(r"\b[a-z]+[A-Z][a-z]+\b", user_input):
+        _user_preferences["naming_style"] = "camelCase"
+
+    # Verbosity
+    if any(w in low for w in ["brief", "short", "concise", "quick"]):
+        _user_preferences["verbosity"] = "concise"
+    elif any(w in low for w in ["detailed", "explain fully", "in depth", "comprehensive"]):
+        _user_preferences["verbosity"] = "detailed"
+
+    # Code-first
+    if any(w in low for w in ["show me the code", "just the code", "code only"]):
+        _user_preferences["code_first"] = True
+
+    # Tables
+    if any(w in low for w in ["table", "comparison table", "tabular"]):
+        _user_preferences["prefers_tables"] = True
+
+    # Store detected preferences
+    detected = {k: v for k, v in _user_preferences.items() if v}
+    if detected:
+        pref_str = "; ".join(f"{k}={v}" for k, v in detected.items())
+        # Only store if new or changed
+        recent = memory_bank.get_recent(3)
+        already = any(f"PREF: {pref_str}" in r for r in recent)
+        if not already:
+            memory_bank.add_log(f"PREF: {pref_str}")
+
+
+def _build_preference_context() -> str:
+    """Build a system message describing known user preferences."""
+    active = [f"{k}={v}" for k, v in _user_preferences.items()
+              if v and v not in ("", False)]
+    if not active:
+        return ""
+    return (
+        "## Known user preferences (apply unless overridden)\n"
+        + "\n".join(f"- {p}" for p in active)
+    )
+
+# ================================================================
+# Feature 5: Autonomous Inspection
+# ================================================================
+
+_last_inspection_time: float = 0
+_inspection_interval = 1800  # 30 minutes between inspections
+
+def _autonomous_inspection() -> None:
+    """Proactive codebase health check: outdated packages, code smells, security issues."""
+    global _last_inspection_time
+    now = time.time()
+    if now - _last_inspection_time < _inspection_interval:
+        return
+    if now - _last_user_interaction < 300:  # user active, don't disturb
+        return
+    _last_inspection_time = now
+
+    findings: list[str] = []
+
+    # 1. Check for outdated pip packages
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "list", "--outdated", "--format=columns"],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            lines = result.stdout.strip().split("\n")
+            if len(lines) > 2:  # header + at least one package
+                outdated_pkgs = lines[2:6]  # top 3 outdated
+                findings.append("Outdated packages:\n  " + "\n  ".join(outdated_pkgs[:3]))
+    except Exception:
+        pass
+
+    # 2. Check for common code smells (bare except, print debugging, TODO markers)
+    project_root = Path(__file__).parent.resolve()
+    bare_excepts = 0
+    print_debugs = 0
+    todo_markers = 0
+    skip_dirs = {".venv", "venv", "chroma_memory", "__pycache__", ".git"}
+
+    for py_file in project_root.rglob("*.py"):
+        if any(part in py_file.parts for part in skip_dirs):
+            continue
+        try:
+            content = py_file.read_text(encoding="utf-8", errors="ignore")
+            rel = str(py_file.relative_to(project_root))
+
+            # Count bare excepts
+            bare = len(re.findall(r"except\s*:", content))
+            if bare > 0:
+                bare_excepts += bare
+
+            # Count print debugging
+            prints = len(re.findall(r"^\s*print\(", content, re.MULTILINE))
+            if prints > 2:  # more than 2 prints in a file
+                print_debugs += prints
+
+            # Count TODOs
+            todos = len(re.findall(r"#\s*TODO", content))
+            if todos > 0:
+                todo_markers += todos
+        except Exception:
+            pass
+
+    if bare_excepts > 0:
+        findings.append(f"Code smell: {bare_excepts} bare 'except:' clauses (should specify exception type)")
+    if print_debugs > 0:
+        findings.append(f"Code smell: {print_debugs} print() statements may be leftover debugging")
+    if todo_markers > 0:
+        findings.append(f"Code hygiene: {todo_markers} TODO markers found in codebase")
+
+    # 3. Check .gitignore for common missing entries
+    gitignore_path = project_root / ".gitignore"
+    if gitignore_path.exists():
+        try:
+            gi_content = gitignore_path.read_text(encoding="utf-8")
+            missing = []
+            for entry in ["*.log", "*.swp", ".env", "dist/", "build/"]:
+                if entry not in gi_content:
+                    missing.append(entry)
+            if missing:
+                findings.append(f"Gitignore missing entries: {', '.join(missing)}")
+        except Exception:
+            pass
+
+    if not findings:
+        return
+
+    # Store findings in memory for the agent to act on next time user asks
+    report = "INSPECTION: Autonomous codebase health check\n" + "\n".join(f"- {f}" for f in findings)
+    memory_bank.add_log(report)
+
+    # If there are security-critical findings, also log as a FACT for immediate visibility
+    if bare_excepts > 5:
+        memory_bank.add_log(f"FACT: Codebase has {bare_excepts} bare except clauses — potential bug masking")
+
+# ================================================================
+# End of new features
+# ================================================================
+
+
 def _remove_stale_file_entries(project_root: Path) -> None:
     """Delete old FILE entries that no longer correspond to existing .py files."""
     skip_dirs = {".venv", "venv", "chroma_memory", "__pycache__", ".git"}
@@ -1424,6 +1806,11 @@ def _build_messages(user_input: str) -> list[dict[str, str]]:
         )
         messages.append({"role": "system", "content": git_guidance})
 
+    # Inject user preferences
+    pref_ctx = _build_preference_context()
+    if pref_ctx:
+        messages.append({"role": "system", "content": pref_ctx})
+
     mem_ctx = _build_memory_context(user_input)
     if mem_ctx:
         messages.append({"role": "system", "content": mem_ctx})
@@ -1583,10 +1970,6 @@ def _run_tool(action: str, args: str) -> str:
     elapsed = time.time() - start
     _track_tool_performance(action, result, elapsed)
     return result
-
-
-def _attempt_define_tool(text: str) -> bool:
-    return False
 
 
 def _select_model(user_input: str) -> str:
@@ -1944,6 +2327,9 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     global _last_user_interaction, DEEPSEEK_MODEL
     _last_user_interaction = time.time()
 
+    # Compress old turns if context is growing too large
+    _summarize_old_turns()
+
     if clear_tasks:
         tasks.tasks.clear()
 
@@ -1977,6 +2363,10 @@ def _chat_turn(user_input: str, clear_tasks: bool = False) -> str:
     if not response_text_clean:
         response_text_clean = response_text
     response_text = response_text_clean
+
+    # Check for DefineTool blocks and register new tools
+    if "DefineTool:" in response_text:
+        _attempt_define_tool(response_text)
 
     tool_calls = _collect_tool_calls(response_text)
 
@@ -2624,6 +3014,8 @@ def _background_learning_loop() -> None:
                     _maybe_strategy_distillation()
                 if _SELF_LEARNING_FLAGS["invent_skills"]:
                     _invent_skills()
+                # Autonomous codebase health inspection
+                _autonomous_inspection()
         except Exception:
             pass
 
@@ -2809,6 +3201,11 @@ def main() -> None:
         cleaned_reply = _remove_task_blocks(reply)
         short_term_memory.append({"role": "assistant", "content": cleaned_reply})
         memory_bank.add_log(f"User: {user_input}\nAssistant: {reply}")
+
+        # Track fix outcomes and detect preferences
+        if _is_bug_report(user_input) or any(kw in user_input.lower() for kw in ["fix", "bug", "error", "报错"]):
+            _track_fix_outcome(user_input, reply)
+        _detect_user_preferences(user_input)
 
         thinking, answer = _split_reply(reply)
 
