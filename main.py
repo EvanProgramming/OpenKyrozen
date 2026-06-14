@@ -66,6 +66,12 @@ import json
 import os
 import re
 import subprocess
+
+# macOS: suppress "MallocStackLogging: can't turn off malloc stack logging"
+# warnings from child Python processes spawned during self-learning
+if _IS_MACOS:
+    for _mk in ("MallocStackLogging", "MallocStackLoggingNoCompact"):
+        os.environ.pop(_mk, None)
 import sys
 import traceback
 import threading
