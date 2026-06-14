@@ -544,10 +544,6 @@ def detect_provider() -> ProviderConfig:
             api_key = os.environ.get(env_var, "")
     if not api_key:
         api_key = config_data.get("api_key", "")
-    # Auto-decrypt if config was saved encrypted
-    if api_key and config_data.get("encrypted"):
-        api_key = decrypt_api_key(api_key)
-
     base_url = os.environ.get("KYROZEN_BASE_URL", "")
     if not base_url:
         base_url = PROVIDER_BASE_URLS.get(provider_name, "")
@@ -560,6 +556,22 @@ def detect_provider() -> ProviderConfig:
         os.environ.get("KYROZEN_MODEL_COMPLEX", "")
         or config_data.get("model_complex", "")
     )
+
+    # Auto-decrypt if config was saved encrypted
+    if api_key and config_data.get("encrypted"):
+        api_key = decrypt_api_key(api_key)
+    # Auto-upgrade: if key exists in config but is not encrypted, re-save with encryption
+    elif api_key and config_data and not config_data.get("encrypted"):
+        try:
+            save_provider_config_encrypted(ProviderConfig(
+                provider=provider_name,
+                api_key=api_key,
+                base_url=base_url,
+                model_simple=model_simple,
+                model_complex=model_complex,
+            ))
+        except Exception:
+            pass  # non-critical — will encrypt on next explicit save
 
     return ProviderConfig(
         provider=provider_name,
