@@ -1751,9 +1751,10 @@ def _check_stored_data(args: str) -> str:
     """Return a categorized summary of stored memories.
     Usage: empty args for overview, or a category prefix like 'FACT', 'SKILL', 'STRATEGY'
     to see more entries of that type.
-    Source code copies (FILE:) are always hidden to reduce noise."""
+    Source code copies (FILE:) and raw conversation logs (User:) are excluded from the
+    learning overview — FILE entries are being migrated to a separate agent_files collection."""
     # Known learning categories and their display labels
-    _CATEGORY_LABELS: dict[str, str] = {
+    _LEARNING_CATEGORIES: dict[str, str] = {
         "FACT:":          "Learned Facts",
         "SKILL:":         "Invented Skills",
         "STRATEGY:":      "Distilled Strategies",
@@ -1765,18 +1766,33 @@ def _check_stored_data(args: str) -> str:
         "LEARNED:":       "Learning Logs",
         "TOOL_REVIEW:":   "Tool Reviews",
         "DEBUG_FINDING:": "Debug Findings",
+        "INSPECTION:":    "Codebase Inspections",
+        "CODE_DOC:":      "Code Documentation",
+        "LIBRARY_INFO:":  "Library Research",
     }
+    # Prefixes that are stored in agent_logs but are NOT learning artifacts
+    _EXCLUDED_PREFIXES = {"FILE:", "User:"}
+
     try:
         total = memory_bank.count_logs()
-        # Scan a reasonable window of recent entries for categorisation.
-        # FILE entries live in a separate collection now, so the main
-        # collection only contains learning artifacts.
         recent_all = memory_bank.get_recent(500)
+
         categorized: dict[str, list[str]] = {}
+        excluded: dict[str, list[str]] = {}  # FILE:, User:, etc.
         uncategorized: list[str] = []
+
         for log in recent_all:
             matched = False
-            for prefix in _CATEGORY_LABELS:
+            # Check excluded first
+            for xpfx in _EXCLUDED_PREFIXES:
+                if log.startswith(xpfx):
+                    excluded.setdefault(xpfx, []).append(log)
+                    matched = True
+                    break
+            if matched:
+                continue
+            # Check learning categories
+            for prefix in _LEARNING_CATEGORIES:
                 if log.startswith(prefix):
                     categorized.setdefault(prefix, []).append(log)
                     matched = True
@@ -1786,49 +1802,67 @@ def _check_stored_data(args: str) -> str:
 
         # Build output
         lines = [f"Total stored logs: {total}"]
-        lines.append(f"Recent window scanned: {len(recent_all)} entries (non‑FILE: {sum(len(v) for v in categorized.values()) + len(uncategorized)})")
+        learning_count = sum(len(v) for v in categorized.values())
+        excluded_count = sum(len(v) for v in excluded.values())
+        lines.append(
+            f"Recent window scanned: {len(recent_all)} entries "
+            f"(learning: {learning_count}, excluded: {excluded_count}, "
+            f"uncategorised: {len(uncategorized)})"
+        )
 
         # If user specified a category filter
-        filter_prefix = args.strip().upper() if args and args.strip() else ""
-        if filter_prefix:
-            filter_prefix = filter_prefix + ":" if not filter_prefix.endswith(":") else filter_prefix
-            if filter_prefix in _CATEGORY_LABELS:
+        filter_arg = args.strip().upper() if args and args.strip() else ""
+        if filter_arg:
+            filter_prefix = filter_arg + ":" if not filter_arg.endswith(":") else filter_arg
+            if filter_prefix in _LEARNING_CATEGORIES:
                 entries = categorized.get(filter_prefix, [])
-                label = _CATEGORY_LABELS[filter_prefix]
+                label = _LEARNING_CATEGORIES[filter_prefix]
                 lines.append(f"\n## {label} ({len(entries)} recent)")
                 for i, entry in enumerate(entries[:10]):
                     snippet = _safe_fstring(entry[:400].replace("\n", " "))
                     lines.append(f"  [{i+1}] {snippet}")
                 if len(entries) > 10:
                     lines.append(f"  ... and {len(entries) - 10} more in the recent window.")
+            elif filter_prefix in _EXCLUDED_PREFIXES:
+                lines.append(f"\n'{filter_arg}' entries are excluded from the learning overview (source code or raw conversations).")
             else:
-                lines.append(f"\nUnknown category '{args.strip()}'. Known: {', '.join(k.rstrip(':') for k in _CATEGORY_LABELS)}")
+                lines.append(f"\nUnknown category '{filter_arg}'. Known learning categories: {', '.join(k.rstrip(':') for k in _LEARNING_CATEGORIES)}")
             return "\n".join(lines)
 
-        # Overview: counts per category plus a sample from each
+        # ---- Overview ----
         lines.append("\n## Learning Categories Overview")
-        for prefix, label in _CATEGORY_LABELS.items():
+        for prefix, label in _LEARNING_CATEGORIES.items():
             entries = categorized.get(prefix, [])
             count = len(entries)
-            marker = "📊" if count > 0 else "  "
-            lines.append(f"  {marker} {label}: {count} recent")
+            marker = "▌" if count > 0 else "·"
+            lines.append(f"  {marker} {label}: {count}")
             if entries:
-                # Show the most recent entry as a sample
                 sample = entries[0][:200].replace("\n", " ")
                 lines.append(f"      Latest: {_safe_fstring(sample)}")
-        if uncategorized:
-            lines.append(f"  📋 Other (uncategorised): {len(uncategorized)} recent")
 
-        # Quick summary of what was actually learned
-        total_learned = sum(len(v) for v in categorized.values())
-        if total_learned > 0:
-            lines.append(f"\nTotal self‑learning artifacts in recent window: {total_learned}")
-            cat_names = [label for prefix, label in _CATEGORY_LABELS.items() if prefix in categorized]
+        # Excluded section
+        if excluded:
+            lines.append("\n## Excluded from Learning Overview")
+            for xpfx, entries in excluded.items():
+                label = "Legacy source code (→ agent_files)" if xpfx == "FILE:" else "Raw conversation logs"
+                lines.append(f"  · {label}: {len(entries)} entries")
+
+        if uncategorized:
+            lines.append(f"\n  · Other uncategorised: {len(uncategorized)} entries")
+            # Show a sample of uncategorized
+            for u in uncategorized[:2]:
+                snippet = u[:150].replace("\n", " ")
+                lines.append(f"      {_safe_fstring(snippet)}")
+
+        # Quick summary
+        if learning_count > 0:
+            lines.append(f"\nTotal self‑learning artifacts in recent window: {learning_count}")
+            cat_names = [label for prefix, label in _LEARNING_CATEGORIES.items() if prefix in categorized]
             lines.append(f"Categories present: {', '.join(cat_names)}")
         else:
-            lines.append("\n(No self‑learning artifacts found in the recent window. They may be deeper in storage — try searching with `search_memory`.)")
+            lines.append("\n(No self‑learning artifacts found in the recent window. They may be deeper in storage — try `search_memory`.)")
 
-        lines.append(f"\nTip: use `check_stored_data FACT` to see all recent facts, or `check_stored_data SKILL` for skills.")
+        lines.append(f"\nTip: use `check_stored_data FACT` to drill into a category, or `search_memory <query>` for semantic search.")
         return "\n".join(lines)
     except Exception as e:
         return f"Error reading memory: {e}"
