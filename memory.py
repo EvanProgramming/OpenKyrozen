@@ -20,19 +20,26 @@ except ImportError:
 
 
 class MemoryBank:
-    """Stores and retrieves interaction logs.
-    Uses ChromaDB when the optional chromadb package is installed,
-    otherwise falls back to a simple in‑memory list.
+    """Stores and retrieves interaction logs and source‑code snapshots.
+    Uses two ChromaDB collections:
+      - ``agent_logs``   : learning artifacts (facts, skills, strategies, conversations)
+      - ``agent_files``  : source‑code snapshots (FILE: entries)
+    This separation keeps FILE entries from dominating the embedding space and
+    polluting semantic recall. Falls back to simple in‑memory lists when ChromaDB
+    is not installed.
     """
 
     COLLECTION_NAME = "agent_logs"
+    FILES_COLLECTION_NAME = "agent_files"
     DEFAULT_PATH = "./chroma_memory"
 
     def __init__(self, path: str | None = None):
         self._lock = threading.Lock()  # protect ChromaDB SQLite from concurrent access
         self._path = path or self.DEFAULT_PATH
-        self._in_memory: list[tuple[str, str, str]] = []  # (id, text, timestamp)
+        self._in_memory: list[tuple[str, str, str]] = []       # (id, text, timestamp)
+        self._in_memory_files: list[tuple[str, str, str]] = []  # (id, text, timestamp)
         self._collection = None
+        self._files_collection = None
         if _CHROMADB_AVAILABLE:
             try:
                 self._client = chromadb.PersistentClient(
@@ -41,15 +48,21 @@ class MemoryBank:
                 )
                 self._collection = self._client.get_or_create_collection(
                     name=self.COLLECTION_NAME,
-                    metadata={"description": "Agent interaction logs"},
+                    metadata={"description": "Agent learning artifacts and interaction logs"},
+                )
+                self._files_collection = self._client.get_or_create_collection(
+                    name=self.FILES_COLLECTION_NAME,
+                    metadata={"description": "Source‑code snapshots (FILE: entries)"},
                 )
             except Exception as _e:
                 print(f"[Memory] ChromaDB init error: {_e} – falling back to in‑memory storage.")
                 self._client = None
                 self._collection = None
+                self._files_collection = None
 
     def add_log(self, text: str) -> str:
-        """Save a text log with a timestamp‑based ID. Returns the assigned ID."""
+        """Save a text log (learning artifact, conversation, etc.) to the main
+        ``agent_logs`` collection. Returns the assigned ID."""
         log_id = f"{datetime.now(timezone.utc).isoformat()}Z_{uuid.uuid4().hex[:8]}"
         now_ts = datetime.now(timezone.utc).isoformat()
         with self._lock:
@@ -72,21 +85,83 @@ class MemoryBank:
                 self._in_memory.append((log_id, text, now_ts))
         return log_id
 
+    def add_file(self, rel_path: str, content: str) -> str:
+        """Save a source‑code snapshot to the separate ``agent_files`` collection.
+        This keeps FILE entries from polluting the learning‑artifact embedding space.
+        Returns the assigned ID."""
+        log_id = f"file_{datetime.now(timezone.utc).isoformat()}Z_{uuid.uuid4().hex[:8]}"
+        now_ts = datetime.now(timezone.utc).isoformat()
+        text = f"FILE: {rel_path}\n```python\n{content}\n```"
+        with self._lock:
+            if _CHROMADB_AVAILABLE and self._files_collection is not None:
+                try:
+                    self._files_collection.add(
+                        ids=[log_id],
+                        documents=[text],
+                        metadatas=[{"timestamp": now_ts, "rel_path": rel_path}],
+                    )
+                except Exception:
+                    pass  # silently skip file storage errors
+            else:
+                self._in_memory_files.append((log_id, text, now_ts))
+        return log_id
+
+    def remove_stale_files(self, valid_paths: set[str]) -> int:
+        """Delete file snapshots whose ``rel_path`` no longer exists on disk.
+        Returns the number of deleted entries."""
+        removed = 0
+        with self._lock:
+            if _CHROMADB_AVAILABLE and self._files_collection is not None:
+                try:
+                    total = self._files_collection.count()
+                    if total == 0:
+                        return 0
+                    # Scan the files collection for entries whose rel_path is stale
+                    result = self._files_collection.get(
+                        limit=min(total, 2000), offset=0, include=["metadatas", "documents"]
+                    )
+                    ids_to_delete = []
+                    for doc_id, meta in zip(result.get("ids", []), result.get("metadatas", [])):
+                        rp = meta.get("rel_path", "")
+                        if rp and rp not in valid_paths:
+                            ids_to_delete.append(doc_id)
+                    if ids_to_delete:
+                        self._files_collection.delete(ids=ids_to_delete)
+                        removed = len(ids_to_delete)
+                except Exception:
+                    pass
+            else:
+                # In‑memory: keep only files whose path is in valid_paths
+                keep = []
+                for item in self._in_memory_files:
+                    # rel_path is embedded in the text: "FILE: {rel_path}\n..."
+                    text = item[1]
+                    rp = text.split("\n")[0].replace("FILE: ", "", 1)
+                    if rp in valid_paths:
+                        keep.append(item)
+                    else:
+                        removed += 1
+                self._in_memory_files = keep
+        return removed
+
     def recall(self, query: str, n_results: int = 2) -> list[str]:
-        """Retrieve the top n_results most relevant non‑FILE logs for the query.
-        FILE entries (source code copies) are excluded so semantic search returns
-        actual learning artifacts (facts, skills, strategies, etc.)."""
+        """Retrieve the top n_results most relevant logs for the query from the
+        ``agent_logs`` collection (learning artifacts only — FILE entries live in a
+        separate ``agent_files`` collection).
+
+        A lightweight FILE‑prefix safety filter catches any legacy FILE entries that
+        predate the two‑collection split."""
         if not query or not query.strip():
             return []
         with self._lock:
             if _CHROMADB_AVAILABLE and self._collection is not None:
                 try:
                     count = self._collection.count()
-                    # Fetch extra results to account for FILE entries being filtered out
-                    fetch_n = min(max(n_results * 5, 10), count or 1)
+                    if count == 0:
+                        return []
                     result = self._collection.query(
                         query_texts=[query.strip()],
-                        n_results=fetch_n,
+                        n_results=min(n_results, count),
                     )
                     docs = result.get("documents")
                     if docs and len(docs) > 0:
@@ -94,19 +169,16 @@ class MemoryBank:
                         if first is None:
                             return []
                         all_docs = list(first) if isinstance(first, list) else [first]
-                        # Exclude FILE entries — they are source code copies, not learning artifacts
-                        filtered = [d for d in all_docs if not d.startswith("FILE:")]
-                        return filtered[:n_results]
+                        # Safety filter for legacy FILE entries still in agent_logs
+                        return [d for d in all_docs if not d.startswith("FILE:")][:n_results]
                     return []
                 except Exception:
                     return []
             else:
                 if not self._in_memory:
                     return []
-                # In‑memory: take recent entries, filter out FILE entries
-                candidates = self._in_memory[-max(n_results * 5, 10):]
-                filtered = [text for _, text, _ in candidates if not text.startswith("FILE:")]
-                return filtered[:n_results]
+                recent = self._in_memory[-n_results:]
+                return [text for _, text, _ in recent if not text.startswith("FILE:")]
 
     def get_recent(self, n: int = 10) -> list[str]:
         """Return the n most recent logs (without relevance ranking)."""

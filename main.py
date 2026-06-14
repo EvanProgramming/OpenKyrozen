@@ -602,13 +602,19 @@ _last_user_interaction = time.time()
 _last_code_scan_time = 0
 
 def _age_out_old_coded_entries() -> None:
-    """Remove or mark obsolete code facts when code files change."""
+    """Remove file snapshots for .py files that no longer exist on disk."""
     global _last_code_scan_time
     now = time.time()
     if now - _last_code_scan_time < 3600:  # once per hour
         return
     _last_code_scan_time = now
-    _remove_stale_file_entries(Path(__file__).parent.resolve())
+    project_root = Path(__file__).parent.resolve()
+    skip_dirs = {".venv", "venv", "chroma_memory", "__pycache__", ".git"}
+    valid: set[str] = set()
+    for py_file in project_root.rglob("*.py"):
+        if not any(part in py_file.parts for part in skip_dirs):
+            valid.add(str(py_file.relative_to(project_root)))
+    memory_bank.remove_stale_files(valid)
 
 def _consolidate_memories() -> None:
     global _saved_user_tools
@@ -1086,23 +1092,23 @@ def _switch_provider() -> None:
 
 def _load_project_files_into_memory() -> None:
     project_root = Path(__file__).parent.resolve()
-    # Before adding new versions, remove any stale FILE entries from ChromaDB
-    _remove_stale_file_entries(project_root)
-    # Skip directories that can contain many files (e.g., virtual environment)
+    # Collect valid relative paths for stale‑file cleanup
     skip_dirs = {".venv", "venv", "chroma_memory", "__pycache__", ".git"}
+    valid_paths: set[str] = set()
     for py_file in project_root.rglob("*.py"):
-        # Skip files inside skipped directories
         if any(part in py_file.parts for part in skip_dirs):
             continue
         try:
             content = py_file.read_text(encoding="utf-8")
             rel_path = str(py_file.relative_to(project_root))
-            log_text = f"FILE: {rel_path}\n```python\n{content}\n```"
-            memory_bank.add_log(log_text)
+            valid_paths.add(rel_path)
+            memory_bank.add_file(rel_path, content)
         except KeyboardInterrupt:
             sys.exit(0)
         except Exception:
             pass
+    # Remove FILE snapshots for paths that no longer exist on disk
+    memory_bank.remove_stale_files(valid_paths)
 
 
 def _self_update() -> str:
@@ -1620,32 +1626,6 @@ def _compose_skills(task_description: str) -> str | None:
     return None
 
 
-def _remove_stale_file_entries(project_root: Path) -> None:
-    """Delete old FILE entries that no longer correspond to existing .py files."""
-    skip_dirs = {".venv", "venv", "chroma_memory", "__pycache__", ".git"}
-    existing_py_files = set()
-    for py_file in project_root.rglob("*.py"):
-        if any(part in py_file.parts for part in skip_dirs):
-            continue
-        existing_py_files.add(str(py_file.relative_to(project_root)))
-    try:
-        ids, documents = memory_bank.get_all()
-        if not ids:
-            return
-        to_delete = []
-        for i, doc in enumerate(documents):
-            if doc and doc.startswith("FILE:"):
-                lines = doc.split("\n")
-                if len(lines) >= 1:
-                    file_rel = lines[0].replace("FILE: ", "").strip()
-                    if file_rel not in existing_py_files:
-                        to_delete.append(ids[i])
-        if to_delete:
-            memory_bank.delete_logs(to_delete)
-    except Exception:
-        pass
-
-
 def _build_tools_list() -> str:
     lines = []
     for name, fn in AVAILABLE_TOOLS.items():
@@ -1788,9 +1768,10 @@ def _check_stored_data(args: str) -> str:
     }
     try:
         total = memory_bank.count_logs()
-        # Scan a reasonable window of recent entries for categorisation
+        # Scan a reasonable window of recent entries for categorisation.
+        # FILE entries live in a separate collection now, so the main
+        # collection only contains learning artifacts.
         recent_all = memory_bank.get_recent(500)
-        # Filter and categorise
         categorized: dict[str, list[str]] = {}
         uncategorized: list[str] = []
         for log in recent_all:
@@ -1800,7 +1781,7 @@ def _check_stored_data(args: str) -> str:
                     categorized.setdefault(prefix, []).append(log)
                     matched = True
                     break
-            if not matched and not log.startswith("FILE:"):
+            if not matched:
                 uncategorized.append(log)
 
         # Build output
@@ -1907,7 +1888,8 @@ def _search_memory(args: str) -> str:
         # First attempt: semantic search via ChromaDB/memory recall
         results = memory_bank.recall(query, n_results=5)
         if not results:
-            # Fallback: scan recent non‑FILE entries for keyword matches
+            # Fallback: keyword match on recent entries (FILE entries live in a
+            # separate collection, so the main collection is learning-only)
             recent = memory_bank.get_recent(200)
             # CJK-aware keyword splitting: use character bigrams for CJK queries
             if _has_cjk(query):
@@ -1922,8 +1904,6 @@ def _search_memory(args: str) -> str:
                 keywords = query.lower().split()
             matched = []
             for doc in recent:
-                if doc.startswith("FILE:"):
-                    continue
                 if any(kw in doc.lower() for kw in keywords):
                     matched.append(doc)
             if matched:
@@ -1933,14 +1913,11 @@ def _search_memory(args: str) -> str:
                 return "No relevant memories found."
         lines = [f"Relevant memories ({len(results)}):"]
         for i, doc in enumerate(results):
-            # Don't show file entries in this search either
-            if doc.startswith("FILE:"):
-                continue
             snippet = _safe_fstring(doc[:500].replace("\n", " "))
             lines.append(f"\n--- Result {i+1} ---\n{snippet}")
         ret = "\n".join(lines)
         if ret.strip() == f"Relevant memories ({len(results)}):":
-            return "No non‑file facts found for that query."
+            return "No relevant memories found for that query."
         return ret
     except Exception as e:
         return f"Error searching memory: {e}"
