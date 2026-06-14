@@ -10,13 +10,15 @@
 <p align="center"><strong>Self‑learning AI Agent — DeepSeek · OpenAI · Claude · Gemini · Ollama</strong></p>
 <p align="center">A terminal-native, fully autonomous AI agent that <em>learns from every interaction</em>,<br>operates your filesystem, manages git, fixes bugs, and improves itself over time.</p>
 
+> 📖 [简体中文 README](README.zh-CN.md)
+
 ---
 
 ## What is OpenKyrozen?
 
 OpenKyrozen is a **self-learning AI agent** that runs in your terminal. Unlike a typical chatbot, it:
 
-- **Uses 24 built-in tools** — read/write files, execute shell commands, search the web, manage git repositories
+- **Uses 26 built-in tools** — read/write files, execute shell commands, search the web, manage git repositories
 - **Learns continuously** — 20 self-learning features run in the background, extracting facts, inventing skills, and improving strategies
 - **Works with any LLM** — DeepSeek, OpenAI, Claude, Gemini, or local Ollama models
 - **Runs on any OS** — macOS, Linux, and Windows (with automatic terminal capability detection)
@@ -145,7 +147,7 @@ User Input
          │  Response + tool calls
          ▼
 ┌─────────────────┐
-│  Tool Executor   │──► 24 built-in tools (file I/O, shell, git, web, memory)
+│  Tool Executor   │──► 26 built-in tools (file I/O, shell, git, web, memory)
 └────────┬────────┘
          │  Tool results fed back to LLM
          │  (up to 50 tool-call rounds per turn)
@@ -203,7 +205,7 @@ If the primary provider fails, Kyrozen automatically falls back through a chain 
 
 ## 🛠 Tools Reference
 
-All 24 tools accept a plain-string `args` field in a JSON action block:
+All 26 tools accept a plain-string `args` field in a JSON action block:
 
 ```json
 {"action": "read_file", "args": "README.md"}
@@ -229,7 +231,7 @@ Short aliases work too — `bash`, `cmd`, `sh` → `run_cmd`; `status`, `diff`, 
 | `search_web` | Internet search (Google → DDG → Wikipedia) | `"latest Python release"` |
 | `read_webpage` | Fetch URL text content | `"https://example.com"` |
 
-### Git (14 tools)
+### Git (15 tools)
 
 | Tool | What it does |
 |------|-------------|
@@ -299,7 +301,7 @@ This is what makes Kyrozen different. **20 self-learning features** run continuo
 
 ### How it works
 
-Every 30 seconds (when you're idle), Kyrozen runs a learning cycle. Each feature can be toggled on/off with `/self-learning`.
+Every 30 seconds (when you're idle), Kyrozen runs a learning cycle. Most features can be toggled on/off with `/self-learning`; the remaining nine run automatically in the background.
 
 | # | Feature | What it learns |
 |---|---------|---------------|
@@ -348,7 +350,7 @@ python server.py --port 8000
 | `GET` | `/api/memory?q=keyword` | Search stored memories |
 | `GET` | `/api/cost` | Token usage and cost summary |
 | `GET` | `/api/health` | Provider status + memory count |
-| `POST` | `/api/voice/speak?text=...` | Text-to-speech via system TTS |
+| `GET` | `/api/voice/speak?text=...` | Text-to-speech via system TTS |
 | `POST` | `/api/voice/transcribe` | Speech-to-text (passthrough) |
 | `POST` | `/api/webhooks/register` | Register a webhook URL |
 | `GET` | `/api/webhooks` | List registered webhooks |
@@ -492,7 +494,7 @@ pip install .[all]              # + Claude + Gemini + web
 ```
 OpenKyrozen/
 ├── main.py              # Core agent loop, self-learning, chat turn logic
-├── tools.py             # 24 built-in tools (file, shell, git, web)
+├── tools.py             # 26 built-in tools (file, shell, git, web)
 ├── providers.py         # Multi-LLM abstraction (5 providers + fallback)
 ├── memory.py            # ChromaDB-backed vector memory
 ├── server.py            # FastAPI web server + REST API + chat UI
