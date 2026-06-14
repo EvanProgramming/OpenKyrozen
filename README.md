@@ -10,7 +10,48 @@
 <p align="center"><strong>Self‑learning AI Agent — DeepSeek · OpenAI · Claude · Gemini · Ollama</strong></p>
 <p align="center">A terminal-native, fully autonomous AI agent that <em>learns from every interaction</em>,<br>operates your filesystem, manages git, fixes bugs, and improves itself over time.</p>
 
-> 📖 [简体中文 README](README.zh-CN.md)
+<p align="center">
+  🌐 <strong>English</strong> ·
+  <a href="README.zh-CN.md">简体中文</a> ·
+  <a href="README.ja.md">日本語</a> ·
+  <a href="README.ko.md">한국어</a>
+</p>
+
+---
+
+## 📑 Table of Contents
+
+- [What is OpenKyrozen?](#what-is-openkyrozen)
+- [🚀 Installation](#-installation)
+  - [Prerequisites](#prerequisites)
+  - [Option A: From source](#option-a-from-source-recommended)
+  - [Option B: pip install](#option-b-pip-install-from-local-directory)
+- [📖 Usage Guide](#-usage-guide)
+  - [Terminal mode](#terminal-mode)
+  - [In-chat commands](#in-chat-commands)
+  - [Web UI mode](#web-ui-mode)
+- [🏗 Architecture](#-architecture)
+  - [Task complexity routing](#task-complexity-routing)
+  - [Model auto-selection](#model-auto-selection)
+  - [Provider management](#provider-management)
+- [🛠 Tools Reference](#-tools-reference)
+  - [File & System](#file--system)
+  - [Web](#web)
+  - [Git](#git-15-tools)
+  - [Memory](#memory)
+- [🧠 Dedicated Workflows](#-dedicated-workflows)
+  - [Bug fixing](#bug-fixing-6-step-protocol)
+  - [Git operations](#git-operations-safety-first)
+  - [Complex tasks](#complex-tasks-never-stops-early)
+- [🧬 Self-Learning System](#-self-learning-system)
+- [🌐 Web UI & REST API](#-web-ui--rest-api)
+- [🔌 Plugin System](#-plugin-system)
+- [🔐 Security](#-security)
+- [⚙️ Configuration Reference](#️-configuration-reference)
+- [🔧 Development](#-development)
+- [📁 Project Structure](#-project-structure)
+- [🙏 Standing on the Shoulders of Giants](#-standing-on-the-shoulders-of-giants)
+- [📄 License](#-license)
 
 ---
 
