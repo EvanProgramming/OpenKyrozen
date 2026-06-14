@@ -3260,16 +3260,16 @@ def _show_self_learning_menu() -> None:
 def _print_banner() -> None:
     """Print the OpenKyrozen ASCII-art banner in accent colour."""
     _ascii = [
-        " _  ____   ______   ___ __________ _   _ ",
-        "| |/ /\\ \\ / /  _ \\ / _ \\__  / ____| \\ | |",
-        "| ' /  \\ V /| |_) | | | |/ /|  _| |  \\| |",
-        "| . \\   | | |  _ <| |_| / /_| |___| |\\  |",
-        "|_|\\_\\  |_| |_| \\_\\\\___/____|_____|_| \\_|",
+        r"  ____  _____  ______ _   _   _  ____     _______   ____ ____________ _   _ ",
+        r" / __ \|  __ \|  ____| \ | | | |/ /\ \   / /  __ \ / __ \___  /  ____| \ | |",
+        r"| |  | | |__) | |__  |  \| | | ' /  \ \_/ /| |__) | |  | | / /| |__  |  \| |",
+        r"| |  | |  ___/|  __| | . ` | |  <    \   / |  _  /| |  | |/ / |  __| | . ` |",
+        r"| |__| | |    | |____| |\  | | . \    | |  | | \ \| |__| / /__| |____| |\  |",
+        r" \____/|_|    |______|_| \_| |_|\_\   |_|  |_|  \_\\____/_____|______|_| \_|",
     ]
-    safe = [ln.replace("\\", "\\\\") for ln in _ascii]
-    for ln in safe:
+    for ln in _ascii:
         console.print(f"  [{_ACCENT}]{ln}[/{_ACCENT}]")
-    console.print(f"  [{_MUTED}]OPEN  {_DOT}  self{_NBHYPHEN}learning AI agent  {_DOT}  DeepSeek V4[/{_MUTED}]")
+    console.print(f"  [{_MUTED}]self{_NBHYPHEN}learning AI agent  {_DOT}  DeepSeek V4[/{_MUTED}]")
     # Platform tag
     if _IS_WINDOWS:
         platform_tag = "Windows"
