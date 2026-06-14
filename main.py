@@ -1768,24 +1768,86 @@ memory_bank = MemoryBank()
 
 # ---- Tool to let agent examine its own memory ----
 def _check_stored_data(args: str) -> str:
-    """Return a summary of stored memories from ChromaDB (or in‑memory fallback).
-    Only facts (non‑file entries) are shown; source code copies are hidden to reduce noise."""
+    """Return a categorized summary of stored memories.
+    Usage: empty args for overview, or a category prefix like 'FACT', 'SKILL', 'STRATEGY'
+    to see more entries of that type.
+    Source code copies (FILE:) are always hidden to reduce noise."""
+    # Known learning categories and their display labels
+    _CATEGORY_LABELS: dict[str, str] = {
+        "FACT:":          "Learned Facts",
+        "SKILL:":         "Invented Skills",
+        "STRATEGY:":      "Distilled Strategies",
+        "REFLECTION:":    "Idle Reflections",
+        "PREF:":          "User Preferences",
+        "FAILURE:":       "Failure Records",
+        "FIX_OUTCOME:":   "Bug Fix Outcomes",
+        "GRAPH:":         "Knowledge Graph",
+        "LEARNED:":       "Learning Logs",
+        "TOOL_REVIEW:":   "Tool Reviews",
+        "DEBUG_FINDING:": "Debug Findings",
+    }
     try:
         total = memory_bank.count_logs()
-        # Retrieve enough logs to find non‑FILE entries.
-        recent_all = memory_bank.get_recent(200)
-        # Filter out FILE entries
-        fact_entries = [log for log in recent_all if not log.startswith("FILE:")]
-        # Show only the most recent 5 non‑FILE logs
-        displayed = fact_entries[:5]
+        # Scan a reasonable window of recent entries for categorisation
+        recent_all = memory_bank.get_recent(500)
+        # Filter and categorise
+        categorized: dict[str, list[str]] = {}
+        uncategorized: list[str] = []
+        for log in recent_all:
+            matched = False
+            for prefix in _CATEGORY_LABELS:
+                if log.startswith(prefix):
+                    categorized.setdefault(prefix, []).append(log)
+                    matched = True
+                    break
+            if not matched and not log.startswith("FILE:"):
+                uncategorized.append(log)
+
+        # Build output
         lines = [f"Total stored logs: {total}"]
-        if displayed:
-            for i, log in enumerate(displayed):
-                snippet = _safe_fstring(log[:300])
-                lines.append(f"\n--- Log {i+1} (FACT) ---\n{snippet}")
+        lines.append(f"Recent window scanned: {len(recent_all)} entries (non‑FILE: {sum(len(v) for v in categorized.values()) + len(uncategorized)})")
+
+        # If user specified a category filter
+        filter_prefix = args.strip().upper() if args and args.strip() else ""
+        if filter_prefix:
+            filter_prefix = filter_prefix + ":" if not filter_prefix.endswith(":") else filter_prefix
+            if filter_prefix in _CATEGORY_LABELS:
+                entries = categorized.get(filter_prefix, [])
+                label = _CATEGORY_LABELS[filter_prefix]
+                lines.append(f"\n## {label} ({len(entries)} recent)")
+                for i, entry in enumerate(entries[:10]):
+                    snippet = _safe_fstring(entry[:400].replace("\n", " "))
+                    lines.append(f"  [{i+1}] {snippet}")
+                if len(entries) > 10:
+                    lines.append(f"  ... and {len(entries) - 10} more in the recent window.")
+            else:
+                lines.append(f"\nUnknown category '{args.strip()}'. Known: {', '.join(k.rstrip(':') for k in _CATEGORY_LABELS)}")
+            return "\n".join(lines)
+
+        # Overview: counts per category plus a sample from each
+        lines.append("\n## Learning Categories Overview")
+        for prefix, label in _CATEGORY_LABELS.items():
+            entries = categorized.get(prefix, [])
+            count = len(entries)
+            marker = "📊" if count > 0 else "  "
+            lines.append(f"  {marker} {label}: {count} recent")
+            if entries:
+                # Show the most recent entry as a sample
+                sample = entries[0][:200].replace("\n", " ")
+                lines.append(f"      Latest: {_safe_fstring(sample)}")
+        if uncategorized:
+            lines.append(f"  📋 Other (uncategorised): {len(uncategorized)} recent")
+
+        # Quick summary of what was actually learned
+        total_learned = sum(len(v) for v in categorized.values())
+        if total_learned > 0:
+            lines.append(f"\nTotal self‑learning artifacts in recent window: {total_learned}")
+            cat_names = [label for prefix, label in _CATEGORY_LABELS.items() if prefix in categorized]
+            lines.append(f"Categories present: {', '.join(cat_names)}")
         else:
-            lines.append("\n(No non‑file facts have been learned yet.)")
-        lines.append(f"\nTotal non‑file fact entries: {len(fact_entries)}")
+            lines.append("\n(No self‑learning artifacts found in the recent window. They may be deeper in storage — try searching with `search_memory`.)")
+
+        lines.append(f"\nTip: use `check_stored_data FACT` to see all recent facts, or `check_stored_data SKILL` for skills.")
         return "\n".join(lines)
     except Exception as e:
         return f"Error reading memory: {e}"

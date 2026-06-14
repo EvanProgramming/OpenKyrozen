@@ -73,40 +73,57 @@ class MemoryBank:
         return log_id
 
     def recall(self, query: str, n_results: int = 2) -> list[str]:
-        """Retrieve the top n_results most relevant logs for the query."""
+        """Retrieve the top n_results most relevant non‑FILE logs for the query.
+        FILE entries (source code copies) are excluded so semantic search returns
+        actual learning artifacts (facts, skills, strategies, etc.)."""
         if not query or not query.strip():
             return []
         with self._lock:
             if _CHROMADB_AVAILABLE and self._collection is not None:
                 try:
                     count = self._collection.count()
+                    # Fetch extra results to account for FILE entries being filtered out
+                    fetch_n = min(max(n_results * 5, 10), count or 1)
                     result = self._collection.query(
                         query_texts=[query.strip()],
-                        n_results=min(n_results, count or 1),
+                        n_results=fetch_n,
                     )
                     docs = result.get("documents")
                     if docs and len(docs) > 0:
                         first = docs[0]
                         if first is None:
                             return []
-                        return list(first) if isinstance(first, list) else [first]
+                        all_docs = list(first) if isinstance(first, list) else [first]
+                        # Exclude FILE entries — they are source code copies, not learning artifacts
+                        filtered = [d for d in all_docs if not d.startswith("FILE:")]
+                        return filtered[:n_results]
                     return []
                 except Exception:
                     return []
             else:
                 if not self._in_memory:
                     return []
-                recent = self._in_memory[-n_results:]
-                return [text for _, text, _ in recent]
+                # In‑memory: take recent entries, filter out FILE entries
+                candidates = self._in_memory[-max(n_results * 5, 10):]
+                filtered = [text for _, text, _ in candidates if not text.startswith("FILE:")]
+                return filtered[:n_results]
 
     def get_recent(self, n: int = 10) -> list[str]:
         """Return the n most recent logs (without relevance ranking)."""
         with self._lock:
             if _CHROMADB_AVAILABLE and self._collection is not None:
                 try:
-                    result = self._collection.get(limit=n, offset=0)
+                    total = self._collection.count()
+                    if total == 0:
+                        return []
+                    n = min(n, total)
+                    # ChromaDB get() returns in insertion order (oldest first).
+                    # Offset to skip to the last n items, then reverse.
+                    offset = total - n
+                    result = self._collection.get(limit=n, offset=offset)
                     docs = result.get("documents", [])
-                    return docs if docs else []
+                    docs.reverse()  # most recent first
+                    return docs
                 except Exception:
                     return []
             else:
@@ -127,7 +144,7 @@ class MemoryBank:
                 return len(self._in_memory)
 
     def get_all(self, limit: int = 2000) -> tuple[list[str], list[str]]:
-        """Return (ids, documents) for stored logs, up to ``limit``. Thread-safe."""
+        """Return (ids, documents) for stored logs, up to ``limit``, most recent first. Thread-safe."""
         with self._lock:
             if _CHROMADB_AVAILABLE and self._collection is not None:
                 try:
@@ -135,14 +152,21 @@ class MemoryBank:
                     if total == 0:
                         return ([], [])
                     n = min(total, limit)
-                    result = self._collection.get(limit=n, offset=0,
+                    # ChromaDB get() returns in insertion order (oldest first).
+                    # Offset to skip to the last n items, then reverse.
+                    offset = total - n
+                    result = self._collection.get(limit=n, offset=offset,
                                                   include=["documents"])
-                    return (result.get("ids", []), result.get("documents", []))
+                    ids = result.get("ids", [])
+                    docs = result.get("documents", [])
+                    ids.reverse()
+                    docs.reverse()
+                    return (ids, docs)
                 except Exception:
                     return ([], [])
             else:
-                ids = [item[0] for item in self._in_memory[:limit]]
-                docs = [item[1] for item in self._in_memory[:limit]]
+                ids = [item[0] for item in self._in_memory[-limit:]]
+                docs = [item[1] for item in self._in_memory[-limit:]]
                 return (ids, docs)
 
     def delete_logs(self, ids: list[str]) -> None:
