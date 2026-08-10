@@ -159,6 +159,7 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
     """
     with _chat_lock:
         previous_messages = _agent.short_term_memory
+        previous_tasks_ref = _agent.tasks.tasks
         previous_tasks = copy.deepcopy(_agent.tasks.tasks)
         try:
             _agent.short_term_memory = list(session["messages"])
@@ -172,7 +173,9 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
             return reply
         finally:
             _agent.short_term_memory = previous_messages
-            _agent.tasks.tasks = previous_tasks
+            previous_tasks_ref.clear()
+            previous_tasks_ref.extend(previous_tasks)
+            _agent.tasks.tasks = previous_tasks_ref
 
 
 def _validate_message(message: str) -> str:

@@ -27,6 +27,11 @@ jobs:
         pip install -r requirements.txt
         pip install fastapi uvicorn
 
+    - name: Install package and run unit tests
+      run: |
+        pip install -e .
+        python -m unittest discover -s tests -p 'test_*.py' -v
+
     - name: Syntax check
       run: |
         python -c "compile(open('main.py').read(), 'main.py', 'exec'); print('main.py OK')"

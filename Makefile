@@ -49,6 +49,10 @@ lint:
 	. venv/bin/activate && python -c "compile(open('memory.py').read(), 'memory.py', 'exec'); print('memory.py OK')"
 	@echo "All files pass syntax check."
 
+# Unit tests
+test:
+	. venv/bin/activate && pip install fastapi uvicorn -q && python -m unittest discover -s tests -p 'test_*.py' -v
+
 # Quick verification
 check:
 	@echo "Checking Python syntax..."

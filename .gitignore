@@ -9,6 +9,9 @@ venv/
 
 # ChromaDB persistent memory (personal user data)
 chroma_memory/
+graphify-out/
+build/
+*.egg-info/
 
 # Editor config
 .vscode/

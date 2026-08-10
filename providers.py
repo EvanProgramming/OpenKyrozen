@@ -583,29 +583,12 @@ def detect_provider() -> ProviderConfig:
 
 
 def save_provider_config(config: ProviderConfig) -> None:
-    """Save provider settings to ~/.kyrozen_config.json."""
-    import json
-    config_path = os.path.expanduser("~/.kyrozen_config.json")
-    existing: dict[str, Any] = {}
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r") as f:
-                existing = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
-    existing["provider"] = config.provider
-    existing["api_key"] = config.api_key
-    existing["model_simple"] = config.model_simple
-    existing["model_complex"] = config.model_complex
-    try:
-        with open(config_path, "w") as f:
-            json.dump(existing, f, indent=2)
-    except OSError:
-        pass
+    """Save provider settings using the encrypted configuration path."""
+    save_provider_config_encrypted(config)
 
 
 # ---------------------------------------------------------------------------
-# API key encryption at rest (simple XOR with machine-derived key)
+# API key encryption at rest
 # ---------------------------------------------------------------------------
 
 def _get_encryption_key() -> bytes:
@@ -614,22 +597,46 @@ def _get_encryption_key() -> bytes:
     seed = f"{socket.gethostname()}:{platform.node()}:openkyrozen"
     return hashlib.sha256(seed.encode()).digest()
 
+
+def _get_fernet():
+    """Return a Fernet cipher backed by a random per-install secret."""
+    from cryptography.fernet import Fernet
+
+    secret_path = os.path.expanduser("~/.kyrozen_secret")
+    try:
+        with open(secret_path, "rb") as f:
+            key = f.read().strip()
+    except FileNotFoundError:
+        key = Fernet.generate_key()
+        try:
+            fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            with open(secret_path, "rb") as f:
+                key = f.read().strip()
+        else:
+            with os.fdopen(fd, "wb") as f:
+                f.write(key)
+    os.chmod(secret_path, 0o600)
+    return Fernet(key)
+
 def encrypt_api_key(plaintext: str) -> str:
-    """Encrypt an API key using XOR with machine key. Returns base64 string."""
-    import base64
+    """Encrypt an API key with a random per-install Fernet key."""
     if not plaintext:
         return ""
-    key = _get_encryption_key()
-    plain_bytes = plaintext.encode()
-    encrypted = bytes(p ^ key[i % len(key)] for i, p in enumerate(plain_bytes))
-    return base64.b64encode(encrypted).decode()
+    return "v2:" + _get_fernet().encrypt(plaintext.encode()).decode()
 
 def decrypt_api_key(ciphertext: str) -> str:
-    """Decrypt an API key. Returns original string or empty on failure."""
+    """Decrypt a Fernet key, with backward-compatible support for legacy XOR."""
     import base64
     if not ciphertext:
         return ""
+    if ciphertext.startswith("v2:"):
+        try:
+            return _get_fernet().decrypt(ciphertext[3:].encode()).decode()
+        except Exception:
+            return ""
     try:
+        # Legacy configs used reversible XOR with a machine-derived key.
         key = _get_encryption_key()
         encrypted = base64.b64decode(ciphertext)
         decrypted = bytes(e ^ key[i % len(key)] for i, e in enumerate(encrypted))
@@ -653,8 +660,10 @@ def save_provider_config_encrypted(config: ProviderConfig) -> None:
     existing["model_simple"] = config.model_simple
     existing["model_complex"] = config.model_complex
     existing["encrypted"] = True
+    existing["encryption"] = "fernet"
     try:
         with open(config_path, "w") as f:
             json.dump(existing, f, indent=2)
+        os.chmod(config_path, 0o600)
     except OSError:
         pass

@@ -454,7 +454,7 @@ See `plugins/turn_logger.py` for a working example.
 | Feature | What it protects |
 |---------|-----------------|
 | **Dangerous command filter** | Blocks `rm -rf`, `mkfs`, fork bombs, Windows destructive commands |
-| **API key encryption** | `~/.kyrozen_config.json` encrypted at rest (XOR + machine-derived SHA-256 key) |
+| **API key encryption** | Fernet encryption with a random per-install secret; config and secret files use `0600` permissions |
 | **Prompt injection protection** | Filters known patterns in CLI, API, and MCP messages |
 | **Workspace boundary** | File and directory tools reject paths outside the active workspace |
 | **API authentication** | Non-loopback API/MCP access requires `KYROZEN_SERVER_TOKEN` |
@@ -490,7 +490,8 @@ See `plugins/turn_logger.py` for a working example.
   "api_key": "<encrypted>",
   "model_simple": "deepseek-chat",
   "model_complex": "deepseek-reasoner",
-  "encrypted": true
+  "encrypted": true,
+  "encryption": "fernet"
 }
 ```
 

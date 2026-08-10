@@ -453,7 +453,7 @@ def register():
 | 特性 | 保护内容 |
 |------|---------|
 | **危险命令过滤** | 拦截 `rm -rf`、`mkfs`、Fork 炸弹、Windows 破坏性命令 |
-| **API 密钥加密** | `~/.kyrozen_config.json` 静态加密（XOR + 机器派生 SHA-256 密钥） |
+| **API 密钥加密** | 使用随机安装密钥进行 Fernet 加密；配置文件和密钥文件权限为 `0600` |
 | **提示注入防护** | CLI、API 和 MCP 消息都会过滤已知模式 |
 | **工作区边界** | 文件和目录工具拒绝访问当前工作区之外的路径 |
 | **API 认证** | 非本机 API/MCP 访问必须设置 `KYROZEN_SERVER_TOKEN` |
@@ -489,7 +489,8 @@ def register():
   "api_key": "<加密>",
   "model_simple": "deepseek-chat",
   "model_complex": "deepseek-reasoner",
-  "encrypted": true
+  "encrypted": true,
+  "encryption": "fernet"
 }
 ```
 

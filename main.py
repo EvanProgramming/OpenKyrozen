@@ -964,6 +964,8 @@ def _load_config_key() -> str | None:
             with open(CONFIG_PATH, "r") as f:
                 data = json.load(f)
             key = data.get("api_key")
+            if data.get("encrypted") and isinstance(key, str):
+                key = decrypt_api_key(key)
             if key and isinstance(key, str) and key.strip():
                 os.environ["DEEPSEEK_API_KEY"] = key.strip()
                 return key.strip()
@@ -978,9 +980,12 @@ def _save_config_key(key: str) -> None:
         if os.path.exists(CONFIG_PATH):
             with open(CONFIG_PATH, "r") as f:
                 existing = json.load(f)
-        existing["api_key"] = key.strip()
+        existing["api_key"] = encrypt_api_key(key.strip())
+        existing["encrypted"] = True
+        existing["encryption"] = "fernet"
         with open(CONFIG_PATH, "w") as f:
             json.dump(existing, f, indent=2)
+        os.chmod(CONFIG_PATH, 0o600)
     except OSError:
         console.print(f"[{_WARNING}]Warning: could not save API key to config file.[/{_WARNING}]")
 

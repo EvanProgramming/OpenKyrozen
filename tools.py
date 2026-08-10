@@ -55,7 +55,11 @@ def set_workspace_root(path: str | os.PathLike[str]) -> None:
 
 
 def _resolve_workspace_path(raw_path: str) -> Path:
-    path = Path(os.path.expanduser(raw_path)).resolve()
+    expanded = os.path.expanduser(raw_path)
+    candidate = Path(expanded)
+    if not candidate.is_absolute():
+        candidate = _WORKSPACE_ROOT / candidate
+    path = candidate.resolve()
     try:
         common = Path(os.path.commonpath([str(_WORKSPACE_ROOT), str(path)]))
     except ValueError as exc:
