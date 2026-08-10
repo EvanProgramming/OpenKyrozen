@@ -45,5 +45,12 @@ Homepage = "https://github.com/EvanProgramming/OpenKyrozen"
 Repository = "https://github.com/EvanProgramming/OpenKyrozen"
 Issues = "https://github.com/EvanProgramming/OpenKyrozen/issues"
 
+[tool.setuptools]
+py-modules = ["main", "memory", "providers", "server", "tools"]
+include-package-data = true
+
 [tool.setuptools.packages.find]
-include = ["*.py", "plugins/*.py", "prompts/*.md"]
+include = ["plugins*"]
+
+[tool.setuptools.package-data]
+plugins = ["*.py"]

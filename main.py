@@ -37,10 +37,10 @@ def _terminal_supports_unicode() -> bool:
     if not _IS_WINDOWS:
         return True
     # Windows Terminal, VS Code terminal, and ConEmu all set WT_SESSION
-    if os.environ.get("WT_SESSION") or os.environ.get("TERM_PROGRAM") == "vscode":
+    if _os.environ.get("WT_SESSION") or _os.environ.get("TERM_PROGRAM") == "vscode":
         return True
     # PowerShell 6+ generally supports UTF-8
-    if "pwsh" in os.environ.get("TERM_PROGRAM", "").lower():
+    if "pwsh" in _os.environ.get("TERM_PROGRAM", "").lower():
         return True
     # Check codepage — 65001 is UTF-8
     try:
