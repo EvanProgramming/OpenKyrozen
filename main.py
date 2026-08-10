@@ -1753,7 +1753,7 @@ def _system_prompt(tools_list: str) -> str:
         "Output a short **Plan** block (numbered list), then execute Actions one by one. "
         "No TaskList required. Example: \"list files and read README\" → Plan→list_dir→read_file→summarise.\n\n"
         "**COMPLEX** (4+ tools, multi‑step analysis, code generation): "
-        "Output **Plan** → **TaskList** (JSON array) → Actions with **TaskDone: N** after each. "
+        "Output **Plan** → **TaskList** (JSON array) → Actions with **TaskDone: N** as a completion request after evidence. "
         "Complete ALL tasks. Never stop early. Example: \"audit this repo\" → full workflow.\n\n"
         "## Planning format (medium/complex tasks only)\n"
         "Plan:\n"
@@ -1769,7 +1769,7 @@ def _system_prompt(tools_list: str) -> str:
         "```json\n"
         "[\"Use list_dir to explore the directory\", \"Use read_file on README.md\", ...]\n"
         "```\n"
-        "After completing a task, output `TaskDone: <index>` on its own line before the next Action.\n\n"
+        "After obtaining evidence for a task, output `TaskDone: <index>` on its own line before the next Action. TaskDone alone never proves completion.\n\n"
         "## General rules\n"
         "- Never ask the user for permission to continue — decide and act.\n"
         "- When analysing a repo, start with `list_dir('.')`.\n"
@@ -1803,7 +1803,7 @@ def _system_prompt(tools_list: str) -> str:
         "1. **UNDERSTAND**: Read the full request. Identify all subtasks and dependencies.\n"
         "2. **PLAN**: Output a numbered Plan with 3‑10 concrete steps. Each step must be verifiable.\n"
         "3. **TASKLIST**: Create a JSON TaskList where each task maps to one Plan step.\n"
-        "4. **EXECUTE**: Work through tasks in order. After each: `TaskDone: N`.\n"
+        "4. **EXECUTE**: Work through tasks in order. After evidence: `TaskDone: N`; the runtime verifies it.\n"
         "5. **TRACK**: If a step fails, create a recovery sub‑task before continuing.\n"
         "6. **SUMMARISE**: When all tasks complete, produce a concise summary of what was done.\n"
         "CRITICAL: Never skip tasks, never stop early, never mark tasks done without executing them.\n"
@@ -3517,7 +3517,7 @@ def main() -> None:
     enabled_count = sum(1 for v in _SELF_LEARNING_FLAGS.values() if v)
     total_count = len(_SELF_LEARNING_FLAGS)
     console.print(f"[{_MUTED}]Self-learning:[/{_MUTED}] [{_ACCENT_DIM}]{enabled_count}/{total_count} features active (toggle with /self-learning)[/{_ACCENT_DIM}]")
-    console.print(f"[{_MUTED}]Memory:[/{_MUTED}] [{_ACCENT_DIM}]ChromaDB (`chroma_memory/`) — ask me what I remember[/{_ACCENT_DIM}]")
+    console.print(f"[{_MUTED}]Memory:[/{_MUTED}] [{_ACCENT_DIM}]SQLite v2 + rebuildable vector index — ask me what I remember[/{_ACCENT_DIM}]")
     console.print(f"[{_MUTED}]Cost:[/{_MUTED}] [{_ACCENT_DIM}]{get_cost_summary()}[/{_ACCENT_DIM}]")
     # Horizontal rule
     console.print(f"[{_ACCENT_DIM}]{_BOX_H * 50}[/{_ACCENT_DIM}]")

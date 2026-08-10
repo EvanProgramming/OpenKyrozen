@@ -440,9 +440,10 @@ loopback destinations are blocked unless `KYROZEN_BROWSER_ALLOW_PRIVATE=1` is se
 
 API and MCP routes allow direct loopback access without a token. Any
 non-loopback deployment must set `KYROZEN_SERVER_TOKEN` and send it as
-`Authorization: Bearer <token>` or `X-Kyrozen-Token`. MCP write, shell, Git
-mutation, and remote-clone tools are disabled by default; explicitly set
-`KYROZEN_MCP_ALLOW_DANGEROUS=1` only in a trusted environment.
+`Authorization: Bearer <token>` or `X-Kyrozen-Token`. Web/MCP use the rich
+`workspace` profile by default; choose `full` explicitly for irreversible reset
+and dynamic tools. Authentication, capability tokens, and command safety checks
+still apply.
 
 ### Docker deployment
 
@@ -451,7 +452,7 @@ docker build -t openkyrozen .
 docker run -p 8000:8000 \
   -e DEEPSEEK_API_KEY=sk-your-key \
   -e KYROZEN_SERVER_TOKEN=change-me \
-  -v $(pwd)/chroma_memory:/app/chroma_memory \
+  -v kyrozen-data:/root/.kyrozen/v2 \
   openkyrozen
 ```
 

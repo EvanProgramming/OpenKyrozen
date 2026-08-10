@@ -446,7 +446,7 @@ docker build -t openkyrozen .
 docker run -p 8000:8000 \
   -e DEEPSEEK_API_KEY=sk-your-key \
   -e KYROZEN_SERVER_TOKEN=change-me \
-  -v $(pwd)/chroma_memory:/app/chroma_memory \
+  -v kyrozen-data:/root/.kyrozen/v2 \
   openkyrozen
 ```
 
