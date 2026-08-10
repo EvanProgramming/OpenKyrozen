@@ -15,6 +15,7 @@ import hmac
 import ipaddress
 import copy
 import re
+import asyncio
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -360,7 +361,10 @@ async def api_chat_stream(request: Request):
 
     async def generate():
         try:
-            reply = _run_session_chat(session, msg)
+            # The legacy agent is synchronous and may perform network and disk
+            # I/O. Keep it off the ASGI event loop so one chat cannot stall
+            # health checks or unrelated requests.
+            reply = await asyncio.to_thread(_run_session_chat, session, msg)
             # Send chunks (simulated streaming for non-streaming providers)
             chunk_size = 20
             for i in range(0, len(reply), chunk_size):
@@ -603,9 +607,8 @@ async def pwa_manifest():
 
 
 # Async sleep helper
-import asyncio as _asyncio
 async def asyncio_sleep(seconds: float):
-    await _asyncio.sleep(seconds)
+    await asyncio.sleep(seconds)
 
 
 # ---------------------------------------------------------------------------

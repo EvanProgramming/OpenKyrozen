@@ -481,6 +481,7 @@ See `plugins/turn_logger.py` for a working example.
 | `KYROZEN_MODEL_SIMPLE` | Model for simple/medium tasks | Provider default |
 | `KYROZEN_MODEL_COMPLEX` | Model for complex tasks | Provider default |
 | `KYROZEN_BASE_URL` | Custom API base URL | Provider default |
+| `KYROZEN_ALLOW_DYNAMIC_TOOLS` | Allow LLM-generated Python tools (`1`/`true`) | Disabled |
 
 ### Config file (`~/.kyrozen_config.json`)
 

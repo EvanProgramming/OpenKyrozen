@@ -480,6 +480,7 @@ def register():
 | `KYROZEN_MODEL_SIMPLE` | 简单/中等任务模型 | 服务商默认值 |
 | `KYROZEN_MODEL_COMPLEX` | 复杂任务模型 | 服务商默认值 |
 | `KYROZEN_BASE_URL` | 自定义 API 基础 URL | 服务商默认值 |
+| `KYROZEN_ALLOW_DYNAMIC_TOOLS` | 允许 LLM 生成 Python 工具（`1`/`true`） | 默认关闭 |
 
 ### 配置文件（`~/.kyrozen_config.json`）
 

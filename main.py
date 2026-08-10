@@ -249,6 +249,7 @@ MAX_STEPS_PER_TURN = 50          # how many tool-call rounds the LLM may perform
 MAX_UNKNOWN_TOOL_RETRIES = 3     # how many times to re-prompt when LLM uses an unrecognised action name
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
 IDLE_CONSOLIDATION_TIMEOUT = 60   # 1 minute
+ALLOW_DYNAMIC_TOOLS = os.environ.get("KYROZEN_ALLOW_DYNAMIC_TOOLS", "0").strip().lower() in {"1", "true", "yes"}
 
 # ---- Provider (multi-LLM support) ----
 _provider_config: ProviderConfig | None = None
@@ -1268,6 +1269,8 @@ def _get_fix_success_rate() -> float:
 
 def _register_tool(name: str, code: str, description: str = "") -> bool:
     """Register a new callable tool dynamically. Returns True on success."""
+    if not ALLOW_DYNAMIC_TOOLS:
+        return False
     if not name or not code:
         return False
     # Validate: name must be a valid identifier
@@ -1321,6 +1324,9 @@ def _attempt_define_tool(text: str) -> bool:
         ...
     ```
     """
+    if not ALLOW_DYNAMIC_TOOLS:
+        return False
+
     pattern = r"DefineTool:\s*```(?:python)?\s*([\s\S]*?)\s*```"
     match = re.search(pattern, text)
     if not match:

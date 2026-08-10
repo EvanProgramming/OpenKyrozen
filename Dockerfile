@@ -19,8 +19,18 @@ RUN pip install --no-cache-dir fastapi uvicorn
 # Copy application code
 COPY . .
 
+# Run the service without root privileges. The application only needs to read
+# its code and write user data under the mounted working directory/home.
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin kyrozen \
+    && chown -R kyrozen:kyrozen /app
+
+USER kyrozen
+
 # Expose web server port
 EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3)"
 
 # Default: run web server
 CMD ["python", "server.py", "--host", "0.0.0.0", "--port", "8000"]
