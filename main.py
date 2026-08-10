@@ -100,6 +100,7 @@ from skill_registry import SkillRegistry
 from instruction_loader import format_instructions
 from subagents import AgentProfile, SubAgentManager
 from capability_tokens import issue_capability_token
+from dynamic_tools import SAFE_BUILTINS, validate_tool_source
 from tools import (AVAILABLE_TOOLS, set_workspace_root as _set_tools_workspace_root,
                    resolve_capabilities, tool_capability)
 from providers import (
@@ -1315,10 +1316,19 @@ def _register_tool(name: str, code: str, description: str = "") -> bool:
     if name in _BUILTIN_TOOL_NAMES:
         return False
 
-    # Compile the tool function
+    valid, reason = validate_tool_source(code, name)
+    if not valid:
+        memory_bank.store.append_event(
+            "tool.rejected", {"name": name, "reason": reason},
+            user_id=memory_bank.user_id, workspace_id=memory_bank.workspace_id,
+            session_id=memory_bank.session_id,
+        )
+        return False
+
+    # Compile the tool function in a restricted global namespace.
     try:
         local_ns: dict[str, Any] = {}
-        exec(code, {"__builtins__": __builtins__}, local_ns)
+        exec(code, {"__builtins__": SAFE_BUILTINS}, local_ns)
         fn = local_ns.get(name)
         if fn is None or not callable(fn):
             # Try to find any top-level function
