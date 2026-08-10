@@ -35,6 +35,7 @@ dependencies = [
 web = ["fastapi", "uvicorn"]
 claude = ["anthropic>=0.30.0"]
 gemini = ["google-generativeai>=0.8.0"]
+browser = ["playwright>=1.40"]
 all = ["fastapi", "uvicorn", "anthropic>=0.30.0", "google-generativeai>=0.8.0"]
 
 [project.scripts]
@@ -47,7 +48,7 @@ Repository = "https://github.com/EvanProgramming/OpenKyrozen"
 Issues = "https://github.com/EvanProgramming/OpenKyrozen/issues"
 
 [tool.setuptools]
-py-modules = ["main", "memory", "providers", "server", "tools"]
+py-modules = ["main", "memory", "providers", "server", "tools", "event_store", "learning_engine", "migration", "task_engine", "scheduler", "skill_registry", "browser_manager"]
 include-package-data = true
 
 [tool.setuptools.packages.find]

@@ -13,7 +13,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -144,6 +144,39 @@ class EventStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_learning_status
                     ON learning_proposals(status, workspace_id, updated_at);
+                CREATE TABLE IF NOT EXISTS scheduled_jobs (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    interval_seconds REAL,
+                    run_at TEXT,
+                    next_run_at TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    payload TEXT NOT NULL DEFAULT '{}',
+                    last_run_at TEXT,
+                    user_id TEXT NOT NULL DEFAULT 'local',
+                    workspace_id TEXT NOT NULL DEFAULT 'default',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_due
+                    ON scheduled_jobs(enabled, next_run_at, workspace_id);
+                CREATE TABLE IF NOT EXISTS skills (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    permissions TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'candidate',
+                    source TEXT NOT NULL DEFAULT 'local',
+                    manifest TEXT NOT NULL DEFAULT '{}',
+                    workspace_id TEXT NOT NULL DEFAULT 'default',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(name, version, workspace_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_skills_status
+                    ON skills(workspace_id, status, name);
                 """
             )
             existing = db.execute("SELECT version FROM schema_migrations WHERE version=?", (self.SCHEMA_VERSION,)).fetchone()
@@ -193,6 +226,15 @@ class EventStore:
                 params,
             ).fetchall()
         return [dict(row, payload=self._loads(row["payload"], {})) for row in rows]
+
+    def list_sessions(self, *, workspace_id: str = "default", limit: int = 100) -> list[dict[str, Any]]:
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT session_id, MAX(created_at) AS updated_at, COUNT(*) AS event_count FROM events "
+                "WHERE workspace_id=? AND session_id IS NOT NULL GROUP BY session_id ORDER BY updated_at DESC LIMIT ?",
+                (workspace_id, max(1, min(limit, 1000))),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def upsert_memory(self, content: str, *, kind: str = "episodic", status: str = "active",
                       confidence: float = 0.5, user_id: str = "local", workspace_id: str = "default",
@@ -352,3 +394,83 @@ class EventStore:
         with self.connection() as db:
             rows = db.execute(f"SELECT * FROM learning_proposals WHERE {clause} ORDER BY updated_at DESC LIMIT ?", params).fetchall()
         return [dict(row, evidence=self._loads(row["evidence"], []), validation=self._loads(row["validation"], {})) for row in rows]
+
+    def upsert_schedule(self, job_id: str, name: str, *, next_run_at: str,
+                        interval_seconds: float | None = None, run_at: str | None = None,
+                        payload: dict[str, Any] | None = None, enabled: bool = True,
+                        workspace_id: str = "default", user_id: str = "local") -> str:
+        now = utc_now()
+        with self._lock, self.connection() as db:
+            db.execute(
+                "INSERT INTO scheduled_jobs(id,name,interval_seconds,run_at,next_run_at,enabled,payload,user_id,workspace_id,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,interval_seconds=excluded.interval_seconds,run_at=excluded.run_at,next_run_at=excluded.next_run_at,enabled=excluded.enabled,payload=excluded.payload,updated_at=excluded.updated_at",
+                (job_id, name, interval_seconds, run_at, next_run_at, int(enabled), self._json(payload or {}), user_id, workspace_id, now, now),
+            )
+        return job_id
+
+    def list_schedules(self, *, workspace_id: str = "default", enabled: bool | None = None,
+                       limit: int = 500) -> list[dict[str, Any]]:
+        clauses = ["workspace_id=?"]
+        params: list[Any] = [workspace_id]
+        if enabled is not None:
+            clauses.append("enabled=?")
+            params.append(int(enabled))
+        params.append(max(1, min(limit, 5000)))
+        with self.connection() as db:
+            rows = db.execute(f"SELECT * FROM scheduled_jobs WHERE {' AND '.join(clauses)} ORDER BY next_run_at LIMIT ?", params).fetchall()
+        return [dict(row, enabled=bool(row["enabled"]), payload=self._loads(row["payload"], {})) for row in rows]
+
+    def claim_due_schedules(self, *, now: str, workspace_id: str = "default", limit: int = 20) -> list[dict[str, Any]]:
+        with self._lock, self.connection() as db:
+            rows = db.execute(
+                "SELECT * FROM scheduled_jobs WHERE workspace_id=? AND enabled=1 AND next_run_at<=? ORDER BY next_run_at LIMIT ?",
+                (workspace_id, now, max(1, min(limit, 100))),
+            ).fetchall()
+            claimed: list[dict[str, Any]] = []
+            for row in rows:
+                interval = row["interval_seconds"]
+                next_run = now if not interval else datetime.fromisoformat(now) + timedelta(seconds=float(interval))
+                next_run_at = next_run.isoformat() if interval else row["next_run_at"]
+                db.execute(
+                    "UPDATE scheduled_jobs SET next_run_at=?,last_run_at=?,enabled=?,updated_at=? WHERE id=? AND enabled=1",
+                    (next_run_at, now, int(bool(interval)), now, row["id"]),
+                )
+                claimed.append(dict(row, payload=self._loads(row["payload"], {}), next_run_at=next_run_at))
+            return claimed
+
+    def set_schedule_enabled(self, job_id: str, enabled: bool, *, workspace_id: str = "default") -> bool:
+        with self._lock, self.connection() as db:
+            return db.execute(
+                "UPDATE scheduled_jobs SET enabled=?,updated_at=? WHERE id=? AND workspace_id=?",
+                (int(enabled), utc_now(), job_id, workspace_id),
+            ).rowcount == 1
+
+    def upsert_skill(self, *, name: str, version: str, path: str, description: str,
+                     permissions: list[str], status: str = "candidate", source: str = "local",
+                     manifest: dict[str, Any] | None = None, workspace_id: str = "default") -> str:
+        skill_id = f"skill_{stable_hash(f'{workspace_id}:{name}:{version}')[:24]}"
+        now = utc_now()
+        with self._lock, self.connection() as db:
+            db.execute(
+                "INSERT INTO skills(id,name,version,path,description,permissions,status,source,manifest,workspace_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(name,version,workspace_id) DO UPDATE SET path=excluded.path,description=excluded.description,permissions=excluded.permissions,status=excluded.status,source=excluded.source,manifest=excluded.manifest,updated_at=excluded.updated_at",
+                (skill_id, name, version, path, description, self._json(sorted(set(permissions))), status, source,
+                 self._json(manifest or {}), workspace_id, now, now),
+            )
+        return skill_id
+
+    def list_skills(self, *, workspace_id: str = "default", status: str | None = None, limit: int = 500) -> list[dict[str, Any]]:
+        clauses = ["workspace_id=?"]
+        params: list[Any] = [workspace_id]
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        params.append(max(1, min(limit, 5000)))
+        with self.connection() as db:
+            rows = db.execute(f"SELECT * FROM skills WHERE {' AND '.join(clauses)} ORDER BY name,version LIMIT ?", params).fetchall()
+        return [dict(row, permissions=self._loads(row["permissions"], []), manifest=self._loads(row["manifest"], {})) for row in rows]
+
+    def set_skill_status(self, skill_id: str, status: str, *, workspace_id: str = "default") -> bool:
+        with self._lock, self.connection() as db:
+            return db.execute("UPDATE skills SET status=?,updated_at=? WHERE id=? AND workspace_id=?",
+                              (status, utc_now(), skill_id, workspace_id)).rowcount == 1

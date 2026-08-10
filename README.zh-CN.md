@@ -410,6 +410,12 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `GET` | `/api/v2/learning` | 查看学习提案 |
 | `POST` | `/api/v2/learning/{id}/rollback` | 回滚已激活的学习提案 |
 | `GET` | `/api/v2/events` | 查看运行时、会话、任务和学习审计事件 |
+| `GET/POST` | `/api/v2/schedules` | 持久化 interval/一次性 Gateway 任务 |
+| `POST` | `/api/v2/schedules/{id}/disable` | 禁用定时任务 |
+| `GET` | `/api/v2/skills` | 查看候选/已激活技能 |
+| `POST` | `/api/v2/skills/install` | 安装并验证本地 `SKILL.md` 技能包 |
+| `POST` | `/api/v2/skills/{id}/activate` | 激活已验证技能 |
+| `POST` | `/api/v2/skills/{id}/rollback` | 回滚技能 |
 | `GET` | `/api/cost` | Token 用量和费用摘要 |
 | `GET` | `/api/health` | 服务商状态 + 记忆计数 |
 | `GET` | `/api/voice/speak?text=...` | 通过系统 TTS 进行文本转语音 |

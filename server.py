@@ -35,6 +35,7 @@ import main as _agent
 from providers import get_cost_summary, reset_cost_tracker
 from memory import MemoryBank
 from task_engine import TaskManager
+from scheduler import JobScheduler
 from tools import allowed_tool_names, resolve_capabilities, tool_capability
 
 try:
@@ -126,6 +127,27 @@ _MAX_SESSION_MESSAGES = 32
 _MAX_MESSAGE_CHARS = 12_000
 _MAX_MEMORY_QUERY_CHARS = 500
 _MAX_MEMORY_RESULTS = 50
+_scheduler = JobScheduler(_agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id)
+
+
+def _run_scheduled_job(job: dict[str, Any]) -> None:
+    payload = job.get("payload", {})
+    if payload.get("type") == "learning_cycle":
+        if _agent._SELF_LEARNING_FLAGS.get("auto_learn_conversations", True):
+            _agent._auto_learn_conversations()
+        if _agent._SELF_LEARNING_FLAGS.get("consolidate_memories", True):
+            _agent._consolidate_memories()
+        return
+    if payload.get("type") == "chat":
+        session_id = _normalise_session_id(payload.get("session_id"))
+        session = _get_or_create_session(session_id, "scheduler")
+        _run_session_chat(session, str(payload.get("message", "")))
+        return
+    raise ValueError(f"Unknown scheduled job type: {payload.get('type', 'default')}")
+
+
+_scheduler.register_callback("learning_cycle", _run_scheduled_job)
+_scheduler.register_callback("chat", _run_scheduled_job)
 
 
 def _normalise_session_id(raw_session_id: Any) -> str:
@@ -519,6 +541,85 @@ async def api_v2_events(event_type: str | None = None, session_id: str | None = 
     )}
 
 
+@app.get("/api/v2/sessions", dependencies=[Depends(require_api_access)])
+async def api_v2_sessions(limit: int = 100):
+    return {"sessions": _agent.memory_bank.store.list_sessions(
+        workspace_id=_agent.memory_bank.workspace_id, limit=max(1, min(limit, 500)),
+    )}
+
+
+@app.get("/api/v2/sessions/{session_id}", dependencies=[Depends(require_api_access)])
+async def api_v2_session(session_id: str):
+    session_id = _normalise_session_id(session_id)
+    session = _get_or_create_session(session_id, "authenticated")
+    return {"session_id": session_id, "messages": session["messages"], "updated": session.get("updated")}
+
+
+@app.get("/api/v2/schedules", dependencies=[Depends(require_api_access)])
+async def api_v2_schedules():
+    return {"schedules": _scheduler.list_jobs()}
+
+
+@app.post("/api/v2/schedules", dependencies=[Depends(require_api_access)])
+async def api_v2_create_schedule(request: Request):
+    body = await request.json()
+    if not isinstance(body, dict) or not str(body.get("name", "")).strip():
+        raise HTTPException(400, "name is required")
+    payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+    if not payload.get("type"):
+        raise HTTPException(400, "payload.type is required")
+    if "interval_seconds" in body:
+        job_id = _scheduler.schedule_every(
+            str(body["name"]), float(body["interval_seconds"]), payload=payload,
+            job_id=str(body["id"]) if body.get("id") else None,
+        )
+    elif body.get("run_at"):
+        job_id = _scheduler.schedule_once(
+            str(body["name"]), str(body["run_at"]), payload=payload,
+            job_id=str(body["id"]) if body.get("id") else None,
+        )
+    else:
+        raise HTTPException(400, "interval_seconds or run_at is required")
+    return {"schedule": next(item for item in _scheduler.list_jobs() if item["id"] == job_id)}
+
+
+@app.post("/api/v2/schedules/{job_id}/disable", dependencies=[Depends(require_api_access)])
+async def api_v2_disable_schedule(job_id: str):
+    if not _agent.memory_bank.store.set_schedule_enabled(job_id, False, workspace_id=_agent.memory_bank.workspace_id):
+        raise HTTPException(404, "Schedule not found")
+    return {"status": "disabled", "job_id": job_id}
+
+
+@app.get("/api/v2/skills", dependencies=[Depends(require_api_access)])
+async def api_v2_skills(status: str | None = None):
+    return {"skills": _agent.skill_registry.list(status)}
+
+
+@app.post("/api/v2/skills/install", dependencies=[Depends(require_api_access)])
+async def api_v2_install_skill(request: Request):
+    body = await request.json()
+    if not isinstance(body, dict) or not str(body.get("path", "")).strip():
+        raise HTTPException(400, "path is required")
+    try:
+        return _agent.skill_registry.install(str(body["path"]), activate=bool(body.get("activate", False)))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/v2/skills/{skill_id}/activate", dependencies=[Depends(require_api_access)])
+async def api_v2_activate_skill(skill_id: str):
+    if not _agent.skill_registry.activate(skill_id):
+        raise HTTPException(400, "Skill validation failed or skill not found")
+    return {"status": "active", "skill_id": skill_id}
+
+
+@app.post("/api/v2/skills/{skill_id}/rollback", dependencies=[Depends(require_api_access)])
+async def api_v2_rollback_skill(skill_id: str):
+    if not _agent.skill_registry.rollback(skill_id):
+        raise HTTPException(404, "Skill not found")
+    return {"status": "rolled_back", "skill_id": skill_id}
+
+
 @app.get("/api/cost", dependencies=[Depends(require_api_access)])
 async def api_cost():
     """Get cost summary."""
@@ -790,8 +891,14 @@ async def startup():
     _agent._load_project_files_into_memory()
     _load_plugins()
     _trigger_hook("on_startup", agent=_agent)
+    _scheduler.start()
     _audit("STARTUP", "server started")
     print("[Server] Ready — http://127.0.0.1:8000 (set KYROZEN_SERVER_TOKEN for remote access)")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    _scheduler.stop()
 
 
 # ---------------------------------------------------------------------------

@@ -414,6 +414,12 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `GET` | `/api/v2/learning` | Learning proposal status |
 | `POST` | `/api/v2/learning/{id}/rollback` | Roll back an activated proposal |
 | `GET` | `/api/v2/events` | Auditable runtime, task, session, and learning events |
+| `GET/POST` | `/api/v2/schedules` | Durable interval and one-shot Gateway jobs |
+| `POST` | `/api/v2/schedules/{id}/disable` | Disable a scheduled job |
+| `GET` | `/api/v2/skills` | List installed candidate/active skills |
+| `POST` | `/api/v2/skills/install` | Install and validate a local `SKILL.md` package |
+| `POST` | `/api/v2/skills/{id}/activate` | Activate a validated skill |
+| `POST` | `/api/v2/skills/{id}/rollback` | Roll back a skill |
 | `GET` | `/api/cost` | Token usage and cost summary |
 | `GET` | `/api/health` | Provider status + memory count |
 | `GET` | `/api/voice/speak?text=...` | Text-to-speech via system TTS |

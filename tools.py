@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from browser_manager import BrowserManager
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", message="This package.*has been renamed")
@@ -46,6 +47,7 @@ _BLOCKED_RE = re.compile("|".join(_BLOCKED_PATTERNS), re.IGNORECASE)
 # intentionally explicit and is disabled for MCP unless separately enabled;
 # Python-level path checks cannot sandbox arbitrary shell programs.
 _WORKSPACE_ROOT: Path = Path.cwd().resolve()
+_BROWSER = BrowserManager()
 
 
 def set_workspace_root(path: str | os.PathLike[str]) -> None:
@@ -749,6 +751,31 @@ def list_tree(args: str) -> str:
         return f"Error listing tree: {e}"
 
 
+def browser_open(args: str) -> str:
+    """Open a URL in an isolated headless browser profile. Args: URL."""
+    return _BROWSER.open(args.strip())
+
+
+def browser_snapshot(args: str) -> str:
+    """Read the current page text. Args: browser session ID."""
+    return _BROWSER.snapshot(args.strip())
+
+
+def browser_click(args: str) -> str:
+    """Click a selector. Args format: session_id|CSS selector."""
+    return _BROWSER.click(args)
+
+
+def browser_type(args: str) -> str:
+    """Fill a selector. Args format: session_id|CSS selector|text."""
+    return _BROWSER.type_text(args)
+
+
+def browser_close(args: str) -> str:
+    """Close an isolated browser session. Args: browser session ID."""
+    return _BROWSER.close(args.strip())
+
+
 AVAILABLE_TOOLS: dict[str, Any] = {
     "write_file": write_file,
     "read_file": read_file,
@@ -774,6 +801,11 @@ AVAILABLE_TOOLS: dict[str, Any] = {
     "analyze_remote_repo": analyze_remote_repo,
     "list_tree": list_tree,
     "read_webpage": read_webpage,
+    "browser_open": browser_open,
+    "browser_snapshot": browser_snapshot,
+    "browser_click": browser_click,
+    "browser_type": browser_type,
+    "browser_close": browser_close,
 }
 
 # Capability labels let local CLI, Web, and MCP surfaces expose the same rich
@@ -789,6 +821,11 @@ _TOOL_CAPABILITIES: dict[str, str] = {
     "read_webpage": "network",
     "git_clone": "git",
     "analyze_remote_repo": "network",
+    "browser_open": "browser",
+    "browser_snapshot": "browser",
+    "browser_click": "browser",
+    "browser_type": "browser",
+    "browser_close": "browser",
     "git_add": "git",
     "git_commit": "git",
     "git_push": "git",
@@ -801,9 +838,9 @@ _TOOL_CAPABILITIES: dict[str, str] = {
 
 _CAPABILITY_PROFILES: dict[str, frozenset[str]] = {
     # Rich local-workspace access: read/write files, shell, network and Git.
-    "workspace": frozenset({"read", "write", "shell", "network", "git"}),
+    "workspace": frozenset({"read", "write", "shell", "network", "git", "browser"}),
     # Explicit opt-in for irreversible operations and user-defined tools.
-    "full": frozenset({"read", "write", "shell", "network", "git", "destructive", "dynamic"}),
+    "full": frozenset({"read", "write", "shell", "network", "git", "browser", "destructive", "dynamic"}),
     "readonly": frozenset({"read", "network"}),
 }
 
@@ -814,7 +851,7 @@ def resolve_capabilities(value: str | None, default: str = "readonly") -> frozen
     if raw in _CAPABILITY_PROFILES:
         return _CAPABILITY_PROFILES[raw]
     requested = {part.strip() for part in raw.split(",") if part.strip()}
-    return frozenset(requested & {"read", "write", "shell", "network", "git", "destructive", "dynamic"})
+    return frozenset(requested & {"read", "write", "shell", "network", "git", "browser", "destructive", "dynamic"})
 
 
 def allowed_tool_names(tools: dict[str, Any] | None = None, capabilities: str | None = None) -> set[str]:

@@ -96,6 +96,8 @@ from memory import MemoryBank
 from task_engine import TaskManager
 from event_store import stable_hash
 from learning_engine import LearningEngine
+from skill_registry import SkillRegistry
+from instruction_loader import format_instructions
 from tools import AVAILABLE_TOOLS, set_workspace_root as _set_tools_workspace_root
 from providers import (
     ProviderConfig, LLMProvider, get_provider, detect_provider,
@@ -388,6 +390,7 @@ _BUILTIN_TOOL_NAMES = {
     "git_diff","git_log","git_branch","git_add","git_commit",
     "git_push","git_pull","git_checkout","git_stash","git_reset",
     "git_show","git_remote",
+    "browser_open","browser_snapshot","browser_click","browser_type","browser_close",
 }
 _saved_user_tools: dict[str, Any] = {}
 
@@ -1801,6 +1804,7 @@ def _system_prompt(tools_list: str) -> str:
 
 memory_bank = MemoryBank()
 learning_engine = LearningEngine(memory_bank)
+skill_registry = SkillRegistry(memory_bank.store, workspace_id=memory_bank.workspace_id)
 
 # ---- Tool to let agent examine its own memory ----
 def _check_stored_data(args: str) -> str:
@@ -2054,6 +2058,10 @@ def _build_messages(user_input: str) -> list[dict[str, str]]:
         "role": "system",
         "content": _workspace_info()
     })
+
+    project_instructions = format_instructions(_get_workspace_root())
+    if project_instructions:
+        messages.append({"role": "system", "content": project_instructions})
 
     # Retrieve failure records if relevant
     failures = _retrieve_failure(user_input)
