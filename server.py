@@ -13,6 +13,8 @@ import threading
 import uuid
 import hmac
 import ipaddress
+import copy
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -111,19 +113,72 @@ def _audit(event: str, detail: str = "", user: str = "anonymous") -> None:
 # ---------------------------------------------------------------------------
 
 _sessions: dict[str, dict[str, Any]] = {}  # session_id -> {messages, user_id, created}
+_chat_lock = threading.RLock()
+_MAX_SESSION_MESSAGES = 32
+_MAX_MESSAGE_CHARS = 12_000
+_MAX_MEMORY_QUERY_CHARS = 500
+_MAX_MEMORY_RESULTS = 50
+
+
+def _normalise_session_id(raw_session_id: Any) -> str:
+    """Validate a client session key without allowing unbounded map growth."""
+    if raw_session_id is None or raw_session_id == "":
+        return f"sess_{uuid.uuid4().hex}"
+    session_id = str(raw_session_id).strip()
+    if len(session_id) > 128 or not re.fullmatch(r"[A-Za-z0-9_.:-]+", session_id):
+        raise HTTPException(400, "Invalid session_id")
+    return session_id
+
+
+def _actor_for_request(request: Request) -> str:
+    """Return a coarse audit actor; user_id is never accepted from JSON."""
+    return "authenticated" if _SERVER_TOKEN else "loopback"
+
 
 def _get_or_create_session(session_id: str, user_id: str = "anonymous") -> dict:
-    if session_id not in _sessions:
-        _sessions[session_id] = {
-            "messages": [],
-            "user_id": user_id,
-            "created": time.time(),
-        }
-        # Keep only last 100 sessions
-        if len(_sessions) > 100:
-            oldest = min(_sessions, key=lambda k: _sessions[k]["created"])
-            del _sessions[oldest]
-    return _sessions[session_id]
+    with _chat_lock:
+        if session_id not in _sessions:
+            _sessions[session_id] = {
+                "messages": [],
+                "user_id": user_id,
+                "created": time.time(),
+            }
+            # Keep only last 100 sessions
+            if len(_sessions) > 100:
+                oldest = min(_sessions, key=lambda k: _sessions[k]["created"])
+                del _sessions[oldest]
+        return _sessions[session_id]
+
+
+def _run_session_chat(session: dict[str, Any], message: str) -> str:
+    """Run the legacy global agent with an isolated per-session context.
+
+    The core agent currently stores short-term messages and task state in module
+    globals. Serialising the swap prevents concurrent requests from seeing one
+    another while preserving independent histories in the web layer.
+    """
+    with _chat_lock:
+        previous_messages = _agent.short_term_memory
+        previous_tasks = copy.deepcopy(_agent.tasks.tasks)
+        try:
+            _agent.short_term_memory = list(session["messages"])
+            reply = _agent._chat_turn(message, clear_tasks=True)
+            _agent.short_term_memory.extend([
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": reply},
+            ])
+            session["messages"] = _agent.short_term_memory[-_MAX_SESSION_MESSAGES:]
+            session["updated"] = time.time()
+            return reply
+        finally:
+            _agent.short_term_memory = previous_messages
+            _agent.tasks.tasks = previous_tasks
+
+
+def _validate_message(message: str) -> str:
+    if len(message) > _MAX_MESSAGE_CHARS:
+        raise HTTPException(413, f"Message exceeds {_MAX_MESSAGE_CHARS} characters")
+    return message
 
 # ---------------------------------------------------------------------------
 # HTML Chat UI
@@ -265,20 +320,23 @@ async def api_chat(request: Request):
         body = await request.json()
     except Exception:
         raise HTTPException(400, "Invalid JSON")
-    msg = _sanitize_api_message(body.get("message", "").strip())
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    msg = _validate_message(_sanitize_api_message(str(body.get("message", "")).strip()))
     if not msg:
         raise HTTPException(400, "Empty message")
-    session = _get_or_create_session(body.get("session_id", "default"), body.get("user_id", "anonymous"))
+    session_id = _normalise_session_id(body.get("session_id"))
+    session = _get_or_create_session(session_id, _actor_for_request(request))
     _audit("CHAT", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
 
     try:
-        reply = _agent._chat_turn(msg, clear_tasks=True)
+        reply = _run_session_chat(session, msg)
     except Exception as e:
         _audit("ERROR", str(e), session["user_id"])
         raise HTTPException(500, str(e))
 
     _audit("REPLY", f"len={len(reply)}", session["user_id"])
-    return {"reply": reply, "cost": get_cost_summary()}
+    return {"reply": reply, "session_id": session_id, "cost": get_cost_summary()}
 
 
 @app.post("/api/chat/stream", dependencies=[Depends(require_api_access)])
@@ -288,15 +346,18 @@ async def api_chat_stream(request: Request):
         body = await request.json()
     except Exception:
         raise HTTPException(400, "Invalid JSON")
-    msg = _sanitize_api_message(body.get("message", "").strip())
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    msg = _validate_message(_sanitize_api_message(str(body.get("message", "")).strip()))
     if not msg:
         raise HTTPException(400, "Empty message")
-    session = _get_or_create_session(body.get("session_id", "default"), body.get("user_id", "anonymous"))
+    session_id = _normalise_session_id(body.get("session_id"))
+    session = _get_or_create_session(session_id, _actor_for_request(request))
     _audit("CHAT_STREAM", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
 
     async def generate():
         try:
-            reply = _agent._chat_turn(msg, clear_tasks=True)
+            reply = _run_session_chat(session, msg)
             # Send chunks (simulated streaming for non-streaming providers)
             chunk_size = 20
             for i in range(0, len(reply), chunk_size):
@@ -315,6 +376,8 @@ async def api_chat_stream(request: Request):
 @app.get("/api/memory", dependencies=[Depends(require_api_access)])
 async def api_memory(q: str = "", limit: int = 10):
     """Search stored memories."""
+    q = q[:_MAX_MEMORY_QUERY_CHARS]
+    limit = max(1, min(limit, _MAX_MEMORY_RESULTS))
     if q:
         results = _agent.memory_bank.recall(q, n_results=limit)
     else:
@@ -350,8 +413,12 @@ async def mcp_endpoint(request: Request):
         body = await request.json()
     except Exception:
         raise HTTPException(400, "Invalid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
     method = body.get("method", "")
     params = body.get("params", {})
+    if not isinstance(params, dict):
+        raise HTTPException(400, "params object required")
 
     if method == "tools/list":
         return {
@@ -391,11 +458,13 @@ async def mcp_endpoint(request: Request):
         except Exception as e:
             return {"jsonrpc": "2.0", "error": {"code": -32603, "message": str(e)}}
     elif method == "chat/send":
-        msg = _sanitize_api_message(params.get("message", ""))
+        msg = _validate_message(_sanitize_api_message(str(params.get("message", "")).strip()))
         if not msg:
             raise HTTPException(400, "Empty message")
-        reply = _agent._chat_turn(msg, clear_tasks=True)
-        return {"jsonrpc": "2.0", "result": {"content": reply}}
+        session_id = _normalise_session_id(params.get("session_id"))
+        session = _get_or_create_session(session_id, "authenticated")
+        reply = _run_session_chat(session, msg)
+        return {"jsonrpc": "2.0", "result": {"content": reply, "session_id": session_id}}
     else:
         return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown method: {method}"}}
 
