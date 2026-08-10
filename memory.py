@@ -1,13 +1,16 @@
-"""
-Long-term memory for the AI agent (ChromaDB if available, else in‑memory).
+"""Versioned memory service.
+
+SQLite is authoritative. ChromaDB, when installed, is only a derived semantic
+index and can be deleted/rebuilt without losing memories.
 """
 
+from __future__ import annotations
+
+import os
+import re
 import threading
-import warnings
-import uuid
-from datetime import datetime, timezone
-
-warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*datetime.utcnow.*")
+from pathlib import Path
+from typing import Any
 
 try:
     import chromadb
@@ -18,238 +21,228 @@ except ImportError:
     chromadb = None
     Settings = None
 
+from event_store import EventStore, stable_hash
+
 
 class MemoryBank:
-    """Stores and retrieves interaction logs and source‑code snapshots.
-    Uses two ChromaDB collections:
-      - ``agent_logs``   : learning artifacts (facts, skills, strategies, conversations)
-      - ``agent_files``  : source‑code snapshots (FILE: entries)
-    This separation keeps FILE entries from dominating the embedding space and
-    polluting semantic recall. Falls back to simple in‑memory lists when ChromaDB
-    is not installed.
-    """
+    """Backward-compatible facade over the v2 durable memory service."""
 
     COLLECTION_NAME = "agent_logs"
     FILES_COLLECTION_NAME = "agent_files"
-    DEFAULT_PATH = "./chroma_memory"
+    DEFAULT_PATH = os.path.expanduser("~/.kyrozen/v2/openkyrozen.sqlite3")
+    MAX_LOGS = int(os.environ.get("KYROZEN_MEMORY_MAX_LOGS", "10000"))
 
-    def __init__(self, path: str | None = None):
-        self._lock = threading.Lock()  # protect ChromaDB SQLite from concurrent access
-        self._path = path or self.DEFAULT_PATH
-        self._in_memory: list[tuple[str, str, str]] = []       # (id, text, timestamp)
-        self._in_memory_files: list[tuple[str, str, str]] = []  # (id, text, timestamp)
+    def __init__(self, path: str | os.PathLike[str] | None = None, *, user_id: str = "local",
+                 workspace_id: str = "default", session_id: str | None = None):
+        self._lock = threading.RLock()
+        self.user_id = user_id
+        self.workspace_id = workspace_id
+        self.session_id = session_id
+        requested = Path(path or os.environ.get("KYROZEN_DB_PATH", self.DEFAULT_PATH)).expanduser()
+        if requested.suffix.lower() != ".sqlite3":
+            requested.mkdir(parents=True, exist_ok=True)
+            requested = requested / "openkyrozen.sqlite3"
+        self.db_path = requested
+        self.store = EventStore(self.db_path)
         self._collection = None
         self._files_collection = None
-        if _CHROMADB_AVAILABLE:
+        self._client = None
+        if _CHROMADB_AVAILABLE and os.environ.get("KYROZEN_DISABLE_VECTOR_INDEX", "").lower() not in {"1", "true", "yes"}:
             try:
-                self._client = chromadb.PersistentClient(
-                    path=self._path,
-                    settings=Settings(anonymized_telemetry=False),
-                )
+                index_path = Path(os.environ.get("KYROZEN_VECTOR_PATH", str(self.db_path.parent / "chroma_index"))).expanduser()
+                index_path.mkdir(parents=True, exist_ok=True)
+                self._client = chromadb.PersistentClient(path=str(index_path), settings=Settings(anonymized_telemetry=False))
                 self._collection = self._client.get_or_create_collection(
                     name=self.COLLECTION_NAME,
-                    metadata={"description": "Agent learning artifacts and interaction logs"},
+                    metadata={"description": "Derived index for durable OpenKyrozen memories"},
                 )
                 self._files_collection = self._client.get_or_create_collection(
                     name=self.FILES_COLLECTION_NAME,
-                    metadata={"description": "Source‑code snapshots (FILE: entries)"},
+                    metadata={"description": "Derived index for workspace source files"},
                 )
-            except Exception as _e:
-                print(f"[Memory] ChromaDB init error: {_e} – falling back to in‑memory storage.")
+            except Exception as exc:
                 self._client = None
                 self._collection = None
                 self._files_collection = None
+                self._last_error = f"vector index unavailable: {exc}"
 
-    def add_log(self, text: str) -> str:
-        """Save a text log (learning artifact, conversation, etc.) to the main
-        ``agent_logs`` collection. Returns the assigned ID."""
-        log_id = f"{datetime.now(timezone.utc).isoformat()}Z_{uuid.uuid4().hex[:8]}"
-        now_ts = datetime.now(timezone.utc).isoformat()
-        with self._lock:
-            if _CHROMADB_AVAILABLE and self._collection is not None:
-                try:
-                    self._collection.add(
-                        ids=[log_id],
-                        documents=[text],
-                        metadatas=[{"timestamp": now_ts}],
-                    )
-                except Exception as e:
-                    log_id = f"err_{uuid.uuid4().hex[:8]}"
-                    safe_doc = "[add_log error] " + str(text) + " (error: " + str(e) + ")"
-                    self._collection.add(
-                        ids=[log_id],
-                        documents=[safe_doc],
-                        metadatas=[{"timestamp": now_ts}],
-                    )
-            else:
-                self._in_memory.append((log_id, text, now_ts))
-        return log_id
+    @staticmethod
+    def _kind_for_text(text: str) -> str:
+        prefix = text.split(":", 1)[0].strip().upper()
+        return {
+            "FACT": "fact", "SKILL": "skill", "STRATEGY": "strategy", "PREF": "preference",
+            "REFLECTION": "strategy", "FAILURE": "failure", "FIX_OUTCOME": "failure",
+            "FILE": "source", "USER": "episodic", "GRAPH": "fact",
+        }.get(prefix, "episodic")
+
+    def _scope_kwargs(self) -> dict[str, str | None]:
+        return {"user_id": self.user_id, "workspace_id": self.workspace_id, "session_id": self.session_id}
+
+    def _index_memory(self, memory_id: str, text: str, *, kind: str, status: str = "active") -> None:
+        if self._collection is None:
+            return
+        try:
+            self._collection.upsert(
+                ids=[memory_id], documents=[text],
+                metadatas=[{"kind": kind, "status": status, "workspace_id": self.workspace_id,
+                             "session_id": self.session_id or "", "memory_id": memory_id}],
+            )
+        except Exception as exc:
+            self._last_error = f"memory index write failed: {exc}"
+
+    def add_log(self, text: str, *, kind: str | None = None, status: str = "active",
+                confidence: float = 0.5, source_event_ids: list[str] | None = None,
+                metadata: dict[str, Any] | None = None) -> str:
+        text = str(text)
+        kind = kind or self._kind_for_text(text)
+        event_id = self.store.append_event("memory.observed", {"kind": kind, "content": text}, **self._scope_kwargs())
+        memory_id = self.store.upsert_memory(
+            text, kind=kind, status=status, confidence=confidence,
+            source_event_ids=[event_id, *(source_event_ids or [])], metadata=metadata,
+            **self._scope_kwargs(),
+        )
+        self._index_memory(memory_id, text, kind=kind, status=status)
+        self._trim_logs()
+        return memory_id
+
+    def add_candidate(self, text: str, *, kind: str = "fact", confidence: float = 0.0,
+                      evidence: list[str] | None = None, metadata: dict[str, Any] | None = None) -> str:
+        proposal_id = self.store.create_proposal(kind, text, confidence=confidence, evidence=evidence,
+                                                  workspace_id=self.workspace_id, user_id=self.user_id)
+        self.store.append_event("learning.candidate", {"proposal_id": proposal_id, "kind": kind}, **self._scope_kwargs())
+        return proposal_id
+
+    def promote_candidate(self, proposal_id: str, *, confidence: float = 0.8,
+                          validation: dict[str, Any] | None = None) -> bool:
+        proposals = [p for p in self.store.list_proposals(workspace_id=self.workspace_id) if p["id"] == proposal_id]
+        if not proposals:
+            return False
+        proposal = proposals[0]
+        if not validation or validation.get("success") is not True:
+            return False
+        changed = self.store.update_proposal(proposal_id, status="active", confidence=confidence, validation=validation)
+        if changed:
+            self.add_log(proposal["content"], kind=proposal["kind"], status="active", confidence=confidence,
+                         metadata={"proposal_id": proposal_id, "validation": validation})
+        return changed
 
     def add_file(self, rel_path: str, content: str) -> str:
-        """Save a source‑code snapshot to the separate ``agent_files`` collection.
-        This keeps FILE entries from polluting the learning‑artifact embedding space.
-        Returns the assigned ID."""
-        log_id = f"file_{datetime.now(timezone.utc).isoformat()}Z_{uuid.uuid4().hex[:8]}"
-        now_ts = datetime.now(timezone.utc).isoformat()
-        text = f"FILE: {rel_path}\n```python\n{content}\n```"
-        with self._lock:
-            if _CHROMADB_AVAILABLE and self._files_collection is not None:
-                try:
-                    self._files_collection.add(
-                        ids=[log_id],
-                        documents=[text],
-                        metadatas=[{"timestamp": now_ts, "rel_path": rel_path}],
-                    )
-                except Exception:
-                    pass  # silently skip file storage errors
-            else:
-                self._in_memory_files.append((log_id, text, now_ts))
-        return log_id
+        file_id = self.store.upsert_file(rel_path, content, user_id=self.user_id, workspace_id=self.workspace_id)
+        text = f"FILE: {rel_path}\n```text\n{content}\n```"
+        if self._files_collection is not None:
+            try:
+                self._files_collection.upsert(
+                    ids=[file_id], documents=[text],
+                    metadatas=[{"rel_path": rel_path, "content_hash": stable_hash(content),
+                                "workspace_id": self.workspace_id}],
+                )
+            except Exception as exc:
+                self._last_error = f"file index write failed: {exc}"
+        return file_id
 
     def remove_stale_files(self, valid_paths: set[str]) -> int:
-        """Delete file snapshots whose ``rel_path`` no longer exists on disk.
-        Returns the number of deleted entries."""
-        removed = 0
-        with self._lock:
-            if _CHROMADB_AVAILABLE and self._files_collection is not None:
-                try:
-                    total = self._files_collection.count()
-                    if total == 0:
-                        return 0
-                    # Scan the files collection for entries whose rel_path is stale
-                    result = self._files_collection.get(
-                        limit=min(total, 2000), offset=0, include=["metadatas", "documents"]
-                    )
-                    ids_to_delete = []
-                    for doc_id, meta in zip(result.get("ids", []), result.get("metadatas", [])):
-                        rp = meta.get("rel_path", "")
-                        if rp and rp not in valid_paths:
-                            ids_to_delete.append(doc_id)
-                    if ids_to_delete:
-                        self._files_collection.delete(ids=ids_to_delete)
-                        removed = len(ids_to_delete)
-                except Exception:
-                    pass
-            else:
-                # In‑memory: keep only files whose path is in valid_paths
-                keep = []
-                for item in self._in_memory_files:
-                    # rel_path is embedded in the text: "FILE: {rel_path}\n..."
-                    text = item[1]
-                    rp = text.split("\n")[0].replace("FILE: ", "", 1)
-                    if rp in valid_paths:
-                        keep.append(item)
-                    else:
-                        removed += 1
-                self._in_memory_files = keep
+        removed = self.store.remove_stale_files(valid_paths, workspace_id=self.workspace_id)
+        if self._files_collection is not None:
+            try:
+                current = self._files_collection.get(include=["metadatas"])
+                stale = [doc_id for doc_id, meta in zip(current.get("ids", []), current.get("metadatas", []))
+                         if meta.get("workspace_id") == self.workspace_id and meta.get("rel_path") not in valid_paths]
+                if stale:
+                    self._files_collection.delete(ids=stale)
+            except Exception as exc:
+                self._last_error = f"file index cleanup failed: {exc}"
         return removed
 
-    def recall(self, query: str, n_results: int = 2) -> list[str]:
-        """Retrieve the top n_results most relevant logs for the query from the
-        ``agent_logs`` collection (learning artifacts only — FILE entries live in a
-        separate ``agent_files`` collection).
+    def _scope_filter(self, row: dict[str, Any]) -> bool:
+        return row.get("workspace_id") == self.workspace_id and (
+            row.get("session_id") in {None, "", self.session_id}
+        )
 
-        A lightweight FILE‑prefix safety filter catches any legacy FILE entries that
-        predate the two‑collection split."""
-        if not query or not query.strip():
+    def recall(self, query: str, n_results: int = 2) -> list[str]:
+        query = str(query or "").strip()
+        if not query:
             return []
-        with self._lock:
-            if _CHROMADB_AVAILABLE and self._collection is not None:
-                try:
-                    count = self._collection.count()
-                    if count == 0:
-                        return []
-                    result = self._collection.query(
-                        query_texts=[query.strip()],
-                        n_results=min(n_results, count),
-                    )
-                    docs = result.get("documents")
-                    if docs and len(docs) > 0:
-                        first = docs[0]
-                        if first is None:
-                            return []
-                        all_docs = list(first) if isinstance(first, list) else [first]
-                        # Safety filter for legacy FILE entries still in agent_logs
-                        return [d for d in all_docs if not d.startswith("FILE:")][:n_results]
-                    return []
-                except Exception:
-                    return []
-            else:
-                if not self._in_memory:
-                    return []
-                recent = self._in_memory[-n_results:]
-                return [text for _, text, _ in recent if not text.startswith("FILE:")]
+        limit = max(1, min(int(n_results), 100))
+        if self._collection is not None:
+            try:
+                result = self._collection.query(
+                    query_texts=[query], n_results=min(limit, max(1, self._collection.count())),
+                    where={"$and": [{"workspace_id": self.workspace_id}, {"status": "active"}]},
+                )
+                docs = result.get("documents", [[]])
+                if docs and docs[0]:
+                    return [doc for doc in docs[0] if not doc.startswith("FILE:")][:limit]
+            except Exception as exc:
+                self._last_error = f"memory index query failed: {exc}"
+        rows = self.store.list_memories(status="active", limit=10000, workspace_id=self.workspace_id,
+                                        session_id=self.session_id)
+        terms = set(re.findall(r"[\w\u3400-\u9fff]+", query.lower()))
+        scored = []
+        for row in rows:
+            if row["kind"] == "source" or row["content"].startswith("FILE:"):
+                continue
+            words = set(re.findall(r"[\w\u3400-\u9fff]+", row["content"].lower()))
+            score = len(terms & words)
+            if score:
+                scored.append((score, row["updated_at"], row["content"]))
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [item[2] for item in scored[:limit]]
+
+    def recall_records(self, query: str, n_results: int = 2) -> list[dict[str, Any]]:
+        """Return recalled data with provenance and trust metadata."""
+        documents = self.recall(query, n_results=n_results)
+        if not documents:
+            return []
+        rows = self.store.list_memories(status="active", limit=10000, workspace_id=self.workspace_id,
+                                        session_id=self.session_id)
+        by_content: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            by_content.setdefault(row["content"], row)
+        return [by_content[doc] for doc in documents if doc in by_content]
 
     def get_recent(self, n: int = 10) -> list[str]:
-        """Return the n most recent logs (without relevance ranking)."""
-        with self._lock:
-            if _CHROMADB_AVAILABLE and self._collection is not None:
-                try:
-                    total = self._collection.count()
-                    if total == 0:
-                        return []
-                    n = min(n, total)
-                    # ChromaDB get() returns in insertion order (oldest first).
-                    # Offset to skip to the last n items, then reverse.
-                    offset = total - n
-                    result = self._collection.get(limit=n, offset=offset)
-                    docs = result.get("documents", [])
-                    docs.reverse()  # most recent first
-                    return docs
-                except Exception:
-                    return []
-            else:
-                if not self._in_memory:
-                    return []
-                recent = self._in_memory[-n:]
-                return [text for _, text, _ in recent]
+        rows = self.store.list_memories(status="active", limit=max(1, min(n, 10000)), workspace_id=self.workspace_id,
+                                        session_id=self.session_id)
+        return [row["content"] for row in rows]
 
     def count_logs(self) -> int:
-        """Return the total number of stored logs."""
-        with self._lock:
-            if _CHROMADB_AVAILABLE and self._collection is not None:
-                try:
-                    return self._collection.count()
-                except Exception:
-                    return 0
-            else:
-                return len(self._in_memory)
+        return len(self.store.list_memories(status="active", limit=100000, workspace_id=self.workspace_id,
+                                            session_id=self.session_id))
 
     def get_all(self, limit: int = 2000) -> tuple[list[str], list[str]]:
-        """Return (ids, documents) for stored logs, up to ``limit``, most recent first. Thread-safe."""
-        with self._lock:
-            if _CHROMADB_AVAILABLE and self._collection is not None:
-                try:
-                    total = self._collection.count()
-                    if total == 0:
-                        return ([], [])
-                    n = min(total, limit)
-                    # ChromaDB get() returns in insertion order (oldest first).
-                    # Offset to skip to the last n items, then reverse.
-                    offset = total - n
-                    result = self._collection.get(limit=n, offset=offset,
-                                                  include=["documents"])
-                    ids = result.get("ids", [])
-                    docs = result.get("documents", [])
-                    ids.reverse()
-                    docs.reverse()
-                    return (ids, docs)
-                except Exception:
-                    return ([], [])
-            else:
-                ids = [item[0] for item in self._in_memory[-limit:]]
-                docs = [item[1] for item in self._in_memory[-limit:]]
-                return (ids, docs)
+        rows = self.store.list_memories(status="active", limit=max(1, min(limit, 10000)), workspace_id=self.workspace_id,
+                                        session_id=self.session_id)
+        return [row["id"] for row in rows], [row["content"] for row in rows]
 
-    def delete_logs(self, ids: list[str]) -> None:
-        """Delete logs by ID. Thread-safe."""
+    def delete_logs(self, ids: list[str]) -> int:
+        """Delete by IDs, accepting exact documents for compatibility with v1 /forget."""
         if not ids:
+            return 0
+        known_ids, docs = self.get_all(limit=10000)
+        resolved = [item if item in known_ids else known_ids[docs.index(item)] for item in ids if item in known_ids or item in docs]
+        removed = self.store.delete_memories(resolved, workspace_id=self.workspace_id)
+        if self._collection is not None and resolved:
+            try:
+                self._collection.delete(ids=resolved)
+            except Exception as exc:
+                self._last_error = f"memory index delete failed: {exc}"
+        return removed
+
+    def _trim_logs(self) -> None:
+        if self.MAX_LOGS <= 0:
             return
-        with self._lock:
-            if _CHROMADB_AVAILABLE and self._collection is not None:
-                try:
-                    self._collection.delete(ids=ids)
-                except Exception:
-                    pass
-            else:
-                self._in_memory = [item for item in self._in_memory if item[0] not in ids]
+        rows = self.store.list_memories(status="active", limit=self.MAX_LOGS + 100, workspace_id=self.workspace_id,
+                                        session_id=self.session_id)
+        if len(rows) <= self.MAX_LOGS:
+            return
+        self.delete_logs([row["id"] for row in rows[self.MAX_LOGS:]])
+
+    def rebuild_index(self) -> int:
+        if self._collection is None:
+            return 0
+        rows = self.store.list_memories(status="active", limit=100000, workspace_id=self.workspace_id,
+                                        session_id=self.session_id)
+        for row in rows:
+            if row["kind"] != "source":
+                self._index_memory(row["id"], row["content"], kind=row["kind"], status=row["status"])
+        return len(rows)

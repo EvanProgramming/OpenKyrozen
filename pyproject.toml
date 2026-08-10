@@ -55,3 +55,7 @@ include = ["plugins*"]
 
 [tool.setuptools.package-data]
 plugins = ["*.py"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

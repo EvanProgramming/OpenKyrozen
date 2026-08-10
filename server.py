@@ -34,6 +34,7 @@ os.environ.setdefault("KYROZEN_EXECUTION_SURFACE", "web")
 import main as _agent
 from providers import get_cost_summary, reset_cost_tracker
 from memory import MemoryBank
+from task_engine import TaskManager
 from tools import allowed_tool_names, resolve_capabilities, tool_capability
 
 try:
@@ -51,7 +52,7 @@ except ImportError:
 app = FastAPI(
     title="OpenKyrozen API",
     description="Self-learning AI Agent — REST API + Web Chat",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 # ---------------------------------------------------------------------------
@@ -145,9 +146,19 @@ def _actor_for_request(request: Request) -> str:
 def _get_or_create_session(session_id: str, user_id: str = "anonymous") -> dict:
     with _chat_lock:
         if session_id not in _sessions:
+            persisted = _agent.memory_bank.store.list_events(
+                event_type="session.message", limit=_MAX_SESSION_MESSAGES,
+                workspace_id=_agent.memory_bank.workspace_id, session_id=session_id,
+            )
+            messages = []
+            for event in reversed(persisted):
+                payload = event.get("payload", {})
+                if payload.get("role") in {"user", "assistant"} and payload.get("content"):
+                    messages.append({"role": payload["role"], "content": payload["content"]})
             _sessions[session_id] = {
-                "messages": [],
+                "messages": messages[-_MAX_SESSION_MESSAGES:],
                 "user_id": user_id,
+                "session_id": session_id,
                 "created": time.time(),
             }
             # Keep only last 100 sessions
@@ -166,6 +177,7 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
     """
     with _chat_lock:
         previous_messages = _agent.short_term_memory
+        previous_memory_session = _agent.memory_bank.session_id
         previous_tasks_ref = _agent.tasks.tasks
         previous_tasks = copy.deepcopy(_agent.tasks.tasks)
         previous_tools = dict(_agent.AVAILABLE_TOOLS)
@@ -178,6 +190,7 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
             })
             _agent.TOOLS_LIST = _agent._build_tools_list()
             _agent.short_term_memory = list(session["messages"])
+            _agent.memory_bank.session_id = session.get("session_id") or session.setdefault("session_id", _normalise_session_id(session.get("id")))
             reply = _agent._chat_turn(message, clear_tasks=True)
             _agent.short_term_memory.extend([
                 {"role": "user", "content": message},
@@ -185,6 +198,13 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
             ])
             session["messages"] = _agent.short_term_memory[-_MAX_SESSION_MESSAGES:]
             session["updated"] = time.time()
+            for role, content in (("user", message), ("assistant", reply)):
+                _agent.memory_bank.store.append_event(
+                    "session.message", {"role": role, "content": content},
+                    user_id=session.get("user_id", "anonymous"),
+                    workspace_id=_agent.memory_bank.workspace_id,
+                    session_id=_agent.memory_bank.session_id,
+                )
             return reply
         finally:
             new_dynamic_tools = {
@@ -192,6 +212,7 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
                 if name not in previous_tools and tool_capability(name) == "dynamic"
             }
             _agent.short_term_memory = previous_messages
+            _agent.memory_bank.session_id = previous_memory_session
             previous_tasks_ref.clear()
             previous_tasks_ref.extend(previous_tasks)
             _agent.tasks.tasks = previous_tasks_ref
@@ -431,6 +452,71 @@ async def api_memory(q: str = "", limit: int = 10):
     else:
         results = _agent.memory_bank.get_recent(limit)
     return {"results": results, "total": _agent.memory_bank.count_logs()}
+
+
+@app.get("/api/v2/memory", dependencies=[Depends(require_api_access)])
+async def api_v2_memory(q: str = "", limit: int = 10, session_id: str | None = None):
+    """Structured memory endpoint with scope and provenance metadata."""
+    limit = max(1, min(limit, _MAX_MEMORY_RESULTS))
+    if q:
+        memory = MemoryBank(_agent.memory_bank.db_path, workspace_id=_agent.memory_bank.workspace_id,
+                            session_id=_normalise_session_id(session_id) if session_id else None)
+        results = memory.recall_records(q, n_results=limit)
+    else:
+        memory = MemoryBank(_agent.memory_bank.db_path, workspace_id=_agent.memory_bank.workspace_id,
+                            session_id=_normalise_session_id(session_id) if session_id else None)
+        results = memory.store.list_memories(status="active", limit=limit,
+                                             workspace_id=memory.workspace_id, session_id=memory.session_id)
+    return {"results": results, "total": memory.count_logs(), "scope": {
+        "workspace_id": memory.workspace_id, "session_id": memory.session_id,
+    }}
+
+
+@app.get("/api/v2/tasks", dependencies=[Depends(require_api_access)])
+async def api_v2_tasks(session_id: str | None = None):
+    session = _normalise_session_id(session_id) if session_id else None
+    manager = TaskManager(_agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id, session_id=session)
+    return {"tasks": manager.store.list_tasks(workspace_id=manager.workspace_id, session_id=session)}
+
+
+@app.post("/api/v2/tasks", dependencies=[Depends(require_api_access)])
+async def api_v2_create_task(request: Request):
+    body = await request.json()
+    if not isinstance(body, dict) or not str(body.get("description", "")).strip():
+        raise HTTPException(400, "description is required")
+    session = _normalise_session_id(body.get("session_id"))
+    manager = TaskManager(_agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id, session_id=session)
+    index = manager.add_task(
+        str(body["description"]),
+        dependencies=body.get("dependencies") if isinstance(body.get("dependencies"), list) else None,
+        acceptance=body.get("acceptance") if isinstance(body.get("acceptance"), list) else None,
+        priority=int(body.get("priority", 0)),
+    )
+    return {"task": manager.tasks[index]}
+
+
+@app.get("/api/v2/learning", dependencies=[Depends(require_api_access)])
+async def api_v2_learning(status: str | None = None, limit: int = 50):
+    proposals = _agent.learning_engine.status(max(1, min(limit, 200)))
+    if status:
+        proposals = [proposal for proposal in proposals if proposal["status"] == status]
+    return {"proposals": proposals}
+
+
+@app.post("/api/v2/learning/{proposal_id}/rollback", dependencies=[Depends(require_api_access)])
+async def api_v2_learning_rollback(proposal_id: str):
+    if not _agent.learning_engine.rollback(proposal_id):
+        raise HTTPException(404, "Learning proposal not found")
+    return {"status": "rolled_back", "proposal_id": proposal_id}
+
+
+@app.get("/api/v2/events", dependencies=[Depends(require_api_access)])
+async def api_v2_events(event_type: str | None = None, session_id: str | None = None, limit: int = 100):
+    session = _normalise_session_id(session_id) if session_id else None
+    return {"events": _agent.memory_bank.store.list_events(
+        event_type=event_type, limit=max(1, min(limit, 500)),
+        workspace_id=_agent.memory_bank.workspace_id, session_id=session,
+    )}
 
 
 @app.get("/api/cost", dependencies=[Depends(require_api_access)])

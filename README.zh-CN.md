@@ -341,11 +341,11 @@ python main.py
 
 ## 🧬 自学习系统
 
-这是 Kyrozen 与众不同的地方。**20 项自学习功能**在后台持续运行——无需手动保存。使用时间越长，智能体就越聪明。
+这是 Kyrozen 与众不同的地方。v2 的自学习是自动的，但必须经过证据门控：系统先记录观察，再生成候选提案，经过重复证据或验证后才激活，并保留回滚信息。记忆中的文字永远不能自动授予新权限。
 
 ### 工作原理
 
-每 30 秒（当你空闲时），Kyrozen 运行一个学习周期。大部分功能可以通过 `/self-learning` 开关；其余九项在后台自动运行。
+空闲时 Kyrozen 运行有界的学习周期。项目扫描采用增量方式，后台任务有并发限制，失败会记录为事件而不会静默丢弃。大部分功能可以通过 `/self-learning` 开关。
 
 | # | 功能 | 学习内容 |
 |---|------|---------|
@@ -372,7 +372,17 @@ python main.py
 
 ### 记忆存储
 
-长期记忆使用 **ChromaDB**（向量数据库，存储在 `chroma_memory/`）。如果 ChromaDB 不可用则回退到内存存储。记忆支持语义搜索——智能体可以回忆起几周前的相关事实。
+OpenKyrozen v2 使用 **SQLite 作为事实主库**（`~/.kyrozen/v2/openkyrozen.sqlite3`），ChromaDB 只作为可重建的语义索引。记忆包含类型、作用域、置信度、来源事件和生命周期状态；workspace 与 session 相互隔离。即使 ChromaDB 不可用，SQLite 仍会提供持久化关键词检索。
+
+导入旧版 Chroma 记忆而不删除原数据：
+
+```bash
+python main.py migrate v1 ./chroma_memory
+```
+
+该命令会创建 `.v1-backup` 备份，并将 v2 数据写入 `~/.kyrozen/v2/`（也可通过 `KYROZEN_DB_PATH` 指定）。
+
+任务会跨重启保存。`TaskDone` 只是完成请求，只有工具结果、测试、文件检查或明确确认提供证据后，任务才会进入成功状态。可使用 `/learning status`、`/learning explain <proposal_id>` 和 `/learning rollback <proposal_id>` 管理学习提案。
 
 ---
 
@@ -395,6 +405,11 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `POST` | `/api/chat` | 发送消息，获取 JSON 响应 |
 | `POST` | `/api/chat/stream` | SSE 流式聊天 |
 | `GET` | `/api/memory?q=关键词` | 搜索已存储的记忆 |
+| `GET` | `/api/v2/memory?q=关键词` | 返回带来源、置信度和作用域的结构化记忆 |
+| `GET/POST` | `/api/v2/tasks` | 持久化任务查询与创建 |
+| `GET` | `/api/v2/learning` | 查看学习提案 |
+| `POST` | `/api/v2/learning/{id}/rollback` | 回滚已激活的学习提案 |
+| `GET` | `/api/v2/events` | 查看运行时、会话、任务和学习审计事件 |
 | `GET` | `/api/cost` | Token 用量和费用摘要 |
 | `GET` | `/api/health` | 服务商状态 + 记忆计数 |
 | `GET` | `/api/voice/speak?text=...` | 通过系统 TTS 进行文本转语音 |
@@ -406,8 +421,8 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 
 API 和 MCP 路由在本机回环访问时可以不使用令牌；任何非本机部署都必须
 设置 `KYROZEN_SERVER_TOKEN`，并通过 `Authorization: Bearer <token>` 或
-`X-Kyrozen-Token` 发送。MCP 的写文件、Shell、Git 修改和远程克隆工具默认
-关闭；只有在可信环境中才应显式设置 `KYROZEN_MCP_ALLOW_DANGEROUS=1`。
+`X-Kyrozen-Token` 发送。MCP/Web 默认使用 `workspace` 能力，`full` 才会开放
+不可逆 Git reset 和动态 Python 工具；高影响 Git 操作仍受确认模式保护。
 
 ### Docker 部署
 

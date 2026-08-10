@@ -60,7 +60,7 @@
 OpenKyrozen is a **self-learning AI agent** that runs in your terminal. Unlike a typical chatbot, it:
 
 - **Uses 26 built-in tools** — read/write files, execute shell commands, search the web, manage git repositories
-- **Learns continuously** — 20 self-learning features run in the background, extracting facts, inventing skills, and improving strategies
+- **Learns continuously** — background learning creates evidence-backed proposals and only promotes repeated or validated improvements
 - **Works with any LLM** — DeepSeek, OpenAI, Claude, Gemini, or local Ollama models
 - **Runs on any OS** — macOS, Linux, and Windows (with automatic terminal capability detection)
 - **Has a Web UI** — browser-based chat interface with REST API for integration
@@ -341,11 +341,11 @@ For multi-step work (refactors, project generators, codebase audits):
 
 ## 🧬 Self-Learning System
 
-This is what makes Kyrozen different. **20 self-learning features** run continuously in the background — no manual saving needed. The agent gets smarter the longer you use it.
+The v2 learning engine is autonomous but evidence-gated. It records observations, creates candidate proposals, checks repeated evidence or validation results, activates a versioned improvement, and records rollback information. Autonomous learning never grants a new permission merely because a memory contains an instruction.
 
 ### How it works
 
-Every 30 seconds (when you're idle), Kyrozen runs a learning cycle. Most features can be toggled on/off with `/self-learning`; the remaining nine run automatically in the background.
+When idle, Kyrozen runs a bounded learning cycle. File scans are incremental, background work has a concurrency limit, and failures are recorded as events instead of being silently discarded. Most features can be toggled on/off with `/self-learning`.
 
 | # | Feature | What it learns |
 |---|---------|---------------|
@@ -372,7 +372,21 @@ Every 30 seconds (when you're idle), Kyrozen runs a learning cycle. Most feature
 
 ### Memory storage
 
-Long-term memory uses **ChromaDB** (vector database, stored in `chroma_memory/`). Falls back to in-memory storage if ChromaDB is unavailable. Memories are semantically searchable — the agent can recall relevant facts from weeks ago.
+OpenKyrozen v2 uses **SQLite as the source of truth** (`~/.kyrozen/v2/openkyrozen.sqlite3`) and ChromaDB as a rebuildable semantic index. Memories have a kind, scope, confidence, source events, and lifecycle status. Workspaces and sessions are isolated, raw observations are marked as data, and `/forget` removes records by durable ID. If ChromaDB is unavailable, SQLite keeps durable keyword retrieval.
+
+Import an existing v1 store without deleting it:
+
+```bash
+python main.py migrate v1 ./chroma_memory
+```
+
+The migration creates a `.v1-backup` copy and writes the v2 database under `~/.kyrozen/v2/` (or `KYROZEN_DB_PATH`).
+
+### v2 durable tasks and learning
+
+Tasks persist across process restarts and use `pending`, `running`, `succeeded`, `failed`, `blocked`, and `cancelled` states. `TaskDone` is only a completion request; a successful tool result, test, file check, or explicit confirmation must provide evidence before a task can succeed.
+
+Learning proposals are visible with `/learning status`, explainable with `/learning explain <proposal_id>`, and reversible with `/learning rollback <proposal_id>`.
 
 ---
 
@@ -395,6 +409,11 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `POST` | `/api/chat` | Send a message, get JSON response |
 | `POST` | `/api/chat/stream` | SSE streaming chat |
 | `GET` | `/api/memory?q=keyword` | Search stored memories |
+| `GET` | `/api/v2/memory?q=keyword` | Structured memory search with provenance and scope |
+| `GET/POST` | `/api/v2/tasks` | Durable task listing and creation |
+| `GET` | `/api/v2/learning` | Learning proposal status |
+| `POST` | `/api/v2/learning/{id}/rollback` | Roll back an activated proposal |
+| `GET` | `/api/v2/events` | Auditable runtime, task, session, and learning events |
 | `GET` | `/api/cost` | Token usage and cost summary |
 | `GET` | `/api/health` | Provider status + memory count |
 | `GET` | `/api/voice/speak?text=...` | Text-to-speech via system TTS |

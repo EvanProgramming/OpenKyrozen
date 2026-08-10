@@ -2,6 +2,7 @@
 
 # Use a known-stable Python version (3.14 has import deadlocks with openai)
 PYTHON := python3.12
+VENV_PYTHON := $(if $(wildcard venv/bin/python),./venv/bin/python,$(PYTHON))
 
 # Detect Windows (native cmd) and redirect to .bat files
 ifeq ($(OS),Windows_NT)
@@ -18,11 +19,11 @@ install:
 
 run:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' with $(PYTHON) installed."; exit 1; }
-	. venv/bin/activate && python main.py
+	$(VENV_PYTHON) main.py
 
 web:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON)."; exit 1; }
-	. venv/bin/activate && pip install fastapi uvicorn -q && python server.py
+	$(VENV_PYTHON) -m pip install fastapi uvicorn -q && $(VENV_PYTHON) server.py
 
 debug:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' first."; exit 1; }
@@ -44,23 +45,21 @@ clean:
 
 # Syntax check
 lint:
-	. venv/bin/activate && python -c "compile(open('main.py').read(), 'main.py', 'exec'); print('main.py OK')"
-	. venv/bin/activate && python -c "compile(open('tools.py').read(), 'tools.py', 'exec'); print('tools.py OK')"
-	. venv/bin/activate && python -c "compile(open('memory.py').read(), 'memory.py', 'exec'); print('memory.py OK')"
+	$(VENV_PYTHON) -m compileall -q main.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py migration.py
+	@echo "Python syntax OK."
 	@echo "All files pass syntax check."
 
 # Unit tests
 test:
-	. venv/bin/activate && pip install fastapi uvicorn -q && python -m unittest discover -s tests -p 'test_*.py' -v
+	$(VENV_PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
 
 # Quick verification
 check:
 	@echo "Checking Python syntax..."
-	@./venv/bin/python -c "compile(open('main.py').read(), 'main.py', 'exec'); print('  main.py: OK')"
-	@./venv/bin/python -c "compile(open('tools.py').read(), 'tools.py', 'exec'); print('  tools.py: OK')"
-	@./venv/bin/python -c "compile(open('memory.py').read(), 'memory.py', 'exec'); print('  memory.py: OK')"
+	@$(VENV_PYTHON) -m py_compile main.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py migration.py
+	@echo "  Python modules: OK"
 	@echo "Checking git tools..."
-	@./venv/bin/python -c "from tools import AVAILABLE_TOOLS; git = [k for k in AVAILABLE_TOOLS if k.startswith('git_')]; print(f'  {len(git)} git tools, {len(AVAILABLE_TOOLS)} total tools')"
+	@$(VENV_PYTHON) -c "from tools import AVAILABLE_TOOLS; git = [k for k in AVAILABLE_TOOLS if k.startswith('git_')]; print(f'  {len(git)} git tools, {len(AVAILABLE_TOOLS)} total tools')"
 	@echo "All checks passed."
 
 # Git helpers
