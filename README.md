@@ -420,6 +420,15 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `POST` | `/api/v2/skills/install` | Install and validate a local `SKILL.md` package |
 | `POST` | `/api/v2/skills/{id}/activate` | Activate a validated skill |
 | `POST` | `/api/v2/skills/{id}/rollback` | Roll back a skill |
+| `GET` | `/api/v2/sessions` | List durable sessions |
+| `GET` | `/api/v2/sessions/{id}` | Resume/read a session context |
+| `GET` | `/api/v2/agents` | List specialised sub-agent profiles |
+| `POST` | `/api/v2/agents/run` | Run a sub-agent with isolated memory and capabilities |
+
+Browser tools (`browser_open`, `browser_snapshot`, `browser_click`, `browser_type`, and
+`browser_close`) use an isolated profile and are available after
+`pip install 'openkyrozen[browser]' && playwright install chromium`. Private and
+loopback destinations are blocked unless `KYROZEN_BROWSER_ALLOW_PRIVATE=1` is set.
 | `GET` | `/api/cost` | Token usage and cost summary |
 | `GET` | `/api/health` | Provider status + memory count |
 | `GET` | `/api/voice/speak?text=...` | Text-to-speech via system TTS |

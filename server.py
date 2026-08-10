@@ -620,6 +620,27 @@ async def api_v2_rollback_skill(skill_id: str):
     return {"status": "rolled_back", "skill_id": skill_id}
 
 
+@app.get("/api/v2/agents", dependencies=[Depends(require_api_access)])
+async def api_v2_agents():
+    return {"agents": _agent.subagent_manager.list_profiles()}
+
+
+@app.post("/api/v2/agents/run", dependencies=[Depends(require_api_access)])
+async def api_v2_run_agent(request: Request):
+    body = await request.json()
+    if not isinstance(body, dict) or not str(body.get("profile", "")).strip() or not str(body.get("task", "")).strip():
+        raise HTTPException(400, "profile and task are required")
+    try:
+        result = await asyncio.to_thread(
+            _agent.subagent_manager.run,
+            str(body["profile"]), str(body["task"]),
+            workspace_id=_agent.memory_bank.workspace_id,
+        )
+        return result
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.get("/api/cost", dependencies=[Depends(require_api_access)])
 async def api_cost():
     """Get cost summary."""

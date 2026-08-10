@@ -416,6 +416,15 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `POST` | `/api/v2/skills/install` | 安装并验证本地 `SKILL.md` 技能包 |
 | `POST` | `/api/v2/skills/{id}/activate` | 激活已验证技能 |
 | `POST` | `/api/v2/skills/{id}/rollback` | 回滚技能 |
+| `GET` | `/api/v2/sessions` | 列出持久化会话 |
+| `GET` | `/api/v2/sessions/{id}` | 恢复/读取会话上下文 |
+| `GET` | `/api/v2/agents` | 查看专用子 Agent profile |
+| `POST` | `/api/v2/agents/run` | 使用独立记忆和权限运行子 Agent |
+
+浏览器工具（`browser_open`、`browser_snapshot`、`browser_click`、`browser_type`、
+`browser_close`）使用隔离 profile。安装 `pip install 'openkyrozen[browser]' &&
+playwright install chromium` 后即可使用。默认阻止内网和 loopback 地址；只有显式设置
+`KYROZEN_BROWSER_ALLOW_PRIVATE=1` 才会放开。
 | `GET` | `/api/cost` | Token 用量和费用摘要 |
 | `GET` | `/api/health` | 服务商状态 + 记忆计数 |
 | `GET` | `/api/voice/speak?text=...` | 通过系统 TTS 进行文本转语音 |
