@@ -259,6 +259,46 @@ ALLOW_DYNAMIC_TOOLS = (
     if _dynamic_tools_env is not None
     else _EXECUTION_SURFACE == "cli" or _surface_capabilities == "full"
 )
+_APPROVAL_REQUIRED_TOOLS = frozenset({
+    "git_push", "git_pull", "git_checkout", "git_stash", "git_reset", "git_remote",
+})
+_APPROVAL_LOG_PATH = Path("kyrozen_audit.log")
+
+
+def _record_tool_approval(action: str, decision: str, args: str = "") -> None:
+    """Write a minimal local audit record without persisting obvious secrets."""
+    safe_args = re.sub(r"(?i)(token|password|secret|api[_-]?key)\s*[:=]\s*\S+", r"\1=<redacted>", str(args))
+    safe_args = re.sub(r"\bsk-[A-Za-z0-9_-]+", "sk-<redacted>", safe_args)
+    safe_args = safe_args.replace("\n", " ")[:240]
+    try:
+        ts = datetime.datetime.now(UTC).isoformat(timespec="seconds")
+        with _APPROVAL_LOG_PATH.open("a", encoding="utf-8") as audit_file:
+            audit_file.write(f"[{ts}] [local-cli] TOOL_{decision.upper()} | {action} | {safe_args}\n")
+    except OSError:
+        pass
+
+
+def _confirm_tool_action(action: str, args: str = "") -> bool:
+    """Confirm high-impact local CLI actions while keeping normal tools frictionless."""
+    if action not in _APPROVAL_REQUIRED_TOOLS or _EXECUTION_SURFACE != "cli":
+        return True
+    mode = os.environ.get("KYROZEN_APPROVAL_MODE", "dangerous").strip().lower()
+    if mode in {"never", "none", "off"}:
+        _record_tool_approval(action, "approved", args)
+        return True
+    if not sys.stdin.isatty():
+        _record_tool_approval(action, "denied_noninteractive", args)
+        return False
+    prompt = (
+        f"High-impact action: {action} {args[:180]}\n"
+        "This may change remote or working-tree state. Continue? [y/N]: "
+    )
+    try:
+        approved = console.input(prompt).strip().lower() in {"y", "yes"}
+    except (EOFError, KeyboardInterrupt):
+        approved = False
+    _record_tool_approval(action, "approved" if approved else "denied", args)
+    return approved
 
 # ---- Provider (multi-LLM support) ----
 _provider_config: ProviderConfig | None = None
@@ -2210,6 +2250,11 @@ def _run_tool(action: str, args: str) -> str:
     fn = AVAILABLE_TOOLS.get(action)
     if not fn:
         return f"Error: unknown tool '{action}'"
+    if not _confirm_tool_action(action, str(args)):
+        return (
+            f"Error: {action} requires confirmation. "
+            "Approve it interactively or set KYROZEN_APPROVAL_MODE=never for an explicitly automated CLI."
+        )
     start = time.time()
     try:
         result = str(fn(args))

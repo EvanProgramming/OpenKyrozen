@@ -459,7 +459,7 @@ See `plugins/turn_logger.py` for a working example.
 | **Workspace boundary** | File and directory tools reject paths outside the active workspace |
 | **API authentication** | Non-loopback API/MCP access requires `KYROZEN_SERVER_TOKEN` |
 | **Capability profiles** | Local CLI keeps the full agent toolset; Web/MCP default to rich `workspace` access, while `full` explicitly enables irreversible Git reset and dynamic tools |
-| **Git safety** | Never force-pushes, warns before hard resets |
+| **Git safety** | Never force-pushes; CLI confirms high-impact Git actions and records the decision |
 | **Audit logging** | All chat/API events logged to `kyrozen_audit.log` with timestamps |
 | **Python version guard** | Refuses to start on Python 3.14+ |
 | **Tool failure memory** | Remembers past failures and avoids repeating them |
@@ -483,6 +483,7 @@ See `plugins/turn_logger.py` for a working example.
 | `KYROZEN_BASE_URL` | Custom API base URL | Provider default |
 | `KYROZEN_EXECUTION_SURFACE` | Execution surface (`cli` or `web`) | `cli` |
 | `KYROZEN_ALLOW_DYNAMIC_TOOLS` | Allow LLM-generated Python tools (`1`/`true`) | CLI: enabled; Web/MCP: disabled |
+| `KYROZEN_APPROVAL_MODE` | CLI confirmation mode for high-impact Git actions (`dangerous`/`never`) | `dangerous` |
 | `KYROZEN_WEB_CAPABILITIES` | Web chat capabilities: `readonly`, `workspace`, or `full` | `workspace` |
 | `KYROZEN_MCP_CAPABILITIES` | MCP capabilities: `readonly`, `workspace`, or `full` | `workspace` |
 

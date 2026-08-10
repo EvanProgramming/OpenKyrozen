@@ -458,7 +458,7 @@ def register():
 | **工作区边界** | 文件和目录工具拒绝访问当前工作区之外的路径 |
 | **API 认证** | 非本机 API/MCP 访问必须设置 `KYROZEN_SERVER_TOKEN` |
 | **能力配置文件** | 本地 CLI 保留完整 Agent 工具集；Web/MCP 默认提供丰富的 `workspace` 权限，不可逆 Git reset 和动态工具由 `full` 显式开启 |
-| **Git 安全** | 绝不强制推送，硬重置前发出警告 |
+| **Git 安全** | 绝不强制推送；CLI 对高影响 Git 操作进行确认并记录决定 |
 | **审计日志** | 所有聊天/API 事件记录到 `kyrozen_audit.log`，带时间戳 |
 | **Python 版本守卫** | 拒绝在 Python 3.14+ 上启动 |
 | **工具失败记忆** | 记住过去的失败并避免重复 |
@@ -482,6 +482,7 @@ def register():
 | `KYROZEN_BASE_URL` | 自定义 API 基础 URL | 服务商默认值 |
 | `KYROZEN_EXECUTION_SURFACE` | 执行面（`cli` 或 `web`） | `cli` |
 | `KYROZEN_ALLOW_DYNAMIC_TOOLS` | 允许 LLM 生成 Python 工具（`1`/`true`） | CLI：开启；Web/MCP：关闭 |
+| `KYROZEN_APPROVAL_MODE` | CLI 高影响 Git 操作确认模式（`dangerous`/`never`） | `dangerous` |
 | `KYROZEN_WEB_CAPABILITIES` | Web 聊天能力：`readonly`、`workspace` 或 `full` | `workspace` |
 | `KYROZEN_MCP_CAPABILITIES` | MCP 能力：`readonly`、`workspace` 或 `full` | `workspace` |
 

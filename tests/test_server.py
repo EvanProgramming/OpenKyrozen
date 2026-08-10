@@ -14,6 +14,17 @@ class ServerBoundaryTests(unittest.TestCase):
         with patch.dict(os.environ, {"KYROZEN_MCP_CAPABILITIES": "full"}):
             self.assertIn("git_reset", server._allowed_server_tools("mcp"))
 
+    def test_cli_approval_denies_noninteractive_high_impact_action(self):
+        with patch.object(server._agent, "_EXECUTION_SURFACE", "cli"):
+            with patch.dict(os.environ, {"KYROZEN_APPROVAL_MODE": "dangerous"}):
+                with patch("sys.stdin.isatty", return_value=False):
+                    self.assertFalse(server._agent._confirm_tool_action("git_push", "origin main"))
+
+    def test_cli_approval_can_be_explicitly_disabled_for_automation(self):
+        with patch.object(server._agent, "_EXECUTION_SURFACE", "cli"):
+            with patch.dict(os.environ, {"KYROZEN_APPROVAL_MODE": "never"}):
+                self.assertTrue(server._agent._confirm_tool_action("git_push", "origin main"))
+
     def test_webhook_validation_rejects_private_destinations(self):
         self.assertTrue(server._validate_webhook_url("https://example.com/hook"))
         self.assertFalse(server._validate_webhook_url("http://127.0.0.1/hook"))
