@@ -8,6 +8,7 @@ import re
 import glob
 import tempfile
 import shutil
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -41,6 +42,28 @@ _BLOCKED_PATTERNS = [
 ]
 _BLOCKED_RE = re.compile("|".join(_BLOCKED_PATTERNS), re.IGNORECASE)
 
+# File tools are constrained to the active workspace. Shell execution remains
+# intentionally explicit and is disabled for MCP unless separately enabled;
+# Python-level path checks cannot sandbox arbitrary shell programs.
+_WORKSPACE_ROOT: Path = Path.cwd().resolve()
+
+
+def set_workspace_root(path: str | os.PathLike[str]) -> None:
+    """Set the root directory allowed by file and directory tools."""
+    global _WORKSPACE_ROOT
+    _WORKSPACE_ROOT = Path(path).expanduser().resolve()
+
+
+def _resolve_workspace_path(raw_path: str) -> Path:
+    path = Path(os.path.expanduser(raw_path)).resolve()
+    try:
+        common = Path(os.path.commonpath([str(_WORKSPACE_ROOT), str(path)]))
+    except ValueError as exc:
+        raise ValueError("path is outside the active workspace") from exc
+    if common != _WORKSPACE_ROOT:
+        raise ValueError(f"path is outside the active workspace: {path}")
+    return path
+
 
 def _is_dangerous(cmd: str) -> bool:
     """Return True if the command looks dangerous and should be blocked."""
@@ -57,9 +80,8 @@ def write_file(args: str) -> str:
         if len(parts) < 2:
             return "Error: write_file requires args in format path|content"
         raw_path, content = parts[0].strip(), parts[1]
-        path = os.path.expanduser(raw_path)
-        abs_path = os.path.abspath(path)
-        os.makedirs(os.path.dirname(abs_path) or ".", exist_ok=True)
+        abs_path = _resolve_workspace_path(raw_path)
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
         with open(abs_path, "w", encoding="utf-8") as f:
             f.write(content)
         return f"Wrote {len(content)} characters to {abs_path}"
@@ -76,12 +98,11 @@ def read_file(args: str) -> str:
         raw_path = args.strip()
         if not raw_path:
             return "Error: read_file requires a path"
-        path = os.path.expanduser(raw_path)
-        abs_path = os.path.abspath(path)
+        abs_path = _resolve_workspace_path(raw_path)
         with open(abs_path, "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        return f"Error: file not found: {os.path.abspath(os.path.expanduser(args.strip()))}"
+        return f"Error: file not found: {args.strip()}"
     except Exception as e:
         return f"Error reading file: {e}"
 
@@ -288,13 +309,17 @@ def find_files(args: str) -> str:
         directory = "."
         if len(parts) > 1:
             directory = parts[1].strip()
-        pattern = os.path.expanduser(pattern)
-        directory = os.path.expanduser(directory)
-        # Ensure pattern is absolute if directory is not "."?
-        if not os.path.isabs(directory):
-            directory = os.path.abspath(directory)
-        full_path = os.path.join(directory, pattern)
-        matches = glob.glob(full_path, recursive=True)
+        directory_path = _resolve_workspace_path(directory)
+        if os.path.isabs(pattern):
+            return "Error: absolute patterns are not allowed"
+        full_path = os.path.join(str(directory_path), pattern)
+        matches = []
+        for match in glob.glob(full_path, recursive=True):
+            try:
+                _resolve_workspace_path(match)
+            except ValueError:
+                continue
+            matches.append(match)
         if not matches:
             return "No files found."
         return "\n".join(matches)
@@ -309,8 +334,7 @@ def list_dir(args: str) -> str:
     """
     try:
         dir_path = args.strip() or "."
-        dir_path = os.path.expanduser(dir_path)
-        abs_path = os.path.abspath(dir_path)
+        abs_path = _resolve_workspace_path(dir_path)
         entries = os.listdir(abs_path)
         return "\n".join(sorted(entries))
     except Exception as e:
@@ -328,7 +352,7 @@ def git_clone(args: str) -> str:
         dest = ""
         if len(parts) > 1:
             dest = parts[1].strip()
-            dest = os.path.expanduser(dest)
+            dest = str(_resolve_workspace_path(dest))
         cmd = ["git", "clone", url]
         if dest:
             cmd.append(dest)
@@ -703,8 +727,7 @@ def list_tree(args: str) -> str:
     import pathlib
     try:
         path = args.strip() or "."
-        path = os.path.expanduser(path)
-        root = pathlib.Path(path).resolve()
+        root = _resolve_workspace_path(path)
         if not root.is_dir():
             return f"Error: '{path}' is not a directory"
         lines = [f"{root.name}/"]

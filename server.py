@@ -11,8 +11,11 @@ import json
 import time
 import threading
 import uuid
+import hmac
+import ipaddress
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 # Add parent to path so we can import main
 sys.path.insert(0, str(Path(__file__).parent))
@@ -25,7 +28,7 @@ from providers import get_cost_summary, reset_cost_tracker
 from memory import MemoryBank
 
 try:
-    from fastapi import FastAPI, Request, HTTPException
+    from fastapi import FastAPI, Request, HTTPException, Depends
     from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
     import uvicorn
@@ -41,6 +44,55 @@ app = FastAPI(
     description="Self-learning AI Agent — REST API + Web Chat",
     version="1.0.0",
 )
+
+# ---------------------------------------------------------------------------
+# API access control
+# ---------------------------------------------------------------------------
+
+_SERVER_TOKEN = os.environ.get("KYROZEN_SERVER_TOKEN", "").strip()
+_LOCAL_CLIENT_NAMES = {"localhost", "127.0.0.1", "::1", "testclient"}
+
+
+def _is_loopback_client(request: Request) -> bool:
+    """Return True only for a direct loopback/test client connection."""
+    host = request.client.host if request.client else ""
+    if host in _LOCAL_CLIENT_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def require_api_access(request: Request) -> None:
+    """Protect API/MCP routes with a bearer token or direct loopback access."""
+    if _SERVER_TOKEN:
+        supplied = request.headers.get("authorization", "")
+        if supplied.lower().startswith("bearer "):
+            supplied = supplied[7:].strip()
+        else:
+            supplied = request.headers.get("x-kyrozen-token", "").strip()
+        if hmac.compare_digest(supplied, _SERVER_TOKEN):
+            return
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if _is_loopback_client(request):
+        return
+    raise HTTPException(
+        status_code=503,
+        detail="Set KYROZEN_SERVER_TOKEN before exposing the server beyond localhost",
+    )
+
+
+def _sanitize_api_message(message: str) -> str:
+    """Apply the same prompt-injection filter to headless API requests."""
+    sanitized, flagged = _agent._sanitize_input(message)
+    if flagged:
+        _audit("PROMPT_INJECTION_FILTERED", "API message contained a known pattern")
+    return sanitized
 
 # Audit log
 _audit_log_path = Path("kyrozen_audit.log")
@@ -206,14 +258,14 @@ async def chat_page():
     return CHAT_HTML
 
 
-@app.post("/api/chat")
+@app.post("/api/chat", dependencies=[Depends(require_api_access)])
 async def api_chat(request: Request):
     """Non-streaming chat endpoint."""
     try:
         body = await request.json()
     except Exception:
         raise HTTPException(400, "Invalid JSON")
-    msg = body.get("message", "").strip()
+    msg = _sanitize_api_message(body.get("message", "").strip())
     if not msg:
         raise HTTPException(400, "Empty message")
     session = _get_or_create_session(body.get("session_id", "default"), body.get("user_id", "anonymous"))
@@ -229,14 +281,14 @@ async def api_chat(request: Request):
     return {"reply": reply, "cost": get_cost_summary()}
 
 
-@app.post("/api/chat/stream")
+@app.post("/api/chat/stream", dependencies=[Depends(require_api_access)])
 async def api_chat_stream(request: Request):
     """SSE streaming chat endpoint."""
     try:
         body = await request.json()
     except Exception:
         raise HTTPException(400, "Invalid JSON")
-    msg = body.get("message", "").strip()
+    msg = _sanitize_api_message(body.get("message", "").strip())
     if not msg:
         raise HTTPException(400, "Empty message")
     session = _get_or_create_session(body.get("session_id", "default"), body.get("user_id", "anonymous"))
@@ -260,7 +312,7 @@ async def api_chat_stream(request: Request):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-@app.get("/api/memory")
+@app.get("/api/memory", dependencies=[Depends(require_api_access)])
 async def api_memory(q: str = "", limit: int = 10):
     """Search stored memories."""
     if q:
@@ -270,13 +322,13 @@ async def api_memory(q: str = "", limit: int = 10):
     return {"results": results, "total": _agent.memory_bank.count_logs()}
 
 
-@app.get("/api/cost")
+@app.get("/api/cost", dependencies=[Depends(require_api_access)])
 async def api_cost():
     """Get cost summary."""
     return {"summary": get_cost_summary()}
 
 
-@app.get("/api/health")
+@app.get("/api/health", dependencies=[Depends(require_api_access)])
 async def api_health():
     """Health check."""
     provider_ok = _agent.llm_provider is not None
@@ -291,7 +343,7 @@ async def api_health():
 # MCP (Model Context Protocol) endpoint
 # ---------------------------------------------------------------------------
 
-@app.post("/mcp")
+@app.post("/mcp", dependencies=[Depends(require_api_access)])
 async def mcp_endpoint(request: Request):
     """MCP-compatible endpoint for AI tool interoperability."""
     try:
@@ -317,13 +369,29 @@ async def mcp_endpoint(request: Request):
         fn = _agent.AVAILABLE_TOOLS.get(tool_name)
         if fn is None:
             return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Tool '{tool_name}' not found"}}
+        dangerous_tools = {
+            "write_file", "run_cmd", "execute_terminal_command", "git_clone",
+            "git_add", "git_commit", "git_push", "git_pull", "git_checkout",
+            "git_stash", "git_reset", "git_remote", "analyze_remote_repo",
+        }
+        allow_dangerous = os.environ.get("KYROZEN_MCP_ALLOW_DANGEROUS", "").lower() in {
+            "1", "true", "yes"
+        }
+        if tool_name in dangerous_tools and not allow_dangerous:
+            return {
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32001,
+                    "message": "Tool is disabled for MCP by default; set KYROZEN_MCP_ALLOW_DANGEROUS=1 to enable it",
+                },
+            }
         try:
             result = fn(str(tool_args))
             return {"jsonrpc": "2.0", "result": {"content": [{"type": "text", "text": str(result)}]}}
         except Exception as e:
             return {"jsonrpc": "2.0", "error": {"code": -32603, "message": str(e)}}
     elif method == "chat/send":
-        msg = params.get("message", "")
+        msg = _sanitize_api_message(params.get("message", ""))
         if not msg:
             raise HTTPException(400, "Empty message")
         reply = _agent._chat_turn(msg, clear_tasks=True)
@@ -336,7 +404,7 @@ async def mcp_endpoint(request: Request):
 # Voice endpoints (TTS / STT)
 # ---------------------------------------------------------------------------
 
-@app.post("/api/voice/transcribe")
+@app.post("/api/voice/transcribe", dependencies=[Depends(require_api_access)])
 async def api_transcribe(request: Request):
     """Transcribe audio to text using system tools (macOS say, Linux espeak)."""
     # This is a placeholder — real STT would use whisper or an API
@@ -345,7 +413,7 @@ async def api_transcribe(request: Request):
     return {"text": text, "source": "passthrough", "note": "Use whisper or cloud STT for real transcription"}
 
 
-@app.get("/api/voice/speak")
+@app.get("/api/voice/speak", dependencies=[Depends(require_api_access)])
 async def api_speak(text: str = ""):
     """Text-to-speech using system TTS tools."""
     if not text:
@@ -358,7 +426,16 @@ async def api_speak(text: str = ""):
         elif system == "Linux":
             subprocess.Popen(["espeak", text])
         elif system == "Windows":
-            subprocess.Popen(["powershell", "-c", f"Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{text}')"])
+            # Keep user text in the environment rather than interpolating it
+            # into PowerShell source code.
+            env = os.environ.copy()
+            env["KYROZEN_TTS_TEXT"] = text
+            subprocess.Popen([
+                "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                "Add-Type -AssemblyName System.Speech; "
+                "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                "$s.Speak($env:KYROZEN_TTS_TEXT)",
+            ], env=env)
         return {"status": "speaking", "text": text[:100]}
     except Exception as e:
         return {"error": str(e)}
@@ -369,8 +446,31 @@ async def api_speak(text: str = ""):
 # ---------------------------------------------------------------------------
 
 _webhooks: list[dict] = []
+_MAX_WEBHOOKS = 32
+_ALLOWED_WEBHOOK_EVENTS = {"chat.completed", "test"}
 
-@app.post("/api/webhooks/register")
+
+def _validate_webhook_url(url: str) -> bool:
+    """Reject malformed and obvious local/private webhook destinations."""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    if parsed.username or parsed.password:
+        return False
+    hostname = parsed.hostname.lower().rstrip(".")
+    if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
+        return False
+    try:
+        address = ipaddress.ip_address(hostname)
+        if address.is_private or address.is_loopback or address.is_link_local or address.is_reserved:
+            return False
+    except ValueError:
+        # DNS rebinding cannot be fully solved in this in-process implementation;
+        # production deployments should use an egress proxy as well.
+        pass
+    return len(url) <= 2048
+
+@app.post("/api/webhooks/register", dependencies=[Depends(require_api_access)])
 async def register_webhook(request: Request):
     """Register a webhook URL for event notifications."""
     body = await request.json()
@@ -378,13 +478,21 @@ async def register_webhook(request: Request):
     events = body.get("events", ["chat.completed"])
     if not url:
         raise HTTPException(400, "URL required")
+    if len(_webhooks) >= _MAX_WEBHOOKS:
+        raise HTTPException(429, "Webhook limit reached")
+    if not _validate_webhook_url(url):
+        raise HTTPException(400, "Only public http(s) webhook URLs are allowed")
+    if not isinstance(events, list) or not events or any(
+        not isinstance(event, str) or event not in _ALLOWED_WEBHOOK_EVENTS for event in events
+    ):
+        raise HTTPException(400, "Unsupported webhook event")
     hook = {"url": url, "events": events, "created": time.time()}
     _webhooks.append(hook)
     _audit("WEBHOOK_REGISTER", f"url={url} events={events}")
     return {"status": "registered", "id": len(_webhooks) - 1}
 
 
-@app.get("/api/webhooks")
+@app.get("/api/webhooks", dependencies=[Depends(require_api_access)])
 async def list_webhooks():
     """List registered webhooks."""
     return {"webhooks": _webhooks}
@@ -401,7 +509,7 @@ def _fire_webhooks(event: str, data: dict):
                 pass
 
 
-@app.post("/api/webhooks/test")
+@app.post("/api/webhooks/test", dependencies=[Depends(require_api_access)])
 async def test_webhook():
     """Manually trigger a test webhook event."""
     _fire_webhooks("test", {"message": "Webhook test from OpenKyrozen"})
@@ -474,6 +582,7 @@ def _trigger_hook(hook_name: str, **kwargs):
 async def startup():
     """Initialize the agent on server start."""
     print("[Server] Initializing OpenKyrozen...")
+    _agent._set_workspace_root(os.getcwd())
     _agent._prompt_and_init_deepseek()
     if _agent.llm_provider is None:
         print("[Server] WARNING: No LLM provider configured. Set API key env vars.")
@@ -483,7 +592,7 @@ async def startup():
     _load_plugins()
     _trigger_hook("on_startup", agent=_agent)
     _audit("STARTUP", "server started")
-    print("[Server] Ready — http://0.0.0.0:8000")
+    print("[Server] Ready — http://127.0.0.1:8000 (set KYROZEN_SERVER_TOKEN for remote access)")
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +602,7 @@ async def startup():
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="OpenKyrozen Web Server")
-    parser.add_argument("--host", default="0.0.0.0", help="Bind address")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind address")
     parser.add_argument("--port", type=int, default=8000, help="Port")
     parser.add_argument("--reload", action="store_true", help="Auto-reload on code changes")
     args = parser.parse_args()
@@ -502,4 +611,4 @@ if __name__ == "__main__":
 
 def main_entry():
     """Entry point for pyproject.toml console_scripts."""
-    uvicorn.run("server:app", host="0.0.0.0", port=8000)
+    uvicorn.run("server:app", host="127.0.0.1", port=8000)

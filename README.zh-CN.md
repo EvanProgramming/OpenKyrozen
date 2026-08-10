@@ -157,9 +157,12 @@ Kyrozen 会：
 python server.py --port 8000
 # 打开 http://localhost:8000
 
+# 局域网或容器访问时，必须设置令牌并显式监听外部地址：
+KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
+
 # 或通过 Docker：
 docker build -t openkyrozen .
-docker run -p 8000:8000 -e DEEPSEEK_API_KEY=sk-... openkyrozen
+docker run -p 8000:8000 -e DEEPSEEK_API_KEY=sk-... -e KYROZEN_SERVER_TOKEN=change-me openkyrozen
 ```
 
 Web 界面提供暗色主题的聊天 UI，支持实时流式输出、费用追踪和会话管理。
@@ -379,6 +382,9 @@ python main.py
 pip install fastapi uvicorn
 python server.py --port 8000
 # 打开 http://localhost:8000
+
+# 局域网或容器访问时，必须设置令牌并显式监听外部地址：
+KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 ```
 
 ### REST API 端点
@@ -398,12 +404,18 @@ python server.py --port 8000
 | `POST` | `/api/webhooks/test` | 触发测试 webhook |
 | `POST` | `/mcp` | 模型上下文协议（JSON-RPC 2.0） |
 
+API 和 MCP 路由在本机回环访问时可以不使用令牌；任何非本机部署都必须
+设置 `KYROZEN_SERVER_TOKEN`，并通过 `Authorization: Bearer <token>` 或
+`X-Kyrozen-Token` 发送。MCP 的写文件、Shell、Git 修改和远程克隆工具默认
+关闭；只有在可信环境中才应显式设置 `KYROZEN_MCP_ALLOW_DANGEROUS=1`。
+
 ### Docker 部署
 
 ```bash
 docker build -t openkyrozen .
 docker run -p 8000:8000 \
   -e DEEPSEEK_API_KEY=sk-your-key \
+  -e KYROZEN_SERVER_TOKEN=change-me \
   -v $(pwd)/chroma_memory:/app/chroma_memory \
   openkyrozen
 ```
@@ -442,8 +454,10 @@ def register():
 |------|---------|
 | **危险命令过滤** | 拦截 `rm -rf`、`mkfs`、Fork 炸弹、Windows 破坏性命令 |
 | **API 密钥加密** | `~/.kyrozen_config.json` 静态加密（XOR + 机器派生 SHA-256 密钥） |
-| **提示注入防护** | 检测并过滤 9 种常见注入模式 |
-| **沙箱执行** | 文件操作限制在工作区边界内 |
+| **提示注入防护** | CLI、API 和 MCP 消息都会过滤已知模式 |
+| **工作区边界** | 文件和目录工具拒绝访问当前工作区之外的路径 |
+| **API 认证** | 非本机 API/MCP 访问必须设置 `KYROZEN_SERVER_TOKEN` |
+| **MCP 工具策略** | Shell、写操作、Git 修改和远程克隆默认关闭 |
 | **Git 安全** | 绝不强制推送，硬重置前发出警告 |
 | **审计日志** | 所有聊天/API 事件记录到 `kyrozen_audit.log`，带时间戳 |
 | **Python 版本守卫** | 拒绝在 Python 3.14+ 上启动 |

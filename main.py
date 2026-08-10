@@ -92,7 +92,7 @@ from rich.panel import Panel
 from rich import print as rprint
 
 from memory import MemoryBank
-from tools import AVAILABLE_TOOLS
+from tools import AVAILABLE_TOOLS, set_workspace_root as _set_tools_workspace_root
 from providers import (
     ProviderConfig, LLMProvider, get_provider, detect_provider,
     save_provider_config, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS,
@@ -1590,13 +1590,17 @@ _workspace_root: str = ""
 def _set_workspace_root(path: str) -> None:
     global _workspace_root
     _workspace_root = os.path.abspath(os.path.expanduser(path))
+    _set_tools_workspace_root(_workspace_root)
 
 def _is_path_safe(path: str) -> bool:
     if not _workspace_root:
         return True
     try:
-        resolved = os.path.abspath(os.path.expanduser(path))
-        return resolved.startswith(_workspace_root)
+        root = os.path.realpath(_workspace_root)
+        resolved = os.path.realpath(os.path.expanduser(path))
+        return os.path.commonpath([root, resolved]) == root
+    except ValueError:
+        return False
     except Exception:
         return False
 
@@ -3477,7 +3481,7 @@ def main() -> None:
             console.print(f"[{_WARNING}]Prompt injection detected and filtered.[/{_WARNING}]")
 
         try:
-            reply = _chat_turn(user_input, clear_tasks=True)
+            reply = _chat_turn(sanitized, clear_tasks=True)
         except Exception as e:
             import traceback as _tb
             console.print(f"[{_ERROR}]=== EXCEPTION IN _chat_turn ===[/{_ERROR}]")

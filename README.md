@@ -157,9 +157,12 @@ Kyrozen will:
 python server.py --port 8000
 # Open http://localhost:8000
 
+# For LAN or container access, set a token and bind explicitly:
+KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
+
 # Or via Docker:
 docker build -t openkyrozen .
-docker run -p 8000:8000 -e DEEPSEEK_API_KEY=sk-... openkyrozen
+docker run -p 8000:8000 -e DEEPSEEK_API_KEY=sk-... -e KYROZEN_SERVER_TOKEN=change-me openkyrozen
 ```
 
 The web interface provides a dark-themed chat UI with real-time streaming, cost tracking, and session management.
@@ -379,6 +382,9 @@ Long-term memory uses **ChromaDB** (vector database, stored in `chroma_memory/`)
 pip install fastapi uvicorn
 python server.py --port 8000
 # Open http://localhost:8000
+
+# For LAN or container access, set a token and bind explicitly:
+KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 ```
 
 ### REST API endpoints
@@ -398,12 +404,19 @@ python server.py --port 8000
 | `POST` | `/api/webhooks/test` | Fire a test webhook |
 | `POST` | `/mcp` | Model Context Protocol (JSON-RPC 2.0) |
 
+API and MCP routes allow direct loopback access without a token. Any
+non-loopback deployment must set `KYROZEN_SERVER_TOKEN` and send it as
+`Authorization: Bearer <token>` or `X-Kyrozen-Token`. MCP write, shell, Git
+mutation, and remote-clone tools are disabled by default; explicitly set
+`KYROZEN_MCP_ALLOW_DANGEROUS=1` only in a trusted environment.
+
 ### Docker deployment
 
 ```bash
 docker build -t openkyrozen .
 docker run -p 8000:8000 \
   -e DEEPSEEK_API_KEY=sk-your-key \
+  -e KYROZEN_SERVER_TOKEN=change-me \
   -v $(pwd)/chroma_memory:/app/chroma_memory \
   openkyrozen
 ```
@@ -442,8 +455,10 @@ See `plugins/turn_logger.py` for a working example.
 |---------|-----------------|
 | **Dangerous command filter** | Blocks `rm -rf`, `mkfs`, fork bombs, Windows destructive commands |
 | **API key encryption** | `~/.kyrozen_config.json` encrypted at rest (XOR + machine-derived SHA-256 key) |
-| **Prompt injection protection** | Detects 9 common injection patterns and filters them |
-| **Sandbox execution** | File operations restricted to workspace boundary |
+| **Prompt injection protection** | Filters known patterns in CLI, API, and MCP messages |
+| **Workspace boundary** | File and directory tools reject paths outside the active workspace |
+| **API authentication** | Non-loopback API/MCP access requires `KYROZEN_SERVER_TOKEN` |
+| **MCP tool policy** | Shell, writes, Git mutations, and remote cloning are disabled by default |
 | **Git safety** | Never force-pushes, warns before hard resets |
 | **Audit logging** | All chat/API events logged to `kyrozen_audit.log` with timestamps |
 | **Python version guard** | Refuses to start on Python 3.14+ |
