@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import patch
 
@@ -5,6 +6,14 @@ import server
 
 
 class ServerBoundaryTests(unittest.TestCase):
+    def test_server_profiles_keep_workspace_tools_and_gate_reset(self):
+        workspace = server._allowed_server_tools("mcp")
+        self.assertIn("run_cmd", workspace)
+        self.assertIn("write_file", workspace)
+        self.assertNotIn("git_reset", workspace)
+        with patch.dict(os.environ, {"KYROZEN_MCP_CAPABILITIES": "full"}):
+            self.assertIn("git_reset", server._allowed_server_tools("mcp"))
+
     def test_webhook_validation_rejects_private_destinations(self):
         self.assertTrue(server._validate_webhook_url("https://example.com/hook"))
         self.assertFalse(server._validate_webhook_url("http://127.0.0.1/hook"))

@@ -249,7 +249,16 @@ MAX_STEPS_PER_TURN = 50          # how many tool-call rounds the LLM may perform
 MAX_UNKNOWN_TOOL_RETRIES = 3     # how many times to re-prompt when LLM uses an unrecognised action name
 CONFIG_PATH = os.path.expanduser("~/.kyrozen_config.json")
 IDLE_CONSOLIDATION_TIMEOUT = 60   # 1 minute
-ALLOW_DYNAMIC_TOOLS = os.environ.get("KYROZEN_ALLOW_DYNAMIC_TOOLS", "0").strip().lower() in {"1", "true", "yes"}
+_EXECUTION_SURFACE = os.environ.get("KYROZEN_EXECUTION_SURFACE", "cli").strip().lower()
+_dynamic_tools_env = os.environ.get("KYROZEN_ALLOW_DYNAMIC_TOOLS")
+_surface_capabilities = os.environ.get(
+    f"KYROZEN_{_EXECUTION_SURFACE.upper()}_CAPABILITIES", ""
+).strip().lower()
+ALLOW_DYNAMIC_TOOLS = (
+    _dynamic_tools_env.strip().lower() in {"1", "true", "yes"}
+    if _dynamic_tools_env is not None
+    else _EXECUTION_SURFACE == "cli" or _surface_capabilities == "full"
+)
 
 # ---- Provider (multi-LLM support) ----
 _provider_config: ProviderConfig | None = None

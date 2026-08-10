@@ -458,7 +458,7 @@ See `plugins/turn_logger.py` for a working example.
 | **Prompt injection protection** | Filters known patterns in CLI, API, and MCP messages |
 | **Workspace boundary** | File and directory tools reject paths outside the active workspace |
 | **API authentication** | Non-loopback API/MCP access requires `KYROZEN_SERVER_TOKEN` |
-| **MCP tool policy** | Shell, writes, Git mutations, and remote cloning are disabled by default |
+| **Capability profiles** | Local CLI keeps the full agent toolset; Web/MCP default to rich `workspace` access, while `full` explicitly enables irreversible Git reset and dynamic tools |
 | **Git safety** | Never force-pushes, warns before hard resets |
 | **Audit logging** | All chat/API events logged to `kyrozen_audit.log` with timestamps |
 | **Python version guard** | Refuses to start on Python 3.14+ |
@@ -481,7 +481,12 @@ See `plugins/turn_logger.py` for a working example.
 | `KYROZEN_MODEL_SIMPLE` | Model for simple/medium tasks | Provider default |
 | `KYROZEN_MODEL_COMPLEX` | Model for complex tasks | Provider default |
 | `KYROZEN_BASE_URL` | Custom API base URL | Provider default |
-| `KYROZEN_ALLOW_DYNAMIC_TOOLS` | Allow LLM-generated Python tools (`1`/`true`) | Disabled |
+| `KYROZEN_EXECUTION_SURFACE` | Execution surface (`cli` or `web`) | `cli` |
+| `KYROZEN_ALLOW_DYNAMIC_TOOLS` | Allow LLM-generated Python tools (`1`/`true`) | CLI: enabled; Web/MCP: disabled |
+| `KYROZEN_WEB_CAPABILITIES` | Web chat capabilities: `readonly`, `workspace`, or `full` | `workspace` |
+| `KYROZEN_MCP_CAPABILITIES` | MCP capabilities: `readonly`, `workspace`, or `full` | `workspace` |
+
+The local CLI is intentionally a high-permission agent, similar to Codex or OpenClaw: it can read and write the active workspace, run shell commands, use the network, and operate Git. The Web and MCP surfaces expose the same rich `workspace` profile by default, but keep irreversible `git_reset` and LLM-generated Python tools behind the explicit `full`/`KYROZEN_ALLOW_DYNAMIC_TOOLS=1` opt-in. Authentication and the command safety filter still apply.
 
 ### Config file (`~/.kyrozen_config.json`)
 

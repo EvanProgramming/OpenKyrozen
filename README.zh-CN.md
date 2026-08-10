@@ -457,7 +457,7 @@ def register():
 | **提示注入防护** | CLI、API 和 MCP 消息都会过滤已知模式 |
 | **工作区边界** | 文件和目录工具拒绝访问当前工作区之外的路径 |
 | **API 认证** | 非本机 API/MCP 访问必须设置 `KYROZEN_SERVER_TOKEN` |
-| **MCP 工具策略** | Shell、写操作、Git 修改和远程克隆默认关闭 |
+| **能力配置文件** | 本地 CLI 保留完整 Agent 工具集；Web/MCP 默认提供丰富的 `workspace` 权限，不可逆 Git reset 和动态工具由 `full` 显式开启 |
 | **Git 安全** | 绝不强制推送，硬重置前发出警告 |
 | **审计日志** | 所有聊天/API 事件记录到 `kyrozen_audit.log`，带时间戳 |
 | **Python 版本守卫** | 拒绝在 Python 3.14+ 上启动 |
@@ -480,7 +480,12 @@ def register():
 | `KYROZEN_MODEL_SIMPLE` | 简单/中等任务模型 | 服务商默认值 |
 | `KYROZEN_MODEL_COMPLEX` | 复杂任务模型 | 服务商默认值 |
 | `KYROZEN_BASE_URL` | 自定义 API 基础 URL | 服务商默认值 |
-| `KYROZEN_ALLOW_DYNAMIC_TOOLS` | 允许 LLM 生成 Python 工具（`1`/`true`） | 默认关闭 |
+| `KYROZEN_EXECUTION_SURFACE` | 执行面（`cli` 或 `web`） | `cli` |
+| `KYROZEN_ALLOW_DYNAMIC_TOOLS` | 允许 LLM 生成 Python 工具（`1`/`true`） | CLI：开启；Web/MCP：关闭 |
+| `KYROZEN_WEB_CAPABILITIES` | Web 聊天能力：`readonly`、`workspace` 或 `full` | `workspace` |
+| `KYROZEN_MCP_CAPABILITIES` | MCP 能力：`readonly`、`workspace` 或 `full` | `workspace` |
+
+本地 CLI 有意保持类似 Codex 或 OpenClaw 的高权限 Agent 能力：可以读写当前工作区、运行 Shell、访问网络并操作 Git。Web 和 MCP 默认同样提供丰富的 `workspace` 能力，但不可逆的 `git_reset` 以及 LLM 生成的 Python 工具需要显式启用 `full` 或 `KYROZEN_ALLOW_DYNAMIC_TOOLS=1`。认证和危险命令过滤仍然有效。
 
 ### 配置文件（`~/.kyrozen_config.json`）
 

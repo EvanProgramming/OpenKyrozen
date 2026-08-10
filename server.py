@@ -25,10 +25,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 # Minimal env setup for headless mode
 os.environ.setdefault("DEEPSEEK_API_KEY", os.environ.get("DEEPSEEK_API_KEY", ""))
+# A Web/MCP process is a separate execution surface from the local CLI. The
+# main module therefore keeps dynamic Python tools off unless explicitly
+# enabled for this server process, while ordinary workspace tools remain
+# available through capability profiles below.
+os.environ.setdefault("KYROZEN_EXECUTION_SURFACE", "web")
 
 import main as _agent
 from providers import get_cost_summary, reset_cost_tracker
 from memory import MemoryBank
+from tools import allowed_tool_names, resolve_capabilities, tool_capability
 
 try:
     from fastapi import FastAPI, Request, HTTPException, Depends
@@ -162,7 +168,15 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
         previous_messages = _agent.short_term_memory
         previous_tasks_ref = _agent.tasks.tasks
         previous_tasks = copy.deepcopy(_agent.tasks.tasks)
+        previous_tools = dict(_agent.AVAILABLE_TOOLS)
+        previous_tools_list = _agent.TOOLS_LIST
         try:
+            allowed = _allowed_server_tools("web")
+            _agent.AVAILABLE_TOOLS.clear()
+            _agent.AVAILABLE_TOOLS.update({
+                name: fn for name, fn in previous_tools.items() if name in allowed
+            })
+            _agent.TOOLS_LIST = _agent._build_tools_list()
             _agent.short_term_memory = list(session["messages"])
             reply = _agent._chat_turn(message, clear_tasks=True)
             _agent.short_term_memory.extend([
@@ -173,16 +187,43 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
             session["updated"] = time.time()
             return reply
         finally:
+            new_dynamic_tools = {
+                name: fn for name, fn in _agent.AVAILABLE_TOOLS.items()
+                if name not in previous_tools and tool_capability(name) == "dynamic"
+            }
             _agent.short_term_memory = previous_messages
             previous_tasks_ref.clear()
             previous_tasks_ref.extend(previous_tasks)
             _agent.tasks.tasks = previous_tasks_ref
+            _agent.AVAILABLE_TOOLS.clear()
+            _agent.AVAILABLE_TOOLS.update(previous_tools)
+            if new_dynamic_tools and _agent.ALLOW_DYNAMIC_TOOLS:
+                _agent.AVAILABLE_TOOLS.update(new_dynamic_tools)
+                _agent.TOOLS_LIST = _agent._build_tools_list()
+            else:
+                _agent.TOOLS_LIST = previous_tools_list
 
 
 def _validate_message(message: str) -> str:
     if len(message) > _MAX_MESSAGE_CHARS:
         raise HTTPException(413, f"Message exceeds {_MAX_MESSAGE_CHARS} characters")
     return message
+
+
+def _server_capabilities(surface: str) -> frozenset[str]:
+    """Return the configured capability set for Web or MCP requests."""
+    env_name = "KYROZEN_MCP_CAPABILITIES" if surface == "mcp" else "KYROZEN_WEB_CAPABILITIES"
+    # workspace is intentionally rich: it includes file writes, shell, network
+    # and ordinary Git operations. `full` additionally enables reset/dynamic.
+    configured = os.environ.get(env_name, "workspace")
+    if os.environ.get("KYROZEN_MCP_ALLOW_DANGEROUS", "").lower() in {"1", "true", "yes"}:
+        configured = "full"
+    return resolve_capabilities(configured, default="workspace")
+
+
+def _allowed_server_tools(surface: str) -> set[str]:
+    capabilities = ",".join(sorted(_server_capabilities(surface)))
+    return allowed_tool_names(_agent.AVAILABLE_TOOLS, capabilities)
 
 # ---------------------------------------------------------------------------
 # HTML Chat UI
@@ -428,12 +469,14 @@ async def mcp_endpoint(request: Request):
         raise HTTPException(400, "params object required")
 
     if method == "tools/list":
+        allowed = _allowed_server_tools("mcp")
         return {
             "jsonrpc": "2.0",
             "result": {
                 "tools": [
                     {"name": name, "description": (fn.__doc__ or "").strip().split("\n")[0]}
                     for name, fn in _agent.AVAILABLE_TOOLS.items()
+                    if name in allowed
                 ]
             }
         }
@@ -443,20 +486,15 @@ async def mcp_endpoint(request: Request):
         fn = _agent.AVAILABLE_TOOLS.get(tool_name)
         if fn is None:
             return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Tool '{tool_name}' not found"}}
-        dangerous_tools = {
-            "write_file", "run_cmd", "execute_terminal_command", "git_clone",
-            "git_add", "git_commit", "git_push", "git_pull", "git_checkout",
-            "git_stash", "git_reset", "git_remote", "analyze_remote_repo",
-        }
-        allow_dangerous = os.environ.get("KYROZEN_MCP_ALLOW_DANGEROUS", "").lower() in {
-            "1", "true", "yes"
-        }
-        if tool_name in dangerous_tools and not allow_dangerous:
+        if tool_name not in _allowed_server_tools("mcp"):
             return {
                 "jsonrpc": "2.0",
                 "error": {
                     "code": -32001,
-                    "message": "Tool is disabled for MCP by default; set KYROZEN_MCP_ALLOW_DANGEROUS=1 to enable it",
+                    "message": (
+                        f"Tool requires '{tool_capability(tool_name)}' capability; "
+                        "set KYROZEN_MCP_CAPABILITIES or use the full profile to enable it"
+                    ),
                 },
             }
         try:
