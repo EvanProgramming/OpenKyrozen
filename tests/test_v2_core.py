@@ -40,7 +40,9 @@ class V2CoreTests(unittest.TestCase):
             self.assertEqual(len(tasks.tasks), 1)
             tasks.mark_done_from_text("TaskDone: 0")
             self.assertEqual(tasks.tasks[index]["status"], "pending")
-            tasks.record_evidence(action="pytest", result="OK", success=True)
+            tasks.record_evidence(action="list_dir", result="OK", success=True)
+            self.assertEqual(tasks.tasks[index]["status"], "pending")
+            tasks.record_evidence(action="pytest", result="OK", success=True, acceptance="pytest passed")
             self.assertEqual(tasks.tasks[index]["status"], "succeeded")
 
     def test_learning_requires_repeated_observation_and_can_roll_back(self):

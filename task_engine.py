@@ -98,7 +98,8 @@ class TaskManager:
     def _has_evidence(self, idx: int, evidence: dict[str, Any] | None = None) -> bool:
         if evidence and evidence.get("success") is True:
             return True
-        return bool(self._evidence or self.tasks[idx].get("evidence"))
+        evidence_items = self._evidence + self.tasks[idx].get("evidence", [])
+        return any(item.get("success") is True and item.get("acceptance") for item in evidence_items)
 
     def record_evidence(self, *, action: str, result: str, success: bool,
                         acceptance: str | None = None) -> None:
@@ -107,7 +108,7 @@ class TaskManager:
             item["acceptance"] = acceptance
         self._evidence.append(item)
         for task in self.tasks:
-            if success:
+            if success and acceptance:
                 task.setdefault("evidence", []).append(item)
         self.reconcile_completions()
 

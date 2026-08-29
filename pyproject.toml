@@ -48,7 +48,7 @@ Repository = "https://github.com/EvanProgramming/OpenKyrozen"
 Issues = "https://github.com/EvanProgramming/OpenKyrozen/issues"
 
 [tool.setuptools]
-py-modules = ["main", "memory", "providers", "server", "tools", "event_store", "learning_engine", "migration", "task_engine", "scheduler", "skill_registry", "browser_manager", "instruction_loader", "subagents", "capability_tokens", "tool_registry", "dynamic_tools"]
+py-modules = ["main", "memory", "providers", "server", "tools", "event_store", "learning_engine", "learning_benchmark", "migration", "task_engine", "scheduler", "skill_registry", "browser_manager", "instruction_loader", "subagents", "capability_tokens", "tool_registry", "dynamic_tools"]
 include-package-data = true
 
 [tool.setuptools.packages.find]

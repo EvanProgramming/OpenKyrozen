@@ -339,36 +339,15 @@ For multi-step work (refactors, project generators, codebase audits):
 
 ---
 
-## 🧬 Self-Learning System
+## 🧬 Profile-scoped self-evolution
 
-The v2 learning engine is autonomous but evidence-gated. It records observations, creates candidate proposals, checks repeated evidence or validation results, activates a versioned improvement, and records rollback information. Autonomous learning never grants a new permission merely because a memory contains an instruction.
+OpenKyrozen learns reusable policies and skills only from completed multi-step work, explicit corrections, or verified failures. Learned artifacts are isolated to either the `coder` or `researcher` profile; the `reviewer` can propose one bounded canary after 30 seconds idle but never learns its own behavior.
 
 ### How it works
 
-When idle, Kyrozen runs a bounded learning cycle. File scans are incremental, background work has a concurrency limit, and failures are recorded as events instead of being silently discarded. Most features can be toggled on/off with `/self-learning`.
+Every run records its profile, task signature, tool/error receipts, acceptance evidence, latency, and tokens in SQLite. Matching is deterministic and injects at most three artifacts (8,000 characters total), including at most one canary. A canary promotes after two distinct verified successes; one linked correction, or two verified failures among its last five active uses, rolls it back to its predecessor. Learned artifacts cannot add permissions or dynamic tools, and user/bundled/plugin skills are immutable to evolution.
 
-| # | Feature | What it learns |
-|---|---------|---------------|
-| 1 | **Conversation learning** | Extracts facts, preferences, and patterns from chat |
-| 2 | **Project file scanning** | Reads every `.py` file into memory for context |
-| 3 | **Stale entry aging** | Removes facts about files that no longer exist |
-| 4 | **Tool auto-debug** | Analyzes tool failures, finds root causes |
-| 5 | **Memory consolidation** | Deduplicates and summarizes stored facts |
-| 6 | **Tool review** | Suggests under-used tools for removal |
-| 7 | **Targeted inquiry** | Finds undocumented functions and infers their purpose |
-| 8 | **Idle reflection** | After complex tasks, reflects on what went well |
-| 9 | **Strategy distillation** | When token usage is high, distills efficiency tips |
-| 10 | **New tech auto-patch** | Queries the web when you mention unknown libraries |
-| 11 | **Skill invention** | Creates reusable skill templates from past successes |
-| 12 | **Context compression** | Summarizes old turns when context exceeds 30K chars |
-| 13 | **Fix verification** | Tracks bug-fix success rate over time |
-| 14 | **Dynamic tool creation** | `DefineTool:` syntax lets the agent build new tools |
-| 15 | **User preference model** | Detects your coding style, preferred language, verbosity |
-| 16 | **Autonomous inspection** | Checks for outdated packages, code smells, gitignore gaps |
-| 17 | **Memory importance scoring** | Rates entries 0-10; high-score entries get priority |
-| 18 | **Knowledge graph** | Builds entity→relationship maps from stored facts |
-| 19 | **Skill composition** | Chains multiple learned skills into workflows |
-| 20 | **Bad learning rollback** | `/forget` command to remove incorrect learnings |
+Use `/agent auto|coder|researcher` to control routing. `/learning status [profile]`, `/learning metrics [profile]`, `/learning explain <id>`, and `/learning rollback <id>` expose lifecycle state and evidence. Project indexing remains separate knowledge ingestion.
 
 ### Memory storage
 
@@ -386,7 +365,15 @@ The migration creates a `.v1-backup` copy and writes the v2 database under `~/.k
 
 Tasks persist across process restarts and use `pending`, `running`, `succeeded`, `failed`, `blocked`, and `cancelled` states. `TaskDone` is only a completion request; a successful tool result, test, file check, or explicit confirmation must provide evidence before a task can succeed.
 
-Learning proposals are visible with `/learning status`, explainable with `/learning explain <proposal_id>`, and reversible with `/learning rollback <proposal_id>`.
+Run a frozen clean-versus-evolved benchmark with identical case order and runner settings:
+
+```bash
+python main.py learning benchmark --cases cases.jsonl \
+  --clean-runner './clean-wrapper' --evolved-runner './evolved-wrapper' \
+  --output benchmark.json
+```
+
+Each JSONL case requires `id`, `profile`, and `task`. Each wrapper reads one case from stdin and emits `verified_success`, `corrections`, `repeated_errors`, `tool_calls`, `tokens`, and `latency`. The exported `openkyrozen-learning-benchmark-v1` JSON is harness-neutral and suppresses a superiority claim unless completion is non-regressing, statistically credible, and a secondary measure improves.
 
 ---
 
@@ -412,6 +399,7 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `GET` | `/api/v2/memory?q=keyword` | Structured memory search with provenance and scope |
 | `GET/POST` | `/api/v2/tasks` | Durable task listing and creation |
 | `GET` | `/api/v2/learning` | Learning proposal status |
+| `GET` | `/api/v2/learning/metrics?profile=...` | Profile completion, correction, error, tool, token, and latency metrics |
 | `POST` | `/api/v2/learning/{id}/rollback` | Roll back an activated proposal |
 | `GET` | `/api/v2/events` | Auditable runtime, task, session, and learning events |
 | `GET/POST` | `/api/v2/schedules` | Durable interval and one-shot Gateway jobs |

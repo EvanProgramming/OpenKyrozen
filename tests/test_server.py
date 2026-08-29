@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 import server
+from fastapi import HTTPException
 
 
 class ServerBoundaryTests(unittest.TestCase):
@@ -47,6 +48,20 @@ class ServerBoundaryTests(unittest.TestCase):
         self.assertEqual(seen, [[], ["hello", "reply:hello"]])
         self.assertIs(server._agent.short_term_memory, original_messages)
         self.assertIs(server._agent.tasks.tasks, original_tasks)
+
+    def test_profile_validation(self):
+        self.assertEqual(server._normalise_profile(None), "auto")
+        self.assertEqual(server._normalise_profile("CODER"), "coder")
+        with self.assertRaises(HTTPException):
+            server._normalise_profile("reviewer")
+
+    def test_research_acceptance_requires_requested_observable_evidence(self):
+        tools = [{"action": "search_web", "success": True}, {"action": "write_file", "success": True}]
+        evidence = server._agent._research_acceptance(
+            "write a sourced report", "See [source](https://example.com).", tools,
+        )
+        self.assertEqual([item["success"] for item in evidence], [True, True])
+        self.assertEqual(server._agent._research_acceptance("explain gravity", "done", tools), [])
 
 
 if __name__ == "__main__":

@@ -135,8 +135,8 @@ def _run_scheduled_job(job: dict[str, Any]) -> None:
     if payload.get("type") == "learning_cycle":
         if _agent._SELF_LEARNING_FLAGS.get("auto_learn_conversations", True):
             _agent._auto_learn_conversations()
-        if _agent._SELF_LEARNING_FLAGS.get("consolidate_memories", True):
-            _agent._consolidate_memories()
+        if _agent._SELF_LEARNING_FLAGS.get("outcome_verified_evolution", True):
+            _agent._review_evolution_runs()
         return
     if payload.get("type") == "chat":
         session_id = _normalise_session_id(payload.get("session_id"))
@@ -158,6 +158,13 @@ def _normalise_session_id(raw_session_id: Any) -> str:
     if len(session_id) > 128 or not re.fullmatch(r"[A-Za-z0-9_.:-]+", session_id):
         raise HTTPException(400, "Invalid session_id")
     return session_id
+
+
+def _normalise_profile(raw_profile: Any) -> str:
+    profile = str(raw_profile or "auto").strip().lower()
+    if profile not in {"auto", "coder", "researcher"}:
+        raise HTTPException(400, "profile must be auto, coder, or researcher")
+    return profile
 
 
 def _actor_for_request(request: Request) -> str:
@@ -204,6 +211,8 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
         previous_tasks = copy.deepcopy(_agent.tasks.tasks)
         previous_tools = dict(_agent.AVAILABLE_TOOLS)
         previous_tools_list = _agent.TOOLS_LIST
+        previous_learning_run = _agent._last_learning_run
+        previous_learning_notices = _agent._learning_notices
         try:
             allowed = _allowed_server_tools("web")
             _agent.AVAILABLE_TOOLS.clear()
@@ -212,8 +221,13 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
             })
             _agent.TOOLS_LIST = _agent._build_tools_list()
             _agent.short_term_memory = list(session["messages"])
+            _agent._last_learning_run = session.get("last_learning_run")
+            _agent._learning_notices = []
             _agent.memory_bank.session_id = session.get("session_id") or session.setdefault("session_id", _normalise_session_id(session.get("id")))
-            reply = _agent._chat_turn(message, clear_tasks=True)
+            profile = session.get("profile", "auto")
+            reply = (_agent._chat_turn(message, clear_tasks=True, profile=profile)
+                     if profile != "auto" else _agent._chat_turn(message, clear_tasks=True))
+            session["last_learning_run"] = _agent._last_learning_run
             _agent.short_term_memory.extend([
                 {"role": "user", "content": message},
                 {"role": "assistant", "content": reply},
@@ -245,6 +259,8 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
                 _agent.TOOLS_LIST = _agent._build_tools_list()
             else:
                 _agent.TOOLS_LIST = previous_tools_list
+            _agent._last_learning_run = previous_learning_run
+            _agent._learning_notices = previous_learning_notices
 
 
 def _validate_message(message: str) -> str:
@@ -415,6 +431,7 @@ async def api_chat(request: Request):
         raise HTTPException(400, "Empty message")
     session_id = _normalise_session_id(body.get("session_id"))
     session = _get_or_create_session(session_id, _actor_for_request(request))
+    session["profile"] = _normalise_profile(body.get("profile", session.get("profile", "auto")))
     _audit("CHAT", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
 
     try:
@@ -424,7 +441,7 @@ async def api_chat(request: Request):
         raise HTTPException(500, str(e))
 
     _audit("REPLY", f"len={len(reply)}", session["user_id"])
-    return {"reply": reply, "session_id": session_id, "cost": get_cost_summary()}
+    return {"reply": reply, "session_id": session_id, "profile": session["profile"], "cost": get_cost_summary()}
 
 
 @app.post("/api/chat/stream", dependencies=[Depends(require_api_access)])
@@ -441,6 +458,7 @@ async def api_chat_stream(request: Request):
         raise HTTPException(400, "Empty message")
     session_id = _normalise_session_id(body.get("session_id"))
     session = _get_or_create_session(session_id, _actor_for_request(request))
+    session["profile"] = _normalise_profile(body.get("profile", session.get("profile", "auto")))
     _audit("CHAT_STREAM", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
 
     async def generate():
@@ -518,11 +536,22 @@ async def api_v2_create_task(request: Request):
 
 
 @app.get("/api/v2/learning", dependencies=[Depends(require_api_access)])
-async def api_v2_learning(status: str | None = None, limit: int = 50):
-    proposals = _agent.learning_engine.status(max(1, min(limit, 200)))
-    if status:
-        proposals = [proposal for proposal in proposals if proposal["status"] == status]
+async def api_v2_learning(status: str | None = None, profile: str | None = None, limit: int = 50):
+    if profile is not None:
+        profile = _normalise_profile(profile)
+        if profile == "auto":
+            profile = None
+    proposals = _agent.learning_engine.status(max(1, min(limit, 200)), profile=profile, status=status)
     return {"proposals": proposals}
+
+
+@app.get("/api/v2/learning/metrics", dependencies=[Depends(require_api_access)])
+async def api_v2_learning_metrics(profile: str | None = None):
+    if profile is not None:
+        profile = _normalise_profile(profile)
+        if profile == "auto":
+            profile = None
+    return _agent.learning_engine.metrics(profile)
 
 
 @app.post("/api/v2/learning/{proposal_id}/rollback", dependencies=[Depends(require_api_access)])
