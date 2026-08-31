@@ -95,7 +95,9 @@ class MemoryBank:
                 metadata: dict[str, Any] | None = None) -> str:
         text = str(text)
         kind = kind or self._kind_for_text(text)
-        event_id = self.store.append_event("memory.observed", {"kind": kind, "content": text}, **self._scope_kwargs())
+        event_content = "[private claim]" if (metadata or {}).get("visibility") == "private" else text
+        event_id = self.store.append_event("memory.observed", {"kind": kind, "content": event_content},
+                                           **self._scope_kwargs())
         memory_id = self.store.upsert_memory(
             text, kind=kind, status=status, confidence=confidence,
             source_event_ids=[event_id, *(source_event_ids or [])], metadata=metadata,
@@ -158,7 +160,7 @@ class MemoryBank:
             row.get("session_id") in {None, "", self.session_id}
         )
 
-    def recall(self, query: str, n_results: int = 2) -> list[str]:
+    def recall(self, query: str, n_results: int = 2, *, include_scoped: bool = False) -> list[str]:
         query = str(query or "").strip()
         if not query:
             return []
@@ -166,12 +168,16 @@ class MemoryBank:
         if self._collection is not None:
             try:
                 result = self._collection.query(
-                    query_texts=[query], n_results=min(limit, max(1, self._collection.count())),
+                    query_texts=[query], n_results=min(limit * 4, max(1, self._collection.count())),
                     where={"$and": [{"workspace_id": self.workspace_id}, {"status": "active"}]},
                 )
                 docs = result.get("documents", [[]])
                 if docs and docs[0]:
-                    return [doc for doc in docs[0] if not doc.startswith("FILE:")][:limit]
+                    rows = self.store.list_memories(status="active", limit=10000,
+                                                    workspace_id=self.workspace_id, session_id=self.session_id)
+                    metadata = {row["content"]: row.get("metadata", {}) for row in rows}
+                    return [doc for doc in docs[0] if not doc.startswith("FILE:") and (
+                        include_scoped or metadata.get(doc, {}).get("visibility", "public") == "public")][:limit]
             except Exception as exc:
                 self._last_error = f"memory index query failed: {exc}"
         rows = self.store.list_memories(status="active", limit=10000, workspace_id=self.workspace_id,
@@ -181,6 +187,8 @@ class MemoryBank:
         for row in rows:
             if row["kind"] == "source" or row["content"].startswith("FILE:"):
                 continue
+            if not include_scoped and row.get("metadata", {}).get("visibility", "public") != "public":
+                continue
             words = set(re.findall(r"[\w\u3400-\u9fff]+", row["content"].lower()))
             score = len(terms & words)
             if score:
@@ -189,9 +197,11 @@ class MemoryBank:
         return [item[2] for item in scored[:limit]]
 
     def recall_records(self, query: str, n_results: int = 2, *, profile: str | None = None,
-                       task_signature: str | None = None) -> list[dict[str, Any]]:
+                       task_signature: str | None = None, speaker: str | None = None,
+                       audience: str | None = None, channel: str | None = None,
+                       authorized_speakers: set[str] | None = None) -> list[dict[str, Any]]:
         """Return recalled data with provenance and trust metadata."""
-        documents = self.recall(query, n_results=n_results)
+        documents = self.recall(query, n_results=n_results, include_scoped=True)
         if not documents:
             return []
         rows = self.store.list_memories(status="active", limit=10000, workspace_id=self.workspace_id,
@@ -200,19 +210,54 @@ class MemoryBank:
         for row in rows:
             by_content.setdefault(row["content"], row)
         records = [by_content[doc] for doc in documents if doc in by_content]
-        context = {"profile": profile, "project": self.workspace_id, "task": task_signature}
+        visible = self.filter_records(records, profile=profile, task_signature=task_signature,
+                                      speaker=speaker, audience=audience, channel=channel,
+                                      authorized_speakers=authorized_speakers)
+        if visible:
+            self.store.append_event("memory.recalled", {
+                "query_hash": stable_hash(query), "memory_ids": [row["id"] for row in visible],
+                "attributions": [{"memory_id": row["id"],
+                                  "speaker": row.get("metadata", {}).get("speaker"),
+                                  "claim_type": row.get("metadata", {}).get("claim_type", "general")}
+                                 for row in visible],
+                "speaker": speaker, "audience": audience, "channel": channel,
+            }, user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id)
+        return visible
+
+    def filter_records(self, records: list[dict[str, Any]], *, profile: str | None = None,
+                       task_signature: str | None = None, speaker: str | None = None,
+                       audience: str | None = None, channel: str | None = None,
+                       authorized_speakers: set[str] | None = None) -> list[dict[str, Any]]:
+        context = {"profile": profile, "project": self.workspace_id, "task": task_signature,
+                   "speaker": speaker, "audience": audience, "channel": channel}
+        authorized_speakers = authorized_speakers or set()
         visible = []
         for row in records:
             scope = row.get("metadata", {}).get("scope")
             if scope and scope.get("type") != "global" and context.get(scope.get("type")) != scope.get("value"):
                 continue
+            metadata = row.get("metadata", {})
+            claim_speaker = metadata.get("speaker")
+            if speaker and claim_speaker and claim_speaker != speaker:
+                continue
+            claim_channel = metadata.get("channel")
+            if claim_channel and claim_channel != channel:
+                continue
+            audiences = set(metadata.get("audiences", []))
+            visibility = metadata.get("visibility", "public")
+            if visibility == "private" and not (
+                    claim_speaker == speaker and claim_speaker in authorized_speakers):
+                continue
+            if visibility == "group" and audiences and audience not in audiences:
+                continue
             visible.append(row)
         return visible
 
-    def get_recent(self, n: int = 10) -> list[str]:
+    def get_recent(self, n: int = 10, *, include_scoped: bool = False) -> list[str]:
         rows = self.store.list_memories(status="active", limit=max(1, min(n, 10000)), workspace_id=self.workspace_id,
                                         session_id=self.session_id)
-        return [row["content"] for row in rows]
+        return [row["content"] for row in rows
+                if include_scoped or row.get("metadata", {}).get("visibility", "public") == "public"][:n]
 
     def count_logs(self) -> int:
         return len(self.store.list_memories(status="active", limit=100000, workspace_id=self.workspace_id,

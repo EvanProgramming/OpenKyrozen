@@ -21,8 +21,9 @@ if TYPE_CHECKING:
 
 
 EVOLUTION_PROFILES = {"coder", "researcher"}
-CLAIM_SCOPES = {"global", "profile", "project", "task"}
-SCOPE_RANK = {"global": 0, "profile": 1, "project": 2, "task": 3}
+CLAIM_SCOPES = {"global", "profile", "project", "task", "speaker", "audience", "channel"}
+SCOPE_RANK = {"global": 0, "profile": 1, "project": 2, "channel": 3, "audience": 4,
+              "speaker": 5, "task": 6}
 POSITIVE_FEEDBACK = ("that works", "it works", "worked", "fixed", "solved", "perfect", "great", "谢谢", "好了", "搞定")
 NEGATIVE_FEEDBACK = ("not working", "still broken", "didn't work", "doesn't work", "wrong", "incorrect", "not fixed", "不对", "还不行", "没解决")
 _SECRET_RE = re.compile(
@@ -394,7 +395,10 @@ class LearningEngine:
 
     def remember_claim(self, *, key: str, value: str, kind: str = "fact", authority: str = "inferred",
                        scope: str = "global", scope_value: str = "", evidence_id: str | None = None,
-                       dependencies: list[str] | None = None, valid_until: str | None = None) -> dict[str, Any]:
+                       dependencies: list[str] | None = None, valid_until: str | None = None,
+                       claim_type: str = "general", speaker: str | None = None,
+                       audiences: list[str] | None = None, channel: str | None = None,
+                       visibility: str = "public") -> dict[str, Any]:
         """Create a typed memory claim; inferred claims need repeated evidence."""
         key, value = self._clean(key), self._clean(value)
         if not key or not value or _SECRET_RE.search(f"{key}={value}"):
@@ -403,22 +407,50 @@ class LearningEngine:
             raise ValueError("invalid claim authority or scope")
         if scope != "global" and not str(scope_value).strip():
             raise ValueError("non-global claims require scope_value")
+        if claim_type not in {"general", "attributed_belief", "private_fact", "group_agreement"}:
+            raise ValueError("invalid claim type")
+        if visibility not in {"public", "private", "group"}:
+            raise ValueError("invalid claim visibility")
+        speaker = self._clean(speaker or "") or None
+        audiences = [self._clean(item) for item in audiences or [] if self._clean(item)]
+        if claim_type in {"attributed_belief", "private_fact"} and not speaker:
+            raise ValueError("attributed and private claims require speaker")
+        if claim_type == "private_fact":
+            visibility = "private"
+            if authority != "owner":
+                raise ValueError("private facts must be explicitly owner-authored")
+        if claim_type == "group_agreement":
+            visibility = "group"
         metadata = {"claim": True, "claim_key": key, "claim_value": value,
                     "authority": authority, "scope": {"type": scope, "value": str(scope_value).strip()},
                     "valid_from": datetime.now(timezone.utc).isoformat(), "valid_until": valid_until,
-                    "dependencies": [str(item) for item in dependencies or [] if item]}
+                    "dependencies": [str(item) for item in dependencies or [] if item],
+                    "claim_type": claim_type, "speaker": speaker, "audiences": audiences,
+                    "channel": self._clean(channel or "") or None, "visibility": visibility}
         active = [row for row in self.store.list_memories(status="active", limit=10000,
                                                           workspace_id=self.memory.workspace_id)
                   if row.get("metadata", {}).get("claim_key") == key
-                  and row.get("metadata", {}).get("scope") == metadata["scope"]]
+                  and row.get("metadata", {}).get("scope") == metadata["scope"]
+                  and row.get("metadata", {}).get("speaker") == speaker
+                  and row.get("metadata", {}).get("claim_type", "general") == claim_type]
+        if claim_type == "attributed_belief":
+            display = f"{speaker} believes {key}: {value}"
+        elif claim_type == "private_fact":
+            display = f"Private fact from {speaker} — {key}: {value}"
+        elif claim_type == "group_agreement":
+            display = f"Group agreement — {key}: {value}"
+        else:
+            display = f"{key}: {value}"
         if authority == "owner":
             for row in active:
                 if row.get("metadata", {}).get("claim_value") != value:
                     self.store.set_memory_status(row["id"], "superseded", workspace_id=self.memory.workspace_id)
                     metadata["supersedes"] = row["id"]
-            memory_id = self.memory.add_log(f"{key}: {value}", kind=kind, status="active", confidence=1.0,
+            memory_id = self.memory.add_log(display, kind=kind, status="active", confidence=1.0,
                                             metadata=metadata)
-            self.store.append_event("memory.claim_activated", {"memory_id": memory_id, **metadata},
+            audit_metadata = ({**metadata, "claim_value": "[private]"}
+                              if visibility == "private" else metadata)
+            self.store.append_event("memory.claim_activated", {"memory_id": memory_id, **audit_metadata},
                                     user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
                                     session_id=self.memory.session_id)
             return {"status": "active", "memory_id": memory_id, "needs_clarification": False}
@@ -426,7 +458,9 @@ class LearningEngine:
         existing = next((item for item in proposals if item["status"] == "candidate"
                          and item.get("validation", {}).get("claim_key") == key
                          and item.get("validation", {}).get("claim_value") == value
-                         and item.get("validation", {}).get("scope") == metadata["scope"]), None)
+                         and item.get("validation", {}).get("scope") == metadata["scope"]
+                         and item.get("validation", {}).get("speaker") == speaker
+                         and item.get("validation", {}).get("claim_type", "general") == claim_type), None)
         conflict = any(row.get("metadata", {}).get("claim_value") != value for row in active)
         if existing:
             count = self.store.add_proposal_evidence(existing["id"], evidence_id or stable_hash(f"{key}:{value}"))
@@ -434,13 +468,13 @@ class LearningEngine:
                 validation = {**existing["validation"], **metadata, "success": True,
                               "evidence_count": count, "stage": "active"}
                 self.store.update_proposal(existing["id"], status="active", confidence=0.8, validation=validation)
-                memory_id = self.memory.add_log(f"{key}: {value}", kind=kind, status="active", confidence=0.8,
+                memory_id = self.memory.add_log(display, kind=kind, status="active", confidence=0.8,
                                                 metadata={**metadata, "proposal_id": existing["id"]})
                 return {"status": "active", "proposal_id": existing["id"], "memory_id": memory_id,
                         "needs_clarification": False}
             return {"status": "candidate", "proposal_id": existing["id"], "evidence_count": count,
                     "needs_clarification": conflict}
-        proposal_id = self.store.create_proposal(kind, f"{key}: {value}", confidence=0.4,
+        proposal_id = self.store.create_proposal(kind, display, confidence=0.4,
                                                  evidence=[evidence_id or stable_hash(f"{key}:{value}")],
                                                  workspace_id=self.memory.workspace_id, user_id=self.memory.user_id)
         self.store.update_proposal(proposal_id, status="candidate",
@@ -452,8 +486,12 @@ class LearningEngine:
                 "needs_clarification": conflict}
 
     def resolve_claim(self, key: str, *, profile: str | None = None, project: str | None = None,
-                      task_signature: str | None = None) -> dict[str, Any] | None:
-        context = {"profile": profile, "project": project, "task": task_signature}
+                      task_signature: str | None = None, speaker: str | None = None,
+                      audience: str | None = None, channel: str | None = None,
+                      authorized_speakers: set[str] | None = None) -> dict[str, Any] | None:
+        context = {"profile": profile, "project": project, "task": task_signature,
+                   "speaker": speaker, "audience": audience, "channel": channel}
+        authorized_speakers = authorized_speakers or set()
         matches = []
         for row in self.store.list_memories(status="active", limit=10000, workspace_id=self.memory.workspace_id):
             meta = row.get("metadata", {})
@@ -462,14 +500,27 @@ class LearningEngine:
             scope = meta.get("scope", {"type": "global", "value": ""})
             if scope["type"] != "global" and context.get(scope["type"]) != scope.get("value"):
                 continue
+            claim_speaker = meta.get("speaker")
+            if speaker and claim_speaker and claim_speaker != speaker:
+                continue
+            if meta.get("channel") and meta.get("channel") != channel:
+                continue
+            if meta.get("visibility") == "private" and not (
+                    claim_speaker == speaker and claim_speaker in authorized_speakers):
+                continue
+            if meta.get("visibility") == "group" and meta.get("audiences") and audience not in meta["audiences"]:
+                continue
             matches.append((SCOPE_RANK[scope["type"]], int(meta.get("authority") == "owner"), row))
         if not matches:
             return None
         best_rank = max((rank, authority) for rank, authority, _ in matches)
         best = [row for rank, authority, row in matches if (rank, authority) == best_rank]
         values = {row["metadata"]["claim_value"] for row in best}
-        return {"conflict": len(values) > 1, "value": next(iter(values)) if len(values) == 1 else None,
-                "claims": best, "scope_rank": best_rank[0]}
+        attributed = {row["metadata"].get("speaker"): row["metadata"]["claim_value"] for row in best
+                      if row["metadata"].get("claim_type") == "attributed_belief"}
+        return {"conflict": len(values) > 1, "value": None if attributed else (
+                    next(iter(values)) if len(values) == 1 else None),
+                "attributed_values": attributed, "claims": best, "scope_rank": best_rank[0]}
 
     def explain_claim(self, claim_id: str) -> dict[str, Any] | None:
         rows = self.store.list_memories(status=None, limit=10000, workspace_id=self.memory.workspace_id)

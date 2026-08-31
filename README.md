@@ -355,6 +355,8 @@ Selection ranks relevant guidance by verified utility per context character and 
 
 Learned guidance is bound to the provider/model family that produced its evidence unless paired replay validates it across models. Verifier reliability, evidence-adaptive review priority, and a user-owned `KYROZEN_LEARNING_CONSTITUTION` file constrain evolution. Redacted experience capsules are portable JSON evidence, but imports always remain inactive candidates until local validation.
 
+Multi-party claims distinguish attributed beliefs, private facts, and group agreements. Speaker, audience, channel, and visibility checks run before recall; private claims require the current authenticated speaker context. Chat responses include a memory receipt listing the claim IDs and speakers that affected the turn, and `benchmarks/multi_party_memory.jsonl` provides frozen leakage, update, ambiguity, and audience cases.
+
 ### Memory storage
 
 OpenKyrozen v2 uses **SQLite as the source of truth** (`~/.kyrozen/v2/openkyrozen.sqlite3`) and ChromaDB as a rebuildable semantic index. Memories have a kind, scope, confidence, source events, and lifecycle status. Workspaces and sessions are isolated, raw observations are marked as data, and `/forget` removes records by durable ID. If ChromaDB is unavailable, SQLite keeps durable keyword retrieval.
@@ -415,7 +417,7 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `POST` | `/api/v2/learning/capsules` | Import a capsule as an inactive candidate |
 | `GET` | `/api/v2/learning/constitution` | Inspect the immutable user-owned learning policy |
 | `POST` | `/api/v2/learning/{id}/rollback` | Roll back an activated proposal |
-| `GET` | `/api/v2/memory/claims` | Typed memory claims with provenance and scope |
+| `GET/POST` | `/api/v2/memory/claims` | List or create typed, attributed memory claims |
 | `GET/DELETE` | `/api/v2/memory/claims/{id}` | Explain or dependency-completely forget a claim |
 | `GET` | `/api/v2/events` | Auditable runtime, task, session, and learning events |
 | `GET/POST` | `/api/v2/schedules` | Durable interval and one-shot Gateway jobs |

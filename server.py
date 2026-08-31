@@ -167,6 +167,29 @@ def _normalise_profile(raw_profile: Any) -> str:
     return profile
 
 
+def _normalise_memory_actor(value: Any, field: str, default: str) -> str:
+    actor = str(value or default).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.:@-]{1,64}", actor):
+        raise HTTPException(400, f"Invalid {field}")
+    return actor
+
+
+def _normalise_memory_context(speaker: Any, audience: Any, channel: Any) -> tuple[str | None, str | None, str | None]:
+    speaker = _normalise_memory_actor(speaker, "speaker", "local") if speaker else None
+    audience = _normalise_memory_actor(audience, "audience", speaker or "local") if audience or speaker else None
+    channel = _normalise_memory_actor(channel, "channel", "chat") if channel else None
+    return speaker, audience, channel
+
+
+def _set_memory_context(session: dict[str, Any], body: dict[str, Any]) -> None:
+    default = session.get("user_id", "local")
+    speaker = _normalise_memory_actor(body.get("speaker"), "speaker", session.get("speaker", default))
+    audience = _normalise_memory_actor(body.get("audience"), "audience", session.get("audience", speaker))
+    channel = _normalise_memory_actor(body.get("channel"), "channel", session.get("channel", "chat"))
+    session.update({"speaker": speaker, "audience": audience, "channel": channel,
+                    "authorized_speakers": [default]})
+
+
 def _actor_for_request(request: Request) -> str:
     """Return a coarse audit actor; user_id is never accepted from JSON."""
     return "authenticated" if _SERVER_TOKEN else "loopback"
@@ -214,6 +237,11 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
         previous_learning_run = _agent._last_learning_run
         previous_learning_notices = _agent._learning_notices
         try:
+            previous_recall = _agent.memory_bank.store.list_events(
+                "memory.recalled", limit=1, workspace_id=_agent.memory_bank.workspace_id,
+                session_id=session.get("session_id"),
+            )
+            previous_recall_id = previous_recall[0]["id"] if previous_recall else None
             allowed = _allowed_server_tools("web")
             _agent.AVAILABLE_TOOLS.clear()
             _agent.AVAILABLE_TOOLS.update({
@@ -225,8 +253,11 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
             _agent._learning_notices = []
             _agent.memory_bank.session_id = session.get("session_id") or session.setdefault("session_id", _normalise_session_id(session.get("id")))
             profile = session.get("profile", "auto")
-            reply = (_agent._chat_turn(message, clear_tasks=True, profile=profile)
-                     if profile != "auto" else _agent._chat_turn(message, clear_tasks=True))
+            memory_context = {key: session.get(key) for key in (
+                "speaker", "audience", "channel", "authorized_speakers")}
+            reply = (_agent._chat_turn(message, clear_tasks=True, profile=profile, memory_context=memory_context)
+                     if profile != "auto" else _agent._chat_turn(message, clear_tasks=True,
+                                                                  memory_context=memory_context))
             session["last_learning_run"] = _agent._last_learning_run
             _agent.short_term_memory.extend([
                 {"role": "user", "content": message},
@@ -234,6 +265,12 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
             ])
             session["messages"] = _agent.short_term_memory[-_MAX_SESSION_MESSAGES:]
             session["updated"] = time.time()
+            recalls = _agent.memory_bank.store.list_events(
+                "memory.recalled", limit=1, workspace_id=_agent.memory_bank.workspace_id,
+                session_id=_agent.memory_bank.session_id,
+            )
+            session["last_memory_receipt"] = (recalls[0]["payload"]
+                                              if recalls and recalls[0]["id"] != previous_recall_id else None)
             for role, content in (("user", message), ("assistant", reply)):
                 _agent.memory_bank.store.append_event(
                     "session.message", {"role": role, "content": content},
@@ -432,6 +469,7 @@ async def api_chat(request: Request):
     session_id = _normalise_session_id(body.get("session_id"))
     session = _get_or_create_session(session_id, _actor_for_request(request))
     session["profile"] = _normalise_profile(body.get("profile", session.get("profile", "auto")))
+    _set_memory_context(session, body)
     _audit("CHAT", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
 
     try:
@@ -441,7 +479,8 @@ async def api_chat(request: Request):
         raise HTTPException(500, str(e))
 
     _audit("REPLY", f"len={len(reply)}", session["user_id"])
-    return {"reply": reply, "session_id": session_id, "profile": session["profile"], "cost": get_cost_summary()}
+    return {"reply": reply, "session_id": session_id, "profile": session["profile"],
+            "memory_receipt": session.get("last_memory_receipt"), "cost": get_cost_summary()}
 
 
 @app.post("/api/chat/stream", dependencies=[Depends(require_api_access)])
@@ -459,6 +498,7 @@ async def api_chat_stream(request: Request):
     session_id = _normalise_session_id(body.get("session_id"))
     session = _get_or_create_session(session_id, _actor_for_request(request))
     session["profile"] = _normalise_profile(body.get("profile", session.get("profile", "auto")))
+    _set_memory_context(session, body)
     _audit("CHAT_STREAM", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
 
     async def generate():
@@ -474,6 +514,8 @@ async def api_chat_stream(request: Request):
                 yield f"data: {json.dumps({'chunk': chunk})}\n\n"
                 await asyncio_sleep(0.01)
             yield f"data: {json.dumps({'cost': get_cost_summary()})}\n\n"
+            if session.get("last_memory_receipt"):
+                yield f"data: {json.dumps({'memory_receipt': session['last_memory_receipt']})}\n\n"
             yield "data: [DONE]\n\n"
             _audit("REPLY_STREAM", f"len={len(reply)}", session["user_id"])
         except Exception as e:
@@ -495,36 +537,75 @@ async def api_memory(q: str = "", limit: int = 10):
 
 
 @app.get("/api/v2/memory", dependencies=[Depends(require_api_access)])
-async def api_v2_memory(q: str = "", limit: int = 10, session_id: str | None = None):
+async def api_v2_memory(request: Request, q: str = "", limit: int = 10, session_id: str | None = None,
+                        speaker: str | None = None, audience: str | None = None,
+                        channel: str | None = None):
     """Structured memory endpoint with scope and provenance metadata."""
     limit = max(1, min(limit, _MAX_MEMORY_RESULTS))
+    speaker, audience, channel = _normalise_memory_context(speaker, audience, channel)
+    authorized_speakers = {_actor_for_request(request)}
     if q:
         memory = MemoryBank(_agent.memory_bank.db_path, workspace_id=_agent.memory_bank.workspace_id,
                             session_id=_normalise_session_id(session_id) if session_id else None)
-        results = memory.recall_records(q, n_results=limit)
+        results = memory.recall_records(q, n_results=limit, speaker=speaker, audience=audience, channel=channel,
+                                        authorized_speakers=authorized_speakers)
     else:
         memory = MemoryBank(_agent.memory_bank.db_path, workspace_id=_agent.memory_bank.workspace_id,
                             session_id=_normalise_session_id(session_id) if session_id else None)
-        results = memory.store.list_memories(status="active", limit=limit,
-                                             workspace_id=memory.workspace_id, session_id=memory.session_id)
+        rows = memory.store.list_memories(status="active", limit=limit * 4,
+                                          workspace_id=memory.workspace_id, session_id=memory.session_id)
+        results = memory.filter_records(rows, speaker=speaker, audience=audience, channel=channel,
+                                        authorized_speakers=authorized_speakers)[:limit]
     return {"results": results, "total": memory.count_logs(), "scope": {
         "workspace_id": memory.workspace_id, "session_id": memory.session_id,
     }}
 
 
 @app.get("/api/v2/memory/claims", dependencies=[Depends(require_api_access)])
-async def api_v2_memory_claims():
+async def api_v2_memory_claims(request: Request, speaker: str | None = None, audience: str | None = None,
+                               channel: str | None = None):
+    speaker, audience, channel = _normalise_memory_context(speaker, audience, channel)
     rows = _agent.memory_bank.store.list_memories(status=None, limit=10000,
                                                   workspace_id=_agent.memory_bank.workspace_id)
-    return {"claims": [row for row in rows if row.get("metadata", {}).get("claim")]}
+    claims = [row for row in rows if row.get("metadata", {}).get("claim")]
+    return {"claims": _agent.memory_bank.filter_records(
+        claims, speaker=speaker, audience=audience, channel=channel,
+        authorized_speakers={_actor_for_request(request)},
+    )}
+
+
+@app.post("/api/v2/memory/claims", dependencies=[Depends(require_api_access)])
+async def api_v2_create_memory_claim(request: Request):
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    if body.get("claim_type") == "private_fact" and body.get("speaker") != _actor_for_request(request):
+        raise HTTPException(403, "Private claims must belong to the authenticated speaker")
+    try:
+        return _agent.learning_engine.remember_claim(
+            key=body.get("key", ""), value=body.get("value", ""), kind=body.get("kind", "fact"),
+            authority=body.get("authority", "owner"), scope=body.get("scope", "global"),
+            scope_value=body.get("scope_value", ""), evidence_id=body.get("evidence_id"),
+            claim_type=body.get("claim_type", "general"), speaker=body.get("speaker"),
+            audiences=body.get("audiences") if isinstance(body.get("audiences"), list) else [],
+            channel=body.get("channel"), visibility=body.get("visibility", "public"),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/v2/memory/claims/{claim_id}", dependencies=[Depends(require_api_access)])
-async def api_v2_memory_claim(claim_id: str):
+async def api_v2_memory_claim(request: Request, claim_id: str, speaker: str | None = None,
+                              audience: str | None = None, channel: str | None = None):
+    speaker, audience, channel = _normalise_memory_context(speaker, audience, channel)
     claim = _agent.learning_engine.explain_claim(claim_id)
-    if claim is None:
+    visible = _agent.memory_bank.filter_records(
+        [claim] if claim else [], speaker=speaker, audience=audience, channel=channel,
+        authorized_speakers={_actor_for_request(request)},
+    )
+    if not visible:
         raise HTTPException(404, "Memory claim not found")
-    return claim
+    return visible[0]
 
 
 @app.delete("/api/v2/memory/claims/{claim_id}", dependencies=[Depends(require_api_access)])
