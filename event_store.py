@@ -268,10 +268,13 @@ class EventStore:
                 )
         return memory_id
 
-    def list_memories(self, *, kind: str | None = None, status: str = "active", limit: int = 100,
+    def list_memories(self, *, kind: str | None = None, status: str | None = "active", limit: int = 100,
                       workspace_id: str = "default", session_id: str | None = None) -> list[dict[str, Any]]:
-        clauses = ["status=?", "workspace_id=?"]
-        params: list[Any] = [status, workspace_id]
+        clauses = ["workspace_id=?"]
+        params: list[Any] = [workspace_id]
+        if status:
+            clauses.append("status=?")
+            params.append(status)
         if kind:
             clauses.append("kind=?")
             params.append(kind)
@@ -285,6 +288,13 @@ class EventStore:
                 params,
             ).fetchall()
         return [dict(row, source_event_ids=self._loads(row["source_event_ids"], []), metadata=self._loads(row["metadata"], {})) for row in rows]
+
+    def set_memory_status(self, memory_id: str, status: str, *, workspace_id: str = "default") -> bool:
+        with self._lock, self.connection() as db:
+            return db.execute(
+                "UPDATE memories SET status=?,updated_at=? WHERE id=? AND workspace_id=?",
+                (status, utc_now(), memory_id, workspace_id),
+            ).rowcount == 1
 
     def delete_memories(self, ids: list[str], *, workspace_id: str = "default") -> int:
         ids = [str(item) for item in ids if item]

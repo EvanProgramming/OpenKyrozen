@@ -188,7 +188,8 @@ class MemoryBank:
         scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [item[2] for item in scored[:limit]]
 
-    def recall_records(self, query: str, n_results: int = 2) -> list[dict[str, Any]]:
+    def recall_records(self, query: str, n_results: int = 2, *, profile: str | None = None,
+                       task_signature: str | None = None) -> list[dict[str, Any]]:
         """Return recalled data with provenance and trust metadata."""
         documents = self.recall(query, n_results=n_results)
         if not documents:
@@ -198,7 +199,15 @@ class MemoryBank:
         by_content: dict[str, dict[str, Any]] = {}
         for row in rows:
             by_content.setdefault(row["content"], row)
-        return [by_content[doc] for doc in documents if doc in by_content]
+        records = [by_content[doc] for doc in documents if doc in by_content]
+        context = {"profile": profile, "project": self.workspace_id, "task": task_signature}
+        visible = []
+        for row in records:
+            scope = row.get("metadata", {}).get("scope")
+            if scope and scope.get("type") != "global" and context.get(scope.get("type")) != scope.get("value"):
+                continue
+            visible.append(row)
+        return visible
 
     def get_recent(self, n: int = 10) -> list[str]:
         rows = self.store.list_memories(status="active", limit=max(1, min(n, 10000)), workspace_id=self.workspace_id,

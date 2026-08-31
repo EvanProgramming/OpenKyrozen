@@ -66,7 +66,10 @@ class SubAgentManager:
         scoped_memory = MemoryBank(self.memory.db_path, user_id=self.memory.user_id,
                                    workspace_id=workspace_id,
                                    session_id=run_id if profile.memory_scope == "session" else None)
-        context = scoped_memory.recall_records(task, n_results=5) if profile.memory_scope != "none" else []
+        context = (scoped_memory.recall_records(
+            task, n_results=5, profile=profile.name,
+            task_signature=self.learning_engine.task_signature(profile.name, task) if self.learning_engine else None,
+        ) if profile.memory_scope != "none" else [])
         learning_run = None
         receipts: list[dict[str, Any]] = []
         if self.learning_engine and profile.evolution_enabled and profile.name in {"coder", "researcher"}:

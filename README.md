@@ -349,6 +349,8 @@ Every run records its profile, task signature, tool/error receipts, acceptance e
 
 Use `/agent auto|coder|researcher` to control routing. `/learning status [profile]`, `/learning metrics [profile]`, `/learning evidence <id>`, `/learning explain <id>`, and `/learning rollback <id>` expose lifecycle state and proof. Shadow replay accepts paired frozen results through the authenticated API and never executes replay commands. Project indexing remains separate knowledge ingestion.
 
+Inferred facts and preferences remain candidates until repeated independent evidence supports them. Explicit owner claims activate immediately. Typed global, profile, project, and task scopes resolve deterministically; `/memory why <id>` explains a claim and `/memory forget <id>` removes it together with solely dependent learned behavior.
+
 ### Memory storage
 
 OpenKyrozen v2 uses **SQLite as the source of truth** (`~/.kyrozen/v2/openkyrozen.sqlite3`) and ChromaDB as a rebuildable semantic index. Memories have a kind, scope, confidence, source events, and lifecycle status. Workspaces and sessions are isolated, raw observations are marked as data, and `/forget` removes records by durable ID. If ChromaDB is unavailable, SQLite keeps durable keyword retrieval.
@@ -403,6 +405,8 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `GET` | `/api/v2/learning/{id}/evidence` | Proof card, applicability, replay, and outcome receipts |
 | `POST` | `/api/v2/learning/{id}/replay` | Record paired sandboxed candidate/predecessor replay results |
 | `POST` | `/api/v2/learning/{id}/rollback` | Roll back an activated proposal |
+| `GET` | `/api/v2/memory/claims` | Typed memory claims with provenance and scope |
+| `GET/DELETE` | `/api/v2/memory/claims/{id}` | Explain or dependency-completely forget a claim |
 | `GET` | `/api/v2/events` | Auditable runtime, task, session, and learning events |
 | `GET/POST` | `/api/v2/schedules` | Durable interval and one-shot Gateway jobs |
 | `POST` | `/api/v2/schedules/{id}/disable` | Disable a scheduled job |
