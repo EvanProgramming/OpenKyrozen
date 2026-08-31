@@ -219,6 +219,13 @@ class SkillRegistry:
                 self.store.set_skill_status(item["id"], "rolled_back", workspace_id=self.workspace_id)
         return self.store.set_skill_status(skill_id, "active", workspace_id=self.workspace_id)
 
+    def set_learned_status(self, skill_id: str, status: str) -> bool:
+        if status not in LEARNED_STATUSES:
+            return False
+        skill = next((item for item in self.list() if item["id"] == skill_id), None)
+        return bool(skill and skill.get("source") == "learned" and
+                    self.store.set_skill_status(skill_id, status, workspace_id=self.workspace_id))
+
     def rollback_learned(self, skill_id: str) -> bool:
         skill = next((item for item in self.list() if item["id"] == skill_id), None)
         if not skill or skill.get("source") != "learned":

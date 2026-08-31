@@ -554,6 +554,27 @@ async def api_v2_learning_metrics(profile: str | None = None):
     return _agent.learning_engine.metrics(profile)
 
 
+@app.get("/api/v2/learning/{proposal_id}/evidence", dependencies=[Depends(require_api_access)])
+async def api_v2_learning_evidence(proposal_id: str):
+    card = _agent.learning_engine.evidence_card(proposal_id)
+    if card is None:
+        raise HTTPException(404, "Learning proposal not found")
+    return card
+
+
+@app.post("/api/v2/learning/{proposal_id}/replay", dependencies=[Depends(require_api_access)])
+async def api_v2_learning_replay(proposal_id: str, request: Request):
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    try:
+        return _agent.learning_engine.record_shadow_replay(
+            proposal_id, body.get("candidate", []), body.get("predecessor", []),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.post("/api/v2/learning/{proposal_id}/rollback", dependencies=[Depends(require_api_access)])
 async def api_v2_learning_rollback(proposal_id: str):
     if not _agent.learning_engine.rollback(proposal_id):
