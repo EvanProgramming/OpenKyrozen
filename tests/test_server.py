@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import server
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 
 class ServerBoundaryTests(unittest.TestCase):
@@ -36,7 +37,7 @@ class ServerBoundaryTests(unittest.TestCase):
         original_tasks = server._agent.tasks.tasks
         seen = []
 
-        def fake_chat(message, clear_tasks=False):
+        def fake_chat(message, clear_tasks=False, memory_context=None):
             seen.append([item["content"] for item in server._agent.short_term_memory])
             return "reply:" + message
 
@@ -48,6 +49,27 @@ class ServerBoundaryTests(unittest.TestCase):
         self.assertEqual(seen, [[], ["hello", "reply:hello"]])
         self.assertIs(server._agent.short_term_memory, original_messages)
         self.assertIs(server._agent.tasks.tasks, original_tasks)
+
+    def test_memory_context_does_not_trust_a_claimed_speaker(self):
+        session = {"user_id": "authenticated"}
+        server._set_memory_context(session, {"speaker": "alice", "audience": "team", "channel": "project"})
+        self.assertEqual(session["authorized_speakers"], ["authenticated"])
+        self.assertEqual(session["audience"], "team")
+        with self.assertRaises(HTTPException):
+            server._set_memory_context(session, {"speaker": "alice/../../bob"})
+
+    def test_private_claim_api_binds_owner_to_authenticated_actor(self):
+        client = TestClient(server.app)
+        claim = {"key": "private-api-check", "value": "hidden-7x", "claim_type": "private_fact",
+                 "speaker": "alice", "authority": "owner"}
+        self.assertEqual(client.post("/api/v2/memory/claims", json=claim).status_code, 403)
+        claim["speaker"] = "loopback"
+        created = client.post("/api/v2/memory/claims", json=claim)
+        self.assertEqual(created.status_code, 200, created.text)
+        hidden = client.get("/api/v2/memory/claims", params={"speaker": "alice"}).json()["claims"]
+        visible = client.get("/api/v2/memory/claims", params={"speaker": "loopback"}).json()["claims"]
+        self.assertNotIn(created.json()["memory_id"], [item["id"] for item in hidden])
+        self.assertIn(created.json()["memory_id"], [item["id"] for item in visible])
 
     def test_profile_validation(self):
         self.assertEqual(server._normalise_profile(None), "auto")
