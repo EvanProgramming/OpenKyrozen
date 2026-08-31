@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import platform
 import re
+import sys
 import uuid
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
@@ -69,16 +71,37 @@ class LearningEngine:
     def begin_run(self, profile: str, task: str) -> dict[str, str]:
         if profile not in EVOLUTION_PROFILES:
             raise ValueError("profile must be coder or researcher")
+        environment = self.environment_fingerprint()
         run = {"run_id": f"learnrun_{uuid.uuid4().hex}", "profile": profile,
-               "task_signature": self.task_signature(profile, task), "task": str(task)[:4000]}
+               "task_signature": self.task_signature(profile, task), "task": str(task)[:4000],
+               "environment_hash": environment["hash"]}
         self.store.append_event("learning.run_started", run, user_id=self.memory.user_id,
                                 workspace_id=self.memory.workspace_id, session_id=self.memory.session_id)
         return run
+
+    def environment_fingerprint(self, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Return a stable, secret-free applicability fingerprint."""
+        values = {"system": platform.system(), "machine": platform.machine(),
+                  "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+                  "workspace": self.memory.workspace_id, **(extra or {})}
+        return {"values": values, "hash": stable_hash(json.dumps(values, sort_keys=True, default=str))}
 
     def artifact_context(self, run: dict[str, str]) -> tuple[str, list[dict[str, Any]]]:
         if self.registry is None:
             return "", []
         artifacts = self.registry.match(run["profile"], run["task"])
+        compatible = []
+        for item in artifacts:
+            expected = item.get("manifest", {}).get("applicability", {}).get("environment_hash")
+            if expected and expected != run.get("environment_hash"):
+                self.registry.set_learned_status(item["id"], "canary")
+                self.store.append_event("learning.artifact_revalidation_required", {
+                    **run, "skill_id": item["id"], "expected_environment_hash": expected,
+                }, user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
+                   session_id=self.memory.session_id)
+                continue
+            compatible.append(item)
+        artifacts = compatible
         receipts = [{"skill_id": item["id"], "version": item["version"], "status": item["status"],
                      "content_hash": item["content_hash"]} for item in artifacts]
         for receipt in receipts:
@@ -134,6 +157,14 @@ class LearningEngine:
             "artifact_type": str(artifact.get("artifact_type", "skill")), "profiles": [profile],
             "triggers": [str(item).lower() for item in artifact.get("triggers", [])],
             "verification": artifact.get("verification", []), "parent_version": parent_version,
+            "verification_contract": {
+                "requirements": artifact.get("verification", []),
+                "side_effects": "forbidden_during_replay",
+            },
+            "applicability": artifact.get("applicability") or {
+                "environment_hash": self.environment_fingerprint()["hash"],
+                "profile": profile,
+            },
         }
         try:
             installed = self.registry.install_learned(body, manifest, status="canary")
@@ -150,7 +181,10 @@ class LearningEngine:
                                                  evidence=[run_id], workspace_id=self.memory.workspace_id,
                                                  user_id=self.memory.user_id)
         validation = {"success": True, "stage": "canary", "profile": profile,
-                      "skill_id": installed["id"], "manifest": installed["manifest"]}
+                      "skill_id": installed["id"], "manifest": installed["manifest"],
+                      "verification_contract": manifest["verification_contract"],
+                      "applicability": manifest["applicability"],
+                      "revalidation_status": "pending", "shadow_replay": None}
         self.store.update_proposal(proposal_id, status="canary", validation=validation, confidence=0.5)
         self.store.append_event("learning.artifact_created", {"run_id": run_id, "proposal_id": proposal_id,
                                                                "skill_id": installed["id"], "profile": profile},
@@ -168,12 +202,46 @@ class LearningEngine:
             self.store.append_event("learning.review_requested", {"run_id": run["run_id"]},
                                     user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
                                     session_id=self.memory.session_id)
+        if correction:
+            self.store.append_event("learning.regression_case_created", {
+                "run_id": run["run_id"], "profile": run["profile"],
+                "task_signature": run["task_signature"], "task": self._clean(run.get("task", "")),
+                "receipts": receipts, "required_outcome": "must not repeat corrected behavior",
+            }, user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
+               session_id=self.memory.session_id)
         changes = []
         for receipt in receipts:
             change = self._reconcile_artifact(str(receipt.get("skill_id", "")))
             if change:
                 changes.append(change)
         return changes
+
+    def record_shadow_replay(self, proposal_id: str, candidate: list[dict[str, Any]],
+                             predecessor: list[dict[str, Any]]) -> dict[str, Any]:
+        """Record paired, already-sandboxed replay results without executing commands."""
+        proposal = next((item for item in self.store.list_proposals(
+            workspace_id=self.memory.workspace_id, limit=10000) if item["id"] == proposal_id), None)
+        if not proposal or not candidate or len(candidate) != len(predecessor):
+            raise ValueError("proposal and equal non-empty paired replay results are required")
+        candidate_ids = [str(item.get("case_id", "")) for item in candidate]
+        predecessor_ids = [str(item.get("case_id", "")) for item in predecessor]
+        if not all(candidate_ids) or candidate_ids != predecessor_ids or len(set(candidate_ids)) != len(candidate_ids):
+            raise ValueError("paired replay case ids must be unique and identical")
+        candidate_successes = sum(bool(item.get("verified_success")) for item in candidate)
+        predecessor_successes = sum(bool(item.get("verified_success")) for item in predecessor)
+        result = {
+            "case_ids": candidate_ids, "candidate_successes": candidate_successes,
+            "predecessor_successes": predecessor_successes,
+            "non_regressing": candidate_successes >= predecessor_successes,
+            "environment": self.environment_fingerprint(),
+        }
+        validation = {**proposal.get("validation", {}), "shadow_replay": result,
+                      "revalidation_status": "valid" if result["non_regressing"] else "failed"}
+        self.store.update_proposal(proposal_id, status=proposal["status"], validation=validation)
+        self.store.append_event("learning.shadow_replay", {"proposal_id": proposal_id, **result},
+                                user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
+                                session_id=self.memory.session_id)
+        return result
 
     def _artifact_outcomes(self, skill_id: str) -> list[dict[str, Any]]:
         events = self.store.list_events("learning.outcome", limit=10000, workspace_id=self.memory.workspace_id)
@@ -205,7 +273,9 @@ class LearningEngine:
                                         user_id=self.memory.user_id, workspace_id=self.memory.workspace_id)
                 return f"Rolled back learned {skill['name']} after verified regression."
         successful_runs = {item["run_id"] for item in verified if item.get("success")}
-        if skill["status"] == "canary" and len(successful_runs) >= 2 and not any_failure and not corrected:
+        replay = (proposal or {}).get("validation", {}).get("shadow_replay") or {}
+        if (skill["status"] == "canary" and len(successful_runs) >= 2 and not any_failure and not corrected
+                and replay.get("non_regressing") is True):
             if self.registry.activate_learned(skill_id):
                 if proposal:
                     self.store.update_proposal(proposal["id"], status="active", confidence=0.9,
@@ -344,6 +414,23 @@ class LearningEngine:
                              }})
         return enriched
 
+    def evidence_card(self, proposal_id: str) -> dict[str, Any] | None:
+        proposal = next((item for item in self.status(10000) if item["id"] == proposal_id), None)
+        if not proposal:
+            return None
+        validation = proposal.get("validation", {})
+        return {
+            "proposal_id": proposal_id, "profile": proposal.get("profile"),
+            "stage": proposal.get("lifecycle_stage"), "source_evidence": proposal.get("evidence", []),
+            "verification_contract": validation.get("verification_contract"),
+            "applicability": validation.get("applicability"),
+            "revalidation_status": validation.get("revalidation_status"),
+            "shadow_replay": validation.get("shadow_replay"),
+            "outcomes": proposal.get("evidence_receipts", []),
+            "metrics": proposal.get("artifact_metrics", {}),
+            "predecessor": proposal.get("predecessor"),
+        }
+
     def metrics(self, profile: str | None = None) -> dict[str, Any]:
         completed = [event["payload"] for event in self.store.list_events(
             "learning.run_completed", limit=10000, workspace_id=self.memory.workspace_id)]
@@ -353,6 +440,11 @@ class LearningEngine:
             completed = [item for item in completed if item.get("profile") == profile]
             outcomes = [item for item in outcomes if item.get("profile") == profile]
         verified = [item for item in outcomes if item.get("verified")]
+        families: dict[str, dict[str, int]] = {}
+        for item in verified:
+            family = families.setdefault(str(item.get("task_signature", "unknown")), {"uses": 0, "successes": 0})
+            family["uses"] += 1
+            family["successes"] += int(bool(item.get("success")))
         return {
             "profile": profile or "all", "runs": len(completed), "verified_outcomes": len(verified),
             "completion_rate": (sum(bool(item.get("success")) for item in verified) / len(verified)) if verified else None,
@@ -361,4 +453,5 @@ class LearningEngine:
             "tool_calls": sum(int(item.get("tool_calls", 0)) for item in completed),
             "tokens": sum(int(item.get("tokens", 0)) for item in completed),
             "latency": sum(float(item.get("latency", 0.0)) for item in completed),
+            "task_families": families,
         }

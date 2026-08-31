@@ -39,9 +39,16 @@ class EvolutionTests(unittest.TestCase):
             "verification": ["pytest exits zero"], "body": BODY,
         })
 
+    def _pass_replay(self, candidate):
+        return self.engine.record_shadow_replay(
+            candidate["proposal_id"], [{"case_id": "case-1", "verified_success": True}],
+            [{"case_id": "case-1", "verified_success": True}],
+        )
+
     def test_profile_isolation_canary_promotion_and_correction_rollback(self):
         candidate = self._candidate()
         self.assertEqual(candidate["status"], "canary")
+        self._pass_replay(candidate)
         self.assertEqual(self.registry.match("researcher", "research pytest history"), [])
 
         for _ in range(2):
@@ -74,6 +81,7 @@ class EvolutionTests(unittest.TestCase):
 
     def test_refinement_records_predecessor_and_rejects_dynamic_tools(self):
         first = self._candidate()
+        self._pass_replay(first)
         for _ in range(2):
             run = self.engine.begin_run("coder", "run pytest tests")
             _, receipts = self.engine.artifact_context(run)
@@ -111,6 +119,46 @@ class EvolutionTests(unittest.TestCase):
         self.engine.complete_run(run, result="failed", receipts=[], tools=[{"success": False}], tokens=5, latency=0.1)
         self.engine.record_outcome(run, [], verified=True, success=False)
         self.assertEqual(self.engine.pending_reviews(min_age_seconds=0), [])
+
+    def test_promotion_requires_non_regressing_shadow_replay(self):
+        candidate = self._candidate()
+        for _ in range(2):
+            run = self.engine.begin_run("coder", "run pytest tests")
+            _, receipts = self.engine.artifact_context(run)
+            self.engine.record_outcome(run, receipts, verified=True, success=True)
+        skill = next(item for item in self.registry.list() if item["id"] == candidate["skill_id"])
+        self.assertEqual(skill["status"], "canary")
+        replay = self._pass_replay(candidate)
+        self.assertTrue(replay["non_regressing"])
+        run = self.engine.begin_run("coder", "run pytest tests")
+        _, receipts = self.engine.artifact_context(run)
+        changes = self.engine.record_outcome(run, receipts, verified=True, success=True)
+        self.assertIn("Promoted", changes[0])
+        card = self.engine.evidence_card(candidate["proposal_id"])
+        self.assertEqual(card["revalidation_status"], "valid")
+
+    def test_environment_drift_requires_revalidation(self):
+        candidate = self._candidate()
+        self._pass_replay(candidate)
+        skill = next(item for item in self.registry.list() if item["id"] == candidate["skill_id"])
+        skill["manifest"]["applicability"]["environment_hash"] = "different"
+        self.memory.store.upsert_skill(
+            name=skill["name"], version=skill["version"], path=skill["path"],
+            description=skill["description"], permissions=[], status="active", source="learned",
+            manifest=skill["manifest"], workspace_id="project",
+        )
+        run = self.engine.begin_run("coder", "run pytest tests")
+        context, receipts = self.engine.artifact_context(run)
+        self.assertEqual((context, receipts), ("", []))
+        self.assertEqual(next(item for item in self.registry.list() if item["id"] == candidate["skill_id"])["status"], "canary")
+
+    def test_correction_creates_regression_case(self):
+        candidate = self._candidate()
+        run = self.engine.begin_run("coder", "run pytest tests")
+        _, receipts = self.engine.artifact_context(run)
+        self.engine.record_outcome(run, receipts, verified=True, success=False, correction=True)
+        events = self.memory.store.list_events("learning.regression_case_created", workspace_id="project")
+        self.assertEqual(events[0]["payload"]["task_signature"], run["task_signature"])
 
 
 if __name__ == "__main__":

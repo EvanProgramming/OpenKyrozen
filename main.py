@@ -3733,11 +3733,16 @@ def main() -> None:
             elif subcommand == "explain" and len(parts) > 2:
                 proposals = [p for p in learning_engine.status(1000) if p["id"] == parts[2].strip()]
                 console.print(json.dumps(proposals[0], ensure_ascii=False, indent=2) if proposals else "Proposal not found.")
+            elif subcommand == "evidence" and len(parts) > 2:
+                card = learning_engine.evidence_card(parts[2].strip())
+                console.print(json.dumps(card, ensure_ascii=False, indent=2) if card else "Proposal not found.")
+            elif subcommand == "replay" and len(parts) > 2:
+                console.print("Replay accepts paired frozen results through POST /api/v2/learning/<id>/replay; it never runs live commands.")
             elif subcommand == "metrics":
                 profile_filter = parts[2].strip() if len(parts) > 2 and parts[2].strip() in {"coder", "researcher"} else None
                 console.print(json.dumps(learning_engine.metrics(profile_filter), ensure_ascii=False, indent=2))
             else:
-                console.print("Usage: /learning status [coder|researcher] | /learning metrics [profile] | /learning rollback <id> | /learning explain <id>")
+                console.print("Usage: /learning status [coder|researcher] | /learning metrics [profile] | /learning rollback <id> | /learning explain|evidence|replay <id>")
             continue
 
         # /forget — show and optionally delete recent learnings

@@ -345,9 +345,9 @@ OpenKyrozen learns reusable policies and skills only from completed multi-step w
 
 ### How it works
 
-Every run records its profile, task signature, tool/error receipts, acceptance evidence, latency, and tokens in SQLite. Matching is deterministic and injects at most three artifacts (8,000 characters total), including at most one canary. A canary promotes after two distinct verified successes; one linked correction, or two verified failures among its last five active uses, rolls it back to its predecessor. Learned artifacts cannot add permissions or dynamic tools, and user/bundled/plugin skills are immutable to evolution.
+Every run records its profile, task signature, tool/error receipts, acceptance evidence, latency, and tokens in SQLite. Matching is deterministic and injects at most three artifacts (8,000 characters total), including at most one canary. A canary promotes only after two distinct verified successes and a non-regressing paired shadow replay; one linked correction, or two verified failures among its last five active uses, rolls it back to its predecessor. Learned artifacts cannot add permissions or dynamic tools, and user/bundled/plugin skills are immutable to evolution.
 
-Use `/agent auto|coder|researcher` to control routing. `/learning status [profile]`, `/learning metrics [profile]`, `/learning explain <id>`, and `/learning rollback <id>` expose lifecycle state and evidence. Project indexing remains separate knowledge ingestion.
+Use `/agent auto|coder|researcher` to control routing. `/learning status [profile]`, `/learning metrics [profile]`, `/learning evidence <id>`, `/learning explain <id>`, and `/learning rollback <id>` expose lifecycle state and proof. Shadow replay accepts paired frozen results through the authenticated API and never executes replay commands. Project indexing remains separate knowledge ingestion.
 
 ### Memory storage
 
@@ -400,6 +400,8 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `GET/POST` | `/api/v2/tasks` | Durable task listing and creation |
 | `GET` | `/api/v2/learning` | Learning proposal status |
 | `GET` | `/api/v2/learning/metrics?profile=...` | Profile completion, correction, error, tool, token, and latency metrics |
+| `GET` | `/api/v2/learning/{id}/evidence` | Proof card, applicability, replay, and outcome receipts |
+| `POST` | `/api/v2/learning/{id}/replay` | Record paired sandboxed candidate/predecessor replay results |
 | `POST` | `/api/v2/learning/{id}/rollback` | Roll back an activated proposal |
 | `GET` | `/api/v2/events` | Auditable runtime, task, session, and learning events |
 | `GET/POST` | `/api/v2/schedules` | Durable interval and one-shot Gateway jobs |
