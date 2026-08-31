@@ -98,6 +98,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--cases", required=True, type=Path, help="JSONL cases with id, profile, and task")
     parser.add_argument("--clean-runner", required=True, help="Command reading one case JSON from stdin")
     parser.add_argument("--evolved-runner", required=True, help="Command reading one case JSON from stdin")
+    parser.add_argument("--ablation", action="append", default=[], metavar="NAME=COMMAND",
+                        help="Additional no-memory, candidate, predecessor, or omission runner")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--timeout", type=float, default=300.0)
     args = parser.parse_args(argv)
@@ -109,6 +111,13 @@ def main(argv: list[str] | None = None) -> None:
               "clean": {"summary": clean_summary, "results": clean},
               "evolved": {"summary": evolved_summary, "results": evolved},
               "comparison": compare(clean_summary, evolved_summary, clean, evolved)}
+    report["ablations"] = {}
+    for spec in args.ablation:
+        name, separator, command = spec.partition("=")
+        if not separator or not name.strip() or not command.strip():
+            raise ValueError("--ablation requires NAME=COMMAND")
+        results = [_run(command, case, args.timeout) for case in cases]
+        report["ablations"][name.strip()] = {"summary": summarize(results), "results": results}
     output = json.dumps(report, indent=2, ensure_ascii=False) + "\n"
     if args.output:
         args.output.write_text(output, encoding="utf-8")

@@ -1,6 +1,10 @@
+import json
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 
-from learning_benchmark import compare, summarize
+from learning_benchmark import compare, main, summarize
 
 
 class LearningBenchmarkTests(unittest.TestCase):
@@ -13,6 +17,21 @@ class LearningBenchmarkTests(unittest.TestCase):
         self.assertTrue(result["completion_non_regressing"])
         self.assertTrue(result["credible_secondary_gain"])
         self.assertTrue(result["public_superiority_claim_supported"])
+
+    def test_cli_exports_named_ablation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cases = root / "cases.jsonl"
+            runner = root / "runner.py"
+            output = root / "result.json"
+            cases.write_text(json.dumps({"id": "one", "profile": "coder", "task": "test"}) + "\n")
+            runner.write_text(
+                "import json,sys\njson.load(sys.stdin)\nprint(json.dumps({'verified_success': True, 'corrections': 0, 'repeated_errors': 0, 'tool_calls': 1, 'tokens': 1, 'latency': 0.1}))\n"
+            )
+            command = f"{sys.executable} {runner}"
+            main(["--cases", str(cases), "--clean-runner", command, "--evolved-runner", command,
+                  "--ablation", f"no-memory={command}", "--output", str(output)])
+            self.assertIn("no-memory", json.loads(output.read_text())["ablations"])
 
 
 if __name__ == "__main__":

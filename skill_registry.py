@@ -17,7 +17,7 @@ ALLOWED_PERMISSIONS = {
     "workspace.read", "workspace.write", "shell", "network", "git.read", "git.write", "browser",
 }
 LEARNING_PROFILES = {"coder", "researcher"}
-LEARNED_STATUSES = {"candidate", "canary", "active", "rolled_back", "rejected"}
+LEARNED_STATUSES = {"candidate", "canary", "active", "rolled_back", "rejected", "retired"}
 MAX_LEARNED_CHARS = 8_000
 _SECRET_RE = re.compile(
     r"(?i)(?:api[_-]?key|secret|password|token)\s*[:=]\s*[^\s]{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----"
@@ -182,7 +182,7 @@ class SkillRegistry:
     def match(self, profile: str, task: str, *, limit: int = 3, max_chars: int = MAX_LEARNED_CHARS) -> list[dict[str, Any]]:
         """Return active guidance plus at most one matching canary."""
         task_terms = self._terms(task)
-        scored: list[tuple[int, dict[str, Any]]] = []
+        scored: list[tuple[float, dict[str, Any], str]] = []
         for skill in self.list():
             manifest = skill.get("manifest", {})
             if skill.get("source") != "learned" or skill.get("status") not in {"active", "canary"}:
@@ -190,23 +190,45 @@ class SkillRegistry:
             if manifest.get("profiles") != [profile]:
                 continue
             triggers = self._terms(" ".join(str(item) for item in manifest.get("triggers", [])))
-            score = len(task_terms & triggers)
-            if score:
-                scored.append((score, skill))
-        canary = [item for _, item in sorted(scored, key=lambda pair: (-pair[0], pair[1]["name"])) if item["status"] == "canary"][:1]
-        canary_names = {item["name"] for item in canary}
-        active = [item for _, item in sorted(scored, key=lambda pair: (-pair[0], pair[1]["name"]))
-                  if item["status"] == "active" and item["name"] not in canary_names]
-        chosen: list[dict[str, Any]] = []
-        used = 0
-        for skill in (active[:limit] + canary)[:limit]:
+            overlap = len(task_terms & triggers)
+            if not overlap:
+                continue
             try:
                 body = (Path(skill["path"]) / "SKILL.md").read_text(encoding="utf-8")
             except OSError:
                 continue
+            outcomes = [event["payload"] for event in self.store.list_events(
+                "learning.outcome", limit=10000, workspace_id=self.workspace_id)
+                if any(item.get("skill_id") == skill["id"] for item in event["payload"].get("receipts", []))
+                and event["payload"].get("verified")]
+            successes = sum(bool(item.get("success")) for item in outcomes)
+            utility = (successes + 1) / (len(outcomes) + 2)
+            scored.append((overlap * utility / max(1, len(body)), skill, body))
+        ordered = sorted(scored, key=lambda item: (-item[0], item[1]["name"], item[1]["version"]))
+        canary = [item for _, item, _ in ordered if item["status"] == "canary"][:1]
+        canary_names = {item["name"] for item in canary}
+        active = [item for _, item, _ in ordered
+                  if item["status"] == "active" and item["name"] not in canary_names]
+        bodies = {item["id"]: body for _, item, body in ordered}
+        pair_events = [event["payload"] for event in self.store.list_events(
+            "learning.artifact_pair", limit=10000, workspace_id=self.workspace_id)]
+        blocked = set()
+        for pair in {tuple(item.get("pair", [])) for item in pair_events if len(item.get("pair", [])) == 2}:
+            evidence = [item for item in pair_events if tuple(item.get("pair", [])) == pair and item.get("verified")]
+            if len(evidence) >= 2 and not any(item.get("success") for item in evidence):
+                blocked.add(pair)
+        chosen: list[dict[str, Any]] = []
+        used = 0
+        for skill in canary + active:
+            if len(chosen) >= limit:
+                break
+            if any(tuple(sorted((skill["id"], item["id"]))) in blocked for item in chosen):
+                continue
+            body = bodies[skill["id"]]
             if used + len(body) > max_chars:
                 continue
-            chosen.append({**skill, "body": body, "content_hash": stable_hash(body)})
+            chosen.append({**skill, "body": body, "content_hash": stable_hash(body),
+                           "utility_per_char": next(score for score, item, _ in ordered if item["id"] == skill["id"])})
             used += len(body)
         return chosen
 

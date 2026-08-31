@@ -8,6 +8,7 @@ import re
 import sys
 import uuid
 from datetime import datetime, timezone
+from itertools import combinations
 from typing import Any, TYPE_CHECKING
 
 from event_store import EventStore, stable_hash
@@ -105,11 +106,13 @@ class LearningEngine:
             compatible.append(item)
         artifacts = compatible
         receipts = [{"skill_id": item["id"], "version": item["version"], "status": item["status"],
-                     "content_hash": item["content_hash"]} for item in artifacts]
+                     "content_hash": item["content_hash"], "chars": len(item["body"]),
+                     "utility_per_char": item.get("utility_per_char")} for item in artifacts]
         for receipt in receipts:
             self.store.append_event("learning.artifact_used", {**run, **receipt}, user_id=self.memory.user_id,
                                     workspace_id=self.memory.workspace_id, session_id=self.memory.session_id)
         preflights = self.negative_preflight(run["profile"], run["task"])
+        run["preflight_ids"] = [item["event_id"] for item in preflights]
         if not artifacts and not preflights:
             return "", receipts
         lines = ["<learned_guidance>",
@@ -208,6 +211,18 @@ class LearningEngine:
             self.store.append_event("learning.review_requested", {"run_id": run["run_id"]},
                                     user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
                                     session_id=self.memory.session_id)
+        for left, right in combinations(sorted(str(item.get("skill_id")) for item in receipts if item.get("skill_id")), 2):
+            self.store.append_event("learning.artifact_pair", {
+                "pair": [left, right], "run_id": run["run_id"], "verified": bool(verified),
+                "success": bool(success), "correction": bool(correction),
+            }, user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
+               session_id=self.memory.session_id)
+        if verified and success:
+            for preflight_id in run.get("preflight_ids", []):
+                self.store.append_event("learning.near_miss_prevented", {
+                    "run_id": run["run_id"], "regression_event_id": preflight_id,
+                }, user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
+                   session_id=self.memory.session_id)
         if correction:
             dependencies = []
             for receipt in receipts:
@@ -253,6 +268,56 @@ class LearningEngine:
                                 user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
                                 session_id=self.memory.session_id)
         return result
+
+    def record_omission_trial(self, proposal_id: str, with_item: list[dict[str, Any]],
+                              without_item: list[dict[str, Any]]) -> dict[str, Any]:
+        proposal = next((item for item in self.store.list_proposals(
+            workspace_id=self.memory.workspace_id, limit=10000) if item["id"] == proposal_id), None)
+        if not proposal or not with_item or len(with_item) != len(without_item):
+            raise ValueError("proposal and equal non-empty omission results are required")
+        left = [str(item.get("case_id", "")) for item in with_item]
+        right = [str(item.get("case_id", "")) for item in without_item]
+        if not all(left) or left != right or len(set(left)) != len(left):
+            raise ValueError("paired omission case ids must be unique and identical")
+        with_successes = sum(bool(item.get("verified_success")) for item in with_item)
+        without_successes = sum(bool(item.get("verified_success")) for item in without_item)
+        result = {"case_ids": left, "with_successes": with_successes, "without_successes": without_successes,
+                  "context_chars_saved": len(proposal["content"]) * len(left),
+                  "retirement_eligible": without_successes >= with_successes}
+        self.store.update_proposal(proposal_id, status=proposal["status"],
+                                   validation={**proposal["validation"], "omission_trial": result})
+        self.store.append_event("learning.omission_trial", {"proposal_id": proposal_id, **result},
+                                user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
+                                session_id=self.memory.session_id)
+        return result
+
+    def retire_artifact(self, proposal_id: str) -> bool:
+        proposal = next((item for item in self.store.list_proposals(
+            workspace_id=self.memory.workspace_id, limit=10000) if item["id"] == proposal_id), None)
+        validation = (proposal or {}).get("validation", {})
+        skill_id = validation.get("skill_id")
+        if not proposal or not skill_id or not validation.get("omission_trial", {}).get("retirement_eligible"):
+            return False
+        if not self.registry or not self.registry.set_learned_status(skill_id, "retired"):
+            return False
+        self.store.update_proposal(proposal_id, status="retired",
+                                   validation={**validation, "stage": "retired", "preimage_status": proposal["status"]})
+        self.store.append_event("learning.artifact_retired", {"proposal_id": proposal_id, "skill_id": skill_id},
+                                user_id=self.memory.user_id, workspace_id=self.memory.workspace_id)
+        return True
+
+    def restore_retired(self, proposal_id: str) -> bool:
+        proposal = next((item for item in self.store.list_proposals(
+            workspace_id=self.memory.workspace_id, limit=10000) if item["id"] == proposal_id), None)
+        skill_id = (proposal or {}).get("validation", {}).get("skill_id")
+        if not proposal or proposal.get("status") != "retired" or not skill_id or not self.registry:
+            return False
+        if not self.registry.set_learned_status(skill_id, "canary"):
+            return False
+        self.store.update_proposal(proposal_id, status="canary",
+                                   validation={**proposal["validation"], "stage": "canary",
+                                               "revalidation_status": "pending"})
+        return True
 
     def remember_claim(self, *, key: str, value: str, kind: str = "fact", authority: str = "inferred",
                        scope: str = "global", scope_value: str = "", evidence_id: str | None = None,
@@ -368,7 +433,7 @@ class LearningEngine:
                                             workspace_id=self.memory.workspace_id):
             payload = event["payload"]
             if payload.get("task_signature") == signature and not (set(payload.get("dependencies", [])) & forgotten):
-                result.append(payload)
+                result.append({**payload, "event_id": event["id"]})
         return result[:3]
 
     def _artifact_outcomes(self, skill_id: str) -> list[dict[str, Any]]:
@@ -582,4 +647,8 @@ class LearningEngine:
             "tokens": sum(int(item.get("tokens", 0)) for item in completed),
             "latency": sum(float(item.get("latency", 0.0)) for item in completed),
             "task_families": families,
+            "context_chars": sum(sum(int(receipt.get("chars", 0)) for receipt in item.get("receipts", []))
+                                 for item in outcomes),
+            "prevented_near_misses": len(self.store.list_events(
+                "learning.near_miss_prevented", limit=10000, workspace_id=self.memory.workspace_id)),
         }
