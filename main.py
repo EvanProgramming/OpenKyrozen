@@ -2054,7 +2054,11 @@ def _search_memory(args: str) -> str:
 
 def _build_memory_context(query: str, n: int = 3) -> str:
     """Return bounded, explicitly untrusted memory data for the model."""
-    recalled = memory_bank.recall_records(query, n_results=n)
+    profile = learning_engine.route_profile(query, _agent_profile_mode)
+    recalled = memory_bank.recall_records(
+        query, n_results=n, profile=profile,
+        task_signature=learning_engine.task_signature(profile, query),
+    )
     if not recalled:
         return ""
     lines = [
@@ -3743,6 +3747,17 @@ def main() -> None:
                 console.print(json.dumps(learning_engine.metrics(profile_filter), ensure_ascii=False, indent=2))
             else:
                 console.print("Usage: /learning status [coder|researcher] | /learning metrics [profile] | /learning rollback <id> | /learning explain|evidence|replay <id>")
+            continue
+
+        if user_input.lower().startswith("/memory "):
+            parts = user_input.split(maxsplit=2)
+            if len(parts) == 3 and parts[1].lower() == "why":
+                claim = learning_engine.explain_claim(parts[2].strip())
+                console.print(json.dumps(claim, ensure_ascii=False, indent=2) if claim else "Memory claim not found.")
+            elif len(parts) == 3 and parts[1].lower() == "forget":
+                console.print("Memory claim forgotten." if learning_engine.forget_claim(parts[2].strip()) else "Memory claim not found.")
+            else:
+                console.print("Usage: /memory why|forget <claim-id>")
             continue
 
         # /forget — show and optionally delete recent learnings

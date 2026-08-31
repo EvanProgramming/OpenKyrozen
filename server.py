@@ -512,6 +512,28 @@ async def api_v2_memory(q: str = "", limit: int = 10, session_id: str | None = N
     }}
 
 
+@app.get("/api/v2/memory/claims", dependencies=[Depends(require_api_access)])
+async def api_v2_memory_claims():
+    rows = _agent.memory_bank.store.list_memories(status=None, limit=10000,
+                                                  workspace_id=_agent.memory_bank.workspace_id)
+    return {"claims": [row for row in rows if row.get("metadata", {}).get("claim")]}
+
+
+@app.get("/api/v2/memory/claims/{claim_id}", dependencies=[Depends(require_api_access)])
+async def api_v2_memory_claim(claim_id: str):
+    claim = _agent.learning_engine.explain_claim(claim_id)
+    if claim is None:
+        raise HTTPException(404, "Memory claim not found")
+    return claim
+
+
+@app.delete("/api/v2/memory/claims/{claim_id}", dependencies=[Depends(require_api_access)])
+async def api_v2_memory_forget_claim(claim_id: str):
+    if not _agent.learning_engine.forget_claim(claim_id):
+        raise HTTPException(404, "Memory claim not found")
+    return {"status": "forgotten", "memory_id": claim_id}
+
+
 @app.get("/api/v2/tasks", dependencies=[Depends(require_api_access)])
 async def api_v2_tasks(session_id: str | None = None):
     session = _normalise_session_id(session_id) if session_id else None
