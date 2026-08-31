@@ -597,6 +597,31 @@ async def api_v2_learning_replay(proposal_id: str, request: Request):
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.post("/api/v2/learning/{proposal_id}/omission", dependencies=[Depends(require_api_access)])
+async def api_v2_learning_omission(proposal_id: str, request: Request):
+    body = await request.json()
+    try:
+        return _agent.learning_engine.record_omission_trial(
+            proposal_id, body.get("with_item", []), body.get("without_item", []),
+        )
+    except (AttributeError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/v2/learning/{proposal_id}/retire", dependencies=[Depends(require_api_access)])
+async def api_v2_learning_retire(proposal_id: str):
+    if not _agent.learning_engine.retire_artifact(proposal_id):
+        raise HTTPException(409, "Artifact lacks non-regressing omission evidence")
+    return {"status": "retired", "proposal_id": proposal_id}
+
+
+@app.post("/api/v2/learning/{proposal_id}/restore", dependencies=[Depends(require_api_access)])
+async def api_v2_learning_restore(proposal_id: str):
+    if not _agent.learning_engine.restore_retired(proposal_id):
+        raise HTTPException(409, "Artifact is not retired")
+    return {"status": "canary", "proposal_id": proposal_id}
+
+
 @app.post("/api/v2/learning/{proposal_id}/rollback", dependencies=[Depends(require_api_access)])
 async def api_v2_learning_rollback(proposal_id: str):
     if not _agent.learning_engine.rollback(proposal_id):

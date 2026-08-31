@@ -351,6 +351,8 @@ Use `/agent auto|coder|researcher` to control routing. `/learning status [profil
 
 Inferred facts and preferences remain candidates until repeated independent evidence supports them. Explicit owner claims activate immediately. Typed global, profile, project, and task scopes resolve deterministically; `/memory why <id>` explains a claim and `/memory forget <id>` removes it together with solely dependent learned behavior.
 
+Selection ranks relevant guidance by verified utility per context character and avoids artifact pairs with repeated verified failures. Paired omission trials can retire guidance only when removing it does not reduce verified completion; retirement is reversible and preserves the learned artifact pre-image.
+
 ### Memory storage
 
 OpenKyrozen v2 uses **SQLite as the source of truth** (`~/.kyrozen/v2/openkyrozen.sqlite3`) and ChromaDB as a rebuildable semantic index. Memories have a kind, scope, confidence, source events, and lifecycle status. Workspaces and sessions are isolated, raw observations are marked as data, and `/forget` removes records by durable ID. If ChromaDB is unavailable, SQLite keeps durable keyword retrieval.
@@ -404,6 +406,9 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `GET` | `/api/v2/learning/metrics?profile=...` | Profile completion, correction, error, tool, token, and latency metrics |
 | `GET` | `/api/v2/learning/{id}/evidence` | Proof card, applicability, replay, and outcome receipts |
 | `POST` | `/api/v2/learning/{id}/replay` | Record paired sandboxed candidate/predecessor replay results |
+| `POST` | `/api/v2/learning/{id}/omission` | Record paired with/without-artifact results |
+| `POST` | `/api/v2/learning/{id}/retire` | Retire an artifact with non-regressing omission evidence |
+| `POST` | `/api/v2/learning/{id}/restore` | Restore a retired artifact as a canary |
 | `POST` | `/api/v2/learning/{id}/rollback` | Roll back an activated proposal |
 | `GET` | `/api/v2/memory/claims` | Typed memory claims with provenance and scope |
 | `GET/DELETE` | `/api/v2/memory/claims/{id}` | Explain or dependency-completely forget a claim |
