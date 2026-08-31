@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import re
 import sys
 import uuid
 from datetime import datetime, timezone
 from itertools import combinations
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from event_store import EventStore, stable_hash
@@ -26,6 +28,12 @@ NEGATIVE_FEEDBACK = ("not working", "still broken", "didn't work", "doesn't work
 _SECRET_RE = re.compile(
     r"(?i)(?:api[_-]?key|secret|password|token)\s*[:=]\s*[^\s]{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----"
 )
+CAPSULE_PROTOCOL = "openkyrozen-experience-capsule-v1"
+DEFAULT_CONSTITUTION = {
+    "allowed_artifact_types": ["policy", "skill"], "allow_dynamic_tools": False,
+    "allow_permission_expansion": False, "allow_harness_edits": False,
+    "minimum_live_successes": 2, "require_shadow_replay": True,
+}
 
 
 class LearningEngine:
@@ -71,13 +79,13 @@ class LearningEngine:
             return "success"
         return None
 
-    def begin_run(self, profile: str, task: str) -> dict[str, str]:
+    def begin_run(self, profile: str, task: str, *, provider_model: str | None = None) -> dict[str, str]:
         if profile not in EVOLUTION_PROFILES:
             raise ValueError("profile must be coder or researcher")
         environment = self.environment_fingerprint()
         run = {"run_id": f"learnrun_{uuid.uuid4().hex}", "profile": profile,
                "task_signature": self.task_signature(profile, task), "task": str(task)[:4000],
-               "environment_hash": environment["hash"]}
+               "environment_hash": environment["hash"], "provider_model": provider_model or "unspecified"}
         self.store.append_event("learning.run_started", run, user_id=self.memory.user_id,
                                 workspace_id=self.memory.workspace_id, session_id=self.memory.session_id)
         return run
@@ -89,6 +97,16 @@ class LearningEngine:
                   "workspace": self.memory.workspace_id, **(extra or {})}
         return {"values": values, "hash": stable_hash(json.dumps(values, sort_keys=True, default=str))}
 
+    def constitution(self) -> dict[str, Any]:
+        path = os.environ.get("KYROZEN_LEARNING_CONSTITUTION", "").strip()
+        if not path:
+            return dict(DEFAULT_CONSTITUTION)
+        try:
+            data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return dict(DEFAULT_CONSTITUTION)
+        return {**DEFAULT_CONSTITUTION, **data} if isinstance(data, dict) else dict(DEFAULT_CONSTITUTION)
+
     def artifact_context(self, run: dict[str, str]) -> tuple[str, list[dict[str, Any]]]:
         if self.registry is None:
             return "", []
@@ -96,7 +114,12 @@ class LearningEngine:
         compatible = []
         for item in artifacts:
             expected = item.get("manifest", {}).get("applicability", {}).get("environment_hash")
-            if expected and expected != run.get("environment_hash"):
+            model_scope = item.get("manifest", {}).get("applicability", {}).get("provider_model")
+            proposal = self._proposal_for_skill(item["id"])
+            cross_model = bool(((proposal or {}).get("validation", {}).get("shadow_replay") or {}).get(
+                "cross_model_validated"))
+            if ((expected and expected != run.get("environment_hash"))
+                    or (model_scope and model_scope != run.get("provider_model") and not cross_model)):
                 self.registry.set_learned_status(item["id"], "canary")
                 self.store.append_event("learning.artifact_revalidation_required", {
                     **run, "skill_id": item["id"], "expected_environment_hash": expected,
@@ -174,6 +197,14 @@ class LearningEngine:
                 "profile": profile,
             },
         }
+        constitution = self.constitution()
+        if manifest["artifact_type"] not in constitution.get("allowed_artifact_types", []):
+            return {"status": "rejected", "reason": "learning constitution forbids artifact type"}
+        source_run = next((event["payload"] for event in self.store.list_events(
+            "learning.run_started", limit=10000, workspace_id=self.memory.workspace_id)
+            if event["payload"].get("run_id") == run_id), None)
+        if source_run and source_run.get("provider_model") != "unspecified":
+            manifest["applicability"]["provider_model"] = source_run["provider_model"]
         try:
             installed = self.registry.install_learned(body, manifest, status="canary")
         except (OSError, ValueError) as exc:
@@ -255,11 +286,13 @@ class LearningEngine:
             raise ValueError("paired replay case ids must be unique and identical")
         candidate_successes = sum(bool(item.get("verified_success")) for item in candidate)
         predecessor_successes = sum(bool(item.get("verified_success")) for item in predecessor)
+        models = sorted({str(item.get("provider_model")) for item in candidate if item.get("provider_model")})
         result = {
             "case_ids": candidate_ids, "candidate_successes": candidate_successes,
             "predecessor_successes": predecessor_successes,
             "non_regressing": candidate_successes >= predecessor_successes,
             "environment": self.environment_fingerprint(),
+            "model_scope": models, "cross_model_validated": len(models) >= 2,
         }
         validation = {**proposal.get("validation", {}), "shadow_replay": result,
                       "revalidation_status": "valid" if result["non_regressing"] else "failed"}
@@ -268,6 +301,46 @@ class LearningEngine:
                                 user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
                                 session_id=self.memory.session_id)
         return result
+
+    def verifier_reliability(self, verifier_id: str) -> dict[str, Any]:
+        outcomes = [event["payload"] for event in self.store.list_events(
+            "learning.outcome", limit=10000, workspace_id=self.memory.workspace_id)]
+        accepted = {item.get("run_id") for item in outcomes
+                    if item.get("source") == verifier_id and item.get("verified") and item.get("success")}
+        corrected = {item.get("run_id") for item in outcomes if item.get("correction")}
+        false_accepts = len(accepted & corrected)
+        return {"verifier_id": verifier_id, "accepted": len(accepted), "false_accepts": false_accepts,
+                "reliability": 1.0 - (false_accepts / len(accepted)) if accepted else None}
+
+    def export_capsule(self, proposal_id: str) -> dict[str, Any] | None:
+        proposal = next((item for item in self.status(10000) if item["id"] == proposal_id), None)
+        if not proposal:
+            return None
+        capsule = {"protocol": CAPSULE_PROTOCOL, "exported_at": datetime.now(timezone.utc).isoformat(),
+                   "kind": proposal["kind"], "content": proposal["content"],
+                   "content_hash": stable_hash(proposal["content"]), "profile": proposal.get("profile"),
+                   "evidence_card": self.evidence_card(proposal_id)}
+        if _SECRET_RE.search(json.dumps(capsule, ensure_ascii=False)):
+            raise ValueError("capsule contains secret-like content")
+        return capsule
+
+    def import_capsule(self, capsule: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(capsule, dict) or capsule.get("protocol") != CAPSULE_PROTOCOL:
+            raise ValueError("unsupported experience capsule")
+        content = str(capsule.get("content", "")).strip()
+        if not content or stable_hash(content) != capsule.get("content_hash") or _SECRET_RE.search(content):
+            raise ValueError("invalid or secret-bearing capsule")
+        proposal_id = self.store.create_proposal(
+            str(capsule.get("kind", "skill")), content, confidence=0.0,
+            evidence=[], workspace_id=self.memory.workspace_id, user_id=self.memory.user_id,
+        )
+        self.store.update_proposal(proposal_id, status="candidate", validation={
+            "stage": "imported", "source": "imported", "active": False,
+            "profile": capsule.get("profile"), "imported_evidence_card": capsule.get("evidence_card"),
+        })
+        self.store.append_event("learning.capsule_imported", {"proposal_id": proposal_id, "active": False},
+                                user_id=self.memory.user_id, workspace_id=self.memory.workspace_id)
+        return {"proposal_id": proposal_id, "status": "candidate", "active": False}
 
     def record_omission_trial(self, proposal_id: str, with_item: list[dict[str, Any]],
                               without_item: list[dict[str, Any]]) -> dict[str, Any]:
@@ -467,8 +540,14 @@ class LearningEngine:
                 return f"Rolled back learned {skill['name']} after verified regression."
         successful_runs = {item["run_id"] for item in verified if item.get("success")}
         replay = (proposal or {}).get("validation", {}).get("shadow_replay") or {}
+        verifier_ids = {item.get("source") for item in verified if item.get("success") and item.get("source")}
+        verifiers_reliable = all(
+            self.verifier_reliability(verifier)["reliability"] in {None, 1.0}
+            or self.verifier_reliability(verifier)["reliability"] >= 0.5
+            for verifier in verifier_ids
+        )
         if (skill["status"] == "canary" and len(successful_runs) >= 2 and not any_failure and not corrected
-                and replay.get("non_regressing") is True):
+                and replay.get("non_regressing") is True and verifiers_reliable):
             if self.registry.activate_learned(skill_id):
                 if proposal:
                     self.store.update_proposal(proposal["id"], status="active", confidence=0.9,
@@ -486,7 +565,7 @@ class LearningEngine:
             "learning.run_reviewed", limit=10000, workspace_id=self.memory.workspace_id)}
         requested = {event["payload"].get("run_id") for event in self.store.list_events(
             "learning.review_requested", limit=10000, workspace_id=self.memory.workspace_id)}
-        now, result = datetime.now(timezone.utc), []
+        now, candidates = datetime.now(timezone.utc), []
         for event in reversed(completed):
             payload = event["payload"]
             if payload["run_id"] in reviewed or payload.get("provider_error") or payload.get("contains_secret"):
@@ -495,10 +574,13 @@ class LearningEngine:
                 continue
             if not payload.get("eligible") and payload["run_id"] not in requested:
                 continue
-            result.append(payload)
-            if len(result) >= limit:
-                break
-        return result
+            recurrence = sum(item["payload"].get("task_signature") == payload.get("task_signature")
+                             for item in completed)
+            score = recurrence * 2 + int(payload["run_id"] in requested) * 5 + int(payload.get("errors", 0)) * 2
+            score += min(5, int(payload.get("tokens", 0)) // 1000)
+            candidates.append((score, event["created_at"], payload))
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        return [payload for _, _, payload in candidates[:limit]]
 
     def mark_reviewed(self, run_id: str, *, result: str) -> None:
         self.store.append_event("learning.run_reviewed", {"run_id": run_id, "result": str(result)[:500]},
@@ -633,11 +715,13 @@ class LearningEngine:
             completed = [item for item in completed if item.get("profile") == profile]
             outcomes = [item for item in outcomes if item.get("profile") == profile]
         verified = [item for item in outcomes if item.get("verified")]
-        families: dict[str, dict[str, int]] = {}
+        families: dict[str, dict[str, Any]] = {}
         for item in verified:
             family = families.setdefault(str(item.get("task_signature", "unknown")), {"uses": 0, "successes": 0})
             family["uses"] += 1
             family["successes"] += int(bool(item.get("success")))
+        for family in families.values():
+            family["completion_rate"] = family["successes"] / family["uses"]
         return {
             "profile": profile or "all", "runs": len(completed), "verified_outcomes": len(verified),
             "completion_rate": (sum(bool(item.get("success")) for item in verified) / len(verified)) if verified else None,

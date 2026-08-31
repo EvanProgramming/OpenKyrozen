@@ -622,6 +622,30 @@ async def api_v2_learning_restore(proposal_id: str):
     return {"status": "canary", "proposal_id": proposal_id}
 
 
+@app.get("/api/v2/learning/{proposal_id}/capsule", dependencies=[Depends(require_api_access)])
+async def api_v2_learning_export_capsule(proposal_id: str):
+    try:
+        capsule = _agent.learning_engine.export_capsule(proposal_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if capsule is None:
+        raise HTTPException(404, "Learning proposal not found")
+    return capsule
+
+
+@app.post("/api/v2/learning/capsules", dependencies=[Depends(require_api_access)])
+async def api_v2_learning_import_capsule(request: Request):
+    try:
+        return _agent.learning_engine.import_capsule(await request.json())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/v2/learning/constitution", dependencies=[Depends(require_api_access)])
+async def api_v2_learning_constitution():
+    return _agent.learning_engine.constitution()
+
+
 @app.post("/api/v2/learning/{proposal_id}/rollback", dependencies=[Depends(require_api_access)])
 async def api_v2_learning_rollback(proposal_id: str):
     if not _agent.learning_engine.rollback(proposal_id):
