@@ -353,6 +353,8 @@ Inferred facts and preferences remain candidates until repeated independent evid
 
 Selection ranks relevant guidance by verified utility per context character and avoids artifact pairs with repeated verified failures. Paired omission trials can retire guidance only when removing it does not reduce verified completion; retirement is reversible and preserves the learned artifact pre-image.
 
+Learned guidance is bound to the provider/model family that produced its evidence unless paired replay validates it across models. Verifier reliability, evidence-adaptive review priority, and a user-owned `KYROZEN_LEARNING_CONSTITUTION` file constrain evolution. Redacted experience capsules are portable JSON evidence, but imports always remain inactive candidates until local validation.
+
 ### Memory storage
 
 OpenKyrozen v2 uses **SQLite as the source of truth** (`~/.kyrozen/v2/openkyrozen.sqlite3`) and ChromaDB as a rebuildable semantic index. Memories have a kind, scope, confidence, source events, and lifecycle status. Workspaces and sessions are isolated, raw observations are marked as data, and `/forget` removes records by durable ID. If ChromaDB is unavailable, SQLite keeps durable keyword retrieval.
@@ -409,6 +411,9 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `POST` | `/api/v2/learning/{id}/omission` | Record paired with/without-artifact results |
 | `POST` | `/api/v2/learning/{id}/retire` | Retire an artifact with non-regressing omission evidence |
 | `POST` | `/api/v2/learning/{id}/restore` | Restore a retired artifact as a canary |
+| `GET` | `/api/v2/learning/{id}/capsule` | Export a redacted, harness-neutral experience capsule |
+| `POST` | `/api/v2/learning/capsules` | Import a capsule as an inactive candidate |
+| `GET` | `/api/v2/learning/constitution` | Inspect the immutable user-owned learning policy |
 | `POST` | `/api/v2/learning/{id}/rollback` | Roll back an activated proposal |
 | `GET` | `/api/v2/memory/claims` | Typed memory claims with provenance and scope |
 | `GET/DELETE` | `/api/v2/memory/claims/{id}` | Explain or dependency-completely forget a claim |

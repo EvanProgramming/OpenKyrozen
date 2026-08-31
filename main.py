@@ -2830,7 +2830,9 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
         ))
         _last_learning_run = None
     resolved_profile = learning_engine.route_profile(user_input, profile or _agent_profile_mode)
-    learning_run = learning_engine.begin_run(resolved_profile, user_input)
+    DEEPSEEK_MODEL = _select_model(user_input)
+    provider_model = f"{_provider_config.provider}:{DEEPSEEK_MODEL}" if _provider_config else f"unknown:{DEEPSEEK_MODEL}"
+    learning_run = learning_engine.begin_run(resolved_profile, user_input, provider_model=provider_model)
     learned_context, learning_receipts = learning_engine.artifact_context(learning_run)
     _execution_capability_token = issue_capability_token(
         f"surface:{_EXECUTION_SURFACE}",
@@ -2847,7 +2849,6 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
         tasks.clear()
 
     # Auto-select the best model for this turn based on task complexity
-    DEEPSEEK_MODEL = _select_model(user_input)
     complexity = _classify_complexity(user_input)
 
     turn_start = time.time()
