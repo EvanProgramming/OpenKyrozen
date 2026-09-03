@@ -4,16 +4,39 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from typing import Any
 
 from event_store import EventStore, utc_now
 
 
 VALID_STATUSES = {"pending", "running", "succeeded", "done", "failed", "blocked", "cancelled"}
+CANONICAL_STATUSES = {"pending", "running", "succeeded", "failed", "blocked", "cancelled"}
+TERMINAL_STATUSES = {"succeeded", "failed", "blocked", "cancelled"}
 
 
 def _task_key(description: str) -> str:
     return hashlib.sha256(" ".join(description.lower().split()).encode("utf-8")).hexdigest()[:16]
+
+
+def canonical_status(status: str) -> str:
+    """Normalize the historical ``done`` spelling to the durable status."""
+    status = str(status).strip().lower()
+    if status == "done":
+        return "succeeded"
+    if status not in CANONICAL_STATUSES:
+        raise ValueError(f"Unknown task status: {status}")
+    return status
+
+
+def is_complete(task_or_status: dict[str, Any] | str) -> bool:
+    status = task_or_status.get("status") if isinstance(task_or_status, dict) else task_or_status
+    return canonical_status(str(status)) == "succeeded"
+
+
+def is_terminal(task_or_status: dict[str, Any] | str) -> bool:
+    status = task_or_status.get("status") if isinstance(task_or_status, dict) else task_or_status
+    return canonical_status(str(status)) in TERMINAL_STATUSES
 
 
 class TaskManager:
@@ -35,7 +58,10 @@ class TaskManager:
         # are performed through its transactional connection here so the
         # compatibility facade remains small and atomic.
         with self.store._lock, self.store.connection() as db:
-            row = db.execute("SELECT id FROM tasks WHERE id=?", (task["id"],)).fetchone()
+            row = db.execute(
+                "SELECT id FROM tasks WHERE id=? AND user_id=? AND workspace_id=? AND session_id IS ?",
+                (task["id"], self.user_id, self.workspace_id, self.session_id),
+            ).fetchone()
             values = (
                 task["id"], task.get("parent_id"), task["description"], task["status"],
                 int(task.get("priority", 0)), self.store._json(task.get("dependencies", [])),
@@ -45,8 +71,9 @@ class TaskManager:
             )
             if row:
                 db.execute(
-                    "UPDATE tasks SET parent_id=?,description=?,status=?,priority=?,dependencies=?,acceptance=?,attempts=?,checkpoint=?,evidence=?,updated_at=? WHERE id=?",
-                    values[1:10] + (now, task["id"]),
+                    "UPDATE tasks SET parent_id=?,description=?,status=?,priority=?,dependencies=?,acceptance=?,attempts=?,checkpoint=?,evidence=?,updated_at=? "
+                    "WHERE id=? AND user_id=? AND workspace_id=? AND session_id IS ?",
+                    values[1:10] + (now, task["id"], self.user_id, self.workspace_id, self.session_id),
                 )
             else:
                 db.execute(
@@ -64,7 +91,13 @@ class TaskManager:
         description = str(description).strip()
         if not description:
             raise ValueError("Task description cannot be empty")
-        task_id = task_id or f"task_{_task_key(description)}"
+        scope_key = _task_key(f"{self.user_id}:{self.workspace_id}:{self.session_id or ''}")
+        if task_id:
+            raw_task_id = str(task_id).strip()
+            task_id = (raw_task_id if raw_task_id.startswith(f"task_{scope_key}_")
+                       else f"task_{scope_key}_{_task_key(raw_task_id)}")
+        else:
+            task_id = f"task_{scope_key}_{uuid.uuid4().hex}"
         existing = next((item for item in self.tasks if item["id"] == task_id), None)
         if existing:
             return self.tasks.index(existing)
@@ -81,12 +114,11 @@ class TaskManager:
     def set_status(self, idx: int, status: str, *, evidence: dict[str, Any] | None = None) -> bool:
         if not 0 <= idx < len(self.tasks):
             return False
-        if status not in VALID_STATUSES:
-            raise ValueError(f"Unknown task status: {status}")
-        if status in {"succeeded", "done"} and not self._has_evidence(idx, evidence):
+        status = canonical_status(status)
+        if status == "succeeded" and not self._has_evidence(idx, evidence):
             return False
         task = self.tasks[idx]
-        task["status"] = "succeeded" if status == "done" else status
+        task["status"] = status
         if evidence:
             task.setdefault("evidence", []).append(evidence)
         from event_store import utc_now
@@ -96,31 +128,53 @@ class TaskManager:
         return True
 
     def _has_evidence(self, idx: int, evidence: dict[str, Any] | None = None) -> bool:
-        if evidence and evidence.get("success") is True:
-            return True
-        evidence_items = self._evidence + self.tasks[idx].get("evidence", [])
+        evidence_items = ([evidence] if evidence else []) + self.tasks[idx].get("evidence", [])
         return any(item.get("success") is True and item.get("acceptance") for item in evidence_items)
 
-    def record_evidence(self, *, action: str, result: str, success: bool,
-                        acceptance: str | None = None) -> None:
+    def record_evidence(self, *, task_id: str | None = None, action: str, result: str, success: bool,
+                        acceptance: str | None = None, args: str | None = None,
+                        receipt_id: str | None = None) -> dict[str, Any]:
         item = {"action": action, "result": str(result)[:2000], "success": bool(success)}
+        if task_id:
+            item["task_id"] = str(task_id)
+        if args:
+            item["args"] = str(args)[:1000]
+        if receipt_id:
+            item["receipt_id"] = str(receipt_id)
         if acceptance:
             item["acceptance"] = acceptance
-        self._evidence.append(item)
-        for task in self.tasks:
-            if success and acceptance:
-                task.setdefault("evidence", []).append(item)
-        self.reconcile_completions()
+        targets = [task for task in self.tasks if task["id"] == str(task_id)] if task_id else []
+        # Compatibility for the old single-task caller.  With more than one
+        # task, an unaddressed receipt is intentionally not attached anywhere.
+        if not task_id and len(self.tasks) == 1:
+            targets = [self.tasks[0]]
+            item["task_id"] = targets[0]["id"]
+        for task in targets:
+            task.setdefault("evidence", []).append(item)
+            task["updated_at"] = utc_now()
+            self._persist(task)
+        self.reconcile_completions({task["id"] for task in targets})
+        return item
 
     def request_completion(self, idx: int) -> None:
         if 0 <= idx < len(self.tasks):
             self._pending_completions.add(idx)
 
-    def reconcile_completions(self) -> None:
+    def active_task_id(self) -> str | None:
+        """Return the next task that may receive an execution receipt."""
+        for task in self.tasks:
+            if task.get("status") in {"pending", "running"}:
+                return task["id"]
+        return None
+
+    def reconcile_completions(self, task_ids: set[str] | None = None) -> None:
         for idx in list(self._pending_completions):
+            if task_ids is not None and self.tasks[idx]["id"] not in task_ids:
+                continue
             if self._has_evidence(idx):
-                self.set_status(idx, "succeeded", evidence=self._evidence[-1] if self._evidence else None)
-                self._pending_completions.discard(idx)
+                self.set_status(idx, "succeeded")
+                if is_complete(self.tasks[idx]):
+                    self._pending_completions.discard(idx)
 
     def mark_done(self, idx: int, *, evidence: dict[str, Any] | None = None) -> bool:
         return self.set_status(idx, "succeeded", evidence=evidence)
@@ -193,9 +247,12 @@ class TaskManager:
     def recover(self) -> list[dict[str, Any]]:
         """Load unfinished tasks from SQLite and make running tasks recoverable."""
         rows = self.store.list_tasks(workspace_id=self.workspace_id, session_id=self.session_id,
-                                     statuses={"pending", "running", "failed", "blocked"})
+                                     statuses={"pending", "running", "failed", "blocked"}, user_id=self.user_id)
         for task in rows:
             if task["status"] == "running":
                 task["status"] = "pending"
+                task["updated_at"] = utc_now()
+                self._persist(task)
+                self._event(task, "task.recovered", {"previous_status": "running"})
         self.tasks = rows
         return rows

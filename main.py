@@ -3020,6 +3020,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
         safe_result = str(result)[:2000]
         acceptance, accepted = _acceptance_for_tool(action, str(args), safe_result)
         tasks.record_evidence(
+            task_id=tasks.active_task_id(),
             action=action,
             result=safe_result,
             success=not _is_tool_error(safe_result),
@@ -3292,7 +3293,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
                     result2 = "Tool execution interrupted by user (Ctrl+C)."
             safe_result2 = str(result2)[:2000]
             acceptance, accepted = _acceptance_for_tool(action, str(args), safe_result2)
-            tasks.record_evidence(action=action, result=safe_result2,
+            tasks.record_evidence(task_id=tasks.active_task_id(), action=action, result=safe_result2,
                                   success=not _is_tool_error(safe_result2),
                                   acceptance=acceptance if accepted else None)
             tool_records.append({"action": action, "args": str(args)[:500], "result": safe_result2,
