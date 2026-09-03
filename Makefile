@@ -45,7 +45,7 @@ clean:
 
 # Syntax check
 lint:
-	$(VENV_PYTHON) -m compileall -q main.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py
+	$(VENV_PYTHON) -m compileall -q main.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py
 	@echo "Python syntax OK."
 	@echo "All files pass syntax check."
 
@@ -56,7 +56,7 @@ test:
 # Quick verification
 check:
 	@echo "Checking Python syntax..."
-	@$(VENV_PYTHON) -m py_compile main.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py
+	@$(VENV_PYTHON) -m py_compile main.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py
 	@echo "  Python modules: OK"
 	@echo "Checking git tools..."
 	@$(VENV_PYTHON) -c "from tools import AVAILABLE_TOOLS; git = [k for k in AVAILABLE_TOOLS if k.startswith('git_')]; print(f'  {len(git)} git tools, {len(AVAILABLE_TOOLS)} total tools')"

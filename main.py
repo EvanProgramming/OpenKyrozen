@@ -102,6 +102,7 @@ from instruction_loader import format_instructions
 from subagents import AgentProfile, SubAgentManager
 from capability_tokens import issue_capability_token
 from dynamic_tools import SAFE_BUILTINS, validate_tool_source
+from plugin_runtime import get_plugin_runtime
 from tools import (AVAILABLE_TOOLS, set_workspace_root as _set_tools_workspace_root,
                    resolve_capabilities, tool_capability)
 from providers import (
@@ -1875,6 +1876,23 @@ _last_learning_run: dict[str, Any] | None = None
 _learning_notices: list[str] = []
 
 
+def _record_plugin_event(event_type: str, payload: dict[str, Any]) -> None:
+    """Persist plugin runtime diagnostics without allowing them to break work."""
+    try:
+        memory_bank.store.append_event(
+            event_type, payload, user_id=memory_bank.user_id,
+            workspace_id=memory_bank.workspace_id, session_id=memory_bank.session_id,
+        )
+    except Exception:
+        pass
+
+
+def _plugin_runtime_for_surface(surface: str | None = None):
+    return get_plugin_runtime(
+        surface or _EXECUTION_SURFACE, event_recorder=_record_plugin_event,
+    )
+
+
 def _subagent_action_arguments(action: str, args: Any) -> Any:
     """Normalise common structured action arguments without widening access."""
     if not isinstance(args, dict):
@@ -1914,12 +1932,17 @@ def _run_subagent_tool(profile: AgentProfile, action: str, args: Any, tools: set
     canonical = TOOL_ALIASES.get(str(action).strip(), str(action).strip())
     receipt_id = f"subagent_receipt_{uuid.uuid4().hex}"
     if canonical not in tools:
+        _notify_tool_execute(
+            canonical, args,
+            f"Error: tool '{canonical}' is not authorized for the '{profile.name}' profile.",
+        )
         return {
             "receipt_id": receipt_id, "action": canonical, "args": str(args)[:500],
             "result": f"Error: tool '{canonical}' is not authorized for the '{profile.name}' profile.",
             "success": False, "authorized": False,
         }
     if not isinstance(args, (str, dict)):
+        _notify_tool_execute(canonical, args, "Error: Action args must be a plain string or supported object.")
         return {
             "receipt_id": receipt_id, "action": canonical, "args": str(args)[:500],
             "result": "Error: Action args must be a plain string or supported object.",
@@ -1978,6 +2001,10 @@ def _run_subagent_llm(profile: AgentProfile, task: str, context: list[dict[str, 
             if unknown or malformed:
                 executed_steps += 1
                 rejected_action = unknown or "malformed"
+                _notify_tool_execute(
+                    str(rejected_action), "",
+                    "Error: malformed or unknown Action rejected; no tool was executed.",
+                )
                 tool_records.append({
                     "receipt_id": f"subagent_receipt_{uuid.uuid4().hex}",
                     "action": str(rejected_action), "args": "",
@@ -2561,6 +2588,22 @@ def _collect_tool_calls(text: str) -> list[dict]:
     return calls
 
 
+def _notify_tool_execute(action: str, args: Any, result: Any) -> None:
+    """Emit exactly one isolated plugin hook for every attempted tool call."""
+    result_text = str(result)
+    try:
+        _plugin_runtime_for_surface().tool_execute(
+            action=action, args=args, result=result_text,
+            success=not _is_tool_error(result_text),
+            error=None if not _is_tool_error(result_text) else result_text,
+            user_id=memory_bank.user_id, workspace_id=memory_bank.workspace_id,
+            session_id=memory_bank.session_id,
+        )
+    except Exception:
+        # A plugin is an observer and cannot change tool semantics.
+        pass
+
+
 def _run_tool(action: str, args: str) -> str:
     # Map aliases
     action = TOOL_ALIASES.get(action, action)
@@ -2593,15 +2636,21 @@ def _run_tool(action: str, args: str) -> str:
             pass
     fn = AVAILABLE_TOOLS.get(action)
     if not fn:
-        return f"Error: unknown tool '{action}'"
+        result = f"Error: unknown tool '{action}'"
+        _notify_tool_execute(action, args, result)
+        return result
     required_capability = tool_capability(action)
     if not _execution_capability_token.allows(required_capability):
-        return f"Error: tool '{action}' requires capability '{required_capability}'"
+        result = f"Error: tool '{action}' requires capability '{required_capability}'"
+        _notify_tool_execute(action, args, result)
+        return result
     if not _confirm_tool_action(action, str(args)):
-        return (
+        result = (
             f"Error: {action} requires confirmation. "
             "Approve it interactively or set KYROZEN_APPROVAL_MODE=never for an explicitly automated CLI."
         )
+        _notify_tool_execute(action, args, result)
+        return result
     start = time.time()
     try:
         result = str(fn(args))
@@ -2611,6 +2660,7 @@ def _run_tool(action: str, args: str) -> str:
         result = f"Error: {e}"
     elapsed = time.time() - start
     _track_tool_performance(action, result, elapsed)
+    _notify_tool_execute(action, args, result)
     return result
 
 
@@ -3115,8 +3165,8 @@ def _classify_complexity(user_input: str) -> str:
     return "medium"
 
 
-def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None = None,
-               memory_context: dict[str, Any] | None = None) -> str:
+def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | None = None,
+                    memory_context: dict[str, Any] | None = None) -> str:
     """One user turn: build context, get LLM reply, execute tool calls
     with automatic retries and failure memory."""
 
@@ -3189,6 +3239,9 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
         if not unknown_action:
             break
         _unknown_retries += 1
+        _notify_tool_execute(
+            unknown_action, "", f"Error: unknown tool '{unknown_action}'",
+        )
         msg = (
             f"System: Action '{unknown_action}' is not recognized. "
             "You must use one of the following actions: "
@@ -3315,6 +3368,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
                 "Example: `\"args\": \"python3 process_logs.py\"`\n"
                 "Do NOT use `\"args\": {\"cmd\": ...}`.\n"
             )
+            _notify_tool_execute(action, args, result)
         else:
             if not isinstance(args, str):
                 args = str(args)
@@ -3581,6 +3635,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
                     "Example: `\"args\": \"python3 process_logs.py\"`\n"
                     "Do NOT use `\"args\": {\"cmd\": ...}`.\n"
                 )
+                _notify_tool_execute(action, args, result2)
             else:
                 if not isinstance(args, str):
                     args = str(args)
@@ -3695,6 +3750,30 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
         learning_run, learning_receipts, user_input, final_answer, tool_records,
         turn_prompt_total + turn_completion_total, turn_start,
     )
+
+
+def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None = None,
+               memory_context: dict[str, Any] | None = None) -> str:
+    """Run one chat turn with failure-isolated plugin lifecycle hooks."""
+    runtime = _plugin_runtime_for_surface()
+    context = {
+        "user_id": memory_bank.user_id,
+        "workspace_id": memory_bank.workspace_id,
+        "session_id": memory_bank.session_id,
+        "profile": profile or _agent_profile_mode,
+    }
+    runtime.turn_start(user_input=user_input, **context)
+    try:
+        reply = _chat_turn_impl(
+            user_input, clear_tasks=clear_tasks, profile=profile,
+            memory_context=memory_context,
+        )
+    except Exception as exc:
+        runtime.turn_end(reply="", success=False,
+                         error=f"{type(exc).__name__}: {exc}", **context)
+        raise
+    runtime.turn_end(reply=reply, success=True, **context)
+    return reply
 
 
 def _split_reply(text: str) -> tuple[str, str]:
@@ -3965,6 +4044,7 @@ def main() -> None:
         sys.exit(1)
     # Set workspace root for sandbox
     _set_workspace_root(os.getcwd())
+    _plugin_runtime_for_surface().load_once()
     task_results = _run_recovered_tasks()
     for item in task_results:
         console.print(f"[{_SUCCESS}]Durable task {item['task']['id']}: {item['status']}[/{_SUCCESS}]")

@@ -551,6 +551,23 @@ def register():
 
 Available hooks: `on_startup`, `on_turn_start`, `on_turn_end`, `on_tool_execute`.
 
+The shared runtime loads `plugins/*.py` once per execution surface (`cli` and
+`web`) in deterministic filename order. Hook failures are isolated, recorded
+as `plugin.hook_failed` events, and never fail the user turn. Hook arguments
+are keyword arguments and are bounded/redacted before a plugin sees them:
+
+| Hook | Required kwargs | Additional context |
+|------|-----------------|--------------------|
+| `on_startup` | — | `agent`, `surface`, `user_id`, `workspace_id` |
+| `on_turn_start` | `user_input` | `surface`, `user_id`, `workspace_id`, `session_id`, `profile` |
+| `on_turn_end` | `reply`, `success` | `error` plus the turn context |
+| `on_tool_execute` | `action`, `args`, `result`, `success` | `error`, `surface`, and scope context |
+
+`on_tool_execute` fires once for every attempted action, including unknown,
+unauthorized, malformed, and approval-denied actions. `turn_logger.py` writes
+to `kyrozen_turns.log`; set `KYROZEN_TURN_LOG` to choose another path for a
+service or test.
+
 See `plugins/turn_logger.py` for a working example.
 
 ---

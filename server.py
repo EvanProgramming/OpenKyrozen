@@ -1156,11 +1156,16 @@ async def mcp_endpoint(request: Request):
         tool_name = params.get("name", "")
         tool_args = params.get("arguments", "")
         if not isinstance(tool_name, str) or not tool_name:
+            _agent._notify_tool_execute(str(tool_name), tool_args, "Error: tool name is required")
             return _mcp_error(request_id, -32602, "Invalid params: tool name is required")
         fn = _agent.AVAILABLE_TOOLS.get(tool_name)
         if fn is None:
+            _agent._notify_tool_execute(tool_name, tool_args, f"Error: Tool '{tool_name}' not found")
             return _mcp_error(request_id, -32601, f"Tool '{tool_name}' not found")
         if tool_name not in _allowed_server_tools("mcp"):
+            _agent._notify_tool_execute(
+                tool_name, tool_args, f"Error: Tool '{tool_name}' is not authorized",
+            )
             return _mcp_error(request_id, -32001, (
                 f"Tool requires '{tool_capability(tool_name)}' capability; "
                 "set KYROZEN_MCP_CAPABILITIES or use the full profile to enable it"
@@ -1168,6 +1173,7 @@ async def mcp_endpoint(request: Request):
         try:
             string_args = _mcp_string_arguments(tool_name, tool_args)
         except (TypeError, ValueError) as e:
+            _agent._notify_tool_execute(tool_name, tool_args, f"Error: invalid params: {e}")
             return _mcp_error(request_id, -32602, f"Invalid params: {e}")
         try:
             previous_token = _agent._execution_capability_token
@@ -1338,38 +1344,14 @@ async def asyncio_sleep(seconds: float):
 # Plugin system
 # ---------------------------------------------------------------------------
 
-_PLUGINS: list[Any] = []
-
 def _load_plugins():
-    """Load plugins from the plugins/ directory."""
-    global _PLUGINS
-    plugins_dir = Path(__file__).parent / "plugins"
-    if not plugins_dir.is_dir():
-        plugins_dir.mkdir(exist_ok=True)
-        (plugins_dir / "__init__.py").write_text("# OpenKyrozen plugins\n")
-        return
-    for py_file in sorted(plugins_dir.glob("*.py")):
-        if py_file.name.startswith("_"):
-            continue
-        try:
-            spec = __import__(f"plugins.{py_file.stem}", fromlist=["register"])
-            if hasattr(spec, "register"):
-                plugin = spec.register()
-                _PLUGINS.append(plugin)
-                print(f"[Plugin] Loaded: {py_file.stem}")
-        except Exception as e:
-            print(f"[Plugin] Failed to load {py_file.stem}: {e}")
+    """Load the shared Web plugin runtime exactly once."""
+    return _agent._plugin_runtime_for_surface("web").load_once()
 
 
-# Hook triggers
 def _trigger_hook(hook_name: str, **kwargs):
-    for plugin in _PLUGINS:
-        fn = getattr(plugin, hook_name, None)
-        if fn:
-            try:
-                fn(**kwargs)
-            except Exception:
-                pass
+    """Compatibility wrapper for startup hooks through the shared runtime."""
+    return _agent._plugin_runtime_for_surface("web").trigger(hook_name, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -1388,7 +1370,10 @@ async def startup():
         print(f"[Server] Provider: {_agent._provider_config.provider}")
     _agent._load_project_files_into_memory()
     _load_plugins()
-    _trigger_hook("on_startup", agent=_agent)
+    _trigger_hook(
+        "on_startup", agent=_agent, surface="web", user_id=_SERVER_ACTOR_ID,
+        workspace_id=_agent.memory_bank.workspace_id,
+    )
     recovered = _task_worker.recover()
     if recovered:
         _audit("TASK_RECOVERY", f"recovered={len(recovered)} pending_or_resumable tasks")
