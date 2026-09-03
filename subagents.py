@@ -27,7 +27,7 @@ class AgentProfile:
 
 
 class SubAgentManager:
-    def __init__(self, memory: MemoryBank, *, runner: Callable[[AgentProfile, str, list[dict[str, Any]], set[str]], str] | None = None,
+    def __init__(self, memory: MemoryBank, *, runner: Callable[[AgentProfile, str, list[dict[str, Any]], set[str]], str | dict[str, Any]] | None = None,
                  learning_engine: "LearningEngine | None" = None):
         self.memory = memory
         self.runner = runner
@@ -80,17 +80,58 @@ class SubAgentManager:
         tools = allowed_tool_names(capabilities=profile.capabilities)
         self.memory.store.append_event("subagent.started", {"run_id": run_id, "profile": profile.name, "task": task},
                                        user_id=self.memory.user_id, workspace_id=workspace_id, session_id=run_id)
+        tool_records: list[dict[str, Any]] = []
+        evidence: list[dict[str, Any]] = []
+        provider_error = False
         if self.runner is None:
             result = "Sub-agent runner is not configured."
         else:
-            result = self.runner(profile, task, context, tools)
+            try:
+                raw_result = self.runner(profile, task, context, tools)
+                if isinstance(raw_result, dict):
+                    result = str(raw_result.get("result", ""))
+                    tool_records = [item for item in raw_result.get("tool_records", []) if isinstance(item, dict)]
+                    evidence = [item for item in raw_result.get("evidence", []) if isinstance(item, dict)]
+                else:
+                    result = str(raw_result)
+            except Exception as exc:
+                provider_error = True
+                result = f"Sub-agent failed: {type(exc).__name__}: {exc}"
+
+        for record in tool_records:
+            payload = {"run_id": run_id, **record}
+            self.memory.store.append_event(
+                "subagent.tool_executed", payload,
+                user_id=self.memory.user_id, workspace_id=workspace_id, session_id=run_id,
+            )
+            if not record.get("success"):
+                self.memory.store.append_event(
+                    "subagent.tool_failed", payload,
+                    user_id=self.memory.user_id, workspace_id=workspace_id, session_id=run_id,
+                )
+        if evidence:
+            self.memory.store.append_event(
+                "subagent.evidence", {"run_id": run_id, "evidence": evidence[:20]},
+                user_id=self.memory.user_id, workspace_id=workspace_id, session_id=run_id,
+            )
         self.memory.store.append_event("subagent.completed", {"run_id": run_id, "profile": profile.name,
-                                                               "result": str(result)[:4000]},
+                                                               "result": str(result)[:4000],
+                                                               "tool_receipts": tool_records[:50],
+                                                               "acceptance_evidence": evidence[:20],
+                                                               "provider_error": provider_error},
                                        user_id=self.memory.user_id, workspace_id=workspace_id, session_id=run_id)
         scoped_memory.add_log(str(result), kind="episodic", status="active",
                               metadata={"subagent_run_id": run_id, "profile": profile.name})
         if learning_run:
             self.learning_engine.complete_run(learning_run, result=str(result), receipts=receipts,
-                                              tools=[], tokens=0, latency=0.0)
+                                              tools=tool_records, tokens=0, latency=0.0,
+                                              acceptance=evidence, provider_error=provider_error)
+            if evidence:
+                self.learning_engine.record_outcome(
+                    learning_run, receipts, verified=True,
+                    success=all(item.get("success", False) for item in evidence),
+                    source="subagent",
+                )
         return {"run_id": run_id, "profile": profile.name, "result": str(result),
-                "tools": sorted(tools), "memory_scope": profile.memory_scope}
+                "tools": sorted(tools), "memory_scope": profile.memory_scope,
+                "tool_receipts": tool_records, "evidence": evidence}
