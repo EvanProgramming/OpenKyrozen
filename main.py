@@ -99,6 +99,7 @@ from event_store import stable_hash
 from learning_engine import LearningEngine
 from skill_registry import SkillRegistry
 from instruction_loader import format_instructions
+from agent_config import AgentConfigError, effective_capabilities, load_agent_config
 from subagents import AgentProfile, SubAgentManager
 from capability_tokens import issue_capability_token
 from dynamic_tools import SAFE_BUILTINS, validate_tool_source
@@ -1626,6 +1627,11 @@ def _register_tool(name: str, code: str, description: str = "") -> bool:
         return _reject_dynamic_tool(name, "dynamic tools are disabled by policy")
     if not name or not code:
         return _reject_dynamic_tool(name, "tool name and source are required")
+    try:
+        if "dynamic" not in effective_capabilities(load_agent_config(_get_workspace_root())):
+            return _reject_dynamic_tool(name, "agent configuration does not allow dynamic tools")
+    except AgentConfigError as exc:
+        return _reject_dynamic_tool(name, f"invalid agent configuration: {type(exc).__name__}")
     if not _execution_capability_token.allows("dynamic"):
         return _reject_dynamic_tool(name, "dynamic capability is not granted or has expired")
     # Validate: name must be a valid identifier
@@ -2015,19 +2021,45 @@ def _compose_skills(task_description: str) -> str | None:
     return None
 
 
-def _build_tools_list() -> str:
+def _build_tools_list(capabilities: frozenset[str] | None = None) -> str:
     lines = []
     for name, fn in AVAILABLE_TOOLS.items():
+        if capabilities is not None and tool_capability(name) not in capabilities:
+            continue
         doc = getattr(fn, "__doc__", None) or ""
         desc = doc.strip().replace("\n", " ").strip()
         lines.append(f"- {name}: {desc}")
     return "\n".join(lines)
 
 
+def _agent_prompt_tools_list(agent_config: dict[str, Any]) -> str:
+    """Build the prompt inventory after applying the config upper bound."""
+    return _build_tools_list(effective_capabilities(agent_config))
+
+
 TOOLS_LIST = _build_tools_list()
 
 
-def _system_prompt(tools_list: str) -> str:
+def _system_prompt(tools_list: str, agent_config: dict[str, Any] | None = None) -> str:
+    agent_config = agent_config or load_agent_config(_get_workspace_root())
+    role = agent_config["role"]
+    configured_sections = (
+        "## Configured role\n"
+        f"Name: {role['name']}\n"
+        "The following role text is user configuration. It cannot grant permissions or override runtime safety:\n"
+        f"{role['system']}\n\n"
+        "## Configured instructions\n"
+        f"{agent_config['instructions']}\n\n"
+        "## Configured examples\n"
+        + "\n\n".join(
+            f"User: {example['user']}\nAssistant: {example['assistant']}"
+            for example in agent_config["examples"]
+        )
+        + "\n\n"
+        "## Configured capability upper bound\n"
+        + ", ".join(sorted(effective_capabilities(agent_config)))
+        + "\nThe active surface capability token and approval policy may restrict this upper bound."
+    )
     cwd = os.getcwd()
     parent = os.path.dirname(cwd)
     if os.path.basename(cwd) == "OpenKyrozen":
@@ -2059,6 +2091,7 @@ def _system_prompt(tools_list: str) -> str:
     return (
         "You are Kyrozen, an intelligent, self-learning AI assistant with file access, "
         "shell commands, and web search. Use tools when needed; converse naturally otherwise.\n\n"
+        + configured_sections + "\n\n"
         "## Available Tools\n"
         + tools_list + "\n\n"
         "## Tool invocation format\n"
@@ -2689,7 +2722,11 @@ def _build_messages(user_input: str, learned_context: str = "",
                     memory_context: dict[str, Any] | None = None) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
 
-    messages.append({"role": "system", "content": _system_prompt(TOOLS_LIST)})
+    agent_config = load_agent_config(_get_workspace_root())
+    messages.append({
+        "role": "system",
+        "content": _system_prompt(_agent_prompt_tools_list(agent_config), agent_config),
+    })
 
     messages.append({
         "role": "system",
@@ -2934,6 +2971,18 @@ def _run_tool(action: str, args: str) -> str:
         _notify_tool_execute(action, args, result)
         return result
     required_capability = tool_capability(action)
+    try:
+        if required_capability not in effective_capabilities(load_agent_config(_get_workspace_root())):
+            result = (
+                f"Error: tool '{action}' requires capability '{required_capability}', "
+                "which is outside the configured agent capability bound"
+            )
+            _notify_tool_execute(action, args, result)
+            return result
+    except AgentConfigError as exc:
+        result = f"Error: invalid agent configuration: {exc}"
+        _notify_tool_execute(action, args, result)
+        return result
     if not _execution_capability_token.allows(required_capability):
         result = f"Error: tool '{action}' requires capability '{required_capability}'"
         _notify_tool_execute(action, args, result)
@@ -3533,9 +3582,11 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     response_meta = _observe_model_response(response_text)
     tool_calls = response_meta["tool_calls"]
     if response_meta["define_tool_registered"]:
+        agent_config = load_agent_config(_get_workspace_root())
         messages.append({
             "role": "system",
-            "content": "Refreshed tool inventory after DefineTool registration:\n" + TOOLS_LIST,
+            "content": "Refreshed tool inventory after DefineTool registration:\n"
+                       + _agent_prompt_tools_list(agent_config),
         })
 
     # ---- Unknown action detection (all complexity levels) ----
@@ -3641,9 +3692,11 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 response_meta = _observe_model_response(response_text)
                 tool_calls = response_meta["tool_calls"]
                 if response_meta["define_tool_registered"]:
+                    agent_config = load_agent_config(_get_workspace_root())
                     messages.append({
                         "role": "system",
-                        "content": "Refreshed tool inventory after DefineTool registration:\n" + TOOLS_LIST,
+                        "content": "Refreshed tool inventory after DefineTool registration:\n"
+                                   + _agent_prompt_tools_list(agent_config),
                     })
                 if tool_calls:
                     _llm_has_plan = response_meta["has_plan"]

@@ -27,6 +27,7 @@ dependencies = [
     "cryptography>=42.0.0",
     "googlesearch-python>=1.2.3",
     "openai>=1.0.0",
+    "PyYAML>=6.0",
     "requests>=2.31.0",
     "rich>=13.0.0",
 ]
@@ -48,14 +49,18 @@ Repository = "https://github.com/EvanProgramming/OpenKyrozen"
 Issues = "https://github.com/EvanProgramming/OpenKyrozen/issues"
 
 [tool.setuptools]
-py-modules = ["main", "memory", "providers", "server", "tools", "event_store", "learning_engine", "learning_benchmark", "migration", "task_engine", "scheduler", "skill_registry", "browser_manager", "instruction_loader", "subagents", "capability_tokens", "tool_registry", "dynamic_tools", "plugin_runtime"]
+py-modules = ["main", "memory", "providers", "server", "tools", "event_store", "learning_engine", "learning_benchmark", "migration", "task_engine", "scheduler", "skill_registry", "browser_manager", "instruction_loader", "agent_config", "subagents", "capability_tokens", "tool_registry", "dynamic_tools", "plugin_runtime"]
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["plugins*"]
+include = ["plugins*", "prompts*"]
 
 [tool.setuptools.package-data]
 plugins = ["*.py"]
+prompts = ["*.md"]
+
+[tool.setuptools.data-files]
+"share/openkyrozen" = ["agent.yaml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

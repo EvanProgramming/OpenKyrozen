@@ -670,8 +670,33 @@ See `plugins/turn_logger.py` for a working example.
 | `KYROZEN_APPROVAL_MODE` | CLI confirmation mode for high-impact Git actions and dynamic-tool registration (`dangerous`/`never`) | `dangerous` |
 | `KYROZEN_WEB_CAPABILITIES` | Web chat capabilities: `readonly`, `workspace`, or `full` | `workspace` |
 | `KYROZEN_MCP_CAPABILITIES` | MCP capabilities: `readonly`, `workspace`, or `full` | `workspace` |
+| `KYROZEN_AGENT_CONFIG` | Explicit path to a validated `agent.yaml` configuration | Workspace `agent.yaml`, then packaged default |
+| `KYROZEN_ROLE` | Override the configured role name | `assistant` |
+| `KYROZEN_ROLE_PROMPT` | Override the configured role system prompt | Packaged `prompts/role.md` |
+| `KYROZEN_INSTRUCTIONS` | Override the configured runtime instructions | Packaged `prompts/instructions.md` |
+| `KYROZEN_AGENT_CAPABILITIES` | Comma-separated capability/profile upper bound | `full` |
+| `KYROZEN_EXAMPLES` | JSON list of `{\"user\": ..., \"assistant\": ...}` examples | Packaged `prompts/examples.md` |
 
 The local CLI is intentionally a high-permission agent, similar to Codex or OpenClaw: it can read and write the active workspace, run shell commands, use the network, and operate Git. The Web and MCP surfaces expose the same rich `workspace` profile by default, but keep irreversible `git_reset` and LLM-generated Python tools behind the explicit `full`/`KYROZEN_ALLOW_DYNAMIC_TOOLS=1` opt-in. On the interactive CLI, dynamic registration also follows `KYROZEN_APPROVAL_MODE`; use `never` only for an explicitly automated deployment. Authentication and the command safety filter still apply.
+
+### Agent role configuration (`agent.yaml`)
+
+`agent.yaml` is a validated, packaged configuration for the role and prompt
+templates. A workspace-level `agent.yaml` customizes that workspace; use
+`KYROZEN_AGENT_CONFIG=/path/to/agent.yaml` for an explicit file. The effective
+precedence is environment-variable overrides, explicit configuration path,
+workspace configuration, packaged configuration, and finally the built-in
+defaults. The `role`, `instructions`, and `examples` fields are loaded from
+the packaged `prompts/` templates by default and are included in installed
+wheels.
+
+The schema accepts `version`, `provider`, `role`, `instructions`, `examples`,
+and `capabilities`. Capabilities are an upper bound: the active surface's
+capability profile, approval mode, and authentication gates still apply, and
+configuration cannot grant permissions. Invalid YAML, unknown fields,
+duplicate keys, unsupported capabilities, and malformed examples fail with a
+deterministic configuration error. See the root `agent.yaml` for a complete
+example.
 
 ### Config file (`~/.kyrozen_config.json`)
 
@@ -755,6 +780,8 @@ OpenKyrozen/
 ├── providers.py         # Multi-LLM abstraction (5 providers + fallback)
 ├── memory.py            # SQLite memory with optional rebuildable Chroma index
 ├── server.py            # FastAPI web server + REST API + chat UI
+├── agent_config.py      # Strict agent.yaml loader and capability bound
+├── agent.yaml           # Validated role/provider/capability configuration
 ├── pyproject.toml       # pip package configuration
 ├── Dockerfile           # Docker image definition
 ├── Makefile             # Build automation (macOS/Linux)
