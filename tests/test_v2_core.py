@@ -45,6 +45,36 @@ class V2CoreTests(unittest.TestCase):
             tasks.record_evidence(action="pytest", result="OK", success=True, acceptance="pytest passed")
             self.assertEqual(tasks.tasks[index]["status"], "succeeded")
 
+    def test_tasks_are_collision_free_and_evidence_targets_one_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = MemoryBank(Path(directory) / "state.sqlite3").store
+            alice = TaskManager(store, user_id="alice", workspace_id="project", session_id="alice-session")
+            bob = TaskManager(store, user_id="bob", workspace_id="project", session_id="bob-session")
+            alice_index = alice.add_task("deploy the service", task_id="step-1")
+            bob_index = bob.add_task("deploy the service", task_id="step-1")
+            self.assertNotEqual(alice.tasks[alice_index]["id"], bob.tasks[bob_index]["id"])
+
+            alice.request_completion(alice_index)
+            bob.request_completion(bob_index)
+            alice.record_evidence(task_id=alice.tasks[alice_index]["id"], action="pytest",
+                                  result="passed", success=True, acceptance="pytest passed")
+            self.assertEqual(alice.tasks[alice_index]["status"], "succeeded")
+            self.assertEqual(bob.tasks[bob_index]["status"], "pending")
+            self.assertEqual(store.list_tasks(workspace_id="project", user_id="bob")[0]["status"], "pending")
+
+    def test_running_task_recovery_is_scoped_and_audited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = MemoryBank(Path(directory) / "state.sqlite3").store
+            owner = TaskManager(store, user_id="alice", workspace_id="project", session_id="session")
+            index = owner.add_task("resume me")
+            owner.set_status(index, "running")
+            recovered = TaskManager(store, user_id="alice", workspace_id="project", session_id="session").recover()
+            self.assertEqual(len(recovered), 1)
+            self.assertEqual(recovered[0]["status"], "pending")
+            events = store.list_events(workspace_id="project", user_id="alice")
+            self.assertTrue(any(event["event_type"] == "task.recovered" for event in events))
+            self.assertEqual(TaskManager(store, user_id="bob", workspace_id="project", session_id="session").recover(), [])
+
     def test_learning_requires_repeated_observation_and_can_roll_back(self):
         with tempfile.TemporaryDirectory() as directory:
             memory = MemoryBank(Path(directory) / "state.sqlite3")
