@@ -1,13 +1,86 @@
 import os
+import asyncio
+import threading
 import unittest
 from unittest.mock import patch
 
 import server
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from providers import ProviderConfig
 
 
 class ServerBoundaryTests(unittest.TestCase):
+    def test_ollama_initialization_never_prompts_for_a_key(self):
+        original_config = server._agent._provider_config
+        original_provider = server._agent.llm_provider
+        config = ProviderConfig(provider="ollama", base_url="http://127.0.0.1:11434/v1")
+        try:
+            with patch.object(server._agent, "detect_provider", return_value=config):
+                with patch.object(server._agent, "get_fallback_provider", return_value=object()) as create:
+                    with patch.object(server._agent.console, "input", side_effect=AssertionError("prompted")):
+                        self.assertTrue(server._agent._prompt_and_init_deepseek(interactive=False))
+            create.assert_called_once_with(config)
+            self.assertEqual(server._agent._provider_config.provider, "ollama")
+        finally:
+            server._agent._provider_config = original_config
+            server._agent.llm_provider = original_provider
+
+    def test_headless_missing_remote_key_enters_deterministic_degraded_state(self):
+        original_config = server._agent._provider_config
+        original_provider = server._agent.llm_provider
+        config = ProviderConfig(provider="deepseek", api_key="")
+        try:
+            with patch.object(server._agent, "detect_provider", return_value=config):
+                with patch.object(server._agent.console, "input", side_effect=AssertionError("prompted")):
+                    self.assertFalse(server._agent._prompt_and_init_deepseek(interactive=False))
+            self.assertIsNone(server._agent.llm_provider)
+            self.assertEqual(server._agent._provider_config.provider, "deepseek")
+        finally:
+            server._agent._provider_config = original_config
+            server._agent.llm_provider = original_provider
+
+    def test_interactive_missing_remote_key_still_accepts_a_key(self):
+        original_config = server._agent._provider_config
+        original_provider = server._agent.llm_provider
+        config = ProviderConfig(provider="deepseek", api_key="")
+        try:
+            with patch.object(server._agent, "detect_provider", return_value=config):
+                with patch.object(server._agent.console, "input", return_value="sk-interactive"):
+                    with patch.object(server._agent, "save_provider_config_encrypted"):
+                        with patch.object(server._agent, "get_fallback_provider", return_value=object()):
+                            self.assertTrue(server._agent._prompt_and_init_deepseek(interactive=True))
+            self.assertEqual(server._agent._provider_config.api_key, "sk-interactive")
+        finally:
+            server._agent._provider_config = original_config
+            server._agent.llm_provider = original_provider
+
+    def test_server_startup_initializes_headlessly(self):
+        with patch.object(server._agent, "_prompt_and_init_deepseek") as init_provider:
+            with patch.object(server._agent, "_set_workspace_root"):
+                with patch.object(server._agent, "_load_project_files_into_memory"):
+                    with patch.object(server, "_load_plugins"):
+                        with patch.object(server, "_trigger_hook"):
+                            with patch.object(server._task_worker, "recover", return_value=[]):
+                                with patch.object(server._scheduler, "list_jobs", return_value=[
+                                    {"payload": {"type": "task_worker"}},
+                                ]):
+                                    with patch.object(server._scheduler, "start"):
+                                        errors = []
+
+                                        def run_startup():
+                                            try:
+                                                asyncio.run(server.startup())
+                                            except Exception as exc:  # pragma: no cover - assertion below reports it
+                                                errors.append(exc)
+
+                                        thread = threading.Thread(target=run_startup)
+                                        thread.start()
+                                        thread.join(timeout=5)
+                                        self.assertFalse(thread.is_alive())
+                                        self.assertEqual(errors, [])
+        init_provider.assert_called_once_with(interactive=False)
+
     def test_server_profiles_keep_workspace_tools_and_gate_reset(self):
         workspace = server._allowed_server_tools("mcp")
         self.assertIn("run_cmd", workspace)
