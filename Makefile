@@ -1,7 +1,11 @@
 .PHONY: install run clean lint test check git-status git-diff git-log web
 
-# Use a known-stable Python version (3.14 has import deadlocks with openai)
-PYTHON := python3.12
+# Prefer the known-stable Python 3.12, but use the active supported Python
+# 3.13 on clean runners that do not provide 3.12. Python 3.14 remains
+# intentionally out of scope because of the OpenAI SDK import deadlock.
+PYTHON ?= python3.12
+_PYTHON_REQUEST := $(PYTHON)
+PYTHON := $(shell if [ "$(_PYTHON_REQUEST)" != "python3.12" ]; then printf '%s' "$(_PYTHON_REQUEST)"; elif command -v python >/dev/null 2>&1 && python -c 'import sys; raise SystemExit(0 if sys.version_info[:2] in ((3, 12), (3, 13)) else 1)' >/dev/null 2>&1; then command -v python; elif command -v python3.12 >/dev/null 2>&1 && python3.12 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' >/dev/null 2>&1; then command -v python3.12; elif command -v python3.13 >/dev/null 2>&1 && python3.13 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 13) else 1)' >/dev/null 2>&1; then command -v python3.13; else printf '%s' "$(_PYTHON_REQUEST)"; fi)
 VENV_PYTHON := $(if $(wildcard venv/bin/python),./venv/bin/python,$(PYTHON))
 
 # Detect Windows (native cmd) and redirect to .bat files
@@ -27,7 +31,7 @@ web:
 
 debug:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' first."; exit 1; }
-	. venv/bin/activate && python main_debug.py
+	$(VENV_PYTHON) main_debug.py
 
 init:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' first."; exit 1; }
@@ -45,7 +49,7 @@ clean:
 
 # Syntax check
 lint:
-	$(VENV_PYTHON) -m compileall -q main.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py
+	$(VENV_PYTHON) -m compileall -q main.py main_debug.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py
 	@echo "Python syntax OK."
 	@echo "All files pass syntax check."
 
@@ -56,7 +60,7 @@ test:
 # Quick verification
 check:
 	@echo "Checking Python syntax..."
-	@$(VENV_PYTHON) -m py_compile main.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py
+	@$(VENV_PYTHON) -m py_compile main.py main_debug.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py
 	@echo "  Python modules: OK"
 	@echo "Checking git tools..."
 	@$(VENV_PYTHON) -c "from tools import AVAILABLE_TOOLS; git = [k for k in AVAILABLE_TOOLS if k.startswith('git_')]; print(f'  {len(git)} git tools, {len(AVAILABLE_TOOLS)} total tools')"
