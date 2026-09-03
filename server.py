@@ -181,10 +181,7 @@ _task_worker = TaskWorker(
 def _run_scheduled_job(job: dict[str, Any]) -> None:
     payload = job.get("payload", {})
     if payload.get("type") == "learning_cycle":
-        if _agent._SELF_LEARNING_FLAGS.get("auto_learn_conversations", True):
-            _agent._auto_learn_conversations()
-        if _agent._SELF_LEARNING_FLAGS.get("outcome_verified_evolution", True):
-            _agent._review_evolution_runs()
+        _agent.dispatch_learning_cycle(surface="web", trigger="scheduled", max_features=4)
         return
     if payload.get("type") == "task_worker":
         _task_worker.run_once()
@@ -749,6 +746,12 @@ async def api_v2_learning_metrics(profile: str | None = None):
         if profile == "auto":
             profile = None
     return _agent.learning_engine.metrics(profile)
+
+
+@app.get("/api/v2/learning/features", dependencies=[Depends(require_api_access)])
+async def api_v2_learning_features():
+    """Expose the authoritative registry and the latest durable run status."""
+    return {"features": _agent.learning_feature_status()}
 
 
 @app.get("/api/v2/learning/{proposal_id}/evidence", dependencies=[Depends(require_api_access)])
@@ -1434,6 +1437,9 @@ async def startup():
     if not any(job.get("payload", {}).get("type") == "task_worker" for job in _scheduler.list_jobs()):
         _scheduler.schedule_every("durable-task-worker", 1.0, payload={"type": "task_worker"},
                                   job_id="job_durable_task_worker", delay_seconds=0)
+    if not any(job.get("payload", {}).get("type") == "learning_cycle" for job in _scheduler.list_jobs()):
+        _scheduler.schedule_every("learning-cycle", 30.0, payload={"type": "learning_cycle"},
+                                  job_id="job_learning_cycle", delay_seconds=0)
     _scheduler.start()
     _audit("STARTUP", "server started")
     print("[Server] Ready — http://127.0.0.1:8000 (set KYROZEN_SERVER_TOKEN for remote access)")

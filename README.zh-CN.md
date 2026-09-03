@@ -60,7 +60,7 @@
 OpenKyrozen 是一款在终端中运行的**自学习 AI 智能体**。与普通聊天机器人不同，它能够：
 
 - **内置 26 种工具** — 读写文件、执行 Shell 命令、搜索网页、管理 Git 仓库
-- **持续学习** — 20 项自学习功能在后台运行，提取事实、发明技能、优化策略
+- **持续学习** — 通过有界 dispatcher 运行 20 项功能，提取事实、发明技能并记录策略优化
 - **兼容多种大模型** — DeepSeek、OpenAI、Claude、Gemini，或本地 Ollama 模型
 - **跨平台运行** — macOS、Linux、Windows（自动检测终端能力）
 - **内置 Web 界面** — 浏览器端聊天界面，带 REST API 用于集成
@@ -341,11 +341,11 @@ python main.py
 
 ## 🧬 自学习系统
 
-这是 Kyrozen 与众不同的地方。v2 的自学习是自动的，但必须经过证据门控：系统先记录观察，再生成候选提案，经过重复证据或验证后才激活，并保留回滚信息。记忆中的文字永远不能自动授予新权限。
+这是 Kyrozen 与众不同的地方。v2 的自学习由一个权威注册表管理 20 个可独立开关的功能；每个周期只运行有界的轮询子集，并记录是否真的改变了持久化或内存状态。系统先记录观察，再生成候选提案，经过重复证据或验证后才激活，并保留回滚信息。记忆中的文字永远不能自动授予新权限。
 
 ### 工作原理
 
-空闲时 Kyrozen 运行有界的学习周期。项目扫描采用增量方式，后台任务有并发限制，失败会记录为事件而不会静默丢弃。大部分功能可以通过 `/self-learning` 开关。
+CLI 在空闲时每 30 秒通过共享 dispatcher 以 round-robin 方式最多执行 4 个功能；Web/Gateway 通过持久化的 `learning_cycle` 调度任务运行；每次聊天 turn 还会运行依赖输入的偏好和技术检测。所有功能都可用 `/self-learning` 独立开关，`GET /api/v2/learning/features` 可查看最新状态。项目扫描采用增量方式，后台任务有并发限制，失败会记录为事件而不会静默丢弃；缺少输入或证据时会诚实记录为无变化的有界 no-op。
 
 | # | 功能 | 学习内容 |
 |---|------|---------|
@@ -408,6 +408,7 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `GET` | `/api/v2/memory?q=关键词` | 返回带来源、置信度和作用域的结构化记忆 |
 | `GET/POST` | `/api/v2/tasks` | 持久化任务查询与创建 |
 | `GET` | `/api/v2/learning` | 查看学习提案 |
+| `GET` | `/api/v2/learning/features` | 查看 20 项功能注册表和最新运行状态 |
 | `POST` | `/api/v2/learning/{id}/rollback` | 回滚已激活的学习提案 |
 | `GET` | `/api/v2/events` | 查看运行时、会话、任务和学习审计事件 |
 | `GET/POST` | `/api/v2/schedules` | 持久化 interval/一次性 Gateway 任务 |
