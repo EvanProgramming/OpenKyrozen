@@ -559,6 +559,7 @@ def register():
 # 빠른 검증
 make check
 make docs-check
+make shell-check
 
 # 구문 검사만
 make lint

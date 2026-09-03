@@ -587,6 +587,7 @@ def register():
 # 快速验证
 make check
 make docs-check
+make shell-check
 
 # 仅语法检查
 make lint

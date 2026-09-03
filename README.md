@@ -787,6 +787,7 @@ The file is auto-managed. Use `/provider` or `/api_key` in-chat to update it int
 # Quick verification
 make check
 make docs-check
+make shell-check
 
 # Syntax lint only
 make lint
@@ -826,8 +827,8 @@ GitHub Actions automatically runs on every push and PR:
 ```bash
 # Install from local directory (PyPI publishing coming soon)
 pip install .                   # core + CLI
-pip install .[web]              # + web UI
-pip install .[all]              # + Claude + Gemini + web
+pip install '.[web]'            # + web UI
+pip install '.[all]'            # + Claude + Gemini + web
 ```
 
 ---

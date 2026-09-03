@@ -23,6 +23,8 @@ jobs:
 
     - name: Install dependencies
       run: |
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y zsh
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install fastapi uvicorn
