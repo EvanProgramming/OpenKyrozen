@@ -589,11 +589,11 @@ See `plugins/turn_logger.py` for a working example.
 | `KYROZEN_BASE_URL` | Custom API base URL | Provider default |
 | `KYROZEN_EXECUTION_SURFACE` | Execution surface (`cli` or `web`) | `cli` |
 | `KYROZEN_ALLOW_DYNAMIC_TOOLS` | Allow LLM-generated Python tools (`1`/`true`) | CLI: enabled; Web/MCP: disabled |
-| `KYROZEN_APPROVAL_MODE` | CLI confirmation mode for high-impact Git actions (`dangerous`/`never`) | `dangerous` |
+| `KYROZEN_APPROVAL_MODE` | CLI confirmation mode for high-impact Git actions and dynamic-tool registration (`dangerous`/`never`) | `dangerous` |
 | `KYROZEN_WEB_CAPABILITIES` | Web chat capabilities: `readonly`, `workspace`, or `full` | `workspace` |
 | `KYROZEN_MCP_CAPABILITIES` | MCP capabilities: `readonly`, `workspace`, or `full` | `workspace` |
 
-The local CLI is intentionally a high-permission agent, similar to Codex or OpenClaw: it can read and write the active workspace, run shell commands, use the network, and operate Git. The Web and MCP surfaces expose the same rich `workspace` profile by default, but keep irreversible `git_reset` and LLM-generated Python tools behind the explicit `full`/`KYROZEN_ALLOW_DYNAMIC_TOOLS=1` opt-in. Authentication and the command safety filter still apply.
+The local CLI is intentionally a high-permission agent, similar to Codex or OpenClaw: it can read and write the active workspace, run shell commands, use the network, and operate Git. The Web and MCP surfaces expose the same rich `workspace` profile by default, but keep irreversible `git_reset` and LLM-generated Python tools behind the explicit `full`/`KYROZEN_ALLOW_DYNAMIC_TOOLS=1` opt-in. On the interactive CLI, dynamic registration also follows `KYROZEN_APPROVAL_MODE`; use `never` only for an explicitly automated deployment. Authentication and the command safety filter still apply.
 
 ### Config file (`~/.kyrozen_config.json`)
 
