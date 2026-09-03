@@ -1,4 +1,4 @@
-.PHONY: install run clean lint test check git-status git-diff git-log web
+.PHONY: install run clean lint test check benchmark git-status git-diff git-log web
 
 # Prefer the known-stable Python 3.12, but use the active supported Python
 # 3.13 on clean runners that do not provide 3.12. Python 3.14 remains
@@ -56,6 +56,17 @@ lint:
 # Unit tests
 test:
 	$(VENV_PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
+
+benchmark:
+	@$(VENV_PYTHON) -c "import openai, requests, rich, yaml" >/dev/null 2>&1 || { echo "Error: benchmark dependencies are missing. Run 'make install' first."; exit 1; }
+	@benchmark_root=$$(mktemp -d "$${TMPDIR:-/tmp}/openkyrozen-benchmark.XXXXXX"); \
+	trap 'rm -rf "$$benchmark_root"' EXIT INT TERM; \
+	KYROZEN_BENCHMARK_ROOT="$$benchmark_root" KYROZEN_DB_PATH="$$benchmark_root/driver.sqlite3" KYROZEN_DISABLE_VECTOR_INDEX=1 \
+	$(VENV_PYTHON) main.py learning benchmark \
+		--cases benchmarks/multi_party_memory.jsonl \
+		--clean-runner "$(VENV_PYTHON) benchmarks/clean_runner.py" \
+		--evolved-runner "$(VENV_PYTHON) benchmarks/evolved_runner.py" \
+		--timeout "$${BENCHMARK_TIMEOUT:-60}"
 
 # Quick verification
 check:

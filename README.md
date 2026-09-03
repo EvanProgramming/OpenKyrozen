@@ -455,15 +455,43 @@ curl -X POST http://127.0.0.1:8000/api/v2/tasks \
 curl -X POST http://127.0.0.1:8000/api/v2/tasks/<task-id>/resume
 ```
 
-Run a frozen clean-versus-evolved benchmark with identical case order and runner settings:
+Run the frozen clean-versus-evolved benchmark from a fresh checkout after
+`make install`:
 
 ```bash
-python main.py learning benchmark --cases cases.jsonl \
-  --clean-runner './clean-wrapper' --evolved-runner './evolved-wrapper' \
-  --output benchmark.json
+make benchmark
 ```
 
-Each JSONL case requires `id`, `profile`, and `task`. Each wrapper reads one case from stdin and emits `verified_success`, `corrections`, `repeated_errors`, `tool_calls`, `tokens`, and `latency`. The exported `openkyrozen-learning-benchmark-v1` JSON is harness-neutral and suppresses a superiority claim unless completion is non-regressing, statistically credible, and a secondary measure improves.
+`make benchmark` uses the repository's
+`benchmarks/multi_party_memory.jsonl` fixture and the shipped
+`benchmarks/clean_runner.py` and `benchmarks/evolved_runner.py` wrappers. It
+creates a temporary benchmark root, assigns separate `clean.sqlite3` and
+`evolved.sqlite3` databases, and isolates the benchmark driver's database with
+`KYROZEN_DB_PATH`; the temporary root is removed when the command exits. The
+wrappers use a deterministic local memory policy, so no provider, model, or
+API key is required. Set `BENCHMARK_TIMEOUT=120` to change the per-case limit.
+
+For direct use, provide an isolated root explicitly:
+
+```bash
+benchmark_root="$(mktemp -d)"
+KYROZEN_BENCHMARK_ROOT="$benchmark_root" \
+  ./venv/bin/python main.py learning benchmark \
+  --cases benchmarks/multi_party_memory.jsonl \
+  --clean-runner "./venv/bin/python benchmarks/clean_runner.py" \
+  --evolved-runner "./venv/bin/python benchmarks/evolved_runner.py"
+rm -rf "$benchmark_root"
+```
+
+Each JSONL case requires `id`, `profile`, and `task`. Each wrapper reads one
+case from stdin and emits `verified_success`, `corrections`,
+`repeated_errors`, `tool_calls`, `tokens`, `latency`, `provider`, `model`, and
+`evidence_status`, plus bounded evidence counts and scope. The exported
+`openkyrozen-learning-benchmark-v1` JSON includes the protocol, runner
+metadata, provider/model, and evidence policy. Fixture-only evidence is
+reported as `fixture_verified` and therefore cannot support a product
+superiority claim; such a claim requires independently verified paired runs
+with the same provider, model, configuration, and observable product behavior.
 
 ---
 
