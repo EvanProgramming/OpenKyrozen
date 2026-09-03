@@ -443,30 +443,73 @@ class FallbackProvider(LLMProvider):
     def config(self) -> ProviderConfig:
         return self._primary.config
 
+    def _model_for(self, provider: LLMProvider, requested_model: str | None) -> str:
+        """Choose a model that has the same simple/complex meaning for *provider*.
+
+        The model names in a provider configuration are provider-specific.  A
+        model selected from the primary provider must therefore not be sent to
+        a fallback merely because it is a non-empty string.  Names configured
+        for the primary (including its built-in defaults) are treated as
+        semantic simple/complex slots and mapped to the fallback's slots.
+        An unrecognised explicit name is forwarded as-is so users can use a
+        model name shared by several compatible endpoints, with the fallback
+        provider responsible for accepting or rejecting it.
+        """
+        primary_config = self._primary.config
+        target_config = provider.config
+        requested = (requested_model or "").strip()
+
+        if not requested or requested.lower() == "auto":
+            return target_config.model_simple
+
+        primary_simple = {
+            primary_config.model_simple,
+            PROVIDER_DEFAULT_MODELS.get(primary_config.provider, ("", ""))[0],
+        }
+        primary_complex = {
+            primary_config.model_complex,
+            PROVIDER_DEFAULT_MODELS.get(primary_config.provider, ("", ""))[1],
+        }
+        if requested in primary_complex and requested not in primary_simple:
+            return target_config.model_complex
+        if requested in primary_simple:
+            return target_config.model_simple
+        return requested
+
+    @staticmethod
+    def _raise_all_failed(attempts: list[tuple[str, Exception]]) -> None:
+        """Raise a useful error without discarding the primary failure."""
+        if not attempts:
+            raise RuntimeError("All providers failed")
+        if len(attempts) == 1:
+            raise attempts[0][1]
+        details = "; ".join(
+            f"{provider}: {type(error).__name__}: {error}"
+            for provider, error in attempts
+        )
+        error = RuntimeError(f"All providers failed ({details})")
+        raise error from attempts[0][1]
+
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         providers = [self._primary] + self._fallbacks
-        last_error = None
-        for i, prov in enumerate(providers):
+        attempts: list[tuple[str, Exception]] = []
+        for prov in providers:
             try:
-                return prov.chat(messages, model)
+                return prov.chat(messages, self._model_for(prov, model))
             except Exception as e:
-                last_error = e
-                if i < len(providers) - 1:
-                    continue  # try next
-        raise last_error or RuntimeError("All providers failed")
+                attempts.append((prov.name, e))
+        self._raise_all_failed(attempts)
 
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         providers = [self._primary] + self._fallbacks
-        last_error = None
-        for i, prov in enumerate(providers):
+        attempts: list[tuple[str, Exception]] = []
+        for prov in providers:
             try:
-                yield from prov.chat_stream(messages, model)
+                yield from prov.chat_stream(messages, self._model_for(prov, model))
                 return
             except Exception as e:
-                last_error = e
-                if i < len(providers) - 1:
-                    continue
-        raise last_error or RuntimeError("All providers failed")
+                attempts.append((prov.name, e))
+        self._raise_all_failed(attempts)
 
     @property
     def name(self) -> str:
