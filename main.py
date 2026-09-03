@@ -1007,31 +1007,52 @@ def _save_config_key(key: str) -> None:
         console.print(f"[{_WARNING}]Warning: could not save API key to config file.[/{_WARNING}]")
 
 
-def _prompt_and_init_deepseek() -> None:
-    """Detect provider, prompt for API key if needed, initialise the LLM client."""
+def _prompt_and_init_deepseek(*, interactive: bool = True) -> bool:
+    """Detect the provider and initialise the LLM client.
+
+    Ollama is a local, keyless provider.  Headless surfaces pass
+    ``interactive=False`` so a missing remote credential produces a usable
+    degraded process instead of reading stdin or raising during ASGI startup.
+    Interactive CLI setup retains the credential prompt for providers that
+    require one.  The return value reports whether a provider was initialised.
+    """
     global _provider_config, llm_provider, DEEPSEEK_MODEL, DEEPSEEK_MODEL_SIMPLE, DEEPSEEK_MODEL_COMPLEX, MODEL_NAME
 
     _provider_config = detect_provider()
+    llm_provider = None
 
-    # If no API key is stored, prompt the user
+    # Ollama's local OpenAI-compatible endpoint deliberately has no credential.
     if not _provider_config.api_key:
-        console.print(f"\n{_provider_config.provider.title()} API key not set.")
-        env_var = PROVIDER_ENV_VARS.get(_provider_config.provider, "")
-        hint = f" (set {env_var})" if env_var else ""
-        try:
-            key = console.input(
-                f"[bold yellow]Enter your {_provider_config.provider.title()} API key{hint}: [/bold yellow]"
-            ).strip()
-        except (EOFError, KeyboardInterrupt):
-            console.print("\nCancelled.")
-            llm_provider = None
-            sys.exit(0)
-        if not key:
-            console.print("No API key entered – use /quit to exit.")
-            llm_provider = None
-            sys.exit(0)
-        _provider_config.api_key = key
-        save_provider_config_encrypted(_provider_config)
+        if _provider_config.provider == "ollama":
+            console.print("Ollama selected: no API key is required; using the configured local endpoint.")
+        elif not interactive:
+            env_var = PROVIDER_ENV_VARS.get(_provider_config.provider, "")
+            hint = f" Set {env_var} or KYROZEN_API_KEY before sending chat requests." if env_var else ""
+            console.print(
+                f"[yellow]Degraded startup: {_provider_config.provider.title()} API key is not configured."
+                f" Headless mode will not prompt for credentials.{hint}[/yellow]"
+            )
+            DEEPSEEK_MODEL_SIMPLE = _provider_config.model_simple
+            DEEPSEEK_MODEL_COMPLEX = _provider_config.model_complex
+            DEEPSEEK_MODEL = DEEPSEEK_MODEL_SIMPLE
+            MODEL_NAME = f"{_provider_config.provider} ({DEEPSEEK_MODEL_SIMPLE})"
+            return False
+        else:
+            console.print(f"\n{_provider_config.provider.title()} API key not set.")
+            env_var = PROVIDER_ENV_VARS.get(_provider_config.provider, "")
+            hint = f" (set {env_var})" if env_var else ""
+            try:
+                key = console.input(
+                    f"[bold yellow]Enter your {_provider_config.provider.title()} API key{hint}: [/bold yellow]"
+                ).strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print("\nCancelled.")
+                sys.exit(0)
+            if not key:
+                console.print("No API key entered – use /quit to exit.")
+                sys.exit(0)
+            _provider_config.api_key = key
+            save_provider_config_encrypted(_provider_config)
 
     # Set provider-specific env var for subprocesses / SDK auto-detection
     env_var = PROVIDER_ENV_VARS.get(_provider_config.provider, "")
@@ -1052,6 +1073,7 @@ def _prompt_and_init_deepseek() -> None:
     if issues:
         for issue in issues:
             console.print(f"[{_WARNING}]Config: {issue}[/{_WARNING}]")
+    return True
 
 
 DEEPSEEK_MODEL: str = DEEPSEEK_MODEL_SIMPLE

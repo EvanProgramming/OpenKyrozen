@@ -255,6 +255,13 @@ python main.py
 
 If the primary provider fails, Kyrozen automatically falls back through a chain (e.g., DeepSeek → OpenAI → Claude). Rate-limit errors (HTTP 429) trigger exponential backoff with jitter.
 
+Ollama is keyless: set `KYROZEN_PROVIDER=ollama` and, if needed, point
+`KYROZEN_BASE_URL` at the local OpenAI-compatible endpoint. The Web server
+always initialises in headless mode. If a remote provider has no key, it
+starts in a documented degraded state without reading stdin; configure the
+provider before sending chat requests. The interactive CLI still prompts for
+providers that require credentials.
+
 ---
 
 ## 🛠 Tools Reference

@@ -1200,7 +1200,7 @@ async def startup():
     """Initialize the agent on server start."""
     print("[Server] Initializing OpenKyrozen...")
     _agent._set_workspace_root(os.getcwd())
-    _agent._prompt_and_init_deepseek()
+    _agent._prompt_and_init_deepseek(interactive=False)
     if _agent.llm_provider is None:
         print("[Server] WARNING: No LLM provider configured. Set API key env vars.")
     else:
