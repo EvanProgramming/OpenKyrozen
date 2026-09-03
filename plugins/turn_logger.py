@@ -4,13 +4,14 @@ Copy this to create your own plugins.
 """
 
 import time
+import os
 from pathlib import Path
 
 class TurnLogger:
     """Logs every conversation turn with timestamp."""
 
     def __init__(self):
-        self._log_path = Path("kyrozen_turns.log")
+        self._log_path = Path(os.environ.get("KYROZEN_TURN_LOG", "kyrozen_turns.log"))
 
     def on_turn_start(self, user_input: str, **kwargs):
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
