@@ -1,8 +1,11 @@
 import tempfile
 import unittest
+import os
+import sys
+from unittest.mock import patch
 from pathlib import Path
 
-from tools import AVAILABLE_TOOLS, allowed_tool_names, read_file, set_workspace_root, write_file
+from tools import AVAILABLE_TOOLS, allowed_tool_names, read_file, run_cmd, set_workspace_root, write_file
 
 
 class WorkspaceToolTests(unittest.TestCase):
@@ -26,6 +29,16 @@ class WorkspaceToolTests(unittest.TestCase):
         self.assertIn("write_file", workspace)
         self.assertNotIn("git_reset", workspace)
         self.assertIn("git_reset", full)
+
+    def test_run_cmd_resolves_bare_python_from_active_environment(self):
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=False):
+            result = run_cmd("python -c 'import sys; print(sys.executable)' ")
+        self.assertEqual(Path(result).resolve(), Path(sys.executable).resolve())
+
+    def test_run_cmd_preserves_explicit_interpreter_paths(self):
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=False):
+            result = run_cmd(f"{sys.executable} -c 'print(\"explicit\")'")
+        self.assertEqual(result, "explicit")
 
 
 if __name__ == "__main__":

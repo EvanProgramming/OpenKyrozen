@@ -8,6 +8,7 @@ import re
 import glob
 import tempfile
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,23 @@ def _is_dangerous(cmd: str) -> bool:
     return bool(_BLOCKED_RE.search(cmd))
 
 
+def _active_command_env() -> dict[str, str]:
+    """Make the interpreter running Kyrozen win bare ``python``/``pip`` lookups."""
+    env = os.environ.copy()
+    # Keep the visible venv ``bin`` directory before the resolved interpreter
+    # target; on macOS a venv executable is commonly a symlink to Homebrew.
+    interpreter_path = Path(sys.executable)
+    interpreter_dir = str(interpreter_path.parent)
+    resolved_dir = str(interpreter_path.resolve().parent)
+    current_path = env.get("PATH", "")
+    path_entries = current_path.split(os.pathsep) if current_path else []
+    for directory in reversed((interpreter_dir, resolved_dir)):
+        if directory and directory not in path_entries:
+            path_entries.insert(0, directory)
+    env["PATH"] = os.pathsep.join(path_entries)
+    return env
+
+
 def write_file(args: str) -> str:
     """
     Write content to a file. Args format: "path|content".
@@ -130,6 +148,7 @@ def run_cmd(args: str) -> str:
             capture_output=True,
             text=True,
             timeout=60,
+            env=_active_command_env(),
         )
         out = result.stdout or ""
         err = result.stderr or ""
