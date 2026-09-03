@@ -280,6 +280,7 @@ ALLOW_DYNAMIC_TOOLS = (
 )
 _APPROVAL_REQUIRED_TOOLS = frozenset({
     "git_push", "git_pull", "git_checkout", "git_stash", "git_reset", "git_remote",
+    "define_tool",
 })
 _APPROVAL_LOG_PATH = Path("kyrozen_audit.log")
 
@@ -1319,28 +1320,48 @@ def _get_fix_success_rate() -> float:
 # Feature 3: DefineTool — Dynamic Tool Creation from SKILLs
 # ================================================================
 
+def _record_dynamic_tool_event(event_type: str, name: str, *, reason: str = "",
+                               description: str = "") -> None:
+    """Record a bounded dynamic-tool decision without persisting source code."""
+    payload = {"name": str(name)[:80] or "<unknown>"}
+    if reason:
+        payload["reason"] = str(reason)[:300]
+    if description:
+        payload["description"] = str(description)[:300]
+    try:
+        memory_bank.store.append_event(
+            event_type, payload, user_id=memory_bank.user_id,
+            workspace_id=memory_bank.workspace_id, session_id=memory_bank.session_id,
+        )
+    except Exception:
+        # Audit logging must never turn a safe rejection into a chat failure.
+        pass
+
+
+def _reject_dynamic_tool(name: str, reason: str) -> bool:
+    _record_dynamic_tool_event("tool.rejected", name, reason=reason)
+    return False
+
+
 def _register_tool(name: str, code: str, description: str = "") -> bool:
     """Register a new callable tool dynamically. Returns True on success."""
     if not ALLOW_DYNAMIC_TOOLS:
-        return False
+        return _reject_dynamic_tool(name, "dynamic tools are disabled by policy")
     if not name or not code:
-        return False
+        return _reject_dynamic_tool(name, "tool name and source are required")
+    if not _execution_capability_token.allows("dynamic"):
+        return _reject_dynamic_tool(name, "dynamic capability is not granted or has expired")
     # Validate: name must be a valid identifier
     if not re.match(r"^[a-zA-Z_]\w*$", name):
-        return False
+        return _reject_dynamic_tool(name, "tool name must be a Python identifier")
 
-    # Don't overwrite built-in tools
-    if name in _BUILTIN_TOOL_NAMES:
-        return False
+    # Don't overwrite built-in or already registered tools.
+    if name in AVAILABLE_TOOLS:
+        return _reject_dynamic_tool(name, "tool name is already registered")
 
     valid, reason = validate_tool_source(code, name)
     if not valid:
-        memory_bank.store.append_event(
-            "tool.rejected", {"name": name, "reason": reason},
-            user_id=memory_bank.user_id, workspace_id=memory_bank.workspace_id,
-            session_id=memory_bank.session_id,
-        )
-        return False
+        return _reject_dynamic_tool(name, reason)
 
     # Compile the tool function in a restricted global namespace.
     try:
@@ -1348,21 +1369,16 @@ def _register_tool(name: str, code: str, description: str = "") -> bool:
         exec(code, {"__builtins__": SAFE_BUILTINS}, local_ns)
         fn = local_ns.get(name)
         if fn is None or not callable(fn):
-            # Try to find any top-level function
-            for v in local_ns.values():
-                if callable(v) and hasattr(v, "__name__"):
-                    fn = v
-                    break
-            if fn is None:
-                return False
-    except Exception:
-        return False
+            return _reject_dynamic_tool(name, "source did not create the requested callable")
+    except Exception as exc:
+        return _reject_dynamic_tool(name, f"tool compilation failed: {type(exc).__name__}")
 
     # Apply description
-    if description and hasattr(fn, "__doc__"):
-        pass  # uses its own docstring
-    elif description:
+    if description and not getattr(fn, "__doc__", None):
         fn.__doc__ = description
+
+    if not _confirm_tool_action("define_tool", name):
+        return _reject_dynamic_tool(name, "dynamic-tool approval was denied")
 
     # Register
     AVAILABLE_TOOLS[name] = fn
@@ -1370,8 +1386,9 @@ def _register_tool(name: str, code: str, description: str = "") -> bool:
     global TOOLS_LIST
     TOOLS_LIST = _build_tools_list()
 
-    # Log the new tool
-    memory_bank.add_log(f"TOOL_CREATED: {name} — {description}")
+    # Log the decision and inventory change, never the generated source.
+    _record_dynamic_tool_event("tool.registered", name, description=description)
+    memory_bank.add_log(f"TOOL_CREATED: {name} — {description[:300]}")
     return True
 
 
@@ -1385,22 +1402,21 @@ def _attempt_define_tool(text: str) -> bool:
         ...
     ```
     """
-    if not ALLOW_DYNAMIC_TOOLS:
+    if not re.search(r"DefineTool\s*:", text, re.IGNORECASE):
         return False
-
     pattern = r"DefineTool:\s*```(?:python)?\s*([\s\S]*?)\s*```"
     match = re.search(pattern, text)
     if not match:
-        return False
+        return _reject_dynamic_tool("<unknown>", "malformed DefineTool block")
 
     code = match.group(1).strip()
     if not code:
-        return False
+        return _reject_dynamic_tool("<unknown>", "DefineTool source is empty")
 
     # Extract function name and description
     name_match = re.search(r"def\s+(\w+)\s*\(", code)
     if not name_match:
-        return False
+        return _reject_dynamic_tool("<unknown>", "DefineTool source has no function definition")
     name = name_match.group(1)
 
     desc_match = re.search(r'"""([^"]*)"""', code) or re.search(r"'''([^']*)'''", code)
@@ -1752,6 +1768,16 @@ def _system_prompt(tools_list: str) -> str:
             "## Current working directory\n"
             "You are currently inside the project root directory of the repository the user is working in.  Relative paths (like \"README.md\" or \"main.py\") will be resolved correctly.  You can use `read_file`, `write_file`, `list_dir`, `find_files`, `run_cmd`, etc. **without needing the user to provide a path**.  Do **not** ask the user to supply a local path or a remote URL unless you intend to use the `analyze_remote_repo` tool to clone an external repository."
         )
+    dynamic_tool_instructions = (
+        "## Dynamic tools\n"
+        "Dynamic tools are enabled only when the active surface grants the `dynamic` capability and the approval policy allows registration. "
+        "When a missing pure helper is genuinely needed, you may output exactly one DefineTool block; never include imports, filesystem/process/network access, secrets, permission changes, or capability grants. "
+        "The runtime validates and registers it, refreshes the tool inventory, and then you may call it by its exact name:\n"
+        "DefineTool:\n```python\ndef tool_name(args: str) -> str:\n    return args.strip()\n```\n"
+    ) if ALLOW_DYNAMIC_TOOLS else (
+        "## Dynamic tools\n"
+        "Dynamic tool creation is disabled for this execution surface. Do not emit DefineTool blocks.\n"
+    )
     # Build system prompt via safe concatenation (no f‑string to avoid format‑spec collisions)
     return (
         "You are Kyrozen, an intelligent, self-learning AI assistant with file access, "
@@ -1836,6 +1862,7 @@ def _system_prompt(tools_list: str) -> str:
         "6. **SUMMARISE**: When all tasks complete, produce a concise summary of what was done.\n"
         "CRITICAL: Never skip tasks, never stop early, never mark tasks done without executing them.\n"
         "If you get stuck on a step, try an alternative approach — do NOT abandon the task.\n"
+        + dynamic_tool_instructions + "\n"
         + cwd_note
     )
 
@@ -2881,6 +2908,8 @@ def _clean_final_response(text: str) -> str:
         return ""
     # Remove fenced protocol blocks first.  The model's JSON may contain
     # braces and newlines, so a line-based JSON parser would be less reliable.
+    cleaned = re.sub(r"DefineTool:\s*```(?:python)?\s*[\s\S]*?```", "", cleaned,
+                     flags=re.IGNORECASE)
     cleaned = re.sub(r"Action:\s*```(?:json)?\s*[\s\S]*?```", "", cleaned,
                      flags=re.IGNORECASE)
     cleaned = re.sub(r"TaskList:\s*```(?:json)?\s*[\s\S]*?```", "", cleaned,
@@ -2933,7 +2962,12 @@ def _parse_model_response(text: str) -> dict[str, Any]:
 
 def _observe_model_response(text: str) -> dict[str, Any]:
     """Parse a response once and merge its durable task signals once."""
+    define_tool_present = bool(re.search(r"^[ \t]*DefineTool\s*:", str(text or ""),
+                                         re.IGNORECASE | re.MULTILINE))
+    define_tool_registered = _attempt_define_tool(text) if define_tool_present else False
     parsed = _parse_model_response(text)
+    parsed["define_tool_present"] = define_tool_present
+    parsed["define_tool_registered"] = define_tool_registered
     if parsed["raw"]:
         tasks.from_llm_block(parsed["raw"])
         tasks.mark_done_from_text(parsed["raw"])
@@ -3142,6 +3176,11 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
     # model context; use the parsed clean field for anything user-facing.
     response_meta = _observe_model_response(response_text)
     tool_calls = response_meta["tool_calls"]
+    if response_meta["define_tool_registered"]:
+        messages.append({
+            "role": "system",
+            "content": "Refreshed tool inventory after DefineTool registration:\n" + TOOLS_LIST,
+        })
 
     # ---- Unknown action detection (all complexity levels) ----
     _unknown_retries = 0
@@ -3210,15 +3249,17 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
 
     # ---- Missing action recovery (up to 3 attempts) ----
     if not tool_calls:
-        if _requires_tool_action(user_input) or _llm_has_plan or _llm_has_tasklist:
+        if (_requires_tool_action(user_input) or _llm_has_plan or _llm_has_tasklist
+                or response_meta["define_tool_registered"]):
             action_retries = 0
             while not tool_calls and action_retries < 3:
                 action_retries += 1
                 if action_retries == 1:
                     reminder = (
-                        "System: You output a Plan but no Action block. "
+                        "System: You output a protocol block but no Action block. "
                         "You **must** now output a JSON Action block to perform the work. "
-                        "Do not repeat the Plan — output ONLY: Thought + Action JSON."
+                        "If a new tool was registered, use its exact name from the refreshed tool inventory. "
+                        "Do not repeat the Plan or DefineTool block — output only the next Action."
                     )
                 elif action_retries == 2:
                     reminder = (
@@ -3240,6 +3281,11 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
                     continue
                 response_meta = _observe_model_response(response_text)
                 tool_calls = response_meta["tool_calls"]
+                if response_meta["define_tool_registered"]:
+                    messages.append({
+                        "role": "system",
+                        "content": "Refreshed tool inventory after DefineTool registration:\n" + TOOLS_LIST,
+                    })
                 if tool_calls:
                     _llm_has_plan = response_meta["has_plan"]
                     _llm_has_tasklist = response_meta["has_tasklist"]
@@ -3446,7 +3492,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
         if not next_tool_calls:
             # If all tasks are already done (or none were set), accept this as final answer
             all_done = not tasks.tasks or all(is_terminal(t) for t in tasks.tasks)
-            if all_done:
+            if all_done and not step_meta["define_tool_registered"]:
                 final_answer = (step_meta["clean"] or _deterministic_tool_summary(tool_records))
                 break
 
