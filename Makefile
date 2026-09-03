@@ -13,7 +13,7 @@ install:
 	@echo "Creating virtual environment with $(PYTHON)..."
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: $(PYTHON) not found. Install Python 3.12 first."; exit 1; }
 	$(PYTHON) -m venv venv
-	. venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt
+	./venv/bin/python -m pip install --upgrade pip && ./venv/bin/python -m pip install -r requirements.txt
 	@echo ""
 	@echo "OpenKyrozen installed. Run 'make run' or 'python main.py'"
 
@@ -31,14 +31,14 @@ debug:
 
 init:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' first."; exit 1; }
-	. venv/bin/activate && python main.py --init
+	$(VENV_PYTHON) main.py --init
 
 # Upgrade the venv to use a different Python version (e.g. after macOS upgrade)
 reinstall:
 	@echo "Rebuilding venv with $(PYTHON)..."
 	rm -rf venv
 	$(PYTHON) -m venv venv
-	. venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt
+	./venv/bin/python -m pip install --upgrade pip && ./venv/bin/python -m pip install -r requirements.txt
 
 clean:
 	rm -rf venv chroma_memory __pycache__

@@ -278,6 +278,11 @@ Short aliases work too — `bash`, `cmd`, `sh` → `run_cmd`; `status`, `diff`, 
 | `find_files` | Glob-based file search | `"*.py\|."` |
 | `run_cmd` | Execute shell command | `"python --version"` |
 
+`run_cmd` prepends the `bin` directory of the Python interpreter running
+OpenKyrozen, so bare `python` and `pip` resolve inside the active virtual
+environment even when the parent shell was not activated. Explicit interpreter
+paths such as `/usr/bin/python3` are left unchanged.
+
 ### Web
 
 | Tool | Description | Example |
