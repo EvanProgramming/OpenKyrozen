@@ -3,6 +3,7 @@ chromadb>=0.4.0
 cryptography>=42.0.0
 googlesearch-python>=1.2.3
 openai>=1.0.0
+PyYAML>=6.0
 requests>=2.31.0
 rich>=13.0.0
 
