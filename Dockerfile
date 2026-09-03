@@ -1,6 +1,6 @@
 # OpenKyrozen Docker Image
 # Build:  docker build -t openkyrozen .
-# Run:    docker run -p 8000:8000 -e DEEPSEEK_API_KEY=sk-... openkyrozen
+# Run:    docker run -p 8000:8000 -v kyrozen-data:/data openkyrozen
 
 FROM python:3.12-slim
 
@@ -19,12 +19,19 @@ RUN pip install --no-cache-dir fastapi uvicorn
 # Copy application code
 COPY . .
 
-# Run the service without root privileges. The application only needs to read
-# its code and write user data under the mounted working directory/home.
+# Keep the SQLite source of truth and its derived index under one explicit,
+# non-root-writable data directory. A named Docker volume mounted at /data is
+# therefore sufficient to survive container replacement.
+ENV KYROZEN_DB_PATH=/data/openkyrozen.sqlite3 \
+    KYROZEN_VECTOR_PATH=/data/chroma_index
+
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin kyrozen \
+    && install -d -o kyrozen -g kyrozen /data \
     && chown -R kyrozen:kyrozen /app
 
 USER kyrozen
+
+VOLUME ["/data"]
 
 # Expose web server port
 EXPOSE 8000

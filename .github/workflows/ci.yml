@@ -48,5 +48,12 @@ jobs:
       run: |
         python -c "from providers import *; print('All providers imported OK')"
 
-    - name: Docker build check
-      run: docker build -t openkyrozen-test .
+  docker-persistence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build and replace-container persistence smoke test
+      run: make docker-smoke

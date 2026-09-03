@@ -162,7 +162,11 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 
 # 或通过 Docker：
 docker build -t openkyrozen .
-docker run -p 8000:8000 -e DEEPSEEK_API_KEY=sk-... -e KYROZEN_SERVER_TOKEN=change-me openkyrozen
+docker run -p 8000:8000 \
+  -e DEEPSEEK_API_KEY=sk-... \
+  -e KYROZEN_SERVER_TOKEN=change-me \
+  -v kyrozen-data:/data \
+  openkyrozen
 ```
 
 Web 界面提供暗色主题的聊天 UI，支持实时流式输出、费用追踪和会话管理。
@@ -447,9 +451,13 @@ docker build -t openkyrozen .
 docker run -p 8000:8000 \
   -e DEEPSEEK_API_KEY=sk-your-key \
   -e KYROZEN_SERVER_TOKEN=change-me \
-  -v kyrozen-data:/root/.kyrozen/v2 \
+  -e KYROZEN_DB_PATH=/data/openkyrozen.sqlite3 \
+  -v kyrozen-data:/data \
   openkyrozen
 ```
+
+镜像使用非 root 用户 `kyrozen` 运行。SQLite 事实主库位于
+`/data/openkyrozen.sqlite3`（镜像已将 `KYROZEN_DB_PATH` 设为该路径）；替换容器时请继续将同一个命名卷挂载到 `/data`。本地可用 `make docker-smoke` 运行同样的替换容器并恢复记忆测试。
 
 ---
 

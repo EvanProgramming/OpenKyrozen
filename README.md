@@ -172,7 +172,11 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 
 # Or via Docker:
 docker build -t openkyrozen .
-docker run -p 8000:8000 -e DEEPSEEK_API_KEY=sk-... -e KYROZEN_SERVER_TOKEN=change-me openkyrozen
+docker run -p 8000:8000 \
+  -e DEEPSEEK_API_KEY=sk-... \
+  -e KYROZEN_SERVER_TOKEN=change-me \
+  -v kyrozen-data:/data \
+  openkyrozen
 ```
 
 The web interface provides a dark-themed chat UI with real-time streaming, cost tracking, and session management.
@@ -612,9 +616,15 @@ docker build -t openkyrozen .
 docker run -p 8000:8000 \
   -e DEEPSEEK_API_KEY=sk-your-key \
   -e KYROZEN_SERVER_TOKEN=change-me \
-  -v kyrozen-data:/root/.kyrozen/v2 \
+  -e KYROZEN_DB_PATH=/data/openkyrozen.sqlite3 \
+  -v kyrozen-data:/data \
   openkyrozen
 ```
+
+The image runs as the non-root `kyrozen` user. SQLite is the durable source of
+truth at `/data/openkyrozen.sqlite3` (the image sets `KYROZEN_DB_PATH` to this
+path), so keep the named volume mounted at `/data` when replacing containers.
+To run the same replacement-and-recovery check locally, use `make docker-smoke`.
 
 ---
 

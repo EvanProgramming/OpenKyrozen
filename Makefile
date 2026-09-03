@@ -1,4 +1,4 @@
-.PHONY: install run clean lint test check benchmark git-status git-diff git-log web
+.PHONY: install run clean lint test check benchmark docker-smoke git-status git-diff git-log web
 
 # Prefer the known-stable Python 3.12, but use the active supported Python
 # 3.13 on clean runners that do not provide 3.12. Python 3.14 remains
@@ -67,6 +67,11 @@ benchmark:
 		--clean-runner "$(VENV_PYTHON) benchmarks/clean_runner.py" \
 		--evolved-runner "$(VENV_PYTHON) benchmarks/evolved_runner.py" \
 		--timeout "$${BENCHMARK_TIMEOUT:-60}"
+
+docker-smoke:
+	@command -v docker >/dev/null 2>&1 || { echo "Error: Docker is required for the container smoke test."; exit 1; }
+	docker build -t openkyrozen-smoke .
+	./scripts/docker_persistence_smoke.sh openkyrozen-smoke
 
 # Quick verification
 check:

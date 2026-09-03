@@ -159,7 +159,11 @@ python server.py --port 8000
 
 # 또는 Docker 사용:
 docker build -t openkyrozen .
-docker run -p 8000:8000 -e DEEPSEEK_API_KEY=sk-... openkyrozen
+docker run -p 8000:8000 \
+  -e DEEPSEEK_API_KEY=sk-... \
+  -e KYROZEN_SERVER_TOKEN=change-me \
+  -v kyrozen-data:/data \
+  openkyrozen
 ```
 
 웹 인터페이스는 실시간 스트리밍, 비용 추적, 세션 관리 기능을 갖춘 다크 테마 채팅 UI를 제공합니다.
@@ -405,9 +409,13 @@ python server.py --port 8000
 docker build -t openkyrozen .
 docker run -p 8000:8000 \
   -e DEEPSEEK_API_KEY=sk-your-key \
-  -v $(pwd)/chroma_memory:/app/chroma_memory \
+  -e KYROZEN_SERVER_TOKEN=change-me \
+  -e KYROZEN_DB_PATH=/data/openkyrozen.sqlite3 \
+  -v kyrozen-data:/data \
   openkyrozen
 ```
+
+이미지는 root가 아닌 `kyrozen` 사용자로 실행됩니다. SQLite 원본 데이터는 `/data/openkyrozen.sqlite3`에 저장되며(이미지에서 `KYROZEN_DB_PATH`를 이 경로로 설정), 컨테이너를 교체할 때도 같은 이름의 볼륨을 `/data`에 마운트해야 합니다. 로컬에서는 `make docker-smoke`로 교체 후 복구 테스트를 실행할 수 있습니다.
 
 ---
 

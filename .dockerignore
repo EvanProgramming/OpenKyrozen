@@ -1,0 +1,50 @@
+# Source control and local instructions
+.git
+.github
+AGENTS.md
+.codewhale/
+.vscode/
+.idea/
+.DS_Store
+
+# Python environments, caches, and test output
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local runtime stores and derived indexes
+chroma_memory/
+chroma_index/
+graphify-out/
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
+*.log
+.kyrozen/
+.kyrozen_config.json
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+
+# Credentials and local configuration
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+credentials*
+secrets*
