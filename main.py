@@ -1253,61 +1253,318 @@ def _summarize_old_turns() -> None:
 
 _fix_outcomes: list[dict] = []  # [{error_sig, fix_desc, success, timestamp}]
 
-def _track_fix_outcome(user_input: str, agent_reply: str) -> None:
-    """Track whether a bug fix was successful based on user feedback.
-    Call this after each turn to build a fix-outcome database."""
-    low_input = user_input.lower()
-    low_reply = agent_reply.lower()
+_FIX_WORKFLOW_STAGES = (
+    "reported", "reproduced", "diagnosed", "hypothesized", "fixed", "verified", "explained",
+)
+_FIX_TERMINAL_STAGES = {"explained", "blocked"}
+_FIX_EVIDENCE_STAGES = {"reproduced", "fixed", "verified"}
+_FIX_MAX_STEPS = 12
+_FIX_REPRODUCTION_ACTIONS = {"read_file", "run_cmd", "execute_terminal_command"}
+_FIX_VERIFICATION_ACTIONS = {"run_cmd", "execute_terminal_command"}
+_FIX_MUTATION_ACTIONS = {"write_file", "git_apply", "git_commit"}
+_FIX_SUCCESS_FEEDBACK = (
+    "thanks", "thank you", "that works", "it works", "worked", "fixed", "solved",
+    "great", "perfect", "awesome", "谢", "谢谢", "好了", "可以了", "搞定", "没问题",
+)
+_FIX_FAILURE_FEEDBACK = (
+    "not working", "still broken", "didn't work", "doesn't work", "wrong", "incorrect",
+    "not correct", "not fixed", "still fails", "还不行", "还是错", "没好", "没解决", "不对",
+)
 
-    # Detect positive feedback
-    positive = any(kw in low_input for kw in [
-        "thanks", "thank you", "that works", "it works", "worked",
-        "fixed", "solved", "great", "perfect", "awesome", "谢", "谢谢",
-        "好了", "可以了", "搞定", "没问题"
-    ])
-    # Detect negative feedback
-    negative = any(kw in low_input for kw in [
-        "not working", "still broken", "didn't work", "doesn't work",
-        "wrong", "incorrect", "not correct", "not fixed", "still fails",
-        "还不行", "还是错", "没好", "没解决", "不对"
-    ])
 
-    if not positive and not negative:
-        return  # no clear feedback signal
+def _fix_feedback_signal(text: str) -> str | None:
+    """Return explicit user feedback without treating a new bug report as feedback."""
+    lowered = str(text or "").lower()
+    positive = any(marker in lowered for marker in _FIX_SUCCESS_FEEDBACK)
+    negative = any(marker in lowered for marker in _FIX_FAILURE_FEEDBACK)
+    if positive == negative:
+        return None
+    return "success" if positive else "failure"
 
-    # Find the most recent bug-fix attempt from memory
-    recent = memory_bank.get_recent(5)
-    fix_context = ""
-    for r in recent:
-        if "FAILURE:" in r or "bug" in r.lower() or "fix" in r.lower() or "error" in r.lower():
-            fix_context = r[:500]
-            break
 
-    outcome = {
-        "timestamp": datetime.datetime.now(UTC).isoformat(),
-        "success": positive,
-        "user_feedback": user_input[:200],
-        "fix_context": fix_context[:300],
+def _fix_safe_text(value: Any, limit: int = 500) -> str:
+    """Bound and redact fix-workflow diagnostics before persisting them."""
+    text = str(value or "")
+    text = re.sub(
+        r"(?i)((?:api[_-]?key|password|secret|token)\s*[:=])\s*\S+",
+        r"\1<redacted>", text,
+    )
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]+", "<redacted>", text)
+    return text.replace("\n", " ")[:limit]
+
+
+def _fix_scope_kwargs() -> dict[str, Any]:
+    return {
+        "user_id": memory_bank.user_id,
+        "workspace_id": memory_bank.workspace_id,
+        "session_id": memory_bank.session_id,
     }
-    _fix_outcomes.append(outcome)
-    # Keep only last 20
-    if len(_fix_outcomes) > 20:
-        _fix_outcomes.pop(0)
 
-    # Store the outcome in long-term memory
-    verdict = "SUCCESS" if positive else "FAILURE"
-    memory_bank.add_log(
-        f"FIX_OUTCOME: {verdict} | User said: {user_input[:100]}\n"
-        f"Fix context: {fix_context[:300]}"
+
+def _latest_fix_workflow() -> dict[str, Any] | None:
+    """Recover the latest fix workflow from scoped SQLite events."""
+    events = memory_bank.store.list_events(
+        "bug_fix.stage", limit=10000, **_fix_scope_kwargs(),
+    )
+    for event in events:
+        payload = event.get("payload", {})
+        if isinstance(payload, dict) and payload.get("workflow_id"):
+            return dict(payload)
+    return None
+
+
+def _persist_fix_stage(state: dict[str, Any], stage: str, *, reason: str = "",
+                       evidence: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Persist one bounded state snapshot; only the declared stage order is legal."""
+    current = str(state.get("stage", "reported"))
+    if stage not in (*_FIX_WORKFLOW_STAGES, "blocked"):
+        raise ValueError(f"Unknown fix workflow stage: {stage}")
+    if stage != "blocked":
+        if current == "blocked" or current == "explained":
+            return state
+        if _FIX_WORKFLOW_STAGES.index(stage) < _FIX_WORKFLOW_STAGES.index(current):
+            return state
+        if stage in _FIX_EVIDENCE_STAGES and not evidence:
+            return state
+    merged_evidence = list(state.get("evidence", []))
+    for item in evidence or []:
+        if item not in merged_evidence:
+            merged_evidence.append(item)
+    next_state = {
+        **state,
+        "stage": stage,
+        "evidence": merged_evidence[-24:],
+        "updated_at": datetime.datetime.now(UTC).isoformat(),
+    }
+    if reason:
+        next_state["reason"] = _fix_safe_text(reason, 300)
+    memory_bank.store.append_event(
+        "bug_fix.stage", next_state, task_id=next_state.get("task_id"), **_fix_scope_kwargs(),
+    )
+    return next_state
+
+
+def _start_fix_workflow(user_input: str) -> dict[str, Any]:
+    workflow_id = f"fix_{uuid.uuid4().hex}"
+    state = {
+        "workflow_id": workflow_id,
+        "task_id": f"task_fix_{uuid.uuid4().hex}",
+        "attempt_id": f"attempt_{uuid.uuid4().hex}",
+        "stage": "reported",
+        "error_signature": stable_hash(_fix_safe_text(user_input, 500))[:16],
+        "report": _fix_safe_text(user_input, 500),
+        "step_count": 0,
+        "evidence": [],
+        "created_at": datetime.datetime.now(UTC).isoformat(),
+    }
+    return _persist_fix_stage(state, "reported", reason="bug report received")
+
+
+def _prepare_fix_workflow(user_input: str) -> dict[str, Any] | None:
+    """Start a new bug attempt or recover the active scoped attempt."""
+    latest = _latest_fix_workflow()
+    signal = _fix_feedback_signal(user_input)
+    if latest and str(latest.get("stage")) not in _FIX_TERMINAL_STAGES:
+        return latest
+    if signal and latest:
+        return latest
+    if _is_bug_report(user_input):
+        return _start_fix_workflow(user_input)
+    return latest if latest and signal else None
+
+
+def _fix_evidence_record(state: dict[str, Any], stage: str, record: dict[str, Any], *, observed: bool) -> dict[str, Any]:
+    receipt = {
+        "workflow_id": state["workflow_id"],
+        "attempt_id": state["attempt_id"],
+        "task_id": state["task_id"],
+        "stage": stage,
+        "receipt_id": str(record.get("receipt_id") or f"fix_receipt_{uuid.uuid4().hex}"),
+        "action": _fix_safe_text(record.get("action"), 80),
+        "args": _fix_safe_text(record.get("args"), 500),
+        "result": _fix_safe_text(record.get("result"), 1000),
+        "tool_success": bool(record.get("success")),
+        "observed": bool(observed),
+    }
+    memory_bank.store.append_event(
+        "bug_fix.receipt", receipt, task_id=state["task_id"], **_fix_scope_kwargs(),
+    )
+    return receipt
+
+
+def _fix_is_mutation(record: dict[str, Any]) -> bool:
+    action = str(record.get("action", "")).strip()
+    if not record.get("success"):
+        return False
+    if action in _FIX_MUTATION_ACTIONS:
+        return True
+    if action in {"run_cmd", "execute_terminal_command"}:
+        command = str(record.get("args", "")).lower()
+        return not bool(re.search(r"pytest|unittest|make\s+(?:test|check|lint)|cargo\s+test|go\s+test", command)) and bool(
+            re.search(
+                r"(?:sed|perl|apply_patch|mv\s|cp\s|touch\s|mkdir\s|"
+                r"python(?:3)?\s+-c\s+.*(?:open|write|replace|unlink|rename))",
+                command,
+            )
+        )
+    return False
+
+
+def _fix_reproduction_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    mutation_seen = False
+    result = []
+    for record in records:
+        if _fix_is_mutation(record):
+            mutation_seen = True
+            continue
+        if not mutation_seen and str(record.get("action", "")) in _FIX_REPRODUCTION_ACTIONS:
+            if str(record.get("result", "")).strip():
+                result.append(record)
+    return result
+
+
+def _fix_verification_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    mutation_seen = False
+    result = []
+    for record in records:
+        if _fix_is_mutation(record):
+            mutation_seen = True
+            continue
+        if mutation_seen and str(record.get("action", "")) in _FIX_VERIFICATION_ACTIONS:
+            result.append(record)
+    return result
+
+
+def _fix_has_marker(text: str, markers: tuple[str, ...]) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in markers)
+
+
+def _fix_success_claim(text: str) -> bool:
+    lowered = str(text or "").lower()
+    if any(marker in lowered for marker in ("cannot claim", "can't claim", "not verified", "not fixed", "unable to verify")):
+        return False
+    return _fix_has_marker(lowered, ("fixed", "resolved", "verified", "works successfully", "修复完成", "已修复"))
+
+
+def _fix_blocked_reply(state: dict[str, Any]) -> str:
+    reason = state.get("reason") or "the required observable reproduction and verification evidence is incomplete"
+    return (
+        "I cannot claim this bug is fixed. The bounded bug-fix workflow is "
+        f"blocked at `{state.get('stage', 'reported')}`: {_fix_safe_text(reason, 300)}. "
+        "No successful fix-and-verify result was recorded, so the issue needs another diagnosed attempt."
     )
 
-    # If failure detected, trigger auto-debug
-    if negative:
+
+def _advance_fix_workflow(state: dict[str, Any] | None, user_input: str, proposed_reply: str,
+                          tool_records: list[dict[str, Any]], model_text: str = "") -> tuple[dict[str, Any] | None, str]:
+    """Advance only on observable receipts and prevent unsupported fix claims."""
+    if state is None:
+        return None, proposed_reply
+    state = dict(state)
+    state["step_count"] = int(state.get("step_count", 0)) + 1
+    if state["step_count"] > _FIX_MAX_STEPS and state.get("stage") not in _FIX_TERMINAL_STAGES:
+        state = _persist_fix_stage(state, "blocked", reason="workflow step budget exhausted")
+        return state, _fix_blocked_reply(state)
+
+    records = [item for item in tool_records if isinstance(item, dict)]
+    reproduction = _fix_reproduction_records(records)
+    verification = _fix_verification_records(records)
+    mutations = [item for item in records if _fix_is_mutation(item)]
+    if state.get("stage") == "reported" and reproduction:
+        evidence = [_fix_evidence_record(state, "reproduced", item, observed=True) for item in reproduction]
+        state = _persist_fix_stage(state, "reproduced", reason="tool receipt captured the reported behavior", evidence=evidence)
+    analysis_text = f"{model_text}\n{proposed_reply}"
+    if state.get("stage") == "reproduced" and (
+        _fix_has_marker(analysis_text, ("diagnos", "root cause", "原因", "根因")) or reproduction
+    ):
+        state = _persist_fix_stage(state, "diagnosed", reason="reproduction was available for diagnosis")
+    if state.get("stage") == "diagnosed" and _fix_has_marker(
+        analysis_text, ("hypothes", "i believe", "assume", "假设", "推测")
+    ):
+        state = _persist_fix_stage(state, "hypothesized", reason="the model stated a repair hypothesis")
+    if state.get("stage") == "hypothesized" and mutations:
+        evidence = [_fix_evidence_record(state, "fixed", item, observed=True) for item in mutations]
+        state = _persist_fix_stage(state, "fixed", reason="a successful mutation receipt was recorded", evidence=evidence)
+    if state.get("stage") == "fixed":
+        if verification and any(item.get("success") for item in verification):
+            evidence = [_fix_evidence_record(state, "verified", item, observed=True)
+                        for item in verification if item.get("success")]
+            state = _persist_fix_stage(state, "verified", reason="the verification command succeeded", evidence=evidence)
+        elif verification:
+            state = _persist_fix_stage(state, "blocked", reason="verification was attempted but failed")
+    if state.get("stage") == "verified" and str(proposed_reply).strip():
+        state = _persist_fix_stage(state, "explained", reason="verified result was returned to the user")
+    if state.get("stage") not in {"verified", "explained"} and _fix_success_claim(proposed_reply):
+        state = _persist_fix_stage(state, "blocked", reason="the response claimed success without verified evidence")
+    if state.get("stage") == "blocked":
+        return state, _fix_blocked_reply(state)
+    if state.get("stage") != "explained" and _fix_success_claim(proposed_reply):
+        return state, _fix_blocked_reply(state)
+    if state.get("stage") in {"fixed", "hypothesized", "diagnosed", "reproduced", "reported"}:
+        return state, (
+            proposed_reply if proposed_reply.strip() else
+            "The bug-fix workflow is still in progress; observable reproduction, repair, and verification are required."
+        )
+    return state, proposed_reply
+
+
+def _track_fix_outcome(user_input: str, agent_reply: str) -> None:
+    """Persist every fix turn and attach explicit feedback to its attempt."""
+    state = _latest_fix_workflow()
+    signal = _fix_feedback_signal(user_input)
+    turn_payload = {
+        "workflow_id": state.get("workflow_id") if state else None,
+        "task_id": state.get("task_id") if state else None,
+        "attempt_id": state.get("attempt_id") if state else None,
+        "feedback": signal,
+        "user_input": _fix_safe_text(user_input, 200),
+        "agent_reply": _fix_safe_text(agent_reply, 300),
+    }
+    track_turn = bool(state and (state.get("stage") not in _FIX_TERMINAL_STAGES or signal))
+    if track_turn:
+        memory_bank.store.append_event(
+            "bug_fix.turn", turn_payload, task_id=state.get("task_id"), **_fix_scope_kwargs(),
+        )
+    if signal is None:
+        return
+
+    recent = memory_bank.get_recent(5)
+    fix_context = ""
+    for item in recent:
+        if "FAILURE:" in item or "bug" in item.lower() or "fix" in item.lower() or "error" in item.lower():
+            fix_context = item[:500]
+            break
+    outcome = {
+        "timestamp": datetime.datetime.now(UTC).isoformat(),
+        "success": signal == "success",
+        "feedback": signal,
+        "user_feedback": _fix_safe_text(user_input, 200),
+        "fix_context": _fix_safe_text(fix_context, 300),
+        "workflow_id": state.get("workflow_id") if state else None,
+        "task_id": state.get("task_id") if state else None,
+        "attempt_id": state.get("attempt_id") if state else None,
+    }
+    _fix_outcomes.append(outcome)
+    if len(_fix_outcomes) > 20:
+        _fix_outcomes.pop(0)
+    if state:
+        memory_bank.store.append_event(
+            "bug_fix.feedback", outcome, task_id=state.get("task_id"), **_fix_scope_kwargs(),
+        )
+        if signal == "failure" and state.get("stage") != "blocked":
+            _persist_fix_stage(state, "blocked", reason="the user reported that the fix still fails")
+
+    verdict = "SUCCESS" if signal == "success" else "FAILURE"
+    memory_bank.add_log(
+        f"FIX_OUTCOME: {verdict} | User said: {_fix_safe_text(user_input, 100)}\n"
+        f"Fix context: {_fix_safe_text(fix_context, 300)}"
+    )
+    if signal == "failure":
         _store_failure(
-            user_input,
-            "bug-fix-attempt",
-            f"User indicated fix did not work: {user_input[:200]}",
-            f"Agent replied: {agent_reply[:200]}"
+            user_input, "bug-fix-attempt",
+            f"User indicated fix did not work: {_fix_safe_text(user_input, 200)}",
+            f"Agent replied: {_fix_safe_text(agent_reply, 200)}",
         )
 
 def _get_fix_success_rate() -> float:
@@ -2445,6 +2702,24 @@ def _build_messages(user_input: str, learned_context: str = "",
         )
         messages.append({"role": "system", "content": bug_guidance})
 
+    fix_state = _latest_fix_workflow()
+    if fix_state and str(fix_state.get("stage")) not in _FIX_TERMINAL_STAGES:
+        current_stage = str(fix_state.get("stage", "reported"))
+        stage_index = _FIX_WORKFLOW_STAGES.index(current_stage) if current_stage in _FIX_WORKFLOW_STAGES else 0
+        next_stage = _FIX_WORKFLOW_STAGES[min(stage_index + 1, len(_FIX_WORKFLOW_STAGES) - 1)]
+        messages.append({
+            "role": "system",
+            "content": (
+                "DURABLE BUG-FIX STATE: workflow={workflow} task={task} attempt={attempt}; "
+                "current stage={stage}; next required stage={next}. "
+                "Do not claim success until a successful fix receipt and a successful "
+                "verification command are recorded. If verification fails, report the blocker."
+            ).format(
+                workflow=fix_state.get("workflow_id", ""), task=fix_state.get("task_id", ""),
+                attempt=fix_state.get("attempt_id", ""), stage=current_stage, next=next_stage,
+            ),
+        })
+
     # Inject git workflow guidance when user is doing git operations
     git_indicators = ["git commit", "git push", "git pull", "git merge", "git rebase",
                        "git branch", "git checkout", "commit this", "push this",
@@ -3200,6 +3475,8 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     if clear_tasks:
         tasks.clear()
 
+    fix_workflow = _prepare_fix_workflow(user_input)
+
     # Auto-select the best model for this turn based on task complexity
     complexity = _classify_complexity(user_input)
 
@@ -3349,9 +3626,12 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 "time": elapsed,
                 "tool_calls": 0
             })
+            proposed = response_meta["clean"] or "I could not produce a user-facing response."
+            fix_workflow, proposed = _advance_fix_workflow(
+                fix_workflow, user_input, proposed, [], response_text,
+            )
             return _finish_learning_run(
-                learning_run, learning_receipts, user_input,
-                response_meta["clean"] or "I could not produce a user-facing response.", [],
+                learning_run, learning_receipts, user_input, proposed, [],
                 turn_prompt_total + turn_completion_total, turn_start,
             )
 
@@ -3746,6 +4026,11 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         except Exception:
             pass
 
+    fix_workflow, final_answer = _advance_fix_workflow(
+        fix_workflow, user_input, final_answer,
+        tool_records, f"{response_text}\n{final_answer}",
+    )
+
     return _finish_learning_run(
         learning_run, learning_receipts, user_input, final_answer, tool_records,
         turn_prompt_total + turn_completion_total, turn_start,
@@ -3769,9 +4054,11 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
             memory_context=memory_context,
         )
     except Exception as exc:
+        _track_fix_outcome(user_input, f"Turn failed: {type(exc).__name__}: {exc}")
         runtime.turn_end(reply="", success=False,
                          error=f"{type(exc).__name__}: {exc}", **context)
         raise
+    _track_fix_outcome(user_input, reply)
     runtime.turn_end(reply=reply, success=True, **context)
     return reply
 

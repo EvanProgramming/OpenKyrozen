@@ -338,7 +338,16 @@ When you paste an error or traceback, Kyrozen activates automatically:
 5. **Verify** — re-run the failing command; loop back to step 2 if it fails
 6. **Explain** — tell you what was wrong, what changed, and why
 
-After the fix, Kyrozen tracks the outcome. If you say "thanks, that works" it records a success. If you say "still broken" it records a failure and triggers deeper analysis.
+The runtime persists this workflow per user/workspace/session as
+`reported → reproduced → diagnosed → hypothesized → fixed → verified → explained`.
+Reproduction, mutation, and verification stages each require bounded tool
+receipts; a response that says the bug is fixed without a successful fix and a
+successful verification command is blocked and cannot be presented as a
+success. A failed verification is also recorded as `blocked`. Every turn and
+feedback signal is linked to the workflow's task and attempt IDs in SQLite.
+If you say "thanks, that works" it records positive feedback for that attempt;
+if you say "still broken" it records negative feedback and blocks the attempt
+for a new diagnosed run.
 
 ### Git operations (safety-first)
 
