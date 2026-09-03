@@ -87,7 +87,7 @@ class TaskManager:
 
     def add_task(self, description: str, *, dependencies: list[str] | None = None,
                  acceptance: list[dict[str, Any]] | None = None, priority: int = 0,
-                 task_id: str | None = None) -> int:
+                 task_id: str | None = None, checkpoint: dict[str, Any] | None = None) -> int:
         description = str(description).strip()
         if not description:
             raise ValueError("Task description cannot be empty")
@@ -104,7 +104,7 @@ class TaskManager:
         task = {
             "id": task_id, "description": description, "status": "pending", "priority": priority,
             "dependencies": dependencies or [], "acceptance": acceptance or [], "attempts": 0,
-            "checkpoint": {}, "evidence": [], "created_at": utc_now(), "updated_at": utc_now(),
+            "checkpoint": checkpoint or {}, "evidence": [], "created_at": utc_now(), "updated_at": utc_now(),
         }
         self.tasks.append(task)
         self._persist(task)
@@ -166,6 +166,78 @@ class TaskManager:
             if task.get("status") in {"pending", "running"}:
                 return task["id"]
         return None
+
+    def _replace_task(self, task: dict[str, Any]) -> int:
+        for index, existing in enumerate(self.tasks):
+            if existing["id"] == task["id"]:
+                self.tasks[index] = task
+                return index
+        self.tasks.append(task)
+        return len(self.tasks) - 1
+
+    def claim_next(self) -> dict[str, Any] | None:
+        """Atomically claim one pending task in this exact durable scope."""
+        with self.store._lock, self.store.connection() as db:
+            row = db.execute(
+                "SELECT * FROM tasks WHERE user_id=? AND workspace_id=? AND session_id IS ? AND status=? "
+                "ORDER BY priority DESC, updated_at LIMIT 1",
+                (self.user_id, self.workspace_id, self.session_id, "pending"),
+            ).fetchone()
+            if row is None:
+                return None
+            now = utc_now()
+            claimed = db.execute(
+                "UPDATE tasks SET status=?,attempts=attempts+1,updated_at=? WHERE id=? AND user_id=? "
+                "AND workspace_id=? AND session_id IS ? AND status=?",
+                ("running", now, row["id"], self.user_id, self.workspace_id, self.session_id, "pending"),
+            ).rowcount
+            if claimed != 1:
+                return None
+        task = dict(row)
+        task["status"] = "running"
+        task["attempts"] = int(task.get("attempts", 0)) + 1
+        for key in ("dependencies", "acceptance", "checkpoint", "evidence"):
+            task[key] = self.store._loads(task[key], [] if key in {"dependencies", "acceptance", "evidence"} else {})
+        task["updated_at"] = now
+        self._replace_task(task)
+        self._event(task, "task.claimed", {"attempt": task["attempts"]})
+        return task
+
+    def update_checkpoint(self, task_id: str, checkpoint: dict[str, Any]) -> bool:
+        """Persist a bounded resumable checkpoint for one task."""
+        if not isinstance(checkpoint, dict):
+            raise ValueError("checkpoint must be an object")
+        if not self.tasks:
+            self.recover()
+        index = next((i for i, task in enumerate(self.tasks) if task["id"] == str(task_id)), None)
+        if index is None:
+            return False
+        task = self.tasks[index]
+        task["checkpoint"] = {**task.get("checkpoint", {}), **checkpoint}
+        task["updated_at"] = utc_now()
+        self._persist(task)
+        self._event(task, "task.checkpoint", {"checkpoint": task["checkpoint"]})
+        return True
+
+    def resume(self, task_id: str) -> dict[str, Any] | None:
+        """Move one failed or blocked task back to pending in this scope."""
+        if not self.tasks:
+            self.recover()
+        index = next((i for i, task in enumerate(self.tasks) if task["id"] == str(task_id)), None)
+        if index is None:
+            self.recover()
+            index = next((i for i, task in enumerate(self.tasks) if task["id"] == str(task_id)), None)
+        if index is None:
+            return None
+        task = self.tasks[index]
+        if task.get("status") not in {"failed", "blocked"}:
+            return task if task.get("status") == "pending" else None
+        previous = task["status"]
+        task["status"] = "pending"
+        task["updated_at"] = utc_now()
+        self._persist(task)
+        self._event(task, "task.resumed", {"previous_status": previous})
+        return task
 
     def reconcile_completions(self, task_ids: set[str] | None = None) -> None:
         for idx in list(self._pending_completions):
@@ -256,3 +328,53 @@ class TaskManager:
                 self._event(task, "task.recovered", {"previous_status": "running"})
         self.tasks = rows
         return rows
+
+
+class TaskWorker:
+    """Execute at most a bounded number of durable task actions per call."""
+
+    def __init__(self, manager: TaskManager, executor: Any, *, max_tasks: int = 1):
+        self.manager = manager
+        self.executor = executor
+        self.max_tasks = max(1, min(int(max_tasks), 20))
+
+    def recover(self) -> list[dict[str, Any]]:
+        return self.manager.recover()
+
+    def run_once(self) -> dict[str, Any] | None:
+        task = self.manager.claim_next()
+        if task is None:
+            return None
+        task_id = task["id"]
+        try:
+            outcome = self.executor(task)
+            if not isinstance(outcome, dict):
+                outcome = {"success": False, "result": str(outcome)}
+        except Exception as exc:
+            outcome = {"success": False, "result": f"Error: {exc}"}
+        success = bool(outcome.get("success"))
+        result = str(outcome.get("result", ""))[:2000]
+        action = str(outcome.get("action") or task.get("checkpoint", {}).get("action") or "task.execute")
+        acceptance = str(outcome.get("acceptance") or "durable task action completed") if success else None
+        evidence = self.manager.record_evidence(
+            task_id=task_id, action=action, args=outcome.get("args") or task.get("checkpoint", {}).get("args"),
+            result=result, success=success, acceptance=acceptance,
+            receipt_id=outcome.get("receipt_id"),
+        )
+        index = next(i for i, item in enumerate(self.manager.tasks) if item["id"] == task_id)
+        status = "succeeded" if success and self.manager.set_status(index, "succeeded") else "failed"
+        if status == "failed" and self.manager.tasks[index].get("status") != "failed":
+            self.manager.set_status(index, "failed")
+        self.manager._event(self.manager.tasks[index], "task.execution_completed", {
+            "success": status == "succeeded", "result": result, "evidence": evidence,
+        })
+        return {"task": self.manager.tasks[index], "status": status, "result": result, "evidence": evidence}
+
+    def run_until_idle(self, *, max_tasks: int | None = None) -> list[dict[str, Any]]:
+        results = []
+        for _ in range(max(1, min(int(max_tasks or self.max_tasks), 20))):
+            result = self.run_once()
+            if result is None:
+                break
+            results.append(result)
+        return results

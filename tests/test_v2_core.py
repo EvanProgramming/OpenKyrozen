@@ -4,7 +4,7 @@ from pathlib import Path
 
 from learning_engine import LearningEngine
 from memory import MemoryBank
-from task_engine import TaskManager
+from task_engine import TaskManager, TaskWorker
 
 
 class V2CoreTests(unittest.TestCase):
@@ -74,6 +74,28 @@ class V2CoreTests(unittest.TestCase):
             events = store.list_events(workspace_id="project", user_id="alice")
             self.assertTrue(any(event["event_type"] == "task.recovered" for event in events))
             self.assertEqual(TaskManager(store, user_id="bob", workspace_id="project", session_id="session").recover(), [])
+
+    def test_task_worker_restarts_and_produces_a_real_effect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = MemoryBank(root / "state.sqlite3").store
+            manager = TaskManager(store, user_id="local", workspace_id="project", session_id="restart")
+            manager.add_task("write marker", task_id="marker", checkpoint={"action": "write_file", "args": "marker.txt|ok"})
+
+            def execute(task):
+                (root / "marker.txt").write_text("ok", encoding="utf-8")
+                return {"success": True, "action": "write_file", "args": "marker.txt|ok",
+                        "result": "wrote marker", "acceptance": "marker exists"}
+
+            result = TaskWorker(manager, execute).run_once()
+            self.assertEqual(result["status"], "succeeded")
+            self.assertEqual((root / "marker.txt").read_text(encoding="utf-8"), "ok")
+            reopened = TaskManager(store, user_id="local", workspace_id="project", session_id="restart")
+            self.assertEqual(reopened.recover(), [])
+            row = store.list_tasks(user_id="local", workspace_id="project", session_id="restart")[0]
+            self.assertEqual(row["status"], "succeeded")
+            self.assertTrue(any(event["event_type"] == "task.execution_completed"
+                                for event in store.list_events(user_id="local", workspace_id="project")))
 
     def test_learning_requires_repeated_observation_and_can_roll_back(self):
         with tempfile.TemporaryDirectory() as directory:

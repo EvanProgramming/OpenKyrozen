@@ -402,6 +402,8 @@ class EventStore:
         result = []
         for row in rows:
             item = dict(row)
+            if item["status"] == "done":
+                item["status"] = "succeeded"
             item["dependencies"] = self._loads(item["dependencies"], [])
             item["acceptance"] = self._loads(item["acceptance"], [])
             item["checkpoint"] = self._loads(item["checkpoint"], {})
