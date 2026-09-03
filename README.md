@@ -576,6 +576,15 @@ The local CLI is intentionally a high-permission agent, similar to Codex or Open
 }
 ```
 
+When automatic fallback is used, `auto`, an empty model, and the primary
+provider's configured simple/complex model names are mapped to the equivalent
+simple/complex model configured for each fallback provider. An explicit model
+name that is not recognised as one of the primary provider's names is passed
+through unchanged; use that only when the fallback endpoint supports the same
+name. The mapping is identical for streaming and non-streaming requests, and
+an all-provider failure retains every provider error with the primary failure
+as its cause.
+
 The file is auto-managed. Use `/provider` or `/api_key` in-chat to update it interactively.
 
 ---
