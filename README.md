@@ -8,7 +8,7 @@
 
 <h1 align="center">✨ OpenKyrozen ✨</h1>
 <p align="center"><strong>Self‑learning AI Agent — DeepSeek · OpenAI · Claude · Gemini · Ollama</strong></p>
-<p align="center">A terminal-native, fully autonomous AI agent that <em>learns from every interaction</em>,<br>operates your filesystem, manages git, fixes bugs, and improves itself over time.</p>
+<p align="center">A terminal-native AI agent that <em>learns from verified outcomes</em>,<br>operates your filesystem, manages git, fixes bugs, and improves itself over time.</p>
 
 <p align="center">
   🌐 <strong>English</strong> ·
@@ -37,13 +37,14 @@
 - [🛠 Tools Reference](#-tools-reference)
   - [File & System](#file--system)
   - [Web](#web)
-  - [Git](#git-15-tools)
+  - [Git](#git-14-tools)
   - [Memory](#memory)
 - [🧠 Dedicated Workflows](#-dedicated-workflows)
   - [Bug fixing](#bug-fixing-6-step-protocol)
   - [Git operations](#git-operations-safety-first)
   - [Complex tasks](#complex-tasks-never-stops-early)
 - [🧬 Self-Learning System](#-self-learning-system)
+  - [Operational self-evolution and memory guide](docs/self-evolution.md)
 - [🌐 Web UI & REST API](#-web-ui--rest-api)
 - [🔌 Plugin System](#-plugin-system)
 - [🔐 Security](#-security)
@@ -59,7 +60,7 @@
 
 OpenKyrozen is a **self-learning AI agent** that runs in your terminal. Unlike a typical chatbot, it:
 
-- **Uses 26 built-in tools** — read/write files, execute shell commands, search the web, manage git repositories
+- **Uses 31 runtime tools** — 29 base file/shell/web/git/browser actions plus two SQLite memory actions
 - **Learns continuously** — background learning creates evidence-backed proposals and only promotes repeated or validated improvements
 - **Works with any LLM** — DeepSeek, OpenAI, Claude, Gemini, or local Ollama models
 - **Runs on any OS** — macOS, Linux, and Windows (with automatic terminal capability detection)
@@ -149,6 +150,15 @@ Kyrozen will:
 | `/learn` | Immediately scan project files into memory |
 | `/forget` | Show recent learnings; `/forget keyword` to delete bad learnings |
 | `/update` | Pull the latest version from git |
+| `/agent auto\|coder\|researcher` | Choose automatic routing or an isolated learning profile |
+| `/learning status [profile]` | Show candidate, canary, active, retired, and rolled-back artifacts |
+| `/learning metrics [profile]` | Show verified completion, corrections, errors, cost, and latency metrics |
+| `/learning evidence <id>` | Print the proof card, replay, applicability, and outcome receipts |
+| `/learning explain <id>` | Print the complete proposal record |
+| `/learning replay <id>` | Explain the API-only paired replay workflow (does not execute commands) |
+| `/learning rollback <id>` | Roll back a learned artifact or proposal |
+| `/memory why <claim-id>` | Inspect a typed claim and its provenance |
+| `/memory forget <claim-id>` | Forget a claim and deactivate solely dependent learned artifacts |
 | `/self-learning` | Toggle individual self-learning features on/off |
 
 ### Web UI mode
@@ -191,7 +201,7 @@ User Input
          │  Response + tool calls
          ▼
 ┌─────────────────┐
-│  Tool Executor   │──► 26 built-in tools (file I/O, shell, git, web, memory)
+│  Tool Executor   │──► 31 runtime tools (file I/O, shell, git, web, memory, browser)
 └────────┬────────┘
          │  Tool results fed back to LLM
          │  (up to 50 tool-call rounds per turn)
@@ -249,7 +259,7 @@ If the primary provider fails, Kyrozen automatically falls back through a chain 
 
 ## 🛠 Tools Reference
 
-All 26 tools accept a plain-string `args` field in a JSON action block:
+All 31 runtime tools accept a plain-string `args` field in a JSON action block:
 
 ```json
 {"action": "read_file", "args": "README.md"}
@@ -275,7 +285,7 @@ Short aliases work too — `bash`, `cmd`, `sh` → `run_cmd`; `status`, `diff`, 
 | `search_web` | Internet search (Google → DDG → Wikipedia) | `"latest Python release"` |
 | `read_webpage` | Fetch URL text content | `"https://example.com"` |
 
-### Git (15 tools)
+### Git (14 tools)
 
 | Tool | What it does |
 |------|-------------|
@@ -341,21 +351,21 @@ For multi-step work (refactors, project generators, codebase audits):
 
 ## 🧬 Profile-scoped self-evolution
 
-OpenKyrozen learns reusable policies and skills only from completed multi-step work, explicit corrections, or verified failures. Learned artifacts are isolated to either the `coder` or `researcher` profile; the `reviewer` can propose one bounded canary after 30 seconds idle but never learns its own behavior.
+OpenKyrozen learns reusable policies and skills only from completed multi-step work, explicit corrections, or verified failures. Learned artifacts are isolated to either the `coder` or `researcher` profile; the `reviewer` can propose one bounded canary during idle review but never learns its own behavior. The background loop waits for at least 60 seconds without user interaction (and each review candidate must be at least 30 seconds old).
 
 ### How it works
 
 Every run records its profile, task signature, tool/error receipts, acceptance evidence, latency, and tokens in SQLite. Matching is deterministic and injects at most three artifacts (8,000 characters total), including at most one canary. A canary promotes only after two distinct verified successes and a non-regressing paired shadow replay; one linked correction, or two verified failures among its last five active uses, rolls it back to its predecessor. Learned artifacts cannot add permissions or dynamic tools, and user/bundled/plugin skills are immutable to evolution.
 
-Use `/agent auto|coder|researcher` to control routing. `/learning status [profile]`, `/learning metrics [profile]`, `/learning evidence <id>`, `/learning explain <id>`, and `/learning rollback <id>` expose lifecycle state and proof. Shadow replay accepts paired frozen results through the authenticated API and never executes replay commands. Project indexing remains separate knowledge ingestion.
+Use `/agent auto|coder|researcher` to control routing. `/learning status [profile]`, `/learning metrics [profile]`, `/learning evidence <id>`, `/learning explain <id>`, `/learning replay <id>`, and `/learning rollback <id>` expose lifecycle state and proof. The terminal replay command is informational; paired frozen results are submitted through the authenticated API, which never executes replay commands. Project indexing remains separate knowledge ingestion. See the [self-evolution and memory operations guide](docs/self-evolution.md) for verified workflows and request examples.
 
-Inferred facts and preferences remain candidates until repeated independent evidence supports them. Explicit owner claims activate immediately. Typed global, profile, project, and task scopes resolve deterministically; `/memory why <id>` explains a claim and `/memory forget <id>` removes it together with solely dependent learned behavior.
+Inferred facts and preferences remain candidates until repeated independent evidence supports them. Explicit owner claims activate immediately. Typed global, profile, project, task, speaker, audience, and channel scopes resolve deterministically; `/memory why <id>` explains a claim and `/memory forget <id>` removes it together with solely dependent learned behavior.
 
 Selection ranks relevant guidance by verified utility per context character and avoids artifact pairs with repeated verified failures. Paired omission trials can retire guidance only when removing it does not reduce verified completion; retirement is reversible and preserves the learned artifact pre-image.
 
 Learned guidance is bound to the provider/model family that produced its evidence unless paired replay validates it across models. Verifier reliability, evidence-adaptive review priority, and a user-owned `KYROZEN_LEARNING_CONSTITUTION` file constrain evolution. Redacted experience capsules are portable JSON evidence, but imports always remain inactive candidates until local validation.
 
-Multi-party claims distinguish attributed beliefs, private facts, and group agreements. Speaker, audience, channel, and visibility checks run before recall; private claims require the current authenticated speaker context. Chat responses include a memory receipt listing the claim IDs and speakers that affected the turn, and `benchmarks/multi_party_memory.jsonl` provides frozen leakage, update, ambiguity, and audience cases.
+Multi-party claims distinguish attributed beliefs, private facts, and group agreements. Speaker, audience, channel, and visibility checks run before recall; private claims require the authenticated request actor, not a client-supplied speaker label. Chat responses include a memory receipt listing the claim IDs and speakers that affected the turn, and `benchmarks/multi_party_memory.jsonl` provides frozen leakage, update, ambiguity, and audience cases.
 
 ### Memory storage
 
@@ -401,10 +411,10 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/` | Dark-themed chat web UI |
-| `POST` | `/api/chat` | Send a message, get JSON response |
-| `POST` | `/api/chat/stream` | SSE streaming chat |
+| `POST` | `/api/chat` | Send a message with optional `profile`, `speaker`, `audience`, and `channel`; returns a memory receipt |
+| `POST` | `/api/chat/stream` | SSE streaming chat with the same optional profile and memory context |
 | `GET` | `/api/memory?q=keyword` | Search stored memories |
-| `GET` | `/api/v2/memory?q=keyword` | Structured memory search with provenance and scope |
+| `GET` | `/api/v2/memory?q=keyword&speaker=...&audience=...&channel=...` | Structured memory search with provenance and party scope |
 | `GET/POST` | `/api/v2/tasks` | Durable task listing and creation |
 | `GET` | `/api/v2/learning` | Learning proposal status |
 | `GET` | `/api/v2/learning/metrics?profile=...` | Profile completion, correction, error, tool, token, and latency metrics |
@@ -417,8 +427,8 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `POST` | `/api/v2/learning/capsules` | Import a capsule as an inactive candidate |
 | `GET` | `/api/v2/learning/constitution` | Inspect the immutable user-owned learning policy |
 | `POST` | `/api/v2/learning/{id}/rollback` | Roll back an activated proposal |
-| `GET/POST` | `/api/v2/memory/claims` | List or create typed, attributed memory claims |
-| `GET/DELETE` | `/api/v2/memory/claims/{id}` | Explain or dependency-completely forget a claim |
+| `GET/POST` | `/api/v2/memory/claims` | List or create typed, attributed memory claims; filter with `speaker`, `audience`, and `channel` |
+| `GET/DELETE` | `/api/v2/memory/claims/{id}` | Explain or dependency-completely forget a claim with party filters |
 | `GET` | `/api/v2/events` | Auditable runtime, task, session, and learning events |
 | `GET/POST` | `/api/v2/schedules` | Durable interval and one-shot Gateway jobs |
 | `POST` | `/api/v2/schedules/{id}/disable` | Disable a scheduled job |
@@ -599,9 +609,9 @@ pip install .[all]              # + Claude + Gemini + web
 ```
 OpenKyrozen/
 ├── main.py              # Core agent loop, self-learning, chat turn logic
-├── tools.py             # 26 built-in tools (file, shell, git, web)
+├── tools.py             # 29 base tools; main.py adds two memory actions
 ├── providers.py         # Multi-LLM abstraction (5 providers + fallback)
-├── memory.py            # ChromaDB-backed vector memory
+├── memory.py            # SQLite memory with optional rebuildable Chroma index
 ├── server.py            # FastAPI web server + REST API + chat UI
 ├── pyproject.toml       # pip package configuration
 ├── Dockerfile           # Docker image definition
