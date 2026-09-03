@@ -93,7 +93,7 @@ from rich.panel import Panel
 from rich import print as rprint
 
 from memory import MemoryBank
-from task_engine import TaskManager
+from task_engine import TaskManager, TaskWorker
 from event_store import stable_hash
 from learning_engine import LearningEngine
 from skill_registry import SkillRegistry
@@ -2431,6 +2431,22 @@ def _run_tool(action: str, args: str) -> str:
     return result
 
 
+def _execute_durable_task(task: dict[str, Any]) -> dict[str, Any]:
+    """Run one explicitly stored task action through the normal CLI gates."""
+    checkpoint = task.get("checkpoint", {})
+    action = TOOL_ALIASES.get(str(checkpoint.get("action", "")).strip(),
+                              str(checkpoint.get("action", "")).strip())
+    args = checkpoint.get("args", "")
+    if not action:
+        return {"success": False,
+                "result": "No executable action stored; create the task with action and string args."}
+    if not isinstance(args, str):
+        return {"success": False, "action": action, "result": "Task args must be a plain string."}
+    result = str(_run_tool(action, args))[:2000]
+    return {"success": not _is_tool_error(result), "action": action, "args": args, "result": result,
+            "acceptance": str(checkpoint.get("acceptance") or "durable task action completed")}
+
+
 def _select_model(user_input: str) -> str:
     """Auto-select the best DeepSeek model based on task complexity.
     Simple queries → fast model (deepseek-chat / V4).
@@ -3599,6 +3615,14 @@ def _print_banner() -> None:
     console.print(f"  [{_MUTED}]Platform: {platform_tag} {_DOT} Python {sys.version_info.major}.{sys.version_info.minor}[/{_MUTED}]")
 
 
+def _run_recovered_tasks(*, max_tasks: int = 20) -> list[dict[str, Any]]:
+    """Recover pending CLI tasks and execute only the bounded safe queue."""
+    recovered = tasks.recover()
+    if recovered:
+        console.print(f"[{_MUTED}]Recovered {len(recovered)} durable task(s).[/{_MUTED}]")
+    return TaskWorker(tasks, _execute_durable_task, max_tasks=max_tasks).run_until_idle(max_tasks=max_tasks)
+
+
 def main() -> None:
     # Bytecode cache cleared already at module level (see top of file)
     global _provider_config, llm_provider, DEEPSEEK_MODEL, DEEPSEEK_MODEL_SIMPLE, DEEPSEEK_MODEL_COMPLEX, MODEL_NAME
@@ -3653,6 +3677,9 @@ def main() -> None:
         sys.exit(1)
     # Set workspace root for sandbox
     _set_workspace_root(os.getcwd())
+    task_results = _run_recovered_tasks()
+    for item in task_results:
+        console.print(f"[{_SUCCESS}]Durable task {item['task']['id']}: {item['status']}[/{_SUCCESS}]")
     # Load project files synchronously to avoid ChromaDB thread conflicts
     _load_project_files_into_memory()
     console.print(f"[{_MUTED}]Project files loaded into memory.[/{_MUTED}]")
@@ -3709,6 +3736,21 @@ def main() -> None:
 
         if user_input.lower() == "/self-learning":
             _show_self_learning_menu()
+            continue
+
+        if user_input.lower().startswith("/tasks"):
+            parts = user_input.split(maxsplit=2)
+            if len(parts) == 1 or (len(parts) > 1 and parts[1].lower() == "list"):
+                console.print(tasks.format())
+            elif len(parts) == 3 and parts[1].lower() == "resume":
+                resumed = tasks.resume(parts[2].strip())
+                if not resumed:
+                    console.print(f"[{_ERROR}]Failed or blocked task not found.[/{_ERROR}]")
+                else:
+                    result = TaskWorker(tasks, _execute_durable_task, max_tasks=1).run_once()
+                    console.print(json.dumps(result or {"status": "queued"}, ensure_ascii=False, indent=2, default=str))
+            else:
+                console.print("Usage: /tasks list | /tasks resume <task-id>")
             continue
 
         if user_input.lower().startswith("/agent"):

@@ -34,9 +34,10 @@ os.environ.setdefault("KYROZEN_EXECUTION_SURFACE", "web")
 import main as _agent
 from providers import get_cost_summary, reset_cost_tracker
 from memory import MemoryBank
-from task_engine import TaskManager
+from task_engine import TaskManager, TaskWorker
 from scheduler import JobScheduler
 from tools import allowed_tool_names, resolve_capabilities, tool_capability
+from capability_tokens import issue_capability_token
 
 try:
     from fastapi import FastAPI, Request, HTTPException, Depends
@@ -144,6 +145,39 @@ _scheduler = JobScheduler(_agent.memory_bank.store, workspace_id=_agent.memory_b
                           user_id=_SERVER_ACTOR_ID)
 
 
+def _execute_durable_task(task: dict[str, Any]) -> dict[str, Any]:
+    """Execute only an explicitly stored, Web-profile action."""
+    checkpoint = task.get("checkpoint", {})
+    action = str(checkpoint.get("action", "")).strip()
+    args = checkpoint.get("args", "")
+    if not action:
+        return {"success": False,
+                "result": "No executable action stored; create the task with action and string args."}
+    action = _agent.TOOL_ALIASES.get(action, action)
+    if not isinstance(args, str):
+        return {"success": False, "action": action,
+                "result": "Task args must be a plain string."}
+    if action not in _allowed_server_tools("web"):
+        return {"success": False, "action": action,
+                "result": f"Error: task action '{action}' is not allowed by the Web capability profile."}
+    _agent._execution_capability_token = issue_capability_token(
+        "surface:web:durable-task", _server_capabilities("web"), ttl_seconds=300,
+    )
+    result = str(_agent._run_tool(action, args))[:2000]
+    return {
+        "success": not result.lower().startswith("error:"), "action": action, "args": args,
+        "result": result,
+        "acceptance": str(checkpoint.get("acceptance") or "durable task action completed"),
+    }
+
+
+_task_worker = TaskWorker(
+    TaskManager(_agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id,
+                user_id=_SERVER_ACTOR_ID),
+    _execute_durable_task,
+)
+
+
 def _run_scheduled_job(job: dict[str, Any]) -> None:
     payload = job.get("payload", {})
     if payload.get("type") == "learning_cycle":
@@ -151,6 +185,9 @@ def _run_scheduled_job(job: dict[str, Any]) -> None:
             _agent._auto_learn_conversations()
         if _agent._SELF_LEARNING_FLAGS.get("outcome_verified_evolution", True):
             _agent._review_evolution_runs()
+        return
+    if payload.get("type") == "task_worker":
+        _task_worker.run_once()
         return
     if payload.get("type") == "chat":
         session_id = _normalise_session_id(payload.get("session_id"))
@@ -661,13 +698,36 @@ async def api_v2_create_task(request: Request):
     session = _normalise_session_id(body.get("session_id"))
     manager = TaskManager(_agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id,
                           session_id=session, user_id=_SERVER_ACTOR_ID)
+    checkpoint: dict[str, Any] = {}
+    if body.get("action") is not None:
+        action = _agent.TOOL_ALIASES.get(str(body.get("action")).strip(), str(body.get("action")).strip())
+        if action not in _allowed_server_tools("web"):
+            raise HTTPException(403, f"Task action '{action}' is not allowed by the Web capability profile")
+        if not isinstance(body.get("args", ""), str):
+            raise HTTPException(400, "args must be a plain string")
+        checkpoint = {"action": action, "args": body.get("args", "")}
+        if isinstance(body.get("acceptance"), list) and body["acceptance"]:
+            checkpoint["acceptance"] = body["acceptance"][0]
     index = manager.add_task(
         str(body["description"]),
         dependencies=body.get("dependencies") if isinstance(body.get("dependencies"), list) else None,
         acceptance=body.get("acceptance") if isinstance(body.get("acceptance"), list) else None,
         priority=int(body.get("priority", 0)),
+        checkpoint=checkpoint,
     )
-    return {"task": manager.tasks[index]}
+    if not any(job.get("payload", {}).get("type") == "task_worker" for job in _scheduler.list_jobs()):
+        _scheduler.schedule_every("durable-task-worker", 1.0, payload={"type": "task_worker"},
+                                  job_id="job_durable_task_worker", delay_seconds=0)
+    return {"task": manager.tasks[index], "queued": True}
+
+
+@app.post("/api/v2/tasks/{task_id}/resume", dependencies=[Depends(require_api_access)])
+async def api_v2_resume_task(task_id: str):
+    manager = _task_worker.manager
+    task = manager.resume(task_id)
+    if task is None:
+        raise HTTPException(404, "Failed or blocked task not found in this scope")
+    return {"task": task, "queued": True}
 
 
 @app.get("/api/v2/learning", dependencies=[Depends(require_api_access)])
@@ -1148,6 +1208,12 @@ async def startup():
     _agent._load_project_files_into_memory()
     _load_plugins()
     _trigger_hook("on_startup", agent=_agent)
+    recovered = _task_worker.recover()
+    if recovered:
+        _audit("TASK_RECOVERY", f"recovered={len(recovered)} pending_or_resumable tasks")
+    if not any(job.get("payload", {}).get("type") == "task_worker" for job in _scheduler.list_jobs()):
+        _scheduler.schedule_every("durable-task-worker", 1.0, payload={"type": "task_worker"},
+                                  job_id="job_durable_task_worker", delay_seconds=0)
     _scheduler.start()
     _audit("STARTUP", "server started")
     print("[Server] Ready — http://127.0.0.1:8000 (set KYROZEN_SERVER_TOKEN for remote access)")

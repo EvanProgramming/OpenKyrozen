@@ -381,7 +381,15 @@ The migration creates a `.v1-backup` copy and writes the v2 database under `~/.k
 
 ### v2 durable tasks and learning
 
-Tasks persist across process restarts and use `pending`, `running`, `succeeded`, `failed`, `blocked`, and `cancelled` states. `TaskDone` is only a completion request; a successful tool result, test, file check, or explicit confirmation must provide evidence before a task can succeed.
+Tasks persist across process restarts and use `pending`, `running`, `succeeded`, `failed`, `blocked`, and `cancelled` states. `TaskDone` is only a completion request; a successful tool result, test, file check, or explicit confirmation must provide evidence before a task can succeed. API-created tasks with an explicit safe `action` and string `args` are picked up by the durable worker after server restart; failed or blocked tasks require an explicit resume request.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v2/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"description":"write a marker","action":"write_file","args":"task-marker.txt|completed","acceptance":["marker written"]}'
+# Resume a failed/blocked task:
+curl -X POST http://127.0.0.1:8000/api/v2/tasks/<task-id>/resume
+```
 
 Run a frozen clean-versus-evolved benchmark with identical case order and runner settings:
 
