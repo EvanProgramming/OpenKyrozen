@@ -262,6 +262,47 @@ starts in a documented degraded state without reading stdin; configure the
 provider before sending chat requests. The interactive CLI still prompts for
 providers that require credentials.
 
+## 🧬 Self-Learning System
+
+OpenKyrozen has one authoritative registry of 20 independently toggleable
+learning features. Each dispatcher cycle runs a bounded round-robin subset and
+stores `learning.feature_started`, `learning.feature_completed`, or
+`learning.feature_failed` in the scoped SQLite event store. A completion records
+whether it changed durable or in-memory state; `changed: false` is an honest
+no-op when the required evidence or input is absent.
+
+The CLI dispatches up to four features every 30 seconds while idle. Web and
+Gateway processes use the durable `learning_cycle` scheduler job. Chat turns
+also dispatch the input-dependent preference and technology features. The
+same dispatcher and feature flags are used by all surfaces. Inspect the
+latest status with `GET /api/v2/learning/features` or toggle flags with
+`/self-learning`. Dynamic tools remain response-time operations protected by
+explicit capability and approval gates, and rollback remains user-directed via
+`/forget` or an explicit learning rollback command.
+
+| # | Registry feature | Bounded effect |
+|---:|---|---|
+| 1 | Conversation learning | Extract candidate facts from new conversation logs |
+| 2 | Project-file loading | Incrementally update scoped Python-file snapshots |
+| 3 | Code-entry aging | Remove snapshots for deleted Python files |
+| 4 | Tool auto-debugging | Record findings from repeated tool failures |
+| 5 | Memory consolidation | Deduplicate and summarize non-trivial memories |
+| 6 | Tool review | Record bounded tool-improvement suggestions |
+| 7 | Targeted inquiry | Inspect one undocumented function per cycle |
+| 8 | Idle reflection | Reflect only after the configured idle interval |
+| 9 | Strategy distillation | Distill strategies after sufficient recent usage |
+| 10 | Technology discovery | Queue bounded documentation fetches for new libraries |
+| 11 | Skill invention | Create candidate reusable workflows from repeated work |
+| 12 | Context compression | Summarize old turns after the context threshold |
+| 13 | Outcome-verified evolution | Review one eligible trajectory and canary |
+| 14 | Dynamic-tool definition | Observe the inventory; never grant capability automatically |
+| 15 | Preference detection | Persist newly detected user preference signals |
+| 16 | Autonomous inspection | Run one bounded project health inspection |
+| 17 | Memory importance scoring | Score a recent window and persist the scores |
+| 18 | Knowledge-graph extraction | Extract bounded entity relationships from facts |
+| 19 | Skill composition | Record a matching learned workflow without executing it |
+| 20 | Learning rollback | Keep automatic deletion disabled; require explicit user action |
+
 ---
 
 ## 🛠 Tools Reference
@@ -448,6 +489,7 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `GET` | `/api/v2/memory?q=keyword&speaker=...&audience=...&channel=...` | Structured memory search with provenance and party scope |
 | `GET/POST` | `/api/v2/tasks` | Durable task listing and creation |
 | `GET` | `/api/v2/learning` | Learning proposal status |
+| `GET` | `/api/v2/learning/features` | Authoritative 20-feature registry and latest run status |
 | `GET` | `/api/v2/learning/metrics?profile=...` | Profile completion, correction, error, tool, token, and latency metrics |
 | `GET` | `/api/v2/learning/{id}/evidence` | Proof card, applicability, replay, and outcome receipts |
 | `POST` | `/api/v2/learning/{id}/replay` | Record paired sandboxed candidate/predecessor replay results |

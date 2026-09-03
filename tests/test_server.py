@@ -196,7 +196,8 @@ class ServerBoundaryTests(unittest.TestCase):
                                 with patch.object(server._scheduler, "list_jobs", return_value=[
                                     {"payload": {"type": "task_worker"}},
                                 ]):
-                                    with patch.object(server._scheduler, "start"):
+                                    with patch.object(server._scheduler, "schedule_every"), \
+                                         patch.object(server._scheduler, "start"):
                                         errors = []
 
                                         def run_startup():

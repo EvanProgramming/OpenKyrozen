@@ -330,12 +330,31 @@ DEEPSEEK_MODEL_SIMPLE = "deepseek-chat"   # set at init time from provider
 DEEPSEEK_MODEL_COMPLEX = "deepseek-reasoner"
 MODEL_NAME = "deepseek-chat (V4 auto-select)"  # updated at init
 # -------- Self-learning feature flags (toggled via /self-learning) --------
-_SELF_LEARNING_FLAGS: dict[str, bool] = {
-    "auto_learn_conversations": True,
-    "load_project_files_into_memory": True,
-    "age_out_old_coded_entries": True,
-    "outcome_verified_evolution": True,
-}
+# Keep this list as the public feature contract.  The dispatcher below binds
+# each name to exactly one bounded executor and both CLI and Web use it.
+_LEARNING_FEATURE_ORDER = (
+    "auto_learn_conversations",
+    "load_project_files_into_memory",
+    "age_out_old_coded_entries",
+    "auto_debug_tool",
+    "consolidate_memories",
+    "review_tools",
+    "targeted_inquiry",
+    "idle_reflection",
+    "strategy_distillation",
+    "auto_patch_technology",
+    "invent_skills",
+    "context_compression",
+    "outcome_verified_evolution",
+    "dynamic_tool_definition",
+    "detect_user_preferences",
+    "autonomous_inspection",
+    "memory_importance_scoring",
+    "knowledge_graph_extraction",
+    "skill_composition",
+    "learning_rollback",
+)
+_SELF_LEARNING_FLAGS: dict[str, bool] = {name: True for name in _LEARNING_FEATURE_ORDER}
 
 
 tasks = TaskManager()
@@ -3477,6 +3496,16 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
 
     fix_workflow = _prepare_fix_workflow(user_input)
 
+    # Input-dependent learning belongs to the same durable dispatcher as idle
+    # and scheduled work.  It is still bounded and cannot grant capabilities:
+    # preference detection records scoped signals, while technology discovery
+    # only queues the existing background documentation fetch.
+    dispatch_learning_cycle(
+        surface=_EXECUTION_SURFACE, trigger="turn", max_features=2,
+        user_input=user_input,
+        feature_names=("detect_user_preferences", "auto_patch_technology"),
+    )
+
     # Auto-select the best model for this turn based on task complexity
     complexity = _classify_complexity(user_input)
 
@@ -4084,7 +4113,10 @@ def _auto_learn_conversations() -> None:
     new_count = memory_bank.count_logs()
     if new_count == _logs_count_at_last_learn:
         return  # no new logs to process
-    num_new = new_count - _logs_count_at_last_learn
+    # A learning cycle is deliberately bounded even when a deployment has a
+    # large backlog after a long outage.  Prefer the newest window and record
+    # the current high-water mark so the same backlog is not reprocessed.
+    num_new = max(0, min(new_count - _logs_count_at_last_learn, 20))
     recent = memory_bank.get_recent(num_new)
     if not recent:
         _logs_count_at_last_learn = new_count
@@ -4178,8 +4210,411 @@ def _auto_debug_tool() -> None:
         pass
 
 
+def _learning_timestamp() -> str:
+    return datetime.datetime.now(UTC).isoformat()
+
+
+def _learning_safe_text(value: Any, limit: int = 300) -> str:
+    """Return bounded, secret-redacted text suitable for learning events."""
+    text = str(value or "").replace("\n", " ").replace("\r", " ")
+    text = re.sub(
+        r"(?i)(api[_-]?key|secret|password|token)\s*[:=]\s*\S+",
+        r"\1=<redacted>", text,
+    )
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]+", "sk-<redacted>", text)
+    return text[:limit]
+
+
+def _record_learning_event(event_type: str, payload: dict[str, Any]) -> str | None:
+    """Persist a scoped learning lifecycle event without breaking the agent."""
+    try:
+        return memory_bank.store.append_event(
+            event_type, payload, user_id=memory_bank.user_id,
+            workspace_id=memory_bank.workspace_id, session_id=memory_bank.session_id,
+        )
+    except Exception:
+        return None
+
+
+def _learning_state_fingerprint() -> tuple[Any, ...]:
+    """Return a small durable-state snapshot used to detect real feature effects."""
+    try:
+        store = memory_bank.store
+        user_id = memory_bank.user_id
+        workspace_id = memory_bank.workspace_id
+        session_id = memory_bank.session_id
+        with store.connection() as db:
+            memory_clause = "user_id=? AND workspace_id=? AND status='active'"
+            memory_params: list[Any] = [user_id, workspace_id]
+            task_clause = "user_id=? AND workspace_id=?"
+            task_params: list[Any] = [user_id, workspace_id]
+            if session_id is not None:
+                memory_clause += " AND (session_id IS NULL OR session_id=?)"
+                memory_params.append(session_id)
+                task_clause += " AND session_id=?"
+                task_params.append(session_id)
+            memory_row = db.execute(
+                f"SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM memories WHERE {memory_clause}",
+                memory_params,
+            ).fetchone()
+            file_row = db.execute(
+                "SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM files WHERE user_id=? AND workspace_id=?",
+                (user_id, workspace_id),
+            ).fetchone()
+            proposal_row = db.execute(
+                "SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM learning_proposals "
+                "WHERE user_id=? AND workspace_id=?",
+                (user_id, workspace_id),
+            ).fetchone()
+            task_row = db.execute(
+                f"SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM tasks WHERE {task_clause}",
+                task_params,
+            ).fetchone()
+            skill_row = db.execute(
+                "SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM skills WHERE workspace_id=?",
+                (workspace_id,),
+            ).fetchone()
+        preference_state = tuple(sorted((key, str(value)) for key, value in _user_preferences.items()))
+        graph_state = tuple(
+            sorted((source, tuple(sorted(targets))) for source, targets in _knowledge_graph.items())
+        )
+        return (
+            tuple(memory_row or ()), tuple(file_row or ()), tuple(proposal_row or ()),
+            tuple(task_row or ()), tuple(skill_row or ()), preference_state, graph_state,
+            tuple(sorted(_known_libraries)),
+        )
+    except Exception:
+        # Test doubles and degraded stores may not expose SQLite.  The in-memory
+        # portions still provide a useful best-effort change signal.
+        return (
+            tuple(sorted((key, str(value)) for key, value in _user_preferences.items())),
+            tuple(sorted((source, tuple(sorted(targets))) for source, targets in _knowledge_graph.items())),
+            tuple(sorted(_known_libraries)),
+        )
+
+
+def _learning_result(*, changed: bool = False, detail: str = "") -> dict[str, Any]:
+    return {"changed": bool(changed), "detail": _learning_safe_text(detail)}
+
+
+def _run_learning_context_compression(_context: dict[str, Any]) -> dict[str, Any]:
+    before = (len(short_term_memory), sum(len(item.get("content", "")) for item in short_term_memory))
+    _summarize_old_turns()
+    after = (len(short_term_memory), sum(len(item.get("content", "")) for item in short_term_memory))
+    return _learning_result(changed=before != after, detail=f"context chars: {before[1]} -> {after[1]}")
+
+
+def _run_learning_technology(context: dict[str, Any]) -> dict[str, Any]:
+    user_input = str(context.get("user_input") or "").strip()
+    if not user_input:
+        return _learning_result(detail="requires a user turn containing technology context")
+    before = set(_known_libraries)
+    _auto_patch_new_technology(user_input)
+    discovered = sorted(_known_libraries - before)
+    return _learning_result(
+        changed=bool(discovered),
+        detail=f"discovered {len(discovered)} technology name(s)" if discovered else "no new technology detected",
+    )
+
+
+def _run_learning_dynamic_tools(_context: dict[str, Any]) -> dict[str, Any]:
+    dynamic_names = sorted(name for name in AVAILABLE_TOOLS if name not in _BUILTIN_TOOL_NAMES)
+    if not ALLOW_DYNAMIC_TOOLS:
+        return _learning_result(
+            detail="dynamic tools remain disabled; capability and approval gates are required",
+        )
+    return _learning_result(
+        detail=(f"{len(dynamic_names)} dynamic tool(s) available; registration remains response-time "
+                "DefineTool plus capability and approval gates"),
+    )
+
+
+def _run_learning_preferences(context: dict[str, Any]) -> dict[str, Any]:
+    user_input = str(context.get("user_input") or "").strip()
+    if not user_input:
+        return _learning_result(detail="requires a user turn containing preference signals")
+    before = dict(_user_preferences)
+    _detect_user_preferences(user_input)
+    changed = {key: value for key, value in _user_preferences.items() if before.get(key) != value and value}
+    if changed:
+        _record_learning_event("learning.preference_updated", {
+            "fields": changed, "source": "turn", "trigger": context.get("trigger", "turn"),
+        })
+    return _learning_result(
+        changed=bool(changed),
+        detail=f"updated {len(changed)} preference field(s)" if changed else "no new preference detected",
+    )
+
+
+def _run_learning_memory_scoring(_context: dict[str, Any]) -> dict[str, Any]:
+    rows = memory_bank.store.list_memories(
+        status="active", limit=20, workspace_id=memory_bank.workspace_id,
+        session_id=memory_bank.session_id, user_id=memory_bank.user_id,
+    )
+    if not rows:
+        return _learning_result(detail="no active memories to score")
+    scores = [{"memory_id": row["id"], "score": _score_memory_importance(row["content"])} for row in rows]
+    scores.sort(key=lambda item: item["score"], reverse=True)
+    _record_learning_event("learning.memory_scored", {
+        "count": len(scores), "top": scores[:5], "scored_at": _learning_timestamp(),
+    })
+    return _learning_result(changed=True, detail=f"scored {len(scores)} active memories")
+
+
+def _run_learning_graph(_context: dict[str, Any]) -> dict[str, Any]:
+    before = len(_knowledge_graph)
+    _extract_knowledge_graph()
+    return _learning_result(changed=len(_knowledge_graph) != before,
+                            detail=f"knowledge graph sources: {before} -> {len(_knowledge_graph)}")
+
+
+def _run_learning_skill_composition(context: dict[str, Any]) -> dict[str, Any]:
+    user_input = str(context.get("user_input") or "").strip()
+    if not user_input:
+        return _learning_result(detail="requires a task description")
+    workflow = _compose_skills(user_input)
+    if not workflow:
+        return _learning_result(detail="no matching learned skill workflow")
+    _record_learning_event("learning.skill_composed", {
+        "task_hash": stable_hash(user_input), "workflow": _learning_safe_text(workflow, 1000),
+    })
+    return _learning_result(changed=True, detail="recorded a bounded composed workflow")
+
+
+def _run_learning_rollback(_context: dict[str, Any]) -> dict[str, Any]:
+    # Rollback is intentionally a user-directed `/forget` or learning
+    # rollback operation.  A scheduler must never delete learned state on its
+    # own, but this registry entry makes the safety behavior observable.
+    return _learning_result(detail="automatic deletion is disabled; use /forget or explicit rollback")
+
+
+_LEARNING_FEATURE_REGISTRY: dict[str, dict[str, Any]] = {
+    "auto_learn_conversations": {
+        "description": "Extract durable facts and preferences from recent conversations",
+        "executor": lambda _context: (_auto_learn_conversations() or _learning_result()),
+    },
+    "load_project_files_into_memory": {
+        "description": "Incrementally index project Python files into scoped memory",
+        "executor": lambda _context: (_load_project_files_into_memory() or _learning_result()),
+    },
+    "age_out_old_coded_entries": {
+        "description": "Remove durable snapshots for deleted project files",
+        "executor": lambda _context: (_age_out_old_coded_entries() or _learning_result()),
+    },
+    "auto_debug_tool": {
+        "description": "Analyse repeated tool failures and record bounded findings",
+        "executor": lambda _context: (_auto_debug_tool() or _learning_result()),
+    },
+    "consolidate_memories": {
+        "description": "Deduplicate and consolidate non-trivial memory entries",
+        "executor": lambda _context: (_consolidate_memories() or _learning_result()),
+    },
+    "review_tools": {
+        "description": "Review tool performance and record improvement proposals",
+        "executor": lambda _context: (_review_tools() or _learning_result()),
+    },
+    "targeted_inquiry": {
+        "description": "Inspect one undocumented project function per bounded cycle",
+        "executor": lambda _context: (_targeted_inquiry() or _learning_result()),
+    },
+    "idle_reflection": {
+        "description": "Reflect on recent multi-step work after an idle interval",
+        "executor": lambda _context: (_maybe_trigger_reflection() or _learning_result()),
+    },
+    "strategy_distillation": {
+        "description": "Distil efficiency strategies from sufficiently large recent runs",
+        "executor": lambda _context: (_maybe_strategy_distillation() or _learning_result()),
+    },
+    "auto_patch_technology": {
+        "description": "Discover unfamiliar libraries and fetch bounded background context",
+        "executor": _run_learning_technology,
+    },
+    "invent_skills": {
+        "description": "Create candidate reusable workflows from repeated conversations",
+        "executor": lambda _context: (_invent_skills() or _learning_result()),
+    },
+    "context_compression": {
+        "description": "Compress old turns when the short-term context exceeds its limit",
+        "executor": _run_learning_context_compression,
+    },
+    "outcome_verified_evolution": {
+        "description": "Review verified trajectories and create at most one bounded canary",
+        "executor": lambda _context: (_review_evolution_runs() or _learning_result()),
+    },
+    "dynamic_tool_definition": {
+        "description": "Observe the dynamic-tool inventory without granting new capability",
+        "executor": _run_learning_dynamic_tools,
+    },
+    "detect_user_preferences": {
+        "description": "Detect explicit preference signals during a user turn",
+        "executor": _run_learning_preferences,
+    },
+    "autonomous_inspection": {
+        "description": "Run one bounded project health inspection during idle time",
+        "executor": lambda _context: (_autonomous_inspection() or _learning_result()),
+    },
+    "memory_importance_scoring": {
+        "description": "Score a bounded recent memory window and persist the result",
+        "executor": _run_learning_memory_scoring,
+    },
+    "knowledge_graph_extraction": {
+        "description": "Extract bounded entity relationships from stored facts",
+        "executor": _run_learning_graph,
+    },
+    "skill_composition": {
+        "description": "Compose matching learned skills into a recorded workflow",
+        "executor": _run_learning_skill_composition,
+    },
+    "learning_rollback": {
+        "description": "Keep automatic learning rollback safe and user-directed",
+        "executor": _run_learning_rollback,
+    },
+}
+
+
+_learning_dispatch_lock = threading.RLock()
+_learning_dispatch_cursor = 0
+
+
+def dispatch_learning_cycle(*, surface: str | None = None, trigger: str = "scheduled",
+                            max_features: int = 4, user_input: str = "",
+                            feature_names: tuple[str, ...] | list[str] | None = None) -> list[dict[str, Any]]:
+    """Run a bounded, round-robin set of enabled learning features.
+
+    Every attempted feature receives durable started/completed/failed events.
+    The executor may report an explicit effect; otherwise the dispatcher also
+    compares scoped durable and in-memory state before and after execution.
+    """
+    global _learning_dispatch_cursor
+    try:
+        limit = max(1, min(int(max_features), len(_LEARNING_FEATURE_ORDER)))
+    except (TypeError, ValueError):
+        limit = 4
+    surface_name = _learning_safe_text(surface or _EXECUTION_SURFACE, 32)
+    trigger_name = _learning_safe_text(trigger, 32) or "scheduled"
+
+    with _learning_dispatch_lock:
+        if feature_names is not None:
+            requested = list(feature_names)
+            selected = []
+            for name in requested:
+                if (name in _LEARNING_FEATURE_REGISTRY and name in _LEARNING_FEATURE_ORDER
+                        and _SELF_LEARNING_FLAGS.get(name, True) and name not in selected):
+                    selected.append(name)
+                if len(selected) >= limit:
+                    break
+        else:
+            selected = []
+            start = _learning_dispatch_cursor % len(_LEARNING_FEATURE_ORDER)
+            for offset in range(len(_LEARNING_FEATURE_ORDER)):
+                name = _LEARNING_FEATURE_ORDER[(start + offset) % len(_LEARNING_FEATURE_ORDER)]
+                if not _SELF_LEARNING_FLAGS.get(name, True):
+                    continue
+                if name not in _LEARNING_FEATURE_REGISTRY:
+                    continue
+                selected.append(name)
+                if len(selected) >= limit:
+                    break
+            if selected:
+                _learning_dispatch_cursor = (
+                    _LEARNING_FEATURE_ORDER.index(selected[-1]) + 1
+                ) % len(_LEARNING_FEATURE_ORDER)
+
+        summaries: list[dict[str, Any]] = []
+        for name in selected:
+            entry = _LEARNING_FEATURE_REGISTRY[name]
+            started_at = _learning_timestamp()
+            description = _learning_safe_text(entry.get("description", ""), 240)
+            _record_learning_event("learning.feature_started", {
+                "feature": name, "description": description, "trigger": trigger_name,
+                "surface": surface_name, "started_at": started_at,
+            })
+            before = _learning_state_fingerprint()
+            context = {
+                "feature": name, "trigger": trigger_name, "surface": surface_name,
+                "user_input": str(user_input or "")[:4000],
+            }
+            try:
+                executor = entry.get("executor")
+                if not callable(executor):
+                    raise TypeError("learning feature has no callable executor")
+                result = executor(context)
+                explicit_changed = False
+                detail = ""
+                if isinstance(result, dict):
+                    explicit_changed = bool(result.get("changed", False))
+                    detail = _learning_safe_text(result.get("detail", ""))
+                elif result is True:
+                    explicit_changed = True
+                elif result not in (None, False, ""):
+                    detail = _learning_safe_text(result)
+                changed = explicit_changed or _learning_state_fingerprint() != before
+                finished_at = _learning_timestamp()
+                if not detail:
+                    detail = "observable state changed" if changed else "no eligible evidence or state change"
+                summary = {
+                    "feature": name, "status": "completed", "changed": changed,
+                    "last_run_at": finished_at, "detail": detail,
+                }
+                _record_learning_event("learning.feature_completed", {
+                    **summary, "trigger": trigger_name, "surface": surface_name,
+                })
+            except Exception as exc:
+                finished_at = _learning_timestamp()
+                summary = {
+                    "feature": name, "status": "failed", "changed": False,
+                    "last_run_at": finished_at, "detail": _learning_safe_text(exc),
+                }
+                _record_learning_event("learning.feature_failed", {
+                    **summary, "trigger": trigger_name, "surface": surface_name,
+                })
+            summaries.append(summary)
+        return summaries
+
+
+def learning_feature_status() -> list[dict[str, Any]]:
+    """Return the user-visible status of every registered learning feature."""
+    events = memory_bank.store.list_events(
+        limit=10000, workspace_id=memory_bank.workspace_id,
+        user_id=memory_bank.user_id,
+    )
+    latest: dict[str, dict[str, Any]] = {}
+    for event in events:  # list_events is newest-first
+        payload = event.get("payload") or {}
+        feature = payload.get("feature")
+        if feature not in _LEARNING_FEATURE_REGISTRY or feature in latest:
+            continue
+        if event.get("event_type") == "learning.feature_started":
+            latest[feature] = {
+                "status": "started", "changed": False,
+                "last_run_at": payload.get("started_at") or event.get("created_at"),
+                "detail": "cycle started",
+            }
+        elif event.get("event_type") == "learning.feature_completed":
+            latest[feature] = {
+                "status": "completed", "changed": bool(payload.get("changed")),
+                "last_run_at": payload.get("last_run_at") or event.get("created_at"),
+                "detail": _learning_safe_text(payload.get("detail", "")),
+            }
+        elif event.get("event_type") == "learning.feature_failed":
+            latest[feature] = {
+                "status": "failed", "changed": False,
+                "last_run_at": payload.get("last_run_at") or event.get("created_at"),
+                "detail": _learning_safe_text(payload.get("detail", "")),
+            }
+    return [
+        {
+            "name": name,
+            "description": _learning_safe_text(_LEARNING_FEATURE_REGISTRY[name].get("description", ""), 240),
+            "enabled": bool(_SELF_LEARNING_FLAGS.get(name, True)),
+            **latest.get(name, {"status": "never", "changed": False, "last_run_at": None, "detail": ""}),
+        }
+        for name in _LEARNING_FEATURE_ORDER if name in _LEARNING_FEATURE_REGISTRY
+    ]
+
+
 def _background_learning_loop() -> None:
-    """Bounded background ingestion plus outcome-verified trajectory review."""
+    """Run bounded round-robin learning cycles while the CLI is idle."""
     global _last_user_interaction
     while True:
         time.sleep(30)
@@ -4191,15 +4626,7 @@ def _background_learning_loop() -> None:
             if idle_duration < 60:
                 continue
 
-            # silently learning (respect self-learning flags)
-            if _SELF_LEARNING_FLAGS["auto_learn_conversations"]:
-                _auto_learn_conversations()
-            if _SELF_LEARNING_FLAGS["load_project_files_into_memory"]:
-                _load_project_files_into_memory()
-            if _SELF_LEARNING_FLAGS["age_out_old_coded_entries"]:
-                _age_out_old_coded_entries()
-            if _SELF_LEARNING_FLAGS["outcome_verified_evolution"]:
-                _review_evolution_runs()
+            dispatch_learning_cycle(surface="cli", trigger="background", max_features=4)
         except Exception as exc:
             try:
                 memory_bank.store.append_event(
@@ -4214,10 +4641,8 @@ def _background_learning_loop() -> None:
 def _show_self_learning_menu() -> None:
     """Display an interactive menu to toggle self-learning features."""
     flag_names = [
-        ("auto_learn_conversations",      "Auto-learn from conversations"),
-        ("load_project_files_into_memory","Scan project files into memory"),
-        ("age_out_old_coded_entries",     "Age out stale code entries"),
-        ("outcome_verified_evolution",    "Canary and promote verified profile guidance"),
+        (name, _LEARNING_FEATURE_REGISTRY[name]["description"])
+        for name in _LEARNING_FEATURE_ORDER
     ]
     while True:
         console.print(f"\n[bold {_ACCENT}]═══ Self‑Learning Features ═══[/bold {_ACCENT}]")
