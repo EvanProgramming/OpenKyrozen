@@ -10,9 +10,54 @@ import server
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from providers import ProviderConfig
+from memory import MemoryBank
+from subagents import SubAgentManager
 
 
 class ServerBoundaryTests(unittest.TestCase):
+    def test_subagent_api_executes_allowed_file_action_and_rejects_disallowed_action(self):
+        client = TestClient(server.app)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manager = SubAgentManager(
+                MemoryBank(root / "state.sqlite3", user_id="local",
+                           workspace_id=server._agent.memory_bank.workspace_id),
+                runner=server._agent._run_subagent_llm,
+            )
+            original_manager = server._agent.subagent_manager
+            original_root = server._agent._get_workspace_root()
+            server._agent.subagent_manager = manager
+            server._agent._set_workspace_root(root)
+            responses = [
+                'Action: {"action":"write_file","args":"allowed.txt|created"}',
+                "Allowed file operation completed.",
+                'Action: {"action":"write_file","args":"denied.txt|must not write"}',
+                "The write was rejected by the reviewer profile.",
+            ]
+            try:
+                with patch.object(server._agent, "_get_llm_response", side_effect=responses):
+                    allowed = client.post("/api/v2/agents/run", json={
+                        "profile": "coder", "task": "Create allowed.txt",
+                    })
+                    denied = client.post("/api/v2/agents/run", json={
+                        "profile": "reviewer", "task": "Create denied.txt",
+                    })
+            finally:
+                server._agent.subagent_manager = original_manager
+                server._agent._set_workspace_root(original_root)
+            self.assertEqual(allowed.status_code, 200, allowed.text)
+            self.assertTrue((root / "allowed.txt").is_file())
+            self.assertTrue(allowed.json()["tool_receipts"][0]["success"])
+            self.assertEqual(denied.status_code, 200, denied.text)
+            self.assertFalse((root / "denied.txt").exists())
+            self.assertFalse(denied.json()["tool_receipts"][0]["success"])
+            self.assertFalse(denied.json()["tool_receipts"][0]["authorized"])
+            events = manager.memory.store.list_events(
+                workspace_id=server._agent.memory_bank.workspace_id,
+                session_id=denied.json()["run_id"], limit=20,
+            )
+            self.assertTrue(any(event["event_type"] == "subagent.tool_failed" for event in events))
+
     def test_mcp_jsonrpc_initialize_discover_list_and_call_sequence(self):
         client = TestClient(server.app)
         init = client.post("/mcp", json={
