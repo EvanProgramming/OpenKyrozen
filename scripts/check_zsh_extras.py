@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -67,6 +68,8 @@ def _run_zsh(args: list[str], script: str) -> subprocess.CompletedProcess[str]:
 
 
 def _check_zsh() -> list[str]:
+    if shutil.which("zsh") is None:
+        return ["zsh executable not found; install zsh before running this check"]
     syntax = "pip install '.[web]'\npip install '.[all]'\n"
     parsed = _run_zsh(["-n"], syntax)
     if parsed.returncode:
