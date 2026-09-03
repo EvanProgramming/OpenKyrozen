@@ -48,6 +48,9 @@ jobs:
       run: |
         python -c "from providers import *; print('All providers imported OK')"
 
+    - name: Documentation and runtime inventory check
+      run: make docs-check
+
   docker-persistence:
     runs-on: ubuntu-latest
     timeout-minutes: 10

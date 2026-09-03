@@ -37,7 +37,8 @@
 - [🛠 ツールリファレンス](#-ツールリファレンス)
   - [ファイルとシステム](#ファイルとシステム)
   - [Web](#web)
-  - [Git（15 ツール）](#git15-ツール)
+  - [ブラウザー](#ブラウザー5-ツール)
+  - [Git（14 ツール）](#git14-ツール)
   - [メモリ](#メモリ)
 - [🧠 専用ワークフロー](#-専用ワークフロー)
   - [バグ修正](#バグ修正6ステッププロトコル)
@@ -59,7 +60,7 @@
 
 OpenKyrozen はターミナルで動作する**自己学習型 AI エージェント**です。一般的なチャットボットとは異なり、以下のことが可能です：
 
-- **26 種類の組み込みツール** — ファイルの読み書き、シェルコマンドの実行、Web 検索、Git リポジトリの管理
+- **31 個のランタイムツール** — ファイル、シェル、Web、Git、ブラウザーの29個の基本操作と、SQLite メモリ操作2個
 - **継続的な学習** — 20 の機能を有界 dispatcher で実行し、事実の抽出、スキルの発明、戦略の最適化を記録します
 - **あらゆる LLM に対応** — DeepSeek、OpenAI、Claude、Gemini、またはローカルの Ollama モデル
 - **クロスプラットフォーム** — macOS、Linux、Windows（端末機能の自動検出付き）
@@ -192,7 +193,7 @@ Web インターフェースは、リアルタイムストリーミング、コ�
          │  応答 + ツール呼び出し
          ▼
 ┌─────────────────┐
-│  ツール実行器   │──► 26 種類の組み込みツール（ファイル I/O、シェル、Git、Web、メモリ）
+│  ツール実行器   │──► 31 個のランタイムツール（ファイル I/O、シェル、Git、Web、メモリ、ブラウザー）
 └────────┬────────┘
          │  ツール結果を LLM にフィードバック
          │  （1ターン最大50回のツール呼び出し）
@@ -244,13 +245,13 @@ export ANTHROPIC_API_KEY=sk-ant-...
 python main.py
 ```
 
-プライマリプロバイダーが失敗した場合、Kyrozen は自動的にフォールバックチェーン（例：DeepSeek → OpenAI → Claude）で切り替えます。レート制限エラー（HTTP 429）はジッター付き指数バックオフをトリガーします。
+プライマリプロバイダーが失敗した場合、Kyrozen は自動的にフォールバックチェーン（例：DeepSeek → OpenAI → Claude）で切り替えます。レート制限エラー（HTTP 429）はジッター付き指数バックオフをトリガーします。Ollama はキー不要のローカルプロバイダーです。`KYROZEN_PROVIDER=ollama` を設定し、必要なら `KYROZEN_BASE_URL` で OpenAI-compatible endpoint を指定してください。Web の headless 起動は stdin を読みません。リモートプロバイダーのキーがない場合は明確な degraded 状態になり、対話型 CLI だけがキーを尋ねます。
 
 ---
 
 ## 🛠 ツールリファレンス
 
-すべての 26 ツールは、JSON アクションブロック内でプレーン文字列の `args` フィールドを受け付けます：
+31 個すべてのランタイムツールは、JSON アクションブロック内でプレーン文字列の `args` フィールドを受け付けます。ツール名、能力ラベル、MCP 入力 schema、実際の HTTP ルートは[生成されたランタイムインベントリ](docs/tool-inventory.md)を正とします：
 
 ```json
 {"action": "read_file", "args": "README.md"}
@@ -268,6 +269,7 @@ python main.py
 | `list_tree` | 再帰的なディレクトリツリー | `"src/"` |
 | `find_files` | グロブベースのファイル検索 | `"*.py|."` |
 | `run_cmd` | シェルコマンドを実行 | `"python --version"` |
+| `execute_terminal_command` | `run_cmd` のエイリアス | `"python --version"` |
 
 ### Web
 
@@ -275,8 +277,22 @@ python main.py
 |------|------|------|
 | `search_web` | インターネット検索（Google → DDG → Wikipedia） | `"最新の Python リリース"` |
 | `read_webpage` | URL のテキストコンテンツを取得 | `"https://example.com"` |
+| `analyze_remote_repo` | リモートリポジトリをクローンして要約 | `"https://github.com/org/repo"` |
 
-### Git（15 ツール）
+### ブラウザー（5 ツール）
+
+ブラウザーツールは隔離された profile を使用します。利用前に browser
+extra をインストールしてください。
+
+| ツール | 説明 | 例 |
+|------|------|------|
+| `browser_open` | URL を開く | `"https://example.com"` |
+| `browser_snapshot` | 現在のページテキストを読む | `"session-id"` |
+| `browser_click` | CSS selector をクリック | `"session-id|button.submit"` |
+| `browser_type` | CSS selector に入力 | `"session-id|input[name=q]|query"` |
+| `browser_close` | 隔離ブラウザーセッションを閉じる | `"session-id"` |
+
+### Git（14 ツール）
 
 | ツール | 機能 |
 |------|------|
@@ -293,7 +309,6 @@ python main.py
 | `git_show` | コミットの詳細を `--stat` で表示 |
 | `git_remote` | リモートの一覧表示 / 追加 / 削除 |
 | `git_clone` | リポジトリをクローン |
-| `analyze_remote_repo` | クローン + 全ファイル読み取り → 構造化サマリー |
 
 ### メモリ
 
@@ -373,7 +388,9 @@ CLI はアイドル時に 30 秒ごとに最大 4 機能をラウンドロビン
 
 ### メモリストレージ
 
-長期メモリには **ChromaDB**（ベクトルデータベース、`chroma_memory/` に保存）を使用します。ChromaDB が利用できない場合はインメモリストレージにフォールバックします。メモリは意味検索が可能で——エージェントは数週間前の関連事実を思い出すことができます。
+OpenKyrozen v2 の長期メモリは **SQLite を事実上のソース**（`~/.kyrozen/v2/openkyrozen.sqlite3`）として使用し、ChromaDB は再構築可能な派生セマンティックインデックスです。workspace と session は分離され、ChromaDB が利用できなくても SQLite のキーワード検索で永続性を保ちます。Web/MCP の単一ユーザーデプロイでは、`KYROZEN_SERVER_TOKEN` が一つの安定した actor を表し、リクエストの `speaker` だけで private データの所有者を変更することはできません。
+
+タスクは再起動後も保存され、状態は `pending`、`running`、`succeeded`、`failed`、`blocked`、`cancelled` です（旧 `done` は読取互換）。`TaskDone` だけでは成功にならず、ツール結果、テスト、ファイル確認、または明示的な確認の証拠が必要です。安全な API タスクは worker が再開し、failed/blocked タスクは `/api/v2/tasks/{task_id}/resume` で明示的に再開します。
 
 ---
 
@@ -390,18 +407,48 @@ python server.py --port 8000
 | メソッド | エンドポイント | 説明 |
 |--------|-------------|------|
 | `GET` | `/` | ダークテーマのチャット Web UI |
-| `POST` | `/api/chat` | メッセージを送信し JSON レスポンスを取得 |
-| `POST` | `/api/chat/stream` | SSE ストリーミングチャット |
+| `POST` | `/api/chat` | メッセージを送り、メモリ receipt 付き JSON レスポンスを取得 |
+| `POST` | `/api/chat/stream` | SSE ストリーミング；`[DONE]` 後だけ完了 webhook を送信 |
 | `GET` | `/api/memory?q=キーワード` | 保存されたメモリを検索 |
-| `GET` | `/api/v2/learning/features` | 20 機能のレジストリと最新実行状態 |
-| `GET` | `/api/cost` | トークン使用量とコストサマリー |
-| `GET` | `/api/health` | プロバイダー状態 + メモリ数 |
+| `GET` | `/api/v2/memory?q=キーワード&speaker=...&audience=...&channel=...` | provenance と参加者スコープ付きの構造化メモリ |
+| `GET/POST` | `/api/v2/tasks` | 永続タスクの一覧と作成 |
+| `POST` | `/api/v2/tasks/{task_id}/resume` | failed/blocked タスクを明示的に再開 |
+| `GET` | `/api/v2/learning` | 学習提案の状態 |
+| `GET` | `/api/v2/learning/metrics?profile=...` | 完了、訂正、エラー、ツール、token、遅延メトリクス |
+| `GET` | `/api/v2/learning/features` | 20 機能の権威あるレジストリと最新実行状態 |
+| `GET` | `/api/v2/learning/{proposal_id}/evidence` | proof card、適用性、replay、結果 receipt |
+| `POST` | `/api/v2/learning/{proposal_id}/replay` | candidate/predecessor のペア replay 結果を記録 |
+| `POST` | `/api/v2/learning/{proposal_id}/omission` | artifact 有/無のペア結果を記録 |
+| `POST` | `/api/v2/learning/{proposal_id}/retire` | 非回帰 omission 証拠で artifact を retire |
+| `POST` | `/api/v2/learning/{proposal_id}/restore` | retired artifact を canary として復元 |
+| `GET` | `/api/v2/learning/{proposal_id}/capsule` | redacted で harness 非依存の経験 capsule を出力 |
+| `POST` | `/api/v2/learning/capsules` | capsule を非アクティブ候補として取り込む |
+| `GET` | `/api/v2/learning/constitution` | 不変のユーザー所有 learning policy |
+| `POST` | `/api/v2/learning/{proposal_id}/rollback` | 有効化された学習提案を rollback |
+| `GET/POST` | `/api/v2/memory/claims` | 型、帰属、スコープ付き memory claim の一覧/作成 |
+| `GET/DELETE` | `/api/v2/memory/claims/{claim_id}` | claim の説明、または単独依存を含む削除 |
+| `GET` | `/api/v2/events` | runtime、session、task、learning の監査イベント |
+| `GET/POST` | `/api/v2/schedules` | 永続 interval/one-shot Gateway job |
+| `POST` | `/api/v2/schedules/{job_id}/disable` | スケジュール job を無効化 |
+| `GET` | `/api/v2/skills` | candidate/active skill の一覧 |
+| `POST` | `/api/v2/skills/install` | ローカル `SKILL.md` package を検証してインストール |
+| `POST` | `/api/v2/skills/{skill_id}/activate` | 検証済み skill を有効化 |
+| `POST` | `/api/v2/skills/{skill_id}/rollback` | skill を rollback |
+| `GET` | `/api/v2/sessions` | 永続 session の一覧 |
+| `GET` | `/api/v2/sessions/{session_id}` | session context の復元/読取 |
+| `GET` | `/api/v2/agents` | 専用 sub-agent profile の一覧 |
+| `POST` | `/api/v2/agents/run` | 分離 memory と能力で sub-agent を実行 |
+| `GET` | `/api/cost` | token 使用量とコストサマリー |
+| `GET` | `/api/health` | provider 状態 + memory 件数 |
 | `GET` | `/api/voice/speak?text=...` | システム TTS でテキスト読み上げ |
 | `POST` | `/api/voice/transcribe` | 音声テキスト変換（パススルー） |
 | `POST` | `/api/webhooks/register` | Webhook URL を登録 |
 | `GET` | `/api/webhooks` | 登録済み Webhook を一覧表示 |
 | `POST` | `/api/webhooks/test` | テスト Webhook を発火 |
 | `POST` | `/mcp` | モデルコンテキストプロトコル（JSON-RPC 2.0） |
+
+すべての JSON Action はプレーン文字列 `args` を使います。MCP の `tools/list` と
+`server/discover` は許可された各ツールの `inputSchema` を返し、object 引数を同じ文字列契約に明示的に変換します。未知/未許可ツールは JSON-RPC protocol error、実行後のツール失敗は `result.isError: true` です。完全な清書済み一覧は [docs/tool-inventory.md](docs/tool-inventory.md) を参照してください。
 
 ### Docker デプロイ
 
@@ -450,10 +497,12 @@ def register():
 | 機能 | 保護内容 |
 |------|---------|
 | **危険コマンドフィルター** | `rm -rf`、`mkfs`、フォークボム、Windows の破壊的コマンドをブロック |
-| **API キー暗号化** | `~/.kyrozen_config.json` を静的暗号化（XOR + マシン派生 SHA-256 キー） |
+| **API キー暗号化** | ランダムなインストール秘密による Fernet 暗号化；設定/秘密ファイルは `0600` |
 | **プロンプトインジェクション保護** | 9 種類の一般的なインジェクションパターンを検出してフィルタリング |
 | **サンドボックス実行** | ファイル操作をワークスペース境界内に制限 |
-| **Git 安全性** | 強制プッシュなし、ハードリセット前に警告 |
+| **API 認証** | loopback 以外の API/MCP には `KYROZEN_SERVER_TOKEN` が必要 |
+| **能力プロファイル** | Web/MCP は `workspace` が既定；不可逆な `git_reset` と動的ツールは `full` で明示的に許可 |
+| **Git 安全性** | 強制プッシュなし；CLI は高影響操作を確認して記録 |
 | **監査ログ** | すべてのチャット/API イベントをタイムスタンプ付きで `kyrozen_audit.log` に記録 |
 | **Python バージョンガード** | Python 3.14+ での起動を拒否 |
 | **ツール失敗メモリ** | 過去の失敗を記憶し、繰り返しを回避 |
@@ -475,6 +524,18 @@ def register():
 | `KYROZEN_MODEL_SIMPLE` | 簡単/中程度タスク用モデル | プロバイダーデフォルト |
 | `KYROZEN_MODEL_COMPLEX` | 複雑タスク用モデル | プロバイダーデフォルト |
 | `KYROZEN_BASE_URL` | カスタム API ベース URL | プロバイダーデフォルト |
+| `KYROZEN_DB_PATH` | SQLite 事実ストアのパス | `~/.kyrozen/v2/openkyrozen.sqlite3` |
+| `KYROZEN_SERVER_TOKEN` | loopback 外の Web/MCP アクセストークン | 未設定（loopback のみ） |
+| `KYROZEN_SERVER_ACTOR` | 単一ユーザーデプロイの安定した actor ラベル | `local` |
+| `KYROZEN_EXECUTION_SURFACE` | 実行面（`cli` または `web`） | `cli` |
+| `KYROZEN_ALLOW_DYNAMIC_TOOLS` | LLM 生成 Python ツールを許可（`1`/`true`） | CLI: 有効；Web/MCP: 無効 |
+| `KYROZEN_APPROVAL_MODE` | CLI の高影響 Git/動的ツール確認（`dangerous`/`never`） | `dangerous` |
+| `KYROZEN_WEB_CAPABILITIES` | Web 能力（`readonly`、`workspace`、`full`） | `workspace` |
+| `KYROZEN_MCP_CAPABILITIES` | MCP 能力（`readonly`、`workspace`、`full`） | `workspace` |
+| `KYROZEN_AGENT_CONFIG` | 明示的な `agent.yaml` のパス | ワークスペース、次にパッケージ既定値 |
+| `KYROZEN_ROLE` / `KYROZEN_ROLE_PROMPT` | role 名または role prompt の上書き | パッケージ prompt |
+| `KYROZEN_INSTRUCTIONS` / `KYROZEN_EXAMPLES` | 実行指示または JSON examples の上書き | パッケージ prompt |
+| `KYROZEN_AGENT_CAPABILITIES` | 能力の上限（surface/確認/認証を迂回不可） | `full` |
 
 ### 設定ファイル（`~/.kyrozen_config.json`）
 
@@ -497,6 +558,7 @@ def register():
 ```bash
 # クイック検証
 make check
+make docs-check
 
 # 構文チェックのみ
 make lint
@@ -524,9 +586,9 @@ make push
 
 GitHub Actions がプッシュと PR ごとに自動実行：
 - Python 3.12 および 3.13 での構文チェック
-- ツールインベントリ検証
+- 実行時レジストリから生成したツール一覧とドキュメントの整合性検証
 - プロバイダーインポートチェック
-- Docker ビルド検証
+- Docker ビルドとコンテナ置換後の復元スモークテスト
 
 ### pip パッケージ
 
@@ -544,9 +606,9 @@ pip install '.[all]'            # + Claude + Gemini + Web
 ```
 OpenKyrozen/
 ├── main.py              # コアエージェントループ、自己学習、チャットターンロジック
-├── tools.py             # 26 種類の組み込みツール（ファイル、シェル、Git、Web）
+├── tools.py             # 29 個の基本ツール；main.py が SQLite メモリ操作2個を追加
 ├── providers.py         # マルチ LLM 抽象化（5 プロバイダー + フォールバック）
-├── memory.py            # ChromaDB ベースのベクトルメモリ
+├── memory.py            # SQLite の事実メモリ + 再構築可能な Chroma インデックス
 ├── server.py            # FastAPI Web サーバー + REST API + チャット UI
 ├── pyproject.toml       # pip パッケージ設定
 ├── Dockerfile           # Docker イメージ定義
@@ -554,7 +616,8 @@ OpenKyrozen/
 ├── setup.bat / run.bat  # Windows バッチスクリプト
 ├── plugins/             # プラグインディレクトリ（フックベース）
 ├── prompts/             # プロンプトテンプレート（役割、指示、例）
-├── chroma_memory/       # ChromaDB 永続ストレージ（自動作成）
+├── docs/tool-inventory.md # 生成されたランタイムツール/ルート一覧
+├── scripts/              # 再現可能なドキュメント/スモークチェック
 └── .github/workflows/   # CI/CD パイプライン
 ```
 

@@ -37,7 +37,8 @@
 - [🛠 工具参考](#-工具参考)
   - [文件与系统](#文件与系统)
   - [网页](#网页)
-  - [Git（15 种工具）](#git15-种工具)
+  - [浏览器](#浏览器5-项工具)
+  - [Git（14 种工具）](#git14-种工具)
   - [记忆](#记忆)
 - [🧠 专用工作流](#-专用工作流)
   - [Bug 修复](#bug-修复六步协议)
@@ -59,7 +60,7 @@
 
 OpenKyrozen 是一款在终端中运行的**自学习 AI 智能体**。与普通聊天机器人不同，它能够：
 
-- **内置 26 种工具** — 读写文件、执行 Shell 命令、搜索网页、管理 Git 仓库
+- **31 项运行时工具** — 29 项文件、Shell、网页、Git 和浏览器基础动作，加上两个 SQLite 记忆动作
 - **持续学习** — 通过有界 dispatcher 运行 20 项功能，提取事实、发明技能并记录策略优化
 - **兼容多种大模型** — DeepSeek、OpenAI、Claude、Gemini，或本地 Ollama 模型
 - **跨平台运行** — macOS、Linux、Windows（自动检测终端能力）
@@ -195,7 +196,7 @@ Web 界面提供暗色主题的聊天 UI，支持实时流式输出、费用追�
          │  响应 + 工具调用
          ▼
 ┌─────────────────┐
-│   工具执行器    │──► 26 种内置工具（文件 I/O、Shell、Git、网页、记忆）
+│   工具执行器    │──► 31 项运行时工具（文件 I/O、Shell、Git、网页、记忆、浏览器）
 └────────┬────────┘
          │  工具结果反馈给 LLM
          │  （每轮最多 50 次工具调用）
@@ -247,13 +248,14 @@ export ANTHROPIC_API_KEY=sk-ant-...
 python main.py
 ```
 
-如果主服务商失败，Kyrozen 会通过回退链自动切换（例如 DeepSeek → OpenAI → Claude）。限流错误（HTTP 429）会触发带抖动的指数退避。
+如果主服务商失败，Kyrozen 会通过回退链自动切换（例如 DeepSeek → OpenAI → Claude）。限流错误（HTTP 429）会触发带抖动的指数退避。Ollama 是无需密钥的本地服务商；设置 `KYROZEN_PROVIDER=ollama`，必要时用 `KYROZEN_BASE_URL` 指定 OpenAI-compatible 地址。Web 启动不会读取 stdin：远程服务商缺少密钥时进入明确的 degraded 状态，交互式 CLI 仍会提示输入密钥。
 
 ---
 
 ## 🛠 工具参考
 
-所有 26 种工具在 JSON 动作块中接受纯字符串 `args` 字段：
+所有 31 项运行时工具在 JSON 动作块中接受纯字符串 `args` 字段。完整的
+工具名称、能力标签、MCP 输入 schema 和实时 HTTP 路由以[生成的运行时清单](docs/tool-inventory.md)为准：
 
 ```json
 {"action": "read_file", "args": "README.md"}
@@ -271,6 +273,7 @@ python main.py
 | `list_tree` | 递归目录树 | `"src/"` |
 | `find_files` | 基于 Glob 的文件搜索 | `"*.py|."` |
 | `run_cmd` | 执行 Shell 命令 | `"python --version"` |
+| `execute_terminal_command` | `run_cmd` 的别名 | `"python --version"` |
 
 ### 网页
 
@@ -278,8 +281,21 @@ python main.py
 |------|------|------|
 | `search_web` | 互联网搜索（Google → DDG → Wikipedia） | `"Python 最新版本"` |
 | `read_webpage` | 抓取 URL 文本内容 | `"https://example.com"` |
+| `analyze_remote_repo` | 克隆并概括远程仓库 | `"https://github.com/org/repo"` |
 
-### Git（15 种工具）
+### 浏览器（5 项工具）
+
+浏览器工具使用隔离 profile，使用前请安装可选的 browser extra。
+
+| 工具 | 描述 | 示例 |
+|------|------|------|
+| `browser_open` | 打开 URL | `"https://example.com"` |
+| `browser_snapshot` | 读取当前页面文本 | `"session-id"` |
+| `browser_click` | 点击 CSS selector | `"session-id|button.submit"` |
+| `browser_type` | 填充 CSS selector | `"session-id|input[name=q]|query"` |
+| `browser_close` | 关闭隔离浏览器会话 | `"session-id"` |
+
+### Git（14 种工具）
 
 | 工具 | 功能 |
 |------|------|
@@ -296,7 +312,6 @@ python main.py
 | `git_show` | 查看提交详情（`--stat`） |
 | `git_remote` | 列出 / 添加 / 删除远程仓库 |
 | `git_clone` | 克隆仓库 |
-| `analyze_remote_repo` | 克隆 + 读取所有文件 → 结构化摘要 |
 
 ### 记忆
 
@@ -386,7 +401,9 @@ python main.py migrate v1 ./chroma_memory
 
 该命令会创建 `.v1-backup` 备份，并将 v2 数据写入 `~/.kyrozen/v2/`（也可通过 `KYROZEN_DB_PATH` 指定）。
 
-任务会跨重启保存。`TaskDone` 只是完成请求，只有工具结果、测试、文件检查或明确确认提供证据后，任务才会进入成功状态。可使用 `/learning status`、`/learning explain <proposal_id>` 和 `/learning rollback <proposal_id>` 管理学习提案。
+任务会跨重启保存，状态为 `pending`、`running`、`succeeded`、`failed`、`blocked` 或 `cancelled`；旧的 `done` 仍可读取。`TaskDone` 只是完成请求，只有工具结果、测试、文件检查或明确确认提供证据后，任务才会进入成功状态。API 创建的安全任务会由 worker 在重启后继续，failed/blocked 任务必须通过 `/api/v2/tasks/{task_id}/resume` 显式恢复。可使用 `/learning status`、`/learning explain <proposal_id>` 和 `/learning rollback <proposal_id>` 管理学习提案。
+
+Web/MCP 是单用户部署：一个 `KYROZEN_SERVER_TOKEN` 代表该部署唯一的私有 actor；请求体中的 `speaker` 不能伪造私有身份。私有记忆、任务、事件、计划和学习状态按该 actor、workspace、session 作用域隔离；共享部署的多个私有用户应使用不同部署和数据库。
 
 ---
 
@@ -406,30 +423,37 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | 方法 | 端点 | 描述 |
 |------|------|------|
 | `GET` | `/` | 暗色主题聊天 Web UI |
-| `POST` | `/api/chat` | 发送消息，获取 JSON 响应 |
-| `POST` | `/api/chat/stream` | SSE 流式聊天 |
+| `POST` | `/api/chat` | 发送消息并返回带记忆 receipt 的 JSON 回复 |
+| `POST` | `/api/chat/stream` | SSE 流式聊天；仅在 `[DONE]` 后发送完成 webhook |
 | `GET` | `/api/memory?q=关键词` | 搜索已存储的记忆 |
-| `GET` | `/api/v2/memory?q=关键词` | 返回带来源、置信度和作用域的结构化记忆 |
+| `GET` | `/api/v2/memory?q=关键词&speaker=...&audience=...&channel=...` | 返回带来源、置信度和参与者作用域的结构化记忆 |
 | `GET/POST` | `/api/v2/tasks` | 持久化任务查询与创建 |
+| `POST` | `/api/v2/tasks/{task_id}/resume` | 显式恢复 failed/blocked 任务 |
 | `GET` | `/api/v2/learning` | 查看学习提案 |
-| `GET` | `/api/v2/learning/features` | 查看 20 项功能注册表和最新运行状态 |
-| `POST` | `/api/v2/learning/{id}/rollback` | 回滚已激活的学习提案 |
+| `GET` | `/api/v2/learning/metrics?profile=...` | 查看完成、纠正、错误、工具、token 和延迟指标 |
+| `GET` | `/api/v2/learning/features` | 查看权威的 20 项功能注册表和最新运行状态 |
+| `GET` | `/api/v2/learning/{proposal_id}/evidence` | 查看 proof card、适用性、回放和结果 receipt |
+| `POST` | `/api/v2/learning/{proposal_id}/replay` | 记录成对的沙箱候选/前身回放结果 |
+| `POST` | `/api/v2/learning/{proposal_id}/omission` | 记录有/无学习产物的成对结果 |
+| `POST` | `/api/v2/learning/{proposal_id}/retire` | 用不回归的 omission 证据退役产物 |
+| `POST` | `/api/v2/learning/{proposal_id}/restore` | 将退役产物恢复为 canary |
+| `GET` | `/api/v2/learning/{proposal_id}/capsule` | 导出脱敏、与 harness 无关的经验 capsule |
+| `POST` | `/api/v2/learning/capsules` | 将 capsule 导入为非激活候选 |
+| `GET` | `/api/v2/learning/constitution` | 查看不可变的用户学习策略 |
+| `POST` | `/api/v2/learning/{proposal_id}/rollback` | 回滚已激活的学习提案 |
+| `GET/POST` | `/api/v2/memory/claims` | 列出或创建带类型、归属和作用域的记忆声明 |
+| `GET/DELETE` | `/api/v2/memory/claims/{claim_id}` | 解释或连同唯一依赖一起遗忘声明 |
 | `GET` | `/api/v2/events` | 查看运行时、会话、任务和学习审计事件 |
 | `GET/POST` | `/api/v2/schedules` | 持久化 interval/一次性 Gateway 任务 |
-| `POST` | `/api/v2/schedules/{id}/disable` | 禁用定时任务 |
+| `POST` | `/api/v2/schedules/{job_id}/disable` | 禁用定时任务 |
 | `GET` | `/api/v2/skills` | 查看候选/已激活技能 |
 | `POST` | `/api/v2/skills/install` | 安装并验证本地 `SKILL.md` 技能包 |
-| `POST` | `/api/v2/skills/{id}/activate` | 激活已验证技能 |
-| `POST` | `/api/v2/skills/{id}/rollback` | 回滚技能 |
+| `POST` | `/api/v2/skills/{skill_id}/activate` | 激活已验证技能 |
+| `POST` | `/api/v2/skills/{skill_id}/rollback` | 回滚技能 |
 | `GET` | `/api/v2/sessions` | 列出持久化会话 |
-| `GET` | `/api/v2/sessions/{id}` | 恢复/读取会话上下文 |
+| `GET` | `/api/v2/sessions/{session_id}` | 恢复/读取会话上下文 |
 | `GET` | `/api/v2/agents` | 查看专用子 Agent profile |
 | `POST` | `/api/v2/agents/run` | 使用独立记忆和权限运行子 Agent |
-
-浏览器工具（`browser_open`、`browser_snapshot`、`browser_click`、`browser_type`、
-`browser_close`）使用隔离 profile。安装 `pip install 'openkyrozen[browser]' &&
-playwright install chromium` 后即可使用。默认阻止内网和 loopback 地址；只有显式设置
-`KYROZEN_BROWSER_ALLOW_PRIVATE=1` 才会放开。
 | `GET` | `/api/cost` | Token 用量和费用摘要 |
 | `GET` | `/api/health` | 服务商状态 + 记忆计数 |
 | `GET` | `/api/voice/speak?text=...` | 通过系统 TTS 进行文本转语音 |
@@ -438,6 +462,12 @@ playwright install chromium` 后即可使用。默认阻止内网和 loopback �
 | `GET` | `/api/webhooks` | 列出已注册的 webhook |
 | `POST` | `/api/webhooks/test` | 触发测试 webhook |
 | `POST` | `/mcp` | 模型上下文协议（JSON-RPC 2.0） |
+
+浏览器工具（`browser_open`、`browser_snapshot`、`browser_click`、`browser_type`、
+`browser_close`）使用隔离 profile。安装 `pip install 'openkyrozen[browser]' &&
+playwright install chromium` 后即可使用。默认阻止内网和 loopback 地址；只有显式设置
+`KYROZEN_BROWSER_ALLOW_PRIVATE=1` 才会放开。所有 JSON Action 都使用纯字符串 `args`；MCP
+的 `tools/list` 和 `server/discover` 为允许的工具提供 `inputSchema`，并把对象参数映射回同一字符串契约。未知/未授权工具是 JSON-RPC 协议错误，工具执行失败使用 `result.isError: true`。完整清单见 [docs/tool-inventory.md](docs/tool-inventory.md)。
 
 API 和 MCP 路由在本机回环访问时可以不使用令牌；任何非本机部署都必须
 设置 `KYROZEN_SERVER_TOKEN`，并通过 `Authorization: Bearer <token>` 或
@@ -519,11 +549,18 @@ def register():
 | `KYROZEN_MODEL_SIMPLE` | 简单/中等任务模型 | 服务商默认值 |
 | `KYROZEN_MODEL_COMPLEX` | 复杂任务模型 | 服务商默认值 |
 | `KYROZEN_BASE_URL` | 自定义 API 基础 URL | 服务商默认值 |
+| `KYROZEN_DB_PATH` | SQLite 事实主库路径 | `~/.kyrozen/v2/openkyrozen.sqlite3` |
+| `KYROZEN_SERVER_TOKEN` | 非本机 Web/MCP 访问令牌 | 未设置（仅回环访问） |
+| `KYROZEN_SERVER_ACTOR` | 单用户部署的稳定 actor 标签 | `local` |
 | `KYROZEN_EXECUTION_SURFACE` | 执行面（`cli` 或 `web`） | `cli` |
 | `KYROZEN_ALLOW_DYNAMIC_TOOLS` | 允许 LLM 生成 Python 工具（`1`/`true`） | CLI：开启；Web/MCP：关闭 |
 | `KYROZEN_APPROVAL_MODE` | CLI 高影响 Git 操作确认模式（`dangerous`/`never`） | `dangerous` |
 | `KYROZEN_WEB_CAPABILITIES` | Web 聊天能力：`readonly`、`workspace` 或 `full` | `workspace` |
 | `KYROZEN_MCP_CAPABILITIES` | MCP 能力：`readonly`、`workspace` 或 `full` | `workspace` |
+| `KYROZEN_AGENT_CONFIG` | 显式 `agent.yaml` 路径 | 工作区配置，然后打包默认值 |
+| `KYROZEN_ROLE` / `KYROZEN_ROLE_PROMPT` | 覆盖 role 名称或 role prompt | 打包 prompt |
+| `KYROZEN_INSTRUCTIONS` / `KYROZEN_EXAMPLES` | 覆盖运行时说明或 JSON examples | 打包 prompt |
+| `KYROZEN_AGENT_CAPABILITIES` | 能力上限，不能绕过 surface/审批/认证 | `full` |
 
 本地 CLI 有意保持类似 Codex 或 OpenClaw 的高权限 Agent 能力：可以读写当前工作区、运行 Shell、访问网络并操作 Git。Web 和 MCP 默认同样提供丰富的 `workspace` 能力，但不可逆的 `git_reset` 以及 LLM 生成的 Python 工具需要显式启用 `full` 或 `KYROZEN_ALLOW_DYNAMIC_TOOLS=1`。认证和危险命令过滤仍然有效。
 
@@ -549,6 +586,7 @@ def register():
 ```bash
 # 快速验证
 make check
+make docs-check
 
 # 仅语法检查
 make lint
@@ -576,9 +614,9 @@ make push
 
 GitHub Actions 在每次推送和 PR 时自动运行：
 - Python 3.12 和 3.13 语法检查
-- 工具清单验证
+- 从真实注册表生成的工具清单和文档一致性检查
 - 服务商导入检查
-- Docker 构建验证
+- Docker 构建和替换容器恢复 smoke test
 
 ### pip 包
 
@@ -596,9 +634,9 @@ pip install '.[all]'            # + Claude + Gemini + Web
 ```
 OpenKyrozen/
 ├── main.py              # 核心智能体循环、自学习、对话逻辑
-├── tools.py             # 26 种内置工具（文件、Shell、Git、网页）
+├── tools.py             # 29 项基础工具；main.py 再加入两个 SQLite 记忆动作
 ├── providers.py         # 多 LLM 抽象层（5 个服务商 + 回退）
-├── memory.py            # ChromaDB 支持的向量记忆
+├── memory.py            # SQLite 事实记忆 + 可重建 Chroma 索引
 ├── server.py            # FastAPI Web 服务器 + REST API + 聊天 UI
 ├── pyproject.toml       # pip 包配置
 ├── Dockerfile           # Docker 镜像定义
@@ -606,7 +644,8 @@ OpenKyrozen/
 ├── setup.bat / run.bat  # Windows 批处理脚本
 ├── plugins/             # 插件目录（基于钩子）
 ├── prompts/             # 提示词模板（角色、指令、示例）
-├── chroma_memory/       # ChromaDB 持久化存储（自动创建）
+├── docs/tool-inventory.md # 生成的运行时工具和端点清单
+├── scripts/              # 可复现的文档和 smoke check
 └── .github/workflows/   # CI/CD 流水线
 ```
 
