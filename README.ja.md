@@ -559,6 +559,7 @@ def register():
 # クイック検証
 make check
 make docs-check
+make shell-check
 
 # 構文チェックのみ
 make lint

@@ -1,4 +1,4 @@
-.PHONY: install run clean lint test check docs-check benchmark docker-smoke git-status git-diff git-log web
+.PHONY: install run clean lint test check docs-check shell-check benchmark docker-smoke git-status git-diff git-log web
 
 # Prefer the known-stable Python 3.12, but use the active supported Python
 # 3.13 on clean runners that do not provide 3.12. Python 3.14 remains
@@ -49,7 +49,7 @@ clean:
 
 # Syntax check
 lint:
-	$(VENV_PYTHON) -m compileall -q main.py main_debug.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py scripts/generate_tool_inventory.py scripts/check_docs.py
+	$(VENV_PYTHON) -m compileall -q main.py main_debug.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py
 	@echo "Python syntax OK."
 	@echo "All files pass syntax check."
 
@@ -71,6 +71,10 @@ benchmark:
 docs-check:
 	$(VENV_PYTHON) scripts/generate_tool_inventory.py --check
 	$(VENV_PYTHON) scripts/check_docs.py
+	$(VENV_PYTHON) scripts/check_zsh_extras.py
+
+shell-check:
+	$(VENV_PYTHON) scripts/check_zsh_extras.py
 
 docker-smoke:
 	@command -v docker >/dev/null 2>&1 || { echo "Error: Docker is required for the container smoke test."; exit 1; }
@@ -80,10 +84,11 @@ docker-smoke:
 # Quick verification
 check:
 	@echo "Checking Python syntax..."
-	@$(VENV_PYTHON) -m py_compile main.py main_debug.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py scripts/generate_tool_inventory.py scripts/check_docs.py
+	@$(VENV_PYTHON) -m py_compile main.py main_debug.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py
 	@echo "  Python modules: OK"
 	@echo "Checking git tools..."
 	@$(VENV_PYTHON) -c "from tools import AVAILABLE_TOOLS; git = [k for k in AVAILABLE_TOOLS if k.startswith('git_')]; print(f'  {len(git)} git tools, {len(AVAILABLE_TOOLS)} total tools')"
+	@$(VENV_PYTHON) scripts/check_zsh_extras.py
 	@echo "All checks passed."
 
 # Git helpers
