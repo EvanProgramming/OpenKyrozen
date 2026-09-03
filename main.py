@@ -94,7 +94,7 @@ from rich.panel import Panel
 from rich import print as rprint
 
 from memory import MemoryBank
-from task_engine import TaskManager, TaskWorker
+from task_engine import TaskManager, TaskWorker, canonical_status, is_complete, is_terminal
 from event_store import stable_hash
 from learning_engine import LearningEngine
 from skill_registry import SkillRegistry
@@ -210,17 +210,18 @@ def _tasks_panel_content() -> str:
     if not tasks.tasks:
         return ""
     total = len(tasks.tasks)
-    done = sum(1 for t in tasks.tasks if t["status"] in {"done", "succeeded"})
+    done = sum(1 for t in tasks.tasks if is_complete(t))
     bar_w = 20
     filled = int(bar_w * done / max(total, 1))
     bar = _BAR_FILL * filled + _BAR_EMPTY * (bar_w - filled)
     lines = [f"[bold white on {_ACCENT_BG}] {_BOX_TL}{_BOX_H}{_BOX_H} TASKS [{bar}] {done}/{total} [/]"]
     for i, t in enumerate(tasks.tasks):
-        icon = _CHECK if t["status"] in {"done", "succeeded"} else _CIRCLE if t["status"] == "pending" else _HALF
-        color = _SUCCESS if t["status"] in {"done", "succeeded"} else _WARNING if t["status"] == "pending" else _ACCENT
+        status = canonical_status(t["status"])
+        icon = _CHECK if is_complete(t) else _CIRCLE if status == "pending" else _HALF
+        color = _SUCCESS if is_complete(t) else _WARNING if status == "pending" else _ACCENT
         desc = t["description"][:55]
         lines.append(f"[white on {_ACCENT_BG}] {_BOX_V} [{color}]{icon}[/{color}] [{_MUTED}]{i}[/{_MUTED}] {desc} [/]")
-    pending = sum(1 for t in tasks.tasks if t["status"] not in {"done", "succeeded", "failed", "blocked", "cancelled"})
+    pending = sum(1 for t in tasks.tasks if not is_terminal(t))
     if pending > 0:
         lines.append(f"[bold white on {_ACCENT_BG}] {_BOX_BL}{_BOX_H}{_BOX_H} {pending} remaining — DO NOT STOP [/]")
     else:
@@ -2868,13 +2869,100 @@ def _is_question(text: str) -> bool:
     return any(phrase in low for phrase in question_phrases)
 
 
+def _clean_final_response(text: str) -> str:
+    """Return only user-facing prose from one model response.
+
+    Plan, TaskList, TaskDone, Thought, and Action are control protocol.  They
+    are useful in the next model prompt, but must never become the final
+    answer merely because the turn stopped after a tool call.
+    """
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+    # Remove fenced protocol blocks first.  The model's JSON may contain
+    # braces and newlines, so a line-based JSON parser would be less reliable.
+    cleaned = re.sub(r"Action:\s*```(?:json)?\s*[\s\S]*?```", "", cleaned,
+                     flags=re.IGNORECASE)
+    cleaned = re.sub(r"TaskList:\s*```(?:json)?\s*[\s\S]*?```", "", cleaned,
+                     flags=re.IGNORECASE)
+    # Accept the legacy plain JSON forms too.
+    cleaned = re.sub(r"Action:\s*(?:\{[\s\S]*?\}|\[[\s\S]*?\])", "", cleaned,
+                     flags=re.IGNORECASE)
+    cleaned = re.sub(r"TaskList:\s*(?:\[[\s\S]*?\])", "", cleaned,
+                     flags=re.IGNORECASE)
+    # Plans are normally numbered.  Remove only the numbered lines so a
+    # natural-language sentence after a plan-only response is preserved.
+    cleaned = re.sub(
+        r"^[ \t]*Plan:[ \t]*\n(?:[ \t]*(?:\d+[.)]|[-*])[ \t]+.*(?:\n|$))+",
+        "", cleaned, flags=re.IGNORECASE | re.MULTILINE,
+    )
+    # For non-numbered legacy plans, remove the plan through the next control
+    # heading.  This branch is deliberately narrower than a greedy Plan:*.*
+    # removal so it cannot swallow a final paragraph.
+    cleaned = re.sub(
+        r"^[ \t]*Plan:[ \t]*\n[\s\S]*?(?=^[ \t]*(?:Action|TaskList|TaskDone):)",
+        "", cleaned, flags=re.IGNORECASE | re.MULTILINE,
+    )
+    cleaned = re.sub(r"^[ \t]*TaskDone:[ \t]*\d+[ \t]*$", "", cleaned,
+                     flags=re.IGNORECASE | re.MULTILINE)
+    # Thought is internal narration.  Remove its heading line while keeping
+    # any following natural-language answer.
+    cleaned = re.sub(r"^[ \t]*Thought:[ \t]*.*(?:\n|$)", "", cleaned,
+                     flags=re.IGNORECASE | re.MULTILINE)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _remove_task_blocks(text: str) -> str:
-    """Remove TaskList and TaskDone blocks from a string."""
-    return re.sub(
-        r"(?:TaskList:\s*```(?:json)?[\s\S]*?```|TaskDone:\s*\d+)",
-        "",
-        text
-    ).strip()
+    """Backward-compatible name for protocol-block removal."""
+    return _clean_final_response(text)
+
+
+def _parse_model_response(text: str) -> dict[str, Any]:
+    """Parse one model response exactly once for the turn state machine."""
+    raw = str(text or "").strip()
+    return {
+        "raw": raw,
+        "clean": _clean_final_response(raw),
+        "has_plan": bool(re.search(r"^[ \t]*Plan:", raw, re.IGNORECASE | re.MULTILINE)),
+        "has_tasklist": bool(re.search(r"^[ \t]*TaskList:", raw, re.IGNORECASE | re.MULTILINE)),
+        "tool_calls": _collect_tool_calls(raw),
+        "unknown_action": _detect_unknown_action(raw),
+    }
+
+
+def _observe_model_response(text: str) -> dict[str, Any]:
+    """Parse a response once and merge its durable task signals once."""
+    parsed = _parse_model_response(text)
+    if parsed["raw"]:
+        tasks.from_llm_block(parsed["raw"])
+        tasks.mark_done_from_text(parsed["raw"])
+    return parsed
+
+
+def _deterministic_tool_summary(tool_records: list[dict[str, Any]]) -> str:
+    """Build a truthful final summary when the model emitted only protocol."""
+    lines: list[str] = []
+    for record in tool_records:
+        action = str(record.get("action") or "tool")
+        status = "succeeded" if record.get("success") else "failed"
+        result = str(record.get("result") or "").strip().replace("\n", " ")
+        if len(result) > 300:
+            result = result[:297] + "..."
+        line = f"- {action}: {status}"
+        if result:
+            line += f" — {result}"
+        lines.append(line)
+    task_lines: list[str] = []
+    for task in tasks.tasks:
+        status = canonical_status(task.get("status", "pending"))
+        task_lines.append(f"- {status}: {task.get('description', '')}")
+    if task_lines:
+        lines.append("Tasks:")
+        lines.extend(task_lines)
+    if not lines:
+        return "I could not produce a user-facing response."
+    return "I executed the requested actions.\n\n" + "\n".join(lines)
 
 
 def _safe_fstring(s: str) -> str:
@@ -2892,16 +2980,16 @@ def _tasks_from_plan(text: str) -> None:
     if not plan_match:
         return
     plan_body = plan_match.group(1).strip()
-    for line in plan_body.splitlines():
+    for index, line in enumerate(plan_body.splitlines()):
         line = line.strip()
         if not line:
             continue
         # Remove leading numbering "1." or "1)" etc.
         cleaned = re.sub(r"^\s*\d+[.)]?\s*", "", line).strip()
         if cleaned:
-            tasks.add_task(cleaned)
+            tasks.add_task(cleaned, task_id=f"plan-{index + 1}")
         else:
-            tasks.add_task(line)
+            tasks.add_task(line, task_id=f"plan-{index + 1}")
 
 
 def _build_task_progress_hint() -> str:
@@ -2910,14 +2998,15 @@ def _build_task_progress_hint() -> str:
     if not tasks.tasks:
         return ""
     total = len(tasks.tasks)
-    done = sum(1 for t in tasks.tasks if t["status"] == "done")
-    pending_tasks = [t for t in tasks.tasks if t["status"] == "pending"]
+    done = sum(1 for t in tasks.tasks if is_complete(t))
+    pending_tasks = [t for t in tasks.tasks if canonical_status(t["status"]) == "pending"]
     lines = [
         "=" * 40,
-        f"📋 YOUR TASK LIST ({done}/{total} done):",
+        f"📋 YOUR TASK LIST ({done}/{total} succeeded):",
     ]
     for i, t in enumerate(tasks.tasks):
-        icon = "✓" if t["status"] == "done" else "○" if t["status"] == "pending" else "◷"
+        status = canonical_status(t["status"])
+        icon = "✓" if is_complete(t) else "○" if status == "pending" else "◷"
         desc = t["description"][:80]
         lines.append(f"  [{i}] {icon} {desc}")
     if pending_tasks:
@@ -3049,20 +3138,15 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
         turn_prompt_total += _last_prompt_tokens
         turn_completion_total += _last_completion_tokens
 
-    # Process task blocks from the LLM
-    tasks.from_llm_block(response_text)
-    tasks.mark_done_from_text(response_text)
-    response_text_clean = re.sub(r'(?:TaskList:\s*```(?:json)?[\s\S]*?```|TaskDone:\s*\d+)', '', response_text).strip()
-    if not response_text_clean:
-        response_text_clean = response_text
-    response_text = response_text_clean
-
-    tool_calls = _collect_tool_calls(response_text)
+    # Parse and observe each model response once.  Keep the raw response for
+    # model context; use the parsed clean field for anything user-facing.
+    response_meta = _observe_model_response(response_text)
+    tool_calls = response_meta["tool_calls"]
 
     # ---- Unknown action detection (all complexity levels) ----
     _unknown_retries = 0
     while _unknown_retries < MAX_UNKNOWN_TOOL_RETRIES:
-        unknown_action = _detect_unknown_action(response_text)
+        unknown_action = response_meta["unknown_action"]
         if not unknown_action:
             break
         _unknown_retries += 1
@@ -3076,12 +3160,11 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
         response_text = _call_llm_with_spinner(messages).strip()
         turn_prompt_total += _last_prompt_tokens
         turn_completion_total += _last_completion_tokens
-        tasks.from_llm_block(response_text)
-        tasks.mark_done_from_text(response_text)
-        tool_calls = _collect_tool_calls(response_text)
+        response_meta = _observe_model_response(response_text)
+        tool_calls = response_meta["tool_calls"]
 
     # ---- Plan enforcement: MEDIUM and COMPLEX only ----
-    _llm_has_plan = bool(re.search(r"Plan:", response_text))
+    _llm_has_plan = response_meta["has_plan"]
     if complexity in ("medium", "complex"):
         plan_attempts = 0
         while not _llm_has_plan and tool_calls and plan_attempts < 2:
@@ -3094,10 +3177,9 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
             response_text = _call_llm_with_spinner(messages).strip()
             turn_prompt_total += _last_prompt_tokens
             turn_completion_total += _last_completion_tokens
-            tasks.from_llm_block(response_text)
-            tasks.mark_done_from_text(response_text)
-            tool_calls = _collect_tool_calls(response_text)
-            _llm_has_plan = bool(re.search(r"Plan:", response_text))
+            response_meta = _observe_model_response(response_text)
+            tool_calls = response_meta["tool_calls"]
+            _llm_has_plan = response_meta["has_plan"]
         if not _llm_has_plan and tool_calls and plan_attempts >= 2:
             # Auto‑generate a minimal plan from tool calls
             plan_lines = ["Plan:"]
@@ -3106,7 +3188,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
             # Don't inject — just let it proceed without plan this time
 
     # ---- TaskList enforcement: COMPLEX only ----
-    _llm_has_tasklist = bool(re.search(r"TaskList:", response_text))
+    _llm_has_tasklist = response_meta["has_tasklist"]
     if complexity == "complex" and tool_calls:
         if not _llm_has_tasklist and _llm_has_plan:
             _tasks_from_plan(response_text)
@@ -3115,8 +3197,9 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
                 _update_tasks_panel()
         if not _llm_has_tasklist:
             # Auto‑generate TaskList from plan or tool calls
-            tasks.clear()
-            if _llm_has_plan:
+            # Never clear durable tasks here: a repeated plan is an update to
+            # the current turn, not permission to erase recovered progress.
+            if _llm_has_plan and not tasks.tasks:
                 _tasks_from_plan(response_text)
             if not tasks.tasks:
                 for tc in tool_calls:
@@ -3155,10 +3238,11 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
                 turn_completion_total += _last_completion_tokens
                 if not response_text:
                     continue
-                tool_calls = _collect_tool_calls(response_text)
+                response_meta = _observe_model_response(response_text)
+                tool_calls = response_meta["tool_calls"]
                 if tool_calls:
-                    tasks.from_llm_block(response_text)
-                    tasks.mark_done_from_text(response_text)
+                    _llm_has_plan = response_meta["has_plan"]
+                    _llm_has_tasklist = response_meta["has_tasklist"]
         if not tool_calls:
             elapsed = time.time() - turn_start
             _turn_cost_log.append({
@@ -3167,7 +3251,8 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
                 "tool_calls": 0
             })
             return _finish_learning_run(
-                learning_run, learning_receipts, user_input, response_text, [],
+                learning_run, learning_receipts, user_input,
+                response_meta["clean"] or "I could not produce a user-facing response.", [],
                 turn_prompt_total + turn_completion_total, turn_start,
             )
 
@@ -3204,7 +3289,8 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
         results.append(f"- `{action}({args!r})` returned:\n{_safe_fstring(safe_result)}")
         if tasks.tasks:
             _update_tasks_panel()
-    tool_results_text = "\n".join(results)
+    all_tool_result_lines = list(results)
+    tool_results_text = "\n".join(all_tool_result_lines)
 
     # Unified multi-step loop - always runs, can handle early errors
     round_limit = MAX_STEPS_PER_TURN
@@ -3322,17 +3408,15 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
         if not step_reply:
             break
 
-        # let the tasks manager know about any TaskDone/TaskList in this reply
-        tasks.from_llm_block(step_reply)
-        tasks.mark_done_from_text(step_reply)
-
-        # extract tool calls for the next step
-        next_tool_calls = _collect_tool_calls(step_reply)
+        # Observe this response once.  The same parsed result drives task
+        # updates, unknown-action handling, loop control, and final rendering.
+        step_meta = _observe_model_response(step_reply)
+        next_tool_calls = step_meta["tool_calls"]
 
         # ----- reject unknown action names and force re-prompting -----
         _unknown_tool_retries = 0
         while _unknown_tool_retries < 3:
-            unknown_action = _detect_unknown_action(step_reply)
+            unknown_action = step_meta["unknown_action"]
             if not unknown_action:
                 break
             _unknown_tool_retries += 1
@@ -3350,10 +3434,9 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
             turn_completion_total += _last_completion_tokens
             if not step_reply:
                 break
-            # re‑parse tasks and tool calls
-            tasks.from_llm_block(step_reply)
-            tasks.mark_done_from_text(step_reply)
-            next_tool_calls = _collect_tool_calls(step_reply)
+            # Re-observe the replacement response exactly once.
+            step_meta = _observe_model_response(step_reply)
+            next_tool_calls = step_meta["tool_calls"]
 
         # if after 3 retries the action is still unknown, clear the list to avoid a crash
         if _unknown_tool_retries >= 3:
@@ -3362,26 +3445,26 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
         # if there are no more tool calls, the LLM might be giving a natural reply
         if not next_tool_calls:
             # If all tasks are already done (or none were set), accept this as final answer
-            all_done = not tasks.tasks or all(
-                t["status"] in {"done", "succeeded", "failed", "blocked", "cancelled"}
-                for t in tasks.tasks
-            )
+            all_done = not tasks.tasks or all(is_terminal(t) for t in tasks.tasks)
             if all_done:
-                final_answer = step_reply
+                final_answer = (step_meta["clean"] or _deterministic_tool_summary(tool_records))
                 break
 
             # Find the next pending task to tell the LLM what to do
             next_pending_desc = ""
             for t in tasks.tasks:
-                if t["status"] == "pending":
+                if canonical_status(t["status"]) == "pending":
                     next_pending_desc = t["description"]
                     break
 
-            if tasks.tasks and any(t["status"] != "done" for t in tasks.tasks):
+            if tasks.tasks and any(
+                not is_complete(t) and canonical_status(t["status"]) != "cancelled"
+                for t in tasks.tasks
+            ):
                 incomplete_prompt_attempts += 1
                 if incomplete_prompt_attempts >= 12:
                     for idx, task in enumerate(tasks.tasks):
-                        if task["status"] in {"pending", "running"}:
+                        if canonical_status(task["status"]) in {"pending", "running"}:
                             tasks.set_status(idx, "blocked")
                     console.print(f"[{_WARNING}]Blocked remaining tasks after {incomplete_prompt_attempts} unsuccessful nudges; no task was marked complete.[/{_WARNING}]")
                     break
@@ -3400,9 +3483,8 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
                 turn_completion_total += _last_completion_tokens
                 if not step_reply:
                     break
-                tasks.from_llm_block(step_reply)
-                tasks.mark_done_from_text(step_reply)
-                next_tool_calls = _collect_tool_calls(step_reply)
+                step_meta = _observe_model_response(step_reply)
+                next_tool_calls = step_meta["tool_calls"]
                 if not next_tool_calls:
                     # Still no action — don't give up yet, loop will try again
                     # (incomplete_prompt_attempts will eventually trigger the 12-nudge limit)
@@ -3417,11 +3499,10 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
                 turn_completion_total += _last_completion_tokens
                 if not step_reply:
                     break
-                tasks.from_llm_block(step_reply)
-                tasks.mark_done_from_text(step_reply)
-                next_tool_calls = _collect_tool_calls(step_reply)
+                step_meta = _observe_model_response(step_reply)
+                next_tool_calls = step_meta["tool_calls"]
                 if not next_tool_calls:
-                    final_answer = step_reply
+                    final_answer = step_meta["clean"] or _deterministic_tool_summary(tool_records)
                     break
             else:
                 summary_messages.append({
@@ -3434,11 +3515,10 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
                 turn_completion_total += _last_completion_tokens
                 if not step_reply:
                     break
-                tasks.from_llm_block(step_reply)
-                tasks.mark_done_from_text(step_reply)
-                next_tool_calls = _collect_tool_calls(step_reply)
+                step_meta = _observe_model_response(step_reply)
+                next_tool_calls = step_meta["tool_calls"]
                 if not next_tool_calls:
-                    final_answer = step_reply
+                    final_answer = step_meta["clean"] or _deterministic_tool_summary(tool_records)
                     break
 
         # execute all new tool calls
@@ -3483,7 +3563,8 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
                     consecutive_search_failures += 1
                 else:
                     consecutive_search_failures = 0  # reset on success
-        tool_results_text = "\n".join(next_results)
+        all_tool_result_lines.extend(next_results)
+        tool_results_text = "\n".join(all_tool_result_lines)
         _has_args_missing = any(
             any(pat in r for pat in [
                 "requires a command",
@@ -3502,29 +3583,33 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
             step_reply = _call_llm_with_spinner(
                 summary_messages + [{"role": "user", "content": final_msg}]
             ).strip()
-            final_answer = step_reply if step_reply else (
-                "Search limit reached. Here's what I gathered: " + tool_results_text[:500]
-            )
+            search_meta = _observe_model_response(step_reply)
+            final_answer = search_meta["clean"] or _deterministic_tool_summary(tool_records)
             console.print(f"[{_WARNING}]Search limit reached — synthesizing final answer.[/{_WARNING}]")
             break
-        # Check if all pending tasks are done; if so, stop
+        # Check if all tasks reached a durable terminal state; if so, stop.
         # (also stops if no tasks were set — medium complexity just runs tools sequentially)
-        if not tasks.tasks or all(t["status"] != "pending" for t in tasks.tasks):
-            # If the LLM's latest reply was a natural-language answer without Action,
-            # use it as the final answer. Otherwise, synthesise from results.
-            if step_reply and not _collect_tool_calls(step_reply):
-                final_answer = step_reply
-            else:
-                final_answer = current_reply
+        if not next_tool_calls and (not tasks.tasks or all(is_terminal(t) for t in tasks.tasks)):
+            # Only the latest response may provide prose.  The initial Action
+            # response is never a valid fallback after work has run.
+            unsuccessful = any(
+                canonical_status(t["status"]) in {"failed", "blocked"}
+                for t in tasks.tasks
+            )
+            final_answer = (
+                _deterministic_tool_summary(tool_records)
+                if unsuccessful or not step_meta["clean"]
+                else step_meta["clean"]
+            )
             break
         # Update the LLM's previous output so the next iteration sees the new results (remove task blocks)
         current_reply = _remove_task_blocks(step_reply)
 
     if final_answer is None:
         # Fallback if the loop exited without a final answer
-        final_answer = f"I executed your request. Here is the information I gathered:\n\n{_safe_fstring(tool_results_text)}"
+        final_answer = _deterministic_tool_summary(tool_records)
     elif len(final_answer.strip()) < 10:
-        final_answer = f"I executed your request. Here is the information I gathered:\n\n{_safe_fstring(tool_results_text)}"
+        final_answer = _deterministic_tool_summary(tool_records)
 
     elapsed = time.time() - turn_start
     _turn_cost_log.append({
@@ -3532,7 +3617,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
         "time": elapsed,
         "tool_calls": len(tool_calls)
     })
-    final_answer = _remove_task_blocks(final_answer)
+    final_answer = _clean_final_response(final_answer)
 
     # If tasks were completed, generate a summary so the user knows what happened
     total_tools_executed = len(tool_records)
@@ -3545,11 +3630,13 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
             f"Tool results:\n{tool_results_text[:1500]}"
         )
         try:
-            summary = _get_llm_response(
+            summary_raw = _get_llm_response(
                 [{"role": "system", "content": summary_prompt}]
             ).strip()
             turn_prompt_total += _last_prompt_tokens
             turn_completion_total += _last_completion_tokens
+            summary_meta = _parse_model_response(summary_raw)
+            summary = summary_meta["clean"] if not summary_meta["tool_calls"] else ""
             if summary and len(summary) > 30:
                 if len(final_answer.strip()) < 60:
                     final_answer = summary

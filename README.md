@@ -395,6 +395,8 @@ The migration creates a `.v1-backup` copy and writes the v2 database under `~/.k
 
 Tasks persist across process restarts and use `pending`, `running`, `succeeded`, `failed`, `blocked`, and `cancelled` states. `TaskDone` is only a completion request; a successful tool result, test, file check, or explicit confirmation must provide evidence before a task can succeed. API-created tasks with an explicit safe `action` and string `args` are picked up by the durable worker after server restart; failed or blocked tasks require an explicit resume request.
 
+For model-generated complex work, give each `TaskList` item a stable `id` when the same turn can be retried; that ID is preferred over the description and is scoped to the authenticated user, workspace, and session. A `TaskList` update never clears recovered progress. `done` remains readable for old records but new progress and completion summaries use `succeeded`. `Plan`, `TaskList`, `TaskDone`, `Thought`, and `Action` are control blocks: the chat surface uses them internally and returns the latest natural-language response (or a deterministic tool/evidence summary), never a stale `Action` block.
+
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v2/tasks \
   -H 'Content-Type: application/json' \
