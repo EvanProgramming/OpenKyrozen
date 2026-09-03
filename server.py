@@ -61,6 +61,14 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 
 _SERVER_TOKEN = os.environ.get("KYROZEN_SERVER_TOKEN", "").strip()
+# A server process is deliberately single-user.  The bearer token authenticates
+# access to this deployment; it is not a multi-user identity provider.  Keep
+# this actor stable across loopback/token access and token rotation so existing
+# private state remains owned by the same deployment user.
+_CONFIGURED_SERVER_ACTOR = os.environ.get("KYROZEN_SERVER_ACTOR", "local").strip()
+_SERVER_ACTOR_ID = (_CONFIGURED_SERVER_ACTOR
+                   if re.fullmatch(r"[A-Za-z0-9_.:@-]{1,64}", _CONFIGURED_SERVER_ACTOR)
+                   else "local")
 _LOCAL_CLIENT_NAMES = {"localhost", "127.0.0.1", "::1", "testclient"}
 
 
@@ -127,7 +135,13 @@ _MAX_SESSION_MESSAGES = 32
 _MAX_MESSAGE_CHARS = 12_000
 _MAX_MEMORY_QUERY_CHARS = 500
 _MAX_MEMORY_RESULTS = 50
-_scheduler = JobScheduler(_agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id)
+# The web surface must use the authenticated deployment actor for every
+# durable subsystem.  Request JSON can describe a public/group speaker, but
+# it can never change ownership of private state.
+_agent.memory_bank.user_id = _SERVER_ACTOR_ID
+_agent.tasks.user_id = _SERVER_ACTOR_ID
+_scheduler = JobScheduler(_agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id,
+                          user_id=_SERVER_ACTOR_ID)
 
 
 def _run_scheduled_job(job: dict[str, Any]) -> None:
@@ -140,7 +154,7 @@ def _run_scheduled_job(job: dict[str, Any]) -> None:
         return
     if payload.get("type") == "chat":
         session_id = _normalise_session_id(payload.get("session_id"))
-        session = _get_or_create_session(session_id, "scheduler")
+        session = _get_or_create_session(session_id, _SERVER_ACTOR_ID)
         _run_session_chat(session, str(payload.get("message", "")))
         return
     raise ValueError(f"Unknown scheduled job type: {payload.get('type', 'default')}")
@@ -182,7 +196,8 @@ def _normalise_memory_context(speaker: Any, audience: Any, channel: Any) -> tupl
 
 
 def _set_memory_context(session: dict[str, Any], body: dict[str, Any]) -> None:
-    default = session.get("user_id", "local")
+    default = _SERVER_ACTOR_ID
+    session["user_id"] = default
     speaker = _normalise_memory_actor(body.get("speaker"), "speaker", session.get("speaker", default))
     audience = _normalise_memory_actor(body.get("audience"), "audience", session.get("audience", speaker))
     channel = _normalise_memory_actor(body.get("channel"), "channel", session.get("channel", "chat"))
@@ -191,16 +206,23 @@ def _set_memory_context(session: dict[str, Any], body: dict[str, Any]) -> None:
 
 
 def _actor_for_request(request: Request) -> str:
-    """Return a coarse audit actor; user_id is never accepted from JSON."""
-    return "authenticated" if _SERVER_TOKEN else "loopback"
+    """Return the stable single-user deployment actor.
+
+    Authentication is enforced by ``require_api_access``.  This function only
+    maps an already-authorized request to the one owner supported by this
+    server process; no header or JSON field can select another private user.
+    """
+    return _SERVER_ACTOR_ID
 
 
 def _get_or_create_session(session_id: str, user_id: str = "anonymous") -> dict:
+    user_id = _SERVER_ACTOR_ID
     with _chat_lock:
         if session_id not in _sessions:
             persisted = _agent.memory_bank.store.list_events(
                 event_type="session.message", limit=_MAX_SESSION_MESSAGES,
                 workspace_id=_agent.memory_bank.workspace_id, session_id=session_id,
+                user_id=user_id,
             )
             messages = []
             for event in reversed(persisted):
@@ -239,7 +261,7 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
         try:
             previous_recall = _agent.memory_bank.store.list_events(
                 "memory.recalled", limit=1, workspace_id=_agent.memory_bank.workspace_id,
-                session_id=session.get("session_id"),
+                session_id=session.get("session_id"), user_id=_SERVER_ACTOR_ID,
             )
             previous_recall_id = previous_recall[0]["id"] if previous_recall else None
             allowed = _allowed_server_tools("web")
@@ -267,7 +289,7 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
             session["updated"] = time.time()
             recalls = _agent.memory_bank.store.list_events(
                 "memory.recalled", limit=1, workspace_id=_agent.memory_bank.workspace_id,
-                session_id=_agent.memory_bank.session_id,
+                session_id=_agent.memory_bank.session_id, user_id=_SERVER_ACTOR_ID,
             )
             session["last_memory_receipt"] = (recalls[0]["payload"]
                                               if recalls and recalls[0]["id"] != previous_recall_id else None)
@@ -545,15 +567,18 @@ async def api_v2_memory(request: Request, q: str = "", limit: int = 10, session_
     speaker, audience, channel = _normalise_memory_context(speaker, audience, channel)
     authorized_speakers = {_actor_for_request(request)}
     if q:
-        memory = MemoryBank(_agent.memory_bank.db_path, workspace_id=_agent.memory_bank.workspace_id,
+        memory = MemoryBank(_agent.memory_bank.db_path, user_id=_actor_for_request(request),
+                            workspace_id=_agent.memory_bank.workspace_id,
                             session_id=_normalise_session_id(session_id) if session_id else None)
         results = memory.recall_records(q, n_results=limit, speaker=speaker, audience=audience, channel=channel,
                                         authorized_speakers=authorized_speakers)
     else:
-        memory = MemoryBank(_agent.memory_bank.db_path, workspace_id=_agent.memory_bank.workspace_id,
+        memory = MemoryBank(_agent.memory_bank.db_path, user_id=_actor_for_request(request),
+                            workspace_id=_agent.memory_bank.workspace_id,
                             session_id=_normalise_session_id(session_id) if session_id else None)
         rows = memory.store.list_memories(status="active", limit=limit * 4,
-                                          workspace_id=memory.workspace_id, session_id=memory.session_id)
+                                          workspace_id=memory.workspace_id, session_id=memory.session_id,
+                                          user_id=_actor_for_request(request))
         results = memory.filter_records(rows, speaker=speaker, audience=audience, channel=channel,
                                         authorized_speakers=authorized_speakers)[:limit]
     return {"results": results, "total": memory.count_logs(), "scope": {
@@ -566,7 +591,8 @@ async def api_v2_memory_claims(request: Request, speaker: str | None = None, aud
                                channel: str | None = None):
     speaker, audience, channel = _normalise_memory_context(speaker, audience, channel)
     rows = _agent.memory_bank.store.list_memories(status=None, limit=10000,
-                                                  workspace_id=_agent.memory_bank.workspace_id)
+                                                  workspace_id=_agent.memory_bank.workspace_id,
+                                                  user_id=_actor_for_request(request))
     claims = [row for row in rows if row.get("metadata", {}).get("claim")]
     return {"claims": _agent.memory_bank.filter_records(
         claims, speaker=speaker, audience=audience, channel=channel,
@@ -579,8 +605,11 @@ async def api_v2_create_memory_claim(request: Request):
     body = await request.json()
     if not isinstance(body, dict):
         raise HTTPException(400, "JSON object required")
-    if body.get("claim_type") == "private_fact" and body.get("speaker") != _actor_for_request(request):
+    actor = _actor_for_request(request)
+    if body.get("claim_type") == "private_fact" and body.get("speaker") not in {None, actor}:
         raise HTTPException(403, "Private claims must belong to the authenticated speaker")
+    if body.get("claim_type") == "private_fact":
+        body["speaker"] = actor
     try:
         return _agent.learning_engine.remember_claim(
             key=body.get("key", ""), value=body.get("value", ""), kind=body.get("kind", "fact"),
@@ -618,8 +647,10 @@ async def api_v2_memory_forget_claim(claim_id: str):
 @app.get("/api/v2/tasks", dependencies=[Depends(require_api_access)])
 async def api_v2_tasks(session_id: str | None = None):
     session = _normalise_session_id(session_id) if session_id else None
-    manager = TaskManager(_agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id, session_id=session)
-    return {"tasks": manager.store.list_tasks(workspace_id=manager.workspace_id, session_id=session)}
+    manager = TaskManager(_agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id,
+                          session_id=session, user_id=_SERVER_ACTOR_ID)
+    return {"tasks": manager.store.list_tasks(workspace_id=manager.workspace_id, session_id=session,
+                                                user_id=_SERVER_ACTOR_ID)}
 
 
 @app.post("/api/v2/tasks", dependencies=[Depends(require_api_access)])
@@ -628,7 +659,8 @@ async def api_v2_create_task(request: Request):
     if not isinstance(body, dict) or not str(body.get("description", "")).strip():
         raise HTTPException(400, "description is required")
     session = _normalise_session_id(body.get("session_id"))
-    manager = TaskManager(_agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id, session_id=session)
+    manager = TaskManager(_agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id,
+                          session_id=session, user_id=_SERVER_ACTOR_ID)
     index = manager.add_task(
         str(body["description"]),
         dependencies=body.get("dependencies") if isinstance(body.get("dependencies"), list) else None,
@@ -739,7 +771,7 @@ async def api_v2_events(event_type: str | None = None, session_id: str | None = 
     session = _normalise_session_id(session_id) if session_id else None
     return {"events": _agent.memory_bank.store.list_events(
         event_type=event_type, limit=max(1, min(limit, 500)),
-        workspace_id=_agent.memory_bank.workspace_id, session_id=session,
+        workspace_id=_agent.memory_bank.workspace_id, session_id=session, user_id=_SERVER_ACTOR_ID,
     )}
 
 
@@ -747,13 +779,14 @@ async def api_v2_events(event_type: str | None = None, session_id: str | None = 
 async def api_v2_sessions(limit: int = 100):
     return {"sessions": _agent.memory_bank.store.list_sessions(
         workspace_id=_agent.memory_bank.workspace_id, limit=max(1, min(limit, 500)),
+        user_id=_SERVER_ACTOR_ID,
     )}
 
 
 @app.get("/api/v2/sessions/{session_id}", dependencies=[Depends(require_api_access)])
 async def api_v2_session(session_id: str):
     session_id = _normalise_session_id(session_id)
-    session = _get_or_create_session(session_id, "authenticated")
+    session = _get_or_create_session(session_id, _SERVER_ACTOR_ID)
     return {"session_id": session_id, "messages": session["messages"], "updated": session.get("updated")}
 
 
@@ -787,7 +820,8 @@ async def api_v2_create_schedule(request: Request):
 
 @app.post("/api/v2/schedules/{job_id}/disable", dependencies=[Depends(require_api_access)])
 async def api_v2_disable_schedule(job_id: str):
-    if not _agent.memory_bank.store.set_schedule_enabled(job_id, False, workspace_id=_agent.memory_bank.workspace_id):
+    if not _agent.memory_bank.store.set_schedule_enabled(job_id, False, workspace_id=_agent.memory_bank.workspace_id,
+                                                         user_id=_SERVER_ACTOR_ID):
         raise HTTPException(404, "Schedule not found")
     return {"status": "disabled", "job_id": job_id}
 
@@ -917,7 +951,7 @@ async def mcp_endpoint(request: Request):
         if not msg:
             raise HTTPException(400, "Empty message")
         session_id = _normalise_session_id(params.get("session_id"))
-        session = _get_or_create_session(session_id, "authenticated")
+        session = _get_or_create_session(session_id, _SERVER_ACTOR_ID)
         reply = _run_session_chat(session, msg)
         return {"jsonrpc": "2.0", "result": {"content": reply, "session_id": session_id}}
     else:

@@ -451,6 +451,16 @@ non-loopback deployment must set `KYROZEN_SERVER_TOKEN` and send it as
 and dynamic tools. Authentication, capability tokens, and command safety checks
 still apply.
 
+The Web/MCP server is intentionally a **single-user deployment**. One
+`KYROZEN_SERVER_TOKEN` represents the one owner of that server's private
+memories, tasks, events, schedules, and learning state; request JSON cannot
+choose another private speaker. Loopback and token-authenticated requests use
+the same stable actor. Set `KYROZEN_SERVER_ACTOR` to a stable, non-secret label
+when migrating an existing deployment; otherwise the default actor is `local`.
+Public and group-attributed claims may name other speakers, but private claims
+must belong to the deployment actor. Use separate deployments and databases
+for separate private users.
+
 ### Docker deployment
 
 ```bash

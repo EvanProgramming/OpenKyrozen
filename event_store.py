@@ -210,9 +210,13 @@ class EventStore:
         return event_id
 
     def list_events(self, event_type: str | None = None, *, limit: int = 100,
-                    workspace_id: str = "default", session_id: str | None = None) -> list[dict[str, Any]]:
+                    workspace_id: str = "default", session_id: str | None = None,
+                    user_id: str | None = None) -> list[dict[str, Any]]:
         clauses = ["workspace_id=?"]
         params: list[Any] = [workspace_id]
+        if user_id is not None:
+            clauses.append("user_id=?")
+            params.append(user_id)
         if event_type:
             clauses.append("event_type=?")
             params.append(event_type)
@@ -227,12 +231,19 @@ class EventStore:
             ).fetchall()
         return [dict(row, payload=self._loads(row["payload"], {})) for row in rows]
 
-    def list_sessions(self, *, workspace_id: str = "default", limit: int = 100) -> list[dict[str, Any]]:
+    def list_sessions(self, *, workspace_id: str = "default", limit: int = 100,
+                      user_id: str | None = None) -> list[dict[str, Any]]:
+        clauses = ["workspace_id=?", "session_id IS NOT NULL"]
+        params: list[Any] = [workspace_id]
+        if user_id is not None:
+            clauses.append("user_id=?")
+            params.append(user_id)
+        params.append(max(1, min(limit, 1000)))
         with self.connection() as db:
             rows = db.execute(
                 "SELECT session_id, MAX(created_at) AS updated_at, COUNT(*) AS event_count FROM events "
-                "WHERE workspace_id=? AND session_id IS NOT NULL GROUP BY session_id ORDER BY updated_at DESC LIMIT ?",
-                (workspace_id, max(1, min(limit, 1000))),
+                f"WHERE {' AND '.join(clauses)} GROUP BY session_id ORDER BY updated_at DESC LIMIT ?",
+                params,
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -269,9 +280,13 @@ class EventStore:
         return memory_id
 
     def list_memories(self, *, kind: str | None = None, status: str | None = "active", limit: int = 100,
-                      workspace_id: str = "default", session_id: str | None = None) -> list[dict[str, Any]]:
+                      workspace_id: str = "default", session_id: str | None = None,
+                      user_id: str | None = None) -> list[dict[str, Any]]:
         clauses = ["workspace_id=?"]
         params: list[Any] = [workspace_id]
+        if user_id is not None:
+            clauses.append("user_id=?")
+            params.append(user_id)
         if status:
             clauses.append("status=?")
             params.append(status)
@@ -289,20 +304,33 @@ class EventStore:
             ).fetchall()
         return [dict(row, source_event_ids=self._loads(row["source_event_ids"], []), metadata=self._loads(row["metadata"], {})) for row in rows]
 
-    def set_memory_status(self, memory_id: str, status: str, *, workspace_id: str = "default") -> bool:
+    def set_memory_status(self, memory_id: str, status: str, *, workspace_id: str = "default",
+                          user_id: str | None = None) -> bool:
+        clauses = ["id=?", "workspace_id=?"]
+        params: list[Any] = [memory_id, workspace_id]
+        if user_id is not None:
+            clauses.append("user_id=?")
+            params.append(user_id)
+        params[:0] = [status, utc_now()]
         with self._lock, self.connection() as db:
             return db.execute(
-                "UPDATE memories SET status=?,updated_at=? WHERE id=? AND workspace_id=?",
-                (status, utc_now(), memory_id, workspace_id),
+                f"UPDATE memories SET status=?,updated_at=? WHERE {' AND '.join(clauses)}",
+                params,
             ).rowcount == 1
 
-    def delete_memories(self, ids: list[str], *, workspace_id: str = "default") -> int:
+    def delete_memories(self, ids: list[str], *, workspace_id: str = "default",
+                        user_id: str | None = None) -> int:
         ids = [str(item) for item in ids if item]
         if not ids:
             return 0
         placeholders = ",".join("?" for _ in ids)
+        clauses = ["workspace_id=?", f"id IN ({placeholders})"]
+        params: list[Any] = [workspace_id, *ids]
+        if user_id is not None:
+            clauses.insert(1, "user_id=?")
+            params.insert(1, user_id)
         with self._lock, self.connection() as db:
-            cursor = db.execute(f"DELETE FROM memories WHERE workspace_id=? AND id IN ({placeholders})", [workspace_id, *ids])
+            cursor = db.execute(f"DELETE FROM memories WHERE {' AND '.join(clauses)}", params)
             return cursor.rowcount
 
     def upsert_file(self, rel_path: str, content: str, *, user_id: str = "local", workspace_id: str = "default") -> str:
@@ -323,9 +351,15 @@ class EventStore:
             )
         return file_id
 
-    def remove_stale_files(self, valid_paths: set[str], *, workspace_id: str = "default") -> int:
+    def remove_stale_files(self, valid_paths: set[str], *, workspace_id: str = "default",
+                           user_id: str | None = None) -> int:
+        clauses = ["workspace_id=?"]
+        params: list[Any] = [workspace_id]
+        if user_id is not None:
+            clauses.append("user_id=?")
+            params.append(user_id)
         with self._lock, self.connection() as db:
-            rows = db.execute("SELECT id, rel_path FROM files WHERE workspace_id=?", (workspace_id,)).fetchall()
+            rows = db.execute(f"SELECT id, rel_path FROM files WHERE {' AND '.join(clauses)}", params).fetchall()
             stale = [row["id"] for row in rows if row["rel_path"] not in valid_paths]
             if stale:
                 placeholders = ",".join("?" for _ in stale)
@@ -345,9 +379,13 @@ class EventStore:
         return proposal_id
 
     def list_tasks(self, *, workspace_id: str = "default", session_id: str | None = None,
-                   statuses: set[str] | None = None, limit: int = 1000) -> list[dict[str, Any]]:
+                   statuses: set[str] | None = None, limit: int = 1000,
+                   user_id: str | None = None) -> list[dict[str, Any]]:
         clauses = ["workspace_id=?"]
         params: list[Any] = [workspace_id]
+        if user_id is not None:
+            clauses.append("user_id=?")
+            params.append(user_id)
         if session_id is not None:
             clauses.append("session_id=?")
             params.append(session_id)
@@ -394,9 +432,13 @@ class EventStore:
                        (self._json(evidence), utc_now(), proposal_id))
             return len(evidence)
 
-    def list_proposals(self, *, status: str | None = None, workspace_id: str = "default", limit: int = 100) -> list[dict[str, Any]]:
+    def list_proposals(self, *, status: str | None = None, workspace_id: str = "default", limit: int = 100,
+                       user_id: str | None = None) -> list[dict[str, Any]]:
         params: list[Any] = [workspace_id]
         clause = "workspace_id=?"
+        if user_id is not None:
+            clause += " AND user_id=?"
+            params.append(user_id)
         if status:
             clause += " AND status=?"
             params.append(status)
@@ -419,9 +461,12 @@ class EventStore:
         return job_id
 
     def list_schedules(self, *, workspace_id: str = "default", enabled: bool | None = None,
-                       limit: int = 500) -> list[dict[str, Any]]:
+                       limit: int = 500, user_id: str | None = None) -> list[dict[str, Any]]:
         clauses = ["workspace_id=?"]
         params: list[Any] = [workspace_id]
+        if user_id is not None:
+            clauses.append("user_id=?")
+            params.append(user_id)
         if enabled is not None:
             clauses.append("enabled=?")
             params.append(int(enabled))
@@ -430,11 +475,19 @@ class EventStore:
             rows = db.execute(f"SELECT * FROM scheduled_jobs WHERE {' AND '.join(clauses)} ORDER BY next_run_at LIMIT ?", params).fetchall()
         return [dict(row, enabled=bool(row["enabled"]), payload=self._loads(row["payload"], {})) for row in rows]
 
-    def claim_due_schedules(self, *, now: str, workspace_id: str = "default", limit: int = 20) -> list[dict[str, Any]]:
+    def claim_due_schedules(self, *, now: str, workspace_id: str = "default", limit: int = 20,
+                            user_id: str | None = None) -> list[dict[str, Any]]:
+        clauses = ["workspace_id=?"]
+        params: list[Any] = [workspace_id]
+        if user_id is not None:
+            clauses.append("user_id=?")
+            params.append(user_id)
+        clauses.extend(["enabled=1", "next_run_at<=?"])
+        params.extend([now, max(1, min(limit, 100))])
         with self._lock, self.connection() as db:
             rows = db.execute(
-                "SELECT * FROM scheduled_jobs WHERE workspace_id=? AND enabled=1 AND next_run_at<=? ORDER BY next_run_at LIMIT ?",
-                (workspace_id, now, max(1, min(limit, 100))),
+                f"SELECT * FROM scheduled_jobs WHERE {' AND '.join(clauses)} ORDER BY next_run_at LIMIT ?",
+                params,
             ).fetchall()
             claimed: list[dict[str, Any]] = []
             for row in rows:
@@ -448,11 +501,18 @@ class EventStore:
                 claimed.append(dict(row, payload=self._loads(row["payload"], {}), next_run_at=next_run_at))
             return claimed
 
-    def set_schedule_enabled(self, job_id: str, enabled: bool, *, workspace_id: str = "default") -> bool:
+    def set_schedule_enabled(self, job_id: str, enabled: bool, *, workspace_id: str = "default",
+                             user_id: str | None = None) -> bool:
+        clauses = ["id=?", "workspace_id=?"]
+        params: list[Any] = [job_id, workspace_id]
+        if user_id is not None:
+            clauses.append("user_id=?")
+            params.append(user_id)
+        params[:0] = [int(enabled), utc_now()]
         with self._lock, self.connection() as db:
             return db.execute(
-                "UPDATE scheduled_jobs SET enabled=?,updated_at=? WHERE id=? AND workspace_id=?",
-                (int(enabled), utc_now(), job_id, workspace_id),
+                f"UPDATE scheduled_jobs SET enabled=?,updated_at=? WHERE {' AND '.join(clauses)}",
+                params,
             ).rowcount == 1
 
     def upsert_skill(self, *, name: str, version: str, path: str, description: str,
