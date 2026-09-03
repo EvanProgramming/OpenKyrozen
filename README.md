@@ -733,8 +733,11 @@ make check
 # Syntax lint only
 make lint
 
-# Debug mode (format-error traps)
+# Debug mode (isolated, non-interactive smoke test; never prompts for a key)
 make debug
+
+# Start the normal interactive CLI explicitly from the debug entry point
+./venv/bin/python main_debug.py --interactive
 
 # First-time API key setup
 make init

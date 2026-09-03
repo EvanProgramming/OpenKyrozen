@@ -24,8 +24,7 @@ Thumbs.db
 *.config.json
 .kyrozen_*
 
-# Debug and test files
-main_debug.py
+# Debug and test runtime files
 test_chat_turn.py
 _test_regression_tmp.txt
 kyrozen_audit.log
