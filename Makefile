@@ -1,7 +1,10 @@
 .PHONY: install run clean lint test check git-status git-diff git-log web
 
-# Use a known-stable Python version (3.14 has import deadlocks with openai)
-PYTHON := python3.12
+# Prefer the known-stable Python 3.12, but use supported Python 3.13 on clean
+# runners that do not provide 3.12.  Python 3.14 remains intentionally out of
+# scope because of the OpenAI SDK import deadlock.
+PYTHON ?= python3.12
+PYTHON := $(shell if command -v "$(PYTHON)" >/dev/null 2>&1; then printf '%s' "$(PYTHON)"; elif command -v python3.13 >/dev/null 2>&1; then printf '%s' python3.13; else printf '%s' "$(PYTHON)"; fi)
 VENV_PYTHON := $(if $(wildcard venv/bin/python),./venv/bin/python,$(PYTHON))
 
 # Detect Windows (native cmd) and redirect to .bat files
