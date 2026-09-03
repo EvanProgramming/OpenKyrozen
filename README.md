@@ -474,6 +474,16 @@ loopback destinations are blocked unless `KYROZEN_BROWSER_ALLOW_PRIVATE=1` is se
 | `POST` | `/api/webhooks/register` | Register a webhook URL |
 | `GET` | `/api/webhooks` | List registered webhooks |
 | `POST` | `/api/webhooks/test` | Fire a test webhook |
+
+Successful `POST /api/chat` requests emit one `chat.completed` webhook after
+the reply is produced. `POST /api/chat/stream` emits the same event only after
+the SSE stream has sent `[DONE]`; failed or disconnected streams do not emit
+it. The POST body is `{"event":"chat.completed","data":{...}}`, where
+`data` contains only the bounded `actor`, `session_id`, `profile`,
+`reply_summary`, `reply_length`, and `streamed` fields. Reply summaries are
+limited to 500 characters and redact common API-key/token patterns. Webhook
+delivery errors are audited as `WEBHOOK_FAILURE` and never change the chat
+response.
 | `POST` | `/mcp` | Model Context Protocol (JSON-RPC 2.0) |
 
 API and MCP routes allow direct loopback access without a token. Any
