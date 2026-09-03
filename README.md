@@ -37,6 +37,7 @@
 - [🛠 Tools Reference](#-tools-reference)
   - [File & System](#file--system)
   - [Web](#web)
+  - [Browser](#browser-5-tools)
   - [Git](#git-14-tools)
   - [Memory](#memory)
 - [🧠 Dedicated Workflows](#-dedicated-workflows)
@@ -311,7 +312,10 @@ explicit capability and approval gates, and rollback remains user-directed via
 
 ## 🛠 Tools Reference
 
-All 31 runtime tools accept a plain-string `args` field in a JSON action block:
+All 31 runtime tools accept a plain-string `args` field in a JSON action block.
+The [generated runtime inventory](docs/tool-inventory.md) is authoritative for
+tool names, capability labels, MCP input schemas, and the live HTTP endpoint
+list:
 
 ```json
 {"action": "read_file", "args": "README.md"}
@@ -329,6 +333,7 @@ Short aliases work too — `bash`, `cmd`, `sh` → `run_cmd`; `status`, `diff`, 
 | `list_tree` | Recursive directory tree | `"src/"` |
 | `find_files` | Glob-based file search | `"*.py\|."` |
 | `run_cmd` | Execute shell command | `"python --version"` |
+| `execute_terminal_command` | Alias for `run_cmd` | `"python --version"` |
 
 `run_cmd` prepends the `bin` directory of the Python interpreter running
 OpenKyrozen, so bare `python` and `pip` resolve inside the active virtual
@@ -341,6 +346,20 @@ paths such as `/usr/bin/python3` are left unchanged.
 |------|-------------|---------|
 | `search_web` | Internet search (Google → DDG → Wikipedia) | `"latest Python release"` |
 | `read_webpage` | Fetch URL text content | `"https://example.com"` |
+| `analyze_remote_repo` | Clone and summarize a remote repository | `"https://github.com/org/repo"` |
+
+### Browser (5 tools)
+
+These tools use an isolated browser profile. Install the optional browser
+extra before using them.
+
+| Tool | Description | Example |
+|------|-------------|---------|
+| `browser_open` | Open a URL | `"https://example.com"` |
+| `browser_snapshot` | Read the current page text | `"session-id"` |
+| `browser_click` | Click a CSS selector | `"session-id\|button.submit"` |
+| `browser_type` | Fill a CSS selector | `"session-id\|input[name=q]\|query"` |
+| `browser_close` | Close an isolated browser session | `"session-id"` |
 
 ### Git (14 tools)
 
@@ -359,7 +378,6 @@ paths such as `/usr/bin/python3` are left unchanged.
 | `git_show` | Inspect a commit with `--stat` |
 | `git_remote` | List / add / remove remotes |
 | `git_clone` | Clone a repository |
-| `analyze_remote_repo` | Clone + read all files → structured summary |
 
 ### Memory
 
@@ -520,29 +538,30 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `GET` | `/api/memory?q=keyword` | Search stored memories |
 | `GET` | `/api/v2/memory?q=keyword&speaker=...&audience=...&channel=...` | Structured memory search with provenance and party scope |
 | `GET/POST` | `/api/v2/tasks` | Durable task listing and creation |
+| `POST` | `/api/v2/tasks/{task_id}/resume` | Explicitly resume a failed or blocked durable task |
 | `GET` | `/api/v2/learning` | Learning proposal status |
 | `GET` | `/api/v2/learning/features` | Authoritative 20-feature registry and latest run status |
 | `GET` | `/api/v2/learning/metrics?profile=...` | Profile completion, correction, error, tool, token, and latency metrics |
-| `GET` | `/api/v2/learning/{id}/evidence` | Proof card, applicability, replay, and outcome receipts |
-| `POST` | `/api/v2/learning/{id}/replay` | Record paired sandboxed candidate/predecessor replay results |
-| `POST` | `/api/v2/learning/{id}/omission` | Record paired with/without-artifact results |
-| `POST` | `/api/v2/learning/{id}/retire` | Retire an artifact with non-regressing omission evidence |
-| `POST` | `/api/v2/learning/{id}/restore` | Restore a retired artifact as a canary |
-| `GET` | `/api/v2/learning/{id}/capsule` | Export a redacted, harness-neutral experience capsule |
+| `GET` | `/api/v2/learning/{proposal_id}/evidence` | Proof card, applicability, replay, and outcome receipts |
+| `POST` | `/api/v2/learning/{proposal_id}/replay` | Record paired sandboxed candidate/predecessor replay results |
+| `POST` | `/api/v2/learning/{proposal_id}/omission` | Record paired with/without-artifact results |
+| `POST` | `/api/v2/learning/{proposal_id}/retire` | Retire an artifact with non-regressing omission evidence |
+| `POST` | `/api/v2/learning/{proposal_id}/restore` | Restore a retired artifact as a canary |
+| `GET` | `/api/v2/learning/{proposal_id}/capsule` | Export a redacted, harness-neutral experience capsule |
 | `POST` | `/api/v2/learning/capsules` | Import a capsule as an inactive candidate |
 | `GET` | `/api/v2/learning/constitution` | Inspect the immutable user-owned learning policy |
-| `POST` | `/api/v2/learning/{id}/rollback` | Roll back an activated proposal |
+| `POST` | `/api/v2/learning/{proposal_id}/rollback` | Roll back an activated proposal |
 | `GET/POST` | `/api/v2/memory/claims` | List or create typed, attributed memory claims; filter with `speaker`, `audience`, and `channel` |
-| `GET/DELETE` | `/api/v2/memory/claims/{id}` | Explain or dependency-completely forget a claim with party filters |
+| `GET/DELETE` | `/api/v2/memory/claims/{claim_id}` | Explain or dependency-completely forget a claim with party filters |
 | `GET` | `/api/v2/events` | Auditable runtime, task, session, and learning events |
 | `GET/POST` | `/api/v2/schedules` | Durable interval and one-shot Gateway jobs |
-| `POST` | `/api/v2/schedules/{id}/disable` | Disable a scheduled job |
+| `POST` | `/api/v2/schedules/{job_id}/disable` | Disable a scheduled job |
 | `GET` | `/api/v2/skills` | List installed candidate/active skills |
 | `POST` | `/api/v2/skills/install` | Install and validate a local `SKILL.md` package |
-| `POST` | `/api/v2/skills/{id}/activate` | Activate a validated skill |
-| `POST` | `/api/v2/skills/{id}/rollback` | Roll back a skill |
+| `POST` | `/api/v2/skills/{skill_id}/activate` | Activate a validated skill |
+| `POST` | `/api/v2/skills/{skill_id}/rollback` | Roll back a skill |
 | `GET` | `/api/v2/sessions` | List durable sessions |
-| `GET` | `/api/v2/sessions/{id}` | Resume/read a session context |
+| `GET` | `/api/v2/sessions/{session_id}` | Resume/read a session context |
 | `GET` | `/api/v2/agents` | List specialised sub-agent profiles |
 | `POST` | `/api/v2/agents/run` | Run a sub-agent with isolated memory and capabilities |
 
@@ -767,6 +786,7 @@ The file is auto-managed. Use `/provider` or `/api_key` in-chat to update it int
 ```bash
 # Quick verification
 make check
+make docs-check
 
 # Syntax lint only
 make lint
@@ -797,9 +817,9 @@ make push
 
 GitHub Actions automatically runs on every push and PR:
 - Syntax check across Python 3.12 and 3.13
-- Tool inventory validation
+- Generated tool inventory and documentation consistency validation
 - Provider import check
-- Docker build verification
+- Docker build and replace-container recovery smoke test
 
 ### pip package
 
@@ -829,7 +849,8 @@ OpenKyrozen/
 ├── setup.bat / run.bat  # Windows batch scripts
 ├── plugins/             # Plugin directory (hook-based)
 ├── prompts/             # Prompt templates (role, instructions, examples)
-├── chroma_memory/       # ChromaDB persistent storage (auto-created)
+├── docs/tool-inventory.md # Generated runtime tool and endpoint inventory
+├── scripts/              # Reproducible documentation and smoke checks
 └── .github/workflows/   # CI/CD pipeline
 ```
 
