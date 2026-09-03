@@ -1,7 +1,9 @@
 import os
 import asyncio
 import threading
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import server
@@ -11,6 +13,90 @@ from providers import ProviderConfig
 
 
 class ServerBoundaryTests(unittest.TestCase):
+    def test_mcp_jsonrpc_initialize_discover_list_and_call_sequence(self):
+        client = TestClient(server.app)
+        init = client.post("/mcp", json={
+            "id": "init-1", "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "clientInfo": {"name": "test"}},
+        })
+        self.assertEqual(init.status_code, 200, init.text)
+        self.assertEqual(init.json()["id"], "init-1")
+        self.assertEqual(init.json()["result"]["protocolVersion"], "2024-11-05")
+
+        initialized = client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 2, "method": "notifications/initialized",
+        }).json()
+        self.assertEqual(initialized, {"jsonrpc": "2.0", "id": 2, "result": {}})
+
+        listing = client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {},
+        }).json()
+        self.assertEqual(listing["id"], 3)
+        read_descriptor = next(item for item in listing["result"]["tools"] if item["name"] == "read_file")
+        self.assertEqual(read_descriptor["inputSchema"]["properties"]["path"]["type"], "string")
+        self.assertEqual(read_descriptor["inputSchema"]["required"], ["path"])
+
+        discovered = client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 4, "method": "server/discover", "params": {},
+        }).json()
+        self.assertEqual(discovered["id"], 4)
+        self.assertEqual(discovered["result"]["serverInfo"]["name"], "openkyrozen")
+        self.assertTrue(discovered["result"]["tools"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "mcp.txt").write_text("MCP object mapping works", encoding="utf-8")
+            previous_root = server._agent._get_workspace_root()
+            server._agent._set_workspace_root(root)
+            try:
+                called = client.post("/mcp", json={
+                    "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                    "params": {"name": "read_file", "arguments": {"path": "mcp.txt"}},
+                }).json()
+            finally:
+                server._agent._set_workspace_root(previous_root)
+            self.assertEqual(called["id"], 5)
+            self.assertEqual(called["result"]["content"][0]["text"], "MCP object mapping works")
+            self.assertFalse(called["result"]["isError"])
+
+    def test_mcp_protocol_and_execution_errors_echo_ids_and_respect_capabilities(self):
+        client = TestClient(server.app)
+        unknown = client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 20, "method": "tools/call",
+            "params": {"name": "does_not_exist", "arguments": {}},
+        }).json()
+        self.assertEqual(unknown["id"], 20)
+        self.assertEqual(unknown["error"]["code"], -32601)
+
+        invalid = client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 21, "method": "tools/call",
+            "params": {"name": "read_file", "arguments": {"path": 123}},
+        }).json()
+        self.assertEqual(invalid["id"], 21)
+        self.assertEqual(invalid["error"]["code"], -32602)
+
+        execution = client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 22, "method": "tools/call",
+            "params": {"name": "read_file", "arguments": {"path": "missing-mcp-file"}},
+        }).json()
+        self.assertEqual(execution["id"], 22)
+        self.assertIn("error", execution["result"]["content"][0]["text"].lower())
+        self.assertTrue(execution["result"]["isError"])
+
+        with patch.dict(os.environ, {"KYROZEN_MCP_CAPABILITIES": "readonly"}):
+            denied = client.post("/mcp", json={
+                "jsonrpc": "2.0", "id": 23, "method": "tools/call",
+                "params": {"name": "write_file", "arguments": {"path": "denied.txt", "content": "no"}},
+            }).json()
+        self.assertEqual(denied["id"], 23)
+        self.assertEqual(denied["error"]["code"], -32001)
+
+        method_error = client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 24, "method": "unknown/method", "params": {},
+        }).json()
+        self.assertEqual(method_error["id"], 24)
+        self.assertEqual(method_error["error"]["code"], -32601)
+
     def test_ollama_initialization_never_prompts_for_a_key(self):
         original_config = server._agent._provider_config
         original_provider = server._agent.llm_provider

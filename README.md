@@ -481,6 +481,29 @@ non-loopback deployment must set `KYROZEN_SERVER_TOKEN` and send it as
 and dynamic tools. Authentication, capability tokens, and command safety checks
 still apply.
 
+The MCP endpoint supports `initialize`, `notifications/initialized`, `ping`,
+`server/discover`, `tools/list`, `tools/call`, and the legacy `chat/send`
+method. Responses echo the JSON-RPC request `id`. `tools/list` returns an
+`inputSchema` for every exposed tool. Tools retain their internal plain-string
+contracts while MCP object arguments are mapped explicitly; for example:
+
+```bash
+curl -sS http://127.0.0.1:8000/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
+curl -sS http://127.0.0.1:8000/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+curl -sS http://127.0.0.1:8000/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"README.md"}}}'
+```
+
+Protocol errors use JSON-RPC error objects. Tool failures use a successful
+JSON-RPC response whose result contains `isError: true`; capability-denied
+and unknown tools remain protocol errors. Write, shell, network, destructive,
+and dynamic tools continue to require their configured MCP capabilities.
+
 The Web/MCP server is intentionally a **single-user deployment**. One
 `KYROZEN_SERVER_TOKEN` represents the one owner of that server's private
 memories, tasks, events, schedules, and learning state; request JSON cannot
