@@ -19,6 +19,13 @@ def _task_key(description: str) -> str:
     return hashlib.sha256(" ".join(description.lower().split()).encode("utf-8")).hexdigest()[:16]
 
 
+def _scoped_task_id(scope_key: str, raw_task_id: str) -> str:
+    """Return the stable, scope-bound durable id for an explicit task id."""
+    raw_task_id = str(raw_task_id).strip()
+    prefix = f"task_{scope_key}_"
+    return raw_task_id if raw_task_id.startswith(prefix) else f"{prefix}{_task_key(raw_task_id)}"
+
+
 def canonical_status(status: str) -> str:
     """Normalize the historical ``done`` spelling to the durable status."""
     status = str(status).strip().lower()
@@ -93,9 +100,7 @@ class TaskManager:
             raise ValueError("Task description cannot be empty")
         scope_key = _task_key(f"{self.user_id}:{self.workspace_id}:{self.session_id or ''}")
         if task_id:
-            raw_task_id = str(task_id).strip()
-            task_id = (raw_task_id if raw_task_id.startswith(f"task_{scope_key}_")
-                       else f"task_{scope_key}_{_task_key(raw_task_id)}")
+            task_id = _scoped_task_id(scope_key, task_id)
         else:
             task_id = f"task_{scope_key}_{uuid.uuid4().hex}"
         existing = next((item for item in self.tasks if item["id"] == task_id), None)
@@ -271,7 +276,8 @@ class TaskManager:
         lines = []
         for task in self.tasks:
             desc = task["description"].replace("{", "{{").replace("}", "}}")
-            lines.append(f"  {icons.get(task['status'], '?')}  {desc}")
+            status = canonical_status(task.get("status", "pending"))
+            lines.append(f"  {icons.get(status, '?')}  {desc}")
         return "\n".join(lines)
 
     def from_llm_block(self, text: str) -> None:
@@ -286,6 +292,7 @@ class TaskManager:
             return
         if not isinstance(raw_tasks, list):
             return
+        existing_by_id = {item["id"]: item for item in self.tasks}
         existing_by_key = {_task_key(item["description"]): item for item in self.tasks}
         for item in raw_tasks:
             if isinstance(item, str):
@@ -299,8 +306,17 @@ class TaskManager:
             else:
                 continue
             key = _task_key(description)
-            if key in existing_by_key:
-                task = existing_by_key[key]
+            explicit_id = task_id is not None
+            if explicit_id:
+                scope_key = _task_key(f"{self.user_id}:{self.workspace_id}:{self.session_id or ''}")
+                stable_id = _scoped_task_id(scope_key, task_id)
+                task = existing_by_id.get(stable_id)
+            else:
+                stable_id = None
+                task = existing_by_key.get(key)
+            if task is not None:
+                if explicit_id:
+                    task["description"] = description
                 if dependencies:
                     task["dependencies"] = dependencies
                 if acceptance:
@@ -309,6 +325,7 @@ class TaskManager:
             else:
                 idx = self.add_task(description, dependencies=dependencies, acceptance=acceptance, task_id=task_id)
                 existing_by_key[key] = self.tasks[idx]
+                existing_by_id[self.tasks[idx]["id"]] = self.tasks[idx]
 
     def mark_done_from_text(self, text: str) -> None:
         """Treat TaskDone as a completion request; evidence performs the transition."""
