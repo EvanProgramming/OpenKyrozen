@@ -958,64 +958,245 @@ async def api_health():
 # MCP (Model Context Protocol) endpoint
 # ---------------------------------------------------------------------------
 
+_MCP_PROTOCOL_VERSION = "2025-06-18"
+_MCP_SUPPORTED_PROTOCOL_VERSIONS = {"2024-11-05", "2025-06-18"}
+_MCP_SERVER_INFO = {"name": "openkyrozen", "version": app.version}
+
+
+def _mcp_response(request_id: Any, *, result: Any = None, error: dict[str, Any] | None = None) -> dict[str, Any]:
+    response: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id}
+    if error is not None:
+        response["error"] = error
+    else:
+        response["result"] = result
+    return response
+
+
+def _mcp_error(request_id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return _mcp_response(request_id, error=error)
+
+
+def _mcp_tool_schema(name: str, fn: Any) -> dict[str, Any]:
+    """Return the object schema for a tool's existing string contract."""
+    schemas: dict[str, dict[str, Any]] = {
+        "read_file": {
+            "properties": {"path": {"type": "string"}}, "required": ["path"],
+        },
+        "write_file": {
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            }, "required": ["path", "content"],
+        },
+        "list_dir": {"properties": {"path": {"type": "string"}}},
+        "list_tree": {"properties": {"path": {"type": "string"}}},
+        "find_files": {
+            "properties": {
+                "pattern": {"type": "string"},
+                "directory": {"type": "string"},
+            }, "required": ["pattern"],
+        },
+        "run_cmd": {"properties": {"command": {"type": "string"}}, "required": ["command"]},
+        "execute_terminal_command": {
+            "properties": {"command": {"type": "string"}}, "required": ["command"],
+        },
+        "search_web": {"properties": {"query": {"type": "string"}}, "required": ["query"]},
+        "read_webpage": {"properties": {"url": {"type": "string"}}, "required": ["url"]},
+        "git_clone": {
+            "properties": {
+                "url": {"type": "string"},
+                "destination": {"type": "string"},
+            }, "required": ["url"],
+        },
+        "analyze_remote_repo": {"properties": {"url": {"type": "string"}}, "required": ["url"]},
+        "browser_open": {"properties": {"url": {"type": "string"}}, "required": ["url"]},
+        "browser_snapshot": {"properties": {"session_id": {"type": "string"}}, "required": ["session_id"]},
+        "browser_close": {"properties": {"session_id": {"type": "string"}}, "required": ["session_id"]},
+        "browser_click": {
+            "properties": {
+                "session_id": {"type": "string"},
+                "selector": {"type": "string"},
+            }, "required": ["session_id", "selector"],
+        },
+        "browser_type": {
+            "properties": {
+                "session_id": {"type": "string"},
+                "selector": {"type": "string"},
+                "text": {"type": "string"},
+            }, "required": ["session_id", "selector", "text"],
+        },
+    }
+    schema = copy.deepcopy(schemas.get(name, {
+        "properties": {"args": {"type": "string"}},
+    }))
+    schema["type"] = "object"
+    schema["additionalProperties"] = False
+    if name not in schemas:
+        schema["description"] = "Plain-string arguments can be supplied as the `args` property."
+    return schema
+
+
+def _mcp_tool_descriptors(allowed: set[str]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": name,
+            "description": (getattr(fn, "__doc__", "") or "").strip().split("\n")[0],
+            "inputSchema": _mcp_tool_schema(name, fn),
+        }
+        for name, fn in _agent.AVAILABLE_TOOLS.items()
+        if name in allowed
+    ]
+
+
+def _mcp_string_arguments(tool_name: str, arguments: Any) -> str:
+    """Map MCP object arguments to the tool's documented pipe/string format."""
+    if arguments is None:
+        return ""
+    if isinstance(arguments, str):
+        return arguments
+    if not isinstance(arguments, dict):
+        raise ValueError("arguments must be an object or plain string")
+    if not arguments:
+        return ""
+    if set(arguments) == {"args"}:
+        if not isinstance(arguments["args"], str):
+            raise ValueError("arguments.args must be a string")
+        return arguments["args"]
+
+    def value(*names: str, required: bool = True) -> str:
+        present = next((name for name in names if name in arguments), None)
+        if present is None:
+            if required:
+                raise ValueError(f"missing required argument: {names[0]}")
+            return ""
+        if not isinstance(arguments[present], str):
+            raise ValueError(f"argument '{present}' must be a string")
+        return arguments[present]
+
+    if tool_name == "read_file":
+        return value("path", "file_path")
+    if tool_name == "write_file":
+        return f"{value('path', 'file_path')}|{value('content', 'text')}"
+    if tool_name in {"list_dir", "list_tree"}:
+        return value("path", required=False)
+    if tool_name == "find_files":
+        pattern = value("pattern")
+        directory = value("directory", required=False)
+        return f"{pattern}|{directory}" if directory else pattern
+    if tool_name in {"run_cmd", "execute_terminal_command"}:
+        return value("command", "cmd")
+    if tool_name == "search_web":
+        return value("query")
+    if tool_name in {"read_webpage", "browser_open", "analyze_remote_repo"}:
+        return value("url")
+    if tool_name == "git_clone":
+        url = value("url")
+        destination = value("destination", required=False)
+        return f"{url}|{destination}" if destination else url
+    if tool_name in {"browser_snapshot", "browser_close"}:
+        return value("session_id", "sessionId")
+    if tool_name == "browser_click":
+        return f"{value('session_id', 'sessionId')}|{value('selector')}"
+    if tool_name == "browser_type":
+        return f"{value('session_id', 'sessionId')}|{value('selector')}|{value('text')}"
+
+    # Every legacy tool has a plain-string contract.  Requiring the explicit
+    # `args` wrapper keeps ambiguous object shapes from silently changing the
+    # command sent to a tool.
+    raise ValueError(f"tool '{tool_name}' accepts object arguments only as {{'args': '<string>'}}")
+
+
 @app.post("/mcp", dependencies=[Depends(require_api_access)])
 async def mcp_endpoint(request: Request):
     """MCP-compatible endpoint for AI tool interoperability."""
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(400, "Invalid JSON")
+        return _mcp_error(None, -32700, "Parse error")
     if not isinstance(body, dict):
-        raise HTTPException(400, "JSON object required")
-    method = body.get("method", "")
+        return _mcp_error(None, -32600, "Invalid Request")
+    request_id = body.get("id")
+    if "id" in body and isinstance(request_id, (dict, list, bool)):
+        request_id = None
+    if body.get("jsonrpc") not in (None, "2.0") or not isinstance(body.get("method"), str):
+        return _mcp_error(request_id, -32600, "Invalid Request")
+    method = body["method"]
     params = body.get("params", {})
     if not isinstance(params, dict):
-        raise HTTPException(400, "params object required")
+        return _mcp_error(request_id, -32602, "Invalid params: params must be an object")
 
+    if method == "initialize":
+        requested_version = params.get("protocolVersion")
+        selected_version = (
+            requested_version if requested_version in _MCP_SUPPORTED_PROTOCOL_VERSIONS
+            else _MCP_PROTOCOL_VERSION
+        )
+        return _mcp_response(request_id, result={
+            "protocolVersion": selected_version,
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": _MCP_SERVER_INFO,
+        })
+    if method in {"notifications/initialized", "ping"}:
+        return _mcp_response(request_id, result={})
+    if method == "server/discover":
+        allowed = _allowed_server_tools("mcp")
+        return _mcp_response(request_id, result={
+            "protocolVersion": _MCP_PROTOCOL_VERSION,
+            "serverInfo": _MCP_SERVER_INFO,
+            "capabilities": {"tools": {"listChanged": False}},
+            "tools": _mcp_tool_descriptors(allowed),
+        })
     if method == "tools/list":
         allowed = _allowed_server_tools("mcp")
-        return {
-            "jsonrpc": "2.0",
-            "result": {
-                "tools": [
-                    {"name": name, "description": (fn.__doc__ or "").strip().split("\n")[0]}
-                    for name, fn in _agent.AVAILABLE_TOOLS.items()
-                    if name in allowed
-                ]
-            }
-        }
-    elif method == "tools/call":
+        return _mcp_response(request_id, result={"tools": _mcp_tool_descriptors(allowed)})
+    if method == "tools/call":
         tool_name = params.get("name", "")
         tool_args = params.get("arguments", "")
+        if not isinstance(tool_name, str) or not tool_name:
+            return _mcp_error(request_id, -32602, "Invalid params: tool name is required")
         fn = _agent.AVAILABLE_TOOLS.get(tool_name)
         if fn is None:
-            return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Tool '{tool_name}' not found"}}
+            return _mcp_error(request_id, -32601, f"Tool '{tool_name}' not found")
         if tool_name not in _allowed_server_tools("mcp"):
-            return {
-                "jsonrpc": "2.0",
-                "error": {
-                    "code": -32001,
-                    "message": (
-                        f"Tool requires '{tool_capability(tool_name)}' capability; "
-                        "set KYROZEN_MCP_CAPABILITIES or use the full profile to enable it"
-                    ),
-                },
-            }
+            return _mcp_error(request_id, -32001, (
+                f"Tool requires '{tool_capability(tool_name)}' capability; "
+                "set KYROZEN_MCP_CAPABILITIES or use the full profile to enable it"
+            ))
         try:
-            result = fn(str(tool_args))
-            return {"jsonrpc": "2.0", "result": {"content": [{"type": "text", "text": str(result)}]}}
+            string_args = _mcp_string_arguments(tool_name, tool_args)
+        except (TypeError, ValueError) as e:
+            return _mcp_error(request_id, -32602, f"Invalid params: {e}")
+        try:
+            previous_token = _agent._execution_capability_token
+            _agent._execution_capability_token = issue_capability_token(
+                "surface:mcp", _server_capabilities("mcp"), ttl_seconds=300,
+            )
+            try:
+                result = _agent._run_tool(tool_name, string_args)
+            finally:
+                _agent._execution_capability_token = previous_token
+            result_text = str(result)
         except Exception as e:
-            return {"jsonrpc": "2.0", "error": {"code": -32603, "message": str(e)}}
-    elif method == "chat/send":
-        msg = _validate_message(_sanitize_api_message(str(params.get("message", "")).strip()))
+            result_text = f"Error: {e}"
+        return _mcp_response(request_id, result={
+            "content": [{"type": "text", "text": result_text}],
+            "isError": _agent._is_tool_error(result_text),
+        })
+    if method == "chat/send":
+        try:
+            msg = _validate_message(_sanitize_api_message(str(params.get("message", "")).strip()))
+        except HTTPException as exc:
+            return _mcp_error(request_id, -32602, str(exc.detail))
         if not msg:
-            raise HTTPException(400, "Empty message")
+            return _mcp_error(request_id, -32602, "Empty message")
         session_id = _normalise_session_id(params.get("session_id"))
         session = _get_or_create_session(session_id, _SERVER_ACTOR_ID)
         reply = _run_session_chat(session, msg)
-        return {"jsonrpc": "2.0", "result": {"content": reply, "session_id": session_id}}
-    else:
-        return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown method: {method}"}}
+        return _mcp_response(request_id, result={"content": reply, "session_id": session_id})
+    return _mcp_error(request_id, -32601, f"Unknown method: {method}")
 
 
 # ---------------------------------------------------------------------------
