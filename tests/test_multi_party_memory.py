@@ -80,6 +80,17 @@ class MultiPartyMemoryTests(unittest.TestCase):
         receipt = self.memory.store.list_events("memory.recalled", workspace_id="project", session_id="session")[0]
         self.assertEqual(receipt["payload"]["attributions"][0]["speaker"], "alice")
 
+    def test_memory_bank_reads_are_scoped_to_its_user(self):
+        alice = MemoryBank(self.memory.db_path, user_id="alice", workspace_id="project", session_id="alice-session")
+        bob = MemoryBank(self.memory.db_path, user_id="bob", workspace_id="project", session_id="bob-session")
+        memory_id = alice.add_log(
+            "Private fact from alice — medical note: diagnosis-8x",
+            kind="fact", metadata={"visibility": "private", "speaker": "alice", "claim_type": "private_fact"},
+        )
+        self.assertEqual(alice.get_all()[0], [memory_id])
+        self.assertEqual(bob.get_all()[0], [])
+        self.assertEqual(bob.store.list_events(workspace_id="project", user_id="bob"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

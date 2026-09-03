@@ -116,7 +116,8 @@ class MemoryBank:
 
     def promote_candidate(self, proposal_id: str, *, confidence: float = 0.8,
                           validation: dict[str, Any] | None = None) -> bool:
-        proposals = [p for p in self.store.list_proposals(workspace_id=self.workspace_id) if p["id"] == proposal_id]
+        proposals = [p for p in self.store.list_proposals(workspace_id=self.workspace_id, user_id=self.user_id)
+                     if p["id"] == proposal_id]
         if not proposals:
             return False
         proposal = proposals[0]
@@ -143,7 +144,7 @@ class MemoryBank:
         return file_id
 
     def remove_stale_files(self, valid_paths: set[str]) -> int:
-        removed = self.store.remove_stale_files(valid_paths, workspace_id=self.workspace_id)
+        removed = self.store.remove_stale_files(valid_paths, workspace_id=self.workspace_id, user_id=self.user_id)
         if self._files_collection is not None:
             try:
                 current = self._files_collection.get(include=["metadatas"])
@@ -174,14 +175,15 @@ class MemoryBank:
                 docs = result.get("documents", [[]])
                 if docs and docs[0]:
                     rows = self.store.list_memories(status="active", limit=10000,
-                                                    workspace_id=self.workspace_id, session_id=self.session_id)
+                                                    workspace_id=self.workspace_id, session_id=self.session_id,
+                                                    user_id=self.user_id)
                     metadata = {row["content"]: row.get("metadata", {}) for row in rows}
                     return [doc for doc in docs[0] if not doc.startswith("FILE:") and (
                         include_scoped or metadata.get(doc, {}).get("visibility", "public") == "public")][:limit]
             except Exception as exc:
                 self._last_error = f"memory index query failed: {exc}"
         rows = self.store.list_memories(status="active", limit=10000, workspace_id=self.workspace_id,
-                                        session_id=self.session_id)
+                                        session_id=self.session_id, user_id=self.user_id)
         terms = set(re.findall(r"[\w\u3400-\u9fff]+", query.lower()))
         scored = []
         for row in rows:
@@ -205,7 +207,7 @@ class MemoryBank:
         if not documents:
             return []
         rows = self.store.list_memories(status="active", limit=10000, workspace_id=self.workspace_id,
-                                        session_id=self.session_id)
+                                        session_id=self.session_id, user_id=self.user_id)
         by_content: dict[str, dict[str, Any]] = {}
         for row in rows:
             by_content.setdefault(row["content"], row)
@@ -255,17 +257,17 @@ class MemoryBank:
 
     def get_recent(self, n: int = 10, *, include_scoped: bool = False) -> list[str]:
         rows = self.store.list_memories(status="active", limit=max(1, min(n, 10000)), workspace_id=self.workspace_id,
-                                        session_id=self.session_id)
+                                        session_id=self.session_id, user_id=self.user_id)
         return [row["content"] for row in rows
                 if include_scoped or row.get("metadata", {}).get("visibility", "public") == "public"][:n]
 
     def count_logs(self) -> int:
         return len(self.store.list_memories(status="active", limit=100000, workspace_id=self.workspace_id,
-                                            session_id=self.session_id))
+                                            session_id=self.session_id, user_id=self.user_id))
 
     def get_all(self, limit: int = 2000) -> tuple[list[str], list[str]]:
         rows = self.store.list_memories(status="active", limit=max(1, min(limit, 10000)), workspace_id=self.workspace_id,
-                                        session_id=self.session_id)
+                                        session_id=self.session_id, user_id=self.user_id)
         return [row["id"] for row in rows], [row["content"] for row in rows]
 
     def delete_logs(self, ids: list[str]) -> int:
@@ -274,7 +276,7 @@ class MemoryBank:
             return 0
         known_ids, docs = self.get_all(limit=10000)
         resolved = [item if item in known_ids else known_ids[docs.index(item)] for item in ids if item in known_ids or item in docs]
-        removed = self.store.delete_memories(resolved, workspace_id=self.workspace_id)
+        removed = self.store.delete_memories(resolved, workspace_id=self.workspace_id, user_id=self.user_id)
         if self._collection is not None and resolved:
             try:
                 self._collection.delete(ids=resolved)
@@ -286,7 +288,7 @@ class MemoryBank:
         if self.MAX_LOGS <= 0:
             return
         rows = self.store.list_memories(status="active", limit=self.MAX_LOGS + 100, workspace_id=self.workspace_id,
-                                        session_id=self.session_id)
+                                        session_id=self.session_id, user_id=self.user_id)
         if len(rows) <= self.MAX_LOGS:
             return
         self.delete_logs([row["id"] for row in rows[self.MAX_LOGS:]])
@@ -295,7 +297,7 @@ class MemoryBank:
         if self._collection is None:
             return 0
         rows = self.store.list_memories(status="active", limit=100000, workspace_id=self.workspace_id,
-                                        session_id=self.session_id)
+                                        session_id=self.session_id, user_id=self.user_id)
         for row in rows:
             if row["kind"] != "source":
                 self._index_memory(row["id"], row["content"], kind=row["kind"], status=row["status"])

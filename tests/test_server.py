@@ -51,9 +51,10 @@ class ServerBoundaryTests(unittest.TestCase):
         self.assertIs(server._agent.tasks.tasks, original_tasks)
 
     def test_memory_context_does_not_trust_a_claimed_speaker(self):
-        session = {"user_id": "authenticated"}
+        session = {"user_id": "spoofed-client-value"}
         server._set_memory_context(session, {"speaker": "alice", "audience": "team", "channel": "project"})
-        self.assertEqual(session["authorized_speakers"], ["authenticated"])
+        self.assertEqual(session["user_id"], server._SERVER_ACTOR_ID)
+        self.assertEqual(session["authorized_speakers"], [server._SERVER_ACTOR_ID])
         self.assertEqual(session["audience"], "team")
         with self.assertRaises(HTTPException):
             server._set_memory_context(session, {"speaker": "alice/../../bob"})
@@ -63,13 +64,31 @@ class ServerBoundaryTests(unittest.TestCase):
         claim = {"key": "private-api-check", "value": "hidden-7x", "claim_type": "private_fact",
                  "speaker": "alice", "authority": "owner"}
         self.assertEqual(client.post("/api/v2/memory/claims", json=claim).status_code, 403)
-        claim["speaker"] = "loopback"
+        claim["speaker"] = server._SERVER_ACTOR_ID
         created = client.post("/api/v2/memory/claims", json=claim)
         self.assertEqual(created.status_code, 200, created.text)
         hidden = client.get("/api/v2/memory/claims", params={"speaker": "alice"}).json()["claims"]
-        visible = client.get("/api/v2/memory/claims", params={"speaker": "loopback"}).json()["claims"]
+        visible = client.get("/api/v2/memory/claims",
+                             params={"speaker": server._SERVER_ACTOR_ID}).json()["claims"]
         self.assertNotIn(created.json()["memory_id"], [item["id"] for item in hidden])
         self.assertIn(created.json()["memory_id"], [item["id"] for item in visible])
+
+    def test_private_claim_without_speaker_is_bound_to_deployment_actor(self):
+        client = TestClient(server.app)
+        response = client.post("/api/v2/memory/claims", json={
+            "key": "private-api-default", "value": "deployment-owned", "claim_type": "private_fact",
+            "authority": "owner",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        claim_id = response.json()["memory_id"]
+        visible = client.get("/api/v2/memory/claims",
+                             params={"speaker": server._SERVER_ACTOR_ID}).json()["claims"]
+        self.assertIn(claim_id, [item["id"] for item in visible])
+
+    def test_server_actor_is_stable_across_authentication_modes(self):
+        self.assertEqual(server._actor_for_request(None), server._SERVER_ACTOR_ID)
+        self.assertEqual(server._get_or_create_session("single-user-test", "alice")["user_id"],
+                         server._SERVER_ACTOR_ID)
 
     def test_profile_validation(self):
         self.assertEqual(server._normalise_profile(None), "auto")

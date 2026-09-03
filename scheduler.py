@@ -14,9 +14,11 @@ from event_store import EventStore, utc_now
 class JobScheduler:
     """Polls SQLite and claims due jobs exactly once per process tick."""
 
-    def __init__(self, store: EventStore, *, workspace_id: str = "default", poll_seconds: float = 2.0):
+    def __init__(self, store: EventStore, *, workspace_id: str = "default", user_id: str = "local",
+                 poll_seconds: float = 2.0):
         self.store = store
         self.workspace_id = workspace_id
+        self.user_id = user_id
         self.poll_seconds = max(0.25, poll_seconds)
         self._callbacks: dict[str, Callable[[dict[str, Any]], Any]] = {}
         self._stop = threading.Event()
@@ -32,17 +34,17 @@ class JobScheduler:
         next_run = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds if delay_seconds is not None else interval_seconds)
         return self.store.upsert_schedule(job_id, name, interval_seconds=interval_seconds,
                                            next_run_at=next_run.isoformat(), payload=payload,
-                                           workspace_id=self.workspace_id)
+                                           workspace_id=self.workspace_id, user_id=self.user_id)
 
     def schedule_once(self, name: str, run_at: str, *, payload: dict[str, Any] | None = None,
                       job_id: str | None = None) -> str:
         datetime.fromisoformat(run_at)
         job_id = job_id or f"job_{uuid.uuid4().hex}"
         return self.store.upsert_schedule(job_id, name, run_at=run_at, next_run_at=run_at,
-                                           payload=payload, workspace_id=self.workspace_id)
+                                           payload=payload, workspace_id=self.workspace_id, user_id=self.user_id)
 
     def list_jobs(self, *, enabled: bool | None = None) -> list[dict[str, Any]]:
-        return self.store.list_schedules(workspace_id=self.workspace_id, enabled=enabled)
+        return self.store.list_schedules(workspace_id=self.workspace_id, enabled=enabled, user_id=self.user_id)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -58,21 +60,21 @@ class JobScheduler:
 
     def tick(self) -> int:
         now = utc_now()
-        jobs = self.store.claim_due_schedules(now=now, workspace_id=self.workspace_id)
+        jobs = self.store.claim_due_schedules(now=now, workspace_id=self.workspace_id, user_id=self.user_id)
         for job in jobs:
             job_type = str(job.get("payload", {}).get("type", "default"))
             callback = self._callbacks.get(job_type)
             if callback is None:
                 self.store.append_event("scheduler.unhandled", {"job_id": job["id"], "type": job_type},
-                                        workspace_id=self.workspace_id)
+                                        user_id=self.user_id, workspace_id=self.workspace_id)
                 continue
             try:
                 callback(job)
                 self.store.append_event("scheduler.completed", {"job_id": job["id"], "type": job_type},
-                                        workspace_id=self.workspace_id)
+                                        user_id=self.user_id, workspace_id=self.workspace_id)
             except Exception as exc:
                 self.store.append_event("scheduler.failed", {"job_id": job["id"], "type": job_type, "error": str(exc)[:1000]},
-                                        workspace_id=self.workspace_id)
+                                        user_id=self.user_id, workspace_id=self.workspace_id)
         return len(jobs)
 
     def _run(self) -> None:
