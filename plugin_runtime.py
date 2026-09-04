@@ -6,10 +6,10 @@ import importlib.util
 import re
 import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 
-_RUNTIMES: dict[str, "PluginRuntime"] = {}
+_RUNTIMES: dict[tuple[str, tuple[str, ...]], "PluginRuntime"] = {}
 _RUNTIMES_LOCK = threading.RLock()
 
 _SECRET_PATTERNS = (
@@ -30,9 +30,15 @@ class PluginRuntime:
     """Load plugins once for one execution surface and isolate every hook."""
 
     def __init__(self, surface: str, *, plugins_dir: Path | None = None,
+                 plugin_dirs: Iterable[Path] | None = None,
                  event_recorder: Callable[[str, dict[str, Any]], None] | None = None):
         self.surface = str(surface or "unknown")
-        self.plugins_dir = (plugins_dir or Path(__file__).parent / "plugins").resolve()
+        configured_dirs = plugin_dirs if plugin_dirs is not None else (
+            plugins_dir or Path(__file__).parent / "plugins",
+        )
+        self.plugin_dirs = tuple(dict.fromkeys(Path(path).expanduser().resolve() for path in configured_dirs))
+        # Keep the old attribute for callers that inspect a single plugin directory.
+        self.plugins_dir = self.plugin_dirs[0] if self.plugin_dirs else Path(__file__).parent / "plugins"
         self.event_recorder = event_recorder
         self._loaded = False
         self._plugins: list[tuple[str, Any]] = []
@@ -63,34 +69,39 @@ class PluginRuntime:
             # Set the flag before importing anything: a broken plugin must not
             # cause another request to retry imports or duplicate registrations.
             self._loaded = True
-            if not self.plugins_dir.is_dir():
+            if not any(path.is_dir() for path in self.plugin_dirs):
                 self._record("plugin.loaded", plugin="<none>", status="no plugin directory")
                 return self.plugin_names
-            for path in sorted(self.plugins_dir.glob("*.py")):
-                if path.name.startswith("_"):
+            loaded_names: set[str] = set()
+            for directory in self.plugin_dirs:
+                if not directory.is_dir():
                     continue
-                module_name = f"openkyrozen_plugin_{self.surface}_{path.stem}"
-                try:
-                    spec = importlib.util.spec_from_file_location(module_name, path)
-                    if spec is None or spec.loader is None:
-                        raise ImportError("could not create module spec")
-                    module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)
-                    register = getattr(module, "register", None)
-                    if not callable(register):
-                        self._record("plugin.load_failed", plugin=path.stem,
-                                     error="register() is missing")
+                for path in sorted(directory.glob("*.py")):
+                    if path.name.startswith("_") or path.stem in loaded_names:
                         continue
-                    plugin = register()
-                    if plugin is None:
+                    loaded_names.add(path.stem)
+                    module_name = f"openkyrozen_plugin_{self.surface}_{len(self._plugins)}_{path.stem}"
+                    try:
+                        spec = importlib.util.spec_from_file_location(module_name, path)
+                        if spec is None or spec.loader is None:
+                            raise ImportError("could not create module spec")
+                        module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(module)
+                        register = getattr(module, "register", None)
+                        if not callable(register):
+                            self._record("plugin.load_failed", plugin=path.stem,
+                                         error="register() is missing")
+                            continue
+                        plugin = register()
+                        if plugin is None:
+                            self._record("plugin.load_failed", plugin=path.stem,
+                                         error="register() returned no plugin")
+                            continue
+                        self._plugins.append((path.stem, plugin))
+                        self._record("plugin.loaded", plugin=path.stem, status="loaded")
+                    except Exception as exc:
                         self._record("plugin.load_failed", plugin=path.stem,
-                                     error="register() returned no plugin")
-                        continue
-                    self._plugins.append((path.stem, plugin))
-                    self._record("plugin.loaded", plugin=path.stem, status="loaded")
-                except Exception as exc:
-                    self._record("plugin.load_failed", plugin=path.stem,
-                                 error=f"{type(exc).__name__}: {exc}")
+                                     error=f"{type(exc).__name__}: {exc}")
             return self.plugin_names
 
     def trigger(self, hook_name: str, **kwargs: Any) -> None:
@@ -128,12 +139,19 @@ class PluginRuntime:
 
 
 def get_plugin_runtime(surface: str, *, plugins_dir: Path | None = None,
+                       plugin_dirs: Iterable[Path] | None = None,
                        event_recorder: Callable[[str, dict[str, Any]], None] | None = None) -> PluginRuntime:
     """Return the one runtime instance for a surface in this process."""
-    key = str(surface or "unknown")
+    configured_dirs = tuple(dict.fromkeys(
+        Path(path).expanduser().resolve()
+        for path in (plugin_dirs if plugin_dirs is not None else (plugins_dir or Path(__file__).parent / "plugins",))
+    ))
+    key = (str(surface or "unknown"), tuple(str(path) for path in configured_dirs))
     with _RUNTIMES_LOCK:
         runtime = _RUNTIMES.get(key)
         if runtime is None:
-            runtime = PluginRuntime(key, plugins_dir=plugins_dir, event_recorder=event_recorder)
+            runtime = PluginRuntime(
+                key[0], plugin_dirs=configured_dirs, event_recorder=event_recorder,
+            )
             _RUNTIMES[key] = runtime
         return runtime

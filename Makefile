@@ -1,4 +1,4 @@
-.PHONY: install run clean lint test check docs-check shell-check benchmark docker-smoke git-status git-diff git-log web
+.PHONY: install run clean lint test check docs-check shell-check benchmark wheel-smoke docker-smoke git-status git-diff git-log web
 
 # Prefer the known-stable Python 3.12, but use the active supported Python
 # 3.13 on clean runners that do not provide 3.12. Python 3.14 remains
@@ -19,15 +19,15 @@ install:
 	$(PYTHON) -m venv venv
 	./venv/bin/python -m pip install --upgrade pip && ./venv/bin/python -m pip install -r requirements.txt
 	@echo ""
-	@echo "OpenKyrozen installed. Run 'make run' or 'python main.py'"
+	@echo "OpenKyrozen installed. Run 'make run' for project mode or 'kyrozen' for the global workspace."
 
 run:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' with $(PYTHON) installed."; exit 1; }
-	$(VENV_PYTHON) main.py
+	$(VENV_PYTHON) main.py --project .
 
 web:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON)."; exit 1; }
-	$(VENV_PYTHON) -m pip install fastapi uvicorn -q && $(VENV_PYTHON) server.py
+	$(VENV_PYTHON) -m pip install fastapi uvicorn -q && $(VENV_PYTHON) server.py --project .
 
 debug:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' first."; exit 1; }
@@ -35,7 +35,7 @@ debug:
 
 init:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' first."; exit 1; }
-	$(VENV_PYTHON) main.py --init
+	$(VENV_PYTHON) main.py --project . --init
 
 # Upgrade the venv to use a different Python version (e.g. after macOS upgrade)
 reinstall:
@@ -49,7 +49,7 @@ clean:
 
 # Syntax check
 lint:
-	$(VENV_PYTHON) -m compileall -q main.py main_debug.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py
+	$(VENV_PYTHON) -m compileall -q main.py main_debug.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py workspace_context.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py scripts/wheel_smoke.py
 	@echo "Python syntax OK."
 	@echo "All files pass syntax check."
 
@@ -68,6 +68,10 @@ benchmark:
 		--evolved-runner "$(VENV_PYTHON) benchmarks/evolved_runner.py" \
 		--timeout "$${BENCHMARK_TIMEOUT:-60}"
 
+wheel-smoke:
+	$(VENV_PYTHON) -m pip install build -q
+	$(VENV_PYTHON) scripts/wheel_smoke.py
+
 docs-check:
 	$(VENV_PYTHON) scripts/generate_tool_inventory.py --check
 	$(VENV_PYTHON) scripts/check_docs.py
@@ -84,7 +88,7 @@ docker-smoke:
 # Quick verification
 check:
 	@echo "Checking Python syntax..."
-	@$(VENV_PYTHON) -m py_compile main.py main_debug.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py
+	@$(VENV_PYTHON) -m py_compile main.py main_debug.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py workspace_context.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py scripts/wheel_smoke.py
 	@echo "  Python modules: OK"
 	@echo "Checking git tools..."
 	@$(VENV_PYTHON) -c "from tools import AVAILABLE_TOOLS; git = [k for k in AVAILABLE_TOOLS if k.startswith('git_')]; print(f'  {len(git)} git tools, {len(AVAILABLE_TOOLS)} total tools')"

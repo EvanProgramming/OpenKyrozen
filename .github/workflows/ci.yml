@@ -42,6 +42,8 @@ jobs:
         python -c "compile(open('memory.py').read(), 'memory.py', 'exec'); print('memory.py OK')"
         python -c "compile(open('providers.py').read(), 'providers.py', 'exec'); print('providers.py OK')"
         python -c "compile(open('server.py').read(), 'server.py', 'exec'); print('server.py OK')"
+        python -c "compile(open('workspace_context.py').read(), 'workspace_context.py', 'exec'); print('workspace_context.py OK')"
+        sh -n install.sh
 
     - name: Tool inventory check
       run: |
@@ -53,6 +55,30 @@ jobs:
 
     - name: Documentation and runtime inventory check
       run: make docs-check
+
+  wheel-install:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Build and run clean wheel installation smoke test
+      run: |
+        python -m pip install --upgrade pip build
+        python scripts/wheel_smoke.py
+
+  installer-syntax:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Parse PowerShell installer and run help path
+      shell: pwsh
+      run: ./install.ps1 -Help
 
   docker-persistence:
     runs-on: ubuntu-latest

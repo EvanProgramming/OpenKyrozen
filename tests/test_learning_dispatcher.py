@@ -75,7 +75,7 @@ class LearningDispatcherTests(unittest.TestCase):
             with main.memory_bank.store.connection() as db:
                 file_row = db.execute(
                     "SELECT content FROM files WHERE rel_path=? AND user_id=? AND workspace_id=?",
-                    ("effect.py", "learning-user", "learning-project"),
+                    ("effect.py", "learning-user", main.memory_bank.file_scope_id),
                 ).fetchone()
             self.assertIsNotNone(file_row)
             self.assertIn("VALUE = 7", file_row["content"])

@@ -9,7 +9,7 @@ Historical verification snapshot: `51be33361422e55e1f2f00c33a0e0f8c56132a91`
 (the post-#54 `main` revision, captured before this #55 documentation-only
 update). Snapshot date: 2026-09-04.
 
-Current repository test count at this snapshot: **130 unittest cases**.
+Current repository test count at this snapshot: **146 unittest cases**.
 
 ## Verified surface
 
@@ -32,8 +32,11 @@ The base `tools.py` registry exposes 29 actions; the terminal runtime adds
 
 ## Terminal workflow
 
-Start the agent with `make run` or `python main.py`. These commands are handled
-by the running terminal session:
+Start the agent with `make run` (which passes `--project .`) or, from an
+installed package, `kyrozen`. Bare `kyrozen` uses the persistent global
+workspace at `~/.kyrozen/workspace`; use `kyrozen --project .` when a source
+checkout or another project should be edited directly. These commands are
+handled by the running terminal session:
 
 | Command | Use |
 | --- | --- |
@@ -83,7 +86,7 @@ Install the web extras and start the server:
 
 ```bash
 pip install -e '.[web]'
-KYROZEN_SERVER_TOKEN=change-me python server.py --host 127.0.0.1 --port 8000
+KYROZEN_SERVER_TOKEN=change-me kyrozen-web --project . --host 127.0.0.1 --port 8000
 ```
 
 Loopback requests may omit the token. Any non-loopback deployment must send

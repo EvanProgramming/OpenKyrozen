@@ -1,8 +1,11 @@
 """
 Kyrozen: self-learning AI Agent powered by DeepSeek API + tools.
-(Run `python main.py` to launch the agent)
+(Run `kyrozen` to launch the agent)
 """
 
+import argparse
+import importlib.metadata
+import shutil
 import sys
 import warnings
 
@@ -98,6 +101,7 @@ from subagents import AgentProfile, SubAgentManager
 from capability_tokens import issue_capability_token
 from dynamic_tools import SAFE_BUILTINS, validate_tool_source
 from plugin_runtime import get_plugin_runtime
+from workspace_context import LaunchContext, resolve_launch_context, source_scope_id
 from tools import (AVAILABLE_TOOLS, set_workspace_root as _set_tools_workspace_root,
                    resolve_capabilities, tool_capability)
 from providers import (
@@ -107,6 +111,11 @@ from providers import (
     get_fallback_provider, get_cost_summary, reset_cost_tracker,
     save_provider_config_encrypted, encrypt_api_key, decrypt_api_key,
 )
+
+try:
+    __version__ = importlib.metadata.version("openkyrozen")
+except importlib.metadata.PackageNotFoundError:
+    __version__ = "2.0.0"
 
 # aliases for flexible action recognition
 TOOL_ALIASES: dict[str, str] = {
@@ -167,28 +176,20 @@ def _detect_unknown_action(text: str) -> str | None:
 
 
 def _workspace_info() -> str:
-    """Return a message describing the current working location,
-    adjusting when the agent is inside an OpenKyrozen folder."""
-    cwd = os.getcwd()
-    parent = os.path.dirname(cwd)
-    if os.path.basename(cwd) == "OpenKyrozen":
+    """Return the active workspace and the selected launch mode."""
+    root = _get_workspace_root()
+    context = globals().get("_launch_context")
+    if isinstance(context, LaunchContext):
         return (
-            f"OpenKyrozen is installed inside `{cwd}`.\n"
-            f"Your workspace (the folder you are working on) is located one level above:\n"
-            f"{parent}\n\n"
-            "You should treat all file operations relative to your workspace.\n"
-            "For example, to list files in your workspace use `list_dir('.')`.\n"
-            "To read a file that is in your workspace (not inside OpenKyrozen), "
-            "use an absolute or relative path as usual – the agent is currently running "
-            "inside the OpenKyrozen folder, but your project files are in your workspace."
+            f"{context.describe()}\n\n"
+            "Relative file operations resolve from the active workspace.\n"
+            "Do not ask the user for a local path unless an explicit external repository is intended."
         )
-    else:
-        return (
-            f"You are currently working inside the directory:\n{cwd}\n\n"
-            "You can use relative paths like '.' or 'main.py' directly.\n"
-            "Do not ask the user to supply a local path or a remote URL unless you intend to "
-            "use the `analyze_remote_repo` tool to clone an external repository."
-        )
+    return (
+        f"The configured workspace is `{root}`.\n\n"
+        "Relative file operations resolve from this workspace.\n"
+        "Do not ask the user for a local path unless an explicit external repository is intended."
+    )
 
 
 console = Console()
@@ -279,7 +280,17 @@ _APPROVAL_REQUIRED_TOOLS = frozenset({
     "git_push", "git_pull", "git_checkout", "git_stash", "git_reset", "git_remote",
     "define_tool",
 })
-_APPROVAL_LOG_PATH = Path("kyrozen_audit.log")
+def _state_root() -> Path:
+    """Return the private durable state directory used by this process."""
+    context = globals().get("_launch_context")
+    if isinstance(context, LaunchContext):
+        return context.runtime_state_root
+    return Path.home().expanduser() / ".kyrozen" / "v2"
+
+
+def _approval_log_path() -> Path:
+    explicit = os.environ.get("KYROZEN_AUDIT_LOG", "").strip()
+    return Path(explicit).expanduser() if explicit else _state_root() / "kyrozen_audit.log"
 
 
 def _record_tool_approval(action: str, decision: str, args: str = "") -> None:
@@ -289,7 +300,9 @@ def _record_tool_approval(action: str, decision: str, args: str = "") -> None:
     safe_args = safe_args.replace("\n", " ")[:240]
     try:
         ts = datetime.datetime.now(UTC).isoformat(timespec="seconds")
-        with _APPROVAL_LOG_PATH.open("a", encoding="utf-8") as audit_file:
+        audit_path = _approval_log_path()
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        with audit_path.open("a", encoding="utf-8") as audit_file:
             audit_file.write(f"[{ts}] [local-cli] TOOL_{decision.upper()} | {action} | {safe_args}\n")
     except OSError:
         pass
@@ -1156,15 +1169,17 @@ def _switch_provider() -> None:
 
 
 _last_project_scan_time = 0.0
+_last_project_scan_root: Path | None = None
 
 def _load_project_files_into_memory(*, force: bool = False) -> None:
     """Incrementally index the configured workspace with a bounded cadence."""
-    global _last_project_scan_time
+    global _last_project_scan_time, _last_project_scan_root
     now = time.time()
-    if not force and now - _last_project_scan_time < 900:
+    project_root = _get_workspace_root()
+    if not force and project_root == _last_project_scan_root and now - _last_project_scan_time < 900:
         return
     _last_project_scan_time = now
-    project_root = _get_workspace_root()
+    _last_project_scan_root = project_root
     # Collect valid relative paths for stale‑file cleanup
     skip_dirs = {".venv", "venv", "chroma_memory", "__pycache__", ".git"}
     valid_paths: set[str] = set()
@@ -1189,10 +1204,15 @@ def _load_project_files_into_memory(*, force: bool = False) -> None:
 
 
 def _self_update() -> str:
-    """Pull the latest version from the git remote."""
+    """Upgrade the installed package without touching the active project."""
+    if shutil.which("uv") is None:
+        return (
+            "OpenKyrozen is package-managed. Install or update it with the official installer, "
+            "or install uv and run: uv tool upgrade openkyrozen"
+        )
     try:
         result = subprocess.run(
-            ["git", "pull"],
+            ["uv", "tool", "upgrade", "openkyrozen"],
             capture_output=True,
             text=True,
             timeout=60,
@@ -1201,11 +1221,11 @@ def _self_update() -> str:
         err = result.stderr.strip() or ""
         if result.returncode != 0:
             return f"Update failed:\n{err}"
-        return f"Updated successfully:\n{out}"
+        return f"Updated OpenKyrozen successfully:\n{out}"
     except subprocess.TimeoutExpired:
         return "Update timed out."
     except FileNotFoundError:
-        return "Error: git not installed or not inside a git repository."
+        return "Error: uv is not installed or could not upgrade the OpenKyrozen tool."
     except Exception as e:
         return f"Error during update: {e}"
 
@@ -1969,16 +1989,60 @@ def _extract_knowledge_graph() -> None:
 # Feature 9: Sandbox — Restrict file operations to workspace
 # ================================================================
 
-_workspace_root: str = os.environ.get("KYROZEN_WORKSPACE_ROOT", os.getcwd())
+_workspace_root: str = os.environ.get(
+    "KYROZEN_WORKSPACE_ROOT",
+    str(Path.home() / ".kyrozen" / "workspace"),
+)
+_launch_context: LaunchContext | None = None
 
 def _get_workspace_root() -> Path:
     """Return the configured target project, never the installed package root."""
-    return Path(_workspace_root or os.getcwd()).expanduser().resolve()
+    return Path(_workspace_root).expanduser().resolve()
 
 def _set_workspace_root(path: str) -> None:
-    global _workspace_root
+    global _workspace_root, _last_project_scan_time, _last_project_scan_root
+    previous_root = _get_workspace_root()
     _workspace_root = os.path.abspath(os.path.expanduser(path))
+    active_root = _get_workspace_root()
+    if active_root != previous_root:
+        _last_project_scan_time = 0.0
+        _last_project_scan_root = None
     _set_tools_workspace_root(_workspace_root)
+    current_context = globals().get("_launch_context")
+    if isinstance(current_context, LaunchContext) and current_context.active_root != active_root:
+        # Direct callers (notably tests and embedding applications) can still
+        # use the legacy setter without leaving a stale mode description.
+        globals()["_launch_context"] = None
+    current_memory = globals().get("memory_bank")
+    if current_memory is not None:
+        current_memory.file_scope_id = source_scope_id(active_root)
+
+
+def _set_launch_context(context: LaunchContext) -> LaunchContext:
+    """Bind one resolved launch context to every shared runtime boundary."""
+    global _launch_context
+    _launch_context = context
+    _set_workspace_root(str(context.active_root))
+    return context
+
+
+def configure_launch_context(
+    *,
+    project_path: str | os.PathLike[str] | None = None,
+    global_mode: bool = False,
+    cwd: str | os.PathLike[str] | None = None,
+) -> LaunchContext:
+    """Resolve and bind the CLI/web context before agent startup."""
+    return _set_launch_context(resolve_launch_context(
+        project_path=project_path,
+        global_mode=global_mode,
+        cwd=cwd,
+    ))
+
+
+def get_launch_context() -> LaunchContext | None:
+    """Return the current process context, if startup has bound one."""
+    return _launch_context
 
 def _is_path_safe(path: str) -> bool:
     if not _workspace_root:
@@ -2057,23 +2121,18 @@ def _system_prompt(tools_list: str, agent_config: dict[str, Any] | None = None) 
         + ", ".join(sorted(effective_capabilities(agent_config)))
         + "\nThe active surface capability token and approval policy may restrict this upper bound."
     )
-    cwd = os.getcwd()
-    parent = os.path.dirname(cwd)
-    if os.path.basename(cwd) == "OpenKyrozen":
-        cwd_note = (
-            "## Current working directory\n"
-            f"OpenKyrozen is installed inside `{cwd}`.\n"
-            f"Your workspace (the folder you are working on) is located one level above:\n"
-            f"{parent}\n\n"
-            "All file operations should be relative to your workspace, not to the OpenKyrozen folder.\n"
-            "For example, `list_dir('.')` will list your workspace contents, and `read_file('main.py')` will refer to a file in your workspace.\n"
-            "Do not ask the user to supply a local path or a remote URL unless you intend to use the `analyze_remote_repo` tool to clone an external repository."
-        )
+    active_root = _get_workspace_root()
+    context = globals().get("_launch_context")
+    if isinstance(context, LaunchContext):
+        mode_note = context.describe()
     else:
-        cwd_note = (
-            "## Current working directory\n"
-            "You are currently inside the project root directory of the repository the user is working in.  Relative paths (like \"README.md\" or \"main.py\") will be resolved correctly.  You can use `read_file`, `write_file`, `list_dir`, `find_files`, `run_cmd`, etc. **without needing the user to provide a path**.  Do **not** ask the user to supply a local path or a remote URL unless you intend to use the `analyze_remote_repo` tool to clone an external repository."
-        )
+        mode_note = f"The configured workspace is `{active_root}`."
+    cwd_note = (
+        "## Active workspace\n"
+        f"{mode_note}\n"
+        f"Relative paths such as `README.md` resolve from `{active_root}`. "
+        "Use `analyze_remote_repo` only when an external repository is explicitly intended."
+    )
     dynamic_tool_instructions = (
         "## Dynamic tools\n"
         "Dynamic tools are enabled only when the active surface grants the `dynamic` capability and the approval policy allows registration. "
@@ -2194,8 +2253,11 @@ def _record_plugin_event(event_type: str, payload: dict[str, Any]) -> None:
 
 
 def _plugin_runtime_for_surface(surface: str | None = None):
+    active_plugins = _get_workspace_root() / "plugins"
+    packaged_plugins = Path(__file__).resolve().parent / "plugins"
     return get_plugin_runtime(
         surface or _EXECUTION_SURFACE, event_recorder=_record_plugin_event,
+        plugin_dirs=(active_plugins, packaged_plugins),
     )
 
 
@@ -4309,7 +4371,7 @@ def _learning_state_fingerprint() -> tuple[Any, ...]:
             ).fetchone()
             file_row = db.execute(
                 "SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM files WHERE user_id=? AND workspace_id=?",
-                (user_id, workspace_id),
+                (user_id, memory_bank.file_scope_id),
             ).fetchone()
             proposal_row = db.execute(
                 "SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM learning_proposals "
@@ -4774,25 +4836,61 @@ def _run_recovered_tasks(*, max_tasks: int = 20) -> list[dict[str, Any]]:
     return TaskWorker(tasks, _execute_durable_task, max_tasks=max_tasks).run_until_idle(max_tasks=max_tasks)
 
 
+def _cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="kyrozen",
+        description="OpenKyrozen self-learning AI agent",
+        epilog="Bare kyrozen uses ~/.kyrozen/workspace; use --project PATH for direct project operation.",
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--project", metavar="PATH",
+        help="operate directly on this project directory",
+    )
+    mode.add_argument(
+        "--global", dest="global_mode", action="store_true",
+        help="use the persistent global workspace (the default)",
+    )
+    parser.add_argument("--init", action="store_true", help="configure a provider and initialise the active workspace")
+    parser.add_argument("--version", action="version", version=f"OpenKyrozen {__version__}")
+    return parser
+
+
+def _parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return _cli_parser().parse_args(sys.argv[1:] if argv is None else argv)
+
+
 def main() -> None:
     global _provider_config, llm_provider, DEEPSEEK_MODEL, DEEPSEEK_MODEL_SIMPLE, DEEPSEEK_MODEL_COMPLEX, MODEL_NAME
     global _agent_profile_mode
 
-    if len(sys.argv) >= 3 and sys.argv[1].lower() == "migrate" and sys.argv[2].lower() == "v1":
+    argv = sys.argv[1:]
+
+    if len(argv) >= 2 and argv[0].lower() == "migrate" and argv[1].lower() == "v1":
         from migration import migrate_v1_chroma
-        source = sys.argv[3] if len(sys.argv) > 3 else "./chroma_memory"
+        source = argv[2] if len(argv) > 2 else "./chroma_memory"
         target = os.environ.get("KYROZEN_DB_PATH", MemoryBank.DEFAULT_PATH)
         report = migrate_v1_chroma(source, target, workspace_id=os.environ.get("KYROZEN_WORKSPACE_ID", "default"))
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return
 
-    if len(sys.argv) >= 3 and sys.argv[1:3] == ["learning", "benchmark"]:
+    if len(argv) >= 2 and argv[:2] == ["learning", "benchmark"]:
         from learning_benchmark import main as benchmark_main
-        benchmark_main(sys.argv[3:])
+        benchmark_main(argv[2:])
         return
 
-    if "--init" in sys.argv:
+    args = _parse_cli_args(argv)
+    try:
+        context = configure_launch_context(
+            project_path=args.project,
+            global_mode=args.global_mode,
+        )
+    except ValueError as exc:
+        _cli_parser().error(str(exc))
+
+    if args.init:
         console.print(f"[{_ACCENT}]OpenKyrozen initialisation[/{_ACCENT}]")
+        console.print(f"[{_MUTED}]{context.describe()}[/{_MUTED}]")
         try:
             import openai  # noqa: F401
         except ImportError:
@@ -4802,7 +4900,8 @@ def main() -> None:
         _load_project_files_into_memory()
         if llm_provider is not None:
             console.print(f"[{_SUCCESS}]{_provider_config.provider.title()} API key configured and saved to ~/.kyrozen_config.json[/{_SUCCESS}]")
-        console.print(f"[{_SUCCESS}]Initialisation finished. Run `python main.py` to start the agent.[/{_SUCCESS}]")
+        next_command = "kyrozen" if context.is_global else f"kyrozen --project {context.active_root}"
+        console.print(f"[{_SUCCESS}]Initialisation finished. Run `{next_command}` to start the agent.[/{_SUCCESS}]")
         sys.exit(0)
 
     # Resolve the effective configuration before rendering any provider status.
@@ -4813,6 +4912,7 @@ def main() -> None:
 
     # ASCII-art banner, 41 chars wide — fits 60-col terminals
     _print_banner(startup_config)
+    console.print(f"[{_MUTED}]{context.describe()}[/{_MUTED}]")
     provider_name = startup_config.provider.title()
     model_name = startup_config.model_simple
     console.print(f"[{_ACCENT}]Kyrozen[/{_ACCENT}] [{_MUTED}]{_DOT} Provider: {provider_name} {_DOT} Model: {model_name}[/{_MUTED}]")
@@ -4831,8 +4931,6 @@ def main() -> None:
     if llm_provider is None:
         console.print(f"[{_ERROR}]Cannot start without an API key.[/{_ERROR}]")
         sys.exit(1)
-    # Set workspace root for sandbox
-    _set_workspace_root(os.getcwd())
     _plugin_runtime_for_surface().load_once()
     task_results = _run_recovered_tasks()
     for item in task_results:
@@ -4886,7 +4984,7 @@ def main() -> None:
             _switch_provider()
             continue
         if user_input.lower() == "/update":
-            console.print(f"[{_ACCENT}]Updating OpenKyrozen from git...[/{_ACCENT}]")
+            console.print(f"[{_ACCENT}]Updating the installed OpenKyrozen package...[/{_ACCENT}]")
             update_result = _self_update()
             console.print(Panel(update_result, title="Update", border_style=_ACCENT))
             continue

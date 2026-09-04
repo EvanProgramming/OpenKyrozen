@@ -24,8 +24,8 @@
 - [OpenKyrozen とは？](#openkyrozen-とは)
 - [🚀 インストール](#-インストール)
   - [前提条件](#前提条件)
-  - [方法 A：ソースからインストール](#方法-aソースからインストール推奨)
-  - [方法 B：ローカルディレクトリから pip インストール](#方法-bローカルディレクトリから-pip-インストール)
+  - [ワンラインインストーラー](#ワンラインインストーラー)
+  - [開発専用のソースチェックアウト](#開発専用のソースチェックアウト)
 - [📖 使い方ガイド](#-使い方ガイド)
   - [ターミナルモード](#ターミナルモード)
   - [チャット内コマンド](#チャット内コマンド)
@@ -74,7 +74,7 @@ OpenKyrozen はターミナルで動作する**自己学習型 AI エージェ�
 
 ### 前提条件
 
-- **Python 3.12 または 3.13**（Python 3.14+ には OpenAI SDK との既知のインポート問題があります）
+- インストーラーは **Python 3.12** を標準で用意し、**3.13** も受け付けます。OpenAI SDK の既知のインポート問題のため Python 3.14+ はサポートしません。
 - 対応プロバイダーの API キー：
 
 | プロバイダー | キーの取得 | コスト |
@@ -85,7 +85,23 @@ OpenKyrozen はターミナルで動作する**自己学習型 AI エージェ�
 | **Google (Gemini)** | [aistudio.google.com](https://aistudio.google.com) | ~$0.15/100万入力トークン |
 | **Ollama** | [ollama.com](https://ollama.com) | 無料（ローカル実行） |
 
-### 方法 A：ソースからインストール（推奨）
+### ワンラインインストーラー
+
+macOS または Linux：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/main/install.sh | sh
+```
+
+Windows PowerShell：
+
+```powershell
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/main/install.ps1 | iex
+```
+
+インストーラーは OS、アーキテクチャ、Python、ネットワーク、ユーザーパスの書き込み可否を確認し、必要なら `uv` を導入します。その後、分離された `uv` ツール環境に `openkyrozen[web]` をインストールし、プライベートな `~/.kyrozen` 状態ディレクトリを作成して `kyrozen --version` と `kyrozen --help` を検証します。API キーを読み取り、表示、アップロードすることはありません。初回の `kyrozen` 起動でプロバイダー設定を案内します。
+
+### 開発専用のソースチェックアウト
 
 ```bash
 git clone https://github.com/EvanProgramming/OpenKyrozen.git
@@ -100,21 +116,18 @@ setup.bat
 run.bat
 ```
 
-### 方法 B：ローカルディレクトリから pip インストール
+これらのコマンドは明示的にプロジェクトモード（`--project .`）で動作し、リポジトリ開発専用です。
+
+### PyPI からのパッケージインストール
 
 ```bash
-git clone https://github.com/EvanProgramming/OpenKyrozen.git
-cd OpenKyrozen
-pip install .
+uv tool install 'openkyrozen[web]'
 
-# インストール後はどこからでも実行可能：
-kyrozen          # ターミナルエージェント
-kyrozen-web      # Web サーバー
+# 対応済みの Python 環境ではこちらも使用できます：
+pip install 'openkyrozen[web]'
 ```
 
-> **注意：** PyPI からの `pip install openkyrozen` は近日公開予定です。現在はローカルディレクトリからインストールするか、リポジトリをクローンしてください。
-
-初回起動時に API キーの入力を求められます。エージェントは自動的にプロバイダーを検出し、暗号化されたキーを `~/.kyrozen_config.json` に保存します。
+インストール後は任意の呼び出し元ディレクトリから `kyrozen` と `kyrozen-web` を実行できます。暗号化されたプロバイダー設定は `~/.kyrozen_config.json` に保存されます。
 
 ---
 
@@ -123,6 +136,12 @@ kyrozen-web      # Web サーバー
 ### ターミナルモード
 
 起動するとバナーと `You:` プロンプトが表示されます。自然に入力してください——エージェントは英語、中国語、日本語、韓国語を理解します。
+
+引数なしの `kyrozen` は常に永続的なグローバルワークスペース
+`~/.kyrozen/workspace` を使用し、現在のディレクトリを変更してもプロジェクトは
+切り替わりません。プロジェクトの元ファイルを直接読み書きする場合は
+`kyrozen --project .` または `kyrozen --project /path/to/project` を使用して
+ください。`--global` は既定のグローバルモードを明示するオプションです。
 
 ```text
 You: README を読んで、このプロジェクトの概要を教えて
@@ -149,14 +168,20 @@ Kyrozen は：
 | `/api_key` | API キーを変更 |
 | `/learn` | プロジェクトファイルを即座にメモリにスキャン |
 | `/forget` | 最近の学習を表示；`/forget キーワード` で誤った学習を削除 |
-| `/update` | Git から最新バージョンをプル |
+| `/update` | `uv tool upgrade openkyrozen` でインストール済みパッケージを更新（プロジェクトへ git pull しない） |
 | `/self-learning` | 個別の自己学習機能をオン/オフ |
 
 ### Web UI モード
 
 ```bash
-python server.py --port 8000
+kyrozen-web --port 8000
 # http://localhost:8000 を開く
+
+# 現在のプロジェクトを直接操作：
+kyrozen-web --project . --port 8000
+
+# LAN またはコンテナからアクセスする場合：
+KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 
 # または Docker 経由：
 docker build -t openkyrozen .
@@ -242,7 +267,7 @@ export KYROZEN_MODEL_COMPLEX=deepseek-reasoner
 ```bash
 export KYROZEN_PROVIDER=anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
-python main.py
+kyrozen
 ```
 
 プライマリプロバイダーが失敗した場合、Kyrozen は自動的にフォールバックチェーン（例：DeepSeek → OpenAI → Claude）で切り替えます。レート制限エラー（HTTP 429）はジッター付き指数バックオフをトリガーします。Ollama はキー不要のローカルプロバイダーです。`KYROZEN_PROVIDER=ollama` を設定し、必要なら `KYROZEN_BASE_URL` で OpenAI-compatible endpoint を指定してください。Web の headless 起動は stdin を読みません。リモートプロバイダーのキーがない場合は明確な degraded 状態になり、対話型 CLI だけがキーを尋ねます。
@@ -388,7 +413,7 @@ CLI はアイドル時に 30 秒ごとに最大 4 機能をラウンドロビン
 
 ### メモリストレージ
 
-OpenKyrozen v2 の長期メモリは **SQLite を事実上のソース**（`~/.kyrozen/v2/openkyrozen.sqlite3`）として使用し、ChromaDB は再構築可能な派生セマンティックインデックスです。workspace と session は分離され、ChromaDB が利用できなくても SQLite のキーワード検索で永続性を保ちます。Web/MCP の単一ユーザーデプロイでは、`KYROZEN_SERVER_TOKEN` が一つの安定した actor を表し、リクエストの `speaker` だけで private データの所有者を変更することはできません。
+OpenKyrozen v2 の長期メモリは **SQLite を事実上のソース**（`~/.kyrozen/v2/openkyrozen.sqlite3`）として使用し、ChromaDB は再構築可能な派生セマンティックインデックスです。個人の会話、タスク、学習はグローバル状態で共有されます。`FILE:` スナップショットとそのベクトルメタデータはアクティブなルートから計算した安定したスコープを使うため、プロジェクトを切り替えても別プロジェクトのファイルインデックスを削除・想起しません。既定のグローバルワークスペースは `~/.kyrozen/workspace` で、`kyrozen --project PATH` はミラーやコピー・バック層なしに元ファイルを直接操作します。Web/MCP の単一ユーザーデプロイでは、`KYROZEN_SERVER_TOKEN` が一つの安定した actor を表し、リクエストの `speaker` だけで private データの所有者を変更することはできません。
 
 タスクは再起動後も保存され、状態は `pending`、`running`、`succeeded`、`failed`、`blocked`、`cancelled` です（旧 `done` は読取互換）。`TaskDone` だけでは成功にならず、ツール結果、テスト、ファイル確認、または明示的な確認の証拠が必要です。安全な API タスクは worker が再開し、failed/blocked タスクは `/api/v2/tasks/{task_id}/resume` で明示的に再開します。
 
@@ -414,9 +439,15 @@ curl -sS -X DELETE http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
 ## 🌐 Web UI と REST API
 
 ```bash
-pip install fastapi uvicorn
-python server.py --port 8000
+pip install 'openkyrozen[web]'
+kyrozen-web --port 8000
 # http://localhost:8000 を開く
+
+# プロジェクトを直接操作：
+kyrozen-web --project . --port 8000
+
+# LAN からアクセスする場合：
+KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 ```
 
 ### REST API エンドポイント
@@ -505,6 +536,11 @@ def register():
 
 利用可能なフック：`on_startup`、`on_turn_start`、`on_turn_end`、`on_tool_execute`。
 
+ランタイムはパッケージ内の `plugins/*.py` とアクティブワークスペースの
+`plugins/*.py` を決定的なファイル名順で読み込み、同名の場合はワークスペース側を
+優先します。既定のターンログは `~/.kyrozen/v2/kyrozen_turns.log` で、
+`KYROZEN_TURN_LOG` で変更できます。
+
 動作例は `plugins/turn_logger.py` を参照してください。
 
 ---
@@ -520,7 +556,7 @@ def register():
 | **API 認証** | loopback 以外の API/MCP には `KYROZEN_SERVER_TOKEN` が必要 |
 | **能力プロファイル** | Web/MCP は `workspace` が既定；不可逆な `git_reset` と動的ツールは `full` で明示的に許可 |
 | **Git 安全性** | 強制プッシュなし；CLI は高影響操作を確認して記録 |
-| **監査ログ** | すべてのチャット/API イベントをタイムスタンプ付きで `kyrozen_audit.log` に記録 |
+| **監査ログ** | すべてのチャット/API イベントを `~/.kyrozen/v2/kyrozen_audit.log` に記録（`KYROZEN_AUDIT_LOG` で変更可） |
 | **Python バージョンガード** | Python 3.14+ での起動を拒否 |
 | **ツール失敗メモリ** | 過去の失敗を記憶し、繰り返しを回避 |
 
@@ -541,6 +577,11 @@ def register():
 | `KYROZEN_MODEL_SIMPLE` | 簡単/中程度タスク用モデル | プロバイダーデフォルト |
 | `KYROZEN_MODEL_COMPLEX` | 複雑タスク用モデル | プロバイダーデフォルト |
 | `KYROZEN_BASE_URL` | カスタム API ベース URL | プロバイダーデフォルト |
+| `KYROZEN_WORKSPACE_ROOT` | 高度なテスト/開発用ルート上書き。明示的な CLI オプションが優先 | `~/.kyrozen/workspace` |
+| `KYROZEN_DB_PATH` | SQLite の事実ストアのパス | `~/.kyrozen/v2/openkyrozen.sqlite3` |
+| `KYROZEN_VECTOR_PATH` | 再構築可能な Chroma インデックスのパス | SQLite ディレクトリ内 |
+| `KYROZEN_TURN_LOG` | 明示的なターンログのパス | `~/.kyrozen/v2/kyrozen_turns.log` |
+| `KYROZEN_AUDIT_LOG` | 明示的な監査ログのパス | `~/.kyrozen/v2/kyrozen_audit.log` |
 | `KYROZEN_DB_PATH` | SQLite 事実ストアのパス | `~/.kyrozen/v2/openkyrozen.sqlite3` |
 | `KYROZEN_SERVER_TOKEN` | loopback 外の Web/MCP アクセストークン | 未設定（loopback のみ） |
 | `KYROZEN_SERVER_ACTOR` | 単一ユーザーデプロイの安定した actor ラベル | `local` |
@@ -611,7 +652,11 @@ GitHub Actions がプッシュと PR ごとに自動実行：
 ### pip パッケージ
 
 ```bash
-# ローカルディレクトリからインストール（PyPI 公開は近日予定）
+# 公開パッケージ（インストーラーが uv と Python の設定も行います）
+uv tool install 'openkyrozen[web]'
+pip install 'openkyrozen[web]'
+
+# ローカルチェックアウトのみ（開発）
 pip install .                   # コア + CLI
 pip install '.[web]'            # + Web UI
 pip install '.[all]'            # + Claude + Gemini + Web
@@ -628,15 +673,17 @@ OpenKyrozen/
 ├── providers.py         # マルチ LLM 抽象化（5 プロバイダー + フォールバック）
 ├── memory.py            # SQLite の事実メモリ + 再構築可能な Chroma インデックス
 ├── server.py            # FastAPI Web サーバー + REST API + チャット UI
+├── workspace_context.py # グローバル/プロジェクト起動ルートの解決
 ├── pyproject.toml       # pip パッケージ設定
 ├── Dockerfile           # Docker イメージ定義
 ├── Makefile             # ビルド自動化（macOS/Linux）
 ├── setup.bat / run.bat  # Windows バッチスクリプト
+├── install.sh / install.ps1 # クロスプラットフォーム uv ブートストラップ
 ├── plugins/             # プラグインディレクトリ（フックベース）
 ├── prompts/             # プロンプトテンプレート（役割、指示、例）
 ├── docs/tool-inventory.md # 生成されたランタイムツール/ルート一覧
 ├── scripts/              # 再現可能なドキュメント/スモークチェック
-└── .github/workflows/   # CI/CD パイプライン
+└── .github/workflows/   # CI、リリース、PyPI 公開パイプライン
 ```
 
 ---

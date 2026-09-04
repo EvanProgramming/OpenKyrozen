@@ -155,6 +155,7 @@ def run_cmd(args: str) -> str:
             text=True,
             timeout=60,
             env=_active_command_env(),
+            cwd=str(_WORKSPACE_ROOT),
         )
         out = result.stdout or ""
         err = result.stderr or ""
@@ -372,6 +373,14 @@ def list_dir(args: str) -> str:
         return f"Error listing directory: {e}"
 
 
+def _git_working_directory(path: str = ".") -> str:
+    """Resolve Git's default directory from the active workspace, not process cwd."""
+    candidate = Path(os.path.expanduser(path or "."))
+    if not candidate.is_absolute():
+        candidate = _WORKSPACE_ROOT / candidate
+    return str(candidate.resolve())
+
+
 def git_clone(args: str) -> str:
     """
     Clone a git repository. Args format: "url" or "url|destination".
@@ -387,7 +396,9 @@ def git_clone(args: str) -> str:
         cmd = ["git", "clone", url]
         if dest:
             cmd.append(dest)
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=60, cwd=str(_WORKSPACE_ROOT),
+        )
         if result.returncode != 0:
             return f"Git clone failed:\n{result.stderr}"
         return f"Repository cloned successfully:\n{result.stdout}"
@@ -402,9 +413,8 @@ def git_diff(args: str) -> str:
     Supports ~ for user home.
     """
     try:
-        dir_path = "."
         extra_args = args.strip()
-        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "diff"]
+        cmd = ["git", "-C", _git_working_directory(), "diff"]
         if extra_args:
             # Support --cached, --staged, HEAD~N, commit hashes
             for part in extra_args.split():
@@ -426,8 +436,7 @@ def git_log(args: str) -> str:
     """
     try:
         import shlex
-        dir_path = "."
-        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "log", "--oneline", "--decorate"]
+        cmd = ["git", "-C", _git_working_directory(), "log", "--oneline", "--decorate"]
         if args.strip():
             try:
                 extra = shlex.split(args.strip())
@@ -450,8 +459,7 @@ def git_branch(args: str) -> str:
     """
     try:
         import shlex
-        dir_path = "."
-        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "branch"]
+        cmd = ["git", "-C", _git_working_directory(), "branch"]
         if args.strip():
             try:
                 extra = shlex.split(args.strip())
@@ -473,9 +481,8 @@ def git_add(args: str) -> str:
     Supports ~ for user home.
     """
     try:
-        dir_path = "."
         files = args.strip() or "."
-        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "add"]
+        cmd = ["git", "-C", _git_working_directory(), "add"]
         for f in files.split():
             cmd.append(f)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -493,11 +500,10 @@ def git_commit(args: str) -> str:
     """
     try:
         import shlex
-        dir_path = "."
         message = args.strip().strip('"').strip("'")
         if not message:
             return "Error: git_commit requires a commit message."
-        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "commit", "-m", message]
+        cmd = ["git", "-C", _git_working_directory(), "commit", "-m", message]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             return f"Git commit failed:\n{result.stderr}"
@@ -512,8 +518,7 @@ def git_push(args: str) -> str:
     "origin main" (specific remote+branch). Supports ~ for user home.
     """
     try:
-        dir_path = "."
-        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "push"]
+        cmd = ["git", "-C", _git_working_directory(), "push"]
         if args.strip():
             for part in args.strip().split():
                 cmd.append(part)
@@ -531,8 +536,7 @@ def git_pull(args: str) -> str:
     "origin main" (specific remote+branch). Supports ~ for user home.
     """
     try:
-        dir_path = "."
-        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "pull"]
+        cmd = ["git", "-C", _git_working_directory(), "pull"]
         if args.strip():
             for part in args.strip().split():
                 cmd.append(part)
@@ -551,8 +555,7 @@ def git_checkout(args: str) -> str:
     Supports ~ for user home.
     """
     try:
-        dir_path = "."
-        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "checkout"]
+        cmd = ["git", "-C", _git_working_directory(), "checkout"]
         if args.strip():
             for part in args.strip().split():
                 cmd.append(part)
@@ -573,8 +576,7 @@ def git_stash(args: str) -> str:
     "apply" (apply without dropping). Supports ~ for user home.
     """
     try:
-        dir_path = "."
-        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "stash"]
+        cmd = ["git", "-C", _git_working_directory(), "stash"]
         if args.strip():
             cmd.append(args.strip())
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -593,8 +595,7 @@ def git_reset(args: str) -> str:
     Supports ~ for user home.
     """
     try:
-        dir_path = "."
-        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "reset"]
+        cmd = ["git", "-C", _git_working_directory(), "reset"]
         if args.strip():
             for part in args.strip().split():
                 cmd.append(part)
@@ -620,9 +621,8 @@ def git_show(args: str) -> str:
     Supports ~ for user home.
     """
     try:
-        dir_path = "."
         target = args.strip() or "HEAD"
-        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "show", "--stat", target]
+        cmd = ["git", "-C", _git_working_directory(), "show", "--stat", target]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             return f"Git show failed:\n{result.stderr}"
@@ -638,8 +638,7 @@ def git_remote(args: str) -> str:
     Supports ~ for user home.
     """
     try:
-        dir_path = "."
-        git_dir = os.path.abspath(os.path.expanduser(dir_path))
+        git_dir = _git_working_directory()
         try:
             parts = shlex.split(args or "")
         except ValueError:
@@ -679,9 +678,7 @@ def git_status(args: str) -> str:
     Supports ~ for user home.
     """
     try:
-        dir_path = args.strip() or "."
-        dir_path = os.path.expanduser(dir_path)
-        abs_path = os.path.abspath(dir_path)
+        abs_path = _git_working_directory(args.strip() or ".")
         cmd = ["git", "-C", abs_path, "status"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:

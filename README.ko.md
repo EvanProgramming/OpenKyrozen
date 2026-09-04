@@ -24,8 +24,8 @@
 - [OpenKyrozen이란?](#openkyrozen이란)
 - [🚀 설치](#-설치)
   - [사전 준비사항](#사전-준비사항)
-  - [방법 A: 소스에서 설치](#방법-a-소스에서-설치권장)
-  - [방법 B: 로컬 디렉토리에서 pip 설치](#방법-b-로컬-디렉토리에서-pip-설치)
+  - [한 줄 설치 프로그램](#한-줄-설치-프로그램)
+  - [개발 전용 소스 체크아웃](#개발-전용-소스-체크아웃)
 - [📖 사용 가이드](#-사용-가이드)
   - [터미널 모드](#터미널-모드)
   - [채팅 내 명령어](#채팅-내-명령어)
@@ -74,7 +74,7 @@ OpenKyrozen은 터미널에서 실행되는 **자기 학습형 AI 에이전트**
 
 ### 사전 준비사항
 
-- **Python 3.12 또는 3.13** (Python 3.14+는 OpenAI SDK와 알려진 임포트 문제가 있습니다)
+- 설치 프로그램은 **Python 3.12**를 기본으로 설치하고 **3.13**도 허용합니다. OpenAI SDK의 알려진 임포트 문제 때문에 Python 3.14+는 지원하지 않습니다.
 - 지원되는 제공자의 API 키:
 
 | 제공자 | 키 발급 | 비용 |
@@ -85,7 +85,23 @@ OpenKyrozen은 터미널에서 실행되는 **자기 학습형 AI 에이전트**
 | **Google (Gemini)** | [aistudio.google.com](https://aistudio.google.com) | ~$0.15/100만 입력 토큰 |
 | **Ollama** | [ollama.com](https://ollama.com) | 무료 (로컬 실행) |
 
-### 방법 A: 소스에서 설치 (권장)
+### 한 줄 설치 프로그램
+
+macOS 또는 Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/main/install.ps1 | iex
+```
+
+설치 프로그램은 OS, 아키텍처, Python, 네트워크와 사용자 경로 쓰기 권한을 확인하고, 필요하면 `uv`를 설치합니다. 격리된 `uv` 도구 환경에 `openkyrozen[web]`을 설치하고, 비공개 `~/.kyrozen` 상태 디렉터리를 만든 뒤 `kyrozen --version`과 `kyrozen --help`를 검증합니다. API 키를 읽거나 출력하거나 업로드하지 않으며, 첫 `kyrozen` 실행에서 제공자 설정을 안내합니다.
+
+### 개발 전용 소스 체크아웃
 
 ```bash
 git clone https://github.com/EvanProgramming/OpenKyrozen.git
@@ -100,21 +116,18 @@ setup.bat
 run.bat
 ```
 
-### 방법 B: 로컬 디렉토리에서 pip 설치
+이 명령들은 프로젝트 모드(`--project .`)로 실행되며 저장소 개발 전용입니다.
+
+### PyPI 패키지 설치
 
 ```bash
-git clone https://github.com/EvanProgramming/OpenKyrozen.git
-cd OpenKyrozen
-pip install .
+uv tool install 'openkyrozen[web]'
 
-# 설치 후 어디서든 실행 가능:
-kyrozen          # 터미널 에이전트
-kyrozen-web      # 웹 서버
+# 이미 지원되는 Python 환경에서는 다음도 사용할 수 있습니다:
+pip install 'openkyrozen[web]'
 ```
 
-> **참고:** PyPI에서 `pip install openkyrozen`은 곧 제공될 예정입니다. 현재는 로컬 디렉토리에서 설치하거나 저장소를 클론하세요.
-
-첫 실행 시 API 키를 입력하라는 메시지가 표시됩니다. 에이전트는 자동으로 제공자를 감지하고 암호화된 키를 `~/.kyrozen_config.json`에 저장합니다.
+설치 후에는 어떤 호출 디렉터리에서도 `kyrozen`과 `kyrozen-web`을 실행할 수 있습니다. 암호화된 제공자 설정은 `~/.kyrozen_config.json`에 저장됩니다.
 
 ---
 
@@ -123,6 +136,12 @@ kyrozen-web      # 웹 서버
 ### 터미널 모드
 
 실행하면 배너와 `You:` 프롬프트가 표시됩니다. 자연스럽게 입력하세요 — 에이전트는 영어, 중국어, 일본어, 한국어를 이해합니다.
+
+인자 없이 실행한 `kyrozen`은 항상 영구 전역 작업 공간
+`~/.kyrozen/workspace`를 사용하며 현재 디렉터리를 바꿔도 프로젝트가 바뀌지
+않습니다. 프로젝트의 원본 파일을 직접 읽고 수정하려면 `kyrozen --project .` 또는
+`kyrozen --project /path/to/project`를 사용하세요. `--global`은 기본 전역 모드를
+명시하는 옵션입니다.
 
 ```text
 You: README를 읽고 이 프로젝트가 무엇인지 알려줘
@@ -149,14 +168,20 @@ Kyrozen의 동작:
 | `/api_key` | API 키 변경 |
 | `/learn` | 프로젝트 파일을 즉시 메모리에 스캔 |
 | `/forget` | 최근 학습 확인; `/forget 키워드`로 잘못된 학습 삭제 |
-| `/update` | Git에서 최신 버전 가져오기 |
+| `/update` | `uv tool upgrade openkyrozen`으로 설치된 패키지 업데이트 (프로젝트에 git pull을 실행하지 않음) |
 | `/self-learning` | 개별 자기 학습 기능 켜기/끄기 |
 
 ### Web UI 모드
 
 ```bash
-python server.py --port 8000
+kyrozen-web --port 8000
 # http://localhost:8000 열기
+
+# 현재 프로젝트를 직접 조작:
+kyrozen-web --project . --port 8000
+
+# LAN 또는 컨테이너에서 접근할 때:
+KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 
 # 또는 Docker 사용:
 docker build -t openkyrozen .
@@ -242,7 +267,7 @@ export KYROZEN_MODEL_COMPLEX=deepseek-reasoner
 ```bash
 export KYROZEN_PROVIDER=anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
-python main.py
+kyrozen
 ```
 
 주 제공자가 실패하면 Kyrozen은 자동으로 폴백 체인(예: DeepSeek → OpenAI → Claude)을 통해 전환합니다. 속도 제한 오류(HTTP 429)는 지터가 포함된 지수 백오프를 트리거합니다. Ollama는 키가 필요 없는 로컬 제공자입니다. `KYROZEN_PROVIDER=ollama`를 설정하고 필요하면 `KYROZEN_BASE_URL`로 OpenAI-compatible endpoint를 지정하세요. Web headless 시작은 stdin을 읽지 않습니다. 원격 제공자 키가 없으면 명확한 degraded 상태가 되며 대화형 CLI만 키를 요청합니다.
@@ -388,7 +413,7 @@ CLI는 유휴 상태에서 30초마다 최대 4개 기능을 라운드 로빈으
 
 ### 메모리 저장소
 
-OpenKyrozen v2의 장기 메모리는 **SQLite를 사실의 원본**(`~/.kyrozen/v2/openkyrozen.sqlite3`)으로 사용하고, ChromaDB는 다시 만들 수 있는 파생 의미 인덱스로 사용합니다. workspace와 session은 분리되며 ChromaDB를 사용할 수 없어도 SQLite 키워드 검색으로 영속성이 유지됩니다. Web/MCP 단일 사용자 배포에서는 `KYROZEN_SERVER_TOKEN` 하나가 안정적인 actor 하나를 나타내고, 요청의 `speaker`만으로 private 데이터의 소유자를 바꿀 수 없습니다.
+OpenKyrozen v2의 장기 메모리는 **SQLite를 사실의 원본**(`~/.kyrozen/v2/openkyrozen.sqlite3`)으로 사용하고, ChromaDB는 다시 만들 수 있는 파생 의미 인덱스로 사용합니다. 개인 대화, 작업과 학습은 전역 상태 저장소에서 공유됩니다. `FILE:` 스냅샷과 벡터 메타데이터는 활성 루트에서 계산한 안정적인 scope를 사용하므로 프로젝트를 바꿔도 다른 프로젝트의 파일 인덱스를 삭제하거나 불러오지 않습니다. 기본 전역 작업 공간은 `~/.kyrozen/workspace`이며 `kyrozen --project PATH`는 미러나 복사-복원 계층 없이 원본 프로젝트 파일을 직접 조작합니다. Web/MCP 단일 사용자 배포에서는 `KYROZEN_SERVER_TOKEN` 하나가 안정적인 actor 하나를 나타내고, 요청의 `speaker`만으로 private 데이터의 소유자를 바꿀 수 없습니다.
 
 작업은 재시작 후에도 저장되며 상태는 `pending`, `running`, `succeeded`, `failed`, `blocked`, `cancelled`입니다(이전 `done`은 읽기 호환). `TaskDone`만으로는 성공하지 않고 도구 결과, 테스트, 파일 확인 또는 명시적 확인 증거가 필요합니다. 안전한 API 작업은 worker가 재개하며 failed/blocked 작업은 `/api/v2/tasks/{task_id}/resume`으로 명시적으로 재개합니다.
 
@@ -413,9 +438,15 @@ curl -sS -X DELETE http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
 ## 🌐 Web UI 및 REST API
 
 ```bash
-pip install fastapi uvicorn
-python server.py --port 8000
+pip install 'openkyrozen[web]'
+kyrozen-web --port 8000
 # http://localhost:8000 열기
+
+# 현재 프로젝트를 직접 조작:
+kyrozen-web --project . --port 8000
+
+# LAN 또는 컨테이너에서 접근할 때:
+KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 ```
 
 ### REST API 엔드포인트
@@ -504,6 +535,11 @@ def register():
 
 사용 가능한 훅: `on_startup`, `on_turn_start`, `on_turn_end`, `on_tool_execute`.
 
+런타임은 패키지의 `plugins/*.py`와 활성 작업 공간의 `plugins/*.py`를 결정적인
+파일명 순서로 로드하며, 이름이 충돌하면 작업 공간 플러그인이 우선합니다. 기본
+턴 로그는 `~/.kyrozen/v2/kyrozen_turns.log`에 저장되고 `KYROZEN_TURN_LOG`로
+변경할 수 있습니다.
+
 작동 예시는 `plugins/turn_logger.py`를 참조하세요.
 
 ---
@@ -519,7 +555,7 @@ def register():
 | **API 인증** | loopback 외 API/MCP 접근에는 `KYROZEN_SERVER_TOKEN` 필요 |
 | **Capability 프로필** | Web/MCP 기본값은 `workspace`; 되돌릴 수 없는 `git_reset`과 동적 도구는 `full`에서 명시적으로 허용 |
 | **Git 안전** | 강제 푸시 없음; CLI가 고영향 작업을 확인하고 기록 |
-| **감사 로그** | 모든 채팅/API 이벤트를 타임스탬프와 함께 `kyrozen_audit.log`에 기록 |
+| **감사 로그** | 모든 채팅/API 이벤트를 `~/.kyrozen/v2/kyrozen_audit.log`에 타임스탬프와 함께 기록 (`KYROZEN_AUDIT_LOG`로 변경 가능) |
 | **Python 버전 가드** | Python 3.14+에서 시작 거부 |
 | **도구 실패 메모리** | 과거 실패를 기억하고 반복 방지 |
 
@@ -540,7 +576,11 @@ def register():
 | `KYROZEN_MODEL_SIMPLE` | 간단/중간 작업용 모델 | 제공자 기본값 |
 | `KYROZEN_MODEL_COMPLEX` | 복잡한 작업용 모델 | 제공자 기본값 |
 | `KYROZEN_BASE_URL` | 사용자 정의 API 기본 URL | 제공자 기본값 |
+| `KYROZEN_WORKSPACE_ROOT` | 고급 테스트/개발용 루트 재정의; 명시적 CLI 옵션이 우선 | `~/.kyrozen/workspace` |
 | `KYROZEN_DB_PATH` | SQLite 사실 저장소 경로 | `~/.kyrozen/v2/openkyrozen.sqlite3` |
+| `KYROZEN_VECTOR_PATH` | 재생성 가능한 Chroma 인덱스 경로 | SQLite 디렉터리 아래 |
+| `KYROZEN_TURN_LOG` | 명시적 턴 로그 경로 | `~/.kyrozen/v2/kyrozen_turns.log` |
+| `KYROZEN_AUDIT_LOG` | 명시적 감사 로그 경로 | `~/.kyrozen/v2/kyrozen_audit.log` |
 | `KYROZEN_SERVER_TOKEN` | loopback 외 Web/MCP 접근 토큰 | 설정되지 않음 (loopback만) |
 | `KYROZEN_SERVER_ACTOR` | 단일 사용자 배포의 안정적인 actor 라벨 | `local` |
 | `KYROZEN_EXECUTION_SURFACE` | 실행 표면 (`cli` 또는 `web`) | `cli` |
@@ -610,7 +650,11 @@ GitHub Actions가 모든 푸시와 PR에서 자동 실행:
 ### pip 패키지
 
 ```bash
-# 로컬 디렉토리에서 설치 (PyPI 게시 곧 예정)
+# 공개 패키지 (설치 프로그램이 uv와 Python 설정도 처리합니다)
+uv tool install 'openkyrozen[web]'
+pip install 'openkyrozen[web]'
+
+# 로컬 체크아웃 전용 (개발)
 pip install .                   # 코어 + CLI
 pip install '.[web]'            # + Web UI
 pip install '.[all]'            # + Claude + Gemini + Web
@@ -627,15 +671,17 @@ OpenKyrozen/
 ├── providers.py         # 멀티 LLM 추상화 (5개 제공자 + 폴백)
 ├── memory.py            # SQLite 사실 메모리 + 재생성 가능한 Chroma 인덱스
 ├── server.py            # FastAPI 웹 서버 + REST API + 채팅 UI
+├── workspace_context.py # 전역/프로젝트 시작 루트 해결
 ├── pyproject.toml       # pip 패키지 설정
 ├── Dockerfile           # Docker 이미지 정의
 ├── Makefile             # 빌드 자동화 (macOS/Linux)
 ├── setup.bat / run.bat  # Windows 배치 스크립트
+├── install.sh / install.ps1 # 크로스 플랫폼 uv 부트스트랩 설치 프로그램
 ├── plugins/             # 플러그인 디렉토리 (훅 기반)
 ├── prompts/             # 프롬프트 템플릿 (역할, 지침, 예시)
 ├── docs/tool-inventory.md # 생성된 런타임 도구/경로 인벤토리
 ├── scripts/              # 재현 가능한 문서/스모크 검사
-└── .github/workflows/   # CI/CD 파이프라인
+└── .github/workflows/   # CI, 릴리스 및 PyPI 게시 파이프라인
 ```
 
 ---

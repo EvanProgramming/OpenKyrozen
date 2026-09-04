@@ -1,6 +1,6 @@
 """
 OpenKyrozen Web Server — FastAPI + Chat UI + REST API
-Run: python server.py  or  uvicorn server:app --host 0.0.0.0 --port 8000
+Run: kyrozen-web  or  uvicorn server:app --host 0.0.0.0 --port 8000
 """
 
 from __future__ import annotations
@@ -115,13 +115,19 @@ def _sanitize_api_message(message: str) -> str:
     return sanitized
 
 # Audit log
-_audit_log_path = Path("kyrozen_audit.log")
+def _audit_log_path() -> Path:
+    explicit = os.environ.get("KYROZEN_AUDIT_LOG", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    return _agent._state_root() / "kyrozen_audit.log"
 
 def _audit(event: str, detail: str = "", user: str = "anonymous") -> None:
     """Append an audit entry to the log file."""
     ts = time.strftime("%Y-%m-%dT%H:%M:%S")
     try:
-        with open(_audit_log_path, "a") as f:
+        audit_path = _audit_log_path()
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(audit_path, "a") as f:
             f.write(f"[{ts}] [{user}] {event} | {detail}\n")
     except Exception:
         pass
@@ -1514,7 +1520,11 @@ def _trigger_hook(hook_name: str, **kwargs):
 async def startup():
     """Initialize the agent on server start."""
     print("[Server] Initializing OpenKyrozen...")
-    _agent._set_workspace_root(os.getcwd())
+    if _agent.get_launch_context() is None:
+        _agent.configure_launch_context()
+    context = _agent.get_launch_context()
+    if context is not None:
+        print(f"[Server] {context.describe()}")
     _agent._prompt_and_init_deepseek(interactive=False)
     if _agent.llm_provider is None:
         print("[Server] WARNING: No LLM provider configured. Set API key env vars.")
@@ -1549,16 +1559,47 @@ async def shutdown():
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def _server_parser():
     import argparse
+
     parser = argparse.ArgumentParser(description="OpenKyrozen Web Server")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--project", metavar="PATH", help="operate directly on this project directory")
+    mode.add_argument("--global", dest="global_mode", action="store_true",
+                      help="use the persistent global workspace (the default)")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address")
     parser.add_argument("--port", type=int, default=8000, help="Port")
     parser.add_argument("--reload", action="store_true", help="Auto-reload on code changes")
-    args = parser.parse_args()
-    uvicorn.run("server:app", host=args.host, port=args.port, reload=args.reload)
+    return parser
+
+
+def _parse_server_args(argv: list[str] | None = None):
+    args = _server_parser().parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        context = _agent.configure_launch_context(
+            project_path=args.project,
+            global_mode=args.global_mode,
+        )
+    except ValueError as exc:
+        _server_parser().error(str(exc))
+    return args, context
 
 
 def main_entry():
     """Entry point for pyproject.toml console_scripts."""
-    uvicorn.run("server:app", host="127.0.0.1", port=8000)
+    args, context = _parse_server_args()
+    if args.reload:
+        # Uvicorn imports the app in a child process when reloading. Carry the
+        # already-resolved mode across that import without using process cwd.
+        os.environ["KYROZEN_WORKSPACE_ROOT"] = str(context.active_root)
+        os.environ["KYROZEN_LAUNCH_MODE"] = context.mode
+        uvicorn.run(
+            "server:app", host=args.host, port=args.port, reload=True,
+            app_dir=str(Path(__file__).resolve().parent),
+        )
+        return
+    uvicorn.run(app, host=args.host, port=args.port, reload=False)
+
+
+if __name__ == "__main__":
+    main_entry()

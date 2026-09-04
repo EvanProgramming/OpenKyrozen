@@ -33,10 +33,14 @@ class MemoryBank:
     MAX_LOGS = int(os.environ.get("KYROZEN_MEMORY_MAX_LOGS", "10000"))
 
     def __init__(self, path: str | os.PathLike[str] | None = None, *, user_id: str = "local",
-                 workspace_id: str = "default", session_id: str | None = None):
+                 workspace_id: str = "default", session_id: str | None = None,
+                 file_scope_id: str | None = None):
         self._lock = threading.RLock()
         self.user_id = user_id
         self.workspace_id = workspace_id
+        # Conversation, task, and learning state may be global while source
+        # snapshots remain isolated to the active project.
+        self.file_scope_id = file_scope_id or workspace_id
         self.session_id = session_id
         requested = Path(path or os.environ.get("KYROZEN_DB_PATH", self.DEFAULT_PATH)).expanduser()
         if requested.suffix.lower() != ".sqlite3":
@@ -131,27 +135,31 @@ class MemoryBank:
         return changed
 
     def add_file(self, rel_path: str, content: str) -> str:
-        file_id = self.store.upsert_file(rel_path, content, user_id=self.user_id, workspace_id=self.workspace_id)
+        file_id = self.store.upsert_file(
+            rel_path, content, user_id=self.user_id, workspace_id=self.file_scope_id,
+        )
         text = f"FILE: {rel_path}\n```text\n{content}\n```"
         if self._files_collection is not None:
             try:
                 self._files_collection.upsert(
                     ids=[file_id], documents=[text],
                     metadatas=[{"rel_path": rel_path, "content_hash": stable_hash(content),
-                                "user_id": self.user_id, "workspace_id": self.workspace_id}],
+                                "user_id": self.user_id, "workspace_id": self.file_scope_id}],
                 )
             except Exception as exc:
                 self._last_error = f"file index write failed: {exc}"
         return file_id
 
     def remove_stale_files(self, valid_paths: set[str]) -> int:
-        removed = self.store.remove_stale_files(valid_paths, workspace_id=self.workspace_id, user_id=self.user_id)
+        removed = self.store.remove_stale_files(
+            valid_paths, workspace_id=self.file_scope_id, user_id=self.user_id,
+        )
         if self._files_collection is not None:
             try:
                 current = self._files_collection.get(include=["metadatas"])
                 stale = [doc_id for doc_id, meta in zip(current.get("ids", []), current.get("metadatas", []))
                          if meta.get("user_id") == self.user_id
-                         and meta.get("workspace_id") == self.workspace_id
+                         and meta.get("workspace_id") == self.file_scope_id
                          and meta.get("rel_path") not in valid_paths]
                 if stale:
                     self._files_collection.delete(ids=stale)

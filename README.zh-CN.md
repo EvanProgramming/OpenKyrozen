@@ -24,8 +24,8 @@
 - [什么是 OpenKyrozen？](#什么是-openkyrozen)
 - [🚀 安装](#-安装)
   - [前置条件](#前置条件)
-  - [方式 A：从源码安装](#方式-a从源码安装推荐)
-  - [方式 B：从本地目录 pip 安装](#方式-b从本地目录-pip-安装)
+  - [一行安装器](#一行安装器)
+  - [仅用于开发的源码检出](#仅用于开发的源码检出)
 - [📖 使用指南](#-使用指南)
   - [终端模式](#终端模式)
   - [对话内命令](#对话内命令)
@@ -74,7 +74,7 @@ OpenKyrozen 是一款在终端中运行的**自学习 AI 智能体**。与普通
 
 ### 前置条件
 
-- **Python 3.12 或 3.13**（Python 3.14+ 与 OpenAI SDK 存在已知的导入问题）
+- 安装脚本默认安装 **Python 3.12**，也接受 **Python 3.13**；Python 3.14+ 因 OpenAI SDK 的已知导入问题而不受支持。
 - 任一支持的服务商 API 密钥：
 
 | 服务商 | 获取密钥 | 费用 |
@@ -85,7 +85,23 @@ OpenKyrozen 是一款在终端中运行的**自学习 AI 智能体**。与普通
 | **Google (Gemini)** | [aistudio.google.com](https://aistudio.google.com) | ~$0.15/百万输入 token |
 | **Ollama** | [ollama.com](https://ollama.com) | 免费（本地运行） |
 
-### 方式 A：从源码安装（推荐）
+### 一行安装器
+
+macOS 或 Linux：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/main/install.sh | sh
+```
+
+Windows PowerShell：
+
+```powershell
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/main/install.ps1 | iex
+```
+
+安装器会检查操作系统、架构、Python、网络和用户目录权限；需要时安装 `uv`；在隔离的 `uv` 工具环境中安装 `openkyrozen[web]`；创建私有 `~/.kyrozen` 状态目录；并验证 `kyrozen --version` 与 `kyrozen --help`。安装器不会读取、打印或上传 API 密钥，首次运行 `kyrozen` 时再引导服务商配置。
+
+### 仅用于开发的源码检出
 
 ```bash
 git clone https://github.com/EvanProgramming/OpenKyrozen.git
@@ -100,21 +116,18 @@ setup.bat
 run.bat
 ```
 
-### 方式 B：从本地目录 pip 安装
+这些命令会显式使用项目模式（`--project .`），仅用于仓库开发。
+
+### 从 PyPI 安装
 
 ```bash
-git clone https://github.com/EvanProgramming/OpenKyrozen.git
-cd OpenKyrozen
-pip install .
+uv tool install 'openkyrozen[web]'
 
-# 安装后可在任意位置运行：
-kyrozen          # 终端智能体
-kyrozen-web      # Web 服务器
+# 已有受支持的 Python 环境也可以：
+pip install 'openkyrozen[web]'
 ```
 
-> **注意：** PyPI 发布 (`pip install openkyrozen`) 即将推出。目前请从本地目录或克隆仓库安装。
-
-首次启动时会提示输入 API 密钥。智能体会自动检测服务商，并将加密密钥保存至 `~/.kyrozen_config.json`。
+安装后可在任意调用目录运行 `kyrozen` 和 `kyrozen-web`。加密的服务商配置保存在 `~/.kyrozen_config.json`。
 
 ---
 
@@ -123,6 +136,8 @@ kyrozen-web      # Web 服务器
 ### 终端模式
 
 启动后会显示横幅和 `You:` 提示符。像平常说话一样输入即可——智能体支持简体中文、英文、日文和韩文。
+
+不带参数的 `kyrozen` 始终使用持久化全局工作区 `~/.kyrozen/workspace`，切换当前目录不会切换项目。需要直接读取和修改项目原文件时，请使用 `kyrozen --project .` 或 `kyrozen --project /path/to/project`；`--global` 是默认全局模式的显式写法。
 
 ```text
 You: 读取 README，告诉我这个项目是做什么的
@@ -149,17 +164,20 @@ Kyrozen 会：
 | `/api_key` | 更改 API 密钥 |
 | `/learn` | 立即扫描项目文件存入记忆 |
 | `/forget` | 查看最近的学习记录；`/forget 关键词` 删除错误学习 |
-| `/update` | 从 git 拉取最新版本 |
+| `/update` | 使用 `uv tool upgrade openkyrozen` 更新已安装的软件包（不会向项目执行 git pull） |
 | `/self-learning` | 开关各项自学习功能 |
 
 ### Web UI 模式
 
 ```bash
-python server.py --port 8000
+kyrozen-web --port 8000
 # 打开 http://localhost:8000
 
+# 直接操作当前项目：
+kyrozen-web --project . --port 8000
+
 # 局域网或容器访问时，必须设置令牌并显式监听外部地址：
-KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
+KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 
 # 或通过 Docker：
 docker build -t openkyrozen .
@@ -245,7 +263,7 @@ export KYROZEN_MODEL_COMPLEX=deepseek-reasoner
 ```bash
 export KYROZEN_PROVIDER=anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
-python main.py
+kyrozen
 ```
 
 如果主服务商失败，Kyrozen 会通过回退链自动切换（例如 DeepSeek → OpenAI → Claude）。限流错误（HTTP 429）会触发带抖动的指数退避。Ollama 是无需密钥的本地服务商；设置 `KYROZEN_PROVIDER=ollama`，必要时用 `KYROZEN_BASE_URL` 指定 OpenAI-compatible 地址。Web 启动不会读取 stdin：远程服务商缺少密钥时进入明确的 degraded 状态，交互式 CLI 仍会提示输入密钥。
@@ -391,7 +409,7 @@ CLI 在空闲时每 30 秒通过共享 dispatcher 以 round-robin 方式最多�
 
 ### 记忆存储
 
-OpenKyrozen v2 使用 **SQLite 作为事实主库**（`~/.kyrozen/v2/openkyrozen.sqlite3`），ChromaDB 只作为可重建的语义索引。记忆包含类型、作用域、置信度、来源事件和生命周期状态；workspace 与 session 相互隔离。即使 ChromaDB 不可用，SQLite 仍会提供持久化关键词检索。
+OpenKyrozen v2 使用 **SQLite 作为事实主库**（`~/.kyrozen/v2/openkyrozen.sqlite3`），ChromaDB 只作为可重建的语义索引。个人对话、任务和学习状态在全局状态库中共享；`FILE:` 快照及其向量元数据使用由活动根目录生成的稳定作用域，因此切换项目不会删除或召回其他项目的文件索引。默认全局工作区是 `~/.kyrozen/workspace`；`kyrozen --project PATH` 直接操作原项目文件，不使用镜像或回写层。即使 ChromaDB 不可用，SQLite 仍会提供持久化关键词检索。
 
 导入旧版 Chroma 记忆而不删除原数据：
 
@@ -426,12 +444,12 @@ curl -sS -X DELETE http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
 ## 🌐 Web UI 与 REST API
 
 ```bash
-pip install fastapi uvicorn
-python server.py --port 8000
+pip install 'openkyrozen[web]'
+kyrozen-web --port 8000
 # 打开 http://localhost:8000
 
 # 局域网或容器访问时，必须设置令牌并显式监听外部地址：
-KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
+KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 ```
 
 ### REST API 端点
@@ -529,6 +547,8 @@ def register():
 
 可用钩子：`on_startup`、`on_turn_start`、`on_turn_end`、`on_tool_execute`。
 
+运行时会按确定性的文件名顺序加载打包的 `plugins/*.py` 和活动工作区下的 `plugins/*.py`；同名时活动工作区插件优先。默认轮次日志位于 `~/.kyrozen/v2/kyrozen_turns.log`，可用 `KYROZEN_TURN_LOG` 覆盖。
+
 参考 `plugins/turn_logger.py` 获取完整示例。
 
 ---
@@ -544,7 +564,7 @@ def register():
 | **API 认证** | 非本机 API/MCP 访问必须设置 `KYROZEN_SERVER_TOKEN` |
 | **能力配置文件** | 本地 CLI 保留完整 Agent 工具集；Web/MCP 默认提供丰富的 `workspace` 权限，不可逆 Git reset 和动态工具由 `full` 显式开启 |
 | **Git 安全** | 绝不强制推送；CLI 对高影响 Git 操作进行确认并记录决定 |
-| **审计日志** | 所有聊天/API 事件记录到 `kyrozen_audit.log`，带时间戳 |
+| **审计日志** | 所有聊天/API 事件记录到 `~/.kyrozen/v2/kyrozen_audit.log`，带时间戳（可用 `KYROZEN_AUDIT_LOG` 覆盖） |
 | **Python 版本守卫** | 拒绝在 Python 3.14+ 上启动 |
 | **工具失败记忆** | 记住过去的失败并避免重复 |
 
@@ -565,7 +585,11 @@ def register():
 | `KYROZEN_MODEL_SIMPLE` | 简单/中等任务模型 | 服务商默认值 |
 | `KYROZEN_MODEL_COMPLEX` | 复杂任务模型 | 服务商默认值 |
 | `KYROZEN_BASE_URL` | 自定义 API 基础 URL | 服务商默认值 |
+| `KYROZEN_WORKSPACE_ROOT` | 高级测试/开发根目录覆盖；显式 CLI 参数优先 | `~/.kyrozen/workspace` |
 | `KYROZEN_DB_PATH` | SQLite 事实主库路径 | `~/.kyrozen/v2/openkyrozen.sqlite3` |
+| `KYROZEN_VECTOR_PATH` | 可重建的 Chroma 索引路径 | SQLite 目录下 |
+| `KYROZEN_TURN_LOG` | 显式轮次日志路径 | `~/.kyrozen/v2/kyrozen_turns.log` |
+| `KYROZEN_AUDIT_LOG` | 显式审计日志路径 | `~/.kyrozen/v2/kyrozen_audit.log` |
 | `KYROZEN_SERVER_TOKEN` | 非本机 Web/MCP 访问令牌 | 未设置（仅回环访问） |
 | `KYROZEN_SERVER_ACTOR` | 单用户部署的稳定 actor 标签 | `local` |
 | `KYROZEN_EXECUTION_SURFACE` | 执行面（`cli` 或 `web`） | `cli` |
@@ -638,7 +662,11 @@ GitHub Actions 在每次推送和 PR 时自动运行：
 ### pip 包
 
 ```bash
-# 从本地目录安装（PyPI 发布即将推出）
+# 已发布的软件包（安装器会负责 uv 和 Python 设置）
+uv tool install 'openkyrozen[web]'
+pip install 'openkyrozen[web]'
+
+# 仅限本地源码检出（开发）
 pip install .                   # 核心 + CLI
 pip install '.[web]'            # + Web UI
 pip install '.[all]'            # + Claude + Gemini + Web
@@ -655,15 +683,17 @@ OpenKyrozen/
 ├── providers.py         # 多 LLM 抽象层（5 个服务商 + 回退）
 ├── memory.py            # SQLite 事实记忆 + 可重建 Chroma 索引
 ├── server.py            # FastAPI Web 服务器 + REST API + 聊天 UI
+├── workspace_context.py # 全局/项目启动根目录解析
 ├── pyproject.toml       # pip 包配置
 ├── Dockerfile           # Docker 镜像定义
 ├── Makefile             # 构建自动化（macOS/Linux）
 ├── setup.bat / run.bat  # Windows 批处理脚本
+├── install.sh / install.ps1 # 跨平台 uv 引导安装器
 ├── plugins/             # 插件目录（基于钩子）
 ├── prompts/             # 提示词模板（角色、指令、示例）
 ├── docs/tool-inventory.md # 生成的运行时工具和端点清单
 ├── scripts/              # 可复现的文档和 smoke check
-└── .github/workflows/   # CI/CD 流水线
+└── .github/workflows/   # CI、发布和 PyPI 流水线
 ```
 
 ---

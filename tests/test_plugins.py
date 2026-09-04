@@ -56,6 +56,37 @@ class PluginLifecycleTests(unittest.TestCase):
             self.assertEqual(len(failures), 3)
             self.assertEqual(set(runtime.plugin_names), {"00_bad", "01_good"})
 
+    def test_active_workspace_plugin_overrides_packaged_plugin_with_same_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            active = root / "active"
+            packaged = root / "packaged"
+            active.mkdir()
+            packaged.mkdir()
+            (active / "sample.py").write_text(
+                "class Plugin:\n"
+                "    source = 'active'\n"
+                "def register(): return Plugin()\n",
+                encoding="utf-8",
+            )
+            (packaged / "sample.py").write_text(
+                "class Plugin:\n"
+                "    source = 'packaged'\n"
+                "def register(): return Plugin()\n",
+                encoding="utf-8",
+            )
+            (packaged / "fallback.py").write_text(
+                "class Plugin:\n"
+                "    source = 'fallback'\n"
+                "def register(): return Plugin()\n",
+                encoding="utf-8",
+            )
+
+            runtime = PluginRuntime("precedence", plugin_dirs=(active, packaged))
+
+            self.assertEqual(runtime.load_once(), ("sample", "fallback"))
+            self.assertEqual(runtime._plugins[0][1].source, "active")
+
     def test_bundled_turn_logger_produces_a_real_turn_log(self):
         with tempfile.TemporaryDirectory() as directory:
             log_path = Path(directory) / "kyrozen_turns.log"

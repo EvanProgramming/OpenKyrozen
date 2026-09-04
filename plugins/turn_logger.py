@@ -11,7 +11,9 @@ class TurnLogger:
     """Logs every conversation turn with timestamp."""
 
     def __init__(self):
-        self._log_path = Path(os.environ.get("KYROZEN_TURN_LOG", "kyrozen_turns.log"))
+        default_path = Path.home() / ".kyrozen" / "v2" / "kyrozen_turns.log"
+        self._log_path = Path(os.environ.get("KYROZEN_TURN_LOG", default_path)).expanduser()
+        self._log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def on_turn_start(self, user_input: str, **kwargs):
         ts = time.strftime("%Y-%m-%d %H:%M:%S")

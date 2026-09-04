@@ -65,7 +65,8 @@ class SubAgentManager:
         workspace_id = workspace_id or self.memory.workspace_id
         scoped_memory = MemoryBank(self.memory.db_path, user_id=self.memory.user_id,
                                    workspace_id=workspace_id,
-                                   session_id=run_id if profile.memory_scope == "session" else None)
+                                   session_id=run_id if profile.memory_scope == "session" else None,
+                                   file_scope_id=self.memory.file_scope_id)
         context = (scoped_memory.recall_records(
             task, n_results=5, profile=profile.name,
             task_signature=self.learning_engine.task_signature(profile.name, task) if self.learning_engine else None,

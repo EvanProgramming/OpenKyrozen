@@ -14,6 +14,7 @@ import tools
 from tools import (
     AVAILABLE_TOOLS,
     allowed_tool_names,
+    git_status,
     git_remote,
     read_file,
     read_webpage,
@@ -72,6 +73,18 @@ class WorkspaceToolTests(unittest.TestCase):
             result = run_cmd("python -c 'import sys; print(sys.executable)' ")
         self.assertEqual(Path(result).resolve(), Path(sys.executable).resolve())
 
+    def test_shell_and_git_commands_use_the_active_workspace_from_any_caller_directory(self):
+        original_root = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            set_workspace_root(root)
+            try:
+                self.assertEqual(Path(run_cmd("pwd")).resolve(), root)
+                self.assertIn("On branch", git_status(""))
+            finally:
+                set_workspace_root(original_root)
+
     def test_run_cmd_preserves_explicit_interpreter_paths(self):
         with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=False):
             result = run_cmd(f"{sys.executable} -c 'print(\"explicit\")'")
@@ -88,11 +101,15 @@ class WorkspaceToolTests(unittest.TestCase):
             )
             self.assertEqual(initialized.returncode, 0, initialized.stderr)
             remote_url = "https://example.com/org/repo.git?token=x&format=json"
-            with patch("tools.os.getcwd", return_value=str(repository)):
+            original_root = tools._WORKSPACE_ROOT
+            set_workspace_root(repository)
+            try:
                 added = git_remote(f"add origin {remote_url}")
                 listed = git_remote("")
                 removed = git_remote("remove origin")
                 after_remove = git_remote("")
+            finally:
+                set_workspace_root(original_root)
             self.assertEqual(added, "Remote 'origin' added.")
             self.assertIn(f"origin\t{remote_url} (fetch)", listed)
             self.assertIn(f"origin\t{remote_url} (push)", listed)

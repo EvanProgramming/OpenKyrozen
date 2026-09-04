@@ -49,7 +49,8 @@ class DurableTaskGatewayTests(unittest.TestCase):
         for variable in ("KYROZEN_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
             env.pop(variable, None)
         process = subprocess.Popen(
-            [sys.executable, str(repository / "server.py"), "--host", "127.0.0.1", "--port", str(port)],
+            [sys.executable, str(repository / "server.py"), "--project", str(workspace),
+             "--host", "127.0.0.1", "--port", str(port)],
             cwd=workspace,
             env=env,
             stdout=subprocess.PIPE,

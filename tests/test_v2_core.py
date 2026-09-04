@@ -30,6 +30,24 @@ class V2CoreTests(unittest.TestCase):
             self.assertEqual(other.get_recent(10), [])
             self.assertEqual(other.recall("secret"), [])
 
+    def test_global_personal_state_can_share_while_file_snapshots_stay_project_scoped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "state.sqlite3"
+            first = MemoryBank(db_path, workspace_id="default", file_scope_id="source-one")
+            second = MemoryBank(db_path, workspace_id="default", file_scope_id="source-two")
+            first.add_log("FACT: shared personal preference", kind="fact")
+            first.add_file("app.py", "print('one')")
+            second.add_file("app.py", "print('two')")
+
+            self.assertIn("FACT: shared personal preference", second.get_recent(10))
+            self.assertEqual(first.remove_stale_files(set()), 1)
+            remaining = second.store.connection()
+            with remaining as db:
+                rows = db.execute(
+                    "SELECT content FROM files WHERE workspace_id=?", ("source-two",)
+                ).fetchall()
+            self.assertEqual([row["content"] for row in rows], ["print('two')"])
+
     def test_task_list_merge_and_evidence_gate(self):
         with tempfile.TemporaryDirectory() as directory:
             memory = MemoryBank(Path(directory) / "state.sqlite3")

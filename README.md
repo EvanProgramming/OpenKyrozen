@@ -24,8 +24,8 @@
 - [What is OpenKyrozen?](#what-is-openkyrozen)
 - [🚀 Installation](#-installation)
   - [Prerequisites](#prerequisites)
-  - [Option A: From source](#option-a-from-source-recommended)
-  - [Option B: pip install](#option-b-pip-install-from-local-directory)
+  - [One-line installer](#one-line-installer)
+  - [Development-only source checkout](#development-only-source-checkout)
 - [📖 Usage Guide](#-usage-guide)
   - [Terminal mode](#terminal-mode)
   - [In-chat commands](#in-chat-commands)
@@ -75,7 +75,7 @@ Think of it as an AI teammate that gets smarter every time you use it.
 
 ### Prerequisites
 
-- **Python 3.12 or 3.13** (Python 3.14+ has a known import issue with the OpenAI SDK)
+- The installer provisions **Python 3.12** by default and accepts Python **3.13**. Python 3.14+ is intentionally unsupported because of a known OpenAI SDK import issue.
 - An API key from any supported provider:
 
 | Provider | Get a key | Cost |
@@ -86,7 +86,23 @@ Think of it as an AI teammate that gets smarter every time you use it.
 | **Google (Gemini)** | [aistudio.google.com](https://aistudio.google.com) | ~$0.15/M input tokens |
 | **Ollama** | [ollama.com](https://ollama.com) | Free (runs locally) |
 
-### Option A: From source (recommended)
+### One-line installer
+
+On macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/main/install.sh | sh
+```
+
+On Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/main/install.ps1 | iex
+```
+
+The installer checks the operating system, architecture, Python, network, and writable user paths; installs `uv` when needed; installs `openkyrozen[web]` in an isolated `uv` tool environment; creates private `~/.kyrozen` state directories; and verifies `kyrozen --version` and `kyrozen --help`. It never reads, prints, or uploads API keys. The first `kyrozen` launch guides provider setup.
+
+### Development-only source checkout
 
 ```bash
 git clone https://github.com/EvanProgramming/OpenKyrozen.git
@@ -101,21 +117,18 @@ setup.bat
 run.bat
 ```
 
-### Option B: pip install from local directory
+These commands intentionally run in project mode (`--project .`) and are for repository development.
+
+### Package installation from PyPI
 
 ```bash
-git clone https://github.com/EvanProgramming/OpenKyrozen.git
-cd OpenKyrozen
-pip install .
+uv tool install 'openkyrozen[web]'
 
-# Then run anywhere:
-kyrozen          # terminal agent
-kyrozen-web      # web server
+# Or use pip in an existing supported environment:
+pip install 'openkyrozen[web]'
 ```
 
-> **Note:** `pip install openkyrozen` from PyPI is coming soon. For now, install from the local directory or clone the repo.
-
-On first launch, you'll be prompted for an API key. The agent auto-detects your provider and saves the encrypted key to `~/.kyrozen_config.json`.
+After installation, `kyrozen` and `kyrozen-web` work from any caller directory. The encrypted provider configuration is saved to `~/.kyrozen_config.json`.
 
 ---
 
@@ -124,6 +137,12 @@ On first launch, you'll be prompted for an API key. The agent auto-detects your 
 ### Terminal mode
 
 Once launched, you'll see the banner and a `You:` prompt. Type naturally — the agent understands plain English (and Chinese, Japanese, Korean).
+
+Bare `kyrozen` always uses the persistent global workspace at
+`~/.kyrozen/workspace`; changing directories does not switch projects. Use
+`kyrozen --project .` or `kyrozen --project /path/to/project` when the agent
+should read and change the original project files directly. `--global` is an
+explicit spelling of the default global mode.
 
 ```text
 You: read the README and tell me what this project does
@@ -150,7 +169,7 @@ Kyrozen will:
 | `/api_key` | Change your API key |
 | `/learn` | Immediately scan project files into memory |
 | `/forget` | Show recent learnings; `/forget keyword` to delete bad learnings |
-| `/update` | Pull the latest version from git |
+| `/update` | Upgrade the installed package with `uv tool upgrade openkyrozen` (never pulls into a project) |
 | `/agent auto\|coder\|researcher` | Choose automatic routing or an isolated learning profile |
 | `/learning status [profile]` | Show candidate, canary, active, retired, and rolled-back artifacts |
 | `/learning metrics [profile]` | Show verified completion, corrections, errors, cost, and latency metrics |
@@ -165,11 +184,14 @@ Kyrozen will:
 ### Web UI mode
 
 ```bash
-python server.py --port 8000
+kyrozen-web
 # Open http://localhost:8000
 
+# Operate directly on a project:
+kyrozen-web --project . --port 8000
+
 # For LAN or container access, set a token and bind explicitly:
-KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
+KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 
 # Or via Docker:
 docker build -t openkyrozen .
@@ -180,7 +202,7 @@ docker run -p 8000:8000 \
   openkyrozen
 ```
 
-The web interface provides a dark-themed chat UI with real-time streaming, cost tracking, and session management.
+The web interface provides a dark-themed chat UI with real-time streaming, cost tracking, and session management. `kyrozen-web` uses the same global/project mode semantics as the terminal command; the Docker image passes `--project /app` so the mounted image checkout remains project-oriented.
 
 ---
 
@@ -255,7 +277,7 @@ Switch providers anytime — in chat with `/provider`, or via environment:
 ```bash
 export KYROZEN_PROVIDER=anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
-python main.py
+kyrozen
 ```
 
 If the primary provider fails, Kyrozen automatically falls back through a chain (e.g., DeepSeek → OpenAI → Claude). Rate-limit errors (HTTP 429) trigger exponential backoff with jitter.
@@ -501,7 +523,7 @@ private users.
 
 ### Memory storage
 
-OpenKyrozen v2 uses **SQLite as the source of truth** (`~/.kyrozen/v2/openkyrozen.sqlite3`) and ChromaDB as a rebuildable semantic index. Memories have a kind, scope, confidence, source events, and lifecycle status. Workspaces and sessions are isolated, raw observations are marked as data, and `/forget` removes records by durable ID. If ChromaDB is unavailable, SQLite keeps durable keyword retrieval.
+OpenKyrozen v2 uses **SQLite as the source of truth** (`~/.kyrozen/v2/openkyrozen.sqlite3`) and ChromaDB as a rebuildable semantic index. Personal conversations, tasks, and learning are shared in the global state store. `FILE:` snapshots and their vector metadata use a stable scope derived from the active root, so switching projects never removes or recalls another project's indexed files. The default global workspace is `~/.kyrozen/workspace`; `kyrozen --project PATH` works directly on the original project files without a mirror or copy-back layer. If ChromaDB is unavailable, SQLite keeps durable keyword retrieval.
 
 Import an existing v1 store without deleting it:
 
@@ -568,12 +590,12 @@ with the same provider, model, configuration, and observable product behavior.
 ## 🌐 Web UI & REST API
 
 ```bash
-pip install fastapi uvicorn
-python server.py --port 8000
+pip install 'openkyrozen[web]'
+kyrozen-web --port 8000
 # Open http://localhost:8000
 
 # For LAN or container access, set a token and bind explicitly:
-KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
+KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 ```
 
 ### REST API endpoints
@@ -721,10 +743,12 @@ def register():
 
 Available hooks: `on_startup`, `on_turn_start`, `on_turn_end`, `on_tool_execute`.
 
-The shared runtime loads `plugins/*.py` once per execution surface (`cli` and
-`web`) in deterministic filename order. Hook failures are isolated, recorded
-as `plugin.hook_failed` events, and never fail the user turn. Hook arguments
-are keyword arguments and are bounded/redacted before a plugin sees them:
+The shared runtime loads packaged `plugins/*.py` plus `plugins/*.py` under the
+active workspace once per execution surface (`cli` and `web`) in deterministic
+filename order. Active-workspace plugins take precedence when names collide.
+Hook failures are isolated, recorded as `plugin.hook_failed` events, and never
+fail the user turn. Hook arguments are keyword arguments and are
+bounded/redacted before a plugin sees them:
 
 | Hook | Required kwargs | Additional context |
 |------|-----------------|--------------------|
@@ -734,9 +758,9 @@ are keyword arguments and are bounded/redacted before a plugin sees them:
 | `on_tool_execute` | `action`, `args`, `result`, `success` | `error`, `surface`, and scope context |
 
 `on_tool_execute` fires once for every attempted action, including unknown,
-unauthorized, malformed, and approval-denied actions. `turn_logger.py` writes
-to `kyrozen_turns.log`; set `KYROZEN_TURN_LOG` to choose another path for a
-service or test.
+unauthorized, malformed, and approval-denied actions. By default,
+`turn_logger.py` writes to `~/.kyrozen/v2/kyrozen_turns.log`; set
+`KYROZEN_TURN_LOG` to choose another path for a service or test.
 
 See `plugins/turn_logger.py` for a working example.
 
@@ -753,7 +777,7 @@ See `plugins/turn_logger.py` for a working example.
 | **API authentication** | Non-loopback API/MCP access requires `KYROZEN_SERVER_TOKEN` |
 | **Capability profiles** | Local CLI keeps the full agent toolset; Web/MCP default to rich `workspace` access, while `full` explicitly enables irreversible Git reset and dynamic tools |
 | **Git safety** | Never force-pushes; CLI confirms high-impact Git actions and records the decision |
-| **Audit logging** | All chat/API events logged to `kyrozen_audit.log` with timestamps |
+| **Audit logging** | All chat/API events logged to `~/.kyrozen/v2/kyrozen_audit.log` with timestamps (override with `KYROZEN_AUDIT_LOG`) |
 | **Python version guard** | Refuses to start on Python 3.14+ |
 | **Tool failure memory** | Remembers past failures and avoids repeating them |
 
@@ -774,6 +798,11 @@ See `plugins/turn_logger.py` for a working example.
 | `KYROZEN_MODEL_SIMPLE` | Model for simple/medium tasks | Provider default |
 | `KYROZEN_MODEL_COMPLEX` | Model for complex tasks | Provider default |
 | `KYROZEN_BASE_URL` | Custom API base URL | Provider default |
+| `KYROZEN_WORKSPACE_ROOT` | Advanced test/development root override; explicit CLI mode flags take precedence | `~/.kyrozen/workspace` |
+| `KYROZEN_DB_PATH` | SQLite source-of-truth path | `~/.kyrozen/v2/openkyrozen.sqlite3` |
+| `KYROZEN_VECTOR_PATH` | Rebuildable Chroma index path | Under the SQLite directory |
+| `KYROZEN_TURN_LOG` | Explicit turn-log path | `~/.kyrozen/v2/kyrozen_turns.log` |
+| `KYROZEN_AUDIT_LOG` | Explicit audit-log path | `~/.kyrozen/v2/kyrozen_audit.log` |
 | `KYROZEN_EXECUTION_SURFACE` | Execution surface (`cli` or `web`) | `cli` |
 | `KYROZEN_ALLOW_DYNAMIC_TOOLS` | Allow LLM-generated Python tools (`1`/`true`) | CLI: enabled; Web/MCP: disabled |
 | `KYROZEN_APPROVAL_MODE` | CLI confirmation mode for high-impact Git actions and dynamic-tool registration (`dangerous`/`never`) | `dangerous` |
@@ -877,10 +906,14 @@ GitHub Actions automatically runs on every push and PR:
 ### pip package
 
 ```bash
-# Install from local directory (PyPI publishing coming soon)
-pip install .                   # core + CLI
-pip install '.[web]'            # + web UI
-pip install '.[all]'            # + Claude + Gemini + web
+# Published package (use the one-line installer for uv + Python setup)
+uv tool install 'openkyrozen[web]'
+pip install 'openkyrozen[web]'  # existing supported environment
+
+# Local checkout only (development)
+pip install .
+pip install '.[web]'
+pip install '.[all]'
 ```
 
 ---
@@ -897,14 +930,16 @@ OpenKyrozen/
 ├── agent_config.py      # Strict agent.yaml loader and capability bound
 ├── agent.yaml           # Validated role/provider/capability configuration
 ├── pyproject.toml       # pip package configuration
+├── workspace_context.py  # global/project launch-root resolution
 ├── Dockerfile           # Docker image definition
 ├── Makefile             # Build automation (macOS/Linux)
 ├── setup.bat / run.bat  # Windows batch scripts
+├── install.sh / install.ps1 # Cross-platform uv bootstrap installers
 ├── plugins/             # Plugin directory (hook-based)
 ├── prompts/             # Prompt templates (role, instructions, examples)
 ├── docs/tool-inventory.md # Generated runtime tool and endpoint inventory
 ├── scripts/              # Reproducible documentation and smoke checks
-└── .github/workflows/   # CI/CD pipeline
+└── .github/workflows/   # CI, release, and PyPI publishing pipelines
 ```
 
 ---

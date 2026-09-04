@@ -15,5 +15,5 @@ if not exist venv\Scripts\activate.bat (
 
 REM --- Activate and run ---
 call venv\Scripts\activate.bat
-python main.py %*
+python main.py --project . %*
 pause
