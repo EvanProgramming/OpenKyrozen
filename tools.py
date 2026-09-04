@@ -103,7 +103,7 @@ def _active_command_env() -> dict[str, str]:
 def write_file(args: str) -> str:
     """
     Write content to a file. Args format: "path|content".
-    Supports ~ for user home (e.g. ~/Desktop/file.txt).
+    The path must be relative to the active workspace (e.g. "notes.txt").
     """
     try:
         parts = args.split("|", 1)
@@ -122,7 +122,7 @@ def write_file(args: str) -> str:
 def read_file(args: str) -> str:
     """
     Read content from a file. Args format: "path".
-    Supports ~ for user home.
+    The path must be relative to the active workspace (e.g. "notes.txt").
     """
     try:
         raw_path = args.strip()
