@@ -2,8 +2,14 @@
 
 This is the operator guide for the merged self-evolution and multi-party memory
 features. It records behavior that is callable today, not a promise about
-future learning. The verification below was run on `main` at `51d0bce` on
-2026-09-03.
+future learning. The verification record below is explicitly a historical
+snapshot, not a claim about the repository's current `HEAD`.
+
+Historical verification snapshot: `51be33361422e55e1f2f00c33a0e0f8c56132a91`
+(the post-#54 `main` revision, captured before this #55 documentation-only
+update). Snapshot date: 2026-09-04.
+
+Current repository test count at this snapshot: **130 unittest cases**.
 
 ## Verified surface
 
@@ -192,21 +198,64 @@ completion is non-regressing and a paired secondary improvement is credible;
 OpenKyrozen does not emit a competitor-superiority claim from a tool success or
 an unpaired run.
 
+The historical snapshot's isolated `make benchmark` output had five cases and
+five verified successes for both runners. Both runners used provider
+`deterministic-fixture` and model `openkyrozen-memory-policy-v1`; each case had
+`fixture_verified` evidence. The observed summary was:
+
+| Runner | Cases | Verified successes | Tool calls | Tokens | Evidence status |
+| --- | ---: | ---: | ---: | ---: | --- |
+| clean | 5 | 5 | 22 | 973 | `fixture_verified` |
+| evolved | 5 | 5 | 22 | 973 | `fixture_verified` |
+
+The run reported `completion_non_regressing: true`,
+`paired_evidence_status: insufficient`, and
+`public_superiority_claim_supported: false`. The fixture is deterministic
+and proves the scoped memory behavior; it does not provide the independently
+paired product evidence required for a public superiority claim. Latency is
+diagnostic only and is not treated as a release claim.
+
+## Verification snapshot commands
+
+The post-#54 snapshot ran the repository's current checks and smoke coverage:
+
+```bash
+make check
+make docs-check
+make shell-check
+make lint
+make test
+make benchmark
+git diff --check
+```
+
+The `make test` suite includes the API health/scoping smoke and the CLI
+command-loop smoke. `make benchmark` uses the five-case
+`benchmarks/multi_party_memory.jsonl` fixture, temporary SQLite databases, the
+`openkyrozen-learning-benchmark-v1` protocol, and no provider credentials.
+The documented commit is retained only as a historical verification snapshot;
+later commits must run these checks again before making current-release claims.
+
 ## Verification and troubleshooting
 
 Run the same local gates used for the merged implementation:
 
 ```bash
 make check
+make docs-check
+make shell-check
+make lint
 tmpdir=$(mktemp -d /tmp/openkyrozen-check.XXXXXX)
 KYROZEN_DB_PATH="$tmpdir/state.sqlite3" make test
+make benchmark
 git diff --check
 ```
 
-The last verification on `main` passed 58 tests, the API health/scoping smoke,
-the CLI command-loop smoke, and the five-case multi-party benchmark with four
-ablations (`make check` reports the 29-entry base registry). A new artifact is
-not immediate: wait for an eligible run, at least
+The historical post-#54 verification passed the 130 discovered tests, the API
+health/scoping smoke, the CLI command-loop smoke, and the five-case
+clean/evolved benchmark described above. `make check` reports the live 31-tool
+runtime inventory, including 14 `git_` tools. A new artifact is not immediate:
+wait for an eligible run, at least
 60 seconds of idle time, reviewer evidence, and then the two-success plus
 replay gate. A model or environment mismatch intentionally downgrades an
 artifact to canary. If ChromaDB is unavailable, SQLite remains the durable
