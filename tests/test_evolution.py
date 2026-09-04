@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -76,6 +77,10 @@ class EvolutionTests(unittest.TestCase):
         source = Path(self.directory.name) / "local"
         source.mkdir()
         (source / "SKILL.md").write_text("# User skill\n", encoding="utf-8")
+        (source / "skill.json").write_text(json.dumps({
+            "name": "local-user-skill", "version": "1.0.0", "profiles": ["coder"],
+            "triggers": ["pytest"], "permissions": [],
+        }), encoding="utf-8")
         local = self.registry.install(source)
         self.assertFalse(self.registry.rollback_learned(local["id"]))
 
