@@ -192,7 +192,7 @@ class ServerBoundaryTests(unittest.TestCase):
                 with patch.object(server._agent, "_load_project_files_into_memory"):
                     with patch.object(server, "_load_plugins"):
                         with patch.object(server, "_trigger_hook"):
-                            with patch.object(server._task_worker, "recover", return_value=[]):
+                            with patch.object(server, "_recover_task_scopes", return_value=[]):
                                 with patch.object(server._scheduler, "list_jobs", return_value=[
                                     {"payload": {"type": "task_worker"}},
                                 ]):

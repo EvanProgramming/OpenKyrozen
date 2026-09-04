@@ -171,11 +171,44 @@ def _execute_durable_task(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-_task_worker = TaskWorker(
-    TaskManager(_agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id,
-                user_id=_SERVER_ACTOR_ID),
-    _execute_durable_task,
-)
+def _task_manager(session_id: str | None) -> TaskManager:
+    """Build a task manager bound to the authenticated deployment scope."""
+    return TaskManager(
+        _agent.memory_bank.store,
+        workspace_id=_agent.memory_bank.workspace_id,
+        session_id=session_id,
+        user_id=_SERVER_ACTOR_ID,
+    )
+
+
+def _task_worker(session_id: str | None) -> TaskWorker:
+    """Build a bounded worker that can only claim one exact session scope."""
+    return TaskWorker(_task_manager(session_id), _execute_durable_task, max_tasks=1)
+
+
+def _task_scopes(statuses: set[str]) -> set[str | None]:
+    rows = _agent.memory_bank.store.list_tasks(
+        workspace_id=_agent.memory_bank.workspace_id,
+        statuses=statuses,
+        limit=10000,
+        user_id=_SERVER_ACTOR_ID,
+    )
+    return {row.get("session_id") for row in rows}
+
+
+def _recover_task_scopes() -> list[dict[str, Any]]:
+    """Recover every unfinished task without collapsing session boundaries."""
+    scopes = _task_scopes({"pending", "running", "failed", "blocked"})
+    recovered: list[dict[str, Any]] = []
+    for session_id in scopes:
+        recovered.extend(_task_manager(session_id).recover())
+    return recovered
+
+
+def _run_task_worker_cycle() -> None:
+    """Run at most one safe action per pending session in this scheduler tick."""
+    for session_id in sorted(_task_scopes({"pending"}), key=lambda item: item or ""):
+        _task_worker(session_id).run_once()
 
 
 def _run_scheduled_job(job: dict[str, Any]) -> None:
@@ -184,7 +217,7 @@ def _run_scheduled_job(job: dict[str, Any]) -> None:
         _agent.dispatch_learning_cycle(surface="web", trigger="scheduled", max_features=4)
         return
     if payload.get("type") == "task_worker":
-        _task_worker.run_once()
+        _run_task_worker_cycle()
         return
     if payload.get("type") == "chat":
         session_id = _normalise_session_id(payload.get("session_id"))
@@ -196,6 +229,7 @@ def _run_scheduled_job(job: dict[str, Any]) -> None:
 
 _scheduler.register_callback("learning_cycle", _run_scheduled_job)
 _scheduler.register_callback("chat", _run_scheduled_job)
+_scheduler.register_callback("task_worker", _run_scheduled_job)
 
 
 def _normalise_session_id(raw_session_id: Any) -> str:
@@ -683,8 +717,7 @@ async def api_v2_memory_forget_claim(claim_id: str):
 @app.get("/api/v2/tasks", dependencies=[Depends(require_api_access)])
 async def api_v2_tasks(session_id: str | None = None):
     session = _normalise_session_id(session_id) if session_id else None
-    manager = TaskManager(_agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id,
-                          session_id=session, user_id=_SERVER_ACTOR_ID)
+    manager = _task_manager(session)
     return {"tasks": manager.store.list_tasks(workspace_id=manager.workspace_id, session_id=session,
                                                 user_id=_SERVER_ACTOR_ID)}
 
@@ -695,8 +728,7 @@ async def api_v2_create_task(request: Request):
     if not isinstance(body, dict) or not str(body.get("description", "")).strip():
         raise HTTPException(400, "description is required")
     session = _normalise_session_id(body.get("session_id"))
-    manager = TaskManager(_agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id,
-                          session_id=session, user_id=_SERVER_ACTOR_ID)
+    manager = _task_manager(session)
     checkpoint: dict[str, Any] = {}
     if body.get("action") is not None:
         action = _agent.TOOL_ALIASES.get(str(body.get("action")).strip(), str(body.get("action")).strip())
@@ -722,10 +754,23 @@ async def api_v2_create_task(request: Request):
 
 @app.post("/api/v2/tasks/{task_id}/resume", dependencies=[Depends(require_api_access)])
 async def api_v2_resume_task(task_id: str):
-    manager = _task_worker.manager
+    candidates = _agent.memory_bank.store.list_tasks(
+        workspace_id=_agent.memory_bank.workspace_id,
+        statuses={"pending", "running", "failed", "blocked"},
+        limit=10000,
+        user_id=_SERVER_ACTOR_ID,
+    )
+    stored = next((item for item in candidates if item["id"] == str(task_id)), None)
+    if stored is None:
+        raise HTTPException(404, "Failed or blocked task not found in this scope")
+    manager = _task_manager(stored.get("session_id"))
+    manager.recover()
     task = manager.resume(task_id)
     if task is None:
         raise HTTPException(404, "Failed or blocked task not found in this scope")
+    if not any(job.get("payload", {}).get("type") == "task_worker" for job in _scheduler.list_jobs()):
+        _scheduler.schedule_every("durable-task-worker", 1.0, payload={"type": "task_worker"},
+                                  job_id="job_durable_task_worker", delay_seconds=0)
     return {"task": task, "queued": True}
 
 
@@ -1431,7 +1476,7 @@ async def startup():
         "on_startup", agent=_agent, surface="web", user_id=_SERVER_ACTOR_ID,
         workspace_id=_agent.memory_bank.workspace_id,
     )
-    recovered = _task_worker.recover()
+    recovered = _recover_task_scopes()
     if recovered:
         _audit("TASK_RECOVERY", f"recovered={len(recovered)} pending_or_resumable tasks")
     if not any(job.get("payload", {}).get("type") == "task_worker" for job in _scheduler.list_jobs()):
