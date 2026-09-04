@@ -103,6 +103,7 @@ from tools import (AVAILABLE_TOOLS, set_workspace_root as _set_tools_workspace_r
 from providers import (
     ProviderConfig, LLMProvider, get_provider, detect_provider,
     save_provider_config, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS,
+    PROVIDER_FALLBACKS,
     get_fallback_provider, get_cost_summary, reset_cost_tracker,
     save_provider_config_encrypted, encrypt_api_key, decrypt_api_key,
 )
@@ -1025,7 +1026,9 @@ def _save_config_key(key: str) -> None:
         console.print(f"[{_WARNING}]Warning: could not save API key to config file.[/{_WARNING}]")
 
 
-def _prompt_and_init_deepseek(*, interactive: bool = True) -> bool:
+def _prompt_and_init_deepseek(
+    *, interactive: bool = True, config: ProviderConfig | None = None
+) -> bool:
     """Detect the provider and initialise the LLM client.
 
     Ollama is a local, keyless provider.  Headless surfaces pass
@@ -1036,7 +1039,7 @@ def _prompt_and_init_deepseek(*, interactive: bool = True) -> bool:
     """
     global _provider_config, llm_provider, DEEPSEEK_MODEL, DEEPSEEK_MODEL_SIMPLE, DEEPSEEK_MODEL_COMPLEX, MODEL_NAME
 
-    _provider_config = detect_provider()
+    _provider_config = config or detect_provider()
     llm_provider = None
 
     # Ollama's local OpenAI-compatible endpoint deliberately has no credential.
@@ -4716,8 +4719,27 @@ def _show_self_learning_menu() -> None:
             console.print(f"[{_ERROR}]Please enter a number or 'done'.[/{_ERROR}]")
 
 
-def _print_banner() -> None:
-    """Print the OpenKyrozen ASCII-art banner in accent colour."""
+def _available_fallback_names(config: ProviderConfig | None) -> list[str]:
+    """Return fallbacks that the runtime can configure without making a call."""
+    if config is None:
+        return []
+    available: list[str] = []
+    for provider_name in PROVIDER_FALLBACKS.get(config.provider, []):
+        env_var = PROVIDER_ENV_VARS.get(provider_name, "")
+        if provider_name == "ollama" or (env_var and os.environ.get(env_var, "").strip()):
+            available.append(provider_name)
+    return available
+
+
+def _print_banner(config: ProviderConfig | None = None) -> None:
+    """Print the banner using the provider configuration selected for startup."""
+    config = config or _provider_config
+    provider_name = config.provider.title() if config else "Unknown"
+    model_name = config.model_simple if config else "unresolved"
+    fallback_names = _available_fallback_names(config)
+    fallback_status = ""
+    if fallback_names:
+        fallback_status = f"  {_DOT}  Fallbacks available: {', '.join(name.title() for name in fallback_names)}"
     _ascii = [
         r"  ____  _____  ______ _   _   _  ____     _______   ____ ____________ _   _ ",
         r" / __ \|  __ \|  ____| \ | | | |/ /\ \   / /  __ \ / __ \___  /  ____| \ | |",
@@ -4728,7 +4750,10 @@ def _print_banner() -> None:
     ]
     for ln in _ascii:
         console.print(f"  [{_ACCENT}]{ln}[/{_ACCENT}]")
-    console.print(f"  [{_MUTED}]self{_NBHYPHEN}learning AI agent  {_DOT}  DeepSeek V4[/{_MUTED}]")
+    console.print(
+        f"  [{_MUTED}]self{_NBHYPHEN}learning AI agent  {_DOT}  "
+        f"{provider_name}  {_DOT}  {model_name}{fallback_status}[/{_MUTED}]"
+    )
     # Platform tag
     if _IS_WINDOWS:
         platform_tag = "Windows"
@@ -4780,10 +4805,16 @@ def main() -> None:
         console.print(f"[{_SUCCESS}]Initialisation finished. Run `python main.py` to start the agent.[/{_SUCCESS}]")
         sys.exit(0)
 
+    # Resolve the effective configuration before rendering any provider status.
+    # The same object is passed to initialization so the banner cannot report a
+    # stale provider or model while startup is still selecting credentials.
+    startup_config = detect_provider()
+    _provider_config = startup_config
+
     # ASCII-art banner, 41 chars wide — fits 60-col terminals
-    _print_banner()
-    provider_name = _provider_config.provider.title() if _provider_config else "DeepSeek"
-    model_name = DEEPSEEK_MODEL_SIMPLE
+    _print_banner(startup_config)
+    provider_name = startup_config.provider.title()
+    model_name = startup_config.model_simple
     console.print(f"[{_ACCENT}]Kyrozen[/{_ACCENT}] [{_MUTED}]{_DOT} Provider: {provider_name} {_DOT} Model: {model_name}[/{_MUTED}]")
     console.print(f"[{_MUTED}]Chat:[/{_MUTED}] [{_ACCENT_DIM}] /quit /exit /agent /provider /api_key /learn /update /self-learning[/{_ACCENT_DIM}]")
 
@@ -4796,7 +4827,7 @@ def main() -> None:
     # Horizontal rule
     console.print(f"[{_ACCENT_DIM}]{_BOX_H * 50}[/{_ACCENT_DIM}]")
 
-    _prompt_and_init_deepseek()
+    _prompt_and_init_deepseek(config=startup_config)
     if llm_provider is None:
         console.print(f"[{_ERROR}]Cannot start without an API key.[/{_ERROR}]")
         sys.exit(1)

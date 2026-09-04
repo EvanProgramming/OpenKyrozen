@@ -18,7 +18,13 @@ _CREDENTIAL_ENV_VARS = (
 
 
 class StartupCacheTests(unittest.TestCase):
-    def _run_startup(self, command: list[str], *, input_text: str = "") -> None:
+    def _run_startup(
+        self,
+        command: list[str],
+        *,
+        input_text: str = "",
+        extra_env: dict[str, str] | None = None,
+    ) -> str:
         repository = Path(__file__).parents[1].resolve()
         with tempfile.TemporaryDirectory(
             prefix=".openkyrozen-startup-cache-", dir=repository
@@ -52,6 +58,8 @@ class StartupCacheTests(unittest.TestCase):
                     ),
                 }
             )
+            if extra_env:
+                env.update(extra_env)
             for variable in _CREDENTIAL_ENV_VARS:
                 env.pop(variable, None)
 
@@ -76,9 +84,22 @@ class StartupCacheTests(unittest.TestCase):
             )
             self.assertTrue(sentinel.is_file(), "startup deleted a dependency cache")
             self.assertEqual(sentinel.read_bytes(), b"dependency-bytecode-sentinel")
+            return output
 
     def test_cli_startup_is_bounded_and_preserves_dependency_bytecode(self):
-        self._run_startup([sys.executable, "main.py"], input_text="/quit\n")
+        output = self._run_startup(
+            [sys.executable, "main.py"],
+            input_text="/quit\n",
+            extra_env={
+                "KYROZEN_MODEL_SIMPLE": "startup-local-model",
+                "KYROZEN_MODEL_COMPLEX": "startup-local-complex-model",
+            },
+        )
+        self.assertIn("Ollama", output)
+        self.assertIn("startup-local-model", output)
+        self.assertNotIn("DeepSeek V4", output)
+        self.assertNotIn("Provider: DeepSeek", output)
+        self.assertNotIn("deepseek-chat", output)
 
     def test_web_startup_is_bounded_and_preserves_dependency_bytecode(self):
         script = (
