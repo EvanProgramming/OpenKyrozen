@@ -31,7 +31,8 @@ jobs:
 
     - name: Install package and run unit tests
       run: |
-        pip install -e .
+        pip install -e '.[browser]'
+        python -m playwright install --with-deps chromium
         python -m unittest discover -s tests -p 'test_*.py' -v
 
     - name: Syntax check

@@ -10,6 +10,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
+BROWSER_SNAPSHOT_TIMEOUT_MS = 10_000
+
+
 def validate_browser_url(url: str) -> tuple[bool, str]:
     parsed = urlparse(str(url).strip())
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -72,7 +75,10 @@ class BrowserManager:
             return "Error: browser session not found"
         _, _, page = session
         try:
-            return f"URL: {page.url}\nTitle: {page.title()}\n\n{page.locator('body').inner_text(timeout=10)[:12000]}"
+            return (
+                f"URL: {page.url}\nTitle: {page.title()}\n\n"
+                f"{page.locator('body').inner_text(timeout=BROWSER_SNAPSHOT_TIMEOUT_MS)[:12000]}"
+            )
         except Exception as exc:
             return f"Error reading browser page: {exc}"
 
