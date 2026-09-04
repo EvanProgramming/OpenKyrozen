@@ -6,16 +6,42 @@ from __future__ import annotations
 import re
 import shlex
 import sys
+import unittest
 from pathlib import Path
 
 from generate_tool_inventory import ROOT, render_inventory, runtime_routes
 
 
 README_FILES = sorted(ROOT.glob("README*.md"))
+VERIFICATION_DOC = ROOT / "docs" / "self-evolution.md"
 STALE_TOOL_PATTERNS = (
     re.compile(r"\b26\b[^\n]*(?:tool|工具|ツール|도구)", re.IGNORECASE),
     re.compile(r"(?:Git|git)[^\n]{0,24}\b15\b[^\n]*(?:tool|工具|ツール|도구)", re.IGNORECASE),
     re.compile(r"\b15\b[^\n]*(?:Git|git)[^\n]*(?:tool|工具|ツール|도구)", re.IGNORECASE),
+)
+STALE_VERIFICATION_CLAIMS = (
+    "51d0bce",
+    "58 tests",
+    "119 tests",
+    "359378b",
+)
+VERIFICATION_COMMANDS = (
+    "make check",
+    "make docs-check",
+    "make shell-check",
+    "make lint",
+    "make test",
+    "make benchmark",
+    "git diff --check",
+)
+BENCHMARK_METADATA = (
+    "benchmarks/multi_party_memory.jsonl",
+    "openkyrozen-learning-benchmark-v1",
+    "deterministic-fixture",
+    "openkyrozen-memory-policy-v1",
+    "fixture_verified",
+    "paired_evidence_status: insufficient",
+    "public_superiority_claim_supported: false",
 )
 
 
@@ -78,6 +104,44 @@ def _check_commands(path: Path, text: str, routes: set[str], targets: set[str]) 
     return errors
 
 
+def _discovered_test_count() -> int:
+    suite = unittest.TestLoader().discover(
+        str(ROOT / "tests"), pattern="test_*.py"
+    )
+    return suite.countTestCases()
+
+
+def _check_verification_record() -> list[str]:
+    if not VERIFICATION_DOC.exists():
+        return ["docs/self-evolution.md is missing"]
+    text = VERIFICATION_DOC.read_text(encoding="utf-8")
+    errors: list[str] = []
+    for claim in STALE_VERIFICATION_CLAIMS:
+        if claim in text:
+            errors.append(f"self-evolution.md contains obsolete verification claim '{claim}'")
+
+    if "historical verification snapshot" not in text.lower():
+        errors.append("self-evolution.md must label its verification as a historical snapshot")
+    if not re.search(r"Historical verification snapshot:\s*`[0-9a-f]{40}`", text):
+        errors.append("self-evolution.md must identify a full historical verification commit")
+
+    test_count = _discovered_test_count()
+    expected_test_marker = f"Current repository test count at this snapshot: **{test_count} unittest cases**"
+    if expected_test_marker not in text:
+        errors.append(f"self-evolution.md must record the discovered test count ({test_count})")
+
+    for command in VERIFICATION_COMMANDS:
+        if command not in text:
+            errors.append(f"self-evolution.md is missing verification command '{command}'")
+    for marker in BENCHMARK_METADATA:
+        if marker not in text:
+            errors.append(f"self-evolution.md is missing benchmark metadata '{marker}'")
+    for marker in ("API health/scoping smoke", "CLI command-loop smoke"):
+        if marker not in text:
+            errors.append(f"self-evolution.md is missing verification evidence '{marker}'")
+    return errors
+
+
 def main() -> int:
     expected_inventory = render_inventory()
     import main as agent_main
@@ -92,6 +156,7 @@ def main() -> int:
     routes = runtime_routes(__import__("server"))
     route_paths = {path for _, path in routes}
     targets = _make_targets()
+    errors.extend(_check_verification_record())
     for readme in README_FILES:
         text = readme.read_text(encoding="utf-8")
         for pattern in STALE_TOOL_PATTERNS:
