@@ -3,6 +3,7 @@ Agent capabilities: file I/O, shell commands, web search.
 """
 
 import os
+import shlex
 import subprocess
 import re
 import glob
@@ -638,15 +639,36 @@ def git_remote(args: str) -> str:
     """
     try:
         dir_path = "."
-        cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "remote", "-v"]
-        if args.strip():
-            action_parts = args.strip().split(maxsplit=1)
-            cmd = ["git", "-C", os.path.abspath(os.path.expanduser(dir_path)), "remote"]
-            cmd.extend(action_parts)
+        git_dir = os.path.abspath(os.path.expanduser(dir_path))
+        try:
+            parts = shlex.split(args or "")
+        except ValueError:
+            return "Error: git_remote arguments contain invalid shell quoting."
+
+        cmd = ["git", "-C", git_dir, "remote"]
+        if not parts:
+            cmd.append("-v")
+        elif parts[0] == "add":
+            if len(parts) != 3:
+                return "Error: git_remote add requires exactly: add <name> <url>."
+            cmd.extend(parts)
+        elif parts[0] == "remove":
+            if len(parts) != 2:
+                return "Error: git_remote remove requires exactly: remove <name>."
+            cmd.extend(parts)
+        else:
+            return "Error: git_remote requires empty args, add <name> <url>, or remove <name>."
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             return f"Git remote failed:\n{result.stderr}"
-        return result.stdout.strip() or "(no remotes configured)"
+        output = result.stdout.strip()
+        if output:
+            return output
+        if parts and parts[0] == "add":
+            return f"Remote '{parts[1]}' added."
+        if parts and parts[0] == "remove":
+            return f"Remote '{parts[1]}' removed."
+        return "(no remotes configured)"
     except Exception as e:
         return f"Error running git remote: {e}"
 

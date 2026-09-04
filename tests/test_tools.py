@@ -1,4 +1,5 @@
 import tempfile
+import subprocess
 import unittest
 import os
 import sys
@@ -8,7 +9,16 @@ from unittest.mock import patch
 from pathlib import Path
 
 import tools
-from tools import AVAILABLE_TOOLS, allowed_tool_names, read_file, read_webpage, run_cmd, set_workspace_root, write_file
+from tools import (
+    AVAILABLE_TOOLS,
+    allowed_tool_names,
+    git_remote,
+    read_file,
+    read_webpage,
+    run_cmd,
+    set_workspace_root,
+    write_file,
+)
 
 
 class WorkspaceToolTests(unittest.TestCase):
@@ -42,6 +52,42 @@ class WorkspaceToolTests(unittest.TestCase):
         with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=False):
             result = run_cmd(f"{sys.executable} -c 'print(\"explicit\")'")
         self.assertEqual(result, "explicit")
+
+    def test_git_remote_add_list_and_remove_use_real_repository(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            initialized = subprocess.run(
+                ["git", "init", "--quiet", str(repository)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(initialized.returncode, 0, initialized.stderr)
+            remote_url = "https://example.com/org/repo.git?token=x&format=json"
+            with patch("tools.os.getcwd", return_value=str(repository)):
+                added = git_remote(f"add origin {remote_url}")
+                listed = git_remote("")
+                removed = git_remote("remove origin")
+                after_remove = git_remote("")
+            self.assertEqual(added, "Remote 'origin' added.")
+            self.assertIn(f"origin\t{remote_url} (fetch)", listed)
+            self.assertIn(f"origin\t{remote_url} (push)", listed)
+            self.assertEqual(removed, "Remote 'origin' removed.")
+            self.assertEqual(after_remove, "(no remotes configured)")
+
+    def test_git_remote_rejects_malformed_arguments_deterministically(self):
+        self.assertEqual(
+            git_remote("add origin"),
+            "Error: git_remote add requires exactly: add <name> <url>.",
+        )
+        self.assertEqual(
+            git_remote("remove origin extra"),
+            "Error: git_remote remove requires exactly: remove <name>.",
+        )
+        self.assertEqual(
+            git_remote("add origin 'unterminated"),
+            "Error: git_remote arguments contain invalid shell quoting.",
+        )
 
     def test_read_webpage_blocks_private_and_reserved_destinations_before_connecting(self):
         class PrivateHandler(BaseHTTPRequestHandler):
