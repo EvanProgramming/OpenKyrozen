@@ -188,7 +188,7 @@ class LearningDispatcherTests(unittest.TestCase):
              patch.object(server._agent, "_load_project_files_into_memory"), \
              patch.object(server, "_load_plugins"), \
              patch.object(server, "_trigger_hook"), \
-             patch.object(server._task_worker, "recover", return_value=[]), \
+             patch.object(server, "_recover_task_scopes", return_value=[]), \
              patch.object(server._scheduler, "list_jobs", return_value=[
                  {"payload": {"type": "task_worker"}},
              ]), \
