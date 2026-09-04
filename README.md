@@ -565,47 +565,52 @@ KYROZEN_SERVER_TOKEN=change-me python server.py --host 0.0.0.0 --port 8000
 | `GET` | `/` | Dark-themed chat web UI |
 | `POST` | `/api/chat` | Send a message with optional `profile`, `speaker`, `audience`, and `channel`; returns a memory receipt |
 | `POST` | `/api/chat/stream` | SSE streaming chat with the same optional profile and memory context |
+| `GET` | `/api/cost` | Token usage and cost summary |
+| `GET` | `/api/health` | Provider status + memory count |
 | `GET` | `/api/memory?q=keyword` | Search stored memories |
-| `GET` | `/api/v2/memory?q=keyword&speaker=...&audience=...&channel=...` | Structured memory search with provenance and party scope |
-| `GET/POST` | `/api/v2/tasks` | Durable task listing and creation |
-| `POST` | `/api/v2/tasks/{task_id}/resume` | Explicitly resume a failed or blocked durable task |
+| `GET` | `/api/v2/agents` | List specialised sub-agent profiles |
+| `POST` | `/api/v2/agents/run` | Run a sub-agent with isolated memory and capabilities |
+| `GET` | `/api/v2/events` | Auditable runtime, task, session, and learning events |
 | `GET` | `/api/v2/learning` | Learning proposal status |
-| `GET` | `/api/v2/learning/features` | Authoritative 20-feature registry and latest run status |
-| `GET` | `/api/v2/learning/metrics?profile=...` | Profile completion, correction, error, tool, token, and latency metrics |
-| `GET` | `/api/v2/learning/{proposal_id}/evidence` | Proof card, applicability, replay, and outcome receipts |
-| `POST` | `/api/v2/learning/{proposal_id}/replay` | Record paired sandboxed candidate/predecessor replay results |
-| `POST` | `/api/v2/learning/{proposal_id}/omission` | Record paired with/without-artifact results |
-| `POST` | `/api/v2/learning/{proposal_id}/retire` | Retire an artifact with non-regressing omission evidence |
-| `POST` | `/api/v2/learning/{proposal_id}/restore` | Restore a retired artifact as a canary |
-| `GET` | `/api/v2/learning/{proposal_id}/capsule` | Export a redacted, harness-neutral experience capsule |
 | `POST` | `/api/v2/learning/capsules` | Import a capsule as an inactive candidate |
 | `GET` | `/api/v2/learning/constitution` | Inspect the immutable user-owned learning policy |
+| `GET` | `/api/v2/learning/features` | Authoritative 20-feature registry and latest run status |
+| `GET` | `/api/v2/learning/metrics?profile=...` | Profile completion, correction, error, tool, token, and latency metrics |
+| `GET` | `/api/v2/learning/{proposal_id}/capsule` | Export a redacted, harness-neutral experience capsule |
+| `GET` | `/api/v2/learning/{proposal_id}/evidence` | Proof card, applicability, replay, and outcome receipts |
+| `POST` | `/api/v2/learning/{proposal_id}/omission` | Record paired with/without-artifact results |
+| `POST` | `/api/v2/learning/{proposal_id}/replay` | Record paired sandboxed candidate/predecessor replay results |
+| `POST` | `/api/v2/learning/{proposal_id}/restore` | Restore a retired artifact as a canary |
+| `POST` | `/api/v2/learning/{proposal_id}/retire` | Retire an artifact with non-regressing omission evidence |
 | `POST` | `/api/v2/learning/{proposal_id}/rollback` | Roll back an activated proposal |
-| `GET/POST` | `/api/v2/memory/claims` | List or create typed, attributed memory claims; filter with `speaker`, `audience`, and `channel` |
-| `GET/DELETE` | `/api/v2/memory/claims/{claim_id}` | Explain or dependency-completely forget a claim with party filters |
-| `GET` | `/api/v2/events` | Auditable runtime, task, session, and learning events |
-| `GET/POST` | `/api/v2/schedules` | Durable interval and one-shot Gateway jobs |
+| `GET` | `/api/v2/memory?q=keyword&speaker=...&audience=...&channel=...` | Structured memory search with provenance and party scope |
+| `GET` | `/api/v2/memory/claims` | List typed, attributed memory claims; filter with `speaker`, `audience`, and `channel` |
+| `POST` | `/api/v2/memory/claims` | Create a typed, attributed memory claim |
+| `DELETE` | `/api/v2/memory/claims/{claim_id}` | Dependency-completely forget a claim with party filters |
+| `GET` | `/api/v2/memory/claims/{claim_id}` | Explain a claim with party filters |
+| `GET` | `/api/v2/schedules` | List durable interval and one-shot Gateway jobs |
+| `POST` | `/api/v2/schedules` | Create a durable interval or one-shot Gateway job |
 | `POST` | `/api/v2/schedules/{job_id}/disable` | Disable a scheduled job |
+| `GET` | `/api/v2/sessions` | List durable sessions |
+| `GET` | `/api/v2/sessions/{session_id}` | Resume/read a session context |
 | `GET` | `/api/v2/skills` | List installed candidate/active skills |
 | `POST` | `/api/v2/skills/install` | Install and validate a local `SKILL.md` package |
 | `POST` | `/api/v2/skills/{skill_id}/activate` | Activate a validated skill |
 | `POST` | `/api/v2/skills/{skill_id}/rollback` | Roll back a skill |
-| `GET` | `/api/v2/sessions` | List durable sessions |
-| `GET` | `/api/v2/sessions/{session_id}` | Resume/read a session context |
-| `GET` | `/api/v2/agents` | List specialised sub-agent profiles |
-| `POST` | `/api/v2/agents/run` | Run a sub-agent with isolated memory and capabilities |
+| `GET` | `/api/v2/tasks` | List durable tasks |
+| `POST` | `/api/v2/tasks` | Create a durable task |
+| `POST` | `/api/v2/tasks/{task_id}/resume` | Explicitly resume a failed or blocked durable task |
+| `GET` | `/api/voice/speak?text=...` | Text-to-speech via system TTS |
+| `POST` | `/api/voice/transcribe` | Speech-to-text (passthrough) |
+| `GET` | `/api/webhooks` | List registered webhooks |
+| `POST` | `/api/webhooks/register` | Register a webhook URL |
+| `POST` | `/api/webhooks/test` | Fire a test webhook |
+| `POST` | `/mcp` | Model Context Protocol (JSON-RPC 2.0) |
 
 Browser tools (`browser_open`, `browser_snapshot`, `browser_click`, `browser_type`, and
 `browser_close`) use an isolated profile and are available after
 `pip install 'openkyrozen[browser]' && playwright install chromium`. Private and
 loopback destinations are blocked unless `KYROZEN_BROWSER_ALLOW_PRIVATE=1` is set.
-| `GET` | `/api/cost` | Token usage and cost summary |
-| `GET` | `/api/health` | Provider status + memory count |
-| `GET` | `/api/voice/speak?text=...` | Text-to-speech via system TTS |
-| `POST` | `/api/voice/transcribe` | Speech-to-text (passthrough) |
-| `POST` | `/api/webhooks/register` | Register a webhook URL |
-| `GET` | `/api/webhooks` | List registered webhooks |
-| `POST` | `/api/webhooks/test` | Fire a test webhook |
 
 Successful `POST /api/chat` requests emit one `chat.completed` webhook after
 the reply is produced. `POST /api/chat/stream` emits the same event only after
@@ -616,7 +621,6 @@ it. The POST body is `{"event":"chat.completed","data":{...}}`, where
 limited to 500 characters and redact common API-key/token patterns. Webhook
 delivery errors are audited as `WEBHOOK_FAILURE` and never change the chat
 response.
-| `POST` | `/mcp` | Model Context Protocol (JSON-RPC 2.0) |
 
 API and MCP routes allow direct loopback access without a token. Any
 non-loopback deployment must set `KYROZEN_SERVER_TOKEN` and send it as
