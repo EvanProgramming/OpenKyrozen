@@ -111,6 +111,115 @@ def _discovered_test_count() -> int:
     return suite.countTestCases()
 
 
+def _pipe_table_cells(line: str) -> list[str] | None:
+    """Parse one simple Markdown pipe row without adding a dependency."""
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return None
+    return [cell.strip() for cell in stripped[1:-1].split("|")]
+
+
+def _endpoint_path(value: str) -> str:
+    """Remove Markdown code formatting and query details from an endpoint."""
+    value = value.strip().strip("`")
+    return value.split("?", 1)[0].split("#", 1)[0]
+
+
+def _endpoint_methods(value: str) -> list[str]:
+    """Expand a documented method cell such as ``GET/POST``."""
+    value = value.replace("`", "").strip()
+    return [method.strip().upper() for method in value.split("/") if method.strip()]
+
+
+def _check_readme_endpoint_table(path: Path, text: str, routes: set[tuple[str, str]]) -> list[str]:
+    """Validate README's endpoint table against the live FastAPI route set."""
+    lines = text.splitlines()
+    heading_index = next(
+        (index for index, line in enumerate(lines) if line.strip() == "### REST API endpoints"),
+        None,
+    )
+    if heading_index is None:
+        return [f"{path.name}: missing '### REST API endpoints' heading"]
+
+    section_end = next(
+        (
+            index
+            for index in range(heading_index + 1, len(lines))
+            if re.match(r"^###\s+", lines[index])
+        ),
+        len(lines),
+    )
+    errors: list[str] = []
+    header_index = next(
+        (
+            index
+            for index in range(heading_index + 1, section_end)
+            if (
+                (cells := _pipe_table_cells(lines[index]))
+                and [cell.lower() for cell in cells]
+                == ["method", "endpoint", "description"]
+            )
+        ),
+        None,
+    )
+    if header_index is None:
+        return [f"{path.name}: endpoint table header is missing or malformed"]
+
+    separator_index = header_index + 1
+    separator = _pipe_table_cells(lines[separator_index]) if separator_index < section_end else None
+    if not separator or len(separator) != 3 or not all(re.fullmatch(r":?-{3,}:?", cell) for cell in separator):
+        return [
+            f"{path.name}:{separator_index + 1}: endpoint table separator is missing or malformed"
+        ]
+
+    documented: set[tuple[str, str]] = set()
+    table_end = separator_index + 1
+    while table_end < section_end:
+        cells = _pipe_table_cells(lines[table_end])
+        if cells is None:
+            break
+        if len(cells) != 3:
+            errors.append(
+                f"{path.name}:{table_end + 1}: endpoint table row must have 3 columns"
+            )
+            table_end += 1
+            continue
+        methods = _endpoint_methods(cells[0])
+        endpoint = _endpoint_path(cells[1])
+        if not methods or not endpoint.startswith("/"):
+            errors.append(f"{path.name}:{table_end + 1}: malformed endpoint row")
+        for method in methods:
+            if not re.fullmatch(r"[A-Z]+", method):
+                errors.append(f"{path.name}:{table_end + 1}: invalid HTTP method '{method}'")
+                continue
+            pair = (method, endpoint)
+            if pair in documented:
+                errors.append(
+                    f"{path.name}:{table_end + 1}: duplicate endpoint {method} {endpoint}"
+                )
+            documented.add(pair)
+        table_end += 1
+
+    # A table row after prose is a broken table, even if Markdown renderers
+    # happen to display it as a second table.
+    for index in range(table_end, section_end):
+        cells = _pipe_table_cells(lines[index])
+        if cells and len(cells) >= 2 and any(
+            method in _endpoint_methods(cells[0]) for method, _ in routes
+        ):
+            errors.append(
+                f"{path.name}:{index + 1}: endpoint row is outside the contiguous REST table"
+            )
+
+    missing = sorted(routes - documented)
+    extra = sorted(documented - routes)
+    for method, endpoint in missing:
+        errors.append(f"{path.name}: endpoint table is missing live route {method} {endpoint}")
+    for method, endpoint in extra:
+        errors.append(f"{path.name}: endpoint table documents unknown route {method} {endpoint}")
+    return errors
+
+
 def _check_verification_record() -> list[str]:
     if not VERIFICATION_DOC.exists():
         return ["docs/self-evolution.md is missing"]
@@ -159,6 +268,8 @@ def main() -> int:
     errors.extend(_check_verification_record())
     for readme in README_FILES:
         text = readme.read_text(encoding="utf-8")
+        if readme.name == "README.md":
+            errors.extend(_check_readme_endpoint_table(readme, text, set(routes)))
         for pattern in STALE_TOOL_PATTERNS:
             match = pattern.search(text)
             if match:
