@@ -84,7 +84,8 @@ class MemoryBank:
         try:
             self._collection.upsert(
                 ids=[memory_id], documents=[text],
-                metadatas=[{"kind": kind, "status": status, "workspace_id": self.workspace_id,
+                metadatas=[{"kind": kind, "status": status, "user_id": self.user_id,
+                             "workspace_id": self.workspace_id,
                              "session_id": self.session_id or "", "memory_id": memory_id}],
             )
         except Exception as exc:
@@ -137,7 +138,7 @@ class MemoryBank:
                 self._files_collection.upsert(
                     ids=[file_id], documents=[text],
                     metadatas=[{"rel_path": rel_path, "content_hash": stable_hash(content),
-                                "workspace_id": self.workspace_id}],
+                                "user_id": self.user_id, "workspace_id": self.workspace_id}],
                 )
             except Exception as exc:
                 self._last_error = f"file index write failed: {exc}"
@@ -149,7 +150,9 @@ class MemoryBank:
             try:
                 current = self._files_collection.get(include=["metadatas"])
                 stale = [doc_id for doc_id, meta in zip(current.get("ids", []), current.get("metadatas", []))
-                         if meta.get("workspace_id") == self.workspace_id and meta.get("rel_path") not in valid_paths]
+                         if meta.get("user_id") == self.user_id
+                         and meta.get("workspace_id") == self.workspace_id
+                         and meta.get("rel_path") not in valid_paths]
                 if stale:
                     self._files_collection.delete(ids=stale)
             except Exception as exc:
@@ -168,18 +171,33 @@ class MemoryBank:
         limit = max(1, min(int(n_results), 100))
         if self._collection is not None:
             try:
+                where = {"$and": [
+                    {"user_id": self.user_id},
+                    {"workspace_id": self.workspace_id},
+                    {"status": "active"},
+                    {"session_id": self.session_id or ""} if self.session_id is None else {
+                        "$or": [{"session_id": ""}, {"session_id": self.session_id}],
+                    },
+                ]}
                 result = self._collection.query(
                     query_texts=[query], n_results=min(limit * 4, max(1, self._collection.count())),
-                    where={"$and": [{"workspace_id": self.workspace_id}, {"status": "active"}]},
+                    where=where,
                 )
                 docs = result.get("documents", [[]])
-                if docs and docs[0]:
+                ids = result.get("ids", [[]])
+                if docs and docs[0] and ids and ids[0]:
                     rows = self.store.list_memories(status="active", limit=10000,
                                                     workspace_id=self.workspace_id, session_id=self.session_id,
                                                     user_id=self.user_id)
-                    metadata = {row["content"]: row.get("metadata", {}) for row in rows}
-                    return [doc for doc in docs[0] if not doc.startswith("FILE:") and (
-                        include_scoped or metadata.get(doc, {}).get("visibility", "public") == "public")][:limit]
+                    by_id = {row["id"]: row for row in rows}
+                    scoped_documents = []
+                    for memory_id, doc in zip(ids[0], docs[0]):
+                        row = by_id.get(memory_id)
+                        if row is None or doc.startswith("FILE:"):
+                            continue
+                        if include_scoped or row.get("metadata", {}).get("visibility", "public") == "public":
+                            scoped_documents.append(doc)
+                    return scoped_documents[:limit]
             except Exception as exc:
                 self._last_error = f"memory index query failed: {exc}"
         rows = self.store.list_memories(status="active", limit=10000, workspace_id=self.workspace_id,
