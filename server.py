@@ -496,31 +496,76 @@ async function sendMessage() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({message: msg, session_id: sessionId})
     });
+    if (!resp.ok || !resp.body) throw new Error('HTTP ' + resp.status);
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let full = '';
+    let sseBuffer = '';
+    const streamState = {done: false, error: false, parseError: false};
+
+    function handleSseEvent(eventText) {
+      const data = eventText.split(/\r?\n/)
+        .filter(line => line.startsWith('data:'))
+        .map(line => line.startsWith('data: ') ? line.slice(6) : line.slice(5))
+        .join('\n');
+      if (!data) return;
+      if (data === '[DONE]') {
+        streamState.done = true;
+        return;
+      }
+      try {
+        const parsed = JSON.parse(data);
+        if (Object.prototype.hasOwnProperty.call(parsed, 'chunk')) {
+          full += String(parsed.chunk);
+          contentDiv.textContent = full;
+        }
+        if (Object.prototype.hasOwnProperty.call(parsed, 'cost')) {
+          document.getElementById('cost-display').textContent = String(parsed.cost);
+        }
+        if (Object.prototype.hasOwnProperty.call(parsed, 'error')) {
+          streamState.error = true;
+          contentDiv.textContent = 'Error: ' + String(parsed.error);
+          contentDiv.classList.add('error');
+        }
+      } catch (e) {
+        streamState.parseError = true;
+        contentDiv.textContent = 'Stream parse error: ' + e.message;
+        contentDiv.classList.add('error');
+      }
+    }
+
+    function consumeSseText(text) {
+      sseBuffer += text;
+      while (true) {
+        const boundary = sseBuffer.match(/\r?\n\r?\n/);
+        if (!boundary) break;
+        const eventText = sseBuffer.slice(0, boundary.index);
+        sseBuffer = sseBuffer.slice(boundary.index + boundary[0].length);
+        handleSseEvent(eventText);
+      }
+    }
+
     while (true) {
       const {done, value} = await reader.read();
       if (done) break;
-      const chunk = decoder.decode(value);
-      for (const line of chunk.split('\n')) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          if (data === '[DONE]') continue;
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.chunk) { full += parsed.chunk; contentDiv.textContent = full; }
-            if (parsed.cost) document.getElementById('cost-display').textContent = parsed.cost;
-            if (parsed.error) { contentDiv.textContent = 'Error: ' + parsed.error; contentDiv.classList.add('error'); }
-          } catch(e) {}
-        }
-      }
+      consumeSseText(decoder.decode(value, {stream: true}));
       document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
     }
-    document.getElementById('status').textContent = 'Ready';
+    consumeSseText(decoder.decode());
+    if (sseBuffer.trim()) handleSseEvent(sseBuffer);
+    if (streamState.parseError) {
+      document.getElementById('status').textContent = 'Error';
+    } else if (streamState.done) {
+      document.getElementById('status').textContent = 'Ready';
+    } else if (streamState.error) {
+      document.getElementById('status').textContent = 'Error';
+    } else {
+      document.getElementById('status').textContent = 'Incomplete stream';
+    }
   } catch(e) {
     contentDiv.textContent = 'Connection error: ' + e.message;
     contentDiv.classList.add('error');
+    document.getElementById('status').textContent = 'Error';
   }
   isStreaming = false;
   btn.disabled = false;

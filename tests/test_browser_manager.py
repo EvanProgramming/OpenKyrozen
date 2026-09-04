@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from browser_manager import BrowserManager, validate_browser_url
+import server
 
 
 class BrowserManagerTests(unittest.TestCase):
@@ -82,6 +83,119 @@ window.addEventListener('DOMContentLoaded', () => {
                 self.assertIn("updated", clicked)
                 closed = manager.close(session_id)
                 self.assertIn("closed", closed)
+
+                class ChatHandler(http.server.BaseHTTPRequestHandler):
+                    def do_GET(self):  # noqa: N802 - stdlib HTTP server contract
+                        if self.path == "/":
+                            body = server.CHAT_HTML.encode("utf-8")
+                            content_type = "text/html; charset=utf-8"
+                        elif self.path == "/api/cost":
+                            body = b'{"summary":"initial-cost"}'
+                            content_type = "application/json"
+                        else:
+                            self.send_error(404)
+                            return
+                        self.send_response(200)
+                        self.send_header("Content-Type", content_type)
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+
+                    def log_message(self, *_args):
+                        return
+
+                chat_httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), ChatHandler)
+                chat_thread = threading.Thread(target=chat_httpd.serve_forever, daemon=True)
+                chat_thread.start()
+                playwright = None
+                browser = None
+                try:
+                    from playwright.sync_api import sync_playwright
+
+                    playwright = sync_playwright().start()
+                    browser = playwright.chromium.launch(headless=True)
+                    page = browser.new_page()
+                    page.add_init_script(r"""
+const originalFetch = window.fetch.bind(window);
+let streamCall = 0;
+window.fetch = async (input, init) => {
+  const url = typeof input === 'string' ? input : input.url;
+  if (url.endsWith('/api/cost')) {
+    return new Response(JSON.stringify({summary: 'initial-cost'}), {
+      status: 200, headers: {'Content-Type': 'application/json'}
+    });
+  }
+  if (!url.endsWith('/api/chat/stream')) return originalFetch(input, init);
+  streamCall += 1;
+  const frames = streamCall === 1 ? [
+    'data: {"chunk":"Hello "}\n\n',
+    'data: {"chunk":"世界"}\n\n',
+    'data: {"cost":"Cost: split-stream"}\n\n',
+    'data: [DONE]\n\n'
+  ] : ['data: {"error":"mock provider failure"}\n\n'];
+  const bytes = new TextEncoder().encode(frames.join(''));
+  return new Response(new ReadableStream({
+    start(controller) {
+      let offset = 0;
+      let part = 0;
+      const sizes = [1, 4, 2, 7, 3, 5];
+      function enqueueNext() {
+        if (offset >= bytes.length) {
+          controller.close();
+          return;
+        }
+        const end = Math.min(bytes.length, offset + sizes[part % sizes.length]);
+        controller.enqueue(bytes.slice(offset, end));
+        offset = end;
+        part += 1;
+        setTimeout(enqueueNext, 20);
+      }
+      enqueueNext();
+    }
+  }), {status: 200, headers: {'Content-Type': 'text/event-stream'}});
+};
+""")
+                    page.goto(
+                        f"http://127.0.0.1:{chat_httpd.server_port}/",
+                        wait_until="domcontentloaded",
+                    )
+                    page.fill("#user-input", "split boundary")
+                    page.click("#send-btn")
+                    page.wait_for_function(
+                        "document.querySelector('.msg.assistant .content').textContent.includes('Hello')"
+                    )
+                    self.assertEqual(page.locator("#status").text_content(), "Thinking...")
+                    page.wait_for_function(
+                        "document.getElementById('status').textContent === 'Ready'"
+                    )
+                    assistant = page.locator(".msg.assistant .content").nth(0)
+                    self.assertEqual(assistant.text_content(), "Hello 世界")
+                    self.assertEqual(
+                        page.locator("#cost-display").text_content(), "Cost: split-stream"
+                    )
+                    self.assertNotIn("parse error", assistant.text_content().lower())
+
+                    page.fill("#user-input", "error boundary")
+                    page.click("#send-btn")
+                    page.wait_for_function(
+                        "document.querySelectorAll('.msg.assistant .content')[1].textContent.includes('mock provider failure')"
+                    )
+                    page.wait_for_function(
+                        "document.getElementById('status').textContent === 'Error'"
+                    )
+                    self.assertEqual(page.locator("#status").text_content(), "Error")
+                    self.assertEqual(
+                        page.locator(".msg.assistant .content").nth(1).text_content(),
+                        "Error: mock provider failure",
+                    )
+                finally:
+                    if browser is not None:
+                        browser.close()
+                    if playwright is not None:
+                        playwright.stop()
+                    chat_httpd.shutdown()
+                    chat_httpd.server_close()
+                    chat_thread.join(timeout=5)
         finally:
             if manager is not None:
                 manager.close_all()
