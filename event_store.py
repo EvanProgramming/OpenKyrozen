@@ -412,13 +412,21 @@ class EventStore:
         return result
 
     def update_proposal(self, proposal_id: str, *, status: str, validation: dict[str, Any] | None = None,
-                        confidence: float | None = None) -> bool:
-        values = [status, self._json(validation or {}), utc_now(), proposal_id]
+                        confidence: float | None = None, workspace_id: str | None = None,
+                        user_id: str | None = None) -> bool:
+        values = [status, self._json(validation or {}), utc_now()]
         query = "UPDATE learning_proposals SET status=?,validation=?,updated_at=?"
         if confidence is not None:
             query += ",confidence=?"
-            values.insert(-1, max(0.0, min(1.0, confidence)))
+            values.append(max(0.0, min(1.0, confidence)))
         query += " WHERE id=?"
+        values.append(proposal_id)
+        if workspace_id is not None:
+            query += " AND workspace_id=?"
+            values.append(workspace_id)
+        if user_id is not None:
+            query += " AND user_id=?"
+            values.append(user_id)
         with self._lock, self.connection() as db:
             return db.execute(query, values).rowcount == 1
 

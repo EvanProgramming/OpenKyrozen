@@ -405,6 +405,22 @@ python main.py migrate v1 ./chroma_memory
 
 Web/MCP 是单用户部署：一个 `KYROZEN_SERVER_TOKEN` 代表该部署唯一的私有 actor；请求体中的 `speaker` 不能伪造私有身份。私有记忆、任务、事件、计划和学习状态按该 actor、workspace、session 作用域隔离；共享部署的多个私有用户应使用不同部署和数据库。
 
+私有声明的完整生命周期不需要重复传入 `speaker`：未提供时使用
+`KYROZEN_SERVER_ACTOR`（默认 `local`）。设置稳定 actor 后，可按 create → list →
+detail → forget 执行：
+
+```bash
+export KYROZEN_SERVER_ACTOR=owner-66
+curl -sS -X POST http://127.0.0.1:8000/api/v2/memory/claims \
+  -H 'Content-Type: application/json' \
+  -d '{"key":"favorite editor","value":"vim","claim_type":"private_fact","authority":"owner"}'
+curl -sS http://127.0.0.1:8000/api/v2/memory/claims
+curl -sS http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
+curl -sS -X DELETE http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
+```
+
+显式提供其他 `speaker` 只能作为归属过滤，不能读取或删除该私有声明。
+
 ---
 
 ## 🌐 Web UI 与 REST API

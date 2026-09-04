@@ -1,5 +1,8 @@
 import os
 import asyncio
+import json
+import subprocess
+import sys
 import threading
 import tempfile
 import unittest
@@ -279,16 +282,99 @@ class ServerBoundaryTests(unittest.TestCase):
         self.assertIn(created.json()["memory_id"], [item["id"] for item in visible])
 
     def test_private_claim_without_speaker_is_bound_to_deployment_actor(self):
-        client = TestClient(server.app)
-        response = client.post("/api/v2/memory/claims", json={
-            "key": "private-api-default", "value": "deployment-owned", "claim_type": "private_fact",
-            "authority": "owner",
-        })
-        self.assertEqual(response.status_code, 200, response.text)
-        claim_id = response.json()["memory_id"]
-        visible = client.get("/api/v2/memory/claims",
-                             params={"speaker": server._SERVER_ACTOR_ID}).json()["claims"]
-        self.assertIn(claim_id, [item["id"] for item in visible])
+        repository = Path(__file__).parents[1].resolve()
+        script = """
+import json
+import os
+from fastapi.testclient import TestClient
+import server
+
+client = TestClient(server.app)
+claim_id = os.environ.get("CLAIM_ID")
+created_status = None
+if not claim_id:
+    created = client.post("/api/v2/memory/claims", json={
+        "key": "private-api-lifecycle", "value": "deployment-owned",
+        "claim_type": "private_fact", "authority": "owner",
+    })
+    created_status = created.status_code
+    claim_id = created.json().get("memory_id")
+listing = client.get("/api/v2/memory/claims")
+detail = client.get(f"/api/v2/memory/claims/{claim_id}") if claim_id else None
+wrong_speaker = client.get(
+    f"/api/v2/memory/claims/{claim_id}", params={"speaker": "different-actor"}
+) if claim_id else None
+forgotten = client.delete(f"/api/v2/memory/claims/{claim_id}") if claim_id else None
+after = client.get(f"/api/v2/memory/claims/{claim_id}") if claim_id else None
+print(json.dumps({
+    "actor": server._SERVER_ACTOR_ID,
+    "created": created_status,
+    "claim_id": claim_id,
+    "listed": listing.status_code == 200 and any(
+        item["id"] == claim_id for item in listing.json().get("claims", [])
+    ),
+    "detail": detail.status_code if detail else None,
+    "wrong_speaker": wrong_speaker.status_code if wrong_speaker else None,
+    "forgotten": forgotten.status_code if forgotten else None,
+    "after": after.status_code if after else None,
+}))
+"""
+
+        def run_actor(database: Path, actor: str | None, claim_id: str | None = None) -> dict:
+            with tempfile.TemporaryDirectory(prefix="openkyrozen-claim-home-") as home:
+                environment = os.environ.copy()
+                environment.update({
+                    "HOME": home,
+                    "KYROZEN_DB_PATH": str(database),
+                    "KYROZEN_DISABLE_VECTOR_INDEX": "1",
+                    "KYROZEN_PROVIDER": "ollama",
+                    "KYROZEN_EXECUTION_SURFACE": "web",
+                    "PYTHONPATH": str(repository),
+                })
+                environment.pop("KYROZEN_SERVER_TOKEN", None)
+                if actor is None:
+                    environment.pop("KYROZEN_SERVER_ACTOR", None)
+                else:
+                    environment["KYROZEN_SERVER_ACTOR"] = actor
+                if claim_id:
+                    environment["CLAIM_ID"] = claim_id
+                result = subprocess.run(
+                    [sys.executable, "-c", script], cwd=database.parent,
+                    env=environment, capture_output=True, text=True, timeout=30,
+                )
+                output = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 0, output)
+                return json.loads(result.stdout.strip().splitlines()[-1])
+
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-claim-api-") as directory:
+            root = Path(directory)
+            default = run_actor(root / "default.sqlite3", None)
+            self.assertEqual(default["actor"], "local")
+            self.assertEqual(default["created"], 200)
+            self.assertTrue(default["listed"])
+            self.assertEqual(default["detail"], 200)
+            self.assertEqual(default["wrong_speaker"], 404)
+            self.assertEqual(default["forgotten"], 200)
+            self.assertEqual(default["after"], 404)
+
+            owner = run_actor(root / "configured.sqlite3", "owner-66")
+            self.assertEqual(owner["actor"], "owner-66")
+            self.assertEqual(owner["created"], 200)
+            self.assertTrue(owner["listed"])
+            self.assertEqual(owner["detail"], 200)
+            self.assertEqual(owner["wrong_speaker"], 404)
+
+            other = run_actor(root / "configured.sqlite3", "other-66", owner["claim_id"])
+            self.assertEqual(other["actor"], "other-66")
+            self.assertFalse(other["listed"])
+            self.assertEqual(other["detail"], 404)
+            self.assertEqual(other["wrong_speaker"], 404)
+            self.assertEqual(other["forgotten"], 404)
+            self.assertEqual(other["after"], 404)
+
+            owner_after = run_actor(root / "configured.sqlite3", "owner-66", owner["claim_id"])
+            self.assertFalse(owner_after["listed"])
+            self.assertEqual(owner_after["detail"], 404)
 
     def test_server_actor_is_stable_across_authentication_modes(self):
         self.assertEqual(server._actor_for_request(None), server._SERVER_ACTOR_ID)

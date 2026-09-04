@@ -429,7 +429,8 @@ class LearningEngine:
                     "claim_type": claim_type, "speaker": speaker, "audiences": audiences,
                     "channel": self._clean(channel or "") or None, "visibility": visibility}
         active = [row for row in self.store.list_memories(status="active", limit=10000,
-                                                          workspace_id=self.memory.workspace_id)
+                                                          workspace_id=self.memory.workspace_id,
+                                                          user_id=self.memory.user_id)
                   if row.get("metadata", {}).get("claim_key") == key
                   and row.get("metadata", {}).get("scope") == metadata["scope"]
                   and row.get("metadata", {}).get("speaker") == speaker
@@ -445,7 +446,9 @@ class LearningEngine:
         if authority == "owner":
             for row in active:
                 if row.get("metadata", {}).get("claim_value") != value:
-                    self.store.set_memory_status(row["id"], "superseded", workspace_id=self.memory.workspace_id)
+                    self.store.set_memory_status(row["id"], "superseded",
+                                                 workspace_id=self.memory.workspace_id,
+                                                 user_id=self.memory.user_id)
                     metadata["supersedes"] = row["id"]
             memory_id = self.memory.add_log(display, kind=kind, status="active", confidence=1.0,
                                             metadata=metadata)
@@ -494,7 +497,9 @@ class LearningEngine:
                    "speaker": speaker, "audience": audience, "channel": channel}
         authorized_speakers = authorized_speakers or set()
         matches = []
-        for row in self.store.list_memories(status="active", limit=10000, workspace_id=self.memory.workspace_id):
+        for row in self.store.list_memories(status="active", limit=10000,
+                                            workspace_id=self.memory.workspace_id,
+                                            user_id=self.memory.user_id):
             meta = row.get("metadata", {})
             if not meta.get("claim") or meta.get("claim_key") != key:
                 continue
@@ -523,30 +528,48 @@ class LearningEngine:
                     next(iter(values)) if len(values) == 1 else None),
                 "attributed_values": attributed, "claims": best, "scope_rank": best_rank[0]}
 
-    def explain_claim(self, claim_id: str) -> dict[str, Any] | None:
-        rows = self.store.list_memories(status=None, limit=10000, workspace_id=self.memory.workspace_id)
+    def explain_claim(self, claim_id: str, *, user_id: str | None = None,
+                      workspace_id: str | None = None, session_id: str | None = None) -> dict[str, Any] | None:
+        scoped_user = self.memory.user_id if user_id is None else str(user_id)
+        scoped_workspace = self.memory.workspace_id if workspace_id is None else str(workspace_id)
+        rows = self.store.list_memories(status=None, limit=10000,
+                                        workspace_id=scoped_workspace, session_id=session_id,
+                                        user_id=scoped_user)
         row = next((item for item in rows if item["id"] == claim_id and item.get("metadata", {}).get("claim")), None)
         return row
 
-    def forget_claim(self, claim_id: str) -> bool:
-        claim = self.explain_claim(claim_id)
+    def forget_claim(self, claim_id: str, *, user_id: str | None = None,
+                     workspace_id: str | None = None, session_id: str | None = None) -> bool:
+        scoped_user = self.memory.user_id if user_id is None else str(user_id)
+        scoped_workspace = self.memory.workspace_id if workspace_id is None else str(workspace_id)
+        scoped_session = self.memory.session_id if session_id is None else session_id
+        claim = self.explain_claim(claim_id, user_id=scoped_user,
+                                   workspace_id=scoped_workspace, session_id=scoped_session)
         if not claim:
             return False
-        self.memory.delete_logs([claim_id])
-        for proposal in self.store.list_proposals(workspace_id=self.memory.workspace_id, limit=10000):
+        claim_memory = self.memory
+        if (scoped_user, scoped_workspace, scoped_session) != (
+                self.memory.user_id, self.memory.workspace_id, self.memory.session_id):
+            claim_memory = MemoryBank(self.memory.db_path, user_id=scoped_user,
+                                      workspace_id=scoped_workspace, session_id=scoped_session)
+        claim_memory.delete_logs([claim_id])
+        for proposal in self.store.list_proposals(workspace_id=scoped_workspace, user_id=scoped_user, limit=10000):
             if claim_id not in proposal.get("validation", {}).get("dependencies", []):
                 continue
             skill_id = proposal.get("validation", {}).get("skill_id")
             if skill_id and self.registry:
                 self.registry.rollback_learned(skill_id)
-            self.store.update_proposal(proposal["id"], status="rejected",
-                                       validation={**proposal["validation"], "reason": "source claim deleted"})
+            self.store.update_proposal(
+                proposal["id"], status="rejected",
+                validation={**proposal["validation"], "reason": "source claim deleted"},
+                workspace_id=scoped_workspace, user_id=scoped_user,
+            )
         self.store.append_event("memory.claim_forgotten", {"memory_id": claim_id},
-                                user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
-                                session_id=self.memory.session_id)
+                                user_id=scoped_user, workspace_id=scoped_workspace,
+                                session_id=scoped_session)
         self.store.append_event("learning.regression_cases_deactivated", {"dependency": claim_id},
-                                user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
-                                session_id=self.memory.session_id)
+                                user_id=scoped_user, workspace_id=scoped_workspace,
+                                session_id=scoped_session)
         return True
 
     def negative_preflight(self, profile: str, task: str) -> list[dict[str, Any]]:

@@ -479,7 +479,25 @@ Selection ranks relevant guidance by verified utility per context character and 
 
 Learned guidance is bound to the provider/model family that produced its evidence unless paired replay validates it across models. Verifier reliability, evidence-adaptive review priority, and a user-owned `KYROZEN_LEARNING_CONSTITUTION` file constrain evolution. Redacted experience capsules are portable JSON evidence, but imports always remain inactive candidates until local validation.
 
-Multi-party claims distinguish attributed beliefs, private facts, and group agreements. Speaker, audience, channel, and visibility checks run before recall; private claims require the authenticated request actor, not a client-supplied speaker label. Chat responses include a memory receipt listing the claim IDs and speakers that affected the turn, and `benchmarks/multi_party_memory.jsonl` provides frozen leakage, update, ambiguity, and audience cases.
+Multi-party claims distinguish attributed beliefs, private facts, and group agreements. Speaker, audience, channel, and visibility checks run before recall; private claims use the configured `KYROZEN_SERVER_ACTOR`, not a client-supplied speaker label. Chat responses include a memory receipt listing the claim IDs and speakers that affected the turn, and `benchmarks/multi_party_memory.jsonl` provides frozen leakage, update, ambiguity, and audience cases.
+
+For a private claim, omit `speaker` and use the same deployment actor for the full
+create → list → detail → forget lifecycle. Set a stable actor label when using a
+custom deployment (the default is `local`):
+
+```bash
+export KYROZEN_SERVER_ACTOR=owner-66
+curl -sS -X POST http://127.0.0.1:8000/api/v2/memory/claims \
+  -H 'Content-Type: application/json' \
+  -d '{"key":"favorite editor","value":"vim","claim_type":"private_fact","authority":"owner"}'
+curl -sS http://127.0.0.1:8000/api/v2/memory/claims
+curl -sS http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
+curl -sS -X DELETE http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
+```
+
+An explicit different `speaker` is only an attribution filter and cannot read or
+delete the private claim. Use separate deployments and databases for separate
+private users.
 
 ### Memory storage
 
