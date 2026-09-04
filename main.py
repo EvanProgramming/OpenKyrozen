@@ -3,8 +3,6 @@ Kyrozen: self-learning AI Agent powered by DeepSeek API + tools.
 (Run `python main.py` to launch the agent)
 """
 
-import pathlib
-import shutil
 import sys
 import warnings
 
@@ -56,10 +54,6 @@ _UNICODE_OK = _terminal_supports_unicode()
 # Dual character sets: Unicode preferred, ASCII fallback for legacy terminals
 if _UNICODE_OK:    _SPINNER_FRAMES = ["◜", "◠", "◝", "◞", "◡", "◟"]; _BAR_FILL = "█"; _BAR_EMPTY = "░"; _CHECK = "✓"; _CIRCLE = "○"; _HALF = "◷"; _BOX_TL = "┌"; _BOX_H = "─"; _BOX_BL = "└"; _BOX_V = "│"; _DOT = "·"; _NBHYPHEN = "‑"
 else:               _SPINNER_FRAMES = ["/", "-", "\\", "|"];             _BAR_FILL = "#"; _BAR_EMPTY = "."; _CHECK = "+"; _CIRCLE = "o"; _HALF = ">"; _BOX_TL = "+"; _BOX_H = "-"; _BOX_BL = "+"; _BOX_V = "|"; _DOT = "."; _NBHYPHEN = "-"
-
-# Delete stale __pycache__ before any imports to avoid loading deprecated bytecode
-for p in pathlib.Path(__file__).parent.rglob("__pycache__"):
-    shutil.rmtree(p, ignore_errors=True)
 
 import ast
 import json
@@ -4756,7 +4750,6 @@ def _run_recovered_tasks(*, max_tasks: int = 20) -> list[dict[str, Any]]:
 
 
 def main() -> None:
-    # Bytecode cache cleared already at module level (see top of file)
     global _provider_config, llm_provider, DEEPSEEK_MODEL, DEEPSEEK_MODEL_SIMPLE, DEEPSEEK_MODEL_COMPLEX, MODEL_NAME
     global _agent_profile_mode
 
