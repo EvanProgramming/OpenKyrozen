@@ -361,6 +361,10 @@ Short aliases work too — `bash`, `cmd`, `sh` → `run_cmd`; `status`, `diff`, 
 | `run_cmd` | Execute shell command | `"python --version"` |
 | `execute_terminal_command` | Alias for `run_cmd` | `"python --version"` |
 
+File and directory paths are resolved inside the active workspace. Use a
+relative path such as `notes.txt` in file examples; home-directory and Desktop
+paths are rejected by the workspace boundary.
+
 `run_cmd` prepends the `bin` directory of the Python interpreter running
 OpenKyrozen, so bare `python` and `pip` resolve inside the active virtual
 environment even when the parent shell was not activated. Explicit interpreter

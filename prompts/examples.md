@@ -2,12 +2,12 @@
 
 ## Example 1: Creating a file
 
-**User:** Create a file on my desktop called `notes.txt` with the content "Hello from the agent."
+**User:** Create `notes.txt` in the active workspace with the content "Hello from the agent."
 
 **Assistant:**
-The user wants a file on the desktop. I will use the write_file tool.
+The user wants a file in the active workspace. I will use the write_file tool.
 ```json
-{"action": "write_file", "args": "~/Desktop/notes.txt|Hello from the agent."}
+{"action": "write_file", "args": "notes.txt|Hello from the agent."}
 ```
 
 ---
@@ -26,10 +26,10 @@ The user wants real-time price data. I need to search the web.
 
 ## Example 3: Reading a file
 
-**User:** Read the file ~/Desktop/notes.txt
+**User:** Read the file `notes.txt` from the active workspace
 
 **Assistant:**
 The user wants to see the contents of a file. I will use read_file.
 ```json
-{"action": "read_file", "args": "~/Desktop/notes.txt"}
+{"action": "read_file", "args": "notes.txt"}
 ```

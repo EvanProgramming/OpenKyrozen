@@ -1,3 +1,5 @@
+import json
+import re
 import tempfile
 import subprocess
 import unittest
@@ -32,6 +34,28 @@ class WorkspaceToolTests(unittest.TestCase):
                 self.assertEqual(read_file("inside.txt"), "hello")
                 self.assertTrue(read_file(str(root.parent / "outside.txt")).startswith("Error"))
                 self.assertTrue(write_file(str(root.parent / "outside.txt") + "|nope").startswith("Error"))
+            finally:
+                set_workspace_root(original_root)
+
+    def test_documented_file_examples_work_inside_a_temporary_workspace(self):
+        examples_path = Path(__file__).parents[1] / "prompts" / "examples.md"
+        blocks = re.findall(r"```json\n(.*?)\n```", examples_path.read_text(encoding="utf-8"), re.DOTALL)
+        actions = [json.loads(block) for block in blocks]
+        write_action = next(item for item in actions if item.get("action") == "write_file")
+        read_action = next(item for item in actions if item.get("action") == "read_file")
+        write_path, write_content = write_action["args"].split("|", 1)
+        self.assertFalse(Path(write_path).is_absolute())
+        self.assertFalse(write_path.startswith("~"))
+        self.assertEqual(read_action["args"], write_path)
+
+        original_root = Path.cwd()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            set_workspace_root(root)
+            try:
+                self.assertIn("Wrote", write_file(write_action["args"]))
+                self.assertEqual(read_file(read_action["args"]), write_content)
+                self.assertEqual((root / write_path).read_text(encoding="utf-8"), write_content)
             finally:
                 set_workspace_root(original_root)
 
