@@ -32,7 +32,28 @@ class SkillRegistry:
         self.root.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
-    def _read_manifest(source: Path) -> dict[str, Any]:
+    def _validate_runtime_match_fields(manifest: dict[str, Any]) -> None:
+        profiles = manifest.get("profiles")
+        if (
+            not isinstance(profiles, list)
+            or not 1 <= len(profiles) <= len(LEARNING_PROFILES)
+            or any(not isinstance(item, str) or item not in LEARNING_PROFILES for item in profiles)
+            or len(set(profiles)) != len(profiles)
+        ):
+            raise ValueError(
+                "runtime-matchable skills require 1-2 explicit profiles from ['coder', 'researcher']"
+            )
+        triggers = manifest.get("triggers")
+        if not isinstance(triggers, list) or not 1 <= len(triggers) <= 12:
+            raise ValueError("runtime-matchable skills require 1-12 triggers")
+        if any(
+            not isinstance(item, str) or not re.fullmatch(r"[\w.+#-]{2,40}", item, re.UNICODE)
+            for item in triggers
+        ):
+            raise ValueError("invalid runtime skill trigger")
+
+    @staticmethod
+    def _read_manifest(source: Path, *, runtime_matchable: bool = False) -> dict[str, Any]:
         manifest_path = source / "skill.json"
         if manifest_path.exists():
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -84,6 +105,8 @@ class SkillRegistry:
                 raise ValueError("learned artifacts cannot create dynamic tools")
             if any(section not in body for section in ("## Trigger", "## Steps", "## Verify")):
                 raise ValueError("learned artifact requires Trigger, Steps, and Verify sections")
+        if runtime_matchable:
+            SkillRegistry._validate_runtime_match_fields(manifest)
         return manifest
 
     def install(self, source: str | os.PathLike[str], *, activate: bool = False, source_name: str = "local") -> dict[str, Any]:
@@ -93,7 +116,7 @@ class SkillRegistry:
         for child in source_path.rglob("*"):
             if child.is_symlink():
                 raise ValueError("Symlinked skill files are not allowed")
-        manifest = self._read_manifest(source_path)
+        manifest = self._read_manifest(source_path, runtime_matchable=source_name == "local")
         target = self.root / manifest["name"] / manifest["version"]
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
@@ -157,7 +180,7 @@ class SkillRegistry:
         path = Path(skill["path"]).resolve()
         try:
             path.relative_to(self.root)
-            manifest = self._read_manifest(path)
+            manifest = self._read_manifest(path, runtime_matchable=skill.get("source") == "local")
             return {"success": True, "checks": ["contained path", "SKILL.md", "manifest", "declared permissions"],
                     "name": manifest["name"], "version": manifest["version"]}
         except Exception as exc:
@@ -185,9 +208,15 @@ class SkillRegistry:
         scored: list[tuple[float, dict[str, Any], str]] = []
         for skill in self.list():
             manifest = skill.get("manifest", {})
-            if skill.get("source") != "learned" or skill.get("status") not in {"active", "canary"}:
-                continue
-            if manifest.get("profiles") != [profile]:
+            source = skill.get("source")
+            status = skill.get("status")
+            if source == "learned":
+                if status not in {"active", "canary"} or manifest.get("profiles") != [profile]:
+                    continue
+            elif source == "local":
+                if status != "active" or profile not in manifest.get("profiles", []):
+                    continue
+            else:
                 continue
             triggers = self._terms(" ".join(str(item) for item in manifest.get("triggers", [])))
             overlap = len(task_terms & triggers)

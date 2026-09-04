@@ -129,7 +129,8 @@ class LearningEngine:
                 continue
             compatible.append(item)
         artifacts = compatible
-        receipts = [{"skill_id": item["id"], "version": item["version"], "status": item["status"],
+        receipts = [{"skill_id": item["id"], "version": item["version"], "source": item.get("source"),
+                     "status": item["status"],
                      "content_hash": item["content_hash"], "chars": len(item["body"]),
                      "utility_per_char": item.get("utility_per_char")} for item in artifacts]
         for receipt in receipts:

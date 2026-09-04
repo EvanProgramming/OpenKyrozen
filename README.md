@@ -285,6 +285,32 @@ latest status with `GET /api/v2/learning/features` or toggle flags with
 explicit capability and approval gates, and rollback remains user-directed via
 `/forget` or an explicit learning rollback command.
 
+### Installed skill guidance
+
+The local skill API installs user-authored `SKILL.md` packages as guidance that
+can participate in matching runtime tasks. A package intended for matching must
+include a `skill.json` with explicit supported profiles and one to twelve
+trigger terms:
+
+```json
+{
+  "name": "local-pytest-guide",
+  "version": "1.0.0",
+  "permissions": [],
+  "profiles": ["coder"],
+  "triggers": ["pytest"]
+}
+```
+
+Install it with `POST /api/v2/skills/install` and
+`{ "path": "...", "activate": true }`. Only an active local skill whose
+profile and trigger match the task is added to the prompt; each use creates a
+scoped `learning.artifact_used` receipt. Skill text is untrusted procedure
+data: it cannot grant capabilities, permissions, or approval, and the normal
+tool and workspace gates still apply. Learned artifacts remain separately
+outcome-verified and follow their canary/promotion lifecycle; plugins remain
+hook extensions rather than permission-bearing skill packages.
+
 | # | Registry feature | Bounded effect |
 |---:|---|---|
 | 1 | Conversation learning | Extract candidate facts from new conversation logs |
