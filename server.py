@@ -697,10 +697,13 @@ async def api_v2_create_memory_claim(request: Request):
 async def api_v2_memory_claim(request: Request, claim_id: str, speaker: str | None = None,
                               audience: str | None = None, channel: str | None = None):
     speaker, audience, channel = _normalise_memory_context(speaker, audience, channel)
-    claim = _agent.learning_engine.explain_claim(claim_id)
+    actor = _actor_for_request(request)
+    claim = _agent.learning_engine.explain_claim(
+        claim_id, user_id=actor, workspace_id=_agent.memory_bank.workspace_id,
+    )
     visible = _agent.memory_bank.filter_records(
         [claim] if claim else [], speaker=speaker, audience=audience, channel=channel,
-        authorized_speakers={_actor_for_request(request)},
+        authorized_speakers={actor},
     )
     if not visible:
         raise HTTPException(404, "Memory claim not found")
@@ -708,8 +711,10 @@ async def api_v2_memory_claim(request: Request, claim_id: str, speaker: str | No
 
 
 @app.delete("/api/v2/memory/claims/{claim_id}", dependencies=[Depends(require_api_access)])
-async def api_v2_memory_forget_claim(claim_id: str):
-    if not _agent.learning_engine.forget_claim(claim_id):
+async def api_v2_memory_forget_claim(request: Request, claim_id: str):
+    actor = _actor_for_request(request)
+    if not _agent.learning_engine.forget_claim(
+            claim_id, user_id=actor, workspace_id=_agent.memory_bank.workspace_id):
         raise HTTPException(404, "Memory claim not found")
     return {"status": "forgotten", "memory_id": claim_id}
 

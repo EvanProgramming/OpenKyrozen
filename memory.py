@@ -265,8 +265,7 @@ class MemoryBank:
                 continue
             audiences = set(metadata.get("audiences", []))
             visibility = metadata.get("visibility", "public")
-            if visibility == "private" and not (
-                    claim_speaker == speaker and claim_speaker in authorized_speakers):
+            if visibility == "private" and claim_speaker not in authorized_speakers:
                 continue
             if visibility == "group" and audiences and audience not in audiences:
                 continue

@@ -157,12 +157,25 @@ curl -sS 'http://127.0.0.1:8000/api/v2/memory/claims?speaker=alice&audience=ops&
 An attributed belief is always rendered with its speaker and does not resolve
 to an unattributed value when speakers disagree. A private fact requires
 `authority=owner` and is never exposed through unscoped recall. Private API
-claims must name the authenticated request actor: `loopback` for an
-unauthenticated loopback server, or `authenticated` when
-`KYROZEN_SERVER_TOKEN` is enabled. A client-supplied label such as `alice` is
-an attribution, not an authorization grant. Deployments that need distinct
-human identities or group membership must enforce that mapping at their
-authentication or proxy layer.
+claims use the stable `KYROZEN_SERVER_ACTOR` configured for the deployment;
+omitting `speaker` uses that actor for create, list, detail, and forget. A
+client-supplied label such as `alice` is an attribution/filter, not an
+authorization grant. Deployments that need distinct human identities or group
+membership must use separate deployments and databases or enforce that mapping
+at their authentication/proxy layer.
+
+Use the same deployment actor for a complete private-claim lifecycle (the
+default actor is `local`):
+
+```bash
+export KYROZEN_SERVER_ACTOR=owner-66
+curl -sS -X POST http://127.0.0.1:8000/api/v2/memory/claims \
+  -H 'Content-Type: application/json' \
+  -d '{"key":"favorite editor","value":"vim","claim_type":"private_fact","authority":"owner"}'
+curl -sS http://127.0.0.1:8000/api/v2/memory/claims
+curl -sS http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
+curl -sS -X DELETE http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
+```
 
 `GET /api/v2/events?event_type=memory.recalled` shows the receipt payload used
 for a turn. Learning events such as `learning.outcome`,

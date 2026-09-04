@@ -392,6 +392,22 @@ OpenKyrozen v2의 장기 메모리는 **SQLite를 사실의 원본**(`~/.kyrozen
 
 작업은 재시작 후에도 저장되며 상태는 `pending`, `running`, `succeeded`, `failed`, `blocked`, `cancelled`입니다(이전 `done`은 읽기 호환). `TaskDone`만으로는 성공하지 않고 도구 결과, 테스트, 파일 확인 또는 명시적 확인 증거가 필요합니다. 안전한 API 작업은 worker가 재개하며 failed/blocked 작업은 `/api/v2/tasks/{task_id}/resume`으로 명시적으로 재개합니다.
 
+private claim은 `speaker`를 생략하면 `KYROZEN_SERVER_ACTOR`(기본값 `local`)에
+연결됩니다. 안정적인 actor를 설정하고 같은 배포에서 create → list → detail →
+forget 전체 수명 주기를 실행할 수 있습니다.
+
+```bash
+export KYROZEN_SERVER_ACTOR=owner-66
+curl -sS -X POST http://127.0.0.1:8000/api/v2/memory/claims \
+  -H 'Content-Type: application/json' \
+  -d '{"key":"favorite editor","value":"vim","claim_type":"private_fact","authority":"owner"}'
+curl -sS http://127.0.0.1:8000/api/v2/memory/claims
+curl -sS http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
+curl -sS -X DELETE http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
+```
+
+다른 `speaker`를 명시해도 attribution filter일 뿐이며 private claim을 읽거나 삭제할 수 없습니다.
+
 ---
 
 ## 🌐 Web UI 및 REST API
