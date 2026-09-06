@@ -642,10 +642,16 @@ make push
 ### CI/CD
 
 GitHub Actions가 모든 푸시와 PR에서 자동 실행:
+
 - Python 3.12 및 3.13에서 구문 검사
 - 실제 런타임 레지스트리에서 생성한 도구 목록과 문서 일관성 검사
 - 제공자 임포트 확인
+- 깨끗한 wheel 설치 및 무관한 디렉터리에서 CLI를 실행하는 스모크 테스트
+- Windows PowerShell 설치 프로그램 구문 및 도움말 경로 확인
 - Docker 빌드 및 컨테이너 교체 복구 스모크 테스트
+
+`v*` 태그를 푸시하면 sdist/wheel을 빌드하고 검증한 뒤, 설정된 `pypi`
+환경 게이트를 통과하면 GitHub Trusted Publishing으로 PyPI에 게시합니다.
 
 ### pip 패키지
 

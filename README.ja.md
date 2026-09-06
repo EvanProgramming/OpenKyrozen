@@ -644,10 +644,16 @@ make push
 ### CI/CD
 
 GitHub Actions がプッシュと PR ごとに自動実行：
+
 - Python 3.12 および 3.13 での構文チェック
 - 実行時レジストリから生成したツール一覧とドキュメントの整合性検証
 - プロバイダーインポートチェック
+- クリーンな wheel インストールと無関係なディレクトリからの CLI スモークテスト
+- Windows PowerShell インストーラーの構文とヘルプ経路のチェック
 - Docker ビルドとコンテナ置換後の復元スモークテスト
+
+`v*` タグをプッシュすると、sdist/wheel をビルドして検証し、設定済みの
+`pypi` 環境ゲート後に GitHub Trusted Publishing で PyPI へ公開します。
 
 ### pip パッケージ
 
