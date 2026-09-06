@@ -654,10 +654,16 @@ make push
 ### CI/CD
 
 GitHub Actions 在每次推送和 PR 时自动运行：
+
 - Python 3.12 和 3.13 语法检查
 - 从真实注册表生成的工具清单和文档一致性检查
 - 服务商导入检查
+- 干净 wheel 安装及从无关目录启动 CLI 的 smoke test
+- Windows PowerShell 安装器语法和帮助路径检查
 - Docker 构建和替换容器恢复 smoke test
+
+推送 `v*` 版本标签时，还会构建并验证 sdist/wheel，并在配置好的
+`pypi` 环境门禁后通过 GitHub Trusted Publishing 发布到 PyPI。
 
 ### pip 包
 

@@ -898,10 +898,17 @@ make push
 ### CI/CD
 
 GitHub Actions automatically runs on every push and PR:
+
 - Syntax check across Python 3.12 and 3.13
 - Generated tool inventory and documentation consistency validation
 - Provider import check
+- Clean wheel installation and unrelated-directory CLI smoke test
+- Windows PowerShell installer syntax/help check
 - Docker build and replace-container recovery smoke test
+
+A `v*` tag additionally builds and validates sdist/wheel distributions, then
+publishes them to PyPI through GitHub Trusted Publishing after the configured
+`pypi` environment gate.
 
 ### pip package
 
