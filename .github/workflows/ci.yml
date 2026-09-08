@@ -7,6 +7,21 @@ on:
     branches: [main]
 
 jobs:
+  core-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Provision the non-browser development path and run lightweight tests
+      run: |
+        make install-core PYTHON=python
+        make test-core
+
   lint-and-test:
     runs-on: ubuntu-latest
     strategy:
@@ -21,19 +36,17 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
-    - name: Install dependencies
+    - name: Install full development dependencies
       run: |
         sudo apt-get update
         sudo apt-get install --no-install-recommends -y zsh
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install fastapi uvicorn
+        pip install -e '.[all]'
 
-    - name: Install package and run unit tests
+    - name: Install Chromium and run the full test suite
       run: |
-        pip install -e '.[browser]'
         python -m playwright install --with-deps chromium
-        python -m unittest discover -s tests -p 'test_*.py' -v
+        make test PYTHON=python
 
     - name: Syntax check
       run: |

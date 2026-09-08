@@ -1,4 +1,8 @@
-.PHONY: install run clean lint test check docs-check shell-check benchmark wheel-smoke docker-smoke git-status git-diff git-log web
+.PHONY: install install-core run clean lint test test-core check docs-check shell-check benchmark wheel-smoke docker-smoke git-status git-diff git-log web
+
+# Tests parse the benchmark target's stdout as JSON; do not inject GNU make's
+# recursive directory banners into that machine-readable output.
+MAKEFLAGS += --no-print-directory
 
 # Prefer the known-stable Python 3.12, but use the active supported Python
 # 3.13 on clean runners that do not provide 3.12. Python 3.14 remains
@@ -13,13 +17,21 @@ ifeq ($(OS),Windows_NT)
 $(error This Makefile is for macOS/Linux/WSL. On native Windows, use: setup.bat, run.bat)
 endif
 
-install:
+install-core:
 	@echo "Creating virtual environment with $(PYTHON)..."
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: $(PYTHON) not found. Install Python 3.12 first."; exit 1; }
 	$(PYTHON) -m venv venv
-	./venv/bin/python -m pip install --upgrade pip && ./venv/bin/python -m pip install -r requirements.txt
+	./venv/bin/python -m pip install --upgrade pip && ./venv/bin/python -m pip install -e '.[web]'
 	@echo ""
-	@echo "OpenKyrozen installed. Run 'make run' for project mode or 'kyrozen' for the global workspace."
+	@echo "OpenKyrozen core development environment installed."
+
+# The documented development path includes every optional integration and the
+# Chromium binary required by the browser integration test.
+install: install-core
+	./venv/bin/python -m pip install -e '.[all]'
+	./venv/bin/python -m playwright install chromium
+	@echo ""
+	@echo "OpenKyrozen full development environment installed. Run 'make test' or 'make run'."
 
 run:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' with $(PYTHON) installed."; exit 1; }
@@ -55,7 +67,11 @@ lint:
 
 # Unit tests
 test:
-	$(VENV_PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
+	KYROZEN_BROWSER_TESTS=1 $(VENV_PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
+
+# Fast non-browser path for contributors and CI jobs that intentionally omit browser binaries.
+test-core:
+	KYROZEN_BROWSER_TESTS=0 $(VENV_PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
 
 benchmark:
 	@$(VENV_PYTHON) -c "import openai, requests, rich, yaml" >/dev/null 2>&1 || { echo "Error: benchmark dependencies are missing. Run 'make install' first."; exit 1; }

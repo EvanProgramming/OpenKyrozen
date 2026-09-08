@@ -37,7 +37,7 @@ web = ["fastapi", "uvicorn"]
 claude = ["anthropic>=0.30.0"]
 gemini = ["google-generativeai>=0.8.0"]
 browser = ["playwright>=1.40"]
-all = ["fastapi", "uvicorn", "anthropic>=0.30.0", "google-generativeai>=0.8.0"]
+all = ["fastapi", "uvicorn", "anthropic>=0.30.0", "google-generativeai>=0.8.0", "playwright>=1.40"]
 
 [project.scripts]
 kyrozen = "main:main"

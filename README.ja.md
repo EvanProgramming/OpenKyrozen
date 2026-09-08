@@ -109,6 +109,7 @@ cd OpenKyrozen
 
 # macOS / Linux
 make install
+make test
 make run
 
 # Windows
@@ -117,6 +118,7 @@ run.bat
 ```
 
 これらのコマンドは明示的にプロジェクトモード（`--project .`）で動作し、リポジトリ開発専用です。
+`make install` は完全な `.[all]` 開発依存関係と Chromium を導入するため、`make test` でブラウザー統合フローも実行します。軽量な非ブラウザーパスには `make install-core` と `make test-core` を使用してください。
 
 ### PyPI からのパッケージインストール
 
@@ -665,7 +667,7 @@ pip install 'openkyrozen[web]'
 # ローカルチェックアウトのみ（開発）
 pip install .                   # コア + CLI
 pip install '.[web]'            # + Web UI
-pip install '.[all]'            # + Claude + Gemini + Web
+pip install '.[all]'            # + Claude + Gemini + Web + Playwright
 ```
 
 ---

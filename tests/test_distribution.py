@@ -23,6 +23,25 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(project["scripts"]["kyrozen-web"], "server:main_entry")
         self.assertIn("workspace_context", document["tool"]["setuptools"]["py-modules"])
 
+    def test_full_development_setup_includes_browser_and_core_test_path(self):
+        with (ROOT / "pyproject.toml").open("rb") as handle:
+            document = tomllib.load(handle)
+        self.assertIn("playwright>=1.40", document["project"]["optional-dependencies"]["all"])
+
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("install: install-core", makefile)
+        self.assertIn("pip install -e '.[web]'", makefile)
+        self.assertIn("pip install -e '.[all]'", makefile)
+        self.assertIn("python -m playwright install chromium", makefile)
+        self.assertIn("test-core:", makefile)
+        self.assertIn("MAKEFLAGS += --no-print-directory", makefile)
+
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("pip install -e '.[all]'", workflow)
+        self.assertIn("make test PYTHON=python", workflow)
+        self.assertIn("make install-core PYTHON=python", workflow)
+        self.assertIn("make test-core", workflow)
+
     def test_posix_installer_has_valid_syntax_and_idempotent_user_path_logic(self):
         installer = ROOT / "install.sh"
         result = subprocess.run(

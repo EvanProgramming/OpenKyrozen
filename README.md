@@ -110,6 +110,7 @@ cd OpenKyrozen
 
 # macOS / Linux
 make install
+make test
 make run
 
 # Windows
@@ -118,6 +119,7 @@ run.bat
 ```
 
 These commands intentionally run in project mode (`--project .`) and are for repository development.
+`make install` installs the full `.[all]` development set and Chromium, so `make test` also runs the browser integration flow. For a lightweight non-browser path, use `make install-core` followed by `make test-core`.
 
 ### Package installation from PyPI
 
@@ -920,7 +922,7 @@ pip install 'openkyrozen[web]'  # existing supported environment
 # Local checkout only (development)
 pip install .
 pip install '.[web]'
-pip install '.[all]'
+pip install '.[all]'            # + Claude + Gemini + Web + Playwright
 ```
 
 ---
