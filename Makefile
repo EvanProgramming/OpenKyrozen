@@ -1,5 +1,9 @@
 .PHONY: install install-core run clean lint test test-core check docs-check shell-check benchmark wheel-smoke docker-smoke git-status git-diff git-log web
 
+# Tests parse the benchmark target's stdout as JSON; do not inject GNU make's
+# recursive directory banners into that machine-readable output.
+MAKEFLAGS += --no-print-directory
+
 # Prefer the known-stable Python 3.12, but use the active supported Python
 # 3.13 on clean runners that do not provide 3.12. Python 3.14 remains
 # intentionally out of scope because of the OpenAI SDK import deadlock.

@@ -34,6 +34,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("pip install -e '.[all]'", makefile)
         self.assertIn("python -m playwright install chromium", makefile)
         self.assertIn("test-core:", makefile)
+        self.assertIn("MAKEFLAGS += --no-print-directory", makefile)
 
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn("pip install -e '.[all]'", workflow)

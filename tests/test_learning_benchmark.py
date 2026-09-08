@@ -49,10 +49,7 @@ class LearningBenchmarkTests(unittest.TestCase):
                 capture_output=True, text=True, timeout=120,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        try:
-            report = json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
-            self.fail(f"benchmark did not emit JSON: stdout={result.stdout!r}; stderr={result.stderr!r}; {exc}")
+        report = json.loads(result.stdout)
         self.assertEqual(report["protocol"], "openkyrozen-learning-benchmark-v1")
         self.assertEqual(report["case_order"], [
             "speaker-belief-isolation", "speaker-update", "private-leakage",
