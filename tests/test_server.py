@@ -145,6 +145,35 @@ class ServerBoundaryTests(unittest.TestCase):
         self.assertEqual(method_error["id"], 24)
         self.assertEqual(method_error["error"]["code"], -32601)
 
+    def test_fresh_mcp_chat_uses_safe_defaults_and_redacts_internal_errors(self):
+        client = TestClient(server.app)
+        seen = {}
+
+        def reply(session, message):
+            seen.update(session)
+            self.assertEqual(message, "Reply with exactly MCP_CHAT_OK")
+            return "MCP_CHAT_OK"
+
+        with patch.object(server, "_run_session_chat", side_effect=reply):
+            fresh = client.post("/mcp", json={
+                "jsonrpc": "2.0", "id": 91, "method": "chat/send",
+                "params": {"message": "Reply with exactly MCP_CHAT_OK", "session_id": "fresh-mcp-test"},
+            })
+        self.assertEqual(fresh.status_code, 200, fresh.text)
+        self.assertEqual(fresh.json()["result"]["content"], "MCP_CHAT_OK")
+        self.assertEqual(seen["user_id"], server._SERVER_ACTOR_ID)
+        self.assertEqual(seen["speaker"], server._SERVER_ACTOR_ID)
+        self.assertEqual(seen["authorized_speakers"], [server._SERVER_ACTOR_ID])
+
+        with patch.object(server, "_run_session_chat", side_effect=RuntimeError("secret=must-not-leak")):
+            failed = client.post("/mcp", json={
+                "jsonrpc": "2.0", "id": 92, "method": "chat/send",
+                "params": {"message": "test", "session_id": "fresh-mcp-error"},
+            })
+        self.assertEqual(failed.status_code, 200, failed.text)
+        self.assertEqual(failed.json()["error"], {"code": -32603, "message": "Internal error"})
+        self.assertNotIn("must-not-leak", failed.text)
+
     def test_ollama_initialization_never_prompts_for_a_key(self):
         original_config = server._agent._provider_config
         original_provider = server._agent.llm_provider
