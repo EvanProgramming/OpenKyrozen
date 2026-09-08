@@ -21,7 +21,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `browser_snapshot` | `browser` | Read the current page text. Args: browser session ID. | `session_id`: string; required: `session_id` |
 | `browser_type` | `browser` | Fill a selector. Args format: session_id\|CSS selector\|text. | `session_id`: string, `selector`: string, `text`: string; required: `session_id`, `selector`, `text` |
 | `check_stored_data` | `read` | Return a categorized summary of stored memories. | `args`: string |
-| `execute_terminal_command` | `shell` | Execute a terminal command. This is an alias for run_cmd. | `command`: string; required: `command` |
+| `execute_terminal_command` | `shell` | Execute a shell command and retain its machine-readable outcome. | `command`: string; required: `command` |
 | `find_files` | `read` | Find files matching a pattern. Args format: "pattern" or "pattern\|directory". | `pattern`: string, `directory`: string; required: `pattern` |
 | `git_add` | `git` | Stage files for commit. Args format: "file1 file2" or "." (stage all). | `args`: string |
 | `git_branch` | `dynamic` | List or manage git branches. Args format: "" (list all), "branch_name" (create), | `args`: string |
@@ -41,7 +41,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `list_tree` | `read` | Recursively list the directory tree of the given path. Args format: "path" (default "."). | `path`: string |
 | `read_file` | `read` | Read content from a file. Args format: "path". | `path`: string; required: `path` |
 | `read_webpage` | `network` | Fetch the content of a web page and return its plain‑text body. | `url`: string; required: `url` |
-| `run_cmd` | `shell` | Execute a shell command. Args: the full command string. | `command`: string; required: `command` |
+| `run_cmd` | `shell` | Execute a shell command and retain its machine-readable outcome. | `command`: string; required: `command` |
 | `search_memory` | `read` | Search stored memories for facts relevant to the query. Args: "query" | `args`: string |
 | `search_web` | `network` | Search the internet for real-time information. | `query`: string; required: `query` |
 | `write_file` | `write` | Write content to a file. Args format: "path\|content". | `path`: string, `content`: string; required: `path`, `content` |

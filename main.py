@@ -103,7 +103,7 @@ from dynamic_tools import SAFE_BUILTINS, validate_tool_source
 from plugin_runtime import get_plugin_runtime
 from workspace_context import LaunchContext, resolve_launch_context, source_scope_id
 from tools import (AVAILABLE_TOOLS, set_workspace_root as _set_tools_workspace_root,
-                   resolve_capabilities, tool_capability)
+                   CommandResult, resolve_capabilities, tool_capability)
 from providers import (
     ProviderConfig, LLMProvider, get_provider, detect_provider,
     save_provider_config, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS,
@@ -2994,7 +2994,10 @@ def _notify_tool_execute(action: str, args: Any, result: Any) -> None:
         pass
 
 
-def _run_tool(action: str, args: str) -> str:
+def _run_tool(action: str, args: str, *, return_success: bool = False) -> str | tuple[str, bool]:
+    def finish(result: str, success: bool = False) -> str | tuple[str, bool]:
+        return (result, success) if return_success else result
+
     # Map aliases
     action = TOOL_ALIASES.get(action, action)
     # Handle dict arguments for tools that expect a simple string
@@ -3028,7 +3031,7 @@ def _run_tool(action: str, args: str) -> str:
     if not fn:
         result = f"Error: unknown tool '{action}'"
         _notify_tool_execute(action, args, result)
-        return result
+        return finish(result)
     required_capability = tool_capability(action)
     try:
         if required_capability not in effective_capabilities(load_agent_config(_get_workspace_root())):
@@ -3037,33 +3040,37 @@ def _run_tool(action: str, args: str) -> str:
                 "which is outside the configured agent capability bound"
             )
             _notify_tool_execute(action, args, result)
-            return result
+            return finish(result)
     except AgentConfigError as exc:
         result = f"Error: invalid agent configuration: {exc}"
         _notify_tool_execute(action, args, result)
-        return result
+        return finish(result)
     if not _execution_capability_token.allows(required_capability):
         result = f"Error: tool '{action}' requires capability '{required_capability}'"
         _notify_tool_execute(action, args, result)
-        return result
+        return finish(result)
     if not _confirm_tool_action(action, str(args)):
         result = (
             f"Error: {action} requires confirmation. "
             "Approve it interactively or set KYROZEN_APPROVAL_MODE=never for an explicitly automated CLI."
         )
         _notify_tool_execute(action, args, result)
-        return result
+        return finish(result)
     start = time.time()
     try:
-        result = str(fn(args))
+        tool_result = fn(args)
+        result = str(tool_result)
+        success = tool_result.success if isinstance(tool_result, CommandResult) else not _is_tool_error(result)
     except KeyboardInterrupt:
         result = "Tool execution interrupted by user (Ctrl+C)."
+        success = False
     except Exception as e:
         result = f"Error: {e}"
+        success = False
     elapsed = time.time() - start
     _track_tool_performance(action, result, elapsed)
     _notify_tool_execute(action, args, result)
-    return result
+    return finish(result, success)
 
 
 def _execute_durable_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -3077,8 +3084,9 @@ def _execute_durable_task(task: dict[str, Any]) -> dict[str, Any]:
                 "result": "No executable action stored; create the task with action and string args."}
     if not isinstance(args, str):
         return {"success": False, "action": action, "result": "Task args must be a plain string."}
-    result = str(_run_tool(action, args))[:2000]
-    return {"success": not _is_tool_error(result), "action": action, "args": args, "result": result,
+    result, success = _run_tool(action, args, return_success=True)
+    result = result[:2000]
+    return {"success": success, "action": action, "args": args, "result": result,
             "acceptance": str(checkpoint.get("acceptance") or "durable task action completed")}
 
 

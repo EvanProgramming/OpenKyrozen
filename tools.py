@@ -14,6 +14,7 @@ import http.client
 import ipaddress
 import socket
 import ssl
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -137,16 +138,30 @@ def read_file(args: str) -> str:
         return f"Error reading file: {e}"
 
 
-def run_cmd(args: str) -> str:
+@dataclass(frozen=True)
+class CommandResult:
+    """The durable outcome of one shell command, separate from its display text."""
+
+    output: str
+    success: bool
+    exit_code: int | None = None
+    failure: str | None = None
+
+    def __str__(self) -> str:
+        return self.output
+
+
+def run_command(args: str) -> CommandResult:
     """
-    Execute a shell command. Args: the full command string.
-    Blocks dangerous operations (e.g. rm -rf).
+    Execute a shell command and retain its machine-readable outcome.
     """
     cmd = args.strip()
     if not cmd:
-        return "Error: run_cmd requires a command"
+        return CommandResult("Error: run_cmd requires a command", False, failure="invalid_arguments")
     if _is_dangerous(cmd):
-        return "Error: command blocked for safety (e.g. rm -rf or similar)."
+        return CommandResult(
+            "Error: command blocked for safety (e.g. rm -rf or similar).", False, failure="denied"
+        )
     try:
         result = subprocess.run(
             cmd,
@@ -160,12 +175,20 @@ def run_cmd(args: str) -> str:
         out = result.stdout or ""
         err = result.stderr or ""
         if result.returncode != 0:
-            return f"Exit code {result.returncode}\nstdout:\n{out}\nstderr:\n{err}".strip()
-        return out.strip() or "(no output)"
+            return CommandResult(
+                f"Exit code {result.returncode}\nstdout:\n{out}\nstderr:\n{err}".strip(),
+                False, result.returncode, "nonzero_exit",
+            )
+        return CommandResult(out.strip() or "(no output)", True, result.returncode)
     except subprocess.TimeoutExpired:
-        return "Error: command timed out after 60s"
+        return CommandResult("Error: command timed out after 60s", False, failure="timeout")
     except Exception as e:
-        return f"Error running command: {e}"
+        return CommandResult(f"Error running command: {e}", False, failure="execution_error")
+
+
+def run_cmd(args: str) -> str:
+    """Execute a shell command. Args: the full command string."""
+    return str(run_command(args))
 
 
 def search_web(args: str) -> str:
@@ -692,7 +715,7 @@ def execute_terminal_command(args: str) -> str:
     """
     Execute a terminal command. This is an alias for run_cmd.
     """
-    return run_cmd(args)
+    return str(run_command(args))
 
 
 def analyze_remote_repo(args: str) -> str:
@@ -976,7 +999,7 @@ def browser_close(args: str) -> str:
 AVAILABLE_TOOLS: dict[str, Any] = {
     "write_file": write_file,
     "read_file": read_file,
-    "run_cmd": run_cmd,
+    "run_cmd": run_command,
     "search_web": search_web,
     "find_files": find_files,
     "list_dir": list_dir,
@@ -994,7 +1017,7 @@ AVAILABLE_TOOLS: dict[str, Any] = {
     "git_reset": git_reset,
     "git_show": git_show,
     "git_remote": git_remote,
-    "execute_terminal_command": execute_terminal_command,
+    "execute_terminal_command": run_command,
     "analyze_remote_repo": analyze_remote_repo,
     "list_tree": list_tree,
     "read_webpage": read_webpage,
