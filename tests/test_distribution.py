@@ -30,11 +30,13 @@ class DistributionTests(unittest.TestCase):
 
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("install: install-core", makefile)
+        self.assertIn("pip install -e '.[web]'", makefile)
         self.assertIn("pip install -e '.[all]'", makefile)
         self.assertIn("python -m playwright install chromium", makefile)
         self.assertIn("test-core:", makefile)
 
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("pip install -e '.[web]'", workflow)
         self.assertIn("pip install -e '.[all]'", workflow)
         self.assertIn("make test PYTHON=python", workflow)
         self.assertIn("make test-core PYTHON=python", workflow)

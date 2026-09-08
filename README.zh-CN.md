@@ -118,7 +118,7 @@ run.bat
 ```
 
 这些命令会显式使用项目模式（`--project .`），仅用于仓库开发。
-`make install` 会安装完整的 `.[all]` 开发依赖和 Chromium，因此 `make test` 也会运行浏览器集成流程。若只需轻量核心路径，请使用 `make install-core` 和 `make test-core`。
+`make install` 会安装完整的 `.[all]` 开发依赖和 Chromium，因此 `make test` 也会运行浏览器集成流程。若只需轻量的非浏览器路径，请使用 `make install-core` 和 `make test-core`。
 
 ### 从 PyPI 安装
 

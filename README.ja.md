@@ -118,7 +118,7 @@ run.bat
 ```
 
 これらのコマンドは明示的にプロジェクトモード（`--project .`）で動作し、リポジトリ開発専用です。
-`make install` は完全な `.[all]` 開発依存関係と Chromium を導入するため、`make test` でブラウザー統合フローも実行します。軽量なコア専用パスには `make install-core` と `make test-core` を使用してください。
+`make install` は完全な `.[all]` 開発依存関係と Chromium を導入するため、`make test` でブラウザー統合フローも実行します。軽量な非ブラウザーパスには `make install-core` と `make test-core` を使用してください。
 
 ### PyPI からのパッケージインストール
 

@@ -17,7 +17,7 @@ install-core:
 	@echo "Creating virtual environment with $(PYTHON)..."
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: $(PYTHON) not found. Install Python 3.12 first."; exit 1; }
 	$(PYTHON) -m venv venv
-	./venv/bin/python -m pip install --upgrade pip && ./venv/bin/python -m pip install -e .
+	./venv/bin/python -m pip install --upgrade pip && ./venv/bin/python -m pip install -e '.[web]'
 	@echo ""
 	@echo "OpenKyrozen core development environment installed."
 
@@ -65,7 +65,7 @@ lint:
 test:
 	KYROZEN_BROWSER_TESTS=1 $(VENV_PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
 
-# Fast unit path for contributors and CI jobs that intentionally omit browser binaries.
+# Fast non-browser path for contributors and CI jobs that intentionally omit browser binaries.
 test-core:
 	KYROZEN_BROWSER_TESTS=0 $(VENV_PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
 

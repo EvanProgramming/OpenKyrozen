@@ -119,7 +119,7 @@ run.bat
 ```
 
 These commands intentionally run in project mode (`--project .`) and are for repository development.
-`make install` installs the full `.[all]` development set and Chromium, so `make test` also runs the browser integration flow. For a lightweight core-only path, use `make install-core` followed by `make test-core`.
+`make install` installs the full `.[all]` development set and Chromium, so `make test` also runs the browser integration flow. For a lightweight non-browser path, use `make install-core` followed by `make test-core`.
 
 ### Package installation from PyPI
 

@@ -118,7 +118,7 @@ run.bat
 ```
 
 이 명령들은 프로젝트 모드(`--project .`)로 실행되며 저장소 개발 전용입니다.
-`make install`은 전체 `.[all]` 개발 의존성과 Chromium을 설치하므로 `make test`에서 브라우저 통합 흐름도 실행합니다. 가벼운 코어 전용 경로에는 `make install-core`와 `make test-core`를 사용하세요.
+`make install`은 전체 `.[all]` 개발 의존성과 Chromium을 설치하므로 `make test`에서 브라우저 통합 흐름도 실행합니다. 가벼운 비브라우저 경로에는 `make install-core`와 `make test-core`를 사용하세요.
 
 ### PyPI 패키지 설치
 
