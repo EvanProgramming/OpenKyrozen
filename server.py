@@ -270,9 +270,20 @@ def _normalise_memory_context(speaker: Any, audience: Any, channel: Any) -> tupl
     return speaker, audience, channel
 
 
-def _set_memory_context(session: dict[str, Any], body: dict[str, Any]) -> None:
+def _initialise_session_defaults(session: dict[str, Any]) -> None:
+    """Apply the server-owned memory authority required by every chat surface."""
     default = _SERVER_ACTOR_ID
     session["user_id"] = default
+    session.setdefault("profile", "auto")
+    session.setdefault("speaker", default)
+    session.setdefault("audience", default)
+    session.setdefault("channel", "chat")
+    session["authorized_speakers"] = [default]
+
+
+def _set_memory_context(session: dict[str, Any], body: dict[str, Any]) -> None:
+    _initialise_session_defaults(session)
+    default = _SERVER_ACTOR_ID
     speaker = _normalise_memory_actor(body.get("speaker"), "speaker", session.get("speaker", default))
     audience = _normalise_memory_actor(body.get("audience"), "audience", session.get("audience", speaker))
     channel = _normalise_memory_actor(body.get("channel"), "channel", session.get("channel", "chat"))
@@ -314,7 +325,9 @@ def _get_or_create_session(session_id: str, user_id: str = "anonymous") -> dict:
             if len(_sessions) > 100:
                 oldest = min(_sessions, key=lambda k: _sessions[k]["created"])
                 del _sessions[oldest]
-        return _sessions[session_id]
+        session = _sessions[session_id]
+        _initialise_session_defaults(session)
+        return session
 
 
 def _run_session_chat(session: dict[str, Any], message: str) -> str:
@@ -1307,7 +1320,11 @@ async def mcp_endpoint(request: Request):
             return _mcp_error(request_id, -32602, "Empty message")
         session_id = _normalise_session_id(params.get("session_id"))
         session = _get_or_create_session(session_id, _SERVER_ACTOR_ID)
-        reply = _run_session_chat(session, msg)
+        try:
+            reply = _run_session_chat(session, msg)
+        except Exception as exc:
+            _audit("MCP_CHAT_ERROR", type(exc).__name__, _SERVER_ACTOR_ID)
+            return _mcp_error(request_id, -32603, "Internal error")
         return _mcp_response(request_id, result={"content": reply, "session_id": session_id})
     return _mcp_error(request_id, -32601, f"Unknown method: {method}")
 
