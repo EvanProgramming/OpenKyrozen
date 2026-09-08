@@ -61,10 +61,12 @@ else:               _SPINNER_FRAMES = ["/", "-", "\\", "|"];             _BAR_FI
 import ast
 import json
 import os
+import queue
 import re
 import subprocess
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 # macOS: suppress "MallocStackLogging: can't turn off malloc stack logging"
 # warnings from child Python processes spawned during self-learning
@@ -92,7 +94,7 @@ from rich import print as rprint
 
 from memory import MemoryBank
 from task_engine import TaskManager, TaskWorker, canonical_status, is_complete, is_terminal
-from event_store import stable_hash
+from event_store import stable_hash, utc_now
 from learning_engine import LearningEngine
 from skill_registry import SkillRegistry
 from instruction_loader import format_instructions
@@ -103,7 +105,7 @@ from dynamic_tools import SAFE_BUILTINS, validate_tool_source
 from plugin_runtime import get_plugin_runtime
 from workspace_context import LaunchContext, resolve_launch_context, source_scope_id
 from tools import (AVAILABLE_TOOLS, set_workspace_root as _set_tools_workspace_root,
-                   CommandResult, resolve_capabilities, tool_capability)
+                   CommandResult, run_command, resolve_capabilities, tool_capability)
 from providers import (
     ProviderConfig, LLMProvider, get_provider, detect_provider,
     save_provider_config, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS,
@@ -2994,8 +2996,111 @@ def _notify_tool_execute(action: str, args: Any, result: Any) -> None:
         pass
 
 
-def _run_tool(action: str, args: str, *, return_success: bool = False) -> str | tuple[str, bool]:
-    def finish(result: str, success: bool = False) -> str | tuple[str, bool]:
+@dataclass(frozen=True)
+class ExecutionReceipt:
+    """Authoritative, bounded result of one tool attempt."""
+
+    receipt_id: str
+    operation_id: str
+    action: str
+    args: str
+    authorized: bool
+    started_at: str
+    completed_at: str
+    success: bool
+    result: str
+    failure: str | None = None
+    exit_code: int | None = None
+    verified_effect: str | None = None
+    acceptance: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "receipt_id": self.receipt_id,
+            "operation_id": self.operation_id,
+            "action": self.action,
+            "args": self.args,
+            "authorized": self.authorized,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "success": self.success,
+            "result": self.result,
+            "failure": self.failure,
+            "exit_code": self.exit_code,
+            "verified_effect": self.verified_effect,
+            "acceptance": self.acceptance,
+        }
+
+
+def _operation_action(action: str) -> str:
+    """Normalise aliases that perform the same state-changing operation."""
+    action = TOOL_ALIASES.get(str(action).strip(), str(action).strip())
+    return "run_cmd" if action == "execute_terminal_command" else action
+
+
+def _operation_args(action: str, args: Any) -> str:
+    value = str(args)
+    return value.strip() if action == "run_cmd" else value
+
+
+def _operation_id(scope: str, action: str, args: Any) -> str:
+    canonical = _operation_action(action)
+    return stable_hash(f"{scope}\0{canonical}\0{_operation_args(canonical, args)}")[:32]
+
+
+def _is_state_changing_action(action: str, args: str) -> bool:
+    action = _operation_action(action)
+    if action == "git_branch":
+        return bool(str(args).strip()) and not str(args).lstrip().startswith(("-a", "-v"))
+    if action == "git_remote":
+        return str(args).lstrip().startswith(("add ", "remove "))
+    return action in {
+        "write_file", "run_cmd", "git_clone", "git_add", "git_commit", "git_push",
+        "git_pull", "git_checkout", "git_stash", "git_reset", "git_remote", "define_tool",
+    }
+
+
+def _make_execution_receipt(*, action: str, args: Any, authorized: bool, started_at: str,
+                            success: bool, result: Any, operation_scope: str,
+                            failure: str | None = None, raw_result: Any = None) -> ExecutionReceipt:
+    canonical = _operation_action(action)
+    result_text = _fix_safe_text(result, 2000)
+    command = raw_result if isinstance(raw_result, CommandResult) else None
+    if command is not None:
+        failure = command.failure
+    effect, effect_verified = _subagent_tool_evidence(canonical, str(args), result_text)
+    acceptance, accepted = _acceptance_for_tool(canonical, str(args), result_text)
+    if not accepted and effect_verified:
+        acceptance = effect
+    return ExecutionReceipt(
+        receipt_id=f"receipt_{uuid.uuid4().hex}",
+        operation_id=_operation_id(operation_scope, canonical, args),
+        action=canonical,
+        args=_fix_safe_text(_operation_args(canonical, args), 1000),
+        authorized=authorized,
+        started_at=started_at,
+        completed_at=utc_now(),
+        success=bool(success),
+        result=result_text,
+        failure=failure if not success else None,
+        exit_code=command.exit_code if command is not None else None,
+        verified_effect=effect if effect_verified else None,
+        acceptance=acceptance if success and (accepted or effect_verified) else None,
+    )
+
+
+def _run_tool(action: str, args: str, *, return_success: bool = False,
+              return_receipt: bool = False, operation_scope: str = "") -> str | tuple[str, bool] | ExecutionReceipt:
+    started_at = utc_now()
+
+    def finish(result: str, success: bool = False, authorized: bool = False,
+               failure: str | None = None, raw_result: Any = None) -> str | tuple[str, bool] | ExecutionReceipt:
+        if return_receipt:
+            return _make_execution_receipt(
+                action=action, args=args, authorized=authorized, started_at=started_at,
+                success=success, result=result, operation_scope=operation_scope, failure=failure,
+                raw_result=raw_result,
+            )
         return (result, success) if return_success else result
 
     # Map aliases
@@ -3031,7 +3136,7 @@ def _run_tool(action: str, args: str, *, return_success: bool = False) -> str | 
     if not fn:
         result = f"Error: unknown tool '{action}'"
         _notify_tool_execute(action, args, result)
-        return finish(result)
+        return finish(result, failure="unknown_tool")
     required_capability = tool_capability(action)
     try:
         if required_capability not in effective_capabilities(load_agent_config(_get_workspace_root())):
@@ -3040,37 +3145,107 @@ def _run_tool(action: str, args: str, *, return_success: bool = False) -> str | 
                 "which is outside the configured agent capability bound"
             )
             _notify_tool_execute(action, args, result)
-            return finish(result)
+            return finish(result, failure="capability_denied")
     except AgentConfigError as exc:
         result = f"Error: invalid agent configuration: {exc}"
         _notify_tool_execute(action, args, result)
-        return finish(result)
+        return finish(result, failure="invalid_configuration")
     if not _execution_capability_token.allows(required_capability):
         result = f"Error: tool '{action}' requires capability '{required_capability}'"
         _notify_tool_execute(action, args, result)
-        return finish(result)
+        return finish(result, failure="capability_denied")
     if not _confirm_tool_action(action, str(args)):
         result = (
             f"Error: {action} requires confirmation. "
             "Approve it interactively or set KYROZEN_APPROVAL_MODE=never for an explicitly automated CLI."
         )
         _notify_tool_execute(action, args, result)
-        return finish(result)
+        return finish(result, failure="approval_denied")
     start = time.time()
+    tool_result: Any = None
+    failure: str | None = None
     try:
-        tool_result = fn(args)
+        tool_result = run_command(args) if action in {"run_cmd", "execute_terminal_command"} else fn(args)
         result = str(tool_result)
         success = tool_result.success if isinstance(tool_result, CommandResult) else not _is_tool_error(result)
     except KeyboardInterrupt:
         result = "Tool execution interrupted by user (Ctrl+C)."
         success = False
+        failure = "interrupted"
     except Exception as e:
         result = f"Error: {e}"
         success = False
+        failure = "execution_error"
     elapsed = time.time() - start
     _track_tool_performance(action, result, elapsed)
     _notify_tool_execute(action, args, result)
-    return finish(result, success)
+    return finish(result, success, authorized=True, failure=failure, raw_result=tool_result)
+
+
+def _execute_turn_action(action: str, args: Any, *, operation_scope: str,
+                         successful_operations: set[str]) -> ExecutionReceipt:
+    """Execute one model action, refusing a duplicate successful mutation."""
+    canonical = _operation_action(action)
+    started_at = utc_now()
+    if isinstance(args, dict):
+        result = (
+            f"Error: `{action}` requires a plain string as the `args` field.\n"
+            "You passed a JSON object. Convert to a plain string.\n"
+            "Example: `\"args\": \"python3 process_logs.py\"`.\n"
+            "Do NOT use `\"args\": {\"cmd\": ...}`.\n"
+        )
+        _notify_tool_execute(action, args, result)
+        return _make_execution_receipt(
+            action=canonical, args=args, authorized=False, started_at=started_at, success=False,
+            result=result, operation_scope=operation_scope, failure="invalid_arguments",
+        )
+    args = str(args)
+    operation_id = _operation_id(operation_scope, canonical, args)
+    if _is_state_changing_action(canonical, args) and operation_id in successful_operations:
+        result = "Error: duplicate successful state-changing action refused for this turn."
+        _notify_tool_execute(canonical, args, result)
+        return _make_execution_receipt(
+            action=canonical, args=args, authorized=True, started_at=started_at, success=False,
+            result=result, operation_scope=operation_scope, failure="duplicate_operation",
+        )
+    receipt = _run_tool(canonical, args, return_receipt=True, operation_scope=operation_scope)
+    assert isinstance(receipt, ExecutionReceipt)
+    if receipt.success and _is_state_changing_action(receipt.action, args):
+        successful_operations.add(receipt.operation_id)
+    return receipt
+
+
+def _record_turn_receipt(receipt: ExecutionReceipt) -> dict[str, Any]:
+    """Persist a receipt and reconcile the current planned task from verified evidence."""
+    task_id = tasks.active_task_id()
+    if task_id:
+        task = next(task for task in tasks.tasks if task["id"] == task_id)
+        checkpoint = task.get("checkpoint", {})
+        checkpoint_action = checkpoint.get("action")
+        if checkpoint_action and (
+            _operation_action(checkpoint_action) != receipt.action
+            or _operation_args(receipt.action, checkpoint.get("args", "")) != receipt.args
+        ):
+            task_id = None
+        elif not checkpoint_action:
+            tasks.update_checkpoint(task_id, {"action": receipt.action, "args": receipt.args})
+    evidence = tasks.record_evidence(
+        task_id=task_id, action=receipt.action, args=receipt.args, result=receipt.result,
+        success=receipt.success, acceptance=receipt.acceptance, receipt_id=receipt.receipt_id,
+    )
+    if task_id and receipt.success and receipt.acceptance:
+        index = next(index for index, task in enumerate(tasks.tasks) if task["id"] == task_id)
+        tasks.set_status(index, "succeeded")
+    tasks.store.append_event(
+        "execution.receipt", receipt.as_dict(), user_id=tasks.user_id,
+        workspace_id=tasks.workspace_id, session_id=tasks.session_id, task_id=task_id,
+    )
+    return {
+        "receipt_id": receipt.receipt_id, "operation_id": receipt.operation_id,
+        "action": receipt.action, "args": receipt.args, "result": receipt.result,
+        "success": receipt.success, "authorized": receipt.authorized,
+        "acceptance": receipt.acceptance, "failure": receipt.failure,
+    }
 
 
 def _execute_durable_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -3183,6 +3358,33 @@ def _select_model(user_input: str) -> str:
     return DEEPSEEK_MODEL_SIMPLE
 
 
+def _provider_timeout_seconds() -> float:
+    try:
+        return max(1.0, min(float(os.environ.get("KYROZEN_PROVIDER_TIMEOUT_SECONDS", "90")), 600.0))
+    except ValueError:
+        return 90.0
+
+
+def _bounded_provider_call(callback: Any) -> Any:
+    """Return a provider result by deadline without leaving the CLI waiting on its SDK."""
+    outcome: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+    def run() -> None:
+        try:
+            outcome.put((True, callback()))
+        except Exception as exc:
+            outcome.put((False, exc))
+
+    threading.Thread(target=run, daemon=True).start()
+    try:
+        succeeded, value = outcome.get(timeout=_provider_timeout_seconds())
+    except queue.Empty as exc:
+        raise TimeoutError(f"Provider timed out after {_provider_timeout_seconds():g}s") from exc
+    if not succeeded:
+        raise value
+    return value
+
+
 def _get_llm_response(messages: list[dict[str, str]], model: str | None = None, stream: bool = False) -> str:
     global _last_prompt_tokens, _last_completion_tokens, _total_prompt_tokens, _total_completion_tokens
     if llm_provider is None:
@@ -3199,7 +3401,9 @@ def _get_llm_response(messages: list[dict[str, str]], model: str | None = None, 
             _last_prompt_tokens = 0
             _last_completion_tokens = len(text) // 4  # rough estimate
         else:
-            text, usage_dict = llm_provider.chat(messages, model or DEEPSEEK_MODEL)
+            text, usage_dict = _bounded_provider_call(
+                lambda: llm_provider.chat(messages, model or DEEPSEEK_MODEL)
+            )
             if usage_dict:
                 _last_prompt_tokens = usage_dict.get("prompt_tokens", 0)
                 _last_completion_tokens = usage_dict.get("completion_tokens", 0)
@@ -3209,6 +3413,8 @@ def _get_llm_response(messages: list[dict[str, str]], model: str | None = None, 
                 _last_prompt_tokens = 0
                 _last_completion_tokens = 0
         return text
+    except TimeoutError as exc:
+        return f"[LLM Error] {exc}"
     except Exception as e:
         return f"[LLM Error] {e}"
 
@@ -3643,6 +3849,11 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         response_text = _call_llm_with_spinner(messages).strip()
         turn_prompt_total += _last_prompt_tokens
         turn_completion_total += _last_completion_tokens
+    if response_text.startswith("[LLM Error]"):
+        return _finish_learning_run(
+            learning_run, learning_receipts, user_input, response_text, [],
+            turn_prompt_total + turn_completion_total, turn_start,
+        )
 
     # Parse and observe each model response once.  Keep the raw response for
     # model context; use the parsed clean field for anything user-facing.
@@ -3787,35 +3998,16 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
 
     results: list[str] = []
     tool_records: list[dict[str, Any]] = []
+    successful_operations: set[str] = set()
+    operation_scope = str(learning_run.get("run_id") or uuid.uuid4().hex)
     for tc in tool_calls:
-        action = tc.get("action", "")
-        args = tc.get("args", "")
-        if isinstance(args, dict):
-            result = (
-                f"Error: `{action}` requires a plain string as the `args` field.\n"
-                "You passed a JSON object. Convert to a plain string.\n"
-                "Example: `\"args\": \"python3 process_logs.py\"`\n"
-                "Do NOT use `\"args\": {\"cmd\": ...}`.\n"
-            )
-            _notify_tool_execute(action, args, result)
-        else:
-            if not isinstance(args, str):
-                args = str(args)
-            result = _run_tool(action, args)
-        safe_result = str(result)[:2000]
-        acceptance, accepted = _acceptance_for_tool(action, str(args), safe_result)
-        tasks.record_evidence(
-            task_id=tasks.active_task_id(),
-            action=action,
-            result=safe_result,
-            success=not _is_tool_error(safe_result),
-            acceptance=acceptance if accepted else None,
+        receipt = _execute_turn_action(
+            tc.get("action", ""), tc.get("args", ""), operation_scope=operation_scope,
+            successful_operations=successful_operations,
         )
-        tool_records.append({"action": action, "args": str(args)[:500], "result": safe_result,
-                             "success": accepted if acceptance else not _is_tool_error(safe_result),
-                             "acceptance": acceptance})
-        console.print(Panel(rich_escape(safe_result), title=f"Tool: {action}", border_style=_ACCENT_DIM, title_align="left"))
-        results.append(f"- `{action}({args!r})` returned:\n{_safe_fstring(safe_result)}")
+        tool_records.append(_record_turn_receipt(receipt))
+        console.print(Panel(rich_escape(receipt.result), title=f"Tool: {receipt.action}", border_style=_ACCENT_DIM, title_align="left"))
+        results.append(f"- `{receipt.action}({receipt.args!r})` returned:\n{_safe_fstring(receipt.result)}")
         if tasks.tasks:
             _update_tasks_panel()
     all_tool_result_lines = list(results)
@@ -3827,9 +4019,9 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     incomplete_prompt_attempts = 0
     final_answer: str | None = None
     current_reply = response_text
-    has_errors = any(_is_tool_error(r) for r in results)
+    has_errors = any(not record["success"] for record in tool_records)
     consecutive_search_failures = 0  # track failed search_web calls to prevent loops
-    total_search_calls = len([r for r in results if "search_web" in r])
+    total_search_calls = sum(record["action"] == "search_web" for record in tool_records)
     # check for missing arguments errors
     _args_missing_errors = [
         "requires a command",
@@ -3935,6 +4127,12 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         turn_prompt_total += _last_prompt_tokens
         turn_completion_total += _last_completion_tokens
         if not step_reply:
+            break
+        if step_reply.startswith("[LLM Error]"):
+            for index, task in enumerate(tasks.tasks):
+                if canonical_status(task["status"]) in {"pending", "running"}:
+                    tasks.set_status(index, "blocked")
+            final_answer = step_reply
             break
 
         # Observe this response once.  The same parsed result drives task
@@ -4055,41 +4253,21 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         next_results: list[str] = []
         has_errors = False
         for tc2 in next_tool_calls:
-            action = tc2.get("action", "")
-            args = tc2.get("args", "")
-            if isinstance(args, dict):
-                result2 = (
-                    f"Error: `{action}` requires a plain string as the `args` field.\n"
-                    "You passed a JSON object. Convert to a plain string.\n"
-                    "Example: `\"args\": \"python3 process_logs.py\"`\n"
-                    "Do NOT use `\"args\": {\"cmd\": ...}`.\n"
-                )
-                _notify_tool_execute(action, args, result2)
-            else:
-                if not isinstance(args, str):
-                    args = str(args)
-                try:
-                    result2 = _run_tool(action, args)
-                except KeyboardInterrupt:
-                    result2 = "Tool execution interrupted by user (Ctrl+C)."
-            safe_result2 = str(result2)[:2000]
-            acceptance, accepted = _acceptance_for_tool(action, str(args), safe_result2)
-            tasks.record_evidence(task_id=tasks.active_task_id(), action=action, result=safe_result2,
-                                  success=not _is_tool_error(safe_result2),
-                                  acceptance=acceptance if accepted else None)
-            tool_records.append({"action": action, "args": str(args)[:500], "result": safe_result2,
-                                 "success": accepted if acceptance else not _is_tool_error(safe_result2),
-                                 "acceptance": acceptance})
-            console.print(Panel(rich_escape(safe_result2), title=f"Tool: {action}", border_style=_ACCENT_DIM, title_align="left"))
-            next_results.append(f"- `{action}({args!r})` returned:\n{_safe_fstring(safe_result2)}")
+            receipt = _execute_turn_action(
+                tc2.get("action", ""), tc2.get("args", ""), operation_scope=operation_scope,
+                successful_operations=successful_operations,
+            )
+            tool_records.append(_record_turn_receipt(receipt))
+            console.print(Panel(rich_escape(receipt.result), title=f"Tool: {receipt.action}", border_style=_ACCENT_DIM, title_align="left"))
+            next_results.append(f"- `{receipt.action}({receipt.args!r})` returned:\n{_safe_fstring(receipt.result)}")
             if tasks.tasks:
                 _update_tasks_panel()
-            if _is_tool_error(result2):
+            if not receipt.success:
                 has_errors = True
             # Track search_web failures to prevent infinite search loops
-            if action == "search_web":
+            if receipt.action == "search_web":
                 total_search_calls += 1
-                if _is_tool_error(result2) or "Search temporarily unavailable" in str(result2):
+                if not receipt.success or "Search temporarily unavailable" in receipt.result:
                     consecutive_search_failures += 1
                 else:
                     consecutive_search_failures = 0  # reset on success

@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -120,6 +121,98 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertIn("Both files were written successfully.", reply)
             self.assertNotIn("Action:", reply)
             self.assertNotIn("Plan:", reply)
+
+    def test_receipts_complete_verified_task_and_refuse_duplicate_write(self):
+        class StubLearning:
+            def feedback_signal(self, _text):
+                return None
+
+            def route_profile(self, _text, _profile=None):
+                return "coder"
+
+            def begin_run(self, profile, _task, provider_model=None):
+                return {"run_id": "receipt-run", "profile": profile, "provider_model": provider_model}
+
+            def artifact_context(self, _run):
+                return "", []
+
+        responses = [
+            "Plan:\n1. Create the repeat marker\nTaskList:\n```json\n"
+            "[{\"id\": \"marker\", \"description\": \"Create the repeat marker\"}]\n```\n"
+            'Action: {"action":"write_file","args":"repeat-marker.txt|REPEAT_OK"}',
+            'Action: {"action":"write_file","args":"repeat-marker.txt|REPEAT_OK"}',
+            "The marker is complete.",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original_root = main._get_workspace_root()
+            original_tasks = main.tasks
+            original_learning = main.learning_engine
+            original_write = main.AVAILABLE_TOOLS["write_file"]
+            writes: list[str] = []
+
+            def counted_write(args: str) -> str:
+                writes.append(args)
+                return original_write(args)
+
+            main._set_workspace_root(root)
+            store = MemoryBank(root / "state.sqlite3").store
+            main.tasks = TaskManager(store, workspace_id="project", session_id="receipt-test")
+            main.learning_engine = StubLearning()
+            try:
+                with patch.object(main, "_classify_complexity", return_value="complex"), \
+                     patch.object(main, "_build_messages", return_value=[]), \
+                     patch.object(main, "_build_memory_context", return_value=""), \
+                     patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
+                     patch.object(main, "_get_llm_response", return_value=""), \
+                     patch.object(main, "_update_tasks_panel"), \
+                     patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
+                                  result, records, tokens, started: result), \
+                     patch.dict(main.AVAILABLE_TOOLS, {"write_file": counted_write}):
+                    reply = main._chat_turn("Create the repeat marker", clear_tasks=True)
+            finally:
+                main._set_workspace_root(original_root)
+                main.tasks = original_tasks
+                main.learning_engine = original_learning
+
+            self.assertEqual(writes, ["repeat-marker.txt|REPEAT_OK"])
+            self.assertEqual((root / "repeat-marker.txt").read_text(encoding="utf-8"), "REPEAT_OK")
+            self.assertEqual(store.list_tasks(workspace_id="project", session_id="receipt-test")[0]["status"], "succeeded")
+            receipts = store.list_events("execution.receipt", workspace_id="project", session_id="receipt-test")
+            self.assertEqual(len(receipts), 2)
+            self.assertEqual({item["payload"]["operation_id"] for item in receipts},
+                             {receipts[0]["payload"]["operation_id"]})
+            self.assertEqual({item["payload"]["success"] for item in receipts}, {True, False})
+            self.assertIn("duplicate_operation", {item["payload"]["failure"] for item in receipts})
+            self.assertIn("marker is complete", reply.lower())
+
+    def test_failed_operation_can_retry_and_provider_deadline_is_honest(self):
+        operations: set[str] = set()
+        with patch.object(main, "run_command", side_effect=[
+            main.CommandResult("Exit code 1", False, 1, "nonzero_exit"),
+            main.CommandResult("(no output)", True, 0),
+        ]):
+            failed = main._execute_turn_action("run_cmd", "python -c pass", operation_scope="retry", successful_operations=operations)
+            retried = main._execute_turn_action("run_cmd", "python -c pass", operation_scope="retry", successful_operations=operations)
+        self.assertFalse(failed.success)
+        self.assertEqual(failed.failure, "nonzero_exit")
+        self.assertTrue(retried.success)
+
+        class SlowProvider:
+            def chat(self, _messages, _model):
+                time.sleep(0.2)
+                return "late", None
+
+        original_provider = main.llm_provider
+        main.llm_provider = SlowProvider()
+        try:
+            with patch.object(main, "_provider_timeout_seconds", return_value=0.01):
+                started = time.monotonic()
+                response = main._get_llm_response([])
+        finally:
+            main.llm_provider = original_provider
+        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertIn("Provider timed out", response)
 
 
 if __name__ == "__main__":
