@@ -169,9 +169,10 @@ def _execute_durable_task(task: dict[str, Any]) -> dict[str, Any]:
     _agent._execution_capability_token = issue_capability_token(
         "surface:web:durable-task", _server_capabilities("web"), ttl_seconds=300,
     )
-    result = str(_agent._run_tool(action, args))[:2000]
+    result, success = _agent._run_tool(action, args, return_success=True)
+    result = result[:2000]
     return {
-        "success": not result.lower().startswith("error:"), "action": action, "args": args,
+        "success": success, "action": action, "args": args,
         "result": result,
         "acceptance": str(checkpoint.get("acceptance") or "durable task action completed"),
     }

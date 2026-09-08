@@ -98,6 +98,17 @@ class DurableTaskGatewayTests(unittest.TestCase):
                 checkpoint={"action": "write_file", "args": "recovered.txt|after restart"},
             )
             recovery_manager.set_status(recovery_index, "running")
+            command_manager = TaskManager(
+                store, user_id="local", workspace_id="default", session_id="restart-command-session"
+            )
+            command_index = command_manager.add_task(
+                "fail a recovered command task",
+                checkpoint={
+                    "action": "execute_terminal_command",
+                    "args": f'{sys.executable} -c "import sys; sys.exit(7)"',
+                },
+            )
+            command_manager.set_status(command_index, "running")
             failed_manager = TaskManager(
                 store, user_id="local", workspace_id="default", session_id="resume-session"
             )
@@ -116,6 +127,21 @@ class DurableTaskGatewayTests(unittest.TestCase):
                     time.sleep(0.1)
                 self.assertEqual(recovered["tasks"][0]["status"], "succeeded")
                 self.assertEqual((workspace / "recovered.txt").read_text(encoding="utf-8"), "after restart")
+
+                deadline = time.monotonic() + 10
+                recovered_command = self._request(
+                    base_url, "/api/v2/tasks?session_id=restart-command-session"
+                )
+                while time.monotonic() < deadline:
+                    recovered_command = self._request(
+                        base_url, "/api/v2/tasks?session_id=restart-command-session"
+                    )
+                    if recovered_command["tasks"][0]["status"] == "failed":
+                        break
+                    time.sleep(0.1)
+                self.assertEqual(recovered_command["tasks"][0]["status"], "failed")
+                self.assertTrue(recovered_command["tasks"][0]["evidence"])
+                self.assertFalse(recovered_command["tasks"][0]["evidence"][-1]["success"])
 
                 created = self._request(
                     base_url,
@@ -143,6 +169,28 @@ class DurableTaskGatewayTests(unittest.TestCase):
                     (workspace / "task-runtime.txt").read_text(encoding="utf-8"),
                     "created by durable worker",
                 )
+
+                succeeded_command = self._request(
+                    base_url,
+                    "/api/v2/tasks",
+                    method="POST",
+                    body={
+                        "description": "complete a zero-exit command task",
+                        "session_id": "task-command-success",
+                        "action": "run_cmd",
+                        "args": f'{sys.executable} -c "print(\'durable success\')"',
+                    },
+                )["task"]
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    succeeded_command = self._request(
+                        base_url, "/api/v2/tasks?session_id=task-command-success"
+                    )["tasks"][0]
+                    if succeeded_command["status"] == "succeeded":
+                        break
+                    time.sleep(0.1)
+                self.assertEqual(succeeded_command["status"], "succeeded")
+                self.assertTrue(succeeded_command["evidence"][-1]["success"])
 
                 before_resume = self._request(base_url, "/api/v2/tasks?session_id=resume-session")
                 self.assertEqual(before_resume["tasks"][0]["status"], "failed")
