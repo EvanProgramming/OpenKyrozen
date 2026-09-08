@@ -36,10 +36,10 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("test-core:", makefile)
 
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        self.assertIn("pip install -e '.[web]'", workflow)
         self.assertIn("pip install -e '.[all]'", workflow)
         self.assertIn("make test PYTHON=python", workflow)
-        self.assertIn("make test-core PYTHON=python", workflow)
+        self.assertIn("make install-core PYTHON=python", workflow)
+        self.assertIn("make test-core", workflow)
 
     def test_posix_installer_has_valid_syntax_and_idempotent_user_path_logic(self):
         installer = ROOT / "install.sh"
