@@ -34,6 +34,10 @@ class BrowserManagerTests(unittest.TestCase):
                 result = manager.open("https://example.com")
             self.assertIn("playwright", result.lower())
 
+    @unittest.skipUnless(
+        os.environ.get("KYROZEN_BROWSER_TESTS") == "1",
+        "browser integration requires `make install` (Playwright and Chromium)",
+    )
     def test_real_open_snapshot_click_and_close_flow(self):
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802 - required by BaseHTTPRequestHandler
