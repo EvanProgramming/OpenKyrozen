@@ -47,8 +47,9 @@ class LearningBenchmarkTests(unittest.TestCase):
             result = subprocess.run(
                 ["make", "benchmark"], cwd=repository, env=env,
                 capture_output=True, text=True, timeout=120,
-            )
+        )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.strip(), result.stderr)
         report = json.loads(result.stdout)
         self.assertEqual(report["protocol"], "openkyrozen-learning-benchmark-v1")
         self.assertEqual(report["case_order"], [
