@@ -417,7 +417,7 @@ CLI はアイドル時に 30 秒ごとに最大 4 機能をラウンドロビン
 
 OpenKyrozen v2 の長期メモリは **SQLite を事実上のソース**（`~/.kyrozen/v2/openkyrozen.sqlite3`）として使用し、ChromaDB は再構築可能な派生セマンティックインデックスです。個人の会話、タスク、学習はグローバル状態で共有されます。`FILE:` スナップショットとそのベクトルメタデータはアクティブなルートから計算した安定したスコープを使うため、プロジェクトを切り替えても別プロジェクトのファイルインデックスを削除・想起しません。既定のグローバルワークスペースは `~/.kyrozen/workspace` で、`kyrozen --project PATH` はミラーやコピー・バック層なしに元ファイルを直接操作します。Web/MCP の単一ユーザーデプロイでは、`KYROZEN_SERVER_TOKEN` が一つの安定した actor を表し、リクエストの `speaker` だけで private データの所有者を変更することはできません。
 
-タスクは再起動後も保存され、状態は `pending`、`running`、`succeeded`、`failed`、`blocked`、`cancelled` です（旧 `done` は読取互換）。`TaskDone` だけでは成功にならず、ツール結果、テスト、ファイル確認、または明示的な確認の証拠が必要です。安全な API タスクは worker が再開し、failed/blocked タスクは `/api/v2/tasks/{task_id}/resume` で明示的に再開します。
+タスクは再起動後も保存され、状態は `pending`、`running`、`succeeded`、`failed`、`blocked`、`cancelled` です（旧 `done` は読取互換）。`TaskDone` は完了リクエストにすぎず、成功したツール結果、テスト、ファイル確認、または明示的な確認による検証済み実行レシートが計画タスクを照合できます。同じチャットターン内で成功済みの状態変更操作を繰り返すことは拒否されます。安全な API タスクは worker が再開し、failed/blocked タスクは `/api/v2/tasks/{task_id}/resume` で明示的に再開します。
 
 プライベート claim は `speaker` を省略すると `KYROZEN_SERVER_ACTOR`（既定値
 `local`）に紐付きます。安定した actor を設定し、create → list → detail → forget
@@ -579,6 +579,7 @@ def register():
 | `KYROZEN_MODEL_SIMPLE` | 簡単/中程度タスク用モデル | プロバイダーデフォルト |
 | `KYROZEN_MODEL_COMPLEX` | 複雑タスク用モデル | プロバイダーデフォルト |
 | `KYROZEN_BASE_URL` | カスタム API ベース URL | プロバイダーデフォルト |
+| `KYROZEN_PROVIDER_TIMEOUT_SECONDS` | 1 回のプロバイダー応答の最大待機時間（秒） | `90` |
 | `KYROZEN_WORKSPACE_ROOT` | 高度なテスト/開発用ルート上書き。明示的な CLI オプションが優先 | `~/.kyrozen/workspace` |
 | `KYROZEN_DB_PATH` | SQLite の事実ストアのパス | `~/.kyrozen/v2/openkyrozen.sqlite3` |
 | `KYROZEN_VECTOR_PATH` | 再構築可能な Chroma インデックスのパス | SQLite ディレクトリ内 |

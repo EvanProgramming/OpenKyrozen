@@ -421,7 +421,7 @@ python main.py migrate v1 ./chroma_memory
 
 该命令会创建 `.v1-backup` 备份，并将 v2 数据写入 `~/.kyrozen/v2/`（也可通过 `KYROZEN_DB_PATH` 指定）。
 
-任务会跨重启保存，状态为 `pending`、`running`、`succeeded`、`failed`、`blocked` 或 `cancelled`；旧的 `done` 仍可读取。`TaskDone` 只是完成请求，只有工具结果、测试、文件检查或明确确认提供证据后，任务才会进入成功状态。API 创建的安全任务会由 worker 在重启后继续，failed/blocked 任务必须通过 `/api/v2/tasks/{task_id}/resume` 显式恢复。可使用 `/learning status`、`/learning explain <proposal_id>` 和 `/learning rollback <proposal_id>` 管理学习提案。
+任务会跨重启保存，状态为 `pending`、`running`、`succeeded`、`failed`、`blocked` 或 `cancelled`；旧的 `done` 仍可读取。`TaskDone` 只是完成请求；成功工具结果、测试、文件检查或明确确认生成的已验证执行回执可协调计划任务。同一聊天轮次会拒绝重复的已成功状态变更操作。API 创建的安全任务会由 worker 在重启后继续，failed/blocked 任务必须通过 `/api/v2/tasks/{task_id}/resume` 显式恢复。可使用 `/learning status`、`/learning explain <proposal_id>` 和 `/learning rollback <proposal_id>` 管理学习提案。
 
 Web/MCP 是单用户部署：一个 `KYROZEN_SERVER_TOKEN` 代表该部署唯一的私有 actor；请求体中的 `speaker` 不能伪造私有身份。私有记忆、任务、事件、计划和学习状态按该 actor、workspace、session 作用域隔离；共享部署的多个私有用户应使用不同部署和数据库。
 
@@ -587,6 +587,7 @@ def register():
 | `KYROZEN_MODEL_SIMPLE` | 简单/中等任务模型 | 服务商默认值 |
 | `KYROZEN_MODEL_COMPLEX` | 复杂任务模型 | 服务商默认值 |
 | `KYROZEN_BASE_URL` | 自定义 API 基础 URL | 服务商默认值 |
+| `KYROZEN_PROVIDER_TIMEOUT_SECONDS` | 单次服务商响应的最长等待时间（秒） | `90` |
 | `KYROZEN_WORKSPACE_ROOT` | 高级测试/开发根目录覆盖；显式 CLI 参数优先 | `~/.kyrozen/workspace` |
 | `KYROZEN_DB_PATH` | SQLite 事实主库路径 | `~/.kyrozen/v2/openkyrozen.sqlite3` |
 | `KYROZEN_VECTOR_PATH` | 可重建的 Chroma 索引路径 | SQLite 目录下 |

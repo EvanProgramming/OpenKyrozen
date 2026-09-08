@@ -999,7 +999,7 @@ def browser_close(args: str) -> str:
 AVAILABLE_TOOLS: dict[str, Any] = {
     "write_file": write_file,
     "read_file": read_file,
-    "run_cmd": run_command,
+    "run_cmd": run_cmd,
     "search_web": search_web,
     "find_files": find_files,
     "list_dir": list_dir,
@@ -1017,7 +1017,7 @@ AVAILABLE_TOOLS: dict[str, Any] = {
     "git_reset": git_reset,
     "git_show": git_show,
     "git_remote": git_remote,
-    "execute_terminal_command": run_command,
+    "execute_terminal_command": execute_terminal_command,
     "analyze_remote_repo": analyze_remote_repo,
     "list_tree": list_tree,
     "read_webpage": read_webpage,

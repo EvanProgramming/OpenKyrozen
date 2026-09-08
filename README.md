@@ -537,7 +537,7 @@ The migration creates a `.v1-backup` copy and writes the v2 database under `~/.k
 
 ### v2 durable tasks and learning
 
-Tasks persist across process restarts and use `pending`, `running`, `succeeded`, `failed`, `blocked`, and `cancelled` states. `TaskDone` is only a completion request; a successful tool result, test, file check, or explicit confirmation must provide evidence before a task can succeed. API-created tasks with an explicit safe `action` and string `args` are picked up by the durable worker after server restart; failed or blocked tasks require an explicit resume request.
+Tasks persist across process restarts and use `pending`, `running`, `succeeded`, `failed`, `blocked`, and `cancelled` states. `TaskDone` is only a completion request; a verified execution receipt from a successful tool result, test, file check, or explicit confirmation can reconcile a planned task. A repeated successful state-changing operation is refused within one chat turn. API-created tasks with an explicit safe `action` and string `args` are picked up by the durable worker after server restart; failed or blocked tasks require an explicit resume request.
 
 For model-generated complex work, give each `TaskList` item a stable `id` when the same turn can be retried; that ID is preferred over the description and is scoped to the authenticated user, workspace, and session. A `TaskList` update never clears recovered progress. `done` remains readable for old records but new progress and completion summaries use `succeeded`. `Plan`, `TaskList`, `TaskDone`, `Thought`, and `Action` are control blocks: the chat surface uses them internally and returns the latest natural-language response (or a deterministic tool/evidence summary), never a stale `Action` block.
 
@@ -800,6 +800,7 @@ See `plugins/turn_logger.py` for a working example.
 | `KYROZEN_MODEL_SIMPLE` | Model for simple/medium tasks | Provider default |
 | `KYROZEN_MODEL_COMPLEX` | Model for complex tasks | Provider default |
 | `KYROZEN_BASE_URL` | Custom API base URL | Provider default |
+| `KYROZEN_PROVIDER_TIMEOUT_SECONDS` | Maximum wait for one provider response | `90` |
 | `KYROZEN_WORKSPACE_ROOT` | Advanced test/development root override; explicit CLI mode flags take precedence | `~/.kyrozen/workspace` |
 | `KYROZEN_DB_PATH` | SQLite source-of-truth path | `~/.kyrozen/v2/openkyrozen.sqlite3` |
 | `KYROZEN_VECTOR_PATH` | Rebuildable Chroma index path | Under the SQLite directory |

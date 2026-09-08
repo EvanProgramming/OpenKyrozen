@@ -417,7 +417,7 @@ CLI는 유휴 상태에서 30초마다 최대 4개 기능을 라운드 로빈으
 
 OpenKyrozen v2의 장기 메모리는 **SQLite를 사실의 원본**(`~/.kyrozen/v2/openkyrozen.sqlite3`)으로 사용하고, ChromaDB는 다시 만들 수 있는 파생 의미 인덱스로 사용합니다. 개인 대화, 작업과 학습은 전역 상태 저장소에서 공유됩니다. `FILE:` 스냅샷과 벡터 메타데이터는 활성 루트에서 계산한 안정적인 scope를 사용하므로 프로젝트를 바꿔도 다른 프로젝트의 파일 인덱스를 삭제하거나 불러오지 않습니다. 기본 전역 작업 공간은 `~/.kyrozen/workspace`이며 `kyrozen --project PATH`는 미러나 복사-복원 계층 없이 원본 프로젝트 파일을 직접 조작합니다. Web/MCP 단일 사용자 배포에서는 `KYROZEN_SERVER_TOKEN` 하나가 안정적인 actor 하나를 나타내고, 요청의 `speaker`만으로 private 데이터의 소유자를 바꿀 수 없습니다.
 
-작업은 재시작 후에도 저장되며 상태는 `pending`, `running`, `succeeded`, `failed`, `blocked`, `cancelled`입니다(이전 `done`은 읽기 호환). `TaskDone`만으로는 성공하지 않고 도구 결과, 테스트, 파일 확인 또는 명시적 확인 증거가 필요합니다. 안전한 API 작업은 worker가 재개하며 failed/blocked 작업은 `/api/v2/tasks/{task_id}/resume`으로 명시적으로 재개합니다.
+작업은 재시작 후에도 저장되며 상태는 `pending`, `running`, `succeeded`, `failed`, `blocked`, `cancelled`입니다(이전 `done`은 읽기 호환). `TaskDone`은 완료 요청일 뿐이며, 성공한 도구 결과, 테스트, 파일 확인 또는 명시적 확인의 검증된 실행 영수증이 계획 작업을 조정할 수 있습니다. 같은 채팅 턴에서 이미 성공한 상태 변경 작업을 반복하면 거부됩니다. 안전한 API 작업은 worker가 재개하며 failed/blocked 작업은 `/api/v2/tasks/{task_id}/resume`으로 명시적으로 재개합니다.
 
 private claim은 `speaker`를 생략하면 `KYROZEN_SERVER_ACTOR`(기본값 `local`)에
 연결됩니다. 안정적인 actor를 설정하고 같은 배포에서 create → list → detail →
@@ -578,6 +578,7 @@ def register():
 | `KYROZEN_MODEL_SIMPLE` | 간단/중간 작업용 모델 | 제공자 기본값 |
 | `KYROZEN_MODEL_COMPLEX` | 복잡한 작업용 모델 | 제공자 기본값 |
 | `KYROZEN_BASE_URL` | 사용자 정의 API 기본 URL | 제공자 기본값 |
+| `KYROZEN_PROVIDER_TIMEOUT_SECONDS` | 한 번의 제공자 응답을 기다리는 최대 시간(초) | `90` |
 | `KYROZEN_WORKSPACE_ROOT` | 고급 테스트/개발용 루트 재정의; 명시적 CLI 옵션이 우선 | `~/.kyrozen/workspace` |
 | `KYROZEN_DB_PATH` | SQLite 사실 저장소 경로 | `~/.kyrozen/v2/openkyrozen.sqlite3` |
 | `KYROZEN_VECTOR_PATH` | 재생성 가능한 Chroma 인덱스 경로 | SQLite 디렉터리 아래 |
