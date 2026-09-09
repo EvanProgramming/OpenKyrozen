@@ -447,6 +447,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 header{background:#161b22;padding:12px 20px;border-bottom:1px solid #30363d;display:flex;align-items:center;gap:12px}
 header h1{font-size:18px;color:#00f0ff}
 header span{font-size:12px;color:#8b949e}
+#session-controls{background:#161b22;border-bottom:1px solid #30363d;display:flex;align-items:center;gap:8px;padding:8px 20px}
+#session-controls label,#session-limit{font-size:12px;color:#8b949e}
+#session-select{min-width:190px;max-width:45vw;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;padding:7px}
+#session-select:focus{outline:none;border-color:#00f0ff}
+#new-session{padding:7px 12px;font-size:12px}
+#session-limit{margin-left:auto}
 #chat{flex:1;overflow-y:auto;padding:20px}
 .msg{margin-bottom:16px;max-width:85%}
 .msg.user{margin-left:auto}
@@ -472,6 +478,12 @@ button:disabled{opacity:.4;cursor:default}
   <span>Self-learning AI Agent</span>
   <span class="cost" id="cost-display"></span>
 </header>
+<div id="session-controls">
+  <label for="session-select">Saved conversation</label>
+  <select id="session-select" aria-describedby="session-limit"></select>
+  <button type="button" id="new-session">New conversation</button>
+  <span id="session-limit" role="status"></span>
+</div>
 <div id="chat"></div>
 <div id="input-area">
   <textarea id="user-input" placeholder="Type your message..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}"></textarea>
@@ -479,8 +491,96 @@ button:disabled{opacity:.4;cursor:default}
 </div>
 <div id="status">Ready</div>
 <script>
-const sessionId = 'sess_' + Math.random().toString(36).slice(2,10);
+const SESSION_STORAGE_KEY = 'openkyrozen.active-session';
+const SESSION_LIST_LIMIT = 100;
+let sessionId = readActiveSession() || createSessionId();
+let recentSessions = [];
 let isStreaming = false;
+
+function createSessionId() {
+  const random = window.crypto && window.crypto.randomUUID
+    ? window.crypto.randomUUID().replace(/-/g, '')
+    : Math.random().toString(36).slice(2, 10);
+  return 'sess_' + random;
+}
+
+function readActiveSession() {
+  try { return localStorage.getItem(SESSION_STORAGE_KEY) || ''; } catch (_) { return ''; }
+}
+
+function saveActiveSession() {
+  try { localStorage.setItem(SESSION_STORAGE_KEY, sessionId); } catch (_) { /* storage is optional */ }
+}
+
+function clearChat() {
+  document.getElementById('chat').replaceChildren();
+}
+
+function renderSessionList(sessions) {
+  recentSessions = Array.isArray(sessions) ? sessions : [];
+  const select = document.getElementById('session-select');
+  select.replaceChildren();
+  const known = recentSessions.some(item => item.session_id === sessionId);
+  if (!known) {
+    const current = new Option('Current conversation', sessionId);
+    select.add(current);
+  }
+  for (const item of recentSessions) {
+    const option = new Option(item.session_id, item.session_id);
+    select.add(option);
+  }
+  select.value = sessionId;
+  document.getElementById('session-limit').textContent = recentSessions.length >= SESSION_LIST_LIMIT
+    ? 'Showing the newest 100 saved sessions. Older durable sessions remain saved.'
+    : `Showing ${recentSessions.length} saved sessions. Older durable history is never deleted here.`;
+}
+
+async function refreshSessionList() {
+  const response = await fetch(`/api/v2/sessions?limit=${SESSION_LIST_LIMIT}`);
+  if (!response.ok) throw new Error('Could not load saved conversations');
+  const data = await response.json();
+  renderSessionList(data.sessions);
+}
+
+async function restoreSession(nextSessionId) {
+  sessionId = nextSessionId;
+  saveActiveSession();
+  try {
+    const response = await fetch(`/api/v2/sessions/${encodeURIComponent(sessionId)}`);
+    if (!response.ok) throw new Error('Could not load this conversation');
+    const data = await response.json();
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    clearChat();
+    messages.forEach(message => addMessage(message.role, String(message.content), false));
+    renderSessionList(recentSessions);
+    document.getElementById('status').textContent = messages.length
+      ? `Restored ${messages.length} saved message${messages.length === 1 ? '' : 's'}.`
+      : 'No saved messages in this conversation.';
+  } catch (_) {
+    clearChat();
+    document.getElementById('status').textContent = 'Could not load this conversation.';
+  }
+}
+
+function startNewSession() {
+  if (isStreaming) return;
+  sessionId = createSessionId();
+  saveActiveSession();
+  clearChat();
+  renderSessionList(recentSessions);
+  document.getElementById('status').textContent = 'New conversation ready.';
+  document.getElementById('user-input').focus();
+}
+
+async function initialiseSessions() {
+  try {
+    await refreshSessionList();
+    await restoreSession(sessionId);
+  } catch (_) {
+    renderSessionList([]);
+    document.getElementById('status').textContent = 'Could not load saved conversations.';
+  }
+}
 
 function addMessage(role, content, isThinking) {
   const chat = document.getElementById('chat');
@@ -590,7 +690,14 @@ async function sendMessage() {
   isStreaming = false;
   btn.disabled = false;
   input.focus();
+  refreshSessionList().catch(() => {});
 }
+
+document.getElementById('session-select').addEventListener('change', event => {
+  if (!isStreaming) restoreSession(event.target.value);
+});
+document.getElementById('new-session').addEventListener('click', startNewSession);
+initialiseSessions();
 
 // Load cost on start
 fetch('/api/cost').then(r=>r.json()).then(d=>{
