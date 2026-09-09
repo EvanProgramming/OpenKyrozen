@@ -373,6 +373,15 @@ class EventStore:
                 f"SELECT provider, {columns} FROM usage_attempts WHERE {' AND '.join(clauses)} "
                 "GROUP BY provider ORDER BY provider", params,
             ).fetchall()
+            pricing_groups = db.execute(
+                "SELECT provider, pricing_snapshot, "
+                "SUM(COALESCE(prompt_tokens, 0)) AS prompt_tokens, "
+                "SUM(COALESCE(completion_tokens, 0)) AS completion_tokens, "
+                "SUM(COALESCE(cost_picos, 0)) AS cost_picos "
+                f"FROM usage_attempts WHERE {' AND '.join(clauses)} "
+                "GROUP BY provider, pricing_snapshot",
+                params,
+            ).fetchall()
 
         def normalise(row: sqlite3.Row | None) -> dict[str, int]:
             names = ("attempts", "authoritative_attempts", "estimated_attempts", "prompt_tokens",
@@ -384,9 +393,33 @@ class EventStore:
             )
             return values
 
+        def exact_cost(groups: list[sqlite3.Row]) -> int:
+            """Round once after combining frozen per-million pricing numerators."""
+            numerator = fallback = 0
+            for row in groups:
+                snapshot = self._loads(row["pricing_snapshot"], {})
+                try:
+                    input_rate = max(0, int(snapshot["input_picos_per_million"]))
+                    output_rate = max(0, int(snapshot["output_picos_per_million"]))
+                except (KeyError, TypeError, ValueError):
+                    # Compatibility for any manually-created legacy ledger row.
+                    fallback += int(row["cost_picos"] or 0)
+                    continue
+                numerator += (int(row["prompt_tokens"] or 0) * input_rate
+                              + int(row["completion_tokens"] or 0) * output_rate)
+            return fallback + numerator // 1_000_000
+
+        totals = normalise(total)
+        totals["cost_picos"] = exact_cost(pricing_groups)
+        provider_groups: dict[str, list[sqlite3.Row]] = {}
+        for row in pricing_groups:
+            provider_groups.setdefault(row["provider"], []).append(row)
+
         return {
-            **normalise(total), "currency": "USD",
-            "providers": [dict(provider=row["provider"], **normalise(row)) for row in by_provider],
+            **totals, "currency": "USD",
+            "providers": [dict(provider=row["provider"], **{
+                **normalise(row), "cost_picos": exact_cost(provider_groups[row["provider"]]),
+            }) for row in by_provider],
         }
 
     def create_usage_reset(

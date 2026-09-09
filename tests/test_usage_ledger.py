@@ -10,7 +10,7 @@ from pathlib import Path
 from event_store import EventStore
 from fastapi.testclient import TestClient
 from memory import MemoryBank
-from providers import PROVIDER_COSTS, _track_cost, usage_scope
+from providers import PROVIDER_COSTS, _track_cost, get_cost_summary, usage_scope
 import server
 
 
@@ -122,6 +122,41 @@ class UsageLedgerTests(unittest.TestCase):
                 ))
             finally:
                 server._agent.memory_bank = original_memory
+
+    def test_short_and_mixed_calls_aggregate_before_display_rounding(self):
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-usage-precision-") as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            with usage_scope(store=store, workspace_id="project", session_id="short"):
+                for _ in range(1000):
+                    _track_cost("deepseek", {"prompt_tokens": 0, "completion_tokens": 100},
+                                model="deepseek-chat")
+            with usage_scope(store=store, workspace_id="project", session_id="mixed"):
+                for _ in range(1000):
+                    _track_cost("deepseek", {"prompt_tokens": 100, "completion_tokens": 100},
+                                model="deepseek-chat")
+            with usage_scope(store=store, workspace_id="project", session_id="combined-short"):
+                _track_cost("deepseek", {"prompt_tokens": 0, "completion_tokens": 100_000},
+                            model="deepseek-chat")
+            with usage_scope(store=store, workspace_id="project", session_id="combined-mixed"):
+                _track_cost("deepseek", {"prompt_tokens": 100_000, "completion_tokens": 100_000},
+                            model="deepseek-chat")
+
+            short = store.usage_totals(workspace_id="project", session_id="short", user_id="local")
+            mixed = store.usage_totals(workspace_id="project", session_id="mixed", user_id="local")
+            combined_short = store.usage_totals(
+                workspace_id="project", session_id="combined-short", user_id="local",
+            )
+            combined_mixed = store.usage_totals(
+                workspace_id="project", session_id="combined-mixed", user_id="local",
+            )
+            self.assertEqual(short["cost_picos"], 110_000_000_000)
+            self.assertEqual(mixed["cost_picos"], 137_000_000_000)
+            self.assertEqual(short["cost_picos"], combined_short["cost_picos"])
+            self.assertEqual(mixed["cost_picos"], combined_mixed["cost_picos"])
+            self.assertEqual(
+                get_cost_summary(store=store, workspace_id="project", session_id="short", scope="session"),
+                "deepseek: 0K in / 100K out ~$0.11",
+            )
 
 
 if __name__ == "__main__":
