@@ -2348,7 +2348,7 @@ def _run_subagent_tool(profile: AgentProfile, action: str, args: Any, tools: set
     }
 
 
-def _run_subagent_llm(profile: AgentProfile, task: str, context: list[dict[str, Any]], tools: set[str]) -> dict[str, Any]:
+def _run_subagent_llm_result(profile: AgentProfile, task: str, context: list[dict[str, Any]], tools: set[str]) -> dict[str, Any]:
     memory_lines = "\n".join(
         f"- kind={item.get('kind')} confidence={item.get('confidence', 0):.2f}: {str(item.get('content', ''))[:500]}"
         for item in context
@@ -2421,7 +2421,66 @@ def _run_subagent_llm(profile: AgentProfile, task: str, context: list[dict[str, 
     return {"result": response, "tool_records": tool_records, "evidence": evidence}
 
 
-subagent_manager = SubAgentManager(memory_bank, runner=_run_subagent_llm, learning_engine=learning_engine)
+def _subagent_usage_metrics(run_id: str, started: float) -> dict[str, Any]:
+    """Read one sub-agent's actual provider usage from the durable ledger."""
+    attempts = memory_bank.store.list_usage_attempts(
+        user_id=memory_bank.user_id, workspace_id=memory_bank.workspace_id, run_id=run_id,
+    )
+    totals = memory_bank.store.usage_totals(
+        user_id=memory_bank.user_id, workspace_id=memory_bank.workspace_id, run_id=run_id,
+    )
+
+    def known_total(field: str) -> int | None:
+        if not attempts or any(item.get(field) is None for item in attempts):
+            return None
+        return int(totals[field])
+
+    provider_models = sorted({f"{item['provider']}:{item['model']}" for item in attempts})
+    statuses = {str(item.get("usage_status") or "unknown") for item in attempts}
+    return {
+        "provider_model": provider_models[0] if len(provider_models) == 1 else (
+            "mixed" if provider_models else "unknown"
+        ),
+        "provider_models": provider_models,
+        "attempts": int(totals["attempts"]),
+        "prompt_tokens": known_total("prompt_tokens"),
+        "completion_tokens": known_total("completion_tokens"),
+        "reasoning_tokens": known_total("reasoning_tokens"),
+        "tokens": (
+            int(totals["prompt_tokens"]) + int(totals["completion_tokens"])
+            if known_total("prompt_tokens") is not None and known_total("completion_tokens") is not None else None
+        ),
+        "latency_ms": round((time.monotonic() - started) * 1000, 3),
+        "usage_status": (
+            next(iter(statuses)) if len(statuses) == 1 else "mixed" if statuses else "unknown"
+        ),
+    }
+
+
+def _run_subagent_llm(profile: AgentProfile, task: str, context: list[dict[str, Any]], tools: set[str], *,
+                      run_id: str | None = None) -> dict[str, Any]:
+    started = time.monotonic()
+    token = _active_usage_run_id.set(run_id) if run_id else None
+    try:
+        result = _run_subagent_llm_result(profile, task, context, tools)
+        if run_id:
+            result["metrics"] = _subagent_usage_metrics(run_id, started)
+        return result
+    finally:
+        if token is not None:
+            _active_usage_run_id.reset(token)
+
+
+def _subagent_provider_model() -> str:
+    if _provider_config and DEEPSEEK_MODEL:
+        return f"{_provider_config.provider}:{DEEPSEEK_MODEL}"
+    return "unknown"
+
+
+subagent_manager = SubAgentManager(
+    memory_bank, runner=_run_subagent_llm, learning_engine=learning_engine,
+    provider_model=_subagent_provider_model,
+)
 
 # ---- Tool to let agent examine its own memory ----
 def _check_stored_data(args: str) -> str:

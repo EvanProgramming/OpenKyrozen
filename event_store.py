@@ -318,7 +318,7 @@ class EventStore:
 
     def list_usage_attempts(
             self, *, workspace_id: str | None = None, session_id: str | None = None,
-            user_id: str | None = None, limit: int = 1000,
+            user_id: str | None = None, run_id: str | None = None, limit: int = 1000,
     ) -> list[dict[str, Any]]:
         clauses = ["1=1"]
         params: list[Any] = []
@@ -331,6 +331,9 @@ class EventStore:
         if user_id is not None:
             clauses.append("user_id=?")
             params.append(user_id)
+        if run_id is not None:
+            clauses.append("run_id=?")
+            params.append(run_id)
         params.append(max(1, min(limit, 10000)))
         with self.connection() as db:
             rows = db.execute(
@@ -341,13 +344,13 @@ class EventStore:
 
     def usage_totals(
             self, *, workspace_id: str | None = None, session_id: str | None = None,
-            user_id: str | None = None, since: str | None = None,
+            user_id: str | None = None, run_id: str | None = None, since: str | None = None,
     ) -> dict[str, Any]:
         """Aggregate immutable usage records for one explicit durable scope."""
         clauses = ["1=1"]
         params: list[Any] = []
         for field, value in (("workspace_id", workspace_id), ("session_id", session_id),
-                             ("user_id", user_id)):
+                             ("user_id", user_id), ("run_id", run_id)):
             if value is not None:
                 clauses.append(f"{field}=?")
                 params.append(value)

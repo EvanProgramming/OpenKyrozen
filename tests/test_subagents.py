@@ -2,10 +2,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
+from types import SimpleNamespace
 
 from event_store import EventStore
+from learning_engine import LearningEngine
 from memory import MemoryBank
 import main
+from providers import OpenAICompatProvider, ProviderConfig
 from subagents import AgentProfile, SubAgentManager
 
 
@@ -13,7 +16,9 @@ class SubAgentTests(unittest.TestCase):
     def test_profile_has_independent_session_memory_and_capabilities(self):
         with tempfile.TemporaryDirectory() as directory:
             memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")
-            manager = SubAgentManager(memory, runner=lambda profile, task, context, tools: f"done:{profile.name}")
+            manager = SubAgentManager(
+                memory, runner=lambda profile, task, context, tools, *, run_id: f"done:{profile.name}",
+            )
             manager.register(AgentProfile("tester", "Return a test result", "readonly"))
             result = manager.run("tester", "check the repository")
             self.assertTrue(result["run_id"].startswith("subagent_"))
@@ -66,7 +71,7 @@ class SubAgentTests(unittest.TestCase):
     def test_manager_persists_tool_receipts_failures_and_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")
-            manager = SubAgentManager(memory, runner=lambda profile, task, context, tools: {
+            manager = SubAgentManager(memory, runner=lambda profile, task, context, tools, *, run_id: {
                 "result": "completed",
                 "tool_records": [{"receipt_id": "receipt-1", "action": "write_file",
                                   "args": "marker.txt|ok", "result": "wrote", "success": True,
@@ -85,6 +90,61 @@ class SubAgentTests(unittest.TestCase):
             self.assertIn("subagent.evidence", event_types)
             completed = next(event for event in events if event["event_type"] == "subagent.completed")
             self.assertEqual(len(completed["payload"]["tool_receipts"]), 2)
+
+    def test_manager_persists_nonzero_runner_metrics_without_zero_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")
+            manager = SubAgentManager(
+                memory, learning_engine=LearningEngine(memory),
+                provider_model=lambda: "deepseek:deepseek-v4-flash",
+                runner=lambda profile, task, context, tools, *, run_id: {
+                    "result": "completed",
+                    "metrics": {"provider_model": "deepseek:deepseek-v4-flash", "tokens": 37,
+                                "latency_ms": 250, "usage_status": "authoritative"},
+                },
+            )
+            result = manager.run("researcher", "report the result")
+            completed = memory.store.list_events(
+                "learning.run_completed", workspace_id="project", limit=10,
+            )[0]["payload"]
+            self.assertEqual(result["metrics"]["tokens"], 37)
+            self.assertEqual(completed["provider_model"], "deepseek:deepseek-v4-flash")
+            self.assertEqual(completed["tokens"], 37)
+            self.assertEqual(completed["latency"], 0.25)
+
+    def test_main_subagent_runner_uses_its_usage_ledger_rows(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="sub-agent complete"))],
+            usage=SimpleNamespace(
+                prompt_tokens=10, completion_tokens=4,
+                prompt_cache_hit_tokens=3, prompt_cache_miss_tokens=7,
+                completion_tokens_details=SimpleNamespace(reasoning_tokens=2),
+            ),
+        )
+        provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+        provider.config = ProviderConfig(provider="deepseek")
+        provider._client = SimpleNamespace(chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_kwargs: response),
+        ))
+        with tempfile.TemporaryDirectory() as directory:
+            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")
+            manager = SubAgentManager(
+                memory, runner=main._run_subagent_llm, learning_engine=LearningEngine(memory),
+                provider_model=lambda: "deepseek:deepseek-v4-flash",
+            )
+            with (patch.object(main, "memory_bank", memory),
+                  patch.object(main, "llm_provider", provider),
+                  patch.object(main, "DEEPSEEK_MODEL", "deepseek-v4-flash")):
+                result = manager.run("researcher", "report the result")
+            ledger = memory.store.usage_totals(workspace_id="project", run_id=result["run_id"])
+            completed = memory.store.list_events(
+                "learning.run_completed", workspace_id="project", limit=10,
+            )[0]["payload"]
+            self.assertEqual(result["metrics"]["provider_model"], "deepseek:deepseek-v4-flash")
+            self.assertEqual(result["metrics"]["tokens"], 14)
+            self.assertEqual(ledger["prompt_tokens"], 10)
+            self.assertEqual(ledger["completion_tokens"], 4)
+            self.assertEqual(completed["tokens"], 14)
 
 
 if __name__ == "__main__":
