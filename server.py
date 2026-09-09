@@ -1773,7 +1773,7 @@ async def startup():
                                   job_id="job_learning_cycle", delay_seconds=0)
     _scheduler.start()
     _audit("STARTUP", "server started")
-    print("[Server] Ready — http://127.0.0.1:8000 (set KYROZEN_SERVER_TOKEN for remote access)")
+    print("[Server] Ready — Uvicorn will report the effective bind address (set KYROZEN_SERVER_TOKEN for remote access)")
 
 
 @app.on_event("shutdown")
