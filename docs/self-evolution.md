@@ -9,14 +9,14 @@ Historical verification snapshot: `51be33361422e55e1f2f00c33a0e0f8c56132a91`
 (the post-#54 `main` revision, captured before this #55 documentation-only
 update). Snapshot date: 2026-09-04.
 
-Current repository test count at this snapshot: **158 unittest cases**.
+Current repository test count at this snapshot: **160 unittest cases**.
 
 ## Verified surface
 
 | Surface | Current behavior | Verification |
 | --- | --- | --- |
 | Profile routing | `auto` routes normal requests to `coder` or `researcher`; an explicit profile wins. | `tests/test_evolution.py` |
-| Evidence ledger | Runs, tool/error receipts, acceptance evidence, latency, tokens, and artifact hashes are durable SQLite events. | `tests/test_evolution.py`, `tests/test_evolution_robustness.py` |
+| Evidence ledger | Runs, actual provider/model, ledger-backed token usage, measured latency, tool/error receipts, acceptance evidence, and artifact hashes are durable SQLite events. | `tests/test_evolution.py`, `tests/test_evolution_robustness.py`, `tests/test_subagents.py` |
 | Canary lifecycle | A learned artifact stays a canary until two distinct verified successes and a non-regressing paired replay; correction or repeated verified failures rolls it back. | `tests/test_evolution.py` |
 | Deterministic selection | Matching is profile- and trigger-scoped, with at most three artifacts and 8,000 body characters, including at most one canary. | `tests/test_causal_selection.py` |
 | Retirement | A paired omission trial can retire an artifact only when completion does not regress; restore keeps the pre-image recoverable. | `tests/test_causal_selection.py` |
