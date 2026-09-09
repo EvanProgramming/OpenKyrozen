@@ -277,6 +277,8 @@ kyrozen
 所有 31 项运行时工具在 JSON 动作块中接受纯字符串 `args` 字段。完整的
 工具名称、能力标签、MCP 输入 schema 和实时 HTTP 路由以[生成的运行时清单](docs/tool-inventory.md)为准：
 
+包括 `git_branch` 在内的内置 Git 工具需要 `git` 能力；`dynamic` 仅用于用户定义的工具。
+
 ```json
 {"action": "read_file", "args": "README.md"}
 ```

@@ -367,6 +367,9 @@ The [generated runtime inventory](docs/tool-inventory.md) is authoritative for
 tool names, capability labels, MCP input schemas, and the live HTTP endpoint
 list:
 
+Built-in Git tools, including `git_branch`, require the `git` capability;
+`dynamic` is reserved for user-defined tools.
+
 ```json
 {"action": "read_file", "args": "README.md"}
 ```

@@ -258,6 +258,48 @@ class ServerBoundaryTests(unittest.TestCase):
         with patch.dict(os.environ, {"KYROZEN_MCP_CAPABILITIES": "full"}):
             self.assertIn("git_reset", server._allowed_server_tools("mcp"))
 
+    def test_git_branch_uses_git_capability_across_surfaces(self):
+        from tools import tool_capability
+
+        self.assertEqual(tool_capability("git_branch"), "git")
+        with patch.dict(os.environ, {
+            "KYROZEN_MCP_CAPABILITIES": "workspace",
+            "KYROZEN_WEB_CAPABILITIES": "workspace",
+        }):
+            self.assertIn("git_branch", server._allowed_server_tools("mcp"))
+            self.assertIn("git_branch", server._allowed_server_tools("web"))
+            listing = TestClient(server.app).post("/mcp", json={
+                "jsonrpc": "2.0", "id": 76, "method": "tools/list", "params": {},
+            }).json()
+        self.assertIn("git_branch", {item["name"] for item in listing["result"]["tools"]})
+
+        with patch.dict(os.environ, {
+            "KYROZEN_MCP_CAPABILITIES": "readonly",
+            "KYROZEN_WEB_CAPABILITIES": "readonly",
+        }):
+            self.assertNotIn("git_branch", server._allowed_server_tools("mcp"))
+            self.assertNotIn("git_branch", server._allowed_server_tools("web"))
+            denied = TestClient(server.app).post("/mcp", json={
+                "jsonrpc": "2.0", "id": 77, "method": "tools/call",
+                "params": {"name": "git_branch", "arguments": {"args": ""}},
+            }).json()
+        self.assertEqual(denied["error"]["code"], -32001)
+
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-git-branch-") as directory:
+            root = Path(directory).resolve()
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            previous_root = server._agent._get_workspace_root()
+            server._agent._set_workspace_root(root)
+            try:
+                with patch.dict(os.environ, {"KYROZEN_MCP_CAPABILITIES": "workspace"}):
+                    allowed = TestClient(server.app).post("/mcp", json={
+                        "jsonrpc": "2.0", "id": 78, "method": "tools/call",
+                        "params": {"name": "git_branch", "arguments": {"args": ""}},
+                    }).json()
+            finally:
+                server._agent._set_workspace_root(previous_root)
+        self.assertFalse(allowed["result"]["isError"])
+
     def test_cli_approval_denies_noninteractive_high_impact_action(self):
         with patch.object(server._agent, "_EXECUTION_SURFACE", "cli"):
             with patch.dict(os.environ, {"KYROZEN_APPROVAL_MODE": "dangerous"}):
