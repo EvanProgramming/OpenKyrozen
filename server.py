@@ -32,7 +32,7 @@ os.environ.setdefault("DEEPSEEK_API_KEY", os.environ.get("DEEPSEEK_API_KEY", "")
 os.environ.setdefault("KYROZEN_EXECUTION_SURFACE", "web")
 
 import main as _agent
-from providers import get_cost_summary, reset_cost_tracker
+from providers import get_cost_report, get_cost_summary, reset_cost_tracker
 from memory import MemoryBank
 from task_engine import TaskManager, TaskWorker
 from scheduler import JobScheduler
@@ -431,6 +431,20 @@ def _allowed_server_tools(surface: str) -> set[str]:
     capabilities = ",".join(sorted(_server_capabilities(surface)))
     return allowed_tool_names(_agent.AVAILABLE_TOOLS, capabilities)
 
+
+def _cost_summary() -> str:
+    return get_cost_summary(
+        store=_agent.memory_bank.store, user_id=_SERVER_ACTOR_ID,
+        workspace_id=_agent.memory_bank.workspace_id,
+    )
+
+
+def _cost_report(scope: str = "installation", session_id: str | None = None) -> dict[str, Any]:
+    return get_cost_report(
+        store=_agent.memory_bank.store, user_id=_SERVER_ACTOR_ID,
+        workspace_id=_agent.memory_bank.workspace_id, session_id=session_id, scope=scope,
+    )
+
 # ---------------------------------------------------------------------------
 # HTML Chat UI
 # ---------------------------------------------------------------------------
@@ -743,7 +757,7 @@ async def api_chat(request: Request):
     _emit_chat_completed(session, reply, streamed=False)
     _audit("REPLY", f"len={len(reply)}", session["user_id"])
     return {"reply": reply, "session_id": session_id, "profile": session["profile"],
-            "memory_receipt": session.get("last_memory_receipt"), "cost": get_cost_summary()}
+            "memory_receipt": session.get("last_memory_receipt"), "cost": _cost_summary()}
 
 
 @app.post("/api/chat/stream", dependencies=[Depends(require_api_access)])
@@ -776,7 +790,7 @@ async def api_chat_stream(request: Request):
                 chunk = reply[i:i+chunk_size]
                 yield f"data: {json.dumps({'chunk': chunk})}\n\n"
                 await asyncio_sleep(0.01)
-            yield f"data: {json.dumps({'cost': get_cost_summary()})}\n\n"
+            yield f"data: {json.dumps({'cost': _cost_summary()})}\n\n"
             if session.get("last_memory_receipt"):
                 yield f"data: {json.dumps({'memory_receipt': session['last_memory_receipt']})}\n\n"
             yield "data: [DONE]\n\n"
@@ -1165,9 +1179,37 @@ async def api_v2_run_agent(request: Request):
 
 
 @app.get("/api/cost", dependencies=[Depends(require_api_access)])
-async def api_cost():
-    """Get cost summary."""
-    return {"summary": get_cost_summary()}
+async def api_cost(scope: str = "installation", session_id: str | None = None):
+    """Get durable installation, workspace, or session usage totals."""
+    if scope not in {"installation", "workspace", "session"}:
+        raise HTTPException(400, "scope must be installation, workspace, or session")
+    session = _normalise_session_id(session_id) if session_id else None
+    if scope == "session" and not session:
+        raise HTTPException(400, "session_id is required for session scope")
+    return _cost_report(scope, session)
+
+
+@app.post("/api/cost/reset", dependencies=[Depends(require_api_access)])
+async def api_cost_reset(request: Request):
+    """Start a new durable workspace/session reporting window without deleting usage."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+    if not isinstance(body, dict) or body.get("confirm") != "reset-cost":
+        raise HTTPException(400, "Set confirm to reset-cost to reset a usage window")
+    scope = str(body.get("scope", "workspace"))
+    if scope not in {"workspace", "session"}:
+        raise HTTPException(400, "scope must be workspace or session")
+    session_id = _normalise_session_id(body.get("session_id")) if body.get("session_id") else None
+    if scope == "session" and not session_id:
+        raise HTTPException(400, "session_id is required for session scope")
+    reset = reset_cost_tracker(
+        store=_agent.memory_bank.store, user_id=_SERVER_ACTOR_ID,
+        workspace_id=_agent.memory_bank.workspace_id, session_id=session_id, scope=scope,
+    )
+    _audit("USAGE_RESET", f"scope={scope}", _SERVER_ACTOR_ID)
+    return {"reset": reset, **_cost_report(scope, session_id)}
 
 
 @app.get("/api/health", dependencies=[Depends(require_api_access)])

@@ -491,6 +491,7 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `GET` | `/api/v2/agents` | 查看专用子 Agent profile |
 | `POST` | `/api/v2/agents/run` | 使用独立记忆和权限运行子 Agent |
 | `GET` | `/api/cost` | Token 用量和费用摘要 |
+| `POST` | `/api/cost/reset` | 显式重置 durable workspace/session 统计窗口（需要 `confirm: "reset-cost"`） |
 | `GET` | `/api/health` | 服务商状态 + 记忆计数 |
 | `GET` | `/api/voice/speak?text=...` | 通过系统 TTS 进行文本转语音 |
 | `POST` | `/api/voice/transcribe` | 语音转文本（透传） |

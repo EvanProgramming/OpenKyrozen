@@ -19,9 +19,15 @@ import os
 import sys
 import time
 import random
+import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Iterator
 from abc import ABC, abstractmethod
+
+from event_store import EventStore
 
 # ---------------------------------------------------------------------------
 # Provider metadata
@@ -70,42 +76,166 @@ PROVIDER_COSTS: dict[str, tuple[float, float]] = {
 }
 
 # ---------------------------------------------------------------------------
-# Global cost tracking
+# Durable usage ledger
 # ---------------------------------------------------------------------------
 
-_cost_tracker: dict[str, dict[str, int]] = {}  # {provider: {prompt_tokens, completion_tokens, cost_cents}}
+_PICOS_PER_DOLLAR = 10**12
+_TOKENS_PER_MILLION = 1_000_000
 
-def _track_cost(provider: str, usage: dict | None) -> None:
-    """Accumulate token usage and estimated cost for a provider."""
-    if usage is None:
-        return
-    entry = _cost_tracker.setdefault(provider, {"prompt_tokens": 0, "completion_tokens": 0, "cost_cents": 0})
-    pt = usage.get("prompt_tokens", 0) or 0
-    ct = usage.get("completion_tokens", 0) or 0
-    entry["prompt_tokens"] += pt
-    entry["completion_tokens"] += ct
-    costs = PROVIDER_COSTS.get(provider, (0, 0))
-    entry["cost_cents"] += int((pt * costs[0] + ct * costs[1]) / 10000)
 
-def get_cost_summary() -> str:
-    """Return a human-readable cost summary."""
-    if not _cost_tracker:
+@dataclass(frozen=True)
+class UsageScope:
+    store: EventStore
+    user_id: str = "local"
+    workspace_id: str = "default"
+    session_id: str | None = None
+    run_id: str | None = None
+    surface: str = "cli"
+
+
+_usage_scope: ContextVar[UsageScope | None] = ContextVar("usage_scope", default=None)
+
+
+@contextmanager
+def usage_scope(*, store: EventStore, user_id: str = "local", workspace_id: str = "default",
+                session_id: str | None = None, run_id: str | None = None,
+                surface: str | None = None) -> Iterator[None]:
+    """Attribute all provider calls in this execution context to one durable scope."""
+    token = _usage_scope.set(UsageScope(
+        store=store, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+        run_id=run_id, surface=surface or os.environ.get("KYROZEN_EXECUTION_SURFACE", "cli"),
+    ))
+    try:
+        yield
+    finally:
+        _usage_scope.reset(token)
+
+
+def _current_usage_scope() -> UsageScope:
+    return _usage_scope.get() or UsageScope(
+        EventStore(), surface=os.environ.get("KYROZEN_EXECUTION_SURFACE", "cli"),
+    )
+
+
+def _legacy_pricing_snapshot(provider: str) -> tuple[dict[str, Any], int, int]:
+    input_usd, output_usd = PROVIDER_COSTS.get(provider, (0.0, 0.0))
+    input_picos = int(Decimal(str(input_usd)) * _PICOS_PER_DOLLAR)
+    output_picos = int(Decimal(str(output_usd)) * _PICOS_PER_DOLLAR)
+    return {
+        "version": "legacy-provider-costs-v1",
+        "currency": "USD",
+        "input_picos_per_million": input_picos,
+        "output_picos_per_million": output_picos,
+    }, input_picos, output_picos
+
+
+def _usage_integer(usage: dict | None, key: str) -> int | None:
+    if usage is None or usage.get(key) is None:
+        return None
+    try:
+        return max(0, int(usage[key]))
+    except (TypeError, ValueError):
+        return None
+
+
+def _track_cost(provider: str, usage: dict | None, *, model: str = "unknown",
+                latency_ms: int | None = None, completion_state: str = "completed") -> str:
+    """Write one immutable provider attempt; summaries always read this ledger."""
+    scope = _current_usage_scope()
+    prompt_tokens = _usage_integer(usage, "prompt_tokens")
+    completion_tokens = _usage_integer(usage, "completion_tokens")
+    cache_hit_tokens = _usage_integer(usage, "cache_hit_tokens")
+    cache_miss_tokens = _usage_integer(usage, "cache_miss_tokens")
+    reasoning_tokens = _usage_integer(usage, "reasoning_tokens")
+    pricing_snapshot, input_rate, output_rate = _legacy_pricing_snapshot(provider)
+    cost_picos = None
+    if prompt_tokens is not None or completion_tokens is not None:
+        cost_picos = (
+            ((prompt_tokens or 0) * input_rate + (completion_tokens or 0) * output_rate)
+            // _TOKENS_PER_MILLION
+        )
+    attempt_id = f"usage_{uuid.uuid4().hex}"
+    scope.store.record_usage_attempt(
+        attempt_id=attempt_id, provider=provider, model=model, surface=scope.surface,
+        user_id=scope.user_id, workspace_id=scope.workspace_id, session_id=scope.session_id,
+        run_id=scope.run_id, cache_status="unknown", prompt_tokens=prompt_tokens,
+        cache_hit_tokens=cache_hit_tokens, cache_miss_tokens=cache_miss_tokens,
+        completion_tokens=completion_tokens, reasoning_tokens=reasoning_tokens,
+        latency_ms=latency_ms, completion_state=completion_state,
+        usage_status="authoritative" if usage is not None else "unknown",
+        cost_picos=cost_picos, pricing_snapshot=pricing_snapshot,
+    )
+    return attempt_id
+
+
+def _format_cost_picos(cost_picos: int) -> str:
+    if cost_picos <= 0:
+        return "$0"
+    cents = Decimal(cost_picos) / Decimal(_PICOS_PER_DOLLAR // 100)
+    if cents < 1:
+        return f"{cents.normalize():f}c"
+    dollars = Decimal(cost_picos) / _PICOS_PER_DOLLAR
+    return f"${dollars:.2f}"
+
+
+def _format_cost_summary(totals: dict[str, Any]) -> str:
+    if not totals["attempts"]:
         return "No usage yet"
-    parts = []
-    for prov, data in _cost_tracker.items():
-        cents = data["cost_cents"]
-        pt = data["prompt_tokens"]
-        ct = data["completion_tokens"]
-        if cents >= 100:
-            cost_str = f"${cents/100:.2f}"
-        else:
-            cost_str = f"{cents}c"
-        parts.append(f"{prov}: {pt/1000:.0f}K in / {ct/1000:.0f}K out ~{cost_str}")
-    return " | ".join(parts)
+    return " | ".join(
+        f"{item['provider']}: {item['prompt_tokens'] / 1000:.0f}K in / "
+        f"{item['completion_tokens'] / 1000:.0f}K out ~{_format_cost_picos(item['cost_picos'])}"
+        for item in totals["providers"]
+    )
 
-def reset_cost_tracker() -> None:
-    """Reset all cost tracking counters."""
-    _cost_tracker.clear()
+
+def _scope_totals(store: EventStore, *, scope: str, user_id: str, workspace_id: str,
+                  session_id: str | None = None) -> dict[str, Any]:
+    reset = None if scope == "installation" else store.latest_usage_reset(
+        scope=scope, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+    )
+    filters: dict[str, Any] = {"user_id": user_id}
+    if scope in {"workspace", "session"}:
+        filters["workspace_id"] = workspace_id
+    if scope == "session":
+        filters["session_id"] = session_id
+    totals = store.usage_totals(since=reset["created_at"] if reset else None, **filters)
+    totals["window_started_at"] = reset["created_at"] if reset else None
+    return totals
+
+
+def get_cost_report(*, store: EventStore | None = None, user_id: str = "local",
+                    workspace_id: str = "default", session_id: str | None = None,
+                    scope: str = "installation") -> dict[str, Any]:
+    """Return durable installation, workspace, and optional session usage windows."""
+    if scope not in {"installation", "workspace", "session"}:
+        raise ValueError("scope must be installation, workspace, or session")
+    if scope == "session" and not session_id:
+        raise ValueError("session scope requires a session_id")
+    store = store or EventStore()
+    totals = {
+        "installation": _scope_totals(store, scope="installation", user_id=user_id,
+                                       workspace_id=workspace_id),
+        "workspace": _scope_totals(store, scope="workspace", user_id=user_id,
+                                    workspace_id=workspace_id),
+        "session": (_scope_totals(store, scope="session", user_id=user_id,
+                                   workspace_id=workspace_id, session_id=session_id)
+                    if session_id else None),
+    }
+    return {"summary": _format_cost_summary(totals[scope]), "selected_scope": scope, "totals": totals}
+
+
+def get_cost_summary(**kwargs: Any) -> str:
+    """Return the legacy display string, reconstructed from durable attempts."""
+    return get_cost_report(**kwargs)["summary"]
+
+
+def reset_cost_tracker(*, store: EventStore | None = None, user_id: str = "local",
+                       workspace_id: str = "default", session_id: str | None = None,
+                       scope: str = "workspace") -> dict[str, str]:
+    """Create an audited reporting-window reset without deleting usage attempts."""
+    return (store or EventStore()).create_usage_reset(
+        scope=scope, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+    )
 
 # ---------------------------------------------------------------------------
 # Retry helper
@@ -208,6 +338,7 @@ class OpenAICompatProvider(LLMProvider):
 
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         model = model or self.config.model_simple
+        started = time.monotonic()
 
         def _call():
             response = self._client.chat.completions.create(model=model, messages=messages)
@@ -222,7 +353,8 @@ class OpenAICompatProvider(LLMProvider):
                 "prompt_tokens": usage.prompt_tokens or 0,
                 "completion_tokens": usage.completion_tokens or 0,
             }
-        _track_cost(self.config.provider, usage_dict)
+        _track_cost(self.config.provider, usage_dict, model=model,
+                    latency_ms=round((time.monotonic() - started) * 1000))
         return text.strip(), usage_dict
 
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
@@ -281,6 +413,7 @@ class AnthropicProvider(LLMProvider):
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         model = model or self.config.model_simple
         system_prompts, claude_messages = self._prepare_messages(messages)
+        started = time.monotonic()
 
         kwargs: dict[str, Any] = {
             "model": model,
@@ -305,7 +438,8 @@ class AnthropicProvider(LLMProvider):
                 "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
                 "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
             }
-        _track_cost(self.config.provider, usage_dict)
+        _track_cost(self.config.provider, usage_dict, model=model,
+                    latency_ms=round((time.monotonic() - started) * 1000))
         return text.strip(), usage_dict
 
 # ---------------------------------------------------------------------------
@@ -329,6 +463,7 @@ class GoogleProvider(LLMProvider):
 
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         model = model or self.config.model_simple
+        started = time.monotonic()
 
         system_instruction: str | None = None
         history: list[dict] = []
@@ -379,7 +514,8 @@ class GoogleProvider(LLMProvider):
                 }
         except Exception:
             pass
-        _track_cost(self.config.provider, usage_dict)
+        _track_cost(self.config.provider, usage_dict, model=model,
+                    latency_ms=round((time.monotonic() - started) * 1000))
         return text.strip(), usage_dict
 
 # ---------------------------------------------------------------------------
@@ -402,6 +538,7 @@ class OllamaNativeProvider(LLMProvider):
         model = model or self.config.model_simple
         url = f"{self._base}/api/chat"
         payload = {"model": model, "messages": messages, "stream": False}
+        started = time.monotonic()
         try:
             resp = self._requests.post(url, json=payload, timeout=120)
             resp.raise_for_status()
@@ -411,7 +548,8 @@ class OllamaNativeProvider(LLMProvider):
                 "prompt_tokens": data.get("prompt_eval_count", 0) or 0,
                 "completion_tokens": data.get("eval_count", 0) or 0,
             }
-            _track_cost(self.config.provider, usage_dict)
+            _track_cost(self.config.provider, usage_dict, model=model,
+                        latency_ms=round((time.monotonic() - started) * 1000))
             return text.strip(), usage_dict
         except Exception as e:
             return f"[Ollama Error] {e}", None
