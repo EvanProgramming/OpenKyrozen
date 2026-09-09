@@ -338,9 +338,9 @@ _provider_config: ProviderConfig | None = None
 llm_provider: LLMProvider | None = None
 
 # Backward-compatible aliases (used throughout the codebase)
-DEEPSEEK_MODEL_SIMPLE = "deepseek-chat"   # set at init time from provider
-DEEPSEEK_MODEL_COMPLEX = "deepseek-reasoner"
-MODEL_NAME = "deepseek-chat (V4 auto-select)"  # updated at init
+DEEPSEEK_MODEL_SIMPLE = "deepseek-v4-flash"   # set at init time from provider
+DEEPSEEK_MODEL_COMPLEX = "deepseek-v4-pro"
+MODEL_NAME = "deepseek-v4-flash"  # updated at init
 # -------- Self-learning feature flags (toggled via /self-learning) --------
 # Keep this list as the public feature contract.  The dispatcher below binds
 # each name to exactly one bounded executor and both CLI and Web use it.

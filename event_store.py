@@ -376,6 +376,8 @@ class EventStore:
             pricing_groups = db.execute(
                 "SELECT provider, pricing_snapshot, "
                 "SUM(COALESCE(prompt_tokens, 0)) AS prompt_tokens, "
+                "SUM(COALESCE(cache_hit_tokens, 0)) AS cache_hit_tokens, "
+                "SUM(COALESCE(cache_miss_tokens, 0)) AS cache_miss_tokens, "
                 "SUM(COALESCE(completion_tokens, 0)) AS completion_tokens, "
                 "SUM(COALESCE(cost_picos, 0)) AS cost_picos "
                 f"FROM usage_attempts WHERE {' AND '.join(clauses)} "
@@ -399,14 +401,23 @@ class EventStore:
             for row in groups:
                 snapshot = self._loads(row["pricing_snapshot"], {})
                 try:
-                    input_rate = max(0, int(snapshot["input_picos_per_million"]))
                     output_rate = max(0, int(snapshot["output_picos_per_million"]))
+                    cache_miss_rate = snapshot.get("cache_miss_picos_per_million")
+                    input_rate = max(0, int(
+                        cache_miss_rate if cache_miss_rate is not None else snapshot["input_picos_per_million"],
+                    ))
                 except (KeyError, TypeError, ValueError):
                     # Compatibility for any manually-created legacy ledger row.
                     fallback += int(row["cost_picos"] or 0)
                     continue
-                numerator += (int(row["prompt_tokens"] or 0) * input_rate
-                              + int(row["completion_tokens"] or 0) * output_rate)
+                prompt = int(row["prompt_tokens"] or 0)
+                if "cache_hit_picos_per_million" in snapshot:
+                    hit = min(prompt, max(0, int(row["cache_hit_tokens"] or 0)))
+                    numerator += (hit * max(0, int(snapshot["cache_hit_picos_per_million"]))
+                                  + (prompt - hit) * input_rate)
+                else:
+                    numerator += prompt * input_rate
+                numerator += int(row["completion_tokens"] or 0) * output_rate
             return fallback + numerator // 1_000_000
 
         totals = normalise(total)

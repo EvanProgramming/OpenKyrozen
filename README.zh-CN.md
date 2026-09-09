@@ -79,7 +79,7 @@ OpenKyrozen 是一款在终端中运行的**自学习 AI 智能体**。与普通
 
 | 服务商 | 获取密钥 | 费用 |
 |--------|---------|------|
-| **DeepSeek** | [platform.deepseek.com](https://platform.deepseek.com) | ~$0.27/百万输入 token |
+| **DeepSeek** | [platform.deepseek.com](https://platform.deepseek.com) | [V4 高峰/低峰、缓存感知计费](https://api-docs.deepseek.com/quick_start/pricing/) |
 | **OpenAI** | [platform.openai.com](https://platform.openai.com) | ~$2.50/百万输入 token |
 | **Anthropic (Claude)** | [console.anthropic.com](https://console.anthropic.com) | ~$3.00/百万输入 token |
 | **Google (Gemini)** | [aistudio.google.com](https://aistudio.google.com) | ~$0.15/百万输入 token |
@@ -246,8 +246,8 @@ Kyrozen 自动对每个请求进行分类并调整行为：
 智能体针对简单任务和复杂任务选择不同模型。你可以覆盖这些默认值：
 
 ```bash
-export KYROZEN_MODEL_SIMPLE=deepseek-chat
-export KYROZEN_MODEL_COMPLEX=deepseek-reasoner
+export KYROZEN_MODEL_SIMPLE=deepseek-v4-flash
+export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
 ```
 
 | 服务商 | 简单任务（默认） | 复杂任务（默认） |

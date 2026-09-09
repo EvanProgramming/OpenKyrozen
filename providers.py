@@ -23,6 +23,7 @@ import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterator
 from abc import ABC, abstractmethod
@@ -34,7 +35,7 @@ from event_store import EventStore
 # ---------------------------------------------------------------------------
 
 PROVIDER_DEFAULT_MODELS: dict[str, tuple[str, str]] = {
-    "deepseek":  ("deepseek-chat",     "deepseek-reasoner"),
+    "deepseek":  ("deepseek-v4-flash", "deepseek-v4-pro"),
     "openai":    ("gpt-4o",             "gpt-4o"),
     "anthropic": ("claude-sonnet-4-20250514", "claude-sonnet-4-20250514"),
     "google":    ("gemini-2.5-flash",   "gemini-2.5-pro"),
@@ -81,6 +82,16 @@ PROVIDER_COSTS: dict[str, tuple[float, float]] = {
 
 _PICOS_PER_DOLLAR = 10**12
 _TOKENS_PER_MILLION = 1_000_000
+_DEEPSEEK_V4_EFFECTIVE_AT = datetime(2026, 8, 16, 16, tzinfo=timezone.utc)
+_DEEPSEEK_V4_MODELS = {
+    "deepseek-v4-flash": ("0.014", "0.44", "1.32"),
+    "deepseek-v4-flash-vision-exp": ("0.014", "0.44", "1.32"),
+    "deepseek-v4-pro": ("0.044", "1.32", "3.96"),
+}
+_DEEPSEEK_V4_ALIASES = {
+    "deepseek-chat": "deepseek-v4-flash",
+    "deepseek-reasoner": "deepseek-v4-flash",
+}
 
 
 @dataclass(frozen=True)
@@ -129,6 +140,35 @@ def _legacy_pricing_snapshot(provider: str) -> tuple[dict[str, Any], int, int]:
     }, input_picos, output_picos
 
 
+def _deepseek_v4_pricing_snapshot(model: str, occurred_at: datetime) -> tuple[dict[str, Any] | None, bool]:
+    """Freeze the official DeepSeek V4 rate card selected at a UTC timestamp."""
+    canonical_model = _DEEPSEEK_V4_ALIASES.get(model.strip().lower(), model.strip().lower())
+    rates = _DEEPSEEK_V4_MODELS.get(canonical_model)
+    if rates is None:
+        return None, False
+    instant = occurred_at.astimezone(timezone.utc)
+    peak = instant.weekday() < 5 and (1 <= instant.hour < 4 or 6 <= instant.hour < 10)
+    multiplier = 1 if peak else 0.5
+    hit, miss, output = (
+        int(Decimal(rate) * Decimal(str(multiplier)) * _PICOS_PER_DOLLAR)
+        for rate in rates
+    )
+    current_schedule = instant >= _DEEPSEEK_V4_EFFECTIVE_AT
+    return {
+        "version": "deepseek-v4-pricing-2026-08-16",
+        "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+        "currency": "USD",
+        "model": canonical_model,
+        "priced_at": instant.isoformat(),
+        "effective_at": _DEEPSEEK_V4_EFFECTIVE_AT.isoformat(),
+        "billing_window": "peak" if peak else "off_peak",
+        "cache_hit_picos_per_million": hit,
+        "cache_miss_picos_per_million": miss,
+        "output_picos_per_million": output,
+        "pricing_status": "authoritative" if current_schedule else "estimated_current_schedule",
+    }, current_schedule
+
+
 def _usage_integer(usage: dict | None, key: str) -> int | None:
     if usage is None or usage.get(key) is None:
         return None
@@ -139,30 +179,61 @@ def _usage_integer(usage: dict | None, key: str) -> int | None:
 
 
 def _track_cost(provider: str, usage: dict | None, *, model: str = "unknown",
-                latency_ms: int | None = None, completion_state: str = "completed") -> str:
+                latency_ms: int | None = None, completion_state: str = "completed",
+                occurred_at: datetime | None = None) -> str:
     """Write one immutable provider attempt; summaries always read this ledger."""
     scope = _current_usage_scope()
     prompt_tokens = _usage_integer(usage, "prompt_tokens")
     completion_tokens = _usage_integer(usage, "completion_tokens")
     cache_hit_tokens = _usage_integer(usage, "cache_hit_tokens")
     cache_miss_tokens = _usage_integer(usage, "cache_miss_tokens")
+    if cache_hit_tokens is None:
+        cache_hit_tokens = _usage_integer(usage, "prompt_cache_hit_tokens")
+    if cache_miss_tokens is None:
+        cache_miss_tokens = _usage_integer(usage, "prompt_cache_miss_tokens")
     reasoning_tokens = _usage_integer(usage, "reasoning_tokens")
-    pricing_snapshot, input_rate, output_rate = _legacy_pricing_snapshot(provider)
+    pricing_snapshot = None
+    current_schedule = True
+    if provider == "deepseek":
+        pricing_snapshot, current_schedule = _deepseek_v4_pricing_snapshot(
+            model, occurred_at or datetime.now(timezone.utc),
+        )
+    if pricing_snapshot is None:
+        pricing_snapshot, input_rate, output_rate = _legacy_pricing_snapshot(provider)
+    else:
+        input_rate = int(pricing_snapshot["cache_miss_picos_per_million"])
+        output_rate = int(pricing_snapshot["output_picos_per_million"])
     cost_picos = None
     if prompt_tokens is not None or completion_tokens is not None:
-        cost_picos = (
-            ((prompt_tokens or 0) * input_rate + (completion_tokens or 0) * output_rate)
-            // _TOKENS_PER_MILLION
-        )
+        prompt = prompt_tokens or 0
+        if "cache_hit_picos_per_million" in pricing_snapshot:
+            hit = min(prompt, cache_hit_tokens or 0)
+            input_cost = (hit * int(pricing_snapshot["cache_hit_picos_per_million"])
+                          + (prompt - hit) * input_rate)
+        else:
+            input_cost = prompt * input_rate
+        cost_picos = (input_cost + (completion_tokens or 0) * output_rate) // _TOKENS_PER_MILLION
+    if cache_hit_tokens is None and cache_miss_tokens is None:
+        cache_status = "unknown"
+    elif (cache_hit_tokens or 0) and (cache_miss_tokens or 0):
+        cache_status = "mixed"
+    elif cache_hit_tokens:
+        cache_status = "hit"
+    else:
+        cache_status = "miss"
+    usage_status = "unknown" if usage is None else (
+        "authoritative" if current_schedule and (provider != "deepseek" or cache_status != "unknown")
+        else "estimated"
+    )
     attempt_id = f"usage_{uuid.uuid4().hex}"
     scope.store.record_usage_attempt(
         attempt_id=attempt_id, provider=provider, model=model, surface=scope.surface,
         user_id=scope.user_id, workspace_id=scope.workspace_id, session_id=scope.session_id,
-        run_id=scope.run_id, cache_status="unknown", prompt_tokens=prompt_tokens,
+        run_id=scope.run_id, cache_status=cache_status, prompt_tokens=prompt_tokens,
         cache_hit_tokens=cache_hit_tokens, cache_miss_tokens=cache_miss_tokens,
         completion_tokens=completion_tokens, reasoning_tokens=reasoning_tokens,
         latency_ms=latency_ms, completion_state=completion_state,
-        usage_status="authoritative" if usage is not None else "unknown",
+        usage_status=usage_status,
         cost_picos=cost_picos, pricing_snapshot=pricing_snapshot,
     )
     return attempt_id
@@ -349,9 +420,13 @@ class OpenAICompatProvider(LLMProvider):
         usage = getattr(response, "usage", None)
         usage_dict = None
         if usage is not None:
+            completion_details = getattr(usage, "completion_tokens_details", None)
             usage_dict = {
                 "prompt_tokens": usage.prompt_tokens or 0,
                 "completion_tokens": usage.completion_tokens or 0,
+                "prompt_cache_hit_tokens": getattr(usage, "prompt_cache_hit_tokens", None),
+                "prompt_cache_miss_tokens": getattr(usage, "prompt_cache_miss_tokens", None),
+                "reasoning_tokens": getattr(completion_details, "reasoning_tokens", None),
             }
         _track_cost(self.config.provider, usage_dict, model=model,
                     latency_ms=round((time.monotonic() - started) * 1000))

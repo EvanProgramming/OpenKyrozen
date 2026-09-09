@@ -79,7 +79,7 @@ OpenKyrozen은 터미널에서 실행되는 **자기 학습형 AI 에이전트**
 
 | 제공자 | 키 발급 | 비용 |
 |--------|--------|------|
-| **DeepSeek** | [platform.deepseek.com](https://platform.deepseek.com) | ~$0.27/100만 입력 토큰 |
+| **DeepSeek** | [platform.deepseek.com](https://platform.deepseek.com) | [V4 피크/비피크, 캐시 인식 가격](https://api-docs.deepseek.com/quick_start/pricing/) |
 | **OpenAI** | [platform.openai.com](https://platform.openai.com) | ~$2.50/100만 입력 토큰 |
 | **Anthropic (Claude)** | [console.anthropic.com](https://console.anthropic.com) | ~$3.00/100만 입력 토큰 |
 | **Google (Gemini)** | [aistudio.google.com](https://aistudio.google.com) | ~$0.15/100만 입력 토큰 |
@@ -250,8 +250,8 @@ Kyrozen은 모든 요청을 자동 분류하고 동작을 조정합니다:
 에이전트는 간단한 작업과 복잡한 작업에 서로 다른 모델을 선택합니다. 재정의할 수 있습니다:
 
 ```bash
-export KYROZEN_MODEL_SIMPLE=deepseek-chat
-export KYROZEN_MODEL_COMPLEX=deepseek-reasoner
+export KYROZEN_MODEL_SIMPLE=deepseek-v4-flash
+export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
 ```
 
 | 제공자 | 간단한 작업 (기본값) | 복잡한 작업 (기본값) |
