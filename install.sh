@@ -13,6 +13,10 @@ printf '%s\n' \
   ' \____/\____/ \_____|_| \_|_|   |_____|_| \_|\____| \___/ '
 printf '%s\n\n' 'OpenKyrozen computer-native installer'
 
+release_version='2.0.1'
+release_tag="v$release_version"
+release_wheel_url="https://github.com/EvanProgramming/OpenKyrozen/releases/download/$release_tag/openkyrozen-$release_version-py3-none-any.whl"
+
 [ -n "${HOME:-}" ] || fail 'HOME is not set.'
 
 os_name="$(uname -s 2>/dev/null || true)"
@@ -31,8 +35,8 @@ esac
 command -v mkdir >/dev/null 2>&1 || fail 'mkdir is required.'
 command -v curl >/dev/null 2>&1 || fail 'curl is required to bootstrap uv.'
 [ -w "$HOME" ] || fail "User home is not writable: $HOME"
-if ! curl -fsS --max-time 10 https://pypi.org/ >/dev/null; then
-    fail 'Network access to PyPI is required to install OpenKyrozen.'
+if ! curl -fsSL --max-time 20 -o /dev/null "$release_wheel_url"; then
+    fail "GitHub release asset is unavailable: $release_tag"
 fi
 
 state_dir="$HOME/.kyrozen"
@@ -70,8 +74,9 @@ else
     fi
 fi
 
-info "Installing OpenKyrozen from PyPI with Python $python_version..."
-"$uv_bin" tool install --python "$python_version" --upgrade 'openkyrozen[web]'
+info "Installing OpenKyrozen $release_tag from its immutable GitHub release with Python $python_version..."
+"$uv_bin" tool install --python "$python_version" --force \
+  --with fastapi --with uvicorn "$release_wheel_url"
 "$uv_bin" tool update-shell >/dev/null 2>&1 || true
 
 profile=''
@@ -92,7 +97,12 @@ if [ -z "$kyrozen_bin" ]; then
 fi
 
 info 'Verifying the installation...'
-"$kyrozen_bin" --version
+installed_version="$($kyrozen_bin --version)"
+printf '%s\n' "$installed_version"
+case "$installed_version" in
+    *"OpenKyrozen $release_version"*) ;;
+    *) fail "Installed version does not match GitHub release $release_tag: $installed_version" ;;
+esac
 "$kyrozen_bin" --help >/dev/null
 
 printf '%s\n' '' 'Installation complete.' \

@@ -55,7 +55,7 @@ except ImportError:
 app = FastAPI(
     title="OpenKyrozen API",
     description="Self-learning AI Agent — REST API + Web Chat",
-    version="2.0.0",
+    version=_agent.RELEASE_VERSION,
 )
 
 # ---------------------------------------------------------------------------

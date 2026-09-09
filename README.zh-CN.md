@@ -90,16 +90,16 @@ OpenKyrozen 是一款在终端中运行的**自学习 AI 智能体**。与普通
 macOS 或 Linux：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.1/install.sh | sh
 ```
 
 Windows PowerShell：
 
 ```powershell
-irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.1/install.ps1 | iex
 ```
 
-安装器会检查操作系统、架构、Python、网络和用户目录权限；需要时安装 `uv`；在隔离的 `uv` 工具环境中安装 `openkyrozen[web]`；创建私有 `~/.kyrozen` 状态目录；并验证 `kyrozen --version` 与 `kyrozen --help`。安装器不会读取、打印或上传 API 密钥，首次运行 `kyrozen` 时再引导服务商配置。
+安装器会获取不可变的 GitHub `v2.0.1` 发布 wheel，检查操作系统、架构、Python、网络和用户目录权限；需要时安装 `uv`；在隔离的 `uv` 工具环境中配置 Web 依赖；创建私有 `~/.kyrozen` 状态目录；并验证 `kyrozen --version` 与 `kyrozen --help`。安装器不会读取、打印或上传 API 密钥，首次运行 `kyrozen` 时再引导服务商配置。
 
 ### 仅用于开发的源码检出
 
@@ -120,16 +120,17 @@ run.bat
 这些命令会显式使用项目模式（`--project .`），仅用于仓库开发。
 `make install` 会安装完整的 `.[all]` 开发依赖和 Chromium，因此 `make test` 也会运行浏览器集成流程。若只需轻量的非浏览器路径，请使用 `make install-core` 和 `make test-core`。
 
-### 从 PyPI 安装
+### 从固定的 GitHub 发布版安装
 
 ```bash
-uv tool install 'openkyrozen[web]'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl'
+uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
 
 # 已有受支持的 Python 环境也可以：
-pip install 'openkyrozen[web]'
+pip install fastapi uvicorn "$release_url"
 ```
 
-安装后可在任意调用目录运行 `kyrozen` 和 `kyrozen-web`。加密的服务商配置保存在 `~/.kyrozen_config.json`。
+GitHub Actions 会构建并验证发布 wheel，详见 [v2.0.1 发布版](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.1)。安装后可在任意调用目录运行 `kyrozen` 和 `kyrozen-web`。加密的服务商配置保存在 `~/.kyrozen_config.json`。
 
 ---
 
@@ -166,7 +167,7 @@ Kyrozen 会：
 | `/api_key` | 更改 API 密钥 |
 | `/learn` | 立即扫描项目文件存入记忆 |
 | `/forget` | 查看最近的学习记录；`/forget 关键词` 删除错误学习 |
-| `/update` | 使用 `uv tool upgrade openkyrozen` 更新已安装的软件包（不会向项目执行 git pull） |
+| `/update` | 重新安装固定的 GitHub `v2.0.1` 发布 wheel（不会向项目执行 git pull） |
 | `/self-learning` | 开关各项自学习功能 |
 
 ### Web UI 模式
@@ -448,7 +449,8 @@ curl -sS -X DELETE http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
 ## 🌐 Web UI 与 REST API
 
 ```bash
-pip install 'openkyrozen[web]'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl'
+pip install fastapi uvicorn "$release_url"
 kyrozen-web --port 8000
 # 打开 http://localhost:8000
 
@@ -503,7 +505,8 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `POST` | `/mcp` | 模型上下文协议（JSON-RPC 2.0） |
 
 浏览器工具（`browser_open`、`browser_snapshot`、`browser_click`、`browser_type`、
-`browser_close`）使用隔离 profile。安装 `pip install 'openkyrozen[browser]' &&
+`browser_close`）使用隔离 profile。安装 `pip install playwright
+https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl &&
 playwright install chromium` 后即可使用。默认阻止内网和 loopback 地址；只有显式设置
 `KYROZEN_BROWSER_ALLOW_PRIVATE=1` 才会放开。所有 JSON Action 都使用纯字符串 `args`；MCP
 的 `tools/list` 和 `server/discover` 为允许的工具提供 `inputSchema`，并把对象参数映射回同一字符串契约。未知/未授权工具是 JSON-RPC 协议错误，工具执行失败使用 `result.isError: true`。完整清单见 [docs/tool-inventory.md](docs/tool-inventory.md)。
@@ -668,15 +671,17 @@ GitHub Actions 在每次推送和 PR 时自动运行：
 - Windows PowerShell 安装器语法和帮助路径检查
 - Docker 构建和替换容器恢复 smoke test
 
-推送 `v*` 版本标签时，还会构建并验证 sdist/wheel，并在配置好的
-`pypi` 环境门禁后通过 GitHub Trusted Publishing 发布到 PyPI。
+推送 `v2.0.1` 版本标签时，还会构建并验证 sdist/wheel，创建包含构件的
+GitHub Release，并在 Windows 上验证 PowerShell 安装器。公共安装器和
+`/update` 会固定到该版本，直到有意发布未来版本。
 
-### pip 包
+### 发布 wheel
 
 ```bash
-# 已发布的软件包（安装器会负责 uv 和 Python 设置）
-uv tool install 'openkyrozen[web]'
-pip install 'openkyrozen[web]'
+# 不可变的 GitHub 发布版（安装器会负责 uv 和 Python 设置）
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl'
+uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
+pip install fastapi uvicorn "$release_url"
 
 # 仅限本地源码检出（开发）
 pip install .                   # 核心 + CLI
@@ -705,7 +710,7 @@ OpenKyrozen/
 ├── prompts/             # 提示词模板（角色、指令、示例）
 ├── docs/tool-inventory.md # 生成的运行时工具和端点清单
 ├── scripts/              # 可复现的文档和 smoke check
-└── .github/workflows/   # CI、发布和 PyPI 流水线
+└── .github/workflows/   # CI 和带标签的 GitHub 发布流水线
 ```
 
 ---
