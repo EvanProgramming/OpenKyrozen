@@ -9,7 +9,7 @@ Historical verification snapshot: `51be33361422e55e1f2f00c33a0e0f8c56132a91`
 (the post-#54 `main` revision, captured before this #55 documentation-only
 update). Snapshot date: 2026-09-04.
 
-Current repository test count at this snapshot: **160 unittest cases**.
+Current repository test count at this snapshot: **161 unittest cases**.
 
 ## Verified surface
 
@@ -106,8 +106,11 @@ curl -sS http://127.0.0.1:8000/api/chat \
   -d '{"message":"Write a sourced migration note", "profile":"researcher", "session_id":"demo", "speaker":"authenticated", "audience":"team", "channel":"chat"}'
 ```
 
-The streaming endpoint `/api/chat/stream` accepts the same body and emits the
-receipt as an SSE record when one is available.
+The streaming endpoint `/api/chat/stream` accepts the same body and forwards
+provider content deltas as they arrive. Control responses are buffered only
+long enough to parse actions; durable tool receipts, task progress, usage,
+memory, and completion are emitted as typed SSE records. The existing `chunk`,
+`cost`, `memory_receipt`, `error`, and `[DONE]` payloads remain compatible.
 
 ### Inspect learning evidence
 

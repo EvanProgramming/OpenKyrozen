@@ -16,6 +16,7 @@ import ipaddress
 import copy
 import re
 import asyncio
+import queue
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -778,26 +779,89 @@ async def api_chat_stream(request: Request):
     _set_memory_context(session, body)
     _audit("CHAT_STREAM", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
 
-    async def generate():
+    class StreamProjection:
+        """Pass plain deltas through while holding model control prefixes."""
+
+        prefixes = ("Thought:", "Plan:", "TaskList:", "TaskDone:", "Action:", "DefineTool:")
+
+        def __init__(self, sink):
+            self.sink = sink
+            self.buffer = ""
+
+        def __call__(self, event: dict[str, Any]) -> None:
+            kind = event.get("event")
+            if kind == "content":
+                self.buffer += str(event.get("chunk", ""))
+                candidate = self.buffer.lstrip()
+                lowered = candidate.lower()
+                if candidate and (
+                    any(prefix.lower().startswith(lowered) for prefix in self.prefixes)
+                    or any(lowered.startswith(prefix.lower()) for prefix in self.prefixes)
+                ):
+                    return
+                if self.buffer:
+                    self.sink({"event": "content", "chunk": self.buffer})
+                    self.buffer = ""
+                return
+            if kind == "model_complete":
+                self._flush()
+                return
+            self.sink(event)
+
+        def _flush(self) -> None:
+            if not self.buffer:
+                return
+            text = self.buffer
+            self.buffer = ""
+            if _agent._collect_tool_calls(text) or any(
+                    text.lstrip().lower().startswith(prefix.lower()) for prefix in self.prefixes
+            ):
+                text = _agent._clean_final_response(text)
+            if text:
+                self.sink({"event": "content", "chunk": text})
+
+    events: queue.Queue[dict[str, Any]] = queue.Queue()
+    projection = StreamProjection(events.put)
+
+    def run_streaming_turn() -> None:
+        callback_token = _agent._stream_event_callback.set(projection)
         try:
-            # The legacy agent is synchronous and may perform network and disk
-            # I/O. Keep it off the ASGI event loop so one chat cannot stall
-            # health checks or unrelated requests.
-            reply = await asyncio.to_thread(_run_session_chat, session, msg)
-            # Send chunks (simulated streaming for non-streaming providers)
-            chunk_size = 20
-            for i in range(0, len(reply), chunk_size):
-                chunk = reply[i:i+chunk_size]
-                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
-                await asyncio_sleep(0.01)
-            yield f"data: {json.dumps({'cost': _cost_summary()})}\n\n"
-            if session.get("last_memory_receipt"):
-                yield f"data: {json.dumps({'memory_receipt': session['last_memory_receipt']})}\n\n"
-            yield "data: [DONE]\n\n"
-            _emit_chat_completed(session, reply, streamed=True)
-            _audit("REPLY_STREAM", f"len={len(reply)}", session["user_id"])
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            reply = _run_session_chat(session, msg)
+            if str(reply).startswith("[LLM Error]"):
+                events.put({"event": "error", "error": str(reply)})
+            else:
+                events.put({"event": "complete", "reply": reply})
+        except Exception as exc:
+            events.put({"event": "error", "error": str(exc)})
+        finally:
+            _agent._stream_event_callback.reset(callback_token)
+
+    async def generate():
+        # The synchronous agent runs in a dedicated worker and safely drains if
+        # a client disconnects; it never blocks the ASGI event loop.
+        threading.Thread(target=run_streaming_turn, daemon=True).start()
+        while True:
+            event = await asyncio.to_thread(events.get)
+            kind = event.get("event")
+            if kind == "content":
+                yield f"data: {json.dumps({'event': 'content', 'chunk': event.get('chunk', '')}, ensure_ascii=False)}\n\n"
+            elif kind == "tool_receipt":
+                yield f"data: {json.dumps({'event': 'tool_receipt', 'tool_receipt': event.get('tool_receipt')}, ensure_ascii=False)}\n\n"
+            elif kind == "tasks":
+                yield f"data: {json.dumps({'event': 'tasks', 'tasks': event.get('tasks', [])}, ensure_ascii=False)}\n\n"
+            elif kind == "error":
+                yield f"data: {json.dumps({'event': 'error', 'error': event.get('error', 'stream failed')}, ensure_ascii=False)}\n\n"
+                break
+            elif kind == "complete":
+                reply = str(event.get("reply", ""))
+                yield f"data: {json.dumps({'event': 'usage', 'cost': _cost_summary()})}\n\n"
+                if session.get("last_memory_receipt"):
+                    yield f"data: {json.dumps({'event': 'memory_receipt', 'memory_receipt': session['last_memory_receipt']}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'event': 'completion', 'status': 'completed'})}\n\n"
+                yield "data: [DONE]\n\n"
+                _emit_chat_completed(session, reply, streamed=True)
+                _audit("REPLY_STREAM", f"len={len(reply)}", session["user_id"])
+                break
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -1658,11 +1722,6 @@ async def pwa_manifest():
         "theme_color": "#00f0ff",
         "icons": [{"src": "/static/icon.png", "sizes": "192x192", "type": "image/png"}]
     }
-
-
-# Async sleep helper
-async def asyncio_sleep(seconds: float):
-    await asyncio.sleep(seconds)
 
 
 # ---------------------------------------------------------------------------
