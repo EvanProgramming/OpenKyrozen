@@ -508,7 +508,19 @@ _total_completion_tokens: int = 0
 _last_prompt_tokens: int = 0
 _last_completion_tokens: int = 0
 _active_usage_run_id: ContextVar[str | None] = ContextVar("active_usage_run_id", default=None)
+_stream_event_callback: ContextVar[Any] = ContextVar("stream_event_callback", default=None)
 _turn_cost_log: list[dict] = []  # {"tokens":int, "time":float, "tool_calls":int}
+
+
+def _emit_stream_event(event: dict[str, Any]) -> None:
+    """Forward typed stream progress without letting a client affect the turn."""
+    callback = _stream_event_callback.get()
+    if not callable(callback):
+        return
+    try:
+        callback(event)
+    except Exception:
+        pass
 
 def _track_tool_performance(action: str, result: str, elapsed: float) -> None:
     stats = _tool_stats.setdefault(action, {"calls":0,"successes":0,"total_time":0.0})
@@ -997,6 +1009,13 @@ def _spinner_worker(stop_event: threading.Event) -> None:
 
 def _call_llm_with_spinner(messages: list[dict], model: str | None = None) -> str:
     global _SPINNER_STOP, _SPINNER_THREAD
+    streaming = callable(_stream_event_callback.get())
+    if streaming:
+        return _get_llm_response(
+            messages, model=model, stream=True,
+            on_chunk=lambda chunk: _emit_stream_event({"event": "content", "chunk": str(chunk)}),
+            on_stream_end=lambda: _emit_stream_event({"event": "model_complete"}),
+        )
     _SPINNER_STOP.clear()
     _SPINNER_THREAD = threading.Thread(target=_spinner_worker, args=(_SPINNER_STOP,), daemon=True)
     _SPINNER_THREAD.start()
@@ -3303,12 +3322,18 @@ def _record_turn_receipt(receipt: ExecutionReceipt) -> dict[str, Any]:
         "execution.receipt", receipt.as_dict(), user_id=tasks.user_id,
         workspace_id=tasks.workspace_id, session_id=tasks.session_id, task_id=task_id,
     )
-    return {
+    result = {
         "receipt_id": receipt.receipt_id, "operation_id": receipt.operation_id,
         "action": receipt.action, "args": receipt.args, "result": receipt.result,
         "success": receipt.success, "authorized": receipt.authorized,
         "acceptance": receipt.acceptance, "failure": receipt.failure,
     }
+    _emit_stream_event({"event": "tool_receipt", "tool_receipt": result})
+    _emit_stream_event({"event": "tasks", "tasks": [
+        {"id": item["id"], "description": item["description"], "status": item["status"]}
+        for item in tasks.tasks
+    ]})
+    return result
 
 
 def _execute_durable_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -3449,7 +3474,8 @@ def _bounded_provider_call(callback: Any) -> Any:
     return value
 
 
-def _get_llm_response(messages: list[dict[str, str]], model: str | None = None, stream: bool = False) -> str:
+def _get_llm_response(messages: list[dict[str, str]], model: str | None = None, stream: bool = False,
+                      on_chunk: Any = None, on_stream_end: Any = None) -> str:
     global _last_prompt_tokens, _last_completion_tokens, _total_prompt_tokens, _total_completion_tokens
     if llm_provider is None:
         return "[Error] LLM provider not initialised"
@@ -3459,15 +3485,29 @@ def _get_llm_response(messages: list[dict[str, str]], model: str | None = None, 
                 workspace_id=memory_bank.workspace_id, session_id=memory_bank.session_id,
                 run_id=_active_usage_run_id.get(), surface=_EXECUTION_SURFACE):
             if stream and hasattr(llm_provider, 'chat_stream'):
-                # Streaming usage frames are persisted by the streaming implementation.
+                before = memory_bank.store.usage_totals(
+                    user_id=memory_bank.user_id, workspace_id=memory_bank.workspace_id,
+                    session_id=memory_bank.session_id, run_id=_active_usage_run_id.get(),
+                )
                 collected: list[str] = []
                 for chunk in llm_provider.chat_stream(messages, model or DEEPSEEK_MODEL):
                     collected.append(chunk)
-                    sys.stdout.write(chunk)
-                    sys.stdout.flush()
+                    if on_chunk:
+                        on_chunk(chunk)
+                    else:
+                        sys.stdout.write(chunk)
+                        sys.stdout.flush()
                 text = "".join(collected).strip()
-                _last_prompt_tokens = 0
-                _last_completion_tokens = len(text) // 4  # presentation-only until a usage frame arrives
+                after = memory_bank.store.usage_totals(
+                    user_id=memory_bank.user_id, workspace_id=memory_bank.workspace_id,
+                    session_id=memory_bank.session_id, run_id=_active_usage_run_id.get(),
+                )
+                _last_prompt_tokens = max(0, int(after["prompt_tokens"]) - int(before["prompt_tokens"]))
+                _last_completion_tokens = max(0, int(after["completion_tokens"]) - int(before["completion_tokens"]))
+                _total_prompt_tokens += _last_prompt_tokens
+                _total_completion_tokens += _last_completion_tokens
+                if on_stream_end:
+                    on_stream_end()
             else:
                 text, usage_dict = _bounded_provider_call(
                     lambda: llm_provider.chat(messages, model or DEEPSEEK_MODEL)

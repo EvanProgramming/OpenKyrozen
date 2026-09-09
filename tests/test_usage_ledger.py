@@ -121,20 +121,21 @@ class UsageLedgerTests(unittest.TestCase):
     def test_short_and_mixed_calls_aggregate_before_display_rounding(self):
         with tempfile.TemporaryDirectory(prefix="openkyrozen-usage-precision-") as directory:
             store = EventStore(Path(directory) / "state.sqlite3")
+            peak_time = datetime(2026, 9, 7, 2, tzinfo=timezone.utc)
             with usage_scope(store=store, workspace_id="project", session_id="short"):
                 for _ in range(1000):
                     _track_cost("deepseek", {"prompt_tokens": 0, "completion_tokens": 100},
-                                model="deepseek-chat")
+                                model="deepseek-chat", occurred_at=peak_time)
             with usage_scope(store=store, workspace_id="project", session_id="mixed"):
                 for _ in range(1000):
                     _track_cost("deepseek", {"prompt_tokens": 100, "completion_tokens": 100},
-                                model="deepseek-chat")
+                                model="deepseek-chat", occurred_at=peak_time)
             with usage_scope(store=store, workspace_id="project", session_id="combined-short"):
                 _track_cost("deepseek", {"prompt_tokens": 0, "completion_tokens": 100_000},
-                            model="deepseek-chat")
+                            model="deepseek-chat", occurred_at=peak_time)
             with usage_scope(store=store, workspace_id="project", session_id="combined-mixed"):
                 _track_cost("deepseek", {"prompt_tokens": 100_000, "completion_tokens": 100_000},
-                            model="deepseek-chat")
+                            model="deepseek-chat", occurred_at=peak_time)
 
             short = store.usage_totals(workspace_id="project", session_id="short", user_id="local")
             mixed = store.usage_totals(workspace_id="project", session_id="mixed", user_id="local")
