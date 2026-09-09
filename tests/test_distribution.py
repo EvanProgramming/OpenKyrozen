@@ -87,6 +87,8 @@ class DistributionTests(unittest.TestCase):
     def test_powershell_installer_is_static_safe_and_parses_when_available(self):
         installer = ROOT / "install.ps1"
         text = installer.read_text(encoding="utf-8")
+        self.assertIn('[Alias("Help")]', text)
+        self.assertIn("$ShowHelp", text)
         self.assertIn("[Environment]::GetEnvironmentVariable(\"Path\", \"User\")", text)
         self.assertIn("SetEnvironmentVariable(\"Path\"", text)
         self.assertIn("tool install --python", text)
