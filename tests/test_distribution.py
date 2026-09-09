@@ -20,6 +20,7 @@ class DistributionTests(unittest.TestCase):
         with (ROOT / "pyproject.toml").open("rb") as handle:
             document = tomllib.load(handle)
         project = document["project"]
+        self.assertEqual(project["version"], "2.0.1")
         self.assertEqual(project["requires-python"], ">=3.12,<3.14")
         self.assertEqual(project["scripts"]["kyrozen"], "main:main")
         self.assertEqual(project["scripts"]["kyrozen-web"], "server:main_entry")
@@ -43,6 +44,26 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("make test PYTHON=python", workflow)
         self.assertIn("make install-core PYTHON=python", workflow)
         self.assertIn("make test-core", workflow)
+        release = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+        self.assertIn('- "v2.0.1"', release)
+        self.assertIn("python -m build --sdist --wheel", release)
+        self.assertIn("gh release create", release)
+        self.assertIn("--verify-tag", release)
+        self.assertIn("runs-on: windows-latest", release)
+        self.assertNotIn("pypa/gh-action-pypi-publish", release)
+
+    def test_public_install_paths_pin_the_verified_release(self):
+        release_url = (
+            "https://github.com/EvanProgramming/OpenKyrozen/releases/download/"
+            "v2.0.1/openkyrozen-2.0.1-py3-none-any.whl"
+        )
+        for readme in sorted(ROOT.glob("README*.md")):
+            text = readme.read_text(encoding="utf-8")
+            with self.subTest(readme=readme.name):
+                self.assertIn("raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.1/", text)
+                self.assertIn(release_url, text)
+                self.assertNotIn("pypi.org", text.lower())
+                self.assertNotIn("uv tool upgrade openkyrozen", text)
 
     def test_posix_installer_has_valid_syntax_and_idempotent_user_path_logic(self):
         installer = ROOT / "install.sh"
@@ -57,7 +78,11 @@ class DistributionTests(unittest.TestCase):
         self.assertIn('PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"', text)
         self.assertIn("grep -Fq '$HOME/.local/bin'", text)
         self.assertIn('tool install --python', text)
-        self.assertIn("kyrozen_bin\" --version", text)
+        self.assertIn("release_version='2.0.1'", text)
+        self.assertIn("releases/download", text)
+        self.assertIn("--with fastapi --with uvicorn", text)
+        self.assertNotIn("pypi.org", text)
+        self.assertIn("installed_version=", text)
 
     def test_powershell_installer_is_static_safe_and_parses_when_available(self):
         installer = ROOT / "install.ps1"
@@ -65,6 +90,10 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("[Environment]::GetEnvironmentVariable(\"Path\", \"User\")", text)
         self.assertIn("SetEnvironmentVariable(\"Path\"", text)
         self.assertIn("tool install --python", text)
+        self.assertIn("v2.0.1", text)
+        self.assertIn("releases/download", text)
+        self.assertIn("--with fastapi --with uvicorn", text)
+        self.assertNotIn("pypi.org", text)
         powershell = shutil.which("pwsh") or shutil.which("powershell")
         if powershell is None:
             return
@@ -96,6 +125,9 @@ class DistributionTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertIn(marker, result.stdout)
 
+        import server
+        self.assertEqual(server.app.version, "2.0.1")
+
     def test_web_parser_accepts_project_and_server_flags(self):
         import server
 
@@ -122,16 +154,22 @@ class DistributionTests(unittest.TestCase):
         import main
 
         completed = subprocess.CompletedProcess(
-            ["uv", "tool", "upgrade", "openkyrozen"], 0, stdout="upgraded", stderr="",
+            ["uv", "tool", "install"], 0, stdout="upgraded", stderr="",
         )
         with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
              patch("main.subprocess.run", return_value=completed) as run:
             result = main._self_update()
         self.assertIn("upgraded", result)
-        run.assert_called_once_with(
-            ["uv", "tool", "upgrade", "openkyrozen"],
-            capture_output=True, text=True, timeout=60,
+        command = run.call_args.args[0]
+        expected_python = (
+            f"{sys.version_info.major}.{sys.version_info.minor}"
+            if sys.version_info[:2] in {(3, 12), (3, 13)} else "3.12"
         )
+        self.assertEqual(command[:6], ["uv", "tool", "install", "--python", expected_python, "--force"])
+        self.assertIn("--with", command)
+        self.assertIn("fastapi", command)
+        self.assertIn("uvicorn", command)
+        self.assertTrue(command[-1].endswith("/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl"))
 
     def test_docker_starts_server_in_explicit_project_mode(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")

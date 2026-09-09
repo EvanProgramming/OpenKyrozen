@@ -90,16 +90,16 @@ OpenKyrozen はターミナルで動作する**自己学習型 AI エージェ�
 macOS または Linux：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.1/install.sh | sh
 ```
 
 Windows PowerShell：
 
 ```powershell
-irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.1/install.ps1 | iex
 ```
 
-インストーラーは OS、アーキテクチャ、Python、ネットワーク、ユーザーパスの書き込み可否を確認し、必要なら `uv` を導入します。その後、分離された `uv` ツール環境に `openkyrozen[web]` をインストールし、プライベートな `~/.kyrozen` 状態ディレクトリを作成して `kyrozen --version` と `kyrozen --help` を検証します。API キーを読み取り、表示、アップロードすることはありません。初回の `kyrozen` 起動でプロバイダー設定を案内します。
+インストーラーは不変の GitHub `v2.0.1` リリース wheel を取得し、OS、アーキテクチャ、Python、ネットワーク、ユーザーパスの書き込み可否を確認します。必要なら `uv` を導入し、分離された `uv` ツール環境に Web 依存関係を用意して、プライベートな `~/.kyrozen` 状態ディレクトリを作成し、`kyrozen --version` と `kyrozen --help` を検証します。API キーを読み取り、表示、アップロードすることはありません。初回の `kyrozen` 起動でプロバイダー設定を案内します。
 
 ### 開発専用のソースチェックアウト
 
@@ -120,16 +120,17 @@ run.bat
 これらのコマンドは明示的にプロジェクトモード（`--project .`）で動作し、リポジトリ開発専用です。
 `make install` は完全な `.[all]` 開発依存関係と Chromium を導入するため、`make test` でブラウザー統合フローも実行します。軽量な非ブラウザーパスには `make install-core` と `make test-core` を使用してください。
 
-### PyPI からのパッケージインストール
+### 固定 GitHub リリースからのインストール
 
 ```bash
-uv tool install 'openkyrozen[web]'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl'
+uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
 
 # 対応済みの Python 環境ではこちらも使用できます：
-pip install 'openkyrozen[web]'
+pip install fastapi uvicorn "$release_url"
 ```
 
-インストール後は任意の呼び出し元ディレクトリから `kyrozen` と `kyrozen-web` を実行できます。暗号化されたプロバイダー設定は `~/.kyrozen_config.json` に保存されます。
+GitHub Actions がリリース wheel をビルド・検証します。詳しくは [v2.0.1 リリース](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.1) を参照してください。インストール後は任意の呼び出し元ディレクトリから `kyrozen` と `kyrozen-web` を実行できます。暗号化されたプロバイダー設定は `~/.kyrozen_config.json` に保存されます。
 
 ---
 
@@ -170,7 +171,7 @@ Kyrozen は：
 | `/api_key` | API キーを変更 |
 | `/learn` | プロジェクトファイルを即座にメモリにスキャン |
 | `/forget` | 最近の学習を表示；`/forget キーワード` で誤った学習を削除 |
-| `/update` | `uv tool upgrade openkyrozen` でインストール済みパッケージを更新（プロジェクトへ git pull しない） |
+| `/update` | 固定された GitHub `v2.0.1` リリース wheel を再インストール（プロジェクトへ git pull しない） |
 | `/self-learning` | 個別の自己学習機能をオン/オフ |
 
 ### Web UI モード
@@ -443,7 +444,8 @@ curl -sS -X DELETE http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
 ## 🌐 Web UI と REST API
 
 ```bash
-pip install 'openkyrozen[web]'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl'
+pip install fastapi uvicorn "$release_url"
 kyrozen-web --port 8000
 # http://localhost:8000 を開く
 
@@ -658,15 +660,18 @@ GitHub Actions がプッシュと PR ごとに自動実行：
 - Windows PowerShell インストーラーの構文とヘルプ経路のチェック
 - Docker ビルドとコンテナ置換後の復元スモークテスト
 
-`v*` タグをプッシュすると、sdist/wheel をビルドして検証し、設定済みの
-`pypi` 環境ゲート後に GitHub Trusted Publishing で PyPI へ公開します。
+`v2.0.1` タグをプッシュすると、sdist/wheel をビルドして検証し、成果物を
+含む GitHub Release を作成して、Windows で PowerShell インストーラーを検証します。
+公開インストーラーと `/update` は、将来のバージョンを意図的に公開するまで
+このリリースに固定されます。
 
-### pip パッケージ
+### リリース wheel
 
 ```bash
-# 公開パッケージ（インストーラーが uv と Python の設定も行います）
-uv tool install 'openkyrozen[web]'
-pip install 'openkyrozen[web]'
+# 不変の GitHub リリース（インストーラーが uv と Python の設定も行います）
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl'
+uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
+pip install fastapi uvicorn "$release_url"
 
 # ローカルチェックアウトのみ（開発）
 pip install .                   # コア + CLI
@@ -695,7 +700,7 @@ OpenKyrozen/
 ├── prompts/             # プロンプトテンプレート（役割、指示、例）
 ├── docs/tool-inventory.md # 生成されたランタイムツール/ルート一覧
 ├── scripts/              # 再現可能なドキュメント/スモークチェック
-└── .github/workflows/   # CI、リリース、PyPI 公開パイプライン
+└── .github/workflows/   # CI とタグ付き GitHub リリースパイプライン
 ```
 
 ---

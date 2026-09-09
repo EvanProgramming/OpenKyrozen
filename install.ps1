@@ -10,9 +10,13 @@ function Fail([string]$Message) {
 }
 
 if ($Help) {
-    Write-Output "OpenKyrozen installer: installs uv, Python 3.12/3.13, and openkyrozen[web]."
+    Write-Output "OpenKyrozen installer: installs the pinned v2.0.1 GitHub release, uv, Python 3.12/3.13, and Web dependencies."
     exit 0
 }
+
+$releaseVersion = "2.0.1"
+$releaseTag = "v$releaseVersion"
+$releaseWheelUrl = "https://github.com/EvanProgramming/OpenKyrozen/releases/download/$releaseTag/openkyrozen-$releaseVersion-py3-none-any.whl"
 
 Write-Output ""
 Write-Output "  ____  ____  _____ _   _ ____  _____ _   _  ____  _   _ "
@@ -37,9 +41,9 @@ try {
 }
 
 try {
-    Invoke-WebRequest -UseBasicParsing -Uri "https://pypi.org/" -Method Head -TimeoutSec 10 | Out-Null
+    Invoke-WebRequest -UseBasicParsing -Uri $releaseWheelUrl -Method Head -TimeoutSec 20 | Out-Null
 } catch {
-    Fail "Network access to PyPI is required to install OpenKyrozen."
+    Fail "GitHub release asset is unavailable: $releaseTag"
 }
 
 $localBin = Join-Path $HOME ".local\bin"
@@ -80,8 +84,8 @@ if (-not $pythonVersion) {
     Fail "Could not install Python 3.12 or 3.13."
 }
 
-Write-Output "[INFO] Installing OpenKyrozen from PyPI with Python $pythonVersion..."
-& $uvCommand.Source tool install --python $pythonVersion --upgrade "openkyrozen[web]"
+Write-Output "[INFO] Installing OpenKyrozen $releaseTag from its immutable GitHub release with Python $pythonVersion..."
+& $uvCommand.Source tool install --python $pythonVersion --force --with fastapi --with uvicorn $releaseWheelUrl
 try { & $uvCommand.Source tool update-shell *> $null } catch { }
 
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -102,7 +106,11 @@ if (-not $kyrozenCommand) {
 }
 
 Write-Output "[INFO] Verifying the installation..."
-& $kyrozenCommand.Source --version
+$installedVersion = (& $kyrozenCommand.Source --version | Out-String).Trim()
+Write-Output $installedVersion
+if ($installedVersion -notmatch "OpenKyrozen $releaseVersion") {
+    Fail "Installed version does not match GitHub release $releaseTag`: $installedVersion"
+}
 & $kyrozenCommand.Source --help *> $null
 Write-Output ""
 Write-Output "Installation complete."

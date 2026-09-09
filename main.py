@@ -115,10 +115,17 @@ from providers import (
     save_provider_config_encrypted, encrypt_api_key, decrypt_api_key,
 )
 
+RELEASE_VERSION = "2.0.1"
+RELEASE_TAG = f"v{RELEASE_VERSION}"
+RELEASE_WHEEL_URL = (
+    "https://github.com/EvanProgramming/OpenKyrozen/releases/download/"
+    f"{RELEASE_TAG}/openkyrozen-{RELEASE_VERSION}-py3-none-any.whl"
+)
+
 try:
     __version__ = importlib.metadata.version("openkyrozen")
 except importlib.metadata.PackageNotFoundError:
-    __version__ = "2.0.0"
+    __version__ = RELEASE_VERSION
 
 # aliases for flexible action recognition
 TOOL_ALIASES: dict[str, str] = {
@@ -1230,12 +1237,17 @@ def _self_update() -> str:
     """Upgrade the installed package without touching the active project."""
     if shutil.which("uv") is None:
         return (
-            "OpenKyrozen is package-managed. Install or update it with the official installer, "
-            "or install uv and run: uv tool upgrade openkyrozen"
+            "OpenKyrozen is package-managed. Install or update it with the official "
+            f"{RELEASE_TAG} installer (uv is required)."
         )
+    requested_python = (
+        f"{sys.version_info.major}.{sys.version_info.minor}"
+        if sys.version_info[:2] in {(3, 12), (3, 13)} else "3.12"
+    )
     try:
         result = subprocess.run(
-            ["uv", "tool", "upgrade", "openkyrozen"],
+            ["uv", "tool", "install", "--python", requested_python, "--force",
+             "--with", "fastapi", "--with", "uvicorn", RELEASE_WHEEL_URL],
             capture_output=True,
             text=True,
             timeout=60,
@@ -1244,11 +1256,11 @@ def _self_update() -> str:
         err = result.stderr.strip() or ""
         if result.returncode != 0:
             return f"Update failed:\n{err}"
-        return f"Updated OpenKyrozen successfully:\n{out}"
+        return f"Updated OpenKyrozen from GitHub release {RELEASE_TAG}:\n{out}"
     except subprocess.TimeoutExpired:
         return "Update timed out."
     except FileNotFoundError:
-        return "Error: uv is not installed or could not upgrade the OpenKyrozen tool."
+        return "Error: uv is not installed or could not install the pinned OpenKyrozen release."
     except Exception as e:
         return f"Error during update: {e}"
 
