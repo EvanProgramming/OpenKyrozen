@@ -1,5 +1,6 @@
 param(
-    [switch]$Help
+    [Alias("Help")]
+    [switch]$ShowHelp
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,7 +10,7 @@ function Fail([string]$Message) {
     exit 1
 }
 
-if ($Help) {
+if ($ShowHelp) {
     Write-Output "OpenKyrozen installer: installs the pinned v2.0.1 GitHub release, uv, Python 3.12/3.13, and Web dependencies."
     exit 0
 }
