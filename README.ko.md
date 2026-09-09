@@ -488,6 +488,7 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `GET` | `/api/v2/agents` | 전문 sub-agent profile 조회 |
 | `POST` | `/api/v2/agents/run` | 격리된 memory와 capability로 sub-agent 실행 |
 | `GET` | `/api/cost` | token 사용량 및 비용 요약 |
+| `POST` | `/api/cost/reset` | durable workspace/session 집계 창을 명시적으로 reset (`confirm: "reset-cost"` 필요) |
 | `GET` | `/api/health` | provider 상태 + memory 수 |
 | `GET` | `/api/voice/speak?text=...` | 시스템 TTS 텍스트 음성 변환 |
 | `POST` | `/api/voice/transcribe` | 음성-텍스트 변환 (패스스루) |

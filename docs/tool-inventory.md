@@ -57,6 +57,7 @@ Parameterized names are part of the contract; clients may substitute a value for
 | `POST` | `/api/chat` |
 | `POST` | `/api/chat/stream` |
 | `GET` | `/api/cost` |
+| `POST` | `/api/cost/reset` |
 | `GET` | `/api/health` |
 | `GET` | `/api/memory` |
 | `GET` | `/api/v2/agents` |

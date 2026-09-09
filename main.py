@@ -66,6 +66,7 @@ import re
 import subprocess
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 
 # macOS: suppress "MallocStackLogging: can't turn off malloc stack logging"
@@ -110,7 +111,7 @@ from providers import (
     ProviderConfig, LLMProvider, get_provider, detect_provider,
     save_provider_config, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS,
     PROVIDER_FALLBACKS,
-    get_fallback_provider, get_cost_summary, reset_cost_tracker,
+    get_fallback_provider, get_cost_summary, reset_cost_tracker, usage_scope,
     save_provider_config_encrypted, encrypt_api_key, decrypt_api_key,
 )
 
@@ -506,6 +507,7 @@ _total_prompt_tokens: int = 0
 _total_completion_tokens: int = 0
 _last_prompt_tokens: int = 0
 _last_completion_tokens: int = 0
+_active_usage_run_id: ContextVar[str | None] = ContextVar("active_usage_run_id", default=None)
 _turn_cost_log: list[dict] = []  # {"tokens":int, "time":float, "tool_calls":int}
 
 def _track_tool_performance(action: str, result: str, elapsed: float) -> None:
@@ -2729,6 +2731,8 @@ def _finish_learning_run(run: dict[str, str], receipts: list[dict[str, Any]], ta
             source="acceptance_command",
         ))
     _last_learning_run = {"run": run, "receipts": receipts, "task": task}
+    if _active_usage_run_id.get() == run["run_id"]:
+        _active_usage_run_id.set(None)
     return _with_learning_notices(result)
 
 
@@ -3375,7 +3379,8 @@ def _bounded_provider_call(callback: Any) -> Any:
         except Exception as exc:
             outcome.put((False, exc))
 
-    threading.Thread(target=run, daemon=True).start()
+    context = copy_context()
+    threading.Thread(target=lambda: context.run(run), daemon=True).start()
     try:
         succeeded, value = outcome.get(timeout=_provider_timeout_seconds())
     except queue.Empty as exc:
@@ -3390,29 +3395,33 @@ def _get_llm_response(messages: list[dict[str, str]], model: str | None = None, 
     if llm_provider is None:
         return "[Error] LLM provider not initialised"
     try:
-        if stream and hasattr(llm_provider, 'chat_stream'):
-            # Streaming mode: collect chunks and print in real-time
-            collected: list[str] = []
-            for chunk in llm_provider.chat_stream(messages, model or DEEPSEEK_MODEL):
-                collected.append(chunk)
-                sys.stdout.write(chunk)
-                sys.stdout.flush()
-            text = "".join(collected).strip()
-            _last_prompt_tokens = 0
-            _last_completion_tokens = len(text) // 4  # rough estimate
-        else:
-            text, usage_dict = _bounded_provider_call(
-                lambda: llm_provider.chat(messages, model or DEEPSEEK_MODEL)
-            )
-            if usage_dict:
-                _last_prompt_tokens = usage_dict.get("prompt_tokens", 0)
-                _last_completion_tokens = usage_dict.get("completion_tokens", 0)
-                _total_prompt_tokens += _last_prompt_tokens
-                _total_completion_tokens += _last_completion_tokens
-            else:
+        with usage_scope(
+                store=memory_bank.store, user_id=memory_bank.user_id,
+                workspace_id=memory_bank.workspace_id, session_id=memory_bank.session_id,
+                run_id=_active_usage_run_id.get(), surface=_EXECUTION_SURFACE):
+            if stream and hasattr(llm_provider, 'chat_stream'):
+                # Streaming usage frames are persisted by the streaming implementation.
+                collected: list[str] = []
+                for chunk in llm_provider.chat_stream(messages, model or DEEPSEEK_MODEL):
+                    collected.append(chunk)
+                    sys.stdout.write(chunk)
+                    sys.stdout.flush()
+                text = "".join(collected).strip()
                 _last_prompt_tokens = 0
-                _last_completion_tokens = 0
-        return text
+                _last_completion_tokens = len(text) // 4  # presentation-only until a usage frame arrives
+            else:
+                text, usage_dict = _bounded_provider_call(
+                    lambda: llm_provider.chat(messages, model or DEEPSEEK_MODEL)
+                )
+                if usage_dict:
+                    _last_prompt_tokens = usage_dict.get("prompt_tokens", 0)
+                    _last_completion_tokens = usage_dict.get("completion_tokens", 0)
+                    _total_prompt_tokens += _last_prompt_tokens
+                    _total_completion_tokens += _last_completion_tokens
+                else:
+                    _last_prompt_tokens = 0
+                    _last_completion_tokens = 0
+            return text
     except TimeoutError as exc:
         return f"[LLM Error] {exc}"
     except Exception as e:
@@ -3801,6 +3810,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     DEEPSEEK_MODEL = _select_model(user_input)
     provider_model = f"{_provider_config.provider}:{DEEPSEEK_MODEL}" if _provider_config else f"unknown:{DEEPSEEK_MODEL}"
     learning_run = learning_engine.begin_run(resolved_profile, user_input, provider_model=provider_model)
+    _active_usage_run_id.set(learning_run["run_id"])
     learned_context, learning_receipts = learning_engine.artifact_context(learning_run)
     _execution_capability_token = issue_capability_token(
         f"surface:{_EXECUTION_SURFACE}",
@@ -5109,7 +5119,9 @@ def main() -> None:
     total_count = len(_SELF_LEARNING_FLAGS)
     console.print(f"[{_MUTED}]Self-learning:[/{_MUTED}] [{_ACCENT_DIM}]{enabled_count}/{total_count} features active (toggle with /self-learning)[/{_ACCENT_DIM}]")
     console.print(f"[{_MUTED}]Memory:[/{_MUTED}] [{_ACCENT_DIM}]SQLite v2 + rebuildable vector index — ask me what I remember[/{_ACCENT_DIM}]")
-    console.print(f"[{_MUTED}]Cost:[/{_MUTED}] [{_ACCENT_DIM}]{get_cost_summary()}[/{_ACCENT_DIM}]")
+    console.print(f"[{_MUTED}]Cost:[/{_MUTED}] [{_ACCENT_DIM}]{get_cost_summary(
+        store=memory_bank.store, user_id=memory_bank.user_id,
+        workspace_id=memory_bank.workspace_id)}[/{_ACCENT_DIM}]")
     # Horizontal rule
     console.print(f"[{_ACCENT_DIM}]{_BOX_H * 50}[/{_ACCENT_DIM}]")
 

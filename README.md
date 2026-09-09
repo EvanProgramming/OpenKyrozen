@@ -608,6 +608,7 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `POST` | `/api/chat` | Send a message with optional `profile`, `speaker`, `audience`, and `channel`; returns a memory receipt |
 | `POST` | `/api/chat/stream` | SSE streaming chat with the same optional profile and memory context |
 | `GET` | `/api/cost` | Token usage and cost summary |
+| `POST` | `/api/cost/reset` | Explicitly reset a durable workspace/session reporting window (requires `confirm: "reset-cost"`) |
 | `GET` | `/api/health` | Provider status + memory count |
 | `GET` | `/api/memory?q=keyword` | Search stored memories |
 | `GET` | `/api/v2/agents` | List specialised sub-agent profiles |
