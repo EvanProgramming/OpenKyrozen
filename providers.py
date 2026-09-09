@@ -178,6 +178,19 @@ def _usage_integer(usage: dict | None, key: str) -> int | None:
         return None
 
 
+def _openai_usage_dict(usage: Any) -> dict[str, int | None] | None:
+    if usage is None:
+        return None
+    completion_details = getattr(usage, "completion_tokens_details", None)
+    return {
+        "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+        "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+        "prompt_cache_hit_tokens": getattr(usage, "prompt_cache_hit_tokens", None),
+        "prompt_cache_miss_tokens": getattr(usage, "prompt_cache_miss_tokens", None),
+        "reasoning_tokens": getattr(completion_details, "reasoning_tokens", None),
+    }
+
+
 def _track_cost(provider: str, usage: dict | None, *, model: str = "unknown",
                 latency_ms: int | None = None, completion_state: str = "completed",
                 occurred_at: datetime | None = None) -> str:
@@ -222,6 +235,7 @@ def _track_cost(provider: str, usage: dict | None, *, model: str = "unknown",
     else:
         cache_status = "miss"
     usage_status = "unknown" if usage is None else (
+        "estimated" if usage.get("_estimated") else
         "authoritative" if current_schedule and (provider != "deepseek" or cache_status != "unknown")
         else "estimated"
     )
@@ -420,14 +434,7 @@ class OpenAICompatProvider(LLMProvider):
         usage = getattr(response, "usage", None)
         usage_dict = None
         if usage is not None:
-            completion_details = getattr(usage, "completion_tokens_details", None)
-            usage_dict = {
-                "prompt_tokens": usage.prompt_tokens or 0,
-                "completion_tokens": usage.completion_tokens or 0,
-                "prompt_cache_hit_tokens": getattr(usage, "prompt_cache_hit_tokens", None),
-                "prompt_cache_miss_tokens": getattr(usage, "prompt_cache_miss_tokens", None),
-                "reasoning_tokens": getattr(completion_details, "reasoning_tokens", None),
-            }
+            usage_dict = _openai_usage_dict(usage)
         _track_cost(self.config.provider, usage_dict, model=model,
                     latency_ms=round((time.monotonic() - started) * 1000))
         return text.strip(), usage_dict
@@ -435,22 +442,39 @@ class OpenAICompatProvider(LLMProvider):
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple
         collected: list[str] = []
+        started = time.monotonic()
+        final_usage: dict[str, int | None] | None = None
+        completed = False
 
         def _call():
             return self._client.chat.completions.create(
-                model=model, messages=messages, stream=True
+                model=model, messages=messages, stream=True,
+                stream_options={"include_usage": True},
             )
 
         stream = _retry_with_backoff(_call)
-        for chunk in stream:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                collected.append(delta.content)
-                yield delta.content
-
-        # Estimate usage from collected text (rough: ~1 token per 4 chars)
-        # Real usage tracking happens in non-streaming chat() for accuracy
-        full_text = "".join(collected)
+        try:
+            for chunk in stream:
+                usage = _openai_usage_dict(getattr(chunk, "usage", None))
+                if usage is not None:
+                    final_usage = usage
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta and delta.content:
+                    collected.append(delta.content)
+                    yield delta.content
+            completed = True
+        finally:
+            if completed:
+                if final_usage is None:
+                    final_usage = {
+                        "prompt_tokens": sum(len(str(message.get("content", ""))) for message in messages) // 4,
+                        "completion_tokens": len("".join(collected)) // 4,
+                        "_estimated": 1,
+                    }
+                _track_cost(
+                    self.config.provider, final_usage, model=model,
+                    latency_ms=round((time.monotonic() - started) * 1000),
+                )
 
 # ---------------------------------------------------------------------------
 # Anthropic (Claude)

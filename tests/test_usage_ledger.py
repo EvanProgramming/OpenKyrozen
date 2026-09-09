@@ -204,6 +204,33 @@ class UsageLedgerTests(unittest.TestCase):
             self.assertEqual(attempt["cache_miss_tokens"], 7)
             self.assertEqual(attempt["reasoning_tokens"], 2)
 
+    def test_completed_stream_records_final_usage_once(self):
+        final_usage = SimpleNamespace(
+            prompt_tokens=10, completion_tokens=4,
+            prompt_cache_hit_tokens=3, prompt_cache_miss_tokens=7,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=2),
+        )
+        chunks = [
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="STREAM"))], usage=None),
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="_OK"))], usage=None),
+            SimpleNamespace(choices=[], usage=final_usage),
+        ]
+        calls = []
+        provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+        provider.config = ProviderConfig(provider="deepseek")
+        provider._client = SimpleNamespace(chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **kwargs: calls.append(kwargs) or iter(chunks)),
+        ))
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-stream-usage-") as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            with usage_scope(store=store, workspace_id="project"):
+                self.assertEqual(list(provider.chat_stream([], "deepseek-v4-flash")), ["STREAM", "_OK"])
+            attempts = store.list_usage_attempts(workspace_id="project", user_id="local")
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(attempts[0]["completion_tokens"], 4)
+            self.assertEqual(attempts[0]["usage_status"], "authoritative")
+            self.assertEqual(calls[0]["stream_options"], {"include_usage": True})
+
 
 if __name__ == "__main__":
     unittest.main()
