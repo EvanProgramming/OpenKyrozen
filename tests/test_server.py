@@ -55,6 +55,11 @@ class ServerBoundaryTests(unittest.TestCase):
             self.assertFalse((root / "denied.txt").exists())
             self.assertFalse(denied.json()["tool_receipts"][0]["success"])
             self.assertFalse(denied.json()["tool_receipts"][0]["authorized"])
+            completed = next(event for event in manager.memory.store.list_events(
+                "subagent.completed", workspace_id=server._agent.memory_bank.workspace_id,
+                session_id=allowed.json()["run_id"], limit=10,
+            ))
+            self.assertEqual(completed["payload"]["metrics"], allowed.json()["metrics"])
             events = manager.memory.store.list_events(
                 workspace_id=server._agent.memory_bank.workspace_id,
                 session_id=denied.json()["run_id"], limit=20,

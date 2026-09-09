@@ -150,7 +150,7 @@ class LearningEngine:
         return "\n".join(lines), receipts
 
     def complete_run(self, run: dict[str, str], *, result: str, receipts: list[dict[str, Any]],
-                     tools: list[dict[str, Any]], tokens: int, latency: float,
+                     tools: list[dict[str, Any]], tokens: int | None, latency: float | None,
                      acceptance: list[dict[str, Any]] | None = None,
                      provider_error: bool = False) -> None:
         errors = sum(1 for item in tools if not item.get("success"))
@@ -158,8 +158,10 @@ class LearningEngine:
             {"task": run.get("task"), "result": result, "tools": tools}, ensure_ascii=False,
         )))
         payload = {**run, "result": str(result)[:4000], "receipts": receipts, "tools": tools[:50],
-                   "tool_calls": len(tools), "errors": errors, "tokens": max(0, int(tokens)),
-                   "latency": max(0.0, float(latency)), "provider_error": bool(provider_error),
+                   "tool_calls": len(tools), "errors": errors,
+                   "tokens": None if tokens is None else max(0, int(tokens)),
+                   "latency": None if latency is None else max(0.0, float(latency)),
+                   "provider_error": bool(provider_error),
                    "acceptance_evidence": (acceptance or [])[:20],
                    "contains_secret": contains_secret,
                    "eligible": not provider_error and not contains_secret and len(tools) >= 2}
@@ -652,7 +654,7 @@ class LearningEngine:
             recurrence = sum(item["payload"].get("task_signature") == payload.get("task_signature")
                              for item in completed)
             score = recurrence * 2 + int(payload["run_id"] in requested) * 5 + int(payload.get("errors", 0)) * 2
-            score += min(5, int(payload.get("tokens", 0)) // 1000)
+            score += min(5, int(payload.get("tokens") or 0) // 1000)
             candidates.append((score, event["created_at"], payload))
         candidates.sort(key=lambda item: (-item[0], item[1]))
         return [payload for _, _, payload in candidates[:limit]]
@@ -803,8 +805,8 @@ class LearningEngine:
             "correction_rate": (sum(bool(item.get("correction")) for item in verified) / len(verified)) if verified else None,
             "repeated_error_rate": (sum(item.get("errors", 0) > 1 for item in completed) / len(completed)) if completed else None,
             "tool_calls": sum(int(item.get("tool_calls", 0)) for item in completed),
-            "tokens": sum(int(item.get("tokens", 0)) for item in completed),
-            "latency": sum(float(item.get("latency", 0.0)) for item in completed),
+            "tokens": sum(int(item.get("tokens") or 0) for item in completed),
+            "latency": sum(float(item.get("latency") or 0.0) for item in completed),
             "task_families": families,
             "context_chars": sum(sum(int(receipt.get("chars", 0)) for receipt in item.get("receipts", []))
                                  for item in outcomes),
