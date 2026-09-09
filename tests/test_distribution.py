@@ -91,6 +91,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("$ShowHelp", text)
         self.assertIn("$homeDirectory = if ($env:HOME)", text)
         self.assertNotIn('Join-Path $HOME ".kyrozen"', text)
+        self.assertIn("$env:UV_INSTALL_DIR = $localBin", text)
         self.assertIn("[Environment]::GetEnvironmentVariable(\"Path\", \"User\")", text)
         self.assertIn("SetEnvironmentVariable(\"Path\"", text)
         self.assertIn("tool install --python", text)

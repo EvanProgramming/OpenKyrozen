@@ -55,6 +55,7 @@ $env:Path = "$localBin;$cargoBin;$env:Path"
 $uvCommand = Get-Command uv -ErrorAction SilentlyContinue
 if (-not $uvCommand) {
     Write-Output "[INFO] Installing uv..."
+    $env:UV_INSTALL_DIR = $localBin
     Invoke-Expression (Invoke-RestMethod https://astral.sh/uv/install.ps1)
     $env:Path = "$localBin;$cargoBin;$env:Path"
     $uvCommand = Get-Command uv -ErrorAction SilentlyContinue
