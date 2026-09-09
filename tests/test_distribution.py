@@ -1,4 +1,5 @@
 import os
+import inspect
 import shutil
 import subprocess
 import sys
@@ -6,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import tomllib
 
@@ -105,6 +107,16 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(args.host, "0.0.0.0")
         self.assertEqual(args.port, 8123)
         self.assertTrue(args.reload)
+
+    def test_custom_web_launch_does_not_claim_a_fixed_endpoint(self):
+        import server
+
+        self.assertNotIn("http://127.0.0.1:8000", inspect.getsource(server.startup))
+        with patch.object(server, "_parse_server_args", return_value=(
+                SimpleNamespace(host="127.0.0.1", port=8876, reload=False), None)), \
+             patch.object(server.uvicorn, "run") as run:
+            server.main_entry()
+        run.assert_called_once_with(server.app, host="127.0.0.1", port=8876, reload=False)
 
     def test_update_uses_the_package_manager_instead_of_git_pull(self):
         import main
