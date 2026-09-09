@@ -9,7 +9,7 @@ Historical verification snapshot: `51be33361422e55e1f2f00c33a0e0f8c56132a91`
 (the post-#54 `main` revision, captured before this #55 documentation-only
 update). Snapshot date: 2026-09-04.
 
-Current repository test count at this snapshot: **150 unittest cases**.
+Current repository test count at this snapshot: **151 unittest cases**.
 
 ## Verified surface
 
