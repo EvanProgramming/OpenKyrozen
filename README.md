@@ -80,7 +80,7 @@ Think of it as an AI teammate that gets smarter every time you use it.
 
 | Provider | Get a key | Cost |
 |----------|-----------|------|
-| **DeepSeek** | [platform.deepseek.com](https://platform.deepseek.com) | ~$0.27/M input tokens |
+| **DeepSeek** | [platform.deepseek.com](https://platform.deepseek.com) | [V4 peak/off-peak, cache-aware pricing](https://api-docs.deepseek.com/quick_start/pricing/) |
 | **OpenAI** | [platform.openai.com](https://platform.openai.com) | ~$2.50/M input tokens |
 | **Anthropic (Claude)** | [console.anthropic.com](https://console.anthropic.com) | ~$3.00/M input tokens |
 | **Google (Gemini)** | [aistudio.google.com](https://aistudio.google.com) | ~$0.15/M input tokens |
@@ -260,13 +260,13 @@ Kyrozen automatically classifies every request and adapts its behavior:
 The agent picks different models for simple vs complex tasks. You can override these:
 
 ```bash
-export KYROZEN_MODEL_SIMPLE=deepseek-chat
-export KYROZEN_MODEL_COMPLEX=deepseek-reasoner
+export KYROZEN_MODEL_SIMPLE=deepseek-v4-flash
+export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
 ```
 
 | Provider | Simple tasks (default) | Complex tasks (default) |
 |----------|----------------------|------------------------|
-| DeepSeek | `deepseek-chat` | `deepseek-reasoner` |
+| DeepSeek | `deepseek-v4-flash` | `deepseek-v4-pro` |
 | OpenAI | `gpt-4o` | `gpt-4o` |
 | Anthropic | `claude-sonnet-4-20250514` | `claude-sonnet-4-20250514` |
 | Google | `gemini-2.5-flash` | `gemini-2.5-pro` |

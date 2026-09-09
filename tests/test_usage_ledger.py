@@ -5,12 +5,14 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from event_store import EventStore
 from fastapi.testclient import TestClient
 from memory import MemoryBank
-from providers import PROVIDER_COSTS, _track_cost, get_cost_summary, usage_scope
+from providers import OpenAICompatProvider, ProviderConfig, _track_cost, get_cost_summary, usage_scope
 import server
 
 
@@ -62,7 +64,10 @@ class UsageLedgerTests(unittest.TestCase):
             def record(index: int) -> None:
                 with usage_scope(store=store, workspace_id="project", session_id=f"session-{index % 2}",
                                  run_id=f"run-{index}", surface="mcp"):
-                    _track_cost("deepseek", {"prompt_tokens": 1, "completion_tokens": 2},
+                    _track_cost("deepseek", {
+                        "prompt_tokens": 1, "prompt_cache_hit_tokens": 0,
+                        "prompt_cache_miss_tokens": 1, "completion_tokens": 2,
+                    },
                                 model="deepseek-chat", latency_ms=index)
 
             threads = [threading.Thread(target=record, args=(index,)) for index in range(32)]
@@ -77,7 +82,7 @@ class UsageLedgerTests(unittest.TestCase):
             self.assertEqual(len({item["id"] for item in attempts}), 32)
             self.assertEqual(totals["prompt_tokens"], 32)
             self.assertEqual(totals["completion_tokens"], 64)
-            self.assertTrue(all(item["pricing_snapshot"]["version"] == "legacy-provider-costs-v1"
+            self.assertTrue(all(item["pricing_snapshot"]["version"] == "deepseek-v4-pricing-2026-08-16"
                                 for item in attempts))
             self.assertEqual(
                 {item["model"] for item in attempts}, {"deepseek-chat"},
@@ -91,16 +96,6 @@ class UsageLedgerTests(unittest.TestCase):
             self.assertEqual({item["run_id"] for item in attempts}, {f"run-{index}" for index in range(32)})
             self.assertTrue(all(item["usage_status"] == "authoritative" for item in attempts))
             self.assertTrue(all(item["completion_state"] == "completed" for item in attempts))
-            original_cost = totals["cost_picos"]
-            previous_rates = PROVIDER_COSTS["deepseek"]
-            try:
-                PROVIDER_COSTS["deepseek"] = (999.0, 999.0)
-                self.assertEqual(
-                    store.usage_totals(workspace_id="project", user_id="local")["cost_picos"],
-                    original_cost,
-                )
-            finally:
-                PROVIDER_COSTS["deepseek"] = previous_rates
 
     def test_reset_requires_explicit_confirmation_and_preserves_installation_ledger(self):
         with tempfile.TemporaryDirectory(prefix="openkyrozen-usage-reset-") as directory:
@@ -149,14 +144,65 @@ class UsageLedgerTests(unittest.TestCase):
             combined_mixed = store.usage_totals(
                 workspace_id="project", session_id="combined-mixed", user_id="local",
             )
-            self.assertEqual(short["cost_picos"], 110_000_000_000)
-            self.assertEqual(mixed["cost_picos"], 137_000_000_000)
+            self.assertEqual(short["cost_picos"], 132_000_000_000)
+            self.assertEqual(mixed["cost_picos"], 176_000_000_000)
             self.assertEqual(short["cost_picos"], combined_short["cost_picos"])
             self.assertEqual(mixed["cost_picos"], combined_mixed["cost_picos"])
             self.assertEqual(
                 get_cost_summary(store=store, workspace_id="project", session_id="short", scope="session"),
-                "deepseek: 0K in / 100K out ~$0.11",
+                "deepseek: 0K in / 100K out ~$0.13",
             )
+
+    def test_deepseek_v4_cache_pricing_uses_fixed_peak_and_off_peak_timestamps(self):
+        usage = {
+            "prompt_tokens": 1_000_000,
+            "prompt_cache_hit_tokens": 250_000,
+            "prompt_cache_miss_tokens": 750_000,
+            "completion_tokens": 1_000_000,
+        }
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-deepseek-pricing-") as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            with usage_scope(store=store, workspace_id="project", session_id="peak"):
+                _track_cost("deepseek", usage, model="deepseek-v4-flash",
+                            occurred_at=datetime(2026, 9, 7, 2, tzinfo=timezone.utc))
+            with usage_scope(store=store, workspace_id="project", session_id="off-peak"):
+                _track_cost("deepseek", usage, model="deepseek-v4-flash",
+                            occurred_at=datetime(2026, 9, 7, 4, tzinfo=timezone.utc))
+
+            peak = store.usage_totals(workspace_id="project", session_id="peak", user_id="local")
+            off_peak = store.usage_totals(workspace_id="project", session_id="off-peak", user_id="local")
+            attempt = store.list_usage_attempts(workspace_id="project", session_id="peak", user_id="local")[0]
+            self.assertEqual(peak["cost_picos"], 1_653_500_000_000)
+            self.assertEqual(off_peak["cost_picos"], 826_750_000_000)
+            self.assertEqual(attempt["cache_status"], "mixed")
+            self.assertEqual(attempt["usage_status"], "authoritative")
+            self.assertEqual(attempt["pricing_snapshot"]["billing_window"], "peak")
+            self.assertEqual(attempt["pricing_snapshot"]["model"], "deepseek-v4-flash")
+
+    def test_openai_compatible_provider_preserves_deepseek_cache_usage_fields(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+            usage=SimpleNamespace(
+                prompt_tokens=10, completion_tokens=4,
+                prompt_cache_hit_tokens=3, prompt_cache_miss_tokens=7,
+                completion_tokens_details=SimpleNamespace(reasoning_tokens=2),
+            ),
+        )
+        provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+        provider.config = ProviderConfig(provider="deepseek")
+        provider._client = SimpleNamespace(chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_kwargs: response),
+        ))
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-deepseek-usage-") as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            with usage_scope(store=store, workspace_id="project"):
+                text, usage = provider.chat([], "deepseek-v4-flash")
+            attempt = store.list_usage_attempts(workspace_id="project", user_id="local")[0]
+            self.assertEqual(text, "ok")
+            self.assertEqual(usage["prompt_cache_hit_tokens"], 3)
+            self.assertEqual(attempt["cache_hit_tokens"], 3)
+            self.assertEqual(attempt["cache_miss_tokens"], 7)
+            self.assertEqual(attempt["reasoning_tokens"], 2)
 
 
 if __name__ == "__main__":
