@@ -280,6 +280,8 @@ kyrozen
 
 31 個すべてのランタイムツールは、JSON アクションブロック内でプレーン文字列の `args` フィールドを受け付けます。ツール名、能力ラベル、MCP 入力 schema、実際の HTTP ルートは[生成されたランタイムインベントリ](docs/tool-inventory.md)を正とします：
 
+`git_branch` を含む組み込み Git ツールには `git` 能力が必要で、`dynamic` はユーザー定義ツール専用です。
+
 ```json
 {"action": "read_file", "args": "README.md"}
 ```

@@ -24,7 +24,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `execute_terminal_command` | `shell` | Execute a terminal command. This is an alias for run_cmd. | `command`: string; required: `command` |
 | `find_files` | `read` | Find files matching a pattern. Args format: "pattern" or "pattern\|directory". | `pattern`: string, `directory`: string; required: `pattern` |
 | `git_add` | `git` | Stage files for commit. Args format: "file1 file2" or "." (stage all). | `args`: string |
-| `git_branch` | `dynamic` | List or manage git branches. Args format: "" (list all), "branch_name" (create), | `args`: string |
+| `git_branch` | `git` | List or manage git branches. Args format: "" (list all), "branch_name" (create), | `args`: string |
 | `git_checkout` | `git` | Switch branches or restore files. Args format: "branch_name" (switch), | `args`: string |
 | `git_clone` | `git` | Clone a git repository. Args format: "url" or "url\|destination". | `url`: string, `destination`: string; required: `url` |
 | `git_commit` | `git` | Commit staged changes. Args format: '"commit message"' (quotes recommended). | `args`: string |

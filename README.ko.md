@@ -280,6 +280,8 @@ kyrozen
 
 모든 31개 런타임 도구는 JSON 액션 블록에서 일반 문자열 `args` 필드를 허용합니다. 도구 이름, capability 라벨, MCP 입력 schema 및 실제 HTTP 경로는[생성된 런타임 인벤토리](docs/tool-inventory.md)를 기준으로 합니다:
 
+`git_branch`를 포함한 기본 Git 도구에는 `git` capability가 필요하며, `dynamic`은 사용자 정의 도구 전용입니다.
+
 ```json
 {"action": "read_file", "args": "README.md"}
 ```

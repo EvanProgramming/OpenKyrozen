@@ -1048,6 +1048,7 @@ _TOOL_CAPABILITIES: dict[str, str] = {
     "search_web": "network",
     "read_webpage": "network",
     "git_clone": "git",
+    "git_branch": "git",
     "analyze_remote_repo": "network",
     "browser_open": "browser",
     "browser_snapshot": "browser",
