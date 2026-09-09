@@ -89,6 +89,8 @@ class DistributionTests(unittest.TestCase):
         text = installer.read_text(encoding="utf-8")
         self.assertIn('[Alias("Help")]', text)
         self.assertIn("$ShowHelp", text)
+        self.assertIn("$homeDirectory = if ($env:HOME)", text)
+        self.assertNotIn('Join-Path $HOME ".kyrozen"', text)
         self.assertIn("[Environment]::GetEnvironmentVariable(\"Path\", \"User\")", text)
         self.assertIn("SetEnvironmentVariable(\"Path\"", text)
         self.assertIn("tool install --python", text)

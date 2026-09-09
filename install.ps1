@@ -18,6 +18,7 @@ if ($ShowHelp) {
 $releaseVersion = "2.0.1"
 $releaseTag = "v$releaseVersion"
 $releaseWheelUrl = "https://github.com/EvanProgramming/OpenKyrozen/releases/download/$releaseTag/openkyrozen-$releaseVersion-py3-none-any.whl"
+$homeDirectory = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
 
 Write-Output ""
 Write-Output "  ____  ____  _____ _   _ ____  _____ _   _  ____  _   _ "
@@ -33,7 +34,7 @@ if ($architecture -notin @("X64", "Arm64")) {
     Fail "Unsupported Windows architecture: $architecture"
 }
 
-$stateDir = Join-Path $HOME ".kyrozen"
+$stateDir = Join-Path $homeDirectory ".kyrozen"
 try {
     New-Item -ItemType Directory -Force -Path (Join-Path $stateDir "workspace") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $stateDir "v2") | Out-Null
@@ -47,8 +48,8 @@ try {
     Fail "GitHub release asset is unavailable: $releaseTag"
 }
 
-$localBin = Join-Path $HOME ".local\bin"
-$cargoBin = Join-Path $HOME ".cargo\bin"
+$localBin = Join-Path $homeDirectory ".local\bin"
+$cargoBin = Join-Path $homeDirectory ".cargo\bin"
 $env:Path = "$localBin;$cargoBin;$env:Path"
 
 $uvCommand = Get-Command uv -ErrorAction SilentlyContinue
