@@ -132,7 +132,9 @@ class SubAgentTests(unittest.TestCase):
                 memory, runner=main._run_subagent_llm, learning_engine=LearningEngine(memory),
                 provider_model=lambda: "deepseek:deepseek-v4-flash",
             )
-            with patch.object(main, "memory_bank", memory), patch.object(main, "llm_provider", provider):
+            with (patch.object(main, "memory_bank", memory),
+                  patch.object(main, "llm_provider", provider),
+                  patch.object(main, "DEEPSEEK_MODEL", "deepseek-v4-flash")):
                 result = manager.run("researcher", "report the result")
             ledger = memory.store.usage_totals(workspace_id="project", run_id=result["run_id"])
             completed = memory.store.list_events(
