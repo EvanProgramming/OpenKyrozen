@@ -109,6 +109,57 @@ class StartupCacheTests(unittest.TestCase):
         )
         self._run_startup([sys.executable, "-c", script])
 
+    def test_cli_and_web_can_initialize_one_fresh_database_concurrently(self):
+        """Concurrent supported entry points must share a fresh SQLite state safely."""
+        repository = Path(__file__).parents[1].resolve()
+        with tempfile.TemporaryDirectory() as home_dir, tempfile.TemporaryDirectory() as state_dir, \
+                tempfile.TemporaryDirectory() as outside_dir:
+            env = os.environ.copy()
+            env.update({
+                "HOME": home_dir,
+                "KYROZEN_DB_PATH": str(Path(state_dir) / "concurrent.sqlite3"),
+                "KYROZEN_DISABLE_VECTOR_INDEX": "1",
+                "KYROZEN_PROVIDER": "ollama",
+                "PYTHONPATH": os.pathsep.join(
+                    part for part in (str(repository), env.get("PYTHONPATH", "")) if part
+                ),
+            })
+            for variable in _CREDENTIAL_ENV_VARS:
+                env.pop(variable, None)
+            commands = [
+                [sys.executable, str(repository / "main.py"), "--help"],
+                [sys.executable, str(repository / "server.py"), "--help"],
+            ]
+            processes = [
+                subprocess.Popen(
+                    command,
+                    cwd=outside_dir,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for command in commands
+            ]
+            outputs = []
+            try:
+                for process in processes:
+                    stdout, stderr = process.communicate(timeout=STARTUP_TIMEOUT_SECONDS)
+                    output = stdout + stderr
+                    outputs.append(output)
+                    self.assertEqual(process.returncode, 0, output)
+            finally:
+                for process in processes:
+                    if process.poll() is None:
+                        process.kill()
+                        process.communicate()
+            combined = "\n".join(outputs)
+            self.assertNotIn("database is locked", combined.lower())
+            self.assertNotIn("traceback (most recent call last)", combined.lower())
+            database = Path(state_dir) / "concurrent.sqlite3"
+            self.assertTrue(database.is_file())
+            self.assertTrue((database.parent / "concurrent.sqlite3-wal").exists() or database.stat().st_size > 0)
+
 
 if __name__ == "__main__":
     unittest.main()
