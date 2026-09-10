@@ -20,7 +20,7 @@ class DistributionTests(unittest.TestCase):
         with (ROOT / "pyproject.toml").open("rb") as handle:
             document = tomllib.load(handle)
         project = document["project"]
-        self.assertEqual(project["version"], "2.0.1")
+        self.assertEqual(project["version"], "2.0.2")
         self.assertEqual(project["requires-python"], ">=3.12,<3.14")
         self.assertEqual(project["scripts"]["kyrozen"], "main:main")
         self.assertEqual(project["scripts"]["kyrozen-web"], "server:main_entry")
@@ -48,15 +48,27 @@ class DistributionTests(unittest.TestCase):
     def test_one_shot_release_workflow_is_retired_after_v2_release(self):
         self.assertFalse((ROOT / ".github" / "workflows" / "publish.yml").exists())
 
+    def test_tag_release_workflow_validates_source_and_installed_artifacts(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn('tags:', workflow)
+        self.assertIn('test "$tag_version" = "$package_version"', workflow)
+        self.assertIn("tests.test_server.ServerBoundaryTests.test_browser_token_bootstrap", workflow)
+        self.assertIn("tests.test_task_consistency.TaskConsistencyTests.test_multi_task_plan", workflow)
+        self.assertIn("python scripts/wheel_smoke.py", workflow)
+        self.assertIn("runs-on: windows-latest", workflow)
+        smoke = (ROOT / "scripts" / "wheel_smoke.py").read_text(encoding="utf-8")
+        self.assertIn("/api/auth/session", smoke)
+        self.assertIn("_task_status_counts", smoke)
+
     def test_public_install_paths_pin_the_verified_release(self):
         release_url = (
             "https://github.com/EvanProgramming/OpenKyrozen/releases/download/"
-            "v2.0.1/openkyrozen-2.0.1-py3-none-any.whl"
+            "v2.0.2/openkyrozen-2.0.2-py3-none-any.whl"
         )
         for readme in sorted(ROOT.glob("README*.md")):
             text = readme.read_text(encoding="utf-8")
             with self.subTest(readme=readme.name):
-                self.assertIn("raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.1/", text)
+                self.assertIn("raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.2/", text)
                 self.assertIn(release_url, text)
                 self.assertNotIn("pypi.org", text.lower())
                 self.assertNotIn("uv tool upgrade openkyrozen", text)
@@ -74,7 +86,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn('PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"', text)
         self.assertIn("grep -Fq '$HOME/.local/bin'", text)
         self.assertIn('tool install --python', text)
-        self.assertIn("release_version='2.0.1'", text)
+        self.assertIn("release_version='2.0.2'", text)
         self.assertIn("releases/download", text)
         self.assertIn("--with fastapi --with uvicorn", text)
         self.assertNotIn("pypi.org", text)
@@ -91,7 +103,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("[Environment]::GetEnvironmentVariable(\"Path\", \"User\")", text)
         self.assertIn("SetEnvironmentVariable(\"Path\"", text)
         self.assertIn("tool install --python", text)
-        self.assertIn("v2.0.1", text)
+        self.assertIn("v2.0.2", text)
         self.assertIn("releases/download", text)
         self.assertIn("--with fastapi --with uvicorn", text)
         self.assertNotIn("pypi.org", text)
@@ -127,7 +139,7 @@ class DistributionTests(unittest.TestCase):
                     self.assertIn(marker, result.stdout)
 
         import server
-        self.assertEqual(server.app.version, "2.0.1")
+        self.assertEqual(server.app.version, "2.0.2")
 
     def test_web_parser_accepts_project_and_server_flags(self):
         import server
@@ -170,7 +182,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("--with", command)
         self.assertIn("fastapi", command)
         self.assertIn("uvicorn", command)
-        self.assertTrue(command[-1].endswith("/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl"))
+        self.assertTrue(command[-1].endswith("/v2.0.2/openkyrozen-2.0.2-py3-none-any.whl"))
 
     def test_docker_starts_server_in_explicit_project_mode(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")

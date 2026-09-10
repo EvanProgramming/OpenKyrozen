@@ -13,7 +13,7 @@ printf '%s\n' \
   ' \____/\____/ \_____|_| \_|_|   |_____|_| \_|\____| \___/ '
 printf '%s\n\n' 'OpenKyrozen computer-native installer'
 
-release_version='2.0.1'
+release_version='2.0.2'
 release_tag="v$release_version"
 release_wheel_url="https://github.com/EvanProgramming/OpenKyrozen/releases/download/$release_tag/openkyrozen-$release_version-py3-none-any.whl"
 
