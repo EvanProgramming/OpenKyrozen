@@ -210,7 +210,18 @@ bg_console = Console(stderr=True)
 def _tasks_panel_height() -> int:
     if not tasks.tasks:
         return 0
-    return min(len(tasks.tasks) + 3, 12)
+    return min(len(tasks.tasks) + 4, 12)
+
+
+_TASK_STATUS_ORDER = ("succeeded", "failed", "blocked", "cancelled", "pending", "running")
+
+
+def _task_status_counts() -> dict[str, int]:
+    """Return durable task counts in a stable order for every surface."""
+    counts = {status: 0 for status in _TASK_STATUS_ORDER}
+    for task in tasks.tasks:
+        counts[canonical_status(task.get("status", "pending"))] += 1
+    return counts
 
 
 def _tasks_panel_content() -> str:
@@ -218,20 +229,42 @@ def _tasks_panel_content() -> str:
     if not tasks.tasks:
         return ""
     total = len(tasks.tasks)
-    done = sum(1 for t in tasks.tasks if is_complete(t))
+    counts = _task_status_counts()
+    done = counts["succeeded"]
     bar_w = 20
     filled = int(bar_w * done / max(total, 1))
     bar = _BAR_FILL * filled + _BAR_EMPTY * (bar_w - filled)
     lines = [f"[bold white on {_ACCENT_BG}] {_BOX_TL}{_BOX_H}{_BOX_H} TASKS [{bar}] {done}/{total} [/]"]
+    status_icons = {
+        "succeeded": _CHECK, "failed": "!", "blocked": "⚠" if _UNICODE_OK else "B",
+        "cancelled": "×", "pending": _CIRCLE, "running": _HALF,
+    }
+    status_colors = {
+        "succeeded": _SUCCESS, "failed": _ERROR, "blocked": _WARNING,
+        "cancelled": _MUTED, "pending": _WARNING, "running": _ACCENT,
+    }
+    status_line = "  ".join(
+        f"[{status_colors[status]}]{status_icons[status]} {status}={counts[status]}"
+        f"[/{status_colors[status]}]"
+        for status in _TASK_STATUS_ORDER
+    )
+    lines.append(f"[white on {_ACCENT_BG}] {_BOX_V} {status_line} [/]")
     for i, t in enumerate(tasks.tasks):
         status = canonical_status(t["status"])
-        icon = _CHECK if is_complete(t) else _CIRCLE if status == "pending" else _HALF
-        color = _SUCCESS if is_complete(t) else _WARNING if status == "pending" else _ACCENT
+        icon = status_icons[status]
+        color = status_colors[status]
         desc = t["description"][:55]
-        lines.append(f"[white on {_ACCENT_BG}] {_BOX_V} [{color}]{icon}[/{color}] [{_MUTED}]{i}[/{_MUTED}] {desc} [/]")
-    pending = sum(1 for t in tasks.tasks if not is_terminal(t))
-    if pending > 0:
-        lines.append(f"[bold white on {_ACCENT_BG}] {_BOX_BL}{_BOX_H}{_BOX_H} {pending} remaining — DO NOT STOP [/]")
+        lines.append(
+            f"[white on {_ACCENT_BG}] {_BOX_V} [{color}]{icon}[/{color}] "
+            f"[{_MUTED}]{i}[/{_MUTED}] {desc} [{color}]{status}[/{color}] [/]"
+        )
+    unfinished = counts["pending"] + counts["running"]
+    attention = counts["failed"] + counts["blocked"] + counts["cancelled"]
+    if unfinished:
+        suffix = f"; {attention} require attention" if attention else ""
+        lines.append(f"[bold white on {_ACCENT_BG}] {_BOX_BL}{_BOX_H}{_BOX_H} {unfinished} unfinished{suffix} — DO NOT STOP [/]")
+    elif attention:
+        lines.append(f"[bold white on {_ACCENT_BG}] {_BOX_BL}{_BOX_H}{_BOX_H} Tasks require attention: {attention} non-success [/]")
     else:
         lines.append(f"[bold white on {_ACCENT_BG}] {_BOX_BL}{_BOX_H}{_BOX_H} All tasks complete {_CHECK} [/]")
     return "\n".join(lines)
@@ -3778,8 +3811,15 @@ def _deterministic_tool_summary(tool_records: list[dict[str, Any]]) -> str:
         status = canonical_status(task.get("status", "pending"))
         task_lines.append(f"- {status}: {task.get('description', '')}")
     if task_lines:
-        lines.append("Tasks:")
+        lines.append("Durable task status (source of truth):")
         lines.extend(task_lines)
+        attention = [task for task in tasks.tasks if canonical_status(task.get("status", "pending")) != "succeeded"]
+        if attention:
+            lines.append("Recovery required for non-succeeded tasks:")
+            lines.extend(
+                f"- {canonical_status(task.get('status', 'pending'))}: {task.get('description', '')}"
+                for task in attention
+            )
     if not lines:
         return "I could not produce a user-facing response."
     return "I executed the requested actions.\n\n" + "\n".join(lines)
@@ -4292,10 +4332,15 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
 
         # if there are no more tool calls, the LLM might be giving a natural reply
         if not next_tool_calls:
-            # If all tasks are already done (or none were set), accept this as final answer
-            all_done = not tasks.tasks or all(is_terminal(t) for t in tasks.tasks)
-            if all_done and not step_meta["define_tool_registered"]:
-                final_answer = (step_meta["clean"] or _deterministic_tool_summary(tool_records))
+            # Stop once every task is terminal, but only trust model prose when
+            # every durable task actually succeeded.
+            all_terminal = not tasks.tasks or all(is_terminal(t) for t in tasks.tasks)
+            all_succeeded = not tasks.tasks or all(is_complete(t) for t in tasks.tasks)
+            if all_terminal and not step_meta["define_tool_registered"]:
+                final_answer = (
+                    step_meta["clean"] if all_succeeded and step_meta["clean"]
+                    else _deterministic_tool_summary(tool_records)
+                )
                 break
 
             # Find the next pending task to tell the LLM what to do
@@ -4440,6 +4485,13 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     elif len(final_answer.strip()) < 10:
         final_answer = _deterministic_tool_summary(tool_records)
 
+    # Durable task rows are authoritative.  Never let a natural-language
+    # response or generated recap claim completion when any task failed,
+    # blocked, cancelled, pending, or is still running.
+    durable_tasks_incomplete = bool(tasks.tasks) and not all(is_complete(t) for t in tasks.tasks)
+    if durable_tasks_incomplete:
+        final_answer = _deterministic_tool_summary(tool_records)
+
     elapsed = time.time() - turn_start
     _turn_cost_log.append({
         "tokens": turn_prompt_total + turn_completion_total,
@@ -4450,7 +4502,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
 
     # If tasks were completed, generate a summary so the user knows what happened
     total_tools_executed = len(tool_records)
-    if total_tools_executed >= 2:
+    if total_tools_executed >= 2 and not durable_tasks_incomplete:
         summary_prompt = (
             "You just completed a multi-step task. Summarise your work below.\n\n"
             "## What was accomplished\n"
