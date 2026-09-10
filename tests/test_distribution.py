@@ -51,7 +51,10 @@ class DistributionTests(unittest.TestCase):
     def test_tag_release_workflow_validates_source_and_installed_artifacts(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn('tags:', workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("RELEASE_TAG", workflow)
         self.assertIn('test "$tag_version" = "$package_version"', workflow)
+        self.assertIn('python -m pip install -e ".[web]"', workflow)
         self.assertIn("tests.test_server.ServerBoundaryTests.test_browser_token_bootstrap", workflow)
         self.assertIn("tests.test_task_consistency.TaskConsistencyTests.test_multi_task_plan", workflow)
         self.assertIn("python scripts/wheel_smoke.py", workflow)
