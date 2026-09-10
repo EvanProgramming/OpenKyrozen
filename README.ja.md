@@ -130,7 +130,7 @@ uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_ur
 pip install fastapi uvicorn "$release_url"
 ```
 
-GitHub Actions がリリース wheel をビルド・検証します。詳しくは [v2.0.1 リリース](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.1) を参照してください。インストール後は任意の呼び出し元ディレクトリから `kyrozen` と `kyrozen-web` を実行できます。暗号化されたプロバイダー設定は `~/.kyrozen_config.json` に保存されます。
+v2.0.1 のリリース wheel は GitHub Actions でビルド・検証済みです。詳しくは [v2.0.1 リリース](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.1) を参照してください。インストール後は任意の呼び出し元ディレクトリから `kyrozen` と `kyrozen-web` を実行できます。暗号化されたプロバイダー設定は `~/.kyrozen_config.json` に保存されます。
 
 ---
 
@@ -665,10 +665,10 @@ GitHub Actions がプッシュと PR ごとに自動実行：
 - Windows PowerShell インストーラーの構文とヘルプ経路のチェック
 - Docker ビルドとコンテナ置換後の復元スモークテスト
 
-`v2.0.1` タグをプッシュすると、sdist/wheel をビルドして検証し、成果物を
-含む GitHub Release を作成して、Windows で PowerShell インストーラーを検証します。
-公開インストーラーと `/update` は、将来のバージョンを意図的に公開するまで
-このリリースに固定されます。
+公開済みの `v2.0.1` リリースは不変であり、公開インストーラーと `/update` は
+このリリースに固定されています。将来のリリースは意図的な手動作業として、
+固定バージョンを更新し、成果物と両方のインストーラーを検証してから新しい
+タグを公開してください。
 
 ### リリース wheel
 
@@ -705,7 +705,7 @@ OpenKyrozen/
 ├── prompts/             # プロンプトテンプレート（役割、指示、例）
 ├── docs/tool-inventory.md # 生成されたランタイムツール/ルート一覧
 ├── scripts/              # 再現可能なドキュメント/スモークチェック
-└── .github/workflows/   # CI とタグ付き GitHub リリースパイプライン
+└── .github/workflows/   # CI 検証パイプライン
 ```
 
 ---

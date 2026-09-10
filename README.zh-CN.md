@@ -130,7 +130,7 @@ uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_ur
 pip install fastapi uvicorn "$release_url"
 ```
 
-GitHub Actions 会构建并验证发布 wheel，详见 [v2.0.1 发布版](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.1)。安装后可在任意调用目录运行 `kyrozen` 和 `kyrozen-web`。加密的服务商配置保存在 `~/.kyrozen_config.json`。
+v2.0.1 发布 wheel 已由 GitHub Actions 构建并验证，详见 [v2.0.1 发布版](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.1)。安装后可在任意调用目录运行 `kyrozen` 和 `kyrozen-web`。加密的服务商配置保存在 `~/.kyrozen_config.json`。
 
 ---
 
@@ -676,9 +676,9 @@ GitHub Actions 在每次推送和 PR 时自动运行：
 - Windows PowerShell 安装器语法和帮助路径检查
 - Docker 构建和替换容器恢复 smoke test
 
-推送 `v2.0.1` 版本标签时，还会构建并验证 sdist/wheel，创建包含构件的
-GitHub Release，并在 Windows 上验证 PowerShell 安装器。公共安装器和
-`/update` 会固定到该版本，直到有意发布未来版本。
+已发布的 `v2.0.1` 版本不可变，公共安装器和 `/update` 会固定到该版本。
+未来版本必须经过有意的手动发布：先更新固定版本，构建并验证构件，验证
+两个安装器，再发布新标签。
 
 ### 发布 wheel
 
@@ -715,7 +715,7 @@ OpenKyrozen/
 ├── prompts/             # 提示词模板（角色、指令、示例）
 ├── docs/tool-inventory.md # 生成的运行时工具和端点清单
 ├── scripts/              # 可复现的文档和 smoke check
-└── .github/workflows/   # CI 和带标签的 GitHub 发布流水线
+└── .github/workflows/   # CI 验证流水线
 ```
 
 ---
