@@ -130,7 +130,7 @@ uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_ur
 pip install fastapi uvicorn "$release_url"
 ```
 
-GitHub Actions가 릴리스 wheel을 빌드하고 검증합니다. 자세한 내용은 [v2.0.1 릴리스](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.1)를 참조하세요. 설치 후에는 어떤 호출 디렉터리에서도 `kyrozen`과 `kyrozen-web`을 실행할 수 있습니다. 암호화된 제공자 설정은 `~/.kyrozen_config.json`에 저장됩니다.
+v2.0.1 릴리스 wheel은 GitHub Actions에서 빌드하고 검증했습니다. 자세한 내용은 [v2.0.1 릴리스](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.1)를 참조하세요. 설치 후에는 어떤 호출 디렉터리에서도 `kyrozen`과 `kyrozen-web`을 실행할 수 있습니다. 암호화된 제공자 설정은 `~/.kyrozen_config.json`에 저장됩니다.
 
 ---
 
@@ -663,10 +663,9 @@ GitHub Actions가 모든 푸시와 PR에서 자동 실행:
 - Windows PowerShell 설치 프로그램 구문 및 도움말 경로 확인
 - Docker 빌드 및 컨테이너 교체 복구 스모크 테스트
 
-`v2.0.1` 태그를 푸시하면 sdist/wheel을 빌드하고 검증한 뒤, 아티팩트가 포함된
-GitHub Release를 만들고 Windows에서 PowerShell 설치 프로그램을 검증합니다.
-공개 설치 프로그램과 `/update`는 향후 버전을 의도적으로 게시할 때까지 이 릴리스에
-고정됩니다.
+게시된 `v2.0.1` 릴리스는 변경할 수 없으며 공개 설치 프로그램과 `/update`는 이
+릴리스에 고정됩니다. 향후 릴리스는 의도적인 수동 작업으로 진행합니다. 고정 버전을
+업데이트하고, 아티팩트와 두 설치 프로그램을 검증한 뒤 새 태그를 게시하세요.
 
 ### 릴리스 wheel
 
@@ -703,7 +702,7 @@ OpenKyrozen/
 ├── prompts/             # 프롬프트 템플릿 (역할, 지침, 예시)
 ├── docs/tool-inventory.md # 생성된 런타임 도구/경로 인벤토리
 ├── scripts/              # 재현 가능한 문서/스모크 검사
-└── .github/workflows/   # CI 및 태그 기반 GitHub 릴리스 파이프라인
+└── .github/workflows/   # CI 검증 파이프라인
 ```
 
 ---

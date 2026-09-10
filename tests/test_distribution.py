@@ -44,13 +44,9 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("make test PYTHON=python", workflow)
         self.assertIn("make install-core PYTHON=python", workflow)
         self.assertIn("make test-core", workflow)
-        release = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
-        self.assertIn('- "v2.0.1"', release)
-        self.assertIn("python -m build --sdist --wheel", release)
-        self.assertIn("gh release create", release)
-        self.assertIn("--verify-tag", release)
-        self.assertIn("runs-on: windows-latest", release)
-        self.assertNotIn("pypa/gh-action-pypi-publish", release)
+
+    def test_one_shot_release_workflow_is_retired_after_v2_release(self):
+        self.assertFalse((ROOT / ".github" / "workflows" / "publish.yml").exists())
 
     def test_public_install_paths_pin_the_verified_release(self):
         release_url = (

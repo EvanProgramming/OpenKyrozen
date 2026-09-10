@@ -131,7 +131,7 @@ uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_ur
 pip install fastapi uvicorn "$release_url"
 ```
 
-The release wheel is built and validated by GitHub Actions; see the [v2.0.1 release](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.1). After installation, `kyrozen` and `kyrozen-web` work from any caller directory. The encrypted provider configuration is saved to `~/.kyrozen_config.json`.
+The v2.0.1 release wheel was built and validated by GitHub Actions; see the [v2.0.1 release](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.1). After installation, `kyrozen` and `kyrozen-web` work from any caller directory. The encrypted provider configuration is saved to `~/.kyrozen_config.json`.
 
 ---
 
@@ -924,10 +924,10 @@ GitHub Actions automatically runs on every push and PR:
 - Windows PowerShell installer syntax/help check
 - Docker build and replace-container recovery smoke test
 
-A `v2.0.1` tag additionally builds and validates sdist/wheel distributions,
-creates an immutable GitHub Release with the artifacts, and verifies the
-PowerShell installer on Windows. Public installers and `/update` stay pinned
-to that release until a future version is deliberately published.
+The published `v2.0.1` release is immutable and remains the pinned target for
+public installers and `/update`. A future release is a deliberate, manual
+release operation: update the pinned version, build and validate the artifacts,
+and verify both installers before publishing the new tag.
 
 ### Release wheel
 
@@ -966,7 +966,7 @@ OpenKyrozen/
 ├── prompts/             # Prompt templates (role, instructions, examples)
 ├── docs/tool-inventory.md # Generated runtime tool and endpoint inventory
 ├── scripts/              # Reproducible documentation and smoke checks
-└── .github/workflows/   # CI and tagged GitHub-release pipelines
+└── .github/workflows/   # CI validation pipeline
 ```
 
 ---
