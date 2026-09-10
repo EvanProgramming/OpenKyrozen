@@ -30,3 +30,6 @@ _test_regression_tmp.txt
 kyrozen_audit.log
 kyrozen_turns.log
 *.log
+
+#CodeWhale ignore
+.codewhale/
