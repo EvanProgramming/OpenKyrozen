@@ -460,6 +460,8 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | 메서드 | 엔드포인트 | 설명 |
 |--------|----------|------|
 | `GET` | `/` | 다크 테마 채팅 Web UI |
+| `POST` | `/api/auth/session` | 서버 토큰을 단기 HttpOnly 브라우저 세션으로 교환 |
+| `DELETE` | `/api/auth/session` | 현재 브라우저 세션 취소 |
 | `POST` | `/api/chat` | 메시지를 보내고 메모리 receipt가 포함된 JSON 응답 받기 |
 | `POST` | `/api/chat/stream` | SSE 스트리밍; `[DONE]` 이후에만 완료 webhook 전송 |
 | `GET` | `/api/memory?q=키워드` | 저장된 메모리 검색 |
@@ -503,6 +505,9 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 
 모든 JSON Action은 일반 문자열 `args`를 사용합니다. MCP의 `tools/list`와
 `server/discover`는 허용된 각 도구의 `inputSchema`를 반환하고 object 인자를 같은 문자열 계약으로 명시적으로 변환합니다. 알 수 없거나 권한이 없는 도구는 JSON-RPC protocol error이며, 실행된 도구의 실패는 `result.isError: true`입니다. 전체 정식 목록은 [docs/tool-inventory.md](docs/tool-inventory.md)를 참조하세요.
+
+토큰 보호 Web UI가 `401`을 받으면 암호 입력란을 표시합니다. 입력한 토큰은 단기
+`HttpOnly`/`SameSite=Strict` cookie로 교환되며 URL, HTML, 로그 또는 브라우저 저장소에는 기록되지 않습니다.
 
 ### Docker 배포
 

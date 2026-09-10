@@ -457,6 +457,41 @@ print(json.dumps({
         self.assertEqual(server._get_or_create_session("single-user-test", "alice")["user_id"],
                          server._SERVER_ACTOR_ID)
 
+    def test_browser_token_bootstrap_uses_httponly_cookie_and_rejects_invalid_tokens(self):
+        original_token = server._SERVER_TOKEN
+        original_sessions = dict(server._browser_auth_sessions)
+        server._SERVER_TOKEN = "browser-test-token"
+        server._browser_auth_sessions.clear()
+        try:
+            client = TestClient(server.app)
+            self.assertEqual(client.get("/api/v2/sessions").status_code, 401)
+            invalid = client.post("/api/auth/session", json={"token": "wrong-token"})
+            self.assertEqual(invalid.status_code, 401)
+            self.assertNotIn("browser-test-token", invalid.text)
+
+            authenticated = client.post("/api/auth/session", json={"token": "browser-test-token"})
+            self.assertEqual(authenticated.status_code, 200, authenticated.text)
+            cookie = authenticated.headers.get("set-cookie", "")
+            self.assertIn("HttpOnly", cookie)
+            self.assertIn("SameSite=strict", cookie)
+            self.assertNotIn("browser-test-token", cookie)
+            self.assertEqual(client.get("/api/v2/sessions").status_code, 200)
+
+            self.assertEqual(client.delete("/api/auth/session").status_code, 200)
+            self.assertEqual(client.get("/api/v2/sessions").status_code, 401)
+        finally:
+            server._SERVER_TOKEN = original_token
+            server._browser_auth_sessions.clear()
+            server._browser_auth_sessions.update(original_sessions)
+
+    def test_browser_ui_uses_auth_bootstrap_and_cookie_credentials(self):
+        html = TestClient(server.app).get("/").text
+        self.assertIn('id="server-token"', html)
+        self.assertIn("/api/auth/session", html)
+        self.assertIn("credentials: 'same-origin'", html)
+        self.assertIn("apiFetch('/api/chat/stream'", html)
+        self.assertNotIn("localStorage.setItem('server-token'", html)
+
     def test_profile_validation(self):
         self.assertEqual(server._normalise_profile(None), "auto")
         self.assertEqual(server._normalise_profile("CODER"), "coder")

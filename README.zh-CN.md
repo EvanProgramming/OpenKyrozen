@@ -463,6 +463,8 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | 方法 | 端点 | 描述 |
 |------|------|------|
 | `GET` | `/` | 暗色主题聊天 Web UI |
+| `POST` | `/api/auth/session` | 将服务器令牌交换为短期 HttpOnly 浏览器会话 |
+| `DELETE` | `/api/auth/session` | 撤销当前浏览器会话 |
 | `POST` | `/api/chat` | 发送消息并返回带记忆 receipt 的 JSON 回复 |
 | `POST` | `/api/chat/stream` | SSE 流式聊天；仅在 `[DONE]` 后发送完成 webhook |
 | `GET` | `/api/memory?q=关键词` | 搜索已存储的记忆 |
@@ -515,6 +517,9 @@ API 和 MCP 路由在本机回环访问时可以不使用令牌；任何非本�
 设置 `KYROZEN_SERVER_TOKEN`，并通过 `Authorization: Bearer <token>` 或
 `X-Kyrozen-Token` 发送。MCP/Web 默认使用 `workspace` 能力，`full` 才会开放
 不可逆 Git reset 和动态 Python 工具；高影响 Git 操作仍受确认模式保护。
+
+启用令牌后，浏览器 UI 遇到 `401` 会显示密码框。输入令牌后，服务器换发短期
+`HttpOnly`/`SameSite=Strict` 会话 cookie；原始令牌只在交换请求中使用，不会写入 URL、页面、日志或浏览器存储。
 
 ### Docker 部署
 

@@ -54,6 +54,8 @@ Parameterized names are part of the contract; clients may substitute a value for
 | Method | Path |
 |---|---|
 | `GET` | `/` |
+| `DELETE` | `/api/auth/session` |
+| `POST` | `/api/auth/session` |
 | `POST` | `/api/chat` |
 | `POST` | `/api/chat/stream` |
 | `GET` | `/api/cost` |

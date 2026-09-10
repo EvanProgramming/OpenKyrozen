@@ -610,6 +610,8 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/` | Dark-themed chat web UI |
+| `POST` | `/api/auth/session` | Exchange a server token for a short-lived HttpOnly browser session |
+| `DELETE` | `/api/auth/session` | Revoke the current browser session |
 | `POST` | `/api/chat` | Send a message with optional `profile`, `speaker`, `audience`, and `channel`; returns a memory receipt |
 | `POST` | `/api/chat/stream` | SSE streaming chat with the same optional profile and memory context |
 | `GET` | `/api/cost` | Token usage and cost summary |
@@ -676,6 +678,13 @@ non-loopback deployment must set `KYROZEN_SERVER_TOKEN` and send it as
 `workspace` profile by default; choose `full` explicitly for irreversible reset
 and dynamic tools. Authentication, capability tokens, and command safety checks
 still apply.
+
+When the shipped browser UI receives a protected-route `401`, enter the server
+token in its password field. The server exchanges it for a short-lived,
+`HttpOnly`/`SameSite=Strict` browser session cookie; the raw token is kept only
+in the form during that exchange and is never written to URLs, page markup,
+logs, or browser storage. The token must be entered again after the cookie
+expires or the browser session is cleared.
 
 The MCP endpoint supports `initialize`, `notifications/initialized`, `ping`,
 `server/discover`, `tools/list`, `tools/call`, and the legacy `chat/send`

@@ -17,6 +17,7 @@ import copy
 import re
 import asyncio
 import queue
+import secrets
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -63,6 +64,10 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 
 _SERVER_TOKEN = os.environ.get("KYROZEN_SERVER_TOKEN", "").strip()
+_BROWSER_AUTH_COOKIE = "openkyrozen_browser_session"
+_BROWSER_AUTH_TTL_SECONDS = 3600
+_browser_auth_sessions: dict[str, float] = {}
+_browser_auth_lock = threading.RLock()
 # A server process is deliberately single-user.  The bearer token authenticates
 # access to this deployment; it is not a multi-user identity provider.  Keep
 # this actor stable across loopback/token access and token rotation so existing
@@ -72,6 +77,33 @@ _SERVER_ACTOR_ID = (_CONFIGURED_SERVER_ACTOR
                    if re.fullmatch(r"[A-Za-z0-9_.:@-]{1,64}", _CONFIGURED_SERVER_ACTOR)
                    else "local")
 _LOCAL_CLIENT_NAMES = {"localhost", "127.0.0.1", "::1", "testclient"}
+
+
+def _issue_browser_auth_session() -> str:
+    """Issue a short-lived, HttpOnly browser session without retaining the server token."""
+    now = time.time()
+    value = secrets.token_urlsafe(32)
+    with _browser_auth_lock:
+        expired = [key for key, deadline in _browser_auth_sessions.items() if deadline <= now]
+        for key in expired:
+            _browser_auth_sessions.pop(key, None)
+        _browser_auth_sessions[value] = now + _BROWSER_AUTH_TTL_SECONDS
+    return value
+
+
+def _browser_auth_session_valid(request: Request) -> bool:
+    value = request.cookies.get(_BROWSER_AUTH_COOKIE, "")
+    if not value:
+        return False
+    now = time.time()
+    with _browser_auth_lock:
+        deadline = _browser_auth_sessions.get(value)
+        if deadline is None:
+            return False
+        if deadline <= now:
+            _browser_auth_sessions.pop(value, None)
+            return False
+        return True
 
 
 def _is_loopback_client(request: Request) -> bool:
@@ -94,6 +126,8 @@ def require_api_access(request: Request) -> None:
         else:
             supplied = request.headers.get("x-kyrozen-token", "").strip()
         if hmac.compare_digest(supplied, _SERVER_TOKEN):
+            return
+        if _browser_auth_session_valid(request):
             return
         raise HTTPException(
             status_code=401,
@@ -468,6 +502,13 @@ header span{font-size:12px;color:#8b949e}
 #session-select:focus{outline:none;border-color:#00f0ff}
 #new-session{padding:7px 12px;font-size:12px}
 #session-limit{margin-left:auto}
+#auth-controls{background:#161b22;border-bottom:1px solid #30363d;padding:8px 20px;display:flex;align-items:center;gap:8px}
+#auth-controls[hidden]{display:none}
+#auth-controls label,#auth-status{font-size:12px;color:#8b949e}
+#server-token{min-width:220px;max-width:45vw;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;padding:7px}
+#server-token:focus{outline:none;border-color:#00f0ff}
+#authenticate{padding:7px 12px;font-size:12px}
+#auth-status.error{color:#ff4466}
 #chat{flex:1;overflow-y:auto;padding:20px}
 .msg{margin-bottom:16px;max-width:85%}
 .msg.user{margin-left:auto}
@@ -499,6 +540,13 @@ button:disabled{opacity:.4;cursor:default}
   <button type="button" id="new-session">New conversation</button>
   <span id="session-limit" role="status"></span>
 </div>
+<div id="auth-controls" hidden>
+  <label for="server-token">Server token</label>
+  <input id="server-token" type="password" autocomplete="current-password" spellcheck="false"
+         aria-describedby="auth-status" placeholder="Enter the server token">
+  <button type="button" id="authenticate">Authenticate</button>
+  <span id="auth-status" role="alert"></span>
+</div>
 <div id="chat"></div>
 <div id="input-area">
   <textarea id="user-input" placeholder="Type your message..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}"></textarea>
@@ -511,6 +559,34 @@ const SESSION_LIST_LIMIT = 100;
 let sessionId = readActiveSession() || createSessionId();
 let recentSessions = [];
 let isStreaming = false;
+let authInFlight = false;
+
+class AuthRequiredError extends Error {}
+
+function showAuthPrompt(message) {
+  const controls = document.getElementById('auth-controls');
+  const status = document.getElementById('auth-status');
+  controls.hidden = false;
+  status.textContent = message || 'Authentication required. Enter the server token.';
+  status.classList.add('error');
+}
+
+function hideAuthPrompt() {
+  const controls = document.getElementById('auth-controls');
+  const status = document.getElementById('auth-status');
+  controls.hidden = true;
+  status.textContent = '';
+  status.classList.remove('error');
+}
+
+async function apiFetch(input, init = {}) {
+  const response = await fetch(input, {...init, credentials: 'same-origin'});
+  if (response.status === 401) {
+    showAuthPrompt('Authentication required. Enter the server token.');
+    throw new AuthRequiredError('Authentication required');
+  }
+  return response;
+}
 
 function createSessionId() {
   const random = window.crypto && window.crypto.randomUUID
@@ -551,7 +627,7 @@ function renderSessionList(sessions) {
 }
 
 async function refreshSessionList() {
-  const response = await fetch(`/api/v2/sessions?limit=${SESSION_LIST_LIMIT}`);
+  const response = await apiFetch(`/api/v2/sessions?limit=${SESSION_LIST_LIMIT}`);
   if (!response.ok) throw new Error('Could not load saved conversations');
   const data = await response.json();
   renderSessionList(data.sessions);
@@ -561,7 +637,7 @@ async function restoreSession(nextSessionId) {
   sessionId = nextSessionId;
   saveActiveSession();
   try {
-    const response = await fetch(`/api/v2/sessions/${encodeURIComponent(sessionId)}`);
+    const response = await apiFetch(`/api/v2/sessions/${encodeURIComponent(sessionId)}`);
     if (!response.ok) throw new Error('Could not load this conversation');
     const data = await response.json();
     const messages = Array.isArray(data.messages) ? data.messages : [];
@@ -571,7 +647,8 @@ async function restoreSession(nextSessionId) {
     document.getElementById('status').textContent = messages.length
       ? `Restored ${messages.length} saved message${messages.length === 1 ? '' : 's'}.`
       : 'No saved messages in this conversation.';
-  } catch (_) {
+  } catch (error) {
+    if (error instanceof AuthRequiredError) throw error;
     clearChat();
     document.getElementById('status').textContent = 'Could not load this conversation.';
   }
@@ -587,13 +664,67 @@ function startNewSession() {
   document.getElementById('user-input').focus();
 }
 
+async function loadCost() {
+  try {
+    const response = await apiFetch('/api/cost');
+    if (!response.ok) return;
+    const data = await response.json();
+    if (data.summary) document.getElementById('cost-display').textContent = 'Cost: ' + data.summary;
+  } catch (error) {
+    if (!(error instanceof AuthRequiredError)) {
+      document.getElementById('cost-display').textContent = '';
+    }
+  }
+}
+
 async function initialiseSessions() {
   try {
     await refreshSessionList();
     await restoreSession(sessionId);
-  } catch (_) {
+    await loadCost();
+  } catch (error) {
+    if (error instanceof AuthRequiredError) return;
     renderSessionList([]);
     document.getElementById('status').textContent = 'Could not load saved conversations.';
+  }
+}
+
+async function authenticate() {
+  if (authInFlight) return;
+  const input = document.getElementById('server-token');
+  const button = document.getElementById('authenticate');
+  const status = document.getElementById('auth-status');
+  const token = input.value.trim();
+  if (!token) {
+    showAuthPrompt('Enter the server token to continue.');
+    input.focus();
+    return;
+  }
+  authInFlight = true;
+  button.disabled = true;
+  status.classList.remove('error');
+  status.textContent = 'Authenticating…';
+  try {
+    const response = await fetch('/api/auth/session', {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token})
+    });
+    input.value = '';
+    if (!response.ok) {
+      showAuthPrompt(response.status === 401
+        ? 'Invalid server token. Check it and try again.'
+        : 'Authentication service unavailable. Try again.');
+      return;
+    }
+    hideAuthPrompt();
+    await initialiseSessions();
+  } catch (_) {
+    input.value = '';
+    showAuthPrompt('Authentication service unavailable. Try again.');
+  } finally {
+    authInFlight = false;
+    button.disabled = false;
   }
 }
 
@@ -626,7 +757,7 @@ async function sendMessage() {
   const contentDiv = assistantDiv.querySelector('.content');
 
   try {
-    const resp = await fetch('/api/chat/stream', {
+    const resp = await apiFetch('/api/chat/stream', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({message: msg, session_id: sessionId})
@@ -698,9 +829,11 @@ async function sendMessage() {
       document.getElementById('status').textContent = 'Incomplete stream';
     }
   } catch(e) {
-    contentDiv.textContent = 'Connection error: ' + e.message;
+    contentDiv.textContent = e instanceof AuthRequiredError
+      ? 'Authentication required. Enter the server token above.'
+      : 'Connection error: ' + e.message;
     contentDiv.classList.add('error');
-    document.getElementById('status').textContent = 'Error';
+    document.getElementById('status').textContent = e instanceof AuthRequiredError ? 'Authentication required' : 'Error';
   }
   isStreaming = false;
   btn.disabled = false;
@@ -712,12 +845,11 @@ document.getElementById('session-select').addEventListener('change', event => {
   if (!isStreaming) restoreSession(event.target.value);
 });
 document.getElementById('new-session').addEventListener('click', startNewSession);
-initialiseSessions();
-
-// Load cost on start
-fetch('/api/cost').then(r=>r.json()).then(d=>{
-  if (d.summary) document.getElementById('cost-display').textContent = 'Cost: ' + d.summary;
+document.getElementById('authenticate').addEventListener('click', authenticate);
+document.getElementById('server-token').addEventListener('keydown', event => {
+  if (event.key === 'Enter') { event.preventDefault(); authenticate(); }
 });
+initialiseSessions();
 </script>
 </body>
 </html>"""
@@ -725,6 +857,42 @@ fetch('/api/cost').then(r=>r.json()).then(d=>{
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+@app.post("/api/auth/session")
+async def api_auth_session(request: Request):
+    """Exchange a user-entered server token for an HttpOnly browser session."""
+    if not _SERVER_TOKEN:
+        return {"authenticated": True}
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+    supplied = str(body.get("token", "")).strip() if isinstance(body, dict) else ""
+    if not hmac.compare_digest(supplied, _SERVER_TOKEN):
+        _audit("AUTH_FAILURE", "browser bootstrap rejected")
+        response = JSONResponse({"detail": "Invalid server token"}, status_code=401)
+        response.headers["WWW-Authenticate"] = "Bearer"
+        return response
+    cookie = _issue_browser_auth_session()
+    response = JSONResponse({"authenticated": True})
+    response.set_cookie(
+        _BROWSER_AUTH_COOKIE, cookie, max_age=_BROWSER_AUTH_TTL_SECONDS,
+        httponly=True, secure=request.url.scheme == "https", samesite="strict", path="/",
+    )
+    return response
+
+
+@app.delete("/api/auth/session")
+async def api_auth_session_logout(request: Request):
+    """Revoke the current in-memory browser session and clear its cookie."""
+    value = request.cookies.get(_BROWSER_AUTH_COOKIE, "")
+    if value:
+        with _browser_auth_lock:
+            _browser_auth_sessions.pop(value, None)
+    response = JSONResponse({"authenticated": False})
+    response.delete_cookie(_BROWSER_AUTH_COOKIE, path="/")
+    return response
+
 
 @app.get("/", response_class=HTMLResponse)
 async def chat_page():
