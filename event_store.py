@@ -11,6 +11,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -39,18 +40,38 @@ class EventStore:
         self._initialise()
 
     @contextmanager
-    def connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(str(self.path), timeout=30, isolation_level=None)
+    def connection(self, *, timeout: float = 30, busy_timeout_ms: int | None = None) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(str(self.path), timeout=timeout, isolation_level=None)
         connection.row_factory = sqlite3.Row
         try:
-            connection.execute("PRAGMA busy_timeout=30000")
+            connection.execute(f"PRAGMA busy_timeout={busy_timeout_ms if busy_timeout_ms is not None else 30000}")
             connection.execute("PRAGMA foreign_keys=ON")
             yield connection
         finally:
             connection.close()
 
     def _initialise(self) -> None:
-        with self._lock, self.connection() as db:
+        # WAL mode changes take an exclusive lock.  Multiple supported entry
+        # points can import the store at the same time on a fresh HOME, so
+        # retry the idempotent schema bootstrap instead of surfacing a raw
+        # sqlite "database is locked" traceback.
+        delay = 0.05
+        for attempt in range(8):
+            try:
+                self._initialise_once()
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                    raise
+                if attempt == 7:
+                    raise RuntimeError(
+                        "OpenKyrozen state database is busy during startup; retry the command."
+                    ) from None
+                time.sleep(delay)
+                delay = min(delay * 2, 1.0)
+
+    def _initialise_once(self) -> None:
+        with self._lock, self.connection(timeout=1, busy_timeout_ms=1000) as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=NORMAL")
             db.executescript(
@@ -216,7 +237,7 @@ class EventStore:
             existing = db.execute("SELECT version FROM schema_migrations WHERE version=?", (self.SCHEMA_VERSION,)).fetchone()
             if existing is None:
                 db.execute(
-                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (self.SCHEMA_VERSION, utc_now()),
                 )
 
