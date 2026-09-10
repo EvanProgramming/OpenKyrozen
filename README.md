@@ -91,16 +91,16 @@ Think of it as an AI teammate that gets smarter every time you use it.
 On macOS or Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.1/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.2/install.sh | sh
 ```
 
 On Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.1/install.ps1 | iex
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.2/install.ps1 | iex
 ```
 
-The installer fetches the immutable `v2.0.1` GitHub release wheel, checks the operating system, architecture, Python, network, and writable user paths; installs `uv` when needed; provisions the Web dependencies in an isolated `uv` tool environment; creates private `~/.kyrozen` state directories; and verifies `kyrozen --version` and `kyrozen --help`. It never reads, prints, or uploads API keys. The first `kyrozen` launch guides provider setup.
+The installer fetches the immutable `v2.0.2` GitHub release wheel, checks the operating system, architecture, Python, network, and writable user paths; installs `uv` when needed; provisions the Web dependencies in an isolated `uv` tool environment; creates private `~/.kyrozen` state directories; and verifies `kyrozen --version` and `kyrozen --help`. It never reads, prints, or uploads API keys. The first `kyrozen` launch guides provider setup.
 
 ### Development-only source checkout
 
@@ -124,14 +124,14 @@ These commands intentionally run in project mode (`--project .`) and are for rep
 ### Pinned GitHub release installation
 
 ```bash
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.2/openkyrozen-2.0.2-py3-none-any.whl'
 uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
 
 # Or use pip in an existing supported environment:
 pip install fastapi uvicorn "$release_url"
 ```
 
-The v2.0.1 release wheel was built and validated by GitHub Actions; see the [v2.0.1 release](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.1). After installation, `kyrozen` and `kyrozen-web` work from any caller directory. The encrypted provider configuration is saved to `~/.kyrozen_config.json`.
+The v2.0.2 release wheel was built and validated by GitHub Actions; see the [v2.0.2 release](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.2). After installation, `kyrozen` and `kyrozen-web` work from any caller directory. The encrypted provider configuration is saved to `~/.kyrozen_config.json`.
 
 ---
 
@@ -172,7 +172,7 @@ Kyrozen will:
 | `/api_key` | Change your API key |
 | `/learn` | Immediately scan project files into memory |
 | `/forget` | Show recent learnings; `/forget keyword` to delete bad learnings |
-| `/update` | Reinstall the pinned `v2.0.1` GitHub release wheel (never pulls into a project) |
+| `/update` | Reinstall the pinned `v2.0.2` GitHub release wheel (never pulls into a project) |
 | `/agent auto\|coder\|researcher` | Choose automatic routing or an isolated learning profile |
 | `/learning status [profile]` | Show candidate, canary, active, retired, and rolled-back artifacts |
 | `/learning metrics [profile]` | Show verified completion, corrections, errors, cost, and latency metrics |
@@ -596,7 +596,7 @@ with the same provider, model, configuration, and observable product behavior.
 ## 🌐 Web UI & REST API
 
 ```bash
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.2/openkyrozen-2.0.2-py3-none-any.whl'
 pip install fastapi uvicorn "$release_url"
 kyrozen-web --port 8000
 # Open http://localhost:8000
@@ -659,7 +659,7 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 
 Browser tools (`browser_open`, `browser_snapshot`, `browser_click`, `browser_type`, and
 `browser_close`) use an isolated profile and are available after
-`pip install playwright https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl && playwright install chromium`. Private and
+`pip install playwright https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.2/openkyrozen-2.0.2-py3-none-any.whl && playwright install chromium`. Private and
 loopback destinations are blocked unless `KYROZEN_BROWSER_ALLOW_PRIVATE=1` is set.
 
 Successful `POST /api/chat` requests emit one `chat.completed` webhook after
@@ -924,7 +924,7 @@ GitHub Actions automatically runs on every push and PR:
 - Windows PowerShell installer syntax/help check
 - Docker build and replace-container recovery smoke test
 
-The published `v2.0.1` release is immutable and remains the pinned target for
+The published `v2.0.2` release is immutable and remains the pinned target for
 public installers and `/update`. A future release is a deliberate, manual
 release operation: update the pinned version, build and validate the artifacts,
 and verify both installers before publishing the new tag.
@@ -933,7 +933,7 @@ and verify both installers before publishing the new tag.
 
 ```bash
 # Immutable GitHub release (use the one-line installer for uv + Python setup)
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.2/openkyrozen-2.0.2-py3-none-any.whl'
 uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
 pip install fastapi uvicorn "$release_url"  # existing supported environment
 

@@ -90,16 +90,16 @@ OpenKyrozen은 터미널에서 실행되는 **자기 학습형 AI 에이전트**
 macOS 또는 Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.1/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.2/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.1/install.ps1 | iex
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.2/install.ps1 | iex
 ```
 
-설치 프로그램은 변경할 수 없는 GitHub `v2.0.1` 릴리스 wheel을 가져와 OS, 아키텍처, Python, 네트워크와 사용자 경로 쓰기 권한을 확인합니다. 필요하면 `uv`를 설치하고, 격리된 `uv` 도구 환경에 Web 의존성을 준비하며, 비공개 `~/.kyrozen` 상태 디렉터리를 만든 뒤 `kyrozen --version`과 `kyrozen --help`를 검증합니다. API 키를 읽거나 출력하거나 업로드하지 않으며, 첫 `kyrozen` 실행에서 제공자 설정을 안내합니다.
+설치 프로그램은 변경할 수 없는 GitHub `v2.0.2` 릴리스 wheel을 가져와 OS, 아키텍처, Python, 네트워크와 사용자 경로 쓰기 권한을 확인합니다. 필요하면 `uv`를 설치하고, 격리된 `uv` 도구 환경에 Web 의존성을 준비하며, 비공개 `~/.kyrozen` 상태 디렉터리를 만든 뒤 `kyrozen --version`과 `kyrozen --help`를 검증합니다. API 키를 읽거나 출력하거나 업로드하지 않으며, 첫 `kyrozen` 실행에서 제공자 설정을 안내합니다.
 
 ### 개발 전용 소스 체크아웃
 
@@ -123,14 +123,14 @@ run.bat
 ### 고정된 GitHub 릴리스 설치
 
 ```bash
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.2/openkyrozen-2.0.2-py3-none-any.whl'
 uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
 
 # 이미 지원되는 Python 환경에서는 다음도 사용할 수 있습니다:
 pip install fastapi uvicorn "$release_url"
 ```
 
-v2.0.1 릴리스 wheel은 GitHub Actions에서 빌드하고 검증했습니다. 자세한 내용은 [v2.0.1 릴리스](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.1)를 참조하세요. 설치 후에는 어떤 호출 디렉터리에서도 `kyrozen`과 `kyrozen-web`을 실행할 수 있습니다. 암호화된 제공자 설정은 `~/.kyrozen_config.json`에 저장됩니다.
+v2.0.2 릴리스 wheel은 GitHub Actions에서 빌드하고 검증했습니다. 자세한 내용은 [v2.0.2 릴리스](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.2)를 참조하세요. 설치 후에는 어떤 호출 디렉터리에서도 `kyrozen`과 `kyrozen-web`을 실행할 수 있습니다. 암호화된 제공자 설정은 `~/.kyrozen_config.json`에 저장됩니다.
 
 ---
 
@@ -171,7 +171,7 @@ Kyrozen의 동작:
 | `/api_key` | API 키 변경 |
 | `/learn` | 프로젝트 파일을 즉시 메모리에 스캔 |
 | `/forget` | 최근 학습 확인; `/forget 키워드`로 잘못된 학습 삭제 |
-| `/update` | 고정된 GitHub `v2.0.1` 릴리스 wheel을 다시 설치 (프로젝트에 git pull을 실행하지 않음) |
+| `/update` | 고정된 GitHub `v2.0.2` 릴리스 wheel을 다시 설치 (프로젝트에 git pull을 실행하지 않음) |
 | `/self-learning` | 개별 자기 학습 기능 켜기/끄기 |
 
 ### Web UI 모드
@@ -443,7 +443,7 @@ curl -sS -X DELETE http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
 ## 🌐 Web UI 및 REST API
 
 ```bash
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.2/openkyrozen-2.0.2-py3-none-any.whl'
 pip install fastapi uvicorn "$release_url"
 kyrozen-web --port 8000
 # http://localhost:8000 열기
@@ -663,7 +663,7 @@ GitHub Actions가 모든 푸시와 PR에서 자동 실행:
 - Windows PowerShell 설치 프로그램 구문 및 도움말 경로 확인
 - Docker 빌드 및 컨테이너 교체 복구 스모크 테스트
 
-게시된 `v2.0.1` 릴리스는 변경할 수 없으며 공개 설치 프로그램과 `/update`는 이
+게시된 `v2.0.2` 릴리스는 변경할 수 없으며 공개 설치 프로그램과 `/update`는 이
 릴리스에 고정됩니다. 향후 릴리스는 의도적인 수동 작업으로 진행합니다. 고정 버전을
 업데이트하고, 아티팩트와 두 설치 프로그램을 검증한 뒤 새 태그를 게시하세요.
 
@@ -671,7 +671,7 @@ GitHub Actions가 모든 푸시와 PR에서 자동 실행:
 
 ```bash
 # 변경할 수 없는 GitHub 릴리스 (설치 프로그램이 uv와 Python 설정도 처리합니다)
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.1/openkyrozen-2.0.1-py3-none-any.whl'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.2/openkyrozen-2.0.2-py3-none-any.whl'
 uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
 pip install fastapi uvicorn "$release_url"
 

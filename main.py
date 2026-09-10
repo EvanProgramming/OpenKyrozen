@@ -115,7 +115,7 @@ from providers import (
     save_provider_config_encrypted, encrypt_api_key, decrypt_api_key,
 )
 
-RELEASE_VERSION = "2.0.1"
+RELEASE_VERSION = "2.0.2"
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 RELEASE_WHEEL_URL = (
     "https://github.com/EvanProgramming/OpenKyrozen/releases/download/"

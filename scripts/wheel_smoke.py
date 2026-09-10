@@ -53,7 +53,10 @@ def main() -> int:
         bin_dir = venv / ("Scripts" if os.name == "nt" else "bin")
         python = bin_dir / ("python.exe" if os.name == "nt" else "python")
         kyrozen = bin_dir / ("kyrozen.exe" if os.name == "nt" else "kyrozen")
-        _run([str(python), "-m", "pip", "install", str(wheels[0])], cwd=ROOT, env=base_env)
+        _run(
+            [str(python), "-m", "pip", "install", "fastapi", "uvicorn", str(wheels[0])],
+            cwd=ROOT, env=base_env,
+        )
 
         env = base_env.copy()
         env.update({
@@ -73,6 +76,34 @@ def main() -> int:
         expected_root = str((home / ".kyrozen" / "workspace").resolve())
         if "Global mode:" not in launched.stdout or expected_root not in compact_output:
             raise RuntimeError(f"installed CLI did not bind the global root:\n{launched.stdout}{launched.stderr}")
+
+        probe_code = """
+import tempfile
+from pathlib import Path
+import main
+import server
+
+assert any(r.path == "/api/auth/session" and "POST" in (r.methods or set()) for r in server.app.routes)
+from event_store import EventStore
+from task_engine import TaskManager
+
+with tempfile.TemporaryDirectory() as directory:
+    store = EventStore(Path(directory) / "state.sqlite3")
+    manager = TaskManager(store, workspace_id="smoke", session_id="release")
+    index = manager.add_task("blocked smoke task")
+    manager.set_status(index, "blocked")
+    previous = main.tasks
+    main.tasks = manager
+    try:
+        assert main._task_status_counts()["blocked"] == 1
+        assert "All tasks complete" not in main._tasks_panel_content()
+    finally:
+        main.tasks = previous
+print("installed artifact auth/task behavior passed")
+"""
+        probe = _run([str(python), "-c", probe_code], cwd=caller, env=env)
+        if "installed artifact auth/task behavior passed" not in probe.stdout:
+            raise RuntimeError(f"installed artifact behavior probe failed:\n{probe.stdout}{probe.stderr}")
 
     print("Wheel installation smoke passed: kyrozen ran from an unrelated directory.")
     return 0

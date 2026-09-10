@@ -11,11 +11,11 @@ function Fail([string]$Message) {
 }
 
 if ($ShowHelp) {
-    Write-Output "OpenKyrozen installer: installs the pinned v2.0.1 GitHub release, uv, Python 3.12/3.13, and Web dependencies."
+    Write-Output "OpenKyrozen installer: installs the pinned v2.0.2 GitHub release, uv, Python 3.12/3.13, and Web dependencies."
     exit 0
 }
 
-$releaseVersion = "2.0.1"
+$releaseVersion = "2.0.2"
 $releaseTag = "v$releaseVersion"
 $releaseWheelUrl = "https://github.com/EvanProgramming/OpenKyrozen/releases/download/$releaseTag/openkyrozen-$releaseVersion-py3-none-any.whl"
 $homeDirectory = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
