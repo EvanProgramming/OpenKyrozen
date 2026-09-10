@@ -73,6 +73,63 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertIn("✓ legacy complete", hint)
             self.assertIn("✓ durable complete", hint)
 
+    def test_blocked_tasks_are_visible_and_cannot_be_summarised_as_complete(self):
+        class StubLearning:
+            def feedback_signal(self, _text):
+                return None
+
+            def route_profile(self, _text, _profile=None):
+                return "coder"
+
+            def begin_run(self, profile, _task, provider_model=None):
+                return {"run_id": "blocked-run", "profile": profile, "provider_model": provider_model}
+
+            def artifact_context(self, _run):
+                return "", []
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = MemoryBank(root / "state.sqlite3").store
+            manager = TaskManager(store, workspace_id="project", session_id="blocked-test")
+            index = manager.add_task("reconcile the four actions")
+            manager.set_status(index, "blocked")
+            original_root = main._get_workspace_root()
+            original_tasks = main.tasks
+            original_learning = main.learning_engine
+            main._set_workspace_root(root)
+            main.tasks = manager
+            main.learning_engine = StubLearning()
+            try:
+                panel = main._tasks_panel_content()
+                self.assertIn("blocked=1", panel)
+                self.assertIn("Tasks require attention", panel)
+                self.assertNotIn("All tasks complete", panel)
+                with patch.object(main, "_classify_complexity", return_value="simple"), \
+                     patch.object(main, "_build_messages", return_value=[]), \
+                     patch.object(main, "_build_memory_context", return_value=""), \
+                     patch.object(main, "_call_llm_with_spinner", side_effect=[
+                         'Action: {"action":"read_file","args":"first.txt"}\n'
+                         'Action: {"action":"read_file","args":"second.txt"}',
+                         "All requested file and Git operations completed.",
+                     ]), \
+                     patch.object(main, "_get_llm_response", return_value="All requested file and Git operations completed."), \
+                     patch.object(main, "_update_tasks_panel"), \
+                     patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
+                                  result, records, tokens, started: result):
+                    reply = main._chat_turn("continue the work", clear_tasks=False)
+            finally:
+                main._set_workspace_root(original_root)
+                main.tasks = original_tasks
+                main.learning_engine = original_learning
+
+            self.assertIn("blocked", reply.lower())
+            self.assertIn("Recovery required", reply)
+            self.assertNotIn("All requested file and Git operations completed.", reply)
+            self.assertEqual(
+                store.list_tasks(workspace_id="project", session_id="blocked-test")[0]["status"],
+                "blocked",
+            )
+
     def test_chat_turn_executes_multiple_real_tools_and_returns_latest_prose(self):
         class StubLearning:
             def feedback_signal(self, _text):
