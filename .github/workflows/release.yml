@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing immutable tag to build and verify (for example v2.0.2)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,8 +17,12 @@ permissions:
 jobs:
   build-release:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -22,11 +32,14 @@ jobs:
       - name: Build and validate the tagged release
         run: |
           python -m pip install --upgrade pip build twine
-          tag_version="${GITHUB_REF_NAME#v}"
+          tag_version="${RELEASE_TAG#v}"
           package_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           test "$tag_version" = "$package_version"
           python -m build --sdist --wheel --outdir dist
           python -m twine check dist/*
+
+      - name: Install source dependencies for release regressions
+        run: python -m pip install -e ".[web]"
 
       - name: Run source release regressions
         run: |
@@ -41,14 +54,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
-            --title "OpenKyrozen $GITHUB_REF_NAME" --generate-notes
+          gh release create "$RELEASE_TAG" dist/* --verify-tag \
+            --title "OpenKyrozen $RELEASE_TAG" --generate-notes
 
   windows-installer:
     needs: build-release
     runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Install the tagged release with the PowerShell installer
         shell: pwsh
