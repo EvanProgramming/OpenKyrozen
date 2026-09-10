@@ -3344,34 +3344,31 @@ def _execute_turn_action(action: str, args: Any, *, operation_scope: str,
 
 def _record_turn_receipt(receipt: ExecutionReceipt) -> dict[str, Any]:
     """Persist a receipt and reconcile the current planned task from verified evidence."""
-    task_id = tasks.active_task_id()
-    if task_id:
-        task = next(task for task in tasks.tasks if task["id"] == task_id)
-        checkpoint = task.get("checkpoint", {})
-        checkpoint_action = checkpoint.get("action")
-        if checkpoint_action and (
-            _operation_action(checkpoint_action) != receipt.action
-            or _operation_args(receipt.action, checkpoint.get("args", "")) != receipt.args
-        ):
-            task_id = None
-        elif not checkpoint_action:
-            tasks.update_checkpoint(task_id, {"action": receipt.action, "args": receipt.args})
     evidence = tasks.record_evidence(
-        task_id=task_id, action=receipt.action, args=receipt.args, result=receipt.result,
+        action=receipt.action, args=receipt.args, result=receipt.result,
         success=receipt.success, acceptance=receipt.acceptance, receipt_id=receipt.receipt_id,
     )
-    if task_id and receipt.success and receipt.acceptance:
+    task_id = evidence.get("task_id")
+    effective_acceptance = evidence.get("acceptance") or receipt.acceptance
+    if task_id:
+        task = next((item for item in tasks.tasks if item["id"] == task_id), None)
+        if task and not (task.get("checkpoint") or {}).get("action"):
+            tasks.update_checkpoint(task_id, {"action": receipt.action, "args": receipt.args})
+    if task_id and receipt.success and effective_acceptance:
         index = next(index for index, task in enumerate(tasks.tasks) if task["id"] == task_id)
         tasks.set_status(index, "succeeded")
+    receipt_payload = receipt.as_dict()
+    if effective_acceptance and not receipt_payload.get("acceptance"):
+        receipt_payload["acceptance"] = effective_acceptance
     tasks.store.append_event(
-        "execution.receipt", receipt.as_dict(), user_id=tasks.user_id,
+        "execution.receipt", {**receipt_payload, "task_id": task_id}, user_id=tasks.user_id,
         workspace_id=tasks.workspace_id, session_id=tasks.session_id, task_id=task_id,
     )
     result = {
         "receipt_id": receipt.receipt_id, "operation_id": receipt.operation_id,
         "action": receipt.action, "args": receipt.args, "result": receipt.result,
         "success": receipt.success, "authorized": receipt.authorized,
-        "acceptance": receipt.acceptance, "failure": receipt.failure,
+        "acceptance": effective_acceptance, "failure": receipt.failure, "task_id": task_id,
     }
     _emit_stream_event({"event": "tool_receipt", "tool_receipt": result})
     _emit_stream_event({"event": "tasks", "tasks": [

@@ -1,3 +1,4 @@
+import subprocess
 import tempfile
 import time
 import unittest
@@ -242,6 +243,75 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertEqual({item["payload"]["success"] for item in receipts}, {True, False})
             self.assertIn("duplicate_operation", {item["payload"]["failure"] for item in receipts})
             self.assertIn("marker is complete", reply.lower())
+
+    def test_multi_task_plan_reconciles_receipts_without_taskdone_and_survives_restart(self):
+        class StubLearning:
+            def feedback_signal(self, _text):
+                return None
+
+            def route_profile(self, _text, _profile=None):
+                return "coder"
+
+            def begin_run(self, profile, _task, provider_model=None):
+                return {"run_id": "multi-task-run", "profile": profile, "provider_model": provider_model}
+
+            def artifact_context(self, _run):
+                return "", []
+
+        responses = [
+            "Plan:\n1. Check the repository status\n2. Create the audit file\n"
+            "3. Stage the audit file\n4. Commit the audit file\n"
+            "TaskList:\n```json\n"
+            "[{\"id\":\"status\",\"description\":\"Check the repository status\"},"
+            "{\"id\":\"write\",\"description\":\"Create the audit file\"},"
+            "{\"id\":\"stage\",\"description\":\"Stage the audit file\"},"
+            "{\"id\":\"commit\",\"description\":\"Commit the audit file\"}]\n```\n"
+            'Action: {"action":"git_status","args":"."}',
+            'Action: {"action":"write_file","args":"audit-task.txt|AUDIT_OK"}',
+            'Action: {"action":"git_add","args":"audit-task.txt"}',
+            'Action: {"action":"git_commit","args":"audit: post-merge"}',
+            "Committed audit file.",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "OpenKyrozen Test"], cwd=root, check=True)
+            store = MemoryBank(root / "state.sqlite3").store
+            original_root = main._get_workspace_root()
+            original_tasks = main.tasks
+            original_learning = main.learning_engine
+            main._set_workspace_root(root)
+            main.tasks = TaskManager(store, workspace_id="project", session_id="multi-task")
+            main.learning_engine = StubLearning()
+            try:
+                with patch.object(main, "_classify_complexity", return_value="complex"), \
+                     patch.object(main, "_build_messages", return_value=[]), \
+                     patch.object(main, "_build_memory_context", return_value=""), \
+                     patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
+                     patch.object(main, "_get_llm_response", return_value=""), \
+                     patch.object(main, "_update_tasks_panel"), \
+                     patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
+                                  result, records, tokens, started: result):
+                    reply = main._chat_turn("Create the audit file and commit it with Git.", clear_tasks=True)
+            finally:
+                main._set_workspace_root(original_root)
+                main.tasks = original_tasks
+                main.learning_engine = original_learning
+
+            rows = store.list_tasks(workspace_id="project", session_id="multi-task")
+            self.assertEqual(len(rows), 4)
+            self.assertEqual({row["status"] for row in rows}, {"succeeded"})
+            self.assertTrue((root / "audit-task.txt").is_file())
+            self.assertIn("audit: post-merge", subprocess.run(
+                ["git", "log", "-1", "--pretty=%s"], cwd=root, capture_output=True, text=True, check=True,
+            ).stdout)
+            receipts = store.list_events("execution.receipt", workspace_id="project", session_id="multi-task")
+            self.assertEqual(len(receipts), 4)
+            self.assertEqual({event["task_id"] for event in receipts}, {row["id"] for row in rows})
+            self.assertIn("Committed audit file", reply)
+            reopened = TaskManager(store, workspace_id="project", session_id="multi-task")
+            self.assertEqual(reopened.recover(), [])
 
     def test_failed_operation_can_retry_and_provider_deadline_is_honest(self):
         operations: set[str] = set()

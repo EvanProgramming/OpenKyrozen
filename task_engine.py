@@ -26,6 +26,42 @@ def _scoped_task_id(scope_key: str, raw_task_id: str) -> str:
     return raw_task_id if raw_task_id.startswith(prefix) else f"{prefix}{_task_key(raw_task_id)}"
 
 
+_RECEIPT_ACTION_ALIASES = {
+    "status": "git_status",
+    "diff": "git_diff",
+    "log": "git_log",
+    "add": "git_add",
+    "commit": "git_commit",
+    "write": "write_file",
+    "run_command": "run_cmd",
+    "execute_terminal_command": "run_cmd",
+    "run_terminal": "run_cmd",
+    "terminal": "run_cmd",
+    "command": "run_cmd",
+    "bash": "run_cmd",
+    "shell": "run_cmd",
+    "sh": "run_cmd",
+    "cmd": "run_cmd",
+}
+_RECEIPT_ACTION_HINTS = {
+    "git_status": (
+        "git status", "repository status", "working tree", "repository state",
+        "inspect repository", "check repository", "status",
+    ),
+    "write_file": ("write file", "create", "save", "write", "file", "artifact", "generate"),
+    "git_add": ("git add", "stage", "staging", "staged", "add files", "prepare commit"),
+    "git_commit": ("git commit", "commit", "committed", "record changes", "save changes"),
+    "git_diff": ("git diff", "diff", "changes"),
+    "git_log": ("git log", "history", "log"),
+    "run_cmd": ("run command", "execute", "shell", "command"),
+}
+
+
+def _receipt_action(action: Any) -> str:
+    value = str(action or "").strip().lower()
+    return _RECEIPT_ACTION_ALIASES.get(value, value)
+
+
 def canonical_status(status: str) -> str:
     """Normalize the historical ``done`` spelling to the durable status."""
     status = str(status).strip().lower()
@@ -136,25 +172,105 @@ class TaskManager:
         evidence_items = ([evidence] if evidence else []) + self.tasks[idx].get("evidence", [])
         return any(item.get("success") is True and item.get("acceptance") for item in evidence_items)
 
+    @staticmethod
+    def _text_score(text: str, hints: tuple[str, ...]) -> int:
+        lowered = " ".join(str(text or "").lower().replace("_", " ").split())
+        score = 0
+        for hint in hints:
+            needle = " ".join(hint.lower().replace("_", " ").split())
+            if needle and needle in lowered:
+                score += 12 if " " in needle else 5
+        return score
+
+    def _receipt_match_score(self, task: dict[str, Any], action: str, args: str) -> int:
+        """Score one pending task against a canonical execution receipt."""
+        action = _receipt_action(action)
+        args = str(args or "").strip()
+        score = 0
+        checkpoint = task.get("checkpoint") or {}
+        checkpoint_action = _receipt_action(checkpoint.get("action"))
+        checkpoint_args = str(checkpoint.get("args") or "").strip()
+        if checkpoint_action:
+            if checkpoint_action != action:
+                return -1
+            if checkpoint_args and checkpoint_args != args:
+                return -1
+            score += 100
+            if checkpoint_args:
+                score += 20
+
+        for criterion in task.get("acceptance") or []:
+            if isinstance(criterion, dict):
+                criterion_action = _receipt_action(criterion.get("action"))
+                criterion_args = str(criterion.get("args") or "").strip()
+                if criterion_action:
+                    if criterion_action != action:
+                        continue
+                    score += 70
+                    if criterion_args and criterion_args == args:
+                        score += 20
+                    elif criterion_args:
+                        continue
+                criterion = criterion.get("description") or criterion.get("acceptance") or ""
+            score += self._text_score(str(criterion), (action,))
+
+        description = str(task.get("description") or "")
+        score += self._text_score(description, (action, *_RECEIPT_ACTION_HINTS.get(action, ())))
+        if args:
+            for token in args.replace("|", " ").split():
+                token = token.strip("\"'`.,:;()[]{}")
+                if len(token) >= 3 and token.lower() in description.lower():
+                    score += 8
+        return score
+
+    def _match_receipt_task(self, action: str, args: str) -> dict[str, Any] | None:
+        candidates = [
+            task for task in self.tasks
+            if canonical_status(task.get("status", "pending")) in {"pending", "running"}
+        ]
+        scored = [(self._receipt_match_score(task, action, args), task) for task in candidates]
+        scored = [(score, task) for score, task in scored if score > 0]
+        if not scored:
+            return None
+        highest = max(score for score, _task in scored)
+        matches = [task for score, task in scored if score == highest]
+        return matches[0] if len(matches) == 1 else None
+
     def record_evidence(self, *, task_id: str | None = None, action: str, result: str, success: bool,
                         acceptance: str | None = None, args: str | None = None,
                         receipt_id: str | None = None) -> dict[str, Any]:
-        item = {"action": action, "result": str(result)[:2000], "success": bool(success)}
+        canonical = _receipt_action(action)
+        normalized_args = str(args or "").strip()
+        item = {"action": canonical, "result": str(result)[:2000], "success": bool(success)}
         if task_id:
             item["task_id"] = str(task_id)
         if args:
-            item["args"] = str(args)[:1000]
+            item["args"] = normalized_args[:1000]
         if receipt_id:
             item["receipt_id"] = str(receipt_id)
         if acceptance:
             item["acceptance"] = acceptance
+        inferred = False
         targets = [task for task in self.tasks if task["id"] == str(task_id)] if task_id else []
-        # Compatibility for the old single-task caller.  With more than one
-        # task, an unaddressed receipt is intentionally not attached anywhere.
-        if not task_id and len(self.tasks) == 1:
-            targets = [self.tasks[0]]
-            item["task_id"] = targets[0]["id"]
+        if not task_id:
+            matched = self._match_receipt_task(canonical, normalized_args)
+            if matched is not None:
+                targets = [matched]
+                inferred = True
+                item["task_id"] = matched["id"]
+                if success and not acceptance:
+                    item["acceptance"] = f"verified receipt for planned action {canonical}"
+            # Compatibility for the old single-task caller.  An unmatched
+            # receipt remains evidence but cannot satisfy the task by itself.
+            elif len(self.tasks) == 1:
+                candidate = self.tasks[0]
+                checkpoint_action = _receipt_action((candidate.get("checkpoint") or {}).get("action"))
+                if not checkpoint_action or self._receipt_match_score(candidate, canonical, normalized_args) >= 0:
+                    targets = [candidate]
+                    item["task_id"] = candidate["id"]
         for task in targets:
+            if inferred and not (task.get("checkpoint") or {}).get("action"):
+                task["checkpoint"] = {"action": canonical, "args": normalized_args}
             task.setdefault("evidence", []).append(item)
             task["updated_at"] = utc_now()
             self._persist(task)
