@@ -482,17 +482,31 @@ def git_branch(args: str) -> str:
     """
     try:
         import shlex
+        raw_args = args.strip()
+        try:
+            extra = shlex.split(raw_args) if raw_args else []
+        except ValueError:
+            extra = raw_args.split()
         cmd = ["git", "-C", _git_working_directory(), "branch"]
-        if args.strip():
-            try:
-                extra = shlex.split(args.strip())
-            except ValueError:
-                extra = args.strip().split()
+        if extra:
             cmd.extend(extra)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             return f"Git branch failed:\n{result.stderr}"
         out = result.stdout.strip()
+        mutation_flags = {"-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy", "-f", "--force"}
+        mutation = bool(extra and (extra[0] in mutation_flags or not extra[0].startswith("-")))
+        if mutation:
+            targets = [item for item in extra if item != "--" and not item.startswith("-")]
+            if extra[0] in {"-d", "-D", "--delete"}:
+                names = ", ".join(repr(item) for item in targets) or "the requested branch"
+                return f"Deleted branch {names}."
+            if extra[0] in {"-m", "-M", "--move"} and len(targets) >= 2:
+                return f"Renamed branch {targets[-2]!r} to {targets[-1]!r}."
+            if extra[0] in {"-c", "-C", "--copy"} and len(targets) >= 2:
+                return f"Copied branch {targets[-2]!r} to {targets[-1]!r}."
+            name = targets[-1] if targets else "the requested branch"
+            return f"Created branch {name!r}."
         return out if out else "(no branches)"
     except Exception as e:
         return f"Error running git branch: {e}"
