@@ -16,6 +16,7 @@ from tools import (
     allowed_tool_names,
     git_status,
     git_remote,
+    git_branch,
     read_file,
     read_webpage,
     run_cmd,
@@ -129,6 +130,29 @@ class WorkspaceToolTests(unittest.TestCase):
             git_remote("add origin 'unterminated"),
             "Error: git_remote arguments contain invalid shell quoting.",
         )
+
+    def test_git_branch_mutations_report_success_and_change_repository_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True)
+            subprocess.run(["git", "config", "user.name", "OpenKyrozen Test"], cwd=repository, check=True)
+            (repository / "README.md").write_text("branch test\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repository, check=True)
+            subprocess.run(["git", "commit", "--quiet", "-m", "initial"], cwd=repository, check=True)
+            original_root = tools._WORKSPACE_ROOT
+            set_workspace_root(repository)
+            try:
+                created = git_branch("audit-branch")
+                listed = git_branch("")
+                deleted = git_branch("-d audit-branch")
+                after_delete = git_branch("")
+            finally:
+                set_workspace_root(original_root)
+            self.assertIn("audit-branch", created)
+            self.assertIn("audit-branch", listed)
+            self.assertIn("Deleted branch", deleted)
+            self.assertNotIn("audit-branch", after_delete)
 
     def test_read_webpage_blocks_private_and_reserved_destinations_before_connecting(self):
         class PrivateHandler(BaseHTTPRequestHandler):
