@@ -2842,6 +2842,7 @@ def _with_learning_notices(answer: str) -> str:
 def _finish_learning_run(run: dict[str, str], receipts: list[dict[str, Any]], task: str, result: str,
                          tool_records: list[dict[str, Any]], tokens: int, started: float) -> str:
     global _last_learning_run, _learning_notices
+    result = _clean_final_response(result)
     latency = time.time() - started
     acceptance = [item for item in tool_records if item.get("acceptance")]
     if run["profile"] == "researcher":
@@ -3713,7 +3714,7 @@ def _is_question(text: str) -> bool:
 
 
 class DeepSeekDSMLFilter:
-    """Remove DeepSeek V4 tool-call markup without buffering plain prose."""
+    """Remove provider control syntax without buffering ordinary prose."""
 
     _OPEN_RE = re.compile(
         r"<(?P<marker>｜DSML｜|\|DSML\|)"
@@ -3722,9 +3723,27 @@ class DeepSeekDSMLFilter:
     )
     _STARTS = ("<｜DSML｜", "<|DSML|", "｜｜DSML｜｜", "||DSML||")
     _PLAIN_MARKER = re.compile(r"｜｜DSML｜｜|\|\|DSML\|\|")
+    _CONTROL_RE = re.compile(
+        r"(?i)(?<![\w])(?P<kind>Action|Thought|Plan|TaskList|TaskDone|DefineTool)\s*:"
+    )
+    _GENERIC_OPEN_RE = re.compile(
+        r"<\s*(?P<kind>invoke|parameter|calls|tool_calls|function_calls)\b[^>]*>",
+        re.IGNORECASE,
+    )
+    _GENERIC_CLOSE_RE = re.compile(
+        r"</\s*(?P<kind>invoke|parameter|calls|tool_calls|function_calls)\s*>",
+        re.IGNORECASE,
+    )
+    _CONTROL_PREFIXES = tuple(
+        item[:length].lower()
+        for item in ("action:", "thought:", "plan:", "tasklist:", "taskdone:",
+                     "definetool:", "<", "</")
+        for length in range(1, len(item) + 1)
+    )
 
     def __init__(self) -> None:
         self._buffer = ""
+        self._control_buffer = ""
 
     @classmethod
     def _partial_suffix_length(cls, value: str) -> int:
@@ -3741,6 +3760,188 @@ class DeepSeekDSMLFilter:
     @classmethod
     def _close_for(cls, match: re.Match[str]) -> str:
         return f"</{match.group('marker')}{match.group('kind')}>"
+
+    @classmethod
+    def _control_partial_suffix_length(cls, value: str) -> int:
+        lowered = value.lower()
+        for length in range(min(len(value), max(map(len, cls._CONTROL_PREFIXES))), 0, -1):
+            if lowered[-length:] in cls._CONTROL_PREFIXES:
+                if length == 1 and lowered[-1].isalpha() and len(value) > 1 and value[-2].isalnum():
+                    continue
+                return length
+        return 0
+
+    @staticmethod
+    def _balanced_end(value: str, start: int, opening: str, closing: str) -> int | None:
+        depth = 0
+        quote = ""
+        escaped = False
+        for index in range(start, len(value)):
+            char = value[index]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+                continue
+            if char in "'\"":
+                quote = char
+            elif char == opening:
+                depth += 1
+            elif char == closing:
+                depth -= 1
+                if depth == 0:
+                    return index + 1
+        return None
+
+    @classmethod
+    def _action_end(cls, value: str, start: int, *, final: bool) -> int | None:
+        cursor = start
+        while cursor < len(value) and value[cursor].isspace():
+            cursor += 1
+        if cursor >= len(value):
+            return cursor if final else None
+        if value[cursor] in "({[":
+            pair = {"(": ")", "{": "}", "[": "]"}[value[cursor]]
+            return cls._balanced_end(value, cursor, value[cursor], pair)
+        if value[cursor] in "'\"":
+            quote = value[cursor]
+            escaped = False
+            for index in range(cursor + 1, len(value)):
+                char = value[index]
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    return index + 1
+            return None
+        end = cursor
+        while end < len(value) and not value[end].isspace():
+            end += 1
+        return end
+
+    @classmethod
+    def _generic_block_end(cls, value: str, match: re.Match[str]) -> int | None:
+        kind = match.group("kind").lower()
+        close_kinds = "parameter" if kind == "parameter" else "invoke|calls|tool_calls|function_calls"
+        close = re.compile(rf"</\s*(?:{close_kinds})\s*>", re.IGNORECASE).search(value, match.end())
+        return close.end() if close else None
+
+    def _filter_control(self, chunk: str, *, final: bool) -> str:
+        self._control_buffer += chunk
+        output: list[str] = []
+        while self._control_buffer:
+            control = self._CONTROL_RE.search(self._control_buffer)
+            generic_open = self._GENERIC_OPEN_RE.search(self._control_buffer)
+            generic_close = self._GENERIC_CLOSE_RE.search(self._control_buffer)
+            starts = [item for item in (control, generic_open, generic_close) if item is not None]
+            if not starts:
+                if final:
+                    output.append(self._control_buffer)
+                    self._control_buffer = ""
+                else:
+                    keep = self._control_partial_suffix_length(self._control_buffer)
+                    safe_end = len(self._control_buffer) - keep
+                    if safe_end:
+                        output.append(self._control_buffer[:safe_end])
+                        self._control_buffer = self._control_buffer[safe_end:]
+                break
+
+            start = min(item.start() for item in starts)
+            if start:
+                output.append(self._control_buffer[:start])
+                self._control_buffer = self._control_buffer[start:]
+                continue
+
+            if generic_close is not None and generic_close.start() == 0 and (
+                    control is None or generic_close.start() <= control.start()):
+                self._control_buffer = self._control_buffer[generic_close.end():]
+                continue
+
+            if generic_open is not None and generic_open.start() == 0 and (
+                    control is None or generic_open.start() <= control.start()):
+                end = self._generic_block_end(self._control_buffer, generic_open)
+                if end is None:
+                    self._control_buffer = "" if final else self._control_buffer
+                    break
+                self._control_buffer = self._control_buffer[end:]
+                continue
+
+            control = self._CONTROL_RE.match(self._control_buffer)
+            if control is None:  # pragma: no cover - defensive loop guard
+                output.append(self._control_buffer[0])
+                self._control_buffer = self._control_buffer[1:]
+                continue
+            kind = control.group("kind").lower()
+            cursor = control.end()
+            if kind == "action":
+                remainder = self._control_buffer[cursor:].lstrip()
+                leading = len(self._control_buffer[cursor:]) - len(remainder)
+                json_end = None
+                if remainder.startswith(("{", "[")):
+                    json_end = self._balanced_end(remainder, 0, remainder[0], {"{": "}", "[": "]"}[remainder[0]])
+                    if json_end is None:
+                        self._control_buffer = "" if final else self._control_buffer
+                        break
+                    try:
+                        parsed = json.loads(remainder[:json_end])
+                    except (TypeError, ValueError):
+                        parsed = None
+                    valid = (
+                        isinstance(parsed, dict) and _is_valid_action(str(parsed.get("action", "")))
+                    ) or (
+                        isinstance(parsed, list) and any(
+                            isinstance(item, dict) and _is_valid_action(str(item.get("action", "")))
+                            for item in parsed
+                        )
+                    )
+                    if not valid:
+                        output.append(self._control_buffer[:control.end()])
+                        self._control_buffer = self._control_buffer[control.end():]
+                        continue
+                    self._control_buffer = self._control_buffer[cursor + leading + json_end:]
+                    continue
+                if remainder.startswith("```"):
+                    closing = remainder.find("```", 3)
+                    if closing < 0:
+                        self._control_buffer = "" if final else self._control_buffer
+                        break
+                    self._control_buffer = self._control_buffer[cursor + leading + closing + 3:]
+                    continue
+                name_match = re.match(r"[A-Za-z_]\w*", remainder)
+                name = name_match.group(0) if name_match else ""
+                if not _is_valid_action(name):
+                    output.append(self._control_buffer[:control.end()])
+                    self._control_buffer = self._control_buffer[control.end():]
+                    continue
+                name_end = cursor + leading + len(name)
+                end = self._action_end(self._control_buffer, name_end, final=final)
+                if end is None:
+                    self._control_buffer = "" if final else self._control_buffer
+                    break
+                self._control_buffer = self._control_buffer[end:]
+                continue
+
+            remainder = self._control_buffer[cursor:]
+            leading = len(remainder) - len(remainder.lstrip())
+            remainder = remainder.lstrip()
+            if kind in {"action", "tasklist", "definetool"} and remainder.startswith("```"):
+                closing = remainder.find("```", 3)
+                if closing < 0:
+                    self._control_buffer = "" if final else self._control_buffer
+                    break
+                self._control_buffer = self._control_buffer[cursor + leading + closing + 3:]
+                continue
+            # Preserve complete headings at the final boundary so the legacy
+            # cleaner can remove their full line/block; live streams only need
+            # the marker itself removed.
+            if final:
+                output.append(self._control_buffer[:cursor])
+            self._control_buffer = self._control_buffer[cursor:]
+        return "".join(output)
 
     def feed(self, chunk: str = "", *, final: bool = False) -> str:
         self._buffer += str(chunk or "")
@@ -3791,7 +3992,7 @@ class DeepSeekDSMLFilter:
                 self._buffer = "" if final else self._buffer
                 break
             self._buffer = self._buffer[end + len(close):]
-        return "".join(output)
+        return self._filter_control("".join(output), final=final)
 
 
 def _clean_final_response(text: str) -> str:
@@ -3836,6 +4037,9 @@ def _clean_final_response(text: str) -> str:
     # any following natural-language answer.
     cleaned = re.sub(r"^[ \t]*Thought:[ \t]*.*(?:\n|$)", "", cleaned,
                      flags=re.IGNORECASE | re.MULTILINE)
+    cleaned = re.sub(
+        r"(?i)(?<![\w])(?:Thought|Plan|TaskList|TaskDone|DefineTool)\s*:", "", cleaned,
+    )
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
@@ -5543,7 +5747,7 @@ def main() -> None:
         short_term_memory.append({"role": "user", "content": user_input})
         cleaned_reply = _remove_task_blocks(reply)
         short_term_memory.append({"role": "assistant", "content": cleaned_reply})
-        memory_bank.add_log(f"User: {user_input}\nAssistant: {reply}")
+        memory_bank.add_log(f"User: {user_input}\nAssistant: {_clean_final_response(reply)}")
 
         thinking, answer = _split_reply(reply)
 
@@ -5582,7 +5786,7 @@ def main() -> None:
                 break
             short_term_memory.append({"role": "user", "content": user_input})
             short_term_memory.append({"role": "assistant", "content": reply})
-            memory_bank.add_log(f"User: {user_input}\nAssistant: {reply}")
+            memory_bank.add_log(f"User: {user_input}\nAssistant: {_clean_final_response(reply)}")
             thinking, answer = _split_reply(reply)
             if thinking:
                 console.print(Panel(thinking, title="Thinking", border_style=_ACCENT_DIM))
