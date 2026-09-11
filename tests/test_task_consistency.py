@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import main
 from memory import MemoryBank
+from learning_engine import LearningEngine
 from task_engine import TaskManager
 
 
@@ -55,6 +56,35 @@ class TaskConsistencyTests(unittest.TestCase):
         self.assertNotIn("Plan:", clean)
         self.assertNotIn("Action:", clean)
         self.assertNotIn("TaskDone:", clean)
+
+    def test_inline_and_malformed_protocol_is_removed_before_learning_persistence(self):
+        raw = (
+            'I checked the project. Action: list_dir "." Action: run_cmd "git status" '
+            '< invoke name="read_file">notes.py</ calls> '
+            'The action word and invoke word are ordinary prose.'
+        )
+        expected = "I checked the project. The action word and invoke word are ordinary prose."
+        clean = main._clean_final_response(raw)
+        self.assertEqual(" ".join(clean.split()), expected)
+        self.assertNotRegex(clean, r"Action:|</?\s*(?:invoke|parameter|calls)\b")
+
+        with tempfile.TemporaryDirectory() as directory:
+            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="protocol")
+            original_memory, original_learning = main.memory_bank, main.learning_engine
+            main.memory_bank = memory
+            main.learning_engine = LearningEngine(memory)
+            try:
+                result = main._finish_learning_run(
+                    {"run_id": "protocol-run", "profile": "coder"}, [],
+                    "What do you remember about this project and my preferences?",
+                    raw, [], 0, time.time(),
+                )
+                memory.add_log(f"User: prompt\nAssistant: {result}")
+            finally:
+                main.memory_bank, main.learning_engine = original_memory, original_learning
+            completed = memory.store.list_events("learning.run_completed", workspace_id="protocol")
+            self.assertEqual(" ".join(completed[-1]["payload"]["result"].split()), expected)
+            self.assertNotRegex(memory.get_recent(1)[0], r"Action:|</?\s*(?:invoke|parameter|calls)\b")
 
     def test_progress_counts_done_and_succeeded_consistently(self):
         with tempfile.TemporaryDirectory() as directory:
