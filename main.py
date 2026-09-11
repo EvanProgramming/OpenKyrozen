@@ -1806,6 +1806,70 @@ _user_preferences: dict[str, Any] = {
     "prefers_tables": False,  # user likes table-format output
     "code_first": False,      # user prefers code before explanation
 }
+_hydrated_preferences: dict[str, Any] = {}
+_preference_scope: tuple[str, str, str | None, str | None] | None = None
+
+
+def _preference_fields(content: str) -> dict[str, Any]:
+    """Parse one durable PREF record without applying untrusted text."""
+    if not str(content).lstrip().upper().startswith("PREF:"):
+        return {}
+    fields: dict[str, Any] = {}
+    for part in str(content).split(":", 1)[1].split(";"):
+        key, separator, value = part.strip().partition("=")
+        if not separator or key not in _user_preferences:
+            continue
+        value = value.strip()
+        if not value:
+            continue
+        if isinstance(_user_preferences[key], bool):
+            if value.lower() not in {"true", "false"}:
+                continue
+            fields[key] = value.lower() == "true"
+        else:
+            fields[key] = value
+    return fields
+
+
+def _restore_user_preferences() -> dict[str, Any]:
+    """Hydrate only active, visible, conflict-free preferences for this scope."""
+    global _preference_scope
+    profile = globals().get("_agent_profile_mode")
+    profile = profile if profile in {"coder", "researcher"} else None
+    scope = (memory_bank.user_id, memory_bank.workspace_id, memory_bank.session_id, profile)
+    if scope != _preference_scope:
+        for key, value in _hydrated_preferences.items():
+            if _user_preferences.get(key) == value:
+                _user_preferences[key] = False if isinstance(value, bool) else ""
+        _hydrated_preferences.clear()
+        _preference_scope = scope
+    try:
+        rows = memory_bank.store.list_memories(
+            kind="preference", status="active", limit=10000,
+            workspace_id=memory_bank.workspace_id, session_id=memory_bank.session_id,
+            user_id=memory_bank.user_id,
+        )
+        if memory_bank.session_id is None:
+            rows = [row for row in rows if not row.get("session_id")]
+        rows = memory_bank.filter_records(
+            rows, profile=profile, authorized_speakers={memory_bank.user_id},
+        )
+    except Exception:
+        return {}
+    candidates: dict[str, set[str]] = {}
+    values: dict[str, Any] = {}
+    for row in rows:
+        for key, value in _preference_fields(row.get("content", "")).items():
+            candidates.setdefault(key, set()).add(repr(value))
+            values[key] = value
+    restored: dict[str, Any] = {}
+    for key, representations in candidates.items():
+        if len(representations) != 1 or _user_preferences.get(key):
+            continue
+        _user_preferences[key] = values[key]
+        _hydrated_preferences[key] = values[key]
+        restored[key] = values[key]
+    return restored
 
 def _detect_user_preferences(user_input: str) -> None:
     """Detect implicit user preferences from their messages."""
@@ -1859,6 +1923,7 @@ def _detect_user_preferences(user_input: str) -> None:
 
 def _build_preference_context() -> str:
     """Build a system message describing known user preferences."""
+    _restore_user_preferences()
     active = [f"{k}={v}" for k, v in _user_preferences.items()
               if v and v not in ("", False)]
     if not active:
@@ -2091,6 +2156,7 @@ def _set_launch_context(context: LaunchContext) -> LaunchContext:
     global _launch_context
     _launch_context = context
     _set_workspace_root(str(context.active_root))
+    _restore_user_preferences()
     return context
 
 
@@ -5662,6 +5728,7 @@ def main() -> None:
                 console.print(f"Agent profile: {_agent_profile_mode}")
             elif parts[1].lower() in {"auto", "coder", "researcher"}:
                 _agent_profile_mode = parts[1].lower()
+                _restore_user_preferences()
                 console.print(f"Agent profile set to {_agent_profile_mode}.")
             else:
                 console.print("Usage: /agent auto|coder|researcher")

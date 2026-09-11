@@ -1,4 +1,7 @@
 import asyncio
+import os
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -21,6 +24,8 @@ class LearningDispatcherTests(unittest.TestCase):
         self.original_cursor = main._learning_dispatch_cursor
         self.original_scan_time = main._last_project_scan_time
         self.original_preferences = dict(main._user_preferences)
+        self.original_hydrated_preferences = dict(main._hydrated_preferences)
+        self.original_preference_scope = main._preference_scope
         self.original_graph = {key: list(value) for key, value in main._knowledge_graph.items()}
         self.original_libraries = set(main._known_libraries)
 
@@ -34,6 +39,9 @@ class LearningDispatcherTests(unittest.TestCase):
         main._last_project_scan_time = self.original_scan_time
         main._user_preferences.clear()
         main._user_preferences.update(self.original_preferences)
+        main._hydrated_preferences.clear()
+        main._hydrated_preferences.update(self.original_hydrated_preferences)
+        main._preference_scope = self.original_preference_scope
         main._knowledge_graph.clear()
         main._knowledge_graph.update({key: list(value) for key, value in self.original_graph.items()})
         main._known_libraries.clear()
@@ -136,6 +144,38 @@ class LearningDispatcherTests(unittest.TestCase):
                 feature_names=tuple(names),
             )
             self.assertEqual([item["feature"] for item in result], [names[0], names[2]])
+
+    def test_verified_preferences_hydrate_in_fresh_runtime_and_prompt(self):
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-preferences-") as directory:
+            root = Path(directory)
+            db_path = root / "state.sqlite3"
+            memory = MemoryBank(db_path, user_id="local", workspace_id="default")
+            engine = main.LearningEngine(memory)
+            self.assertEqual(
+                engine.submit("preference", "PREF: naming_style=snake_case", evidence_id="signal-one")["status"],
+                "candidate",
+            )
+            self.assertEqual(
+                engine.submit("preference", "PREF: naming_style=snake_case", evidence_id="signal-two")["status"],
+                "active",
+            )
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(root), "KYROZEN_DB_PATH": str(db_path),
+                "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": str(root),
+                "PYTHONPATH": str(Path(__file__).parents[1]),
+            })
+            completed = subprocess.run(
+                [sys.executable, "-c", (
+                    "import main; "
+                    "print(main._build_preference_context()); "
+                    "print('\\n'.join(item['content'] for item in main._build_messages('implement feature')))"
+                )],
+                cwd=Path(__file__).parents[1], env=env, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("naming_style=snake_case", completed.stdout)
+            self.assertIn("Known user preferences", completed.stdout)
 
     def test_feature_failure_is_recorded_without_stopping_the_cycle(self):
         names = main._LEARNING_FEATURE_ORDER[:2]
