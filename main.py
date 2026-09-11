@@ -3737,7 +3737,11 @@ class DeepSeekDSMLFilter:
     _CONTROL_PREFIXES = tuple(
         item[:length].lower()
         for item in ("action:", "thought:", "plan:", "tasklist:", "taskdone:",
-                     "definetool:", "<", "</")
+                     "definetool:", "<invoke", "<parameter", "<calls", "<tool_calls",
+                     "<function_calls", "< invoke", "< parameter", "< calls",
+                     "< tool_calls", "< function_calls", "</invoke", "</parameter",
+                     "</calls", "</tool_calls", "</function_calls", "</ invoke", "</ parameter",
+                     "</ calls", "</ tool_calls", "</ function_calls")
         for length in range(1, len(item) + 1)
     )
 
