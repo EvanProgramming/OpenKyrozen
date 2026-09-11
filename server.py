@@ -403,6 +403,9 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
             reply = (_agent._chat_turn(message, clear_tasks=True, profile=profile, memory_context=memory_context)
                      if profile != "auto" else _agent._chat_turn(message, clear_tasks=True,
                                                                   memory_context=memory_context))
+            # The web boundary must never persist provider control syntax even
+            # when a provider or test adapter returns an unclean final string.
+            reply = _agent._clean_final_response(reply)
             session["last_learning_run"] = _agent._last_learning_run
             _agent.short_term_memory.extend([
                 {"role": "user", "content": message},
@@ -955,23 +958,28 @@ async def api_chat_stream(request: Request):
         def __init__(self, sink):
             self.sink = sink
             self.buffer = ""
+            self.dsml = _agent.DeepSeekDSMLFilter()
+
+        def _emit_content(self, chunk: str) -> None:
+            self.buffer += chunk
+            candidate = self.buffer.lstrip()
+            lowered = candidate.lower()
+            if candidate and (
+                any(prefix.lower().startswith(lowered) for prefix in self.prefixes)
+                or any(lowered.startswith(prefix.lower()) for prefix in self.prefixes)
+            ):
+                return
+            if self.buffer:
+                self.sink({"event": "content", "chunk": self.buffer})
+                self.buffer = ""
 
         def __call__(self, event: dict[str, Any]) -> None:
             kind = event.get("event")
             if kind == "content":
-                self.buffer += str(event.get("chunk", ""))
-                candidate = self.buffer.lstrip()
-                lowered = candidate.lower()
-                if candidate and (
-                    any(prefix.lower().startswith(lowered) for prefix in self.prefixes)
-                    or any(lowered.startswith(prefix.lower()) for prefix in self.prefixes)
-                ):
-                    return
-                if self.buffer:
-                    self.sink({"event": "content", "chunk": self.buffer})
-                    self.buffer = ""
+                self._emit_content(self.dsml.feed(str(event.get("chunk", ""))))
                 return
             if kind == "model_complete":
+                self._emit_content(self.dsml.feed("", final=True))
                 self._flush()
                 return
             self.sink(event)
