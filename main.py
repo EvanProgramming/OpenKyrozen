@@ -3712,6 +3712,88 @@ def _is_question(text: str) -> bool:
     return any(phrase in low for phrase in question_phrases)
 
 
+class DeepSeekDSMLFilter:
+    """Remove DeepSeek V4 tool-call markup without buffering plain prose."""
+
+    _OPEN_RE = re.compile(
+        r"<(?P<marker>｜DSML｜|\|DSML\|)"
+        r"(?P<kind>tool_calls|function_calls|toolcalls|invoke|parameter)\b[^>]*>",
+        re.IGNORECASE,
+    )
+    _STARTS = ("<｜DSML｜", "<|DSML|", "｜｜DSML｜｜", "||DSML||")
+    _PLAIN_MARKER = re.compile(r"｜｜DSML｜｜|\|\|DSML\|\|")
+
+    def __init__(self) -> None:
+        self._buffer = ""
+
+    @classmethod
+    def _partial_suffix_length(cls, value: str) -> int:
+        prefixes = {
+            start[:length]
+            for start in cls._STARTS
+            for length in range(1, len(start) + 1)
+        }
+        for length in range(min(len(value), max(map(len, cls._STARTS))), 0, -1):
+            if value[-length:] in prefixes:
+                return length
+        return 0
+
+    @classmethod
+    def _close_for(cls, match: re.Match[str]) -> str:
+        return f"</{match.group('marker')}{match.group('kind')}>"
+
+    def feed(self, chunk: str = "", *, final: bool = False) -> str:
+        self._buffer += str(chunk or "")
+        output: list[str] = []
+        while self._buffer:
+            match = self._OPEN_RE.search(self._buffer)
+            plain_marker = self._PLAIN_MARKER.search(self._buffer)
+            starts = [item for item in (match, plain_marker) if item is not None]
+            if not starts:
+                if final:
+                    output.append(self._buffer)
+                    self._buffer = ""
+                else:
+                    keep = self._partial_suffix_length(self._buffer)
+                    safe_end = len(self._buffer) - keep
+                    if safe_end:
+                        output.append(self._buffer[:safe_end])
+                        self._buffer = self._buffer[safe_end:]
+                break
+
+            start = min(item.start() for item in starts)
+            if start:
+                output.append(self._buffer[:start])
+                self._buffer = self._buffer[start:]
+                continue
+
+            if plain_marker is not None and plain_marker.start() == 0 and (
+                    match is None or plain_marker.start() <= match.start()):
+                marker = plain_marker.group(0)
+                end = self._buffer.find(marker, len(marker))
+                if end < 0:
+                    self._buffer = "" if final else self._buffer
+                    break
+                self._buffer = self._buffer[end + len(marker):]
+                continue
+
+            # A complete DSML opening tag is present.  Drop it and everything
+            # through its matching close; an incomplete block is held until
+            # the next provider delta (or discarded at the final boundary).
+            match = self._OPEN_RE.match(self._buffer)
+            if match is None:
+                if final:
+                    self._buffer = ""
+                break
+            close = self._close_for(match)
+            end = self._buffer.find(close, match.end())
+            if end < 0:
+                self._buffer = "" if final else self._buffer
+                break
+            self._buffer = self._buffer[end + len(close):]
+        return "".join(output)
+
+
 def _clean_final_response(text: str) -> str:
     """Return only user-facing prose from one model response.
 
@@ -3719,7 +3801,7 @@ def _clean_final_response(text: str) -> str:
     are useful in the next model prompt, but must never become the final
     answer merely because the turn stopped after a tool call.
     """
-    cleaned = str(text or "").strip()
+    cleaned = DeepSeekDSMLFilter().feed(str(text or ""), final=True).strip()
     if not cleaned:
         return ""
     # Remove fenced protocol blocks first.  The model's JSON may contain
