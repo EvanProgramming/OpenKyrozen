@@ -313,6 +313,54 @@ class TaskConsistencyTests(unittest.TestCase):
             reopened = TaskManager(store, workspace_id="project", session_id="multi-task")
             self.assertEqual(reopened.recover(), [])
 
+    def test_web_natural_plan_receipts_match_and_survive_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "README.md").write_text("Usage: run the baseline check.\n", encoding="utf-8")
+            store = MemoryBank(root / "state.sqlite3").store
+            manager = TaskManager(store, workspace_id="web-project", session_id="web-natural")
+            manager.add_task("Read the existing Python file before making changes.")
+            manager.add_task("Run the project check to confirm the baseline is still valid.")
+            manager.add_task("Make one small, focused README usage improvement.")
+
+            original_root = main._get_workspace_root()
+            original_tasks = main.tasks
+            main._set_workspace_root(root)
+            main.tasks = manager
+            try:
+                receipts = [
+                    main._make_execution_receipt(
+                        action="read_file", args="notes.py", authorized=True, started_at=main.utc_now(),
+                        success=True, result="notes.py contents", operation_scope="web-natural",
+                    ),
+                    main._make_execution_receipt(
+                        action="run_cmd", args="python -c \"print('baseline-ok')\"", authorized=True,
+                        started_at=main.utc_now(), success=True, result="baseline-ok",
+                        operation_scope="web-natural",
+                    ),
+                    main._make_execution_receipt(
+                        action="write_file", args="README.md|Usage: run the baseline check.\nSee the quickstart.",
+                        authorized=True, started_at=main.utc_now(), success=True,
+                        result="updated README.md", operation_scope="web-natural",
+                    ),
+                ]
+                records = [main._record_turn_receipt(receipt) for receipt in receipts]
+            finally:
+                main._set_workspace_root(original_root)
+                main.tasks = original_tasks
+
+            rows = store.list_tasks(workspace_id="web-project", session_id="web-natural")
+            self.assertEqual(len(rows), 3)
+            self.assertEqual({row["status"] for row in rows}, {"succeeded"})
+            self.assertEqual({record["task_id"] for record in records}, {row["id"] for row in rows})
+            persisted = store.list_events(
+                "execution.receipt", workspace_id="web-project", session_id="web-natural",
+            )
+            self.assertEqual(len(persisted), 3)
+            self.assertTrue(all(event["task_id"] for event in persisted))
+            reopened = TaskManager(store, workspace_id="web-project", session_id="web-natural")
+            self.assertEqual(reopened.recover(), [])
+
     def test_failed_operation_can_retry_and_provider_deadline_is_honest(self):
         operations: set[str] = set()
         with patch.object(main, "run_command", side_effect=[

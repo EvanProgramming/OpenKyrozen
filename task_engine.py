@@ -48,12 +48,19 @@ _RECEIPT_ACTION_HINTS = {
         "git status", "repository status", "working tree", "repository state",
         "inspect repository", "check repository", "status",
     ),
-    "write_file": ("write file", "create", "save", "write", "file", "artifact", "generate"),
+    "read_file": ("read", "inspect", "open", "view", "examine", "file", "contents", "source"),
+    "write_file": (
+        "write file", "create", "save", "write", "edit", "modify", "update", "improve",
+        "documentation", "readme", "usage", "instructions", "file", "artifact", "generate",
+    ),
     "git_add": ("git add", "stage", "staging", "staged", "add files", "prepare commit"),
     "git_commit": ("git commit", "commit", "committed", "record changes", "save changes"),
     "git_diff": ("git diff", "diff", "changes"),
     "git_log": ("git log", "history", "log"),
-    "run_cmd": ("run command", "execute", "shell", "command"),
+    "run_cmd": (
+        "run command", "run", "execute", "shell", "command", "check", "test", "validate",
+        "verify", "confirm", "baseline",
+    ),
 }
 
 
