@@ -3144,6 +3144,57 @@ def _extract_json_objects(text: str) -> list[dict]:
     return objects
 
 
+def _collect_unwrapped_tool_calls(text: str) -> tuple[list[dict], bool]:
+    """Parse safe, line/fence-bounded provider aliases such as ``run_cmd:``."""
+    calls: list[dict] = []
+    malformed = False
+    value = str(text or "")
+    for match in _ACTION_MARKER_RE.finditer(value):
+        line_end = value.find("\n", match.end())
+        line_end = len(value) if line_end < 0 else line_end
+        prefix = value[value.rfind("\n", 0, match.start()) + 1:match.start()].rstrip()
+        if prefix and not prefix.endswith((".", "!", "?", ")", "]", "`")):
+            continue
+        cursor = match.end()
+        while cursor < len(value) and value[cursor] in " \t":
+            cursor += 1
+        fence_cursor = cursor
+        if value[fence_cursor:fence_cursor + 2] == "\r\n":
+            fence_cursor += 2
+        elif value[fence_cursor:fence_cursor + 1] == "\n":
+            fence_cursor += 1
+        if fence_cursor != cursor:
+            while fence_cursor < len(value) and value[fence_cursor] in " \t":
+                fence_cursor += 1
+        if value[fence_cursor:fence_cursor + 3] == "```":
+            fence_line = value.find("\n", fence_cursor + 3)
+            close = value.find("```", fence_line + 1) if fence_line >= 0 else -1
+            if fence_line < 0 or close < 0:
+                malformed = True
+                continue
+            args = value[fence_line + 1:close].strip()
+            if not args:
+                malformed = True
+                continue
+            trailing_end = value.find("\n", close + 3)
+            trailing_end = len(value) if trailing_end < 0 else trailing_end
+            if value[close + 3:trailing_end].strip():
+                malformed = True
+                continue
+        else:
+            args = value[cursor:line_end].strip().strip("`\"'")
+            if not args:
+                malformed = True
+                continue
+            next_marker = _ACTION_MARKER_RE.search(value, cursor)
+            if next_marker is not None and next_marker.start() < line_end:
+                malformed = True
+                continue
+        raw_action = match.group("name").lower()
+        calls.append({"action": TOOL_ALIASES.get(raw_action, raw_action), "args": args})
+    return calls, malformed
+
+
 def _collect_tool_calls(text: str) -> list[dict]:
     """Extract tool-call dicts from LLM response. Deduplicated by (action, args)."""
     calls: list[dict] = []
@@ -3183,6 +3234,10 @@ def _collect_tool_calls(text: str) -> list[dict]:
                 and _is_valid_action(obj.get("action"))
                 and len(obj) <= 3):  # action, args + optionally one more key
             _add(obj)
+
+    for data in _collect_unwrapped_tool_calls(text)[0]:
+        if _is_valid_action(data.get("action")):
+            _add(data)
 
     return calls
 
@@ -4169,13 +4224,20 @@ def _remove_task_blocks(text: str) -> str:
 def _parse_model_response(text: str) -> dict[str, Any]:
     """Parse one model response exactly once for the turn state machine."""
     raw = str(text or "").strip()
+    _unwrapped_calls, malformed_unwrapped = _collect_unwrapped_tool_calls(raw)
+    tool_calls = [] if malformed_unwrapped else _collect_tool_calls(raw)
     return {
         "raw": raw,
         "clean": _clean_final_response(raw),
         "has_plan": bool(re.search(r"^[ \t]*Plan:", raw, re.IGNORECASE | re.MULTILINE)),
         "has_tasklist": bool(re.search(r"^[ \t]*TaskList:", raw, re.IGNORECASE | re.MULTILINE)),
-        "tool_calls": _collect_tool_calls(raw),
+        "tool_calls": tool_calls,
         "unknown_action": _detect_unknown_action(raw),
+        "protocol_error": (
+            "The model returned an incomplete or ambiguous unwrapped tool call. "
+            "No tool was executed. Retry with one complete structured tool call."
+            if malformed_unwrapped else None
+        ),
     }
 
 
@@ -4428,6 +4490,13 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                        + _agent_prompt_tools_list(agent_config),
         })
 
+    if response_meta["protocol_error"]:
+        return _finish_learning_run(
+            learning_run, learning_receipts, user_input,
+            response_meta["protocol_error"], [],
+            turn_prompt_total + turn_completion_total, turn_start,
+        )
+
     # ---- Unknown action detection (all complexity levels) ----
     _unknown_retries = 0
     while _unknown_retries < MAX_UNKNOWN_TOOL_RETRIES:
@@ -4468,12 +4537,25 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
             response_meta = _observe_model_response(response_text)
             tool_calls = response_meta["tool_calls"]
             _llm_has_plan = response_meta["has_plan"]
+        if response_meta["protocol_error"]:
+            return _finish_learning_run(
+                learning_run, learning_receipts, user_input,
+                response_meta["protocol_error"], [],
+                turn_prompt_total + turn_completion_total, turn_start,
+            )
         if not _llm_has_plan and tool_calls and plan_attempts >= 2:
             # Auto‑generate a minimal plan from tool calls
             plan_lines = ["Plan:"]
             for i, tc in enumerate(tool_calls):
                 plan_lines.append(f"{i+1}. Execute {tc.get('action','?')}")
             # Don't inject — just let it proceed without plan this time
+
+    if response_meta["protocol_error"]:
+        return _finish_learning_run(
+            learning_run, learning_receipts, user_input,
+            response_meta["protocol_error"], [],
+            turn_prompt_total + turn_completion_total, turn_start,
+        )
 
     # ---- TaskList enforcement: COMPLEX only ----
     _llm_has_tasklist = response_meta["has_tasklist"]
@@ -4579,6 +4661,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     round_count = 0
     incomplete_prompt_attempts = 0
     final_answer: str | None = None
+    protocol_error_message: str | None = None
     current_reply = response_text
     has_errors = any(not record["success"] for record in tool_records)
     consecutive_search_failures = 0  # track failed search_web calls to prevent loops
@@ -4700,6 +4783,9 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         # updates, unknown-action handling, loop control, and final rendering.
         step_meta = _observe_model_response(step_reply)
         next_tool_calls = step_meta["tool_calls"]
+        if step_meta["protocol_error"]:
+            protocol_error_message = step_meta["protocol_error"]
+            break
 
         # ----- reject unknown action names and force re-prompting -----
         _unknown_tool_retries = 0
@@ -4725,6 +4811,12 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
             # Re-observe the replacement response exactly once.
             step_meta = _observe_model_response(step_reply)
             next_tool_calls = step_meta["tool_calls"]
+            if step_meta["protocol_error"]:
+                protocol_error_message = step_meta["protocol_error"]
+                break
+
+        if protocol_error_message:
+            break
 
         # if after 3 retries the action is still unknown, clear the list to avoid a crash
         if _unknown_tool_retries >= 3:
@@ -4778,6 +4870,9 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                     break
                 step_meta = _observe_model_response(step_reply)
                 next_tool_calls = step_meta["tool_calls"]
+                if step_meta["protocol_error"]:
+                    protocol_error_message = step_meta["protocol_error"]
+                    break
                 if not next_tool_calls:
                     # Still no action — don't give up yet, loop will try again
                     # (incomplete_prompt_attempts will eventually trigger the 12-nudge limit)
@@ -4794,6 +4889,9 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                     break
                 step_meta = _observe_model_response(step_reply)
                 next_tool_calls = step_meta["tool_calls"]
+                if step_meta["protocol_error"]:
+                    protocol_error_message = step_meta["protocol_error"]
+                    break
                 if not next_tool_calls:
                     final_answer = step_meta["clean"] or _deterministic_tool_summary(tool_records)
                     break
@@ -4810,6 +4908,9 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                     break
                 step_meta = _observe_model_response(step_reply)
                 next_tool_calls = step_meta["tool_calls"]
+                if step_meta["protocol_error"]:
+                    protocol_error_message = step_meta["protocol_error"]
+                    break
                 if not next_tool_calls:
                     final_answer = step_meta["clean"] or _deterministic_tool_summary(tool_records)
                     break
@@ -4890,7 +4991,12 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     # blocked, cancelled, pending, or is still running.
     durable_tasks_incomplete = bool(tasks.tasks) and not all(is_complete(t) for t in tasks.tasks)
     if durable_tasks_incomplete:
-        final_answer = _deterministic_tool_summary(tool_records)
+        summary = _deterministic_tool_summary(tool_records)
+        final_answer = (
+            f"{protocol_error_message}\n\n{summary}" if protocol_error_message else summary
+        )
+    elif protocol_error_message:
+        final_answer = protocol_error_message
 
     elapsed = time.time() - turn_start
     _turn_cost_log.append({
