@@ -2913,12 +2913,25 @@ def _finish_learning_run(run: dict[str, str], receipts: list[dict[str, Any]], ta
     acceptance = [item for item in tool_records if item.get("acceptance")]
     if run["profile"] == "researcher":
         acceptance.extend(_research_acceptance(task, result, tool_records))
+    task_statuses = [
+        {"id": item.get("id"), "description": item.get("description", ""),
+         "status": canonical_status(item.get("status", "pending"))}
+        for item in tasks.tasks
+    ]
+    durable_complete = not task_statuses or all(item["status"] == "succeeded" for item in task_statuses)
+    acceptance_complete = bool(acceptance) and all(item.get("success") is True for item in acceptance)
+    tools_complete = all(item.get("success") is True for item in tool_records) if tool_records else True
+    has_verifiable_work = bool(task_statuses or acceptance)
+    verified = has_verifiable_work and durable_complete and (not acceptance or acceptance_complete)
+    success = verified and tools_complete
     learning_engine.complete_run(run, result=result, receipts=receipts, tools=tool_records,
-                                 tokens=tokens, latency=latency, acceptance=acceptance)
-    if acceptance:
+                                 tokens=tokens, latency=latency, acceptance=acceptance,
+                                 task_statuses=task_statuses, eligible=verified)
+    if has_verifiable_work:
         _learning_notices.extend(learning_engine.record_outcome(
-            run, receipts, verified=True, success=all(item["success"] for item in acceptance),
-            source="acceptance_command",
+            run, receipts, verified=verified, success=success,
+            correction=not success,
+            source="durable_tasks" if task_statuses else "acceptance_command",
         ))
     _last_learning_run = {"run": run, "receipts": receipts, "task": task}
     if _active_usage_run_id.get() == run["run_id"]:
