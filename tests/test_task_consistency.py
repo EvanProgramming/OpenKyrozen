@@ -464,6 +464,67 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertFalse(recorder.outcome["verified"])
             self.assertFalse(recorder.outcome["success"])
 
+    def test_unwrapped_provider_aliases_are_bounded_and_canonicalized(self):
+        response = (
+            "Visible progress. bash: git status\n"
+            "read_file: README.md\n"
+            "run_cmd: ```bash\nprintf alias-ok\n```\n"
+        )
+        self.assertEqual(
+            main._collect_tool_calls(response),
+            [
+                {"action": "run_cmd", "args": "git status"},
+                {"action": "read_file", "args": "README.md"},
+                {"action": "run_cmd", "args": "printf alias-ok"},
+            ],
+        )
+        self.assertEqual(
+            main._collect_tool_calls("run_cmd:\n```bash\nprintf newline-fence\n```")[-1],
+            {"action": "run_cmd", "args": "printf newline-fence"},
+        )
+
+        malformed = main._parse_model_response("run_cmd: ```bash\nprintf alias-ok")
+        self.assertEqual(malformed["tool_calls"], [])
+        self.assertIn("No tool was executed", malformed["protocol_error"])
+
+    def test_malformed_unwrapped_alias_stops_without_retrying_or_executing(self):
+        class StubLearning:
+            def feedback_signal(self, _text):
+                return None
+
+            def route_profile(self, _text, _profile=None):
+                return "coder"
+
+            def begin_run(self, profile, _task, provider_model=None):
+                return {"run_id": "malformed-alias", "profile": profile, "provider_model": provider_model}
+
+            def artifact_context(self, _run):
+                return "", []
+
+        original_root = main._get_workspace_root()
+        original_tasks, original_learning = main.tasks, main.learning_engine
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            main._set_workspace_root(root)
+            main.tasks = TaskManager(MemoryBank(root / "state.sqlite3").store,
+                                     workspace_id="project", session_id="malformed-alias")
+            main.learning_engine = StubLearning()
+            try:
+                with patch.object(main, "_classify_complexity", return_value="simple"), \
+                     patch.object(main, "_build_messages", return_value=[]), \
+                     patch.object(main, "_build_memory_context", return_value=""), \
+                     patch.object(main, "_call_llm_with_spinner",
+                                  return_value="run_cmd: ```bash\nprintf alias-ok" ) as provider, \
+                     patch.object(main, "_finish_learning_run",
+                                  side_effect=lambda run, receipts, task, result, records, tokens, started: result):
+                    reply = main._chat_turn("run the audit command", clear_tasks=True)
+            finally:
+                main._set_workspace_root(original_root)
+                main.tasks, main.learning_engine = original_tasks, original_learning
+
+        self.assertEqual(provider.call_count, 1)
+        self.assertIn("No tool was executed", reply)
+
     def test_failed_operation_can_retry_and_provider_deadline_is_honest(self):
         operations: set[str] = set()
         with patch.object(main, "run_command", side_effect=[
