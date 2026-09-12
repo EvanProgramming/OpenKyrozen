@@ -226,7 +226,8 @@ class TaskConsistencyTests(unittest.TestCase):
 
         responses = [
             "Plan:\n1. Create the repeat marker\nTaskList:\n```json\n"
-            "[{\"id\": \"marker\", \"description\": \"Create the repeat marker\"}]\n```\n"
+            "[{\"id\": \"marker\", \"description\": \"Create the repeat marker\","
+            "\"action\":\"write_file\",\"args\":\"repeat-marker.txt|REPEAT_OK\"}]\n```\n"
             'Action: {"action":"write_file","args":"repeat-marker.txt|REPEAT_OK"}',
             'Action: {"action":"write_file","args":"repeat-marker.txt|REPEAT_OK"}',
             "The marker is complete.",
@@ -292,10 +293,10 @@ class TaskConsistencyTests(unittest.TestCase):
             "Plan:\n1. Check the repository status\n2. Create the audit file\n"
             "3. Stage the audit file\n4. Commit the audit file\n"
             "TaskList:\n```json\n"
-            "[{\"id\":\"status\",\"description\":\"Check the repository status\"},"
-            "{\"id\":\"write\",\"description\":\"Create the audit file\"},"
-            "{\"id\":\"stage\",\"description\":\"Stage the audit file\"},"
-            "{\"id\":\"commit\",\"description\":\"Commit the audit file\"}]\n```\n"
+            "[{\"id\":\"status\",\"description\":\"Check the repository status\",\"action\":\"git_status\",\"args\":\".\"},"
+            "{\"id\":\"write\",\"description\":\"Create the audit file\",\"action\":\"write_file\",\"args\":\"audit-task.txt|AUDIT_OK\"},"
+            "{\"id\":\"stage\",\"description\":\"Stage the audit file\",\"action\":\"git_add\",\"args\":\"audit-task.txt\"},"
+            "{\"id\":\"commit\",\"description\":\"Commit the audit file\",\"action\":\"git_commit\",\"args\":\"audit: post-merge\"}]\n```\n"
             'Action: {"action":"git_status","args":"."}',
             'Action: {"action":"write_file","args":"audit-task.txt|AUDIT_OK"}',
             'Action: {"action":"git_add","args":"audit-task.txt"}',
@@ -349,9 +350,12 @@ class TaskConsistencyTests(unittest.TestCase):
             (root / "README.md").write_text("Usage: run the baseline check.\n", encoding="utf-8")
             store = MemoryBank(root / "state.sqlite3").store
             manager = TaskManager(store, workspace_id="web-project", session_id="web-natural")
-            manager.add_task("Read the existing Python file before making changes.")
-            manager.add_task("Run the project check to confirm the baseline is still valid.")
-            manager.add_task("Make one small, focused README usage improvement.")
+            manager.add_task("Read the existing Python file before making changes.",
+                             checkpoint={"action": "read_file", "args": "notes.py"})
+            manager.add_task("Run the project check to confirm the baseline is still valid.",
+                             checkpoint={"action": "run_cmd", "args": "python -c \"print('baseline-ok')\""})
+            manager.add_task("Make one small, focused README usage improvement.",
+                             checkpoint={"action": "write_file", "args": "README.md|Usage: run the baseline check.\nSee the quickstart."})
 
             original_root = main._get_workspace_root()
             original_tasks = main.tasks
@@ -390,6 +394,36 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertTrue(all(event["task_id"] for event in persisted))
             reopened = TaskManager(store, workspace_id="web-project", session_id="web-natural")
             self.assertEqual(reopened.recover(), [])
+
+    def test_receipt_cannot_satisfy_a_neighboring_task_without_exact_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = MemoryBank(Path(directory) / "state.sqlite3").store
+            manager = TaskManager(store, workspace_id="project", session_id="receipt-match")
+            read_index = manager.add_task(
+                "Inspect the README", checkpoint={"action": "read_file", "args": "README.md"}
+            )
+            write_index = manager.add_task(
+                "Apply the README edit", checkpoint={"action": "write_file", "args": "README.md|updated"}
+            )
+            manager.request_completion(read_index)
+            manager.request_completion(write_index)
+
+            unmatched = manager.record_evidence(
+                action="read_file", args="notes.py", result="notes", success=True,
+                acceptance="verified read",
+            )
+            self.assertNotIn("task_id", unmatched)
+            self.assertEqual([task["status"] for task in manager.tasks], ["pending", "pending"])
+
+            matched = manager.record_evidence(
+                action="read_file", args="README.md", result="README", success=True,
+            )
+            self.assertEqual(matched["task_id"], manager.tasks[read_index]["id"])
+            self.assertEqual(manager.tasks[read_index]["status"], "succeeded")
+            self.assertEqual(manager.tasks[write_index]["status"], "pending")
+
+            reopened = TaskManager(store, workspace_id="project", session_id="receipt-match")
+            self.assertEqual(reopened.recover()[0]["status"], "pending")
 
     def test_failed_operation_can_retry_and_provider_deadline_is_honest(self):
         operations: set[str] = set()

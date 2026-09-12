@@ -58,9 +58,10 @@ class V2CoreTests(unittest.TestCase):
             self.assertEqual(len(tasks.tasks), 1)
             tasks.mark_done_from_text("TaskDone: 0")
             self.assertEqual(tasks.tasks[index]["status"], "pending")
-            tasks.record_evidence(action="list_dir", result="OK", success=True)
+            tasks.record_evidence(task_id=tasks.tasks[index]["id"], action="list_dir", result="OK", success=True)
             self.assertEqual(tasks.tasks[index]["status"], "pending")
-            tasks.record_evidence(action="pytest", result="OK", success=True, acceptance="pytest passed")
+            tasks.record_evidence(task_id=tasks.tasks[index]["id"], action="pytest", result="OK", success=True,
+                                  acceptance="pytest passed")
             self.assertEqual(tasks.tasks[index]["status"], "succeeded")
 
     def test_tasks_are_collision_free_and_evidence_targets_one_scope(self):

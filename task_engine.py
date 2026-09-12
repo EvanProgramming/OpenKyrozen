@@ -43,30 +43,14 @@ _RECEIPT_ACTION_ALIASES = {
     "sh": "run_cmd",
     "cmd": "run_cmd",
 }
-_RECEIPT_ACTION_HINTS = {
-    "git_status": (
-        "git status", "repository status", "working tree", "repository state",
-        "inspect repository", "check repository", "status",
-    ),
-    "read_file": ("read", "inspect", "open", "view", "examine", "file", "contents", "source"),
-    "write_file": (
-        "write file", "create", "save", "write", "edit", "modify", "update", "improve",
-        "documentation", "readme", "usage", "instructions", "file", "artifact", "generate",
-    ),
-    "git_add": ("git add", "stage", "staging", "staged", "add files", "prepare commit"),
-    "git_commit": ("git commit", "commit", "committed", "record changes", "save changes"),
-    "git_diff": ("git diff", "diff", "changes"),
-    "git_log": ("git log", "history", "log"),
-    "run_cmd": (
-        "run command", "run", "execute", "shell", "command", "check", "test", "validate",
-        "verify", "confirm", "baseline",
-    ),
-}
-
-
 def _receipt_action(action: Any) -> str:
     value = str(action or "").strip().lower()
     return _RECEIPT_ACTION_ALIASES.get(value, value)
+
+
+def _receipt_args(args: Any) -> str:
+    """Normalize transport-only line breaks before comparing receipt arguments."""
+    return str(args or "").replace("\r\n", "\n").replace("\n", " ").strip()
 
 
 def canonical_status(status: str) -> str:
@@ -179,56 +163,32 @@ class TaskManager:
         evidence_items = ([evidence] if evidence else []) + self.tasks[idx].get("evidence", [])
         return any(item.get("success") is True and item.get("acceptance") for item in evidence_items)
 
-    @staticmethod
-    def _text_score(text: str, hints: tuple[str, ...]) -> int:
-        lowered = " ".join(str(text or "").lower().replace("_", " ").split())
-        score = 0
-        for hint in hints:
-            needle = " ".join(hint.lower().replace("_", " ").split())
-            if needle and needle in lowered:
-                score += 12 if " " in needle else 5
-        return score
-
     def _receipt_match_score(self, task: dict[str, Any], action: str, args: str) -> int:
-        """Score one pending task against a canonical execution receipt."""
+        """Match only an explicit action/argument contract on the task."""
         action = _receipt_action(action)
-        args = str(args or "").strip()
-        score = 0
+        args = _receipt_args(args)
         checkpoint = task.get("checkpoint") or {}
         checkpoint_action = _receipt_action(checkpoint.get("action"))
-        checkpoint_args = str(checkpoint.get("args") or "").strip()
+        checkpoint_args = _receipt_args(checkpoint.get("args"))
         if checkpoint_action:
             if checkpoint_action != action:
                 return -1
             if checkpoint_args and checkpoint_args != args:
                 return -1
-            score += 100
-            if checkpoint_args:
-                score += 20
+            return 200 if checkpoint_args else 150
 
+        score = 0
         for criterion in task.get("acceptance") or []:
-            if isinstance(criterion, dict):
-                criterion_action = _receipt_action(criterion.get("action"))
-                criterion_args = str(criterion.get("args") or "").strip()
-                if criterion_action:
-                    if criterion_action != action:
-                        continue
-                    score += 70
-                    if criterion_args and criterion_args == args:
-                        score += 20
-                    elif criterion_args:
-                        continue
-                criterion = criterion.get("description") or criterion.get("acceptance") or ""
-            score += self._text_score(str(criterion), (action,))
-
-        description = str(task.get("description") or "")
-        score += self._text_score(description, (action, *_RECEIPT_ACTION_HINTS.get(action, ())))
-        if args:
-            for token in args.replace("|", " ").split():
-                token = token.strip("\"'`.,:;()[]{}")
-                if len(token) >= 3 and token.lower() in description.lower():
-                    score += 8
-        return score
+            if not isinstance(criterion, dict):
+                continue
+            criterion_action = _receipt_action(criterion.get("action"))
+            if not criterion_action or criterion_action != action:
+                continue
+            criterion_args = _receipt_args(criterion.get("args"))
+            if criterion_args and criterion_args != args:
+                continue
+            score = max(score, 120 if criterion_args else 100)
+        return score or -1
 
     def _match_receipt_task(self, action: str, args: str) -> dict[str, Any] | None:
         candidates = [
@@ -247,10 +207,9 @@ class TaskManager:
                         acceptance: str | None = None, args: str | None = None,
                         receipt_id: str | None = None) -> dict[str, Any]:
         canonical = _receipt_action(action)
-        normalized_args = str(args or "").strip()
+        normalized_args = _receipt_args(args)
         item = {"action": canonical, "result": str(result)[:2000], "success": bool(success)}
-        if task_id:
-            item["task_id"] = str(task_id)
+        requested_task_id = str(task_id) if task_id else None
         if args:
             item["args"] = normalized_args[:1000]
         if receipt_id:
@@ -258,7 +217,20 @@ class TaskManager:
         if acceptance:
             item["acceptance"] = acceptance
         inferred = False
-        targets = [task for task in self.tasks if task["id"] == str(task_id)] if task_id else []
+        targets = []
+        if task_id:
+            candidate = next((task for task in self.tasks if task["id"] == str(task_id)), None)
+            # An explicit identity is authoritative, but a stored action
+            # contract still has to agree before successful evidence can be
+            # attached to that task.
+            has_contract = bool(((candidate or {}).get("checkpoint") or {}).get("action")) or any(
+                isinstance(item, dict) and item.get("action")
+                for item in (candidate or {}).get("acceptance", [])
+            )
+            if candidate is not None and (not has_contract or self._receipt_match_score(
+                    candidate, canonical, normalized_args) >= 0):
+                targets = [candidate]
+                item["task_id"] = requested_task_id
         if not task_id:
             matched = self._match_receipt_task(canonical, normalized_args)
             if matched is not None:
@@ -267,14 +239,6 @@ class TaskManager:
                 item["task_id"] = matched["id"]
                 if success and not acceptance:
                     item["acceptance"] = f"verified receipt for planned action {canonical}"
-            # Compatibility for the old single-task caller.  An unmatched
-            # receipt remains evidence but cannot satisfy the task by itself.
-            elif len(self.tasks) == 1:
-                candidate = self.tasks[0]
-                checkpoint_action = _receipt_action((candidate.get("checkpoint") or {}).get("action"))
-                if not checkpoint_action or self._receipt_match_score(candidate, canonical, normalized_args) >= 0:
-                    targets = [candidate]
-                    item["task_id"] = candidate["id"]
         for task in targets:
             if inferred and not (task.get("checkpoint") or {}).get("action"):
                 task["checkpoint"] = {"action": canonical, "args": normalized_args}
@@ -418,6 +382,7 @@ class TaskManager:
         existing_by_id = {item["id"]: item for item in self.tasks}
         existing_by_key = {_task_key(item["description"]): item for item in self.tasks}
         for item in raw_tasks:
+            checkpoint = None
             if isinstance(item, str):
                 description, task_id, acceptance = item, None, None
                 dependencies = None
@@ -426,6 +391,9 @@ class TaskManager:
                 task_id = str(item.get("id")) if item.get("id") else None
                 dependencies = item.get("dependencies") if isinstance(item.get("dependencies"), list) else None
                 acceptance = item.get("acceptance") if isinstance(item.get("acceptance"), list) else None
+                checkpoint = item.get("checkpoint") if isinstance(item.get("checkpoint"), dict) else None
+                if checkpoint is None and item.get("action"):
+                    checkpoint = {"action": item.get("action"), "args": item.get("args", "")}
             else:
                 continue
             key = _task_key(description)
@@ -444,9 +412,12 @@ class TaskManager:
                     task["dependencies"] = dependencies
                 if acceptance:
                     task["acceptance"] = acceptance
+                if checkpoint:
+                    task["checkpoint"] = checkpoint
                 self._persist(task)
             else:
-                idx = self.add_task(description, dependencies=dependencies, acceptance=acceptance, task_id=task_id)
+                idx = self.add_task(description, dependencies=dependencies, acceptance=acceptance,
+                                    task_id=task_id, checkpoint=checkpoint)
                 existing_by_key[key] = self.tasks[idx]
                 existing_by_id[self.tasks[idx]["id"]] = self.tasks[idx]
 
