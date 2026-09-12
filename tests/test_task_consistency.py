@@ -425,6 +425,45 @@ class TaskConsistencyTests(unittest.TestCase):
             reopened = TaskManager(store, workspace_id="project", session_id="receipt-match")
             self.assertEqual(reopened.recover()[0]["status"], "pending")
 
+    def test_blocked_durable_tasks_cannot_be_recorded_as_verified_learning_success(self):
+        class LearningRecorder:
+            def __init__(self):
+                self.completed = None
+                self.outcome = None
+
+            def complete_run(self, *args, **kwargs):
+                self.completed = kwargs
+
+            def record_outcome(self, *args, **kwargs):
+                self.outcome = kwargs
+                return []
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = MemoryBank(Path(directory) / "state.sqlite3").store
+            manager = TaskManager(store, workspace_id="project", session_id="learning-blocked")
+            index = manager.add_task(
+                "Run the verification command",
+                checkpoint={"action": "run_cmd", "args": "python -m unittest"},
+            )
+            manager.set_status(index, "blocked")
+            recorder = LearningRecorder()
+            original_tasks, original_learning = main.tasks, main.learning_engine
+            main.tasks, main.learning_engine = manager, recorder
+            try:
+                main._finish_learning_run(
+                    {"run_id": "blocked-learning", "profile": "coder"}, [],
+                    "run the verification command", "The command passed.",
+                    [{"action": "run_cmd", "success": True, "acceptance": "tests passed"}],
+                    10, time.time(),
+                )
+            finally:
+                main.tasks, main.learning_engine = original_tasks, original_learning
+
+            self.assertFalse(recorder.completed["eligible"])
+            self.assertEqual(recorder.completed["task_statuses"][0]["status"], "blocked")
+            self.assertFalse(recorder.outcome["verified"])
+            self.assertFalse(recorder.outcome["success"])
+
     def test_failed_operation_can_retry_and_provider_deadline_is_honest(self):
         operations: set[str] = set()
         with patch.object(main, "run_command", side_effect=[

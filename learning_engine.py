@@ -152,11 +152,19 @@ class LearningEngine:
     def complete_run(self, run: dict[str, str], *, result: str, receipts: list[dict[str, Any]],
                      tools: list[dict[str, Any]], tokens: int | None, latency: float | None,
                      acceptance: list[dict[str, Any]] | None = None,
-                     provider_error: bool = False) -> None:
+                     provider_error: bool = False, task_statuses: list[dict[str, Any]] | None = None,
+                     eligible: bool | None = None) -> None:
         errors = sum(1 for item in tools if not item.get("success"))
         contains_secret = bool(_SECRET_RE.search(json.dumps(
             {"task": run.get("task"), "result": result, "tools": tools}, ensure_ascii=False,
         )))
+        status_rows = [
+            {"id": str(item.get("id", "")), "status": str(item.get("status", "")),
+             "description": str(item.get("description", ""))[:500]}
+            for item in (task_statuses or [])
+        ]
+        durable_complete = (all(item["status"] == "succeeded" for item in status_rows)
+                            if task_statuses is not None else None)
         payload = {**run, "result": str(result)[:4000], "receipts": receipts, "tools": tools[:50],
                    "tool_calls": len(tools), "errors": errors,
                    "tokens": None if tokens is None else max(0, int(tokens)),
@@ -164,7 +172,11 @@ class LearningEngine:
                    "provider_error": bool(provider_error),
                    "acceptance_evidence": (acceptance or [])[:20],
                    "contains_secret": contains_secret,
-                   "eligible": not provider_error and not contains_secret and len(tools) >= 2}
+                   "task_statuses": status_rows,
+                   "durable_complete": durable_complete,
+                   "eligible": (not provider_error and not contains_secret and len(tools) >= 2
+                                if eligible is None else bool(eligible) and not provider_error
+                                and not contains_secret)}
         self.store.append_event("learning.run_completed", payload, user_id=self.memory.user_id,
                                 workspace_id=self.memory.workspace_id, session_id=self.memory.session_id)
 
