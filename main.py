@@ -3792,6 +3792,12 @@ def _is_question(text: str) -> bool:
     return any(phrase in low for phrase in question_phrases)
 
 
+_ACTION_MARKER_NAMES = tuple(sorted(set(AVAILABLE_TOOLS) | set(TOOL_ALIASES), key=len, reverse=True))
+_ACTION_MARKER_RE = re.compile(
+    r"(?i)(?<![\w])(?P<name>(?:" + "|".join(map(re.escape, _ACTION_MARKER_NAMES)) + r"))\s*:"
+)
+
+
 class DeepSeekDSMLFilter:
     """Remove provider control syntax without buffering ordinary prose."""
 
@@ -3813,14 +3819,17 @@ class DeepSeekDSMLFilter:
         r"</\s*(?P<kind>invoke|parameter|calls|tool_calls|function_calls)\s*>",
         re.IGNORECASE,
     )
+    _ACTION_MARKER_RE = _ACTION_MARKER_RE
     _CONTROL_PREFIXES = tuple(
         item[:length].lower()
-        for item in ("action:", "thought:", "plan:", "tasklist:", "taskdone:",
-                     "definetool:", "<invoke", "<parameter", "<calls", "<tool_calls",
-                     "<function_calls", "< invoke", "< parameter", "< calls",
-                     "< tool_calls", "< function_calls", "</invoke", "</parameter",
-                     "</calls", "</tool_calls", "</function_calls", "</ invoke", "</ parameter",
-                     "</ calls", "</ tool_calls", "</ function_calls")
+        for item in (
+            "action:", "thought:", "plan:", "tasklist:", "taskdone:", "definetool:",
+            "<invoke", "<parameter", "<calls", "<tool_calls", "<function_calls",
+            "< invoke", "< parameter", "< calls", "< tool_calls", "< function_calls",
+            "</invoke", "</parameter", "</calls", "</tool_calls", "</function_calls",
+            "</ invoke", "</ parameter", "</ calls", "</ tool_calls", "</ function_calls",
+            *_ACTION_MARKER_NAMES,
+        )
         for length in range(1, len(item) + 1)
     )
 
@@ -3849,7 +3858,8 @@ class DeepSeekDSMLFilter:
         lowered = value.lower()
         for length in range(min(len(value), max(map(len, cls._CONTROL_PREFIXES))), 0, -1):
             if lowered[-length:] in cls._CONTROL_PREFIXES:
-                if length == 1 and lowered[-1].isalpha() and len(value) > 1 and value[-2].isalnum():
+                start = len(value) - length
+                if start and value[start - 1].isalnum():
                     continue
                 return length
         return 0
@@ -3913,6 +3923,21 @@ class DeepSeekDSMLFilter:
         close = re.compile(rf"</\s*(?:{close_kinds})\s*>", re.IGNORECASE).search(value, match.end())
         return close.end() if close else None
 
+    @staticmethod
+    def _action_marker_end(value: str, match: re.Match[str], *, final: bool) -> int | None:
+        cursor = match.end()
+        while cursor < len(value) and value[cursor] in " \t":
+            cursor += 1
+        if value[cursor:cursor + 3] == "```":
+            close = value.find("```", cursor + 3)
+            if close < 0:
+                return len(value) if final else None
+            return close + 3
+        newline = value.find("\n", cursor)
+        if newline >= 0:
+            return newline + 1
+        return len(value) if final else None
+
     def _filter_control(self, chunk: str, *, final: bool) -> str:
         self._control_buffer += chunk
         output: list[str] = []
@@ -3920,7 +3945,8 @@ class DeepSeekDSMLFilter:
             control = self._CONTROL_RE.search(self._control_buffer)
             generic_open = self._GENERIC_OPEN_RE.search(self._control_buffer)
             generic_close = self._GENERIC_CLOSE_RE.search(self._control_buffer)
-            starts = [item for item in (control, generic_open, generic_close) if item is not None]
+            action_marker = self._ACTION_MARKER_RE.search(self._control_buffer)
+            starts = [item for item in (control, generic_open, generic_close, action_marker) if item is not None]
             if not starts:
                 if final:
                     output.append(self._control_buffer)
@@ -3949,6 +3975,14 @@ class DeepSeekDSMLFilter:
                 end = self._generic_block_end(self._control_buffer, generic_open)
                 if end is None:
                     self._control_buffer = "" if final else self._control_buffer
+                    break
+                self._control_buffer = self._control_buffer[end:]
+                continue
+
+            if action_marker is not None and action_marker.start() == 0 and (
+                    control is None or action_marker.start() <= control.start()):
+                end = self._action_marker_end(self._control_buffer, action_marker, final=final)
+                if end is None:
                     break
                 self._control_buffer = self._control_buffer[end:]
                 continue

@@ -75,6 +75,22 @@ class _InlineControlProvider:
         )
 
 
+class _ProsePrefixedAliasProvider:
+    config = ProviderConfig(provider="deepseek", model_simple="deepseek-v4-flash")
+
+    def chat_stream(self, _messages, _model=None):
+        # Alias-formatted controls may arrive after prose and across deltas.
+        yield from (
+            "Visible progress. ",
+            "run_",
+            "cmd: ```bash\n",
+            "git status\n",
+            "```",
+            " after the command.\nread_file: README.md\n",
+            "The action word and plan word are ordinary prose.",
+        )
+
+
 class StreamingEndpointTests(unittest.TestCase):
     def test_first_sse_content_arrives_before_provider_stream_completes(self):
         session_id = "stream-timing-regression"
@@ -229,6 +245,55 @@ class StreamingEndpointTests(unittest.TestCase):
             assistant_messages = [
                 event["payload"] for event in memory.store.list_events(
                     "session.message", workspace_id="inline-control-test", session_id=session_id,
+                ) if event["payload"].get("role") == "assistant"
+            ]
+            self.assertEqual(assistant_messages[-1]["content"], main._clean_final_response(content))
+
+    def test_prose_prefixed_alias_controls_are_filtered_before_sse_and_persistence(self):
+        session_id = "stream-prose-alias-regression"
+        provider = _ProsePrefixedAliasProvider()
+
+        async def exercise():
+            response = await server.api_chat_stream(_Request({
+                "message": "review the project", "session_id": session_id,
+            }))
+            iterator = response.body_iterator.__aiter__()
+            frames = []
+            try:
+                while True:
+                    frames.append(await asyncio.wait_for(anext(iterator), timeout=2))
+            except StopAsyncIteration:
+                return frames
+
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-prose-alias-") as directory:
+            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="prose-alias-test")
+            original_sessions = server._sessions
+            server._sessions = {}
+            try:
+                with (patch.object(server._agent, "memory_bank", memory),
+                      patch.object(server._agent, "llm_provider", provider),
+                      patch.object(server._agent, "DEEPSEEK_MODEL", "deepseek-v4-flash"),
+                      patch.object(server._agent, "_chat_turn", side_effect=lambda message, **_: (
+                          main._call_llm_with_spinner([{"role": "user", "content": message}])
+                      ))):
+                    frames = asyncio.run(exercise())
+            finally:
+                server._sessions = original_sessions
+
+            def text(item):
+                return item.decode() if isinstance(item, bytes) else item
+
+            payloads = [json.loads(text(frame).split("data: ", 1)[1].splitlines()[0])
+                        for frame in frames
+                        if text(frame).startswith("data: ") and text(frame) != "data: [DONE]\n\n"]
+            content = "".join(item["chunk"] for item in payloads if item.get("event") == "content")
+            self.assertIn("Visible progress.", content)
+            self.assertIn("The action word and plan word are ordinary prose.", content)
+            self.assertNotRegex(content, r"(?:run_cmd|read_file|bash|shell)\s*:")
+            self.assertNotIn("```", content)
+            assistant_messages = [
+                event["payload"] for event in memory.store.list_events(
+                    "session.message", workspace_id="prose-alias-test", session_id=session_id,
                 ) if event["payload"].get("role") == "assistant"
             ]
             self.assertEqual(assistant_messages[-1]["content"], main._clean_final_response(content))
