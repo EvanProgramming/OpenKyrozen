@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from typing import Any
 
@@ -43,6 +44,29 @@ _RECEIPT_ACTION_ALIASES = {
     "sh": "run_cmd",
     "cmd": "run_cmd",
 }
+
+_ORDERED_ACTION_FAMILIES = {
+    "inspect": {"list_dir", "list_tree", "read_file", "find_files"},
+    "write": {"write_file"},
+    "execute": {"run_cmd"},
+    "review": {"git_diff"},
+    "status": {"git_status"},
+    "stage": {"git_add"},
+    "commit": {"git_commit"},
+    "history": {"git_log"},
+}
+_ORDERED_ACTION_HINTS = {
+    "inspect": ("read", "inspect", "list", "directory", "repo", "repository", "structure", "tree"),
+    "write": ("write", "edit", "add", "update", "create", "modify", "append"),
+    "execute": ("run", "test", "execute", "command", "suite", "pytest"),
+    "review": ("diff", "review", "compare"),
+    "status": ("status", "clean"),
+    "stage": ("stage", "staging"),
+    "commit": ("commit", "committed"),
+    "history": ("log", "history", "commits"),
+}
+
+
 def _receipt_action(action: Any) -> str:
     value = str(action or "").strip().lower()
     return _RECEIPT_ACTION_ALIASES.get(value, value)
@@ -51,6 +75,31 @@ def _receipt_action(action: Any) -> str:
 def _receipt_args(args: Any) -> str:
     """Normalize transport-only line breaks before comparing receipt arguments."""
     return str(args or "").replace("\r\n", "\n").replace("\n", " ").strip()
+
+
+def _ordered_plan_info(task: dict[str, Any]) -> dict[str, Any] | None:
+    marker = (task.get("checkpoint") or {}).get("ordered_plan")
+    if not isinstance(marker, dict) or not isinstance(marker.get("id"), str):
+        return None
+    if not isinstance(marker.get("index"), int) or not isinstance(marker.get("total"), int):
+        return None
+    if marker["index"] < 0 or marker["total"] <= 0 or marker["index"] >= marker["total"]:
+        return None
+    return {"id": marker["id"], "index": marker["index"], "total": marker["total"]}
+
+
+def _ordered_action_compatible(description: str, action: str) -> bool:
+    """Keep ordered inference bounded to descriptions with an execution hint."""
+    action = _receipt_action(action)
+    families = {family for family, actions in _ORDERED_ACTION_FAMILIES.items() if action in actions}
+    description = str(description).lower()
+    hinted = {
+        family for family, words in _ORDERED_ACTION_HINTS.items()
+        if any(re.search(rf"\b{re.escape(word)}\b", description) for word in words)
+    }
+    # ponytail: lexical guard is intentionally conservative; replace with a
+    # provider-supplied checkpoint when plain plans gain durable action IDs.
+    return bool(families & hinted)
 
 
 def canonical_status(status: str) -> str:
@@ -197,11 +246,54 @@ class TaskManager:
         ]
         scored = [(self._receipt_match_score(task, action, args), task) for task in candidates]
         scored = [(score, task) for score, task in scored if score > 0]
-        if not scored:
+        if scored:
+            highest = max(score for score, _task in scored)
+            matches = [task for score, task in scored if score == highest]
+            if len(matches) == 1:
+                return matches[0]
             return None
-        highest = max(score for score, _task in scored)
-        matches = [task for score, task in scored if score == highest]
-        return matches[0] if len(matches) == 1 else None
+
+        # Plain-string TaskLists have no action contract.  They may still be
+        # reconciled, but only as one complete, uniquely identified ordered
+        # plan; a neighboring pending task without this marker is never used.
+        ordered_groups: dict[str, list[dict[str, Any]]] = {}
+        for task in self.tasks:
+            marker = _ordered_plan_info(task)
+            if marker is not None:
+                ordered_groups.setdefault(marker["id"], []).append(task)
+        valid_groups = []
+        for plan_id, group in ordered_groups.items():
+            markers = [_ordered_plan_info(task) for task in group]
+            total = markers[0]["total"] if markers else 0
+            if len(group) != total or {item["index"] for item in markers} != set(range(total)):
+                continue
+            if any(
+                (task.get("acceptance") and not (task.get("checkpoint") or {}).get("ordered_receipt"))
+                or ((task.get("checkpoint") or {}).get("action")
+                    and not (task.get("checkpoint") or {}).get("ordered_receipt"))
+                for task in group
+            ):
+                continue
+            valid_groups.append((plan_id, sorted(group, key=lambda item: _ordered_plan_info(item)["index"])))
+        if len(valid_groups) != 1:
+            return None
+        _plan_id, ordered_tasks = valid_groups[0]
+        pending = [task for task in ordered_tasks if canonical_status(task.get("status", "pending")) in {"pending", "running"}]
+        if not pending:
+            return None
+        candidate = pending[0]
+        if _ordered_action_compatible(candidate["description"], action):
+            return candidate
+        # One ordered plan item can legitimately cover several observations
+        # (for example listing a repository and reading two files).  Keep the
+        # receipt on the most recent verified item rather than assigning it to
+        # the next neighboring item whose description conflicts with the action.
+        candidate_index = _ordered_plan_info(candidate)["index"]
+        for previous in reversed(ordered_tasks[:candidate_index]):
+            if (is_complete(previous)
+                    and _ordered_action_compatible(previous["description"], action)):
+                return previous
+        return None
 
     def record_evidence(self, *, task_id: str | None = None, action: str, result: str, success: bool,
                         acceptance: str | None = None, args: str | None = None,
@@ -217,6 +309,7 @@ class TaskManager:
         if acceptance:
             item["acceptance"] = acceptance
         inferred = False
+        ordered_inferred = False
         targets = []
         if task_id:
             candidate = next((task for task in self.tasks if task["id"] == str(task_id)), None)
@@ -236,15 +329,32 @@ class TaskManager:
             if matched is not None:
                 targets = [matched]
                 inferred = True
+                ordered_inferred = _ordered_plan_info(matched) is not None
                 item["task_id"] = matched["id"]
                 if success and not acceptance:
                     item["acceptance"] = f"verified receipt for planned action {canonical}"
         for task in targets:
-            if inferred and not (task.get("checkpoint") or {}).get("action"):
+            if ordered_inferred:
+                marker = _ordered_plan_info(task)
+                if marker:
+                    item["ordered_plan"] = marker
+                task["checkpoint"] = {
+                    **(task.get("checkpoint") or {}), "action": canonical,
+                    "args": normalized_args, "ordered_receipt": True,
+                }
+            elif inferred and not (task.get("checkpoint") or {}).get("action"):
                 task["checkpoint"] = {"action": canonical, "args": normalized_args}
             task.setdefault("evidence", []).append(item)
             task["updated_at"] = utc_now()
             self._persist(task)
+        if ordered_inferred and success:
+            index = next((index for index, task in enumerate(self.tasks) if targets and task["id"] == targets[0]["id"]), None)
+            if index is not None and not is_complete(self.tasks[index]):
+                self.set_status(index, "succeeded")
+        if not targets:
+            item["unmatched_reason"] = (
+                "No unique ordered or contracted task matched this receipt; no task was marked complete."
+            )
         self.reconcile_completions({task["id"] for task in targets})
         return item
 
@@ -381,11 +491,20 @@ class TaskManager:
             return
         existing_by_id = {item["id"]: item for item in self.tasks}
         existing_by_key = {_task_key(item["description"]): item for item in self.tasks}
-        for item in raw_tasks:
+        plain_items = [item for item in raw_tasks if isinstance(item, str) and item.strip()]
+        ordered_plan_id = None
+        if len(plain_items) == len(raw_tasks) and len({_task_key(item) for item in plain_items}) == len(plain_items):
+            ordered_plan_id = _task_key("\n".join(item.strip() for item in plain_items))
+        for position, item in enumerate(raw_tasks):
             checkpoint = None
             if isinstance(item, str):
                 description, task_id, acceptance = item, None, None
                 dependencies = None
+                if ordered_plan_id is not None:
+                    checkpoint = {"ordered_plan": {
+                        "id": ordered_plan_id, "index": position,
+                        "total": len(raw_tasks),
+                    }}
             elif isinstance(item, dict) and item.get("description"):
                 description = str(item["description"])
                 task_id = str(item.get("id")) if item.get("id") else None
@@ -413,7 +532,7 @@ class TaskManager:
                 if acceptance:
                     task["acceptance"] = acceptance
                 if checkpoint:
-                    task["checkpoint"] = checkpoint
+                    task["checkpoint"] = {**task.get("checkpoint", {}), **checkpoint}
                 self._persist(task)
             else:
                 idx = self.add_task(description, dependencies=dependencies, acceptance=acceptance,
@@ -429,16 +548,31 @@ class TaskManager:
 
     def recover(self) -> list[dict[str, Any]]:
         """Load unfinished tasks from SQLite and make running tasks recoverable."""
-        rows = self.store.list_tasks(workspace_id=self.workspace_id, session_id=self.session_id,
-                                     statuses={"pending", "running", "failed", "blocked"}, user_id=self.user_id)
-        for task in rows:
+        unfinished = self.store.list_tasks(workspace_id=self.workspace_id, session_id=self.session_id,
+                                           statuses={"pending", "running", "failed", "blocked"}, user_id=self.user_id)
+        for task in unfinished:
             if task["status"] == "running":
                 task["status"] = "pending"
                 task["updated_at"] = utc_now()
                 self._persist(task)
                 self._event(task, "task.recovered", {"previous_status": "running"})
-        self.tasks = rows
-        return rows
+        ordered_plan_ids = {
+            marker["id"] for task in unfinished
+            if (marker := _ordered_plan_info(task)) is not None
+        }
+        if ordered_plan_ids:
+            all_rows = self.store.list_tasks(
+                workspace_id=self.workspace_id, session_id=self.session_id,
+                user_id=self.user_id,
+            )
+            self.tasks = [
+                task for task in all_rows
+                if (marker := _ordered_plan_info(task)) is not None
+                and marker["id"] in ordered_plan_ids
+            ]
+        else:
+            self.tasks = unfinished
+        return unfinished
 
 
 class TaskWorker:
