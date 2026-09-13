@@ -211,7 +211,7 @@ docker run -p 8000:8000 \
          │
          ▼
 ┌─────────────────┐
-│   모델 선택기   │──► deepseek-chat / deepseek-reasoner / gpt-4o / claude / gemini / llama
+│   모델 선택기   │──► deepseek-v4-flash / deepseek-v4-pro / gpt-4o / claude / gemini / llama
 └────────┬────────┘
          │
          ▼
@@ -257,7 +257,7 @@ export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
 
 | 제공자 | 간단한 작업 (기본값) | 복잡한 작업 (기본값) |
 |--------|-------------------|---------------------|
-| DeepSeek | `deepseek-chat` | `deepseek-reasoner` |
+| DeepSeek | `deepseek-v4-flash` | `deepseek-v4-pro` |
 | OpenAI | `gpt-4o` | `gpt-4o` |
 | Anthropic | `claude-sonnet-4-20250514` | `claude-sonnet-4-20250514` |
 | Google | `gemini-2.5-flash` | `gemini-2.5-pro` |
@@ -612,8 +612,8 @@ def register():
 {
   "provider": "deepseek",
   "api_key": "<암호화됨>",
-  "model_simple": "deepseek-chat",
-  "model_complex": "deepseek-reasoner",
+  "model_simple": "deepseek-v4-flash",
+  "model_complex": "deepseek-v4-pro",
   "encrypted": true
 }
 ```

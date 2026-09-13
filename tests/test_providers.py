@@ -8,6 +8,7 @@ from pathlib import Path
 from providers import (
     FallbackProvider,
     LLMProvider,
+    PROVIDER_DEFAULT_MODELS,
     ProviderConfig,
     _get_encryption_key,
     decrypt_api_key,
@@ -71,6 +72,15 @@ class ProviderConfigTests(unittest.TestCase):
         encrypted = bytes(char ^ key[index % len(key)] for index, char in enumerate(plaintext.encode()))
         ciphertext = base64.b64encode(encrypted).decode()
         self.assertEqual(decrypt_api_key(ciphertext), plaintext)
+
+    def test_readmes_use_current_deepseek_defaults(self):
+        simple, complex_model = PROVIDER_DEFAULT_MODELS["deepseek"]
+        root = Path(__file__).resolve().parents[1]
+        for readme in sorted(root.glob("README*.md")):
+            text = readme.read_text(encoding="utf-8")
+            self.assertNotRegex(text, r"\bdeepseek-(?:chat|reasoner)\b")
+            self.assertIn(f'"model_simple": "{simple}"', text)
+            self.assertIn(f'"model_complex": "{complex_model}"', text)
 
 
 class FallbackModelTests(unittest.TestCase):

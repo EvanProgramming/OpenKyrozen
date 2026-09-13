@@ -211,7 +211,7 @@ Web インターフェースは、リアルタイムストリーミング、コ�
          │
          ▼
 ┌─────────────────┐
-│  モデル選択器   │──► deepseek-chat / deepseek-reasoner / gpt-4o / claude / gemini / llama
+│  モデル選択器   │──► deepseek-v4-flash / deepseek-v4-pro / gpt-4o / claude / gemini / llama
 └────────┬────────┘
          │
          ▼
@@ -257,7 +257,7 @@ export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
 
 | プロバイダー | 簡単なタスク（デフォルト） | 複雑なタスク（デフォルト） |
 |-------------|------------------------|--------------------------|
-| DeepSeek | `deepseek-chat` | `deepseek-reasoner` |
+| DeepSeek | `deepseek-v4-flash` | `deepseek-v4-pro` |
 | OpenAI | `gpt-4o` | `gpt-4o` |
 | Anthropic | `claude-sonnet-4-20250514` | `claude-sonnet-4-20250514` |
 | Google | `gemini-2.5-flash` | `gemini-2.5-pro` |
@@ -614,8 +614,8 @@ def register():
 {
   "provider": "deepseek",
   "api_key": "<暗号化>",
-  "model_simple": "deepseek-chat",
-  "model_complex": "deepseek-reasoner",
+  "model_simple": "deepseek-v4-flash",
+  "model_complex": "deepseek-v4-pro",
   "encrypted": true
 }
 ```
