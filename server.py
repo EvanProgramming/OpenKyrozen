@@ -18,6 +18,7 @@ import re
 import asyncio
 import queue
 import secrets
+import math
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -861,16 +862,23 @@ initialiseSessions();
 # Routes
 # ---------------------------------------------------------------------------
 
+async def _json_object(request: Request) -> dict[str, Any]:
+    """Parse one bounded JSON object at every REST trust boundary."""
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(400, "Invalid JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    return body
+
 @app.post("/api/auth/session")
 async def api_auth_session(request: Request):
     """Exchange a user-entered server token for an HttpOnly browser session."""
     if not _SERVER_TOKEN:
         return {"authenticated": True}
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(400, "Invalid JSON")
-    supplied = str(body.get("token", "")).strip() if isinstance(body, dict) else ""
+    body = await _json_object(request)
+    supplied = str(body.get("token", "")).strip()
     if not hmac.compare_digest(supplied, _SERVER_TOKEN):
         _audit("AUTH_FAILURE", "browser bootstrap rejected")
         response = JSONResponse({"detail": "Invalid server token"}, status_code=401)
@@ -905,12 +913,7 @@ async def chat_page():
 @app.post("/api/chat", dependencies=[Depends(require_api_access)])
 async def api_chat(request: Request):
     """Non-streaming chat endpoint."""
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(400, "Invalid JSON")
-    if not isinstance(body, dict):
-        raise HTTPException(400, "JSON object required")
+    body = await _json_object(request)
     msg = _validate_message(_sanitize_api_message(str(body.get("message", "")).strip()))
     if not msg:
         raise HTTPException(400, "Empty message")
@@ -935,12 +938,7 @@ async def api_chat(request: Request):
 @app.post("/api/chat/stream", dependencies=[Depends(require_api_access)])
 async def api_chat_stream(request: Request):
     """SSE streaming chat endpoint."""
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(400, "Invalid JSON")
-    if not isinstance(body, dict):
-        raise HTTPException(400, "JSON object required")
+    body = await _json_object(request)
     msg = _validate_message(_sanitize_api_message(str(body.get("message", "")).strip()))
     if not msg:
         raise HTTPException(400, "Empty message")
@@ -1098,9 +1096,7 @@ async def api_v2_memory_claims(request: Request, speaker: str | None = None, aud
 
 @app.post("/api/v2/memory/claims", dependencies=[Depends(require_api_access)])
 async def api_v2_create_memory_claim(request: Request):
-    body = await request.json()
-    if not isinstance(body, dict):
-        raise HTTPException(400, "JSON object required")
+    body = await _json_object(request)
     actor = _actor_for_request(request)
     if body.get("claim_type") == "private_fact" and body.get("speaker") not in {None, actor}:
         raise HTTPException(403, "Private claims must belong to the authenticated speaker")
@@ -1155,8 +1151,8 @@ async def api_v2_tasks(session_id: str | None = None):
 
 @app.post("/api/v2/tasks", dependencies=[Depends(require_api_access)])
 async def api_v2_create_task(request: Request):
-    body = await request.json()
-    if not isinstance(body, dict) or not str(body.get("description", "")).strip():
+    body = await _json_object(request)
+    if not isinstance(body.get("description"), str) or not body["description"].strip():
         raise HTTPException(400, "description is required")
     session = _normalise_session_id(body.get("session_id"))
     manager = _task_manager(session)
@@ -1170,11 +1166,14 @@ async def api_v2_create_task(request: Request):
         checkpoint = {"action": action, "args": body.get("args", "")}
         if isinstance(body.get("acceptance"), list) and body["acceptance"]:
             checkpoint["acceptance"] = body["acceptance"][0]
+    priority = body.get("priority", 0)
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        raise HTTPException(400, "priority must be an integer")
     index = manager.add_task(
         str(body["description"]),
         dependencies=body.get("dependencies") if isinstance(body.get("dependencies"), list) else None,
         acceptance=body.get("acceptance") if isinstance(body.get("acceptance"), list) else None,
-        priority=int(body.get("priority", 0)),
+        priority=priority,
         checkpoint=checkpoint,
     )
     if not any(job.get("payload", {}).get("type") == "task_worker" for job in _scheduler.list_jobs()):
@@ -1240,9 +1239,9 @@ async def api_v2_learning_evidence(proposal_id: str):
 
 @app.post("/api/v2/learning/{proposal_id}/replay", dependencies=[Depends(require_api_access)])
 async def api_v2_learning_replay(proposal_id: str, request: Request):
-    body = await request.json()
-    if not isinstance(body, dict):
-        raise HTTPException(400, "JSON object required")
+    body = await _json_object(request)
+    if any(key in body and not isinstance(body[key], list) for key in ("candidate", "predecessor")):
+        raise HTTPException(400, "candidate and predecessor must be arrays")
     try:
         return _agent.learning_engine.record_shadow_replay(
             proposal_id, body.get("candidate", []), body.get("predecessor", []),
@@ -1253,7 +1252,9 @@ async def api_v2_learning_replay(proposal_id: str, request: Request):
 
 @app.post("/api/v2/learning/{proposal_id}/omission", dependencies=[Depends(require_api_access)])
 async def api_v2_learning_omission(proposal_id: str, request: Request):
-    body = await request.json()
+    body = await _json_object(request)
+    if any(key in body and not isinstance(body[key], list) for key in ("with_item", "without_item")):
+        raise HTTPException(400, "with_item and without_item must be arrays")
     try:
         return _agent.learning_engine.record_omission_trial(
             proposal_id, body.get("with_item", []), body.get("without_item", []),
@@ -1290,7 +1291,7 @@ async def api_v2_learning_export_capsule(proposal_id: str):
 @app.post("/api/v2/learning/capsules", dependencies=[Depends(require_api_access)])
 async def api_v2_learning_import_capsule(request: Request):
     try:
-        return _agent.learning_engine.import_capsule(await request.json())
+        return _agent.learning_engine.import_capsule(await _json_object(request))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -1338,22 +1339,33 @@ async def api_v2_schedules():
 
 @app.post("/api/v2/schedules", dependencies=[Depends(require_api_access)])
 async def api_v2_create_schedule(request: Request):
-    body = await request.json()
-    if not isinstance(body, dict) or not str(body.get("name", "")).strip():
+    body = await _json_object(request)
+    if not isinstance(body.get("name"), str) or not body["name"].strip():
         raise HTTPException(400, "name is required")
     payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
     if not payload.get("type"):
         raise HTTPException(400, "payload.type is required")
     if "interval_seconds" in body:
-        job_id = _scheduler.schedule_every(
-            str(body["name"]), float(body["interval_seconds"]), payload=payload,
-            job_id=str(body["id"]) if body.get("id") else None,
-        )
+        interval = body["interval_seconds"]
+        if isinstance(interval, bool) or not isinstance(interval, (int, float)) or not math.isfinite(interval):
+            raise HTTPException(400, "interval_seconds must be a finite number")
+        try:
+            job_id = _scheduler.schedule_every(
+                body["name"], interval, payload=payload,
+                job_id=str(body["id"]) if body.get("id") else None,
+            )
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise HTTPException(400, "invalid interval_seconds") from exc
     elif body.get("run_at"):
-        job_id = _scheduler.schedule_once(
-            str(body["name"]), str(body["run_at"]), payload=payload,
-            job_id=str(body["id"]) if body.get("id") else None,
-        )
+        if not isinstance(body["run_at"], str):
+            raise HTTPException(400, "run_at must be an ISO-8601 timestamp")
+        try:
+            job_id = _scheduler.schedule_once(
+                body["name"], body["run_at"], payload=payload,
+                job_id=str(body["id"]) if body.get("id") else None,
+            )
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise HTTPException(400, "run_at must be an ISO-8601 timestamp") from exc
     else:
         raise HTTPException(400, "interval_seconds or run_at is required")
     return {"schedule": next(item for item in _scheduler.list_jobs() if item["id"] == job_id)}
@@ -1374,11 +1386,13 @@ async def api_v2_skills(status: str | None = None):
 
 @app.post("/api/v2/skills/install", dependencies=[Depends(require_api_access)])
 async def api_v2_install_skill(request: Request):
-    body = await request.json()
-    if not isinstance(body, dict) or not str(body.get("path", "")).strip():
+    body = await _json_object(request)
+    if not isinstance(body.get("path"), str) or not body["path"].strip():
         raise HTTPException(400, "path is required")
+    if "activate" in body and not isinstance(body["activate"], bool):
+        raise HTTPException(400, "activate must be a boolean")
     try:
-        return _agent.skill_registry.install(str(body["path"]), activate=bool(body.get("activate", False)))
+        return _agent.skill_registry.install(body["path"], activate=body.get("activate", False))
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(400, str(exc))
 
@@ -1404,13 +1418,14 @@ async def api_v2_agents():
 
 @app.post("/api/v2/agents/run", dependencies=[Depends(require_api_access)])
 async def api_v2_run_agent(request: Request):
-    body = await request.json()
-    if not isinstance(body, dict) or not str(body.get("profile", "")).strip() or not str(body.get("task", "")).strip():
+    body = await _json_object(request)
+    if (not isinstance(body.get("profile"), str) or not body["profile"].strip()
+            or not isinstance(body.get("task"), str) or not body["task"].strip()):
         raise HTTPException(400, "profile and task are required")
     try:
         result = await asyncio.to_thread(
             _agent.subagent_manager.run,
-            str(body["profile"]), str(body["task"]),
+            body["profile"], body["task"],
             workspace_id=_agent.memory_bank.workspace_id,
         )
         return result
@@ -1432,11 +1447,8 @@ async def api_cost(scope: str = "installation", session_id: str | None = None):
 @app.post("/api/cost/reset", dependencies=[Depends(require_api_access)])
 async def api_cost_reset(request: Request):
     """Start a new durable workspace/session reporting window without deleting usage."""
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(400, "Invalid JSON")
-    if not isinstance(body, dict) or body.get("confirm") != "reset-cost":
+    body = await _json_object(request)
+    if body.get("confirm") != "reset-cost":
         raise HTTPException(400, "Set confirm to reset-cost to reset a usage window")
     scope = str(body.get("scope", "workspace"))
     if scope not in {"workspace", "session"}:
@@ -1726,7 +1738,9 @@ async def mcp_endpoint(request: Request):
 async def api_transcribe(request: Request):
     """Transcribe audio to text using system tools (macOS say, Linux espeak)."""
     # This is a placeholder — real STT would use whisper or an API
-    body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+    body = await _json_object(request) if request.headers.get("content-type", "").lower().startswith("application/json") else {}
+    if "text" in body and not isinstance(body["text"], str):
+        raise HTTPException(400, "text must be a string")
     text = body.get("text", "")
     return {"text": text, "source": "passthrough", "note": "Use whisper or cloud STT for real transcription"}
 
@@ -1828,7 +1842,9 @@ def _validate_webhook_url(url: str) -> bool:
 @app.post("/api/webhooks/register", dependencies=[Depends(require_api_access)])
 async def register_webhook(request: Request):
     """Register a webhook URL for event notifications."""
-    body = await request.json()
+    body = await _json_object(request)
+    if "url" in body and not isinstance(body["url"], str):
+        raise HTTPException(400, "URL required")
     url = body.get("url", "").strip()
     events = body.get("events", ["chat.completed"])
     if not url:
