@@ -4378,16 +4378,15 @@ def _tasks_from_plan(text: str) -> None:
     if not plan_match:
         return
     plan_body = plan_match.group(1).strip()
-    for index, line in enumerate(plan_body.splitlines()):
+    descriptions = []
+    for line in plan_body.splitlines():
         line = line.strip()
         if not line:
             continue
         # Remove leading numbering "1." or "1)" etc.
         cleaned = re.sub(r"^\s*\d+[.)]?\s*", "", line).strip()
-        if cleaned:
-            tasks.add_task(cleaned, task_id=f"plan-{index + 1}")
-        else:
-            tasks.add_task(line, task_id=f"plan-{index + 1}")
+        descriptions.append(cleaned or line)
+    tasks.add_ordered_plan(descriptions, task_id_prefix="plan")
 
 
 def _build_task_progress_hint() -> str:

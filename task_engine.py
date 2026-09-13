@@ -88,6 +88,12 @@ def _ordered_plan_info(task: dict[str, Any]) -> dict[str, Any] | None:
     return {"id": marker["id"], "index": marker["index"], "total": marker["total"]}
 
 
+def _ordered_plan_id(items: list[str]) -> str | None:
+    if not items or len({_task_key(item) for item in items}) != len(items):
+        return None
+    return _task_key("\n".join(items))
+
+
 def _ordered_action_compatible(description: str, action: str) -> bool:
     """Keep ordered inference bounded to descriptions with an execution hint."""
     action = _receipt_action(action)
@@ -191,6 +197,19 @@ class TaskManager:
         self._persist(task)
         self._event(task, "task.created", {"description": description})
         return len(self.tasks) - 1
+
+    def add_ordered_plan(self, descriptions: list[str], *, task_id_prefix: str | None = None) -> None:
+        """Add a numbered plan with the same durable ordering as a plain TaskList."""
+        items = [str(description).strip() for description in descriptions if str(description).strip()]
+        plan_id = _ordered_plan_id(items)
+        for position, description in enumerate(items):
+            checkpoint = None
+            if plan_id is not None:
+                checkpoint = {"ordered_plan": {
+                    "id": plan_id, "index": position, "total": len(items),
+                }}
+            task_id = f"{task_id_prefix}-{position + 1}" if task_id_prefix else None
+            self.add_task(description, task_id=task_id, checkpoint=checkpoint)
 
     def set_status(self, idx: int, status: str, *, evidence: dict[str, Any] | None = None) -> bool:
         if not 0 <= idx < len(self.tasks):
@@ -493,8 +512,8 @@ class TaskManager:
         existing_by_key = {_task_key(item["description"]): item for item in self.tasks}
         plain_items = [item for item in raw_tasks if isinstance(item, str) and item.strip()]
         ordered_plan_id = None
-        if len(plain_items) == len(raw_tasks) and len({_task_key(item) for item in plain_items}) == len(plain_items):
-            ordered_plan_id = _task_key("\n".join(item.strip() for item in plain_items))
+        if len(plain_items) == len(raw_tasks):
+            ordered_plan_id = _ordered_plan_id([item.strip() for item in plain_items])
         for position, item in enumerate(raw_tasks):
             checkpoint = None
             if isinstance(item, str):
@@ -565,11 +584,14 @@ class TaskManager:
                 workspace_id=self.workspace_id, session_id=self.session_id,
                 user_id=self.user_id,
             )
-            self.tasks = [
-                task for task in all_rows
-                if (marker := _ordered_plan_info(task)) is not None
-                and marker["id"] in ordered_plan_ids
-            ]
+            self.tasks = sorted(
+                (
+                    task for task in all_rows
+                    if (marker := _ordered_plan_info(task)) is not None
+                    and marker["id"] in ordered_plan_ids
+                ),
+                key=lambda task: _ordered_plan_info(task)["index"],
+            )
         else:
             self.tasks = unfinished
         return unfinished

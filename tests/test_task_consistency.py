@@ -469,6 +469,103 @@ class TaskConsistencyTests(unittest.TestCase):
             ).stdout)
             self.assertIn("plain-string plan", reply)
 
+    def test_plan_only_tasks_reconcile_in_order_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = MemoryBank(Path(directory) / "state.sqlite3").store
+            manager = TaskManager(store, workspace_id="project", session_id="plan-only")
+            original_tasks = main.tasks
+            main.tasks = manager
+            try:
+                main._tasks_from_plan(
+                    "Plan:\n1. Inspect the repository\n2. Read the README\n"
+                    "3. Run the tests\n4. Write the README\n5. Review the diff\n"
+                    "6. Commit the change\n7. Report the final results\n"
+                )
+            finally:
+                main.tasks = original_tasks
+
+            self.assertEqual(len(manager.tasks), 7)
+            self.assertTrue(all((task.get("checkpoint") or {}).get("ordered_plan")
+                                for task in manager.tasks))
+            receipts = [
+                ("list_dir", "."), ("read_file", "README.md"), ("run_cmd", "python -m unittest"),
+                ("write_file", "README.md|quick start"), ("git_diff", "."),
+                ("git_commit", "audit: plan-only"),
+            ]
+            for action, args in receipts[:3]:
+                evidence = manager.record_evidence(action=action, args=args, result="verified", success=True)
+                self.assertIn("task_id", evidence)
+
+            reopened = TaskManager(store, workspace_id="project", session_id="plan-only")
+            self.assertEqual(len(reopened.recover()), 4)
+            for action, args in receipts[3:]:
+                evidence = reopened.record_evidence(action=action, args=args, result="verified", success=True)
+                self.assertIn("task_id", evidence)
+            self.assertEqual([task["status"] for task in reopened.tasks[:6]], ["succeeded"] * 6)
+            self.assertEqual(reopened.tasks[6]["status"], "pending")
+            self.assertTrue(all(len(task["evidence"]) == 1 for task in reopened.tasks[:6]))
+
+    def test_cli_plan_only_completes_verified_work_without_taskdone(self):
+        class StubLearning:
+            def feedback_signal(self, _text):
+                return None
+
+            def route_profile(self, _text, _profile=None):
+                return "coder"
+
+            def begin_run(self, profile, _task, provider_model=None):
+                return {"run_id": "plan-cli-run", "profile": profile, "provider_model": provider_model}
+
+            def artifact_context(self, _run):
+                return "", []
+
+        responses = [
+            "Plan:\n1. Inspect the repository status\n2. Create the audit file\n"
+            "3. Run the test suite\n4. Stage the audit file\n5. Commit the audit file\n"
+            'Action: {"action":"git_status","args":"."}',
+            'Action: {"action":"write_file","args":"audit-plan.txt|PLAN_OK"}',
+            'Action: {"action":"run_cmd","args":"python -c pass"}',
+            'Action: {"action":"git_add","args":"audit-plan.txt"}',
+            'Action: {"action":"git_commit","args":"audit: plan-only"}',
+            "Committed the Plan-only work.",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "OpenKyrozen Test"], cwd=root, check=True)
+            store = MemoryBank(root / "state.sqlite3").store
+            original_root = main._get_workspace_root()
+            original_tasks = main.tasks
+            original_learning = main.learning_engine
+            main._set_workspace_root(root)
+            main.tasks = TaskManager(store, workspace_id="project", session_id="plan-cli")
+            main.learning_engine = StubLearning()
+            try:
+                with patch.object(main, "_classify_complexity", return_value="complex"), \
+                     patch.object(main, "_build_messages", return_value=[]), \
+                     patch.object(main, "_build_memory_context", return_value=""), \
+                     patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
+                     patch.object(main, "_get_llm_response", return_value=""), \
+                     patch.object(main, "_update_tasks_panel"), \
+                     patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
+                                  result, records, tokens, started: result):
+                    reply = main._chat_turn("Create and commit the audit file.", clear_tasks=True)
+            finally:
+                main._set_workspace_root(original_root)
+                main.tasks = original_tasks
+                main.learning_engine = original_learning
+
+            rows = store.list_tasks(workspace_id="project", session_id="plan-cli")
+            self.assertEqual(len(rows), 5)
+            self.assertEqual({row["status"] for row in rows}, {"succeeded"})
+            self.assertEqual((root / "audit-plan.txt").read_text(encoding="utf-8"), "PLAN_OK")
+            self.assertIn("audit: plan-only", subprocess.run(
+                ["git", "log", "-1", "--pretty=%s"], cwd=root,
+                capture_output=True, text=True, check=True,
+            ).stdout)
+            self.assertIn("Plan-only work", reply)
+
     def test_web_natural_plan_receipts_match_and_survive_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
