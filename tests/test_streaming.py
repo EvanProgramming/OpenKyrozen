@@ -107,6 +107,16 @@ class _ToolNameProseProvider:
         )
 
 
+class _SplitGenericInvokeProvider:
+    config = ProviderConfig(provider="deepseek", model_simple="deepseek-v4-flash")
+    marker = '< invoke name="read_file">read_file("README.md")</ invoke>'
+
+    def chat_stream(self, _messages, _model=None):
+        yield "Visible progress. "
+        yield from self.marker
+        yield " after marker."
+
+
 class StreamingEndpointTests(unittest.TestCase):
     def test_first_sse_content_arrives_before_provider_stream_completes(self):
         session_id = "stream-timing-regression"
@@ -357,6 +367,62 @@ class StreamingEndpointTests(unittest.TestCase):
             assistant_messages = [
                 event["payload"] for event in memory.store.list_events(
                     "session.message", workspace_id="tool-name-prose-test", session_id=session_id,
+                ) if event["payload"].get("role") == "assistant"
+            ]
+            self.assertEqual(assistant_messages[-1]["content"], expected)
+
+    def test_generic_invoke_tags_split_at_every_boundary_stay_out_of_sse(self):
+        marker = _SplitGenericInvokeProvider.marker
+        expected = "Visible progress.  after marker."
+        for split in range(1, len(marker)):
+            stream_filter = main.DeepSeekDSMLFilter()
+            content = stream_filter.feed("Visible progress. " + marker[:split])
+            content += stream_filter.feed(marker[split:] + " after marker.", final=True)
+            self.assertEqual(content, expected, split)
+
+        session_id = "stream-generic-invoke-regression"
+        provider = _SplitGenericInvokeProvider()
+
+        async def exercise():
+            response = await server.api_chat_stream(_Request({
+                "message": "read the README", "session_id": session_id,
+            }))
+            iterator = response.body_iterator.__aiter__()
+            frames = []
+            try:
+                while True:
+                    frames.append(await asyncio.wait_for(anext(iterator), timeout=2))
+            except StopAsyncIteration:
+                return frames
+
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-generic-invoke-") as directory:
+            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="generic-invoke-test")
+            original_sessions = server._sessions
+            server._sessions = {}
+            try:
+                with (patch.object(server._agent, "memory_bank", memory),
+                      patch.object(server._agent, "llm_provider", provider),
+                      patch.object(server._agent, "DEEPSEEK_MODEL", "deepseek-v4-flash"),
+                      patch.object(server._agent, "_chat_turn", side_effect=lambda message, **_: (
+                          main._call_llm_with_spinner([{"role": "user", "content": message}])
+                      ))):
+                    frames = asyncio.run(exercise())
+            finally:
+                server._sessions = original_sessions
+
+            def text(item):
+                return item.decode() if isinstance(item, bytes) else item
+
+            payloads = [json.loads(text(frame).split("data: ", 1)[1].splitlines()[0])
+                        for frame in frames
+                        if text(frame).startswith("data: ") and text(frame) != "data: [DONE]\n\n"]
+            content = "".join(item["chunk"] for item in payloads if item.get("event") == "content")
+            self.assertEqual(content, expected)
+            self.assertNotRegex(content, r"<\s*/?\s*(?:invoke|parameter|calls|tool_calls|function_calls)\b")
+            self.assertNotIn("read_file(\"README.md\")", content)
+            assistant_messages = [
+                event["payload"] for event in memory.store.list_events(
+                    "session.message", workspace_id="generic-invoke-test", session_id=session_id,
                 ) if event["payload"].get("role") == "assistant"
             ]
             self.assertEqual(assistant_messages[-1]["content"], expected)
