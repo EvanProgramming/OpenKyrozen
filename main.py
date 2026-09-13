@@ -3150,6 +3150,8 @@ def _collect_unwrapped_tool_calls(text: str) -> tuple[list[dict], bool]:
     malformed = False
     value = str(text or "")
     for match in _ACTION_MARKER_RE.finditer(value):
+        if not _action_marker_is_protocol(value, match, final=True):
+            continue
         line_end = value.find("\n", match.end())
         line_end = len(value) if line_end < 0 else line_end
         prefix = value[value.rfind("\n", 0, match.start()) + 1:match.start()].rstrip()
@@ -3851,6 +3853,56 @@ _ACTION_MARKER_NAMES = tuple(sorted(set(AVAILABLE_TOOLS) | set(TOOL_ALIASES), ke
 _ACTION_MARKER_RE = re.compile(
     r"(?i)(?<![\w])(?P<name>(?:" + "|".join(map(re.escape, _ACTION_MARKER_NAMES)) + r"))\s*:"
 )
+_ACTION_SENTENCE_ENDS = (".", "!", "?", "…", "。", "！", "？", ")", "]", "}", "`", '"', "'")
+_ACTION_PROSE_START_RE = re.compile(
+    r"(?i)^(?:a|an|and|are|accepts|can|does|for|from|is|means|must|not|or|returns|the|that|this|to|used|use|will|which|with)\b"
+)
+
+
+def _marker_line_prefix(value: str, start: int) -> str:
+    return value[value.rfind("\n", 0, start) + 1:start].rstrip()
+
+
+def _action_marker_is_protocol(value: str, match: re.Match[str], *, final: bool) -> bool:
+    """Accept only bounded alias lines, not prose that mentions a tool name."""
+    prefix = _marker_line_prefix(value, match.start())
+    if prefix and not prefix.endswith(_ACTION_SENTENCE_ENDS):
+        return False
+    cursor = match.end()
+    while cursor < len(value) and value[cursor] in " \t":
+        cursor += 1
+    if value[cursor:cursor + 2] == "\r\n":
+        cursor += 2
+    elif value[cursor:cursor + 1] == "\n":
+        cursor += 1
+    while cursor < len(value) and value[cursor] in " \t":
+        cursor += 1
+    if value[cursor:cursor + 3] == "```":
+        return True
+    line_end = value.find("\n", cursor)
+    line_end = len(value) if line_end < 0 else line_end
+    args = value[cursor:line_end].strip().strip("`\"'")
+    if not args:
+        return final
+    return not _ACTION_PROSE_START_RE.match(args)
+
+
+def _control_marker_is_protocol(value: str, match: re.Match[str]) -> bool:
+    prefix = _marker_line_prefix(value, match.start())
+    if not prefix or prefix.endswith(_ACTION_SENTENCE_ENDS):
+        return True
+    return bool(re.search(
+        r"(?i)(?:Action|Plan|TaskList|TaskDone|DefineTool)\s*:", prefix[-400:],
+    ))
+
+
+def _remove_protocol_headings(value: str) -> str:
+    """Remove control headings only when their context is protocol-like."""
+    matches = list(DeepSeekDSMLFilter._CONTROL_RE.finditer(value))
+    for match in reversed(matches):
+        if _control_marker_is_protocol(value, match):
+            value = value[:match.start()] + value[match.end():]
+    return value
 
 
 class DeepSeekDSMLFilter:
@@ -3919,6 +3971,20 @@ class DeepSeekDSMLFilter:
                 return length
         return 0
 
+    @classmethod
+    def _find_control_marker(cls, value: str, *, final: bool) -> re.Match[str] | None:
+        for match in cls._CONTROL_RE.finditer(value):
+            if _control_marker_is_protocol(value, match):
+                return match
+        return None
+
+    @classmethod
+    def _find_action_marker(cls, value: str, *, final: bool) -> re.Match[str] | None:
+        for match in cls._ACTION_MARKER_RE.finditer(value):
+            if _action_marker_is_protocol(value, match, final=final):
+                return match
+        return None
+
     @staticmethod
     def _balanced_end(value: str, start: int, opening: str, closing: str) -> int | None:
         depth = 0
@@ -3983,6 +4049,12 @@ class DeepSeekDSMLFilter:
         cursor = match.end()
         while cursor < len(value) and value[cursor] in " \t":
             cursor += 1
+        if value[cursor:cursor + 2] == "\r\n":
+            cursor += 2
+        elif value[cursor:cursor + 1] == "\n":
+            cursor += 1
+        while cursor < len(value) and value[cursor] in " \t":
+            cursor += 1
         if value[cursor:cursor + 3] == "```":
             close = value.find("```", cursor + 3)
             if close < 0:
@@ -3997,10 +4069,10 @@ class DeepSeekDSMLFilter:
         self._control_buffer += chunk
         output: list[str] = []
         while self._control_buffer:
-            control = self._CONTROL_RE.search(self._control_buffer)
+            control = self._find_control_marker(self._control_buffer, final=final)
             generic_open = self._GENERIC_OPEN_RE.search(self._control_buffer)
             generic_close = self._GENERIC_CLOSE_RE.search(self._control_buffer)
-            action_marker = self._ACTION_MARKER_RE.search(self._control_buffer)
+            action_marker = self._find_action_marker(self._control_buffer, final=final)
             starts = [item for item in (control, generic_open, generic_close, action_marker) if item is not None]
             if not starts:
                 if final:
@@ -4209,9 +4281,7 @@ def _clean_final_response(text: str) -> str:
     # any following natural-language answer.
     cleaned = re.sub(r"^[ \t]*Thought:[ \t]*.*(?:\n|$)", "", cleaned,
                      flags=re.IGNORECASE | re.MULTILINE)
-    cleaned = re.sub(
-        r"(?i)(?<![\w])(?:Thought|Plan|TaskList|TaskDone|DefineTool)\s*:", "", cleaned,
-    )
+    cleaned = _remove_protocol_headings(cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
