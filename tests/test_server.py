@@ -18,6 +18,51 @@ from subagents import SubAgentManager
 
 
 class ServerBoundaryTests(unittest.TestCase):
+    def test_json_post_boundaries_reject_non_objects_and_malformed_payloads(self):
+        client = TestClient(server.app)
+        endpoints = (
+            "/api/chat", "/api/chat/stream", "/api/voice/transcribe",
+            "/api/webhooks/register", "/api/v2/agents/run", "/api/v2/memory/claims",
+            "/api/v2/schedules", "/api/v2/skills/install", "/api/v2/tasks",
+            "/api/v2/learning/capsules", "/api/v2/learning/missing/replay",
+            "/api/v2/learning/missing/omission", "/api/cost/reset",
+        )
+        for endpoint in endpoints:
+            for value in (None, [], "scalar", 7):
+                response = client.post(
+                    endpoint, content=json.dumps(value),
+                    headers={"content-type": "application/json"},
+                )
+                self.assertEqual(response.status_code, 400, f"{endpoint} accepted {value!r}: {response.text}")
+                self.assertNotIn("Traceback", response.text)
+                self.assertNotIn("AttributeError", response.text)
+            malformed = client.post(
+                endpoint, content=b"{", headers={"content-type": "application/json"},
+            )
+            self.assertEqual(malformed.status_code, 400, f"{endpoint}: {malformed.text}")
+            self.assertNotIn("Traceback", malformed.text)
+            self.assertNotIn("JSONDecodeError", malformed.text)
+
+    def test_json_post_field_validation_is_bounded_and_side_effect_free(self):
+        client = TestClient(server.app)
+        invalid = (
+            ("/api/v2/schedules", {"name": "bad", "payload": {"type": "test"},
+                                    "interval_seconds": "abc"}),
+            ("/api/v2/schedules", {"name": "bad", "payload": {"type": "test"},
+                                    "run_at": "not-a-date"}),
+            ("/api/v2/tasks", {"description": "bad", "priority": None}),
+            ("/api/v2/tasks", {"description": "bad", "priority": "high"}),
+            ("/api/voice/transcribe", {"text": []}),
+            ("/api/webhooks/register", {"url": []}),
+            ("/api/v2/agents/run", {"profile": [], "task": "bad"}),
+            ("/api/v2/skills/install", {"path": "missing", "activate": "false"}),
+        )
+        for endpoint, body in invalid:
+            response = client.post(endpoint, json=body)
+            self.assertEqual(response.status_code, 400, f"{endpoint}: {response.text}")
+            self.assertNotIn("Traceback", response.text)
+            self.assertNotIn("ValueError", response.text)
+
     def test_subagent_api_executes_allowed_file_action_and_rejects_disallowed_action(self):
         client = TestClient(server.app)
         with tempfile.TemporaryDirectory() as directory:
