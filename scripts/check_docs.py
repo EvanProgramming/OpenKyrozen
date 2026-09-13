@@ -43,6 +43,7 @@ BENCHMARK_METADATA = (
     "paired_evidence_status: insufficient",
     "public_superiority_claim_supported: false",
 )
+STALE_DEEPSEEK_MODELS = re.compile(r"\bdeepseek-(?:chat|reasoner)\b", re.IGNORECASE)
 
 
 def _command_blocks(text: str) -> list[str]:
@@ -220,6 +221,21 @@ def _check_readme_endpoint_table(path: Path, text: str, routes: set[tuple[str, s
     return errors
 
 
+def _check_provider_defaults(path: Path, text: str, defaults: dict[str, tuple[str, str]]) -> list[str]:
+    """Keep README model examples tied to the provider's current defaults."""
+    simple, complex_model = defaults["deepseek"]
+    errors: list[str] = []
+    if STALE_DEEPSEEK_MODELS.search(text):
+        errors.append(f"{path.name}: README contains a retired DeepSeek model name")
+    simple_match = re.search(r'"model_simple"\s*:\s*"([^"]+)"', text)
+    complex_match = re.search(r'"model_complex"\s*:\s*"([^"]+)"', text)
+    if not simple_match or simple_match.group(1) != simple:
+        errors.append(f"{path.name}: model_simple example must match provider default '{simple}'")
+    if not complex_match or complex_match.group(1) != complex_model:
+        errors.append(f"{path.name}: model_complex example must match provider default '{complex_model}'")
+    return errors
+
+
 def _check_verification_record() -> list[str]:
     if not VERIFICATION_DOC.exists():
         return ["docs/self-evolution.md is missing"]
@@ -254,6 +270,7 @@ def _check_verification_record() -> list[str]:
 def main() -> int:
     expected_inventory = render_inventory()
     import main as agent_main
+    from providers import PROVIDER_DEFAULT_MODELS
 
     runtime_tool_count = len(agent_main.AVAILABLE_TOOLS)
     git_tool_count = sum(name.startswith("git_") for name in agent_main.AVAILABLE_TOOLS)
@@ -268,6 +285,7 @@ def main() -> int:
     errors.extend(_check_verification_record())
     for readme in README_FILES:
         text = readme.read_text(encoding="utf-8")
+        errors.extend(_check_provider_defaults(readme, text, PROVIDER_DEFAULT_MODELS))
         if readme.name == "README.md":
             errors.extend(_check_readme_endpoint_table(readme, text, set(routes)))
         for pattern in STALE_TOOL_PATTERNS:

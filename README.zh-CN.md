@@ -207,7 +207,7 @@ Web 界面提供暗色主题的聊天 UI，支持实时流式输出、费用追�
          │
          ▼
 ┌─────────────────┐
-│   模型选择器    │──► deepseek-chat / deepseek-reasoner / gpt-4o / claude / gemini / llama
+│   模型选择器    │──► deepseek-v4-flash / deepseek-v4-pro / gpt-4o / claude / gemini / llama
 └────────┬────────┘
          │
          ▼
@@ -253,7 +253,7 @@ export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
 
 | 服务商 | 简单任务（默认） | 复杂任务（默认） |
 |--------|-----------------|-----------------|
-| DeepSeek | `deepseek-chat` | `deepseek-reasoner` |
+| DeepSeek | `deepseek-v4-flash` | `deepseek-v4-pro` |
 | OpenAI | `gpt-4o` | `gpt-4o` |
 | Anthropic | `claude-sonnet-4-20250514` | `claude-sonnet-4-20250514` |
 | Google | `gemini-2.5-flash` | `gemini-2.5-pro` |
@@ -624,8 +624,8 @@ def register():
 {
   "provider": "deepseek",
   "api_key": "<加密>",
-  "model_simple": "deepseek-chat",
-  "model_complex": "deepseek-reasoner",
+  "model_simple": "deepseek-v4-flash",
+  "model_complex": "deepseek-v4-pro",
   "encrypted": true,
   "encryption": "fernet"
 }

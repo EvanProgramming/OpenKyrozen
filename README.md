@@ -221,7 +221,7 @@ User Input
          │
          ▼
 ┌─────────────────┐
-│  Model Selector  │──► deepseek-chat / deepseek-reasoner / gpt-4o / claude / gemini / llama
+│  Model Selector  │──► deepseek-v4-flash / deepseek-v4-pro / gpt-4o / claude / gemini / llama
 └────────┬────────┘
          │
          ▼
@@ -860,8 +860,8 @@ example.
 {
   "provider": "deepseek",
   "api_key": "<encrypted>",
-  "model_simple": "deepseek-chat",
-  "model_complex": "deepseek-reasoner",
+  "model_simple": "deepseek-v4-flash",
+  "model_complex": "deepseek-v4-pro",
   "encrypted": true,
   "encryption": "fernet"
 }
