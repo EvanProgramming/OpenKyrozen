@@ -3497,6 +3497,8 @@ def _record_turn_receipt(receipt: ExecutionReceipt) -> dict[str, Any]:
     receipt_payload = receipt.as_dict()
     if effective_acceptance and not receipt_payload.get("acceptance"):
         receipt_payload["acceptance"] = effective_acceptance
+    if evidence.get("unmatched_reason"):
+        receipt_payload["unmatched_reason"] = evidence["unmatched_reason"]
     tasks.store.append_event(
         "execution.receipt", {**receipt_payload, "task_id": task_id}, user_id=tasks.user_id,
         workspace_id=tasks.workspace_id, session_id=tasks.session_id, task_id=task_id,
@@ -3507,6 +3509,8 @@ def _record_turn_receipt(receipt: ExecutionReceipt) -> dict[str, Any]:
         "success": receipt.success, "authorized": receipt.authorized,
         "acceptance": effective_acceptance, "failure": receipt.failure, "task_id": task_id,
     }
+    if evidence.get("unmatched_reason"):
+        result["unmatched_reason"] = evidence["unmatched_reason"]
     _emit_stream_event({"event": "tool_receipt", "tool_receipt": result})
     _emit_stream_event({"event": "tasks", "tasks": [
         {"id": item["id"], "description": item["description"], "status": item["status"]}
@@ -4337,6 +4341,8 @@ def _deterministic_tool_summary(tool_records: list[dict[str, Any]]) -> str:
         line = f"- {action}: {status}"
         if result:
             line += f" — {result}"
+        if record.get("unmatched_reason"):
+            line += f" ({record['unmatched_reason']})"
         lines.append(line)
     task_lines: list[str] = []
     for task in tasks.tasks:

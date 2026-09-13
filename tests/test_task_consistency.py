@@ -344,6 +344,131 @@ class TaskConsistencyTests(unittest.TestCase):
             reopened = TaskManager(store, workspace_id="project", session_id="multi-task")
             self.assertEqual(reopened.recover(), [])
 
+    def test_plain_string_plan_reconciles_in_order_after_restart_and_leaves_unmatched_receipts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = MemoryBank(Path(directory) / "state.sqlite3").store
+            manager = TaskManager(store, workspace_id="project", session_id="plain-plan")
+            manager.from_llm_block(
+                "TaskList:\n```json\n"
+                '["Inspect the repository", "Read the README", "Run the tests", "Commit the change"]\n'
+                "```"
+            )
+            receipts = [
+                ("list_dir", "."), ("read_file", "README.md"),
+                ("run_cmd", "python -m unittest"), ("git_commit", "audit: plain plan"),
+            ]
+            for action, args in receipts[:2]:
+                evidence = manager.record_evidence(
+                    action=action, args=args, result="verified", success=True,
+                )
+                self.assertIn("task_id", evidence)
+            reopened = TaskManager(store, workspace_id="project", session_id="plain-plan")
+            pending = reopened.recover()
+            self.assertEqual(len(pending), 2)
+            self.assertEqual({task["status"] for task in reopened.tasks}, {"pending", "succeeded"})
+            for action, args in receipts[2:]:
+                evidence = reopened.record_evidence(
+                    action=action, args=args, result="verified", success=True,
+                )
+                self.assertIn("task_id", evidence)
+            self.assertEqual({task["status"] for task in reopened.tasks}, {"succeeded"})
+            self.assertTrue(all(len(task["evidence"]) == 1 for task in reopened.tasks))
+
+            grouped = TaskManager(store, workspace_id="project", session_id="grouped")
+            grouped.from_llm_block(
+                "TaskList:\n```json\n[\"Inspect the repository\", \"Write the README\"]\n```"
+            )
+            grouped.record_evidence(action="list_dir", args=".", result="verified", success=True)
+            grouped.record_evidence(action="read_file", args="README.md", result="verified", success=True)
+            self.assertEqual(grouped.tasks[0]["status"], "succeeded")
+            self.assertEqual(len(grouped.tasks[0]["evidence"]), 2)
+            self.assertEqual(grouped.tasks[1]["status"], "pending")
+
+            unmatched = TaskManager(store, workspace_id="project", session_id="unmatched")
+            unmatched.from_llm_block(
+                "TaskList:\n```json\n[\"Read the README\", \"Write the README\"]\n```"
+            )
+            evidence = unmatched.record_evidence(
+                action="git_commit", args="unrelated", result="verified", success=True,
+            )
+            self.assertNotIn("task_id", evidence)
+            self.assertIn("unmatched_reason", evidence)
+            self.assertEqual([task["status"] for task in unmatched.tasks], ["pending", "pending"])
+
+            mismatch = TaskManager(store, workspace_id="project", session_id="mismatch")
+            mismatch.from_llm_block(
+                "TaskList:\n```json\n[\"Write the file\", \"Run the tests\"]\n```"
+            )
+            evidence = mismatch.record_evidence(
+                action="read_file", args="README.md", result="verified", success=True,
+            )
+            self.assertNotIn("task_id", evidence)
+            self.assertEqual([task["status"] for task in mismatch.tasks], ["pending", "pending"])
+
+    def test_cli_plain_string_plan_completes_verified_work_without_taskdone(self):
+        class StubLearning:
+            def feedback_signal(self, _text):
+                return None
+
+            def route_profile(self, _text, _profile=None):
+                return "coder"
+
+            def begin_run(self, profile, _task, provider_model=None):
+                return {"run_id": "plain-cli-run", "profile": profile, "provider_model": provider_model}
+
+            def artifact_context(self, _run):
+                return "", []
+
+        responses = [
+            "Plan:\n1. Inspect the repository status\n2. Create the audit file\n"
+            "3. Run the test suite\n4. Stage the audit file\n5. Commit the audit file\n"
+            "TaskList:\n" + "```json\n"
+            '["Inspect the repository status", "Create the audit file", "Run the test suite", '
+            '"Stage the audit file", "Commit the audit file"]\n' + "```\n"
+            'Action: {"action":"git_status","args":"."}',
+            'Action: {"action":"write_file","args":"audit-plain.txt|PLAIN_OK"}',
+            'Action: {"action":"run_cmd","args":"python -c pass"}',
+            'Action: {"action":"git_add","args":"audit-plain.txt"}',
+            'Action: {"action":"git_commit","args":"audit: plain plan"}',
+            "Committed the plain-string plan.",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "OpenKyrozen Test"], cwd=root, check=True)
+            store = MemoryBank(root / "state.sqlite3").store
+            original_root = main._get_workspace_root()
+            original_tasks = main.tasks
+            original_learning = main.learning_engine
+            main._set_workspace_root(root)
+            main.tasks = TaskManager(store, workspace_id="project", session_id="plain-cli")
+            main.learning_engine = StubLearning()
+            try:
+                with patch.object(main, "_classify_complexity", return_value="complex"), \
+                     patch.object(main, "_build_messages", return_value=[]), \
+                     patch.object(main, "_build_memory_context", return_value=""), \
+                     patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
+                     patch.object(main, "_get_llm_response", return_value=""), \
+                     patch.object(main, "_update_tasks_panel"), \
+                     patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
+                                  result, records, tokens, started: result):
+                    reply = main._chat_turn("Create and commit the audit file.", clear_tasks=True)
+            finally:
+                main._set_workspace_root(original_root)
+                main.tasks = original_tasks
+                main.learning_engine = original_learning
+
+            rows = store.list_tasks(workspace_id="project", session_id="plain-cli")
+            self.assertEqual(len(rows), 5)
+            self.assertEqual({row["status"] for row in rows}, {"succeeded"})
+            self.assertEqual((root / "audit-plain.txt").read_text(encoding="utf-8"), "PLAIN_OK")
+            self.assertIn("audit: plain plan", subprocess.run(
+                ["git", "log", "-1", "--pretty=%s"], cwd=root,
+                capture_output=True, text=True, check=True,
+            ).stdout)
+            self.assertIn("plain-string plan", reply)
+
     def test_web_natural_plan_receipts_match_and_survive_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
