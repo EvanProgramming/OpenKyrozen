@@ -487,6 +487,22 @@ class TaskConsistencyTests(unittest.TestCase):
         self.assertEqual(malformed["tool_calls"], [])
         self.assertIn("No tool was executed", malformed["protocol_error"])
 
+    def test_tool_names_in_prose_are_not_filtered_or_executed(self):
+        prose = (
+            "Use run_cmd: to execute a command.\n"
+            "The tool name is read_file: and it reads text.\n"
+            "For example, browser_open: accepts a URL.\n"
+            "The following is a label, not a call: write_file: README.md\n"
+            "Use plan: for a project plan.\n"
+            "工具名称是 read_file:，用于读取文本。\n"
+            "run_cmd: is a shell command tool."
+        )
+        self.assertEqual(main.DeepSeekDSMLFilter().feed(prose, final=True), prose)
+        self.assertEqual(main._clean_final_response(prose), prose)
+        parsed = main._parse_model_response(prose)
+        self.assertEqual(parsed["tool_calls"], [])
+        self.assertIsNone(parsed["protocol_error"])
+
     def test_malformed_unwrapped_alias_stops_without_retrying_or_executing(self):
         class StubLearning:
             def feedback_signal(self, _text):

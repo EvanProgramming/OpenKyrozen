@@ -91,6 +91,22 @@ class _ProsePrefixedAliasProvider:
         )
 
 
+class _ToolNameProseProvider:
+    config = ProviderConfig(provider="deepseek", model_simple="deepseek-v4-flash")
+
+    def chat_stream(self, _messages, _model=None):
+        # Tool names in explanations and examples are ordinary user-facing prose.
+        yield from (
+            "Use run_cmd: to execute a command.\n",
+            "The tool name is read_file: and it reads text.\n",
+            "For example, browser_open: accepts a URL.\n",
+            "The following is a label, not a call: write_file: README.md\n",
+            "Use plan: for a project plan.\n",
+            "工具名称是 read_file:，用于读取文本。\n",
+            "run_cmd: is a shell command tool.",
+        )
+
+
 class StreamingEndpointTests(unittest.TestCase):
     def test_first_sse_content_arrives_before_provider_stream_completes(self):
         session_id = "stream-timing-regression"
@@ -297,6 +313,53 @@ class StreamingEndpointTests(unittest.TestCase):
                 ) if event["payload"].get("role") == "assistant"
             ]
             self.assertEqual(assistant_messages[-1]["content"], main._clean_final_response(content))
+
+    def test_tool_name_prose_survives_sse_and_persistence(self):
+        session_id = "stream-tool-name-prose-regression"
+        provider = _ToolNameProseProvider()
+
+        async def exercise():
+            response = await server.api_chat_stream(_Request({
+                "message": "explain the tools", "session_id": session_id,
+            }))
+            iterator = response.body_iterator.__aiter__()
+            frames = []
+            try:
+                while True:
+                    frames.append(await asyncio.wait_for(anext(iterator), timeout=2))
+            except StopAsyncIteration:
+                return frames
+
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-tool-name-prose-") as directory:
+            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="tool-name-prose-test")
+            original_sessions = server._sessions
+            server._sessions = {}
+            try:
+                with (patch.object(server._agent, "memory_bank", memory),
+                      patch.object(server._agent, "llm_provider", provider),
+                      patch.object(server._agent, "DEEPSEEK_MODEL", "deepseek-v4-flash"),
+                      patch.object(server._agent, "_chat_turn", side_effect=lambda message, **_: (
+                          main._call_llm_with_spinner([{"role": "user", "content": message}])
+                      ))):
+                    frames = asyncio.run(exercise())
+            finally:
+                server._sessions = original_sessions
+
+            def text(item):
+                return item.decode() if isinstance(item, bytes) else item
+
+            payloads = [json.loads(text(frame).split("data: ", 1)[1].splitlines()[0])
+                        for frame in frames
+                        if text(frame).startswith("data: ") and text(frame) != "data: [DONE]\n\n"]
+            content = "".join(item["chunk"] for item in payloads if item.get("event") == "content")
+            expected = "".join(provider.chat_stream([], None))
+            self.assertEqual(content, expected)
+            assistant_messages = [
+                event["payload"] for event in memory.store.list_events(
+                    "session.message", workspace_id="tool-name-prose-test", session_id=session_id,
+                ) if event["payload"].get("role") == "assistant"
+            ]
+            self.assertEqual(assistant_messages[-1]["content"], expected)
 
 
 if __name__ == "__main__":
