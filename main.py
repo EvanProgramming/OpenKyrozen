@@ -3930,6 +3930,7 @@ class DeepSeekDSMLFilter:
         r"</\s*(?P<kind>invoke|parameter|calls|tool_calls|function_calls)\s*>",
         re.IGNORECASE,
     )
+    _GENERIC_KINDS = ("invoke", "parameter", "calls", "tool_calls", "function_calls")
     _ACTION_MARKER_RE = _ACTION_MARKER_RE
     _CONTROL_PREFIXES = tuple(
         item[:length].lower()
@@ -3966,6 +3967,21 @@ class DeepSeekDSMLFilter:
 
     @classmethod
     def _control_partial_suffix_length(cls, value: str) -> int:
+        start = value.rfind("<")
+        if start >= 0:
+            suffix = value[start:]
+            if ">" not in suffix:
+                remainder = suffix[1:]
+                if remainder.startswith("/"):
+                    remainder = remainder[1:]
+                remainder = remainder.lstrip()
+                if not remainder:
+                    return len(suffix)
+                name_match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", remainder)
+                if name_match:
+                    name = name_match.group(0).lower()
+                    if any(kind.startswith(name) for kind in cls._GENERIC_KINDS):
+                        return len(suffix)
         lowered = value.lower()
         for length in range(min(len(value), max(map(len, cls._CONTROL_PREFIXES))), 0, -1):
             if lowered[-length:] in cls._CONTROL_PREFIXES:
