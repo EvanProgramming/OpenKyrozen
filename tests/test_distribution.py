@@ -92,6 +92,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("release_version='2.0.2'", text)
         self.assertIn("releases/download", text)
         self.assertIn("--with fastapi --with uvicorn", text)
+        self.assertIn("--no-cache", text)
         self.assertNotIn("pypi.org", text)
         self.assertIn("installed_version=", text)
 
@@ -117,6 +118,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("v2.0.2", text)
         self.assertIn("releases/download", text)
         self.assertIn("--with fastapi --with uvicorn", text)
+        self.assertIn("--no-cache", text)
         self.assertNotIn("pypi.org", text)
         powershell = shutil.which("pwsh") or shutil.which("powershell")
         if powershell is None:
@@ -128,6 +130,56 @@ class DistributionTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_posix_installer_retries_with_uncached_uv_install(self):
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as bin_dir:
+            home_path = Path(home)
+            bin_path = Path(bin_dir)
+            log_path = home_path / "uv.log"
+            uv_path = bin_path / "uv"
+            uv_path.write_text(
+                r"""#!/bin/sh
+printf '%s\n' "$*" >> "$UV_TEST_LOG"
+if [ "$1" = "python" ] && [ "$2" = "find" ]; then
+    exit 0
+fi
+if [ "$1" = "tool" ] && [ "$2" = "install" ]; then
+    exit 1
+fi
+if [ "$1" = "--no-cache" ] && [ "$2" = "tool" ] && [ "$3" = "install" ]; then
+    mkdir -p "$HOME/.local/bin"
+    printf '%s\n' '#!/bin/sh' 'if [ "$1" = "--version" ]; then printf "%s\n" "OpenKyrozen 2.0.2"; fi' > "$HOME/.local/bin/kyrozen"
+    chmod +x "$HOME/.local/bin/kyrozen"
+    exit 0
+fi
+exit 0
+""",
+                encoding="utf-8",
+            )
+            curl_path = bin_path / "curl"
+            curl_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            os.chmod(uv_path, 0o755)
+            os.chmod(curl_path, 0o755)
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(home_path),
+                "PATH": f"{bin_path}:{env.get('PATH', '')}",
+                "SHELL": "/bin/sh",
+                "UV_TEST_LOG": str(log_path),
+            })
+            result = subprocess.run(
+                ["sh", str(ROOT / "install.sh")],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            install_calls = [
+                line for line in log_path.read_text(encoding="utf-8").splitlines()
+                if "tool install" in line
+            ]
+            self.assertEqual(len(install_calls), 2)
+            self.assertTrue(install_calls[0].startswith("tool install "))
+            self.assertTrue(install_calls[1].startswith("--no-cache tool install "))
+            self.assertIn("Installation complete.", result.stdout)
 
     def test_cli_and_web_help_version_flags_work_without_provider_setup(self):
         with tempfile.TemporaryDirectory() as home:
@@ -194,6 +246,25 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("fastapi", command)
         self.assertIn("uvicorn", command)
         self.assertTrue(command[-1].endswith("/v2.0.2/openkyrozen-2.0.2-py3-none-any.whl"))
+
+    def test_update_retries_without_uv_cache_after_install_failure(self):
+        import main
+
+        failed = subprocess.CompletedProcess(
+            ["uv", "tool", "install"], 1, stdout="", stderr="missing archive",
+        )
+        completed = subprocess.CompletedProcess(
+            ["uv", "--no-cache", "tool", "install"], 0, stdout="upgraded", stderr="",
+        )
+        with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
+             patch("main.subprocess.run", side_effect=[failed, completed]) as run:
+            result = main._self_update()
+        self.assertIn("upgraded", result)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(
+            run.call_args_list[1].args[0][:3],
+            ["uv", "--no-cache", "tool"],
+        )
 
     def test_docker_starts_server_in_explicit_project_mode(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
