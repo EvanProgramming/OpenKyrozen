@@ -8,7 +8,7 @@ fail() { printf '%s\n' "[ERROR] $*" >&2; exit 1; }
 printf '%s\n' 'OPENKYROZEN' 'OpenKyrozen computer-native installer'
 printf '\n'
 
-release_version='2.0.2'
+release_version='2.0.3'
 release_tag="v$release_version"
 release_wheel_url="https://github.com/EvanProgramming/OpenKyrozen/releases/download/$release_tag/openkyrozen-$release_version-py3-none-any.whl"
 
