@@ -95,6 +95,14 @@ class DistributionTests(unittest.TestCase):
         self.assertNotIn("pypi.org", text)
         self.assertIn("installed_version=", text)
 
+    def test_installers_use_plain_canonical_banner(self):
+        for name in ("install.sh", "install.ps1"):
+            text = (ROOT / name).read_text(encoding="utf-8")
+            with self.subTest(installer=name):
+                self.assertIn("OPENKYROZEN", text)
+                self.assertIn("computer-native installer", text)
+                self.assertNotIn("____", text)
+
     def test_powershell_installer_is_static_safe_and_parses_when_available(self):
         installer = ROOT / "install.ps1"
         text = installer.read_text(encoding="utf-8")
