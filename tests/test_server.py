@@ -275,6 +275,17 @@ class ServerBoundaryTests(unittest.TestCase):
             )
             self.assertEqual(messages, [], session_id)
 
+    def test_pwa_manifest_declares_only_served_icons(self):
+        client = TestClient(server.app)
+        response = client.get("/manifest.json")
+        self.assertEqual(response.status_code, 200, response.text)
+        manifest = response.json()
+        for icon in manifest.get("icons", []):
+            icon_response = client.get(icon["src"])
+            self.assertEqual(icon_response.status_code, 200, icon["src"])
+            self.assertTrue(icon_response.headers["content-type"].startswith(icon["type"]))
+        self.assertNotIn("/static/icon.png", json.dumps(manifest))
+
     def test_ollama_initialization_never_prompts_for_a_key(self):
         original_config = server._agent._provider_config
         original_provider = server._agent.llm_provider

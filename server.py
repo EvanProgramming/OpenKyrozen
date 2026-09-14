@@ -1931,7 +1931,6 @@ async def pwa_manifest():
         "display": "standalone",
         "background_color": "#0d1117",
         "theme_color": "#00f0ff",
-        "icons": [{"src": "/static/icon.png", "sizes": "192x192", "type": "image/png"}]
     }
 
 
