@@ -85,6 +85,13 @@ if (-not $pythonVersion) {
 
 Write-Output "[INFO] Installing OpenKyrozen $releaseTag from its immutable GitHub release with Python $pythonVersion..."
 & $uvCommand.Source tool install --python $pythonVersion --force --with fastapi --with uvicorn $releaseWheelUrl
+if ($LASTEXITCODE -ne 0) {
+    Write-Output "[INFO] uv cache was incomplete; retrying without the existing cache..."
+    & $uvCommand.Source --no-cache tool install --python $pythonVersion --force --with fastapi --with uvicorn $releaseWheelUrl
+}
+if ($LASTEXITCODE -ne 0) {
+    Fail "OpenKyrozen installation failed from release $releaseTag."
+}
 try { & $uvCommand.Source tool update-shell *> $null } catch { }
 
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")

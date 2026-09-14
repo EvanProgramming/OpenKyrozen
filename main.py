@@ -1287,14 +1287,26 @@ def _self_update() -> str:
         f"{sys.version_info.major}.{sys.version_info.minor}"
         if sys.version_info[:2] in {(3, 12), (3, 13)} else "3.12"
     )
+    command = [
+        "uv", "tool", "install", "--python", requested_python, "--force",
+        "--with", "fastapi", "--with", "uvicorn", RELEASE_WHEEL_URL,
+    ]
     try:
         result = subprocess.run(
-            ["uv", "tool", "install", "--python", requested_python, "--force",
-             "--with", "fastapi", "--with", "uvicorn", RELEASE_WHEEL_URL],
+            command,
             capture_output=True,
             text=True,
             timeout=60,
         )
+        if result.returncode != 0:
+            retry = subprocess.run(
+                ["uv", "--no-cache", *command[1:]],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if retry.returncode == 0:
+                result = retry
         out = result.stdout.strip() or ""
         err = result.stderr.strip() or ""
         if result.returncode != 0:

@@ -70,8 +70,14 @@ else
 fi
 
 info "Installing OpenKyrozen $release_tag from its immutable GitHub release with Python $python_version..."
-"$uv_bin" tool install --python "$python_version" --force \
-  --with fastapi --with uvicorn "$release_wheel_url"
+install_openkyrozen() {
+    "$uv_bin" "$@" tool install --python "$python_version" --force \
+      --with fastapi --with uvicorn "$release_wheel_url"
+}
+if ! install_openkyrozen; then
+    info 'uv cache was incomplete; retrying without the existing cache...'
+    install_openkyrozen --no-cache
+fi
 "$uv_bin" tool update-shell >/dev/null 2>&1 || true
 
 profile=''
