@@ -224,6 +224,57 @@ class ServerBoundaryTests(unittest.TestCase):
         self.assertEqual(failed.json()["error"], {"code": -32603, "message": "Internal error"})
         self.assertNotIn("must-not-leak", failed.text)
 
+    def test_missing_provider_fails_honestly_across_rest_stream_and_mcp(self):
+        client = TestClient(server.app)
+        sessions = {
+            "rest": "missing-provider-rest",
+            "stream": "missing-provider-stream",
+            "mcp": "missing-provider-mcp",
+        }
+        original_provider = server._agent.llm_provider
+        try:
+            with patch.object(server._agent, "llm_provider", None):
+                rest = client.post("/api/chat", json={
+                    "message": "hello", "session_id": sessions["rest"],
+                })
+                streamed = client.post("/api/chat/stream", json={
+                    "message": "hello", "session_id": sessions["stream"],
+                })
+                mcp = client.post("/mcp", json={
+                    "jsonrpc": "2.0", "id": 93, "method": "chat/send",
+                    "params": {"message": "hello", "session_id": sessions["mcp"]},
+                })
+        finally:
+            server._agent.llm_provider = original_provider
+
+        self.assertEqual(rest.status_code, 503, rest.text)
+        detail = rest.json()["detail"]
+        self.assertEqual(detail["code"], server._agent.PROVIDER_UNAVAILABLE_CODE)
+        self.assertIn("configure", detail["message"])
+        self.assertNotIn("[Error]", rest.text)
+
+        self.assertEqual(streamed.status_code, 200, streamed.text)
+        self.assertEqual(streamed.text.count('"event": "error"'), 1)
+        self.assertIn('"code": "provider_unavailable"', streamed.text)
+        self.assertNotIn('"event": "completion"', streamed.text)
+        self.assertNotIn("data: [DONE]", streamed.text)
+
+        self.assertEqual(mcp.status_code, 200, mcp.text)
+        mcp_body = mcp.json()
+        self.assertEqual(mcp_body["error"]["code"], -32002)
+        self.assertEqual(
+            mcp_body["error"]["data"]["code"],
+            server._agent.PROVIDER_UNAVAILABLE_CODE,
+        )
+        self.assertNotIn("result", mcp_body)
+
+        for session_id in sessions.values():
+            messages = server._agent.memory_bank.store.list_events(
+                "session.message", workspace_id=server._agent.memory_bank.workspace_id,
+                session_id=session_id, user_id=server._SERVER_ACTOR_ID,
+            )
+            self.assertEqual(messages, [], session_id)
+
     def test_ollama_initialization_never_prompts_for_a_key(self):
         original_config = server._agent._provider_config
         original_provider = server._agent.llm_provider

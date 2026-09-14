@@ -136,7 +136,7 @@ window.fetch = async (input, init) => {
     'data: {"chunk":"世界"}\n\n',
     'data: {"cost":"Cost: split-stream"}\n\n',
     'data: [DONE]\n\n'
-  ] : ['data: {"error":"mock provider failure"}\n\n'];
+  ] : ['data: {"event":"error","code":"provider_unavailable","error":"No LLM provider is configured. Configure a provider before sending chat."}\n\n'];
   const bytes = new TextEncoder().encode(frames.join(''));
   return new Response(new ReadableStream({
     start(controller) {
@@ -182,7 +182,7 @@ window.fetch = async (input, init) => {
                     page.fill("#user-input", "error boundary")
                     page.click("#send-btn")
                     page.wait_for_function(
-                        "document.querySelectorAll('.msg.assistant .content')[1].textContent.includes('mock provider failure')"
+                        "document.querySelectorAll('.msg.assistant .content')[1].textContent.includes('No LLM provider is configured')"
                     )
                     page.wait_for_function(
                         "document.getElementById('status').textContent === 'Error'"
@@ -190,7 +190,7 @@ window.fetch = async (input, init) => {
                     self.assertEqual(page.locator("#status").text_content(), "Error")
                     self.assertEqual(
                         page.locator(".msg.assistant .content").nth(1).text_content(),
-                        "Error: mock provider failure",
+                        "Error: No LLM provider is configured. Configure a provider before sending chat.",
                     )
                 finally:
                     if browser is not None:

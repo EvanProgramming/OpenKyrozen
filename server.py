@@ -925,6 +925,12 @@ async def api_chat(request: Request):
 
     try:
         reply = _run_session_chat(session, msg)
+    except _agent.ProviderUnavailableError as exc:
+        _audit("ERROR", _agent.PROVIDER_UNAVAILABLE_CODE, session["user_id"])
+        raise HTTPException(
+            status_code=503,
+            detail={"code": _agent.PROVIDER_UNAVAILABLE_CODE, "message": str(exc)},
+        ) from exc
     except Exception as e:
         _audit("ERROR", str(e), session["user_id"])
         raise HTTPException(500, str(e))
@@ -1005,6 +1011,12 @@ async def api_chat_stream(request: Request):
                 events.put({"event": "error", "error": str(reply)})
             else:
                 events.put({"event": "complete", "reply": reply})
+        except _agent.ProviderUnavailableError as exc:
+            events.put({
+                "event": "error",
+                "code": _agent.PROVIDER_UNAVAILABLE_CODE,
+                "error": str(exc),
+            })
         except Exception as exc:
             events.put({"event": "error", "error": str(exc)})
         finally:
@@ -1024,7 +1036,7 @@ async def api_chat_stream(request: Request):
             elif kind == "tasks":
                 yield f"data: {json.dumps({'event': 'tasks', 'tasks': event.get('tasks', [])}, ensure_ascii=False)}\n\n"
             elif kind == "error":
-                yield f"data: {json.dumps({'event': 'error', 'error': event.get('error', 'stream failed')}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'event': 'error', 'code': event.get('code', 'stream_error'), 'error': event.get('error', 'stream failed')}, ensure_ascii=False)}\n\n"
                 break
             elif kind == "complete":
                 reply = str(event.get("reply", ""))
@@ -1723,6 +1735,13 @@ async def mcp_endpoint(request: Request):
         session = _get_or_create_session(session_id, _SERVER_ACTOR_ID)
         try:
             reply = _run_session_chat(session, msg)
+        except _agent.ProviderUnavailableError as exc:
+            return _mcp_error(
+                request_id,
+                -32002,
+                "LLM provider unavailable",
+                {"code": _agent.PROVIDER_UNAVAILABLE_CODE, "message": str(exc)},
+            )
         except Exception as exc:
             _audit("MCP_CHAT_ERROR", type(exc).__name__, _SERVER_ACTOR_ID)
             return _mcp_error(request_id, -32603, "Internal error")
