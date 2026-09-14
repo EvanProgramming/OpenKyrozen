@@ -21,11 +21,7 @@ $releaseWheelUrl = "https://github.com/EvanProgramming/OpenKyrozen/releases/down
 $homeDirectory = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
 
 Write-Output ""
-Write-Output "  ____  ____  _____ _   _ ____  _____ _   _  ____  _   _ "
-Write-Output " / __ \/ __ \/ ____| \ | |  _ \| ____| \ | |/ ___|| | | |"
-Write-Output "| |  | | |  | | |    |  \| | |_) |  _| |  \| | |    | | | |"
-Write-Output "| |__| | |__| | |____| |\  |  __/| |___| |\  | |___ | |_| |"
-Write-Output " \____/\____/ \_____|_| \_|_|   |_____|_| \_|\____| \___/ "
+Write-Output "OPENKYROZEN"
 Write-Output "OpenKyrozen computer-native installer"
 Write-Output ""
 

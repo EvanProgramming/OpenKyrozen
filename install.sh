@@ -5,13 +5,8 @@ set -eu
 info() { printf '%s\n' "[INFO] $*"; }
 fail() { printf '%s\n' "[ERROR] $*" >&2; exit 1; }
 
-printf '%s\n' \
-  '  ____  ____  _____ _   _ ____  _____ _   _  ____  _   _ ' \
-  ' / __ \/ __ \/ ____| \ | |  _ \| ____| \ | |/ ___|| | | |' \
-  '| |  | | |  | | |    |  \| | |_) |  _| |  \| | |    | | | |' \
-  '| |__| | |__| | |____| |\  |  __/| |___| |\  | |___ | |_| |' \
-  ' \____/\____/ \_____|_| \_|_|   |_____|_| \_|\____| \___/ '
-printf '%s\n\n' 'OpenKyrozen computer-native installer'
+printf '%s\n' 'OPENKYROZEN' 'OpenKyrozen computer-native installer'
+printf '\n'
 
 release_version='2.0.2'
 release_tag="v$release_version"
