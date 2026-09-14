@@ -121,6 +121,16 @@ RELEASE_WHEEL_URL = (
     "https://github.com/EvanProgramming/OpenKyrozen/releases/download/"
     f"{RELEASE_TAG}/openkyrozen-{RELEASE_VERSION}-py3-none-any.whl"
 )
+PROVIDER_UNAVAILABLE_CODE = "provider_unavailable"
+PROVIDER_UNAVAILABLE_MESSAGE = (
+    "No LLM provider is configured. Set DEEPSEEK_API_KEY or configure a local provider before sending chat."
+)
+
+
+class ProviderUnavailableError(RuntimeError):
+    """Raised when a chat request reaches the provider boundary unconfigured."""
+
+    code = PROVIDER_UNAVAILABLE_CODE
 
 try:
     __version__ = importlib.metadata.version("openkyrozen")
@@ -3661,7 +3671,7 @@ def _get_llm_response(messages: list[dict[str, str]], model: str | None = None, 
                       on_chunk: Any = None, on_stream_end: Any = None) -> str:
     global _last_prompt_tokens, _last_completion_tokens, _total_prompt_tokens, _total_completion_tokens
     if llm_provider is None:
-        return "[Error] LLM provider not initialised"
+        raise ProviderUnavailableError(PROVIDER_UNAVAILABLE_MESSAGE)
     try:
         with usage_scope(
                 store=memory_bank.store, user_id=memory_bank.user_id,
