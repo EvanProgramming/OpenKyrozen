@@ -167,7 +167,7 @@ Kyrozen 会：
 | `/api_key` | 更改 API 密钥 |
 | `/learn` | 立即扫描项目文件存入记忆 |
 | `/forget` | 查看最近的学习记录；`/forget 关键词` 删除错误学习 |
-| `/update` | 重新安装固定的 GitHub `v2.0.3` 发布 wheel（不会向项目执行 git pull） |
+| `/update` | 使用固定的 GitHub `v2.0.3` wheel 就地更新已安装工具；成功后重启 Kyrozen（不会向项目执行 git pull） |
 | `/self-learning` | 开关各项自学习功能 |
 
 ### Web UI 模式

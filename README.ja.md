@@ -171,7 +171,7 @@ Kyrozen は：
 | `/api_key` | API キーを変更 |
 | `/learn` | プロジェクトファイルを即座にメモリにスキャン |
 | `/forget` | 最近の学習を表示；`/forget キーワード` で誤った学習を削除 |
-| `/update` | 固定された GitHub `v2.0.3` リリース wheel を再インストール（プロジェクトへ git pull しない） |
+| `/update` | 固定された GitHub `v2.0.3` wheel でインストール済みツールを更新；成功後に Kyrozen を再起動（プロジェクトへ git pull しない） |
 | `/self-learning` | 個別の自己学習機能をオン/オフ |
 
 ### Web UI モード

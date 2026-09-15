@@ -1297,7 +1297,8 @@ def _load_project_files_into_memory(*, force: bool = False) -> None:
 
 def _self_update() -> str:
     """Upgrade the installed package without touching the active project."""
-    if shutil.which("uv") is None:
+    uv_path = shutil.which("uv")
+    if uv_path is None:
         return (
             "OpenKyrozen is package-managed. Install or update it with the official "
             f"{RELEASE_TAG} installer (uv is required)."
@@ -1307,7 +1308,7 @@ def _self_update() -> str:
         if sys.version_info[:2] in {(3, 12), (3, 13)} else "3.12"
     )
     command = [
-        "uv", "tool", "install", "--python", requested_python, "--force",
+        uv_path, "tool", "install", "--python", requested_python, "--force",
         "--with", "fastapi", "--with", "uvicorn", RELEASE_WHEEL_URL,
     ]
     try:
@@ -1319,18 +1320,25 @@ def _self_update() -> str:
         )
         if result.returncode != 0:
             retry = subprocess.run(
-                ["uv", "--no-cache", *command[1:]],
+                [uv_path, "--no-cache", *command[1:]],
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
-            if retry.returncode == 0:
-                result = retry
+            result = retry
         out = result.stdout.strip() or ""
         err = result.stderr.strip() or ""
+        diagnostics = "\n".join(part for part in (out, err) if part)
         if result.returncode != 0:
-            return f"Update failed:\n{err}"
-        return f"Updated OpenKyrozen from GitHub release {RELEASE_TAG}:\n{out}"
+            return (
+                f"Update failed (uv exit {result.returncode}):\n"
+                f"{diagnostics or 'uv returned no diagnostics.'}"
+            )
+        return (
+            f"Updated OpenKyrozen from GitHub release {RELEASE_TAG}:\n"
+            f"{diagnostics or 'uv completed successfully.'}\n"
+            "Restart kyrozen to use the updated process."
+        )
     except subprocess.TimeoutExpired:
         return "Update timed out."
     except FileNotFoundError:
