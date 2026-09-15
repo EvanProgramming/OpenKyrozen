@@ -495,41 +495,38 @@ CHAT_HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OpenKyrozen Chat</title>
 <style>
+:root{color-scheme:dark;--ink:#050608;--surface:#11161b;--surface-hi:#1a2229;--line:#33414b;--text:#f4f7f9;--muted:#93a0aa;--brand:#00f0ff;--success:#61d095;--warning:#e8ae5b;--error:#f2788f}
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d1117;color:#c9d1d9;height:100vh;display:flex;flex-direction:column}
-header{background:#161b22;padding:12px 20px;border-bottom:1px solid #30363d;display:flex;align-items:center;gap:12px}
-header h1{font-size:18px;color:#00f0ff}
-header span{font-size:12px;color:#8b949e}
-#session-controls{background:#161b22;border-bottom:1px solid #30363d;display:flex;align-items:center;gap:8px;padding:8px 20px}
-#session-controls label,#session-limit{font-size:12px;color:#8b949e}
-#session-select{min-width:190px;max-width:45vw;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;padding:7px}
-#session-select:focus{outline:none;border-color:#00f0ff}
-#new-session{padding:7px 12px;font-size:12px}
+html,body{min-height:100%;background:var(--ink)}
+body{font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--ink);color:var(--text);min-height:100dvh;display:flex;flex-direction:column;line-height:1.45}
+header{background:var(--surface);padding:16px clamp(16px,4vw,48px);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+header h1{font-size:clamp(18px,2vw,24px);letter-spacing:.04em;color:var(--brand)}
+header span{font-size:12px;color:var(--muted)}
+#session-controls,#auth-controls{background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;padding:10px clamp(16px,4vw,48px);flex-wrap:wrap}
+#session-controls label,#session-limit,#auth-controls label,#auth-status{font-size:12px;color:var(--muted)}
+#session-select,#server-token{min-width:190px;max-width:100%;background:var(--ink);border:1px solid var(--line);border-radius:7px;color:var(--text);padding:8px}
+#server-token{min-width:220px}
 #session-limit{margin-left:auto}
-#auth-controls{background:#161b22;border-bottom:1px solid #30363d;padding:8px 20px;display:flex;align-items:center;gap:8px}
 #auth-controls[hidden]{display:none}
-#auth-controls label,#auth-status{font-size:12px;color:#8b949e}
-#server-token{min-width:220px;max-width:45vw;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;padding:7px}
-#server-token:focus{outline:none;border-color:#00f0ff}
-#authenticate{padding:7px 12px;font-size:12px}
-#auth-status.error{color:#ff4466}
-#chat{flex:1;overflow-y:auto;padding:20px}
-.msg{margin-bottom:16px;max-width:85%}
+#chat{flex:1;overflow-y:auto;width:min(100%,1120px);margin:0 auto;padding:clamp(20px,5vw,52px) clamp(16px,4vw,48px);scroll-behavior:smooth}
+#chat:empty::before{content:'Start a conversation or type / for commands.';display:block;color:var(--muted);text-align:center;padding:12vh 0}
+.msg{margin-bottom:22px;max-width:min(88%,860px)}
 .msg.user{margin-left:auto}
-.msg .role{font-size:11px;color:#8b949e;margin-bottom:4px}
-.msg .content{background:#161b22;padding:12px 16px;border-radius:8px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
-.msg.user .content{background:#1f6feb22;border:1px solid #1f6feb44}
-.msg.assistant .content{background:#161b22;border:1px solid #30363d}
-.msg.thinking .content{background:#1a1a2e;border:1px solid #00f0ff22;color:#8b949e;font-style:italic}
-#input-area{background:#161b22;padding:16px 20px;border-top:1px solid #30363d;display:flex;gap:12px}
-#user-input{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px;color:#c9d1d9;font-size:14px;resize:none;min-height:44px;max-height:120px}
-#user-input:focus{outline:none;border-color:#00f0ff}
-button{background:#00f0ff;color:#0d1117;border:none;border-radius:8px;padding:12px 20px;font-weight:600;cursor:pointer;transition:opacity .2s}
-button:hover{opacity:.8}
-button:disabled{opacity:.4;cursor:default}
-#status{font-size:11px;color:#8b949e;text-align:center;padding:4px}
-.cost{font-size:11px;color:#00ff88}
-.error{color:#ff4466}
+.msg .role{font-size:11px;letter-spacing:.08em;color:var(--muted);margin-bottom:6px}
+.msg .content{background:var(--surface);border:1px solid var(--line);padding:14px 17px;border-radius:10px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.msg.user .content{background:var(--surface-hi);border-color:#5b6b76;color:var(--text)}
+.msg.thinking .content{background:#17191c;border-color:#6d5836;color:var(--warning);font-style:italic}
+#input-area{background:var(--surface);padding:16px clamp(16px,4vw,48px) 12px;border-top:1px solid var(--line);display:flex;gap:12px;width:100%}
+#user-input{flex:1;background:var(--ink);border:1px solid var(--line);border-radius:9px;padding:12px;color:var(--text);font-size:15px;resize:none;min-height:48px;max-height:160px}
+button{background:var(--text);color:var(--ink);border:1px solid var(--text);border-radius:8px;padding:10px 16px;font-weight:700;cursor:pointer;transition:background .15s,color .15s,opacity .15s}
+button:hover{background:var(--brand);border-color:var(--brand)}
+button:disabled{opacity:.45;cursor:default}
+:is(button,input,select,textarea):focus-visible{outline:3px solid var(--brand);outline-offset:2px}
+#status{font-size:12px;color:var(--muted);text-align:center;padding:6px 16px 12px;background:var(--surface)}
+.cost{font-size:11px;color:var(--success)}
+.error{color:var(--error)}
+@media(max-width:640px){#session-limit{width:100%;margin-left:0}.msg{max-width:100%}#input-area{align-items:stretch}#input-area button{padding:10px 12px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
 </style>
 </head>
 <body>
@@ -551,7 +548,7 @@ button:disabled{opacity:.4;cursor:default}
   <button type="button" id="authenticate">Authenticate</button>
   <span id="auth-status" role="alert"></span>
 </div>
-<div id="chat"></div>
+<div id="chat" aria-live="polite" aria-label="Conversation"></div>
 <div id="input-area">
   <textarea id="user-input" placeholder="Type your message..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}"></textarea>
   <button onclick="sendMessage()" id="send-btn">Send</button>
@@ -1929,7 +1926,7 @@ async def pwa_manifest():
         "short_name": "Kyrozen",
         "start_url": "/",
         "display": "standalone",
-        "background_color": "#0d1117",
+        "background_color": "#050608",
         "theme_color": "#00f0ff",
     }
 

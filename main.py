@@ -363,12 +363,20 @@ def _record_tool_approval(action: str, decision: str, args: str = "") -> None:
 
 def _confirm_tool_action(action: str, args: str = "") -> bool:
     """Confirm high-impact local CLI actions while keeping normal tools frictionless."""
-    if action not in _APPROVAL_REQUIRED_TOOLS or _EXECUTION_SURFACE != "cli":
+    if action not in _APPROVAL_REQUIRED_TOOLS or _EXECUTION_SURFACE not in {"cli", "tui"}:
         return True
     mode = os.environ.get("KYROZEN_APPROVAL_MODE", "dangerous").strip().lower()
     if mode in {"never", "none", "off"}:
         _record_tool_approval(action, "approved", args)
         return True
+    callback = _approval_callback.get()
+    if callable(callback):
+        try:
+            approved = bool(callback(action, args))
+        except Exception:
+            approved = False
+        _record_tool_approval(action, "approved" if approved else "denied", args)
+        return approved
     if not sys.stdin.isatty():
         _record_tool_approval(action, "denied_noninteractive", args)
         return False
@@ -578,6 +586,7 @@ _last_prompt_tokens: int = 0
 _last_completion_tokens: int = 0
 _active_usage_run_id: ContextVar[str | None] = ContextVar("active_usage_run_id", default=None)
 _stream_event_callback: ContextVar[Any] = ContextVar("stream_event_callback", default=None)
+_approval_callback: ContextVar[Any] = ContextVar("approval_callback", default=None)
 _turn_cost_log: list[dict] = []  # {"tokens":int, "time":float, "tool_calls":int}
 
 
@@ -5858,20 +5867,6 @@ def _print_banner(config: ProviderConfig | None = None) -> None:
     fallback_status = ""
     if fallback_names:
         fallback_status = f"  {_DOT}  Fallbacks available: {', '.join(name.title() for name in fallback_names)}"
-    _ascii = [
-        r"  ____  _____  ______ _   _   _  ____     _______   ____ ____________ _   _ ",
-        r" / __ \|  __ \|  ____| \ | | | |/ /\ \   / /  __ \ / __ \___  /  ____| \ | |",
-        r"| |  | | |__) | |__  |  \| | | ' /  \ \_/ /| |__) | |  | | / /| |__  |  \| |",
-        r"| |  | |  ___/|  __| | . ` | |  <    \   / |  _  /| |  | |/ / |  __| | . ` |",
-        r"| |__| | |    | |____| |\  | | . \    | |  | | \ \| |__| / /__| |____| |\  |",
-        r" \____/|_|    |______|_| \_| |_|\_\   |_|  |_|  \_\\____/_____|______|_| \_|",
-    ]
-    for ln in _ascii:
-        console.print(f"  [{_ACCENT}]{ln}[/{_ACCENT}]")
-    console.print(
-        f"  [{_MUTED}]self{_NBHYPHEN}learning AI agent  {_DOT}  "
-        f"{provider_name}  {_DOT}  {model_name}{fallback_status}[/{_MUTED}]"
-    )
     # Platform tag
     if _IS_WINDOWS:
         platform_tag = "Windows"
@@ -5881,7 +5876,14 @@ def _print_banner(config: ProviderConfig | None = None) -> None:
         platform_tag = "Linux"
     else:
         platform_tag = _PLATFORM
-    console.print(f"  [{_MUTED}]Platform: {platform_tag} {_DOT} Python {sys.version_info.major}.{sys.version_info.minor}[/{_MUTED}]")
+    banner = (
+        f"[bold white]OPEN[/bold white][bold {_ACCENT}]KYROZEN[/bold {_ACCENT}]\n"
+        f"[{_MUTED}]self{_NBHYPHEN}learning AI agent  {_DOT}  "
+        f"{provider_name}  {_DOT}  {model_name}{fallback_status}[/{_MUTED}]\n"
+        f"[{_MUTED}]Platform: {platform_tag} {_DOT} Python "
+        f"{sys.version_info.major}.{sys.version_info.minor}[/{_MUTED}]"
+    )
+    console.print(Panel(banner, border_style=_ACCENT_DIM, padding=(1, 2), expand=False))
 
 
 def _run_recovered_tasks(*, max_tasks: int = 20) -> list[dict[str, Any]]:

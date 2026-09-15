@@ -1,14 +1,10 @@
 @echo off
-REM ============================================================
-REM  OpenKyrozen — Windows Setup
-REM  Creates a Python virtual environment and installs dependencies.
-REM ============================================================
+REM OpenKyrozen development setup: Python backend plus optional Bubble Tea UI.
 
 setlocal enabledelayedexpansion
 
-echo ============================================================
-echo  OpenKyrozen Windows Setup
-echo ============================================================
+echo OPENKYROZEN
+echo OpenKyrozen computer-native development setup
 echo.
 
 REM --- Find a working Python 3.12 (preferred) or 3.13 ---
@@ -44,12 +40,37 @@ REM --- Activate and install ---
 call venv\Scripts\activate.bat
 echo [INFO] Upgrading pip...
 python -m pip install --upgrade pip -q
-echo [INFO] Installing requirements...
-pip install -r requirements.txt -q
+echo [INFO] Installing the Python backend and web dependencies...
+pip install -e ".[web]" -q
+if errorlevel 1 (
+    echo [ERROR] Python dependencies could not be installed.
+    pause
+    exit /b 1
+)
+if exist "%ProgramFiles%\Go\bin\go.exe" (
+    set "GO=%ProgramFiles%\Go\bin\go.exe"
+) else (
+    where go >nul 2>nul && set "GO=go"
+)
+if defined GO (
+    echo [INFO] Building the Bubble Tea terminal UI...
+    if not exist "%USERPROFILE%\.kyrozen\bin" mkdir "%USERPROFILE%\.kyrozen\bin"
+    set "TUI_OUTPUT=%TEMP%\openkyrozen-tui-%RANDOM%.exe"
+    pushd tui
+    "%GO%" build -trimpath -o "!TUI_OUTPUT!" .
+    if errorlevel 1 (
+        echo [WARN] TUI build failed; kyrozen will use the Rich fallback.
+    ) else (
+        move /y "!TUI_OUTPUT!" "%USERPROFILE%\.kyrozen\bin\openkyrozen-tui.exe" >nul
+    )
+    popd
+    if exist "!TUI_OUTPUT!" del /q "!TUI_OUTPUT!"
+) else (
+    echo [INFO] Go was not found; the installed launcher will use the Rich fallback.
+    echo        The one-line installer can provision Go automatically.
+)
 echo.
-echo ============================================================
-echo  Setup complete. Run 'run.bat' to start OpenKyrozen.
-echo ============================================================
+echo Setup complete. Run run.bat to start OpenKyrozen.
 pause
 exit /b 0
 

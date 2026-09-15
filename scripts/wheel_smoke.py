@@ -22,7 +22,7 @@ def _run(command: list[str], *, cwd: Path, env: dict[str, str], input_text: str 
         input=input_text,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=300,
         check=False,
     )
     if result.returncode:

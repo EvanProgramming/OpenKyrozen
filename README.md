@@ -76,6 +76,7 @@ Think of it as an AI teammate that gets smarter every time you use it.
 ### Prerequisites
 
 - The installer provisions **Python 3.12** by default and accepts Python **3.13**. Python 3.14+ is intentionally unsupported because of a known OpenAI SDK import issue.
+- Go is not required beforehand: the installer reuses a compatible Go toolchain or downloads the pinned official Go 1.27.1 archive with SHA-256 verification to build the terminal UI in `~/.kyrozen/bin`.
 - An API key from any supported provider:
 
 | Provider | Get a key | Cost |
@@ -100,7 +101,7 @@ On Windows PowerShell:
 irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.3/install.ps1 | iex
 ```
 
-The installer fetches the immutable `v2.0.3` GitHub release wheel, checks the operating system, architecture, Python, network, and writable user paths; installs `uv` when needed; provisions the Web dependencies in an isolated `uv` tool environment; retries once with `uv --no-cache` if an incomplete local cache is encountered; creates private `~/.kyrozen` state directories; and verifies `kyrozen --version` and `kyrozen --help`. It never reads, prints, or uploads API keys. The first `kyrozen` launch guides provider setup.
+The installer fetches the immutable `v2.0.3` GitHub release wheel and checksum-verified TUI source asset, checks the operating system, architecture, Python, network, and writable user paths; installs `uv` when needed; provisions the Web dependencies in an isolated `uv` tool environment; reuses or installs Go 1.27.1 locally; builds the Bubble Tea binary atomically; retries once with `uv --no-cache` if an incomplete local cache is encountered; creates private `~/.kyrozen` state directories; and verifies `kyrozen --version` and `kyrozen --help`. If the TUI asset or build is unavailable, `kyrozen` clearly falls back to the Rich recovery interface. It never reads, prints, or uploads API keys. The first `kyrozen` launch guides provider setup.
 
 ### Development-only source checkout
 
@@ -139,7 +140,7 @@ The v2.0.3 release wheel was built and validated by GitHub Actions; see the [v2.
 
 ### Terminal mode
 
-Once launched, you'll see the banner and a `You:` prompt. Type naturally — the agent understands plain English (and Chinese, Japanese, Korean).
+Once launched, `kyrozen` opens a full-screen Bubble Tea interface with an animated OpenKyrozen banner, high-contrast black background, white text, slate panels, streamed responses, and a responsive task panel. Type naturally — the agent understands plain English (and Chinese, Japanese, Korean). The direct `python main.py` command remains the Rich recovery/development entry point.
 
 Bare `kyrozen` always uses the persistent global workspace at
 `~/.kyrozen/workspace`; changing directories does not switch projects. Use
@@ -164,6 +165,8 @@ Kyrozen will:
 6. Summarize what was done
 
 ### In-chat commands
+
+Type `/` as the first non-whitespace character to open the command palette. It filters as you type; use Up/Down, Enter, Tab, or Esc. A slash inside normal prose, a URL, a path, or code is treated as ordinary text.
 
 | Command | What it does |
 |---------|-------------|
@@ -205,7 +208,7 @@ docker run -p 8000:8000 \
   openkyrozen
 ```
 
-The web interface provides a dark-themed chat UI with real-time streaming, cost tracking, and session management. `kyrozen-web` uses the same global/project mode semantics as the terminal command; the Docker image passes `--project /app` so the mounted image checkout remains project-oriented.
+The web interface uses the same black, white, slate, semantic-status, and restrained-cyan visual system with real-time streaming, accessible focus states, reduced-motion support, cost tracking, and session management. `kyrozen-web` uses the same global/project mode semantics as the terminal command; the Docker image passes `--project /app` so the mounted image checkout remains project-oriented.
 
 ---
 
@@ -215,6 +218,11 @@ The web interface provides a dark-themed chat UI with real-time streaming, cost 
 User Input
     │
     ▼
+┌─────────────────┐
+│ Bubble Tea / Web │──► JSONL callbacks or native HTML/CSS SSE
+└────────┬────────┘
+         │
+         ▼
 ┌─────────────────┐
 │  Task Classifier │──► simple / medium / complex
 └────────┬────────┘
@@ -950,11 +958,14 @@ pip install '.[all]'            # + Claude + Gemini + Web + Playwright
 
 ```
 OpenKyrozen/
-├── main.py              # Core agent loop, self-learning, chat turn logic
+├── main.py              # Authoritative Rich recovery agent loop and chat logic
+├── tui/                 # Bubble Tea v2 terminal client and Go unit tests
+├── tui_launcher.py      # TUI discovery with clear Rich fallback
+├── tui_backend.py       # Bounded JSONL bridge to the Python agent
 ├── tools.py             # 29 base tools; main.py adds two memory actions
 ├── providers.py         # Multi-LLM abstraction (5 providers + fallback)
 ├── memory.py            # SQLite memory with optional rebuildable Chroma index
-├── server.py            # FastAPI web server + REST API + chat UI
+├── server.py            # FastAPI web server + REST API + native HTML/CSS chat UI
 ├── learning_worker.py   # Detached durable self-learning worker
 ├── agent_config.py      # Strict agent.yaml loader and capability bound
 ├── agent.yaml           # Validated role/provider/capability configuration
@@ -983,7 +994,11 @@ OpenKyrozen is built on top of incredible open-source work. We're grateful to ev
 | **CodeWhale** | [deepseek-ai/codewhale](https://github.com/deepseek-ai/codewhale) | Agent runtime architecture, sub-agent delegation, and verification discipline |
 | **Chroma** | [chroma-core/chroma](https://github.com/chroma-core/chroma) | Vector database powering our long-term memory and semantic recall |
 | **FastAPI** | [fastapi/fastapi](https://github.com/fastapi/fastapi) | Web server, REST API, and real-time streaming endpoints |
-| **Rich** | [Textualize/rich](https://github.com/Textualize/rich) | Terminal UI — panels, progress bars, syntax highlighting, and live displays |
+| **Bubble Tea** | [charmbracelet/bubbletea](https://github.com/charmbracelet/bubbletea) | Full-screen terminal UI state, input, resize, and event updates |
+| **Bubbles** | [charmbracelet/bubbles](https://github.com/charmbracelet/bubbles) | Textareas, masked text input, and scrollable viewports |
+| **Lip Gloss** | [charmbracelet/lipgloss](https://github.com/charmbracelet/lipgloss) | Terminal layout, color, borders, and explicit backgrounds |
+| **Glamour** | [charmbracelet/glamour](https://github.com/charmbracelet/glamour) | Markdown rendering for streamed assistant responses |
+| **Rich** | [Textualize/rich](https://github.com/Textualize/rich) | Recovery/development CLI rendering and Python-side diagnostics |
 | **OpenAI Python** | [openai/openai-python](https://github.com/openai/openai-python) | Unified API client for DeepSeek, OpenAI, and Ollama providers |
 | **Uvicorn** | [encode/uvicorn](https://github.com/encode/uvicorn) | ASGI server for production web deployments |
 | **googlesearch-python** | [Nv7-GitHub/googlesearch](https://github.com/Nv7-GitHub/googlesearch) | Web search fallback when DuckDuckGo is unavailable |

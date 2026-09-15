@@ -1,4 +1,4 @@
-.PHONY: install install-core run clean lint test test-core check docs-check shell-check benchmark wheel-smoke docker-smoke git-status git-diff git-log web
+.PHONY: install install-core run clean lint test test-core tui-test check docs-check shell-check benchmark wheel-smoke docker-smoke git-status git-diff git-log web
 
 # Tests parse the benchmark target's stdout as JSON; do not inject GNU make's
 # recursive directory banners into that machine-readable output.
@@ -35,7 +35,10 @@ install: install-core
 
 run:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' with $(PYTHON) installed."; exit 1; }
-	$(VENV_PYTHON) main.py --project .
+	$(VENV_PYTHON) -m tui_launcher --project .
+
+tui-test:
+	@if command -v go >/dev/null 2>&1; then (cd tui && go test ./...); else echo "Go toolchain not found; TUI tests skipped (install Go 1.27.1 or run install.sh)."; fi
 
 web:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON)."; exit 1; }
@@ -61,7 +64,7 @@ clean:
 
 # Syntax check
 lint:
-	$(VENV_PYTHON) -m compileall -q main.py main_debug.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py learning_worker.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py workspace_context.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py scripts/wheel_smoke.py
+	$(VENV_PYTHON) -m compileall -q main.py tui_launcher.py tui_backend.py main_debug.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py learning_worker.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py workspace_context.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py scripts/wheel_smoke.py
 	@echo "Python syntax OK."
 	@echo "All files pass syntax check."
 
@@ -104,11 +107,12 @@ docker-smoke:
 # Quick verification
 check:
 	@echo "Checking Python syntax..."
-	@$(VENV_PYTHON) -m py_compile main.py main_debug.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py learning_worker.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py workspace_context.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py scripts/wheel_smoke.py
+	@$(VENV_PYTHON) -m py_compile main.py tui_launcher.py tui_backend.py main_debug.py server.py tools.py memory.py event_store.py task_engine.py learning_engine.py learning_benchmark.py learning_worker.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py workspace_context.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py scripts/wheel_smoke.py
 	@echo "  Python modules: OK"
 	@echo "Checking git tools..."
 	@$(VENV_PYTHON) -c "from tools import AVAILABLE_TOOLS; git = [k for k in AVAILABLE_TOOLS if k.startswith('git_')]; print(f'  {len(git)} git tools, {len(AVAILABLE_TOOLS)} total tools')"
 	@$(VENV_PYTHON) scripts/check_zsh_extras.py
+	@$(MAKE) tui-test
 	@echo "All checks passed."
 
 # Git helpers

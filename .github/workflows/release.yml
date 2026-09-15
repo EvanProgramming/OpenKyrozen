@@ -50,11 +50,24 @@ jobs:
       - name: Run clean installed-artifact smoke test
         run: python scripts/wheel_smoke.py
 
+      - name: Package the pinned Bubble Tea source asset
+        run: |
+          if [ -d tui ]; then
+            tar -czf "openkyrozen-tui-${RELEASE_TAG#v}.tar.gz" -C tui .
+            sha256sum "openkyrozen-tui-${RELEASE_TAG#v}.tar.gz" > "openkyrozen-tui-${RELEASE_TAG#v}.tar.gz.sha256"
+          else
+            echo "Legacy tag has no Bubble Tea source asset; keeping the release Python-only."
+          fi
+
       - name: Create immutable GitHub release and upload artifacts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$RELEASE_TAG" dist/* --verify-tag \
+          assets=(dist/*)
+          for asset in openkyrozen-tui-*.tar.gz openkyrozen-tui-*.tar.gz.sha256; do
+            [ -e "$asset" ] && assets+=("$asset")
+          done
+          gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag \
             --title "OpenKyrozen $RELEASE_TAG" --generate-notes
 
   windows-installer:

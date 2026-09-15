@@ -1,7 +1,7 @@
 @echo off
 REM ============================================================
 REM  OpenKyrozen — Windows Run
-REM  Activates the virtual environment and starts the agent.
+REM  Activates the virtual environment and starts the Bubble Tea launcher.
 REM ============================================================
 
 setlocal
@@ -15,5 +15,5 @@ if not exist venv\Scripts\activate.bat (
 
 REM --- Activate and run ---
 call venv\Scripts\activate.bat
-python main.py --project . %*
+python -m tui_launcher --project . %*
 pause

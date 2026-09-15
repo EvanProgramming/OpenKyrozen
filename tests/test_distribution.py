@@ -22,8 +22,11 @@ class DistributionTests(unittest.TestCase):
         project = document["project"]
         self.assertEqual(project["version"], "2.0.3")
         self.assertEqual(project["requires-python"], ">=3.12,<3.14")
-        self.assertEqual(project["scripts"]["kyrozen"], "main:main")
+        self.assertEqual(project["scripts"]["kyrozen"], "tui_launcher:main")
+        self.assertEqual(project["scripts"]["kyrozen-backend"], "tui_backend:main")
         self.assertEqual(project["scripts"]["kyrozen-web"], "server:main_entry")
+        self.assertIn("tui_launcher", document["tool"]["setuptools"]["py-modules"])
+        self.assertIn("tui_backend", document["tool"]["setuptools"]["py-modules"])
         self.assertIn("workspace_context", document["tool"]["setuptools"]["py-modules"])
         self.assertIn("learning_worker", document["tool"]["setuptools"]["py-modules"])
 
@@ -46,6 +49,8 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("make test PYTHON=python", workflow)
         self.assertIn("make install-core PYTHON=python", workflow)
         self.assertIn("make test-core", workflow)
+        self.assertIn("actions/setup-go@v5", workflow)
+        self.assertIn("go test ./...", workflow)
 
     def test_one_shot_release_workflow_is_retired_after_v2_release(self):
         self.assertFalse((ROOT / ".github" / "workflows" / "publish.yml").exists())
@@ -60,6 +65,8 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("tests.test_server.ServerBoundaryTests.test_browser_token_bootstrap", workflow)
         self.assertIn("tests.test_task_consistency.TaskConsistencyTests.test_multi_task_plan", workflow)
         self.assertIn("python scripts/wheel_smoke.py", workflow)
+        self.assertIn("openkyrozen-tui-", workflow)
+        self.assertIn("sha256sum", workflow)
         self.assertIn("runs-on: windows-latest", workflow)
         smoke = (ROOT / "scripts" / "wheel_smoke.py").read_text(encoding="utf-8")
         self.assertIn("/api/auth/session", smoke)
@@ -97,6 +104,9 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("--no-cache", text)
         self.assertNotIn("pypi.org", text)
         self.assertIn("installed_version=", text)
+        self.assertIn("go_version='1.27.1'", text)
+        self.assertIn("Bubble Tea source asset", text)
+        self.assertIn("mv \"$build_output\" \"$state_dir/bin/openkyrozen-tui\"", text)
 
     def test_installers_use_plain_canonical_banner(self):
         for name in ("install.sh", "install.ps1"):
@@ -121,6 +131,8 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("releases/download", text)
         self.assertIn("--with fastapi --with uvicorn", text)
         self.assertIn("--no-cache", text)
+        self.assertIn('$goVersion = "1.27.1"', text)
+        self.assertIn("Get-FileHash -Algorithm SHA256", text)
         self.assertNotIn("pypi.org", text)
         powershell = shutil.which("pwsh") or shutil.which("powershell")
         if powershell is None:
