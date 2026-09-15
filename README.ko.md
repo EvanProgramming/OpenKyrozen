@@ -171,7 +171,7 @@ Kyrozen의 동작:
 | `/api_key` | API 키 변경 |
 | `/learn` | 프로젝트 파일을 즉시 메모리에 스캔 |
 | `/forget` | 최근 학습 확인; `/forget 키워드`로 잘못된 학습 삭제 |
-| `/update` | 고정된 GitHub `v2.0.3` 릴리스 wheel을 다시 설치 (프로젝트에 git pull을 실행하지 않음) |
+| `/update` | 고정된 GitHub `v2.0.3` wheel로 설치된 도구를 제자리에서 업데이트; 성공 후 Kyrozen 재시작 (프로젝트에 git pull을 실행하지 않음) |
 | `/self-learning` | 개별 자기 학습 기능 켜기/끄기 |
 
 ### Web UI 모드

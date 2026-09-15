@@ -243,7 +243,7 @@ exit 0
             f"{sys.version_info.major}.{sys.version_info.minor}"
             if sys.version_info[:2] in {(3, 12), (3, 13)} else "3.12"
         )
-        self.assertEqual(command[:6], ["uv", "tool", "install", "--python", expected_python, "--force"])
+        self.assertEqual(command[:6], ["/usr/local/bin/uv", "tool", "install", "--python", expected_python, "--force"])
         self.assertIn("--with", command)
         self.assertIn("fastapi", command)
         self.assertIn("uvicorn", command)
@@ -265,8 +265,25 @@ exit 0
         self.assertEqual(run.call_count, 2)
         self.assertEqual(
             run.call_args_list[1].args[0][:3],
-            ["uv", "--no-cache", "tool"],
+            ["/usr/local/bin/uv", "--no-cache", "tool"],
         )
+
+    def test_update_preserves_stdout_only_failure_diagnostics(self):
+        import main
+
+        failed = subprocess.CompletedProcess(
+            ["/usr/local/bin/uv", "tool", "install"], 1,
+            stdout="release asset unavailable", stderr="",
+        )
+        retry_failed = subprocess.CompletedProcess(
+            ["/usr/local/bin/uv", "--no-cache", "tool", "install"], 1,
+            stdout="retry also failed", stderr="",
+        )
+        with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
+             patch("main.subprocess.run", side_effect=[failed, retry_failed]):
+            result = main._self_update()
+        self.assertIn("uv exit 1", result)
+        self.assertIn("retry also failed", result)
 
     def test_docker_starts_server_in_explicit_project_mode(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")

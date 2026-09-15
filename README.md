@@ -172,7 +172,7 @@ Kyrozen will:
 | `/api_key` | Change your API key |
 | `/learn` | Immediately scan project files into memory |
 | `/forget` | Show recent learnings; `/forget keyword` to delete bad learnings |
-| `/update` | Reinstall the pinned `v2.0.3` GitHub release wheel (never pulls into a project) |
+| `/update` | Update the installed tool in place from the pinned `v2.0.3` GitHub wheel; restart Kyrozen after success (never pulls into a project) |
 | `/agent auto\|coder\|researcher` | Choose automatic routing or an isolated learning profile |
 | `/learning status [profile]` | Show candidate, canary, active, retired, and rolled-back artifacts |
 | `/learning metrics [profile]` | Show verified completion, corrections, errors, cost, and latency metrics |
