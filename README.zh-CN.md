@@ -387,7 +387,7 @@ kyrozen
 
 ### 工作原理
 
-CLI 在空闲时每 30 秒通过共享 dispatcher 以 round-robin 方式最多执行 4 个功能；Web/Gateway 通过持久化的 `learning_cycle` 调度任务运行；每次聊天 turn 还会运行依赖输入的偏好和技术检测。所有功能都可用 `/self-learning` 独立开关，`GET /api/v2/learning/features` 可查看最新状态。项目扫描采用增量方式，后台任务有并发限制，失败会记录为事件而不会静默丢弃；缺少输入或证据时会诚实记录为无变化的有界 no-op。
+CLI 会为每个工作区启动一个独立的单例学习 worker。交互式 CLI 活跃时 worker 会等待；终端退出后，心跳静默至少 60 秒，worker 仍会每 30 秒通过共享 dispatcher 以 round-robin 方式最多执行 4 个功能。Web/Gateway 通过持久化的 `learning_cycle` 调度任务运行；每次聊天 turn 还会运行依赖输入的偏好和技术检测。所有功能都可用 `/self-learning` 独立开关，开关会持久化到 SQLite，`GET /api/v2/learning/features` 可查看最新状态。项目扫描采用增量方式，后台任务有并发限制，失败会记录为事件而不会静默丢弃；缺少输入或证据时会诚实记录为无变化的有界 no-op。
 
 | # | 功能 | 学习内容 |
 |---|------|---------|

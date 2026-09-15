@@ -9,7 +9,7 @@ Historical verification snapshot: `51be33361422e55e1f2f00c33a0e0f8c56132a91`
 (the post-#54 `main` revision, captured before this #55 documentation-only
 update). Snapshot date: 2026-09-04.
 
-Current repository test count at this snapshot: **198 unittest cases**.
+Current repository test count at this snapshot: **201 unittest cases**.
 
 ## Verified surface
 
@@ -62,9 +62,11 @@ API below.
    explicit corrections, and verified failures may enter review. Provider
    failures, secret-bearing runs, routine one-step work, and project indexing
    are excluded from behavioral evolution.
-2. The background loop reviews after at least 60 seconds without user
-   interaction. A reviewer can create at most one bounded `policy` or `skill`
-   canary for the run, or abstain.
+2. The CLI launches one detached learning worker per workspace. The worker
+   waits until the interactive heartbeat is quiet for at least 60 seconds,
+   then reviews on its 30-second cycle even after the terminal exits. A
+   reviewer can create at most one bounded `policy` or `skill` canary for the
+   run, or abstain. Feature switches are persisted in SQLite.
 3. Static validation requires the manifest, Markdown sections, size limits,
    secret redaction, workspace containment, and declared permissions. Learned
    artifacts cannot add capabilities or dynamic tools.

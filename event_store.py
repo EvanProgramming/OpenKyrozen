@@ -165,6 +165,16 @@ class EventStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_learning_status
                     ON learning_proposals(status, workspace_id, updated_at);
+                CREATE TABLE IF NOT EXISTS learning_feature_flags (
+                    name TEXT NOT NULL,
+                    user_id TEXT NOT NULL DEFAULT 'local',
+                    workspace_id TEXT NOT NULL DEFAULT 'default',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(name, user_id, workspace_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_learning_feature_flags_scope
+                    ON learning_feature_flags(user_id, workspace_id, name);
                 CREATE TABLE IF NOT EXISTS scheduled_jobs (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -693,6 +703,29 @@ class EventStore:
             db.execute("UPDATE learning_proposals SET evidence=?,updated_at=? WHERE id=?",
                        (self._json(evidence), utc_now(), proposal_id))
             return len(evidence)
+
+    def list_learning_feature_flags(self, *, user_id: str = "local",
+                                    workspace_id: str = "default") -> dict[str, bool]:
+        """Return persisted self-learning feature switches for one scope."""
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT name, enabled FROM learning_feature_flags "
+                "WHERE user_id=? AND workspace_id=?",
+                (user_id, workspace_id),
+            ).fetchall()
+        return {str(row["name"]): bool(row["enabled"]) for row in rows}
+
+    def set_learning_feature_flag(self, name: str, enabled: bool, *,
+                                  user_id: str = "local",
+                                  workspace_id: str = "default") -> None:
+        """Persist one self-learning feature switch transactionally."""
+        with self._lock, self.connection() as db:
+            db.execute(
+                "INSERT INTO learning_feature_flags(name,user_id,workspace_id,enabled,updated_at) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(name,user_id,workspace_id) DO UPDATE SET "
+                "enabled=excluded.enabled,updated_at=excluded.updated_at",
+                (str(name), user_id, workspace_id, int(bool(enabled)), utc_now()),
+            )
 
     def list_proposals(self, *, status: str | None = None, workspace_id: str = "default", limit: int = 100,
                        user_id: str | None = None) -> list[dict[str, Any]]:
