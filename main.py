@@ -419,6 +419,25 @@ _LEARNING_FEATURE_ORDER = (
 _SELF_LEARNING_FLAGS: dict[str, bool] = {name: True for name in _LEARNING_FEATURE_ORDER}
 
 
+def _restore_self_learning_flags() -> dict[str, bool]:
+    """Load persisted feature switches without widening the learning scope."""
+    store_owner = globals().get("memory_bank")
+    if store_owner is None:
+        return {}
+    try:
+        persisted = store_owner.store.list_learning_feature_flags(
+            user_id=store_owner.user_id, workspace_id=store_owner.workspace_id,
+        )
+    except Exception:
+        return {}
+    restored: dict[str, bool] = {}
+    for name in _LEARNING_FEATURE_ORDER:
+        enabled = bool(persisted.get(name, True))
+        _SELF_LEARNING_FLAGS[name] = enabled
+        restored[name] = enabled
+    return restored
+
+
 tasks = TaskManager()
 
 # -------- Regression Testing --------
@@ -2179,6 +2198,7 @@ def _set_launch_context(context: LaunchContext) -> LaunchContext:
     _launch_context = context
     _set_workspace_root(str(context.active_root))
     _restore_user_preferences()
+    _restore_self_learning_flags()
     return context
 
 
@@ -2392,6 +2412,7 @@ def _system_prompt(tools_list: str, agent_config: dict[str, Any] | None = None) 
 memory_bank = MemoryBank()
 skill_registry = SkillRegistry(memory_bank.store, workspace_id=memory_bank.workspace_id)
 learning_engine = LearningEngine(memory_bank, registry=skill_registry)
+_restore_self_learning_flags()
 _agent_profile_mode = "auto"
 _last_learning_run: dict[str, Any] | None = None
 _learning_notices: list[str] = []
@@ -4524,6 +4545,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     global _last_user_interaction, DEEPSEEK_MODEL, _execution_capability_token
     global _last_learning_run, _learning_notices
     _last_user_interaction = time.time()
+    _touch_detached_learning_heartbeat()
     feedback = learning_engine.feedback_signal(user_input)
     if feedback and _last_learning_run:
         previous = _last_learning_run
@@ -5728,6 +5750,42 @@ def _background_learning_loop() -> None:
                 pass
 
 
+def _ensure_detached_learning_worker() -> bool:
+    """Keep learning alive outside the interactive CLI process."""
+    if os.environ.get("KYROZEN_LEARNING_WORKER") == "1":
+        return True
+    context = get_launch_context()
+    if context is None:
+        return False
+    try:
+        from learning_worker import start_worker
+        return start_worker(
+            workspace_root=context.active_root,
+            launch_mode=context.mode,
+        )
+    except Exception as exc:
+        try:
+            memory_bank.store.append_event(
+                "learning.worker_start_failed", {"error": str(exc)[:1000]},
+                user_id=memory_bank.user_id, workspace_id=memory_bank.workspace_id,
+                session_id=memory_bank.session_id,
+            )
+        except Exception:
+            pass
+        return False
+
+
+def _touch_detached_learning_heartbeat() -> None:
+    context = get_launch_context()
+    if context is None or os.environ.get("KYROZEN_LEARNING_WORKER") == "1":
+        return
+    try:
+        from learning_worker import touch_cli_heartbeat
+        touch_cli_heartbeat(context.active_root)
+    except Exception:
+        pass
+
+
 def _show_self_learning_menu() -> None:
     """Display an interactive menu to toggle self-learning features."""
     flag_names = [
@@ -5751,6 +5809,17 @@ def _show_self_learning_menu() -> None:
             if 0 <= idx < len(flag_names):
                 key = flag_names[idx][0]
                 _SELF_LEARNING_FLAGS[key] = not _SELF_LEARNING_FLAGS[key]
+                try:
+                    memory_bank.store.set_learning_feature_flag(
+                        key, _SELF_LEARNING_FLAGS[key],
+                        user_id=memory_bank.user_id,
+                        workspace_id=memory_bank.workspace_id,
+                    )
+                    _record_learning_event("learning.feature_toggled", {
+                        "feature": key, "enabled": _SELF_LEARNING_FLAGS[key],
+                    })
+                except Exception:
+                    pass
                 state = "enabled" if _SELF_LEARNING_FLAGS[key] else "disabled"
                 console.print(f"[{_SUCCESS}]Toggled {flag_names[idx][1]} → {state}.[/{_SUCCESS}]")
             else:
@@ -5919,8 +5988,10 @@ def main() -> None:
     _load_project_files_into_memory()
     console.print(f"[{_MUTED}]Project files loaded into memory.[/{_MUTED}]")
 
-    # Start background learning daemon
-    threading.Thread(target=_background_learning_loop, daemon=True).start()
+    # Hand learning off to a detached process so it survives CLI exit.  Keep
+    # the in-process loop only as a safe fallback when process creation fails.
+    if not _ensure_detached_learning_worker():
+        threading.Thread(target=_background_learning_loop, daemon=True).start()
 
     while True:
         try:

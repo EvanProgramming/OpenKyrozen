@@ -301,14 +301,15 @@ stores `learning.feature_started`, `learning.feature_completed`, or
 whether it changed durable or in-memory state; `changed: false` is an honest
 no-op when the required evidence or input is absent.
 
-The CLI dispatches up to four features every 30 seconds while idle. Web and
-Gateway processes use the durable `learning_cycle` scheduler job. Chat turns
-also dispatch the input-dependent preference and technology features. The
-same dispatcher and feature flags are used by all surfaces. Inspect the
-latest status with `GET /api/v2/learning/features` or toggle flags with
-`/self-learning`. Dynamic tools remain response-time operations protected by
-explicit capability and approval gates, and rollback remains user-directed via
-`/forget` or an explicit learning rollback command.
+The CLI starts a singleton detached learning worker. It waits while the CLI is
+active, then continues dispatching up to four features every 30 seconds after
+the terminal exits. Web and Gateway processes use the durable `learning_cycle`
+scheduler job. Feature switches from `/self-learning` are persisted in SQLite,
+so disabled features stay disabled across restarts. Chat turns also dispatch
+the input-dependent preference and technology features. Inspect the latest
+status with `GET /api/v2/learning/features`. Dynamic tools remain response-time
+operations protected by explicit capability and approval gates, and rollback
+remains user-directed via `/forget` or an explicit learning rollback command.
 
 ### Installed skill guidance
 
@@ -954,6 +955,7 @@ OpenKyrozen/
 ├── providers.py         # Multi-LLM abstraction (5 providers + fallback)
 ├── memory.py            # SQLite memory with optional rebuildable Chroma index
 ├── server.py            # FastAPI web server + REST API + chat UI
+├── learning_worker.py   # Detached durable self-learning worker
 ├── agent_config.py      # Strict agent.yaml loader and capability bound
 ├── agent.yaml           # Validated role/provider/capability configuration
 ├── pyproject.toml       # pip package configuration

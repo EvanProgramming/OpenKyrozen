@@ -25,6 +25,7 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(project["scripts"]["kyrozen"], "main:main")
         self.assertEqual(project["scripts"]["kyrozen-web"], "server:main_entry")
         self.assertIn("workspace_context", document["tool"]["setuptools"]["py-modules"])
+        self.assertIn("learning_worker", document["tool"]["setuptools"]["py-modules"])
 
     def test_full_development_setup_includes_browser_and_core_test_path(self):
         with (ROOT / "pyproject.toml").open("rb") as handle:
@@ -36,6 +37,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("pip install -e '.[web]'", makefile)
         self.assertIn("pip install -e '.[all]'", makefile)
         self.assertIn("python -m playwright install chromium", makefile)
+        self.assertIn("learning_worker.py", makefile)
         self.assertIn("test-core:", makefile)
         self.assertIn("MAKEFLAGS += --no-print-directory", makefile)
 
