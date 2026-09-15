@@ -1962,12 +1962,13 @@ def _detect_user_preferences(user_input: str) -> None:
     detected = {k: v for k, v in _user_preferences.items() if v}
     if detected:
         pref_str = "; ".join(f"{k}={v}" for k, v in detected.items())
-        # Only store if new or changed
-        recent = memory_bank.get_recent(3)
-        already = any(f"PREF: {pref_str}" in r for r in recent)
-        if not already:
-            learning_engine.submit("preference", f"PREF: {pref_str}", evidence_id=stable_hash(user_input),
-                                   confidence=0.5, metadata={"source": "preference_detection"})
+        # Each user turn is an independent observation.  Reusing a content hash
+        # (or suppressing a repeated message) prevents the evidence threshold
+        # from ever promoting a preference across a process restart.
+        learning_engine.submit(
+            "preference", f"PREF: {pref_str}", evidence_id=f"turn-{uuid.uuid4().hex}",
+            confidence=0.5, metadata={"source": "preference_detection"},
+        )
 
 
 def _build_preference_context() -> str:

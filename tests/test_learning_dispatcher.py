@@ -177,6 +177,43 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertIn("naming_style=snake_case", completed.stdout)
             self.assertIn("Known user preferences", completed.stdout)
 
+    def test_detected_preference_promotes_and_survives_restart(self):
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-detected-preference-") as directory:
+            root = Path(directory)
+            db_path = root / "state.sqlite3"
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(root), "KYROZEN_DB_PATH": str(db_path),
+                "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": str(root),
+                "PYTHONPATH": str(Path(__file__).parents[1]),
+            })
+            observe = subprocess.run(
+                [sys.executable, "-c", (
+                    "import main; "
+                    f"main.configure_launch_context(project_path={str(root)!r}); "
+                    "[main.dispatch_learning_cycle(surface='cli', trigger='turn', max_features=1, "
+                    "user_input='Please use concise Python and snake_case names.', "
+                    "feature_names=('detect_user_preferences',)) for _ in range(2)]; "
+                    "print(main.learning_engine.status(100)[0]['status'])"
+                )],
+                cwd=Path(__file__).parents[1], env=env, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(observe.returncode, 0, observe.stderr)
+            self.assertIn("active", observe.stdout)
+
+            fresh = subprocess.run(
+                [sys.executable, "-c", (
+                    "import main; "
+                    f"main.configure_launch_context(project_path={str(root)!r}); "
+                    "print(main._build_preference_context())"
+                )],
+                cwd=Path(__file__).parents[1], env=env, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(fresh.returncode, 0, fresh.stderr)
+            self.assertIn("language=python", fresh.stdout)
+            self.assertIn("naming_style=snake_case", fresh.stdout)
+            self.assertIn("verbosity=concise", fresh.stdout)
+
     def test_feature_failure_is_recorded_without_stopping_the_cycle(self):
         names = main._LEARNING_FEATURE_ORDER[:2]
         registry = dict(main._LEARNING_FEATURE_REGISTRY)
