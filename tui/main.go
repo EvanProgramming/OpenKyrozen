@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -12,7 +13,6 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 )
 
@@ -33,6 +33,7 @@ const (
 type chatMessage struct {
 	role      string
 	text      string
+	status    string
 	streaming bool
 }
 
@@ -49,53 +50,87 @@ type featureItem struct {
 }
 
 type model struct {
-	bridge        *bridge
-	project       string
-	global        bool
-	width         int
-	height        int
-	view          viewport.Model
-	input         textarea.Model
-	apiInput      textinput.Model
-	screen        screen
-	status        string
-	provider      string
-	modelName     string
-	workspace     string
-	messages      []chatMessage
-	tasks         []taskItem
-	palette       []command
-	paletteIndex  int
-	providerList  []string
-	providerIdx   int
-	features      []featureItem
-	featureIdx    int
-	approvalID    string
-	approvalTool  string
-	approvalArgs  string
-	errorText     string
-	splashFrame   int
-	reducedMotion bool
-	busy          bool
-	requestCount  int
+	bridge         *bridge
+	project        string
+	global         bool
+	width          int
+	height         int
+	view           viewport.Model
+	input          textarea.Model
+	apiInput       textinput.Model
+	screen         screen
+	status         string
+	provider       string
+	modelName      string
+	workspace      string
+	messages       []chatMessage
+	tasks          []taskItem
+	palette        []command
+	paletteIndex   int
+	providerList   []string
+	providerIdx    int
+	features       []featureItem
+	featureIdx     int
+	approvalID     string
+	approvalTool   string
+	approvalArgs   string
+	errorText      string
+	splashFrame    int
+	splashStarted  time.Time
+	readyAt        time.Time
+	backendReady   bool
+	motionFrame    int
+	cursorVisible  bool
+	thinkingText   string
+	taskFlashID    string
+	taskFlashTick  int
+	followTail     bool
+	transitionTick int
+	reducedMotion  bool
+	busy           bool
+	requestCount   int
 }
 
 type tickMsg time.Time
 type backendStartedMsg struct{ err error }
 
+const (
+	splashMinimumDuration = 2400 * time.Millisecond
+	readyHoldDuration     = 300 * time.Millisecond
+)
+
+var uiSensitiveArgRE = regexp.MustCompile(`(?i)(api[_-]?key|secret|password|token)\s*[:=]\s*[^\s,;]+`)
+
 func initialModel(project string, global bool) model {
+	reducedMotion := os.Getenv("KYROZEN_REDUCED_MOTION") == "1"
 	input := textarea.New()
 	input.Placeholder = "Ask Kyrozen anything…"
 	input.Prompt = "› "
 	input.CharLimit = 12_000
+	input.ShowLineNumbers = false
 	input.SetHeight(3)
 	input.SetWidth(60)
 	input.Focus()
+	inputStyles := input.Styles()
+	inputStyles.Focused.Text = bodyStyle
+	inputStyles.Focused.Placeholder = mutedStyle
+	inputStyles.Focused.Prompt = brandStyle
+	inputStyles.Focused.CursorLine = lipgloss.NewStyle().Background(lipgloss.Color(deep))
+	inputStyles.Cursor.Color = lipgloss.Color(cyan)
+	inputStyles.Cursor.Blink = !reducedMotion
+	input.SetStyles(inputStyles)
 	apiInput := textinput.New()
 	apiInput.Placeholder = "Paste an API key"
 	apiInput.CharLimit = 512
 	apiInput.EchoMode = textinput.EchoPassword
 	apiInput.EchoCharacter = '•'
+	apiStyles := apiInput.Styles()
+	apiStyles.Focused.Text = bodyStyle
+	apiStyles.Focused.Placeholder = mutedStyle
+	apiStyles.Focused.Prompt = brandStyle
+	apiStyles.Cursor.Color = lipgloss.Color(cyan)
+	apiStyles.Cursor.Blink = !reducedMotion
+	apiInput.SetStyles(apiStyles)
 	return model{
 		bridge:        newBridge(),
 		project:       project,
@@ -105,23 +140,27 @@ func initialModel(project string, global bool) model {
 		apiInput:      apiInput,
 		screen:        screenSplash,
 		status:        "Starting the workspace…",
-		reducedMotion: os.Getenv("KYROZEN_REDUCED_MOTION") == "1" || os.Getenv("NO_COLOR") != "",
+		splashStarted: time.Now(),
+		cursorVisible: true,
+		followTail:    true,
+		reducedMotion: reducedMotion,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(startBackend(m.bridge), splashTick(m.reducedMotion))
+	cmds := []tea.Cmd{startBackend(m.bridge)}
+	if !m.reducedMotion {
+		cmds = append(cmds, motionTick())
+	}
+	return tea.Batch(cmds...)
 }
 
 func startBackend(b *bridge) tea.Cmd {
 	return func() tea.Msg { return backendStartedMsg{err: b.start()} }
 }
 
-func splashTick(reduced bool) tea.Cmd {
-	if reduced {
-		return func() tea.Msg { return tickMsg(time.Now()) }
-	}
-	return tea.Tick(90*time.Millisecond, func(now time.Time) tea.Msg { return tickMsg(now) })
+func motionTick() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(now time.Time) tea.Msg { return tickMsg(now) })
 }
 
 func waitBackend(b *bridge) tea.Cmd {
@@ -153,6 +192,10 @@ func (m *model) setError(message string) {
 	m.status = "Error"
 	m.screen = screenError
 	m.busy = false
+	m.thinkingText = ""
+	if !m.reducedMotion {
+		m.transitionTick = 4
+	}
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -175,20 +218,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.handleBackendEvent(msg.event)
 		}
 		cmds = append(cmds, waitBackend(m.bridge))
+		m.maybeMotion(&cmds)
 	case backendExitMsg:
 		if m.screen != screenError {
 			m.status = "Backend stopped"
 		}
 	case tickMsg:
-		if m.screen == screenSplash && !m.reducedMotion {
+		now := time.Time(msg)
+		m.motionFrame++
+		if m.screen == screenSplash {
 			m.splashFrame++
-			if m.splashFrame >= 10 {
+			if m.reducedMotion || m.canLeaveSplash(now) {
 				m.screen = screenChat
 			}
-			cmds = append(cmds, splashTick(m.reducedMotion))
-		} else if m.screen == screenSplash {
-			m.screen = screenChat
 		}
+		if m.busy {
+			m.cursorVisible = !m.cursorVisible
+		}
+		if m.taskFlashTick > 0 {
+			m.taskFlashTick--
+			if m.taskFlashTick == 0 {
+				m.taskFlashID = ""
+			}
+		}
+		if m.transitionTick > 0 {
+			m.transitionTick--
+		}
+		m.maybeMotion(&cmds)
 	case tea.KeyPressMsg:
 		cmd, quit := m.handleKey(msg)
 		if quit {
@@ -201,6 +257,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	m.syncViewport()
 	return m, tea.Batch(cmds...)
+}
+
+func (m model) canLeaveSplash(now time.Time) bool {
+	if !m.backendReady {
+		return false
+	}
+	started := m.splashStarted
+	ready := m.readyAt
+	return (started.IsZero() || now.Sub(started) >= splashMinimumDuration) &&
+		(ready.IsZero() || now.Sub(ready) >= readyHoldDuration)
+}
+
+func (m model) animating() bool {
+	return !m.reducedMotion && (m.screen == screenSplash || m.busy || m.taskFlashTick > 0 || m.transitionTick > 0)
+}
+
+func (m *model) maybeMotion(cmds *[]tea.Cmd) {
+	if m.animating() {
+		*cmds = append(*cmds, motionTick())
+	}
 }
 
 func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
@@ -249,6 +325,16 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if key == "esc" && len(m.palette) > 0 {
 		m.palette = nil
 		m.input.SetHeight(m.composerHeight())
+		return nil, false
+	}
+	if key == "pgup" {
+		m.followTail = false
+		m.view.PageUp()
+		return nil, false
+	}
+	if key == "pgdown" {
+		m.view.PageDown()
+		m.followTail = m.view.AtBottom()
 		return nil, false
 	}
 	if len(m.palette) > 0 {
@@ -302,6 +388,9 @@ func (m *model) submit() tea.Cmd {
 	m.messages = append(m.messages, chatMessage{role: "assistant", streaming: true})
 	m.busy = true
 	m.status = "Thinking…"
+	m.thinkingText = ""
+	m.cursorVisible = true
+	m.followTail = true
 	m.input.Reset()
 	m.palette = nil
 	m.input.SetHeight(m.composerHeight())
@@ -310,11 +399,15 @@ func (m *model) submit() tea.Cmd {
 }
 
 func (m *model) refreshPalette() {
+	wasOpen := len(m.palette) > 0
 	m.palette = commandMatches(m.input.Value())
 	if len(m.palette) == 0 {
 		m.paletteIndex = 0
 	} else if m.paletteIndex >= len(m.palette) {
 		m.paletteIndex = len(m.palette) - 1
+	}
+	if !wasOpen && len(m.palette) > 0 && !m.reducedMotion {
+		m.transitionTick = 4
 	}
 	m.input.SetHeight(m.composerHeight())
 }
@@ -378,11 +471,17 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		m.workspace = stringValue(event, "workspace")
 		m.status = "Ready"
 		m.busy = false
-		if m.screen == screenSplash && (m.reducedMotion || m.splashFrame >= 10) {
+		m.backendReady = true
+		m.readyAt = time.Now()
+		m.thinkingText = ""
+		if m.screen == screenSplash && (m.reducedMotion || m.canLeaveSplash(time.Now())) {
 			m.screen = screenChat
 		}
 	case "stream_delta":
 		m.busy, m.status = true, "Generating…"
+		m.thinkingText = ""
+		m.cursorVisible = true
+		m.followTail = true
 		text := stringValue(event, "text")
 		for i := len(m.messages) - 1; i >= 0; i-- {
 			if m.messages[i].role == "assistant" && m.messages[i].streaming {
@@ -392,30 +491,54 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		}
 		m.messages = append(m.messages, chatMessage{role: "assistant", text: text, streaming: true})
 	case "thinking":
-		m.messages = append(m.messages, chatMessage{role: "thinking", text: stringValue(event, "text")})
+		m.thinkingText = firstNonEmpty(stringValue(event, "text"), "Working…")
+		m.busy = true
+		m.status = "Thinking…"
+		m.followTail = true
 	case "response":
 		text := stringValue(event, "text")
 		for i := len(m.messages) - 1; i >= 0; i-- {
 			if m.messages[i].role == "assistant" && m.messages[i].streaming {
 				m.messages[i].text, m.messages[i].streaming = text, false
 				m.busy = false
+				m.thinkingText = ""
+				m.followTail = true
 				return
 			}
 		}
 		m.messages = append(m.messages, chatMessage{role: "assistant", text: text})
 		m.busy = false
+		m.thinkingText = ""
+		m.followTail = true
 	case "tool_receipt":
 		if receipt, ok := event["receipt"].(map[string]any); ok {
-			m.messages = append(m.messages, chatMessage{role: "receipt", text: "✓ " + stringValue(receipt, "action") + " — " + stringValue(receipt, "result")})
+			m.messages = append(m.messages, chatMessage{
+				role: "receipt", status: receiptStatus(receipt),
+				text: stringValue(receipt, "action") + " — " + stringValue(receipt, "result"),
+			})
+			m.followTail = true
 		}
 	case "tasks":
+		previous := make(map[string]string, len(m.tasks))
+		for _, task := range m.tasks {
+			previous[task.id] = task.status
+		}
 		m.tasks = parseTasks(event["tasks"])
+		if !m.reducedMotion {
+			for _, task := range m.tasks {
+				if previous[task.id] == "running" && task.status == "succeeded" {
+					m.taskFlashID, m.taskFlashTick = task.id, 8
+					break
+				}
+			}
+		}
 	case "prompt":
 		m.handlePrompt(event)
 	case "error":
 		m.setError(firstNonEmpty(stringValue(event, "error"), "Backend error"))
 	case "exit":
 		m.status, m.busy = "Stopped", false
+		m.thinkingText = ""
 	}
 }
 
@@ -436,6 +559,7 @@ func (m *model) handlePrompt(event backendEvent) {
 	switch stringValue(event, "kind") {
 	case "api_key":
 		m.screen = screenAPIKey
+		m.startTransition()
 		m.apiInput.Reset()
 		m.apiInput.Placeholder = firstNonEmpty(stringValue(event, "message"), "Enter API key")
 		m.apiInput.Focus()
@@ -449,11 +573,13 @@ func (m *model) handlePrompt(event backendEvent) {
 			}
 		}
 		m.providerIdx, m.screen = 0, screenProvider
+		m.startTransition()
 	case "approval":
 		m.approvalID = stringValue(event, "request_id")
 		m.approvalTool = stringValue(event, "action")
-		m.approvalArgs = stringValue(event, "args")
+		m.approvalArgs = safeApprovalArgs(stringValue(event, "args"))
 		m.screen = screenApproval
+		m.startTransition()
 	case "self_learning":
 		m.features = nil
 		if features, ok := event["features"].([]any); ok {
@@ -464,7 +590,30 @@ func (m *model) handlePrompt(event backendEvent) {
 			}
 		}
 		m.featureIdx, m.screen = 0, screenSelfLearning
+		m.startTransition()
 	}
+}
+
+func (m *model) startTransition() {
+	if !m.reducedMotion {
+		m.transitionTick = 4
+	}
+}
+
+func safeApprovalArgs(value string) string {
+	value = uiSensitiveArgRE.ReplaceAllString(value, "$1=<redacted>")
+	return strings.TrimSpace(value)
+}
+
+func receiptStatus(receipt map[string]any) string {
+	if success, ok := receipt["success"].(bool); ok && success {
+		return "success"
+	}
+	failure := strings.ToLower(stringValue(receipt, "failure"))
+	if strings.Contains(failure, "denied") || strings.Contains(failure, "blocked") {
+		return "blocked"
+	}
+	return "failure"
 }
 
 func boolValue(values map[string]any, key string) bool {
@@ -477,6 +626,7 @@ func (m *model) resize() {
 	mainWidth, _ := m.layoutWidths()
 	m.input.SetWidth(width)
 	m.input.SetHeight(m.composerHeight())
+	m.apiInput.SetWidth(maxInt(1, minInt(68, m.width-14)))
 	m.view.SetWidth(mainWidth)
 	m.view.SetHeight(m.historyHeight())
 	m.syncViewport()
@@ -488,26 +638,29 @@ func (m model) contentWidth() int {
 
 func (m model) layoutWidths() (int, int) {
 	available := m.contentWidth()
-	if m.width < 100 || len(m.tasks) == 0 {
+	if m.width < 110 {
 		return available, 0
 	}
-	panelWidth := minInt(30, maxInt(22, available/4))
-	return maxInt(1, available-panelWidth-2), panelWidth
+	railWidth := minInt(30, maxInt(24, available/4))
+	return maxInt(1, available-railWidth-2), railWidth
 }
 
 func (m model) composerHeight() int {
-	if len(m.palette) > 0 || (m.height > 0 && m.height < 16) {
+	if m.height > 0 && m.height < 16 {
 		return 1
 	}
 	return 3
 }
 
 func (m model) historyHeight() int {
-	height := maxInt(1, m.height-11)
-	if len(m.palette) > 0 {
-		height = maxInt(2, minInt(height, maxInt(2, m.height-10)))
+	height := m.height - 10
+	if m.thinkingText != "" || m.busy {
+		height--
 	}
-	return height
+	if len(m.palette) > 0 {
+		height -= minInt(6, len(m.palette)+1)
+	}
+	return maxInt(1, height)
 }
 
 func maxInt(a, b int) int {
@@ -531,13 +684,15 @@ func (m *model) syncViewport() {
 	mainWidth, _ := m.layoutWidths()
 	m.view.SetWidth(mainWidth)
 	m.view.SetHeight(m.historyHeight())
-	m.view.SetContent(m.history())
-	m.view.GotoBottom()
+	m.view.SetContent(m.history(mainWidth))
+	if m.followTail {
+		m.view.GotoBottom()
+	}
 }
 
-func (m model) history() string {
+func (m model) history(width int) string {
 	if len(m.messages) == 0 {
-		return mutedStyle.Render("No messages yet. Start with a question, or type / for commands.")
+		return softStyle.Render("No messages yet. Start with a question, or type / for commands.")
 	}
 	var lines []string
 	for _, message := range m.messages {
@@ -545,18 +700,27 @@ func (m model) history() string {
 		labelStyle := brandStyle
 		switch message.role {
 		case "user":
-			label, labelStyle = "YOU", lipgloss.NewStyle().Foreground(lipgloss.Color(white)).Bold(true)
+			label, labelStyle = "YOU", titleStyle
 		case "thinking":
 			label, labelStyle = "THINKING", amberStyle
 		case "receipt":
-			label, labelStyle = "TOOL RECEIPT", greenStyle
+			status := strings.ToUpper(firstNonEmpty(message.status, "success"))
+			label, labelStyle = "TOOL RECEIPT · "+status, receiptStyle(message.status)
 		}
 		if message.role == "assistant" && body != "" {
-			if rendered, err := glamour.Render(body, "dark"); err == nil {
-				body = strings.TrimSpace(rendered)
-			}
+			body = renderMarkdown(body, width-2)
+		} else if body != "" {
+			body = softStyle.Render(body)
 		}
-		lines = append(lines, labelStyle.Render(label)+"\n"+body+"\n")
+		if message.role == "assistant" && message.streaming {
+			cursor := mutedStyle.Render("▌")
+			if m.cursorVisible {
+				cursor = brandStyle.Render("▌")
+			}
+			body += cursor
+		}
+		block := labelStyle.Render(label) + "\n" + body
+		lines = append(lines, lipgloss.NewStyle().Width(maxInt(1, width-2)).Render(block))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -580,48 +744,69 @@ func (m model) View() tea.View {
 }
 
 func (m model) splash() string {
-	word := "OPENKYROZEN"
+	width := minInt(56, maxInt(28, m.width-4))
+	rows := bannerRows(width)
+	visible := len(rows)
 	if !m.reducedMotion {
-		frames := []string{"·", "✦", "✧", "✦"}
-		marker := frames[m.splashFrame%len(frames)]
-		word = marker + "  " + word + "  " + marker
+		visible = minInt(len(rows), maxInt(0, m.splashFrame-1))
 	}
-	logo := brandStyle.Copy().Align(lipgloss.Center).Render(word)
-	tagline := mutedStyle.Copy().Align(lipgloss.Center).Render("A computer-native, self-learning agent")
-	return lipgloss.NewStyle().Width(maxInt(1, m.width)).Height(maxInt(1, m.height)).Align(lipgloss.Center, lipgloss.Center).Render(logo + "\n\n" + tagline)
+	logo := make([]string, 0, len(rows))
+	for index, row := range rows {
+		if index >= visible {
+			row = strings.Repeat(" ", lipgloss.Width(row))
+		}
+		style := softStyle
+		if index != 3 {
+			style = brandStyle
+		}
+		logo = append(logo, style.Copy().Width(width).Align(lipgloss.Center).Render(row))
+	}
+	lines := append(logo, "")
+	lines = append(lines, startupMilestones(m)...)
+	lines = append(lines, "", splashStatus(m))
+	content := strings.Join(lines, "\n")
+	return lipgloss.NewStyle().Width(maxInt(1, m.width)).Height(maxInt(1, m.height)).Align(lipgloss.Center, lipgloss.Center).Render(content)
 }
 
 func (m model) chatView() string {
-	header := lipgloss.JoinHorizontal(lipgloss.Top, brandStyle.Render("OPENKYROZEN"), "  "+mutedStyle.Render(firstNonEmpty(m.provider, "provider pending")), "  "+mutedStyle.Render(firstNonEmpty(m.modelName, "startup")))
-	if m.workspace != "" {
-		header += "\n" + mutedStyle.Render("workspace  "+m.workspace)
-	}
-	historyHeight := m.historyHeight()
+	contentWidth := m.contentWidth()
 	mainWidth, panelWidth := m.layoutWidths()
-	history := m.view.View()
-	if len(m.palette) > 0 {
-		history = m.paletteView()
+	header := lipgloss.NewStyle().Width(contentWidth).Render(
+		brandStyle.Render("OPENKYROZEN") + "  " + softStyle.Render(firstNonEmpty(m.provider, "provider pending")) +
+			"  ·  " + mutedStyle.Render(firstNonEmpty(m.modelName, "startup")),
+	)
+	if m.workspace != "" {
+		header += "\n" + mutedStyle.Render("workspace  "+compactText(m.workspace, contentWidth-11))
 	}
-	main := quietStyle.Copy().Width(mainWidth).MaxWidth(mainWidth).Height(historyHeight).MaxHeight(historyHeight).Render(history)
+	main := quietStyle.Copy().Width(mainWidth).MaxWidth(mainWidth).Height(m.historyHeight()).MaxHeight(m.historyHeight()).Render(m.view.View())
 	if panelWidth > 0 {
-		main = lipgloss.JoinHorizontal(lipgloss.Top, main, "  ", m.taskPanel())
+		main = lipgloss.JoinHorizontal(lipgloss.Top, main, "  ", m.activityRail())
 	}
-	composer := focusStyle.Copy().Width(m.contentWidth()).MaxWidth(m.contentWidth()).Render(m.input.View())
-	footer := mutedStyle.Render("Enter send  ·  Shift+Enter newline  ·  ↑↓ command menu  ·  PgUp/PgDn scroll  ·  Ctrl+C quit")
+	blocks := []string{header, rule(contentWidth), main}
+	if progress := m.progressBlock(contentWidth); progress != "" {
+		blocks = append(blocks, progress)
+	}
+	if len(m.palette) > 0 {
+		blocks = append(blocks, m.paletteView(contentWidth))
+	}
+	blocks = append(blocks, m.composer(contentWidth))
+	footer := mutedStyle.Render("Enter send  ·  Shift+Enter newline  ·  ↑↓ commands  ·  PgUp/PgDn scroll  ·  Ctrl+C quit")
 	if m.busy {
-		footer = amberStyle.Render("● "+m.status) + "  " + footer
+		footer = amberStyle.Render(taskSpinner(m.motionFrame)+" "+firstNonEmpty(m.status, "Working…")) + "  " + footer
 	} else {
 		footer = mutedStyle.Render("○ "+firstNonEmpty(m.status, "Ready")) + "  " + footer
 	}
-	return header + "\n\n" + main + "\n\n" + composer + "\n" + footer
+	blocks = append(blocks, footer)
+	return strings.Join(blocks, "\n")
 }
 
-func (m model) paletteView() string {
+func (m model) paletteView(width int) string {
 	if len(m.palette) == 0 {
 		return ""
 	}
-	lines := []string{brandStyle.Render("COMMANDS")}
-	visible := maxInt(1, minInt(len(m.palette), maxInt(1, m.height/8)))
+	rowWidth := maxInt(1, width-2)
+	lines := []string{titleStyle.Render("COMMANDS")}
+	visible := maxInt(1, minInt(len(m.palette), 5))
 	start := 0
 	if m.paletteIndex >= visible {
 		start = m.paletteIndex - visible + 1
@@ -629,77 +814,205 @@ func (m model) paletteView() string {
 	end := minInt(len(m.palette), start+visible)
 	for index := start; index < end; index++ {
 		item := m.palette[index]
-		style, cursor := mutedStyle, "  "
+		cursor := mutedStyle.Render("·")
+		rowStyle := lipgloss.NewStyle().Width(rowWidth).Padding(0, 1)
 		if index == m.paletteIndex {
-			style, cursor = brandStyle, "› "
+			cursor = brandStyle.Render("›")
+			rowStyle = rowStyle.Background(lipgloss.Color(surfaceHi))
+			if m.transitionTick > 0 && m.motionFrame%2 == 0 {
+				cursor = brandStyle.Render("»")
+			}
 		}
-		lines = append(lines, style.Render(cursor+"/"+item.name)+"  "+mutedStyle.Render(item.description))
+		row := cursor + " " + softStyle.Render("/"+item.name) + "  " + mutedStyle.Render(item.description)
+		lines = append(lines, rowStyle.MaxWidth(rowWidth).Render(row))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func (m model) taskPanel() string {
-	_, panelWidth := m.layoutWidths()
-	lines := []string{titleStyle.Render("TASKS"), ""}
-	for _, task := range m.tasks {
-		icon, style := "○", mutedStyle
-		switch task.status {
-		case "succeeded":
-			icon, style = "✓", greenStyle
-		case "running":
-			icon, style = "◷", amberStyle
-		case "failed", "blocked":
-			icon, style = "!", redStyle
-		}
-		lines = append(lines, style.Render(icon)+" "+task.description, mutedStyle.Render(task.status))
+func (m model) composer(width int) string {
+	style := quietStyle.Copy().Width(width).MaxWidth(width).BorderTop(true).BorderBottom(true).BorderForeground(lipgloss.Color(border))
+	if m.input.Focused() {
+		style = style.BorderBottomForeground(lipgloss.Color(cyan))
 	}
-	return panelStyle.Copy().Width(maxInt(1, panelWidth)).MaxWidth(maxInt(1, panelWidth)).Render(strings.Join(lines, "\n"))
+	return style.Render(m.input.View())
 }
+
+func (m model) progressBlock(width int) string {
+	if !m.busy && m.thinkingText == "" {
+		return ""
+	}
+	message := firstNonEmpty(m.thinkingText, m.status, "Working…")
+	return lipgloss.NewStyle().Width(width).Render(amberStyle.Render(taskSpinner(m.motionFrame)) + " " + softStyle.Render(message))
+}
+
+func (m model) activityRail() string {
+	_, panelWidth := m.layoutWidths()
+	width := maxInt(1, panelWidth-2)
+	lines := []string{titleStyle.Render("ACTIVITY"), rule(width), mutedStyle.Render("PROVIDER"), softStyle.Render(firstNonEmpty(m.provider, "pending"))}
+	if m.modelName != "" {
+		lines = append(lines, mutedStyle.Render(compactText(m.modelName, width)))
+	}
+	if m.workspace != "" {
+		lines = append(lines, "", mutedStyle.Render("WORKSPACE"), softStyle.Render(compactText(m.workspace, width)))
+	}
+	lines = append(lines, "", titleStyle.Render(fmt.Sprintf("TASKS  %d", len(m.tasks))))
+	if len(m.tasks) == 0 {
+		lines = append(lines, mutedStyle.Render("No active tasks"))
+	}
+	for _, task := range m.tasks {
+		icon, stateStyle, label := taskState(task.status, m.motionFrame)
+		if task.id == m.taskFlashID && m.taskFlashTick > 0 && task.status == "succeeded" {
+			label = "completed ·"
+		}
+		lines = append(lines, stateStyle.Render(icon)+" "+softStyle.Render(compactText(task.description, width-4)), stateStyle.Render(label))
+	}
+	return lipgloss.NewStyle().Width(maxInt(1, panelWidth)).MaxWidth(maxInt(1, panelWidth)).BorderLeft(true).BorderForeground(lipgloss.Color(border)).PaddingLeft(2).Render(strings.Join(lines, "\n"))
+}
+
+func (m model) taskPanel() string { return m.activityRail() }
 
 func (m model) modal(_ string) string {
 	var body string
 	switch m.screen {
 	case screenProvider:
-		lines := []string{titleStyle.Render("Choose a provider"), mutedStyle.Render("↑↓ select  Enter confirm  Esc cancel"), ""}
+		lines := []string{brandStyle.Render("PROVIDER SETUP"), titleStyle.Render("Choose a provider"), mutedStyle.Render("↑↓ select  Enter confirm  Esc cancel"), ""}
 		for index, provider := range m.providerList {
-			cursor, style := "  ", mutedStyle
+			cursor, style := mutedStyle.Render("·"), softStyle
+			rowStyle := lipgloss.NewStyle().Padding(0, 1)
 			if index == m.providerIdx {
-				cursor, style = "› ", brandStyle
+				cursor, style = brandStyle.Render("›"), titleStyle
+				rowStyle = rowStyle.Background(lipgloss.Color(surfaceHi))
 			}
-			lines = append(lines, style.Render(cursor+provider))
+			lines = append(lines, rowStyle.Render(cursor+" "+style.Render(provider)))
+		}
+		if len(m.providerList) == 0 {
+			lines = append(lines, mutedStyle.Render("No providers are available."))
 		}
 		body = strings.Join(lines, "\n")
 	case screenAPIKey:
-		body = titleStyle.Render("Provider setup") + "\n" + mutedStyle.Render("Your key is masked and stored encrypted locally.") + "\n\n" + focusStyle.Render(m.apiInput.View()) + "\n\n" + mutedStyle.Render("Enter confirm  ·  Esc cancel")
+		body = brandStyle.Render("PROVIDER SETUP") + "\n" + titleStyle.Render("Add your API key") + "\n" + mutedStyle.Render("Your key is masked and stored encrypted locally.") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.apiInput.View()) + "\n\n" + mutedStyle.Render("Enter confirm  ·  Esc cancel")
 	case screenApproval:
-		body = titleStyle.Render("Approval required") + "\n\n" + amberStyle.Render(m.approvalTool) + "\n" + mutedStyle.Render(m.approvalArgs) + "\n\n" + mutedStyle.Render("This may change local or remote state.") + "\n\n" + greenStyle.Render("Y / Enter approve") + "    " + redStyle.Render("N / Esc deny")
+		body = amberStyle.Render("!  APPROVAL REQUIRED") + "\n" + titleStyle.Render("Confirm this action") + "\n\n" + softStyle.Render(m.approvalTool) + "\n" + softStyle.Render(m.approvalArgs) + "\n\n" + mutedStyle.Render("This may change local or remote state.") + "\n\n" + greenStyle.Render("Y / Enter  approve") + "    " + redStyle.Render("N / Esc  deny")
 	case screenSelfLearning:
-		lines := []string{titleStyle.Render("Self-learning settings"), mutedStyle.Render("↑↓ select  Space toggle  Esc close"), ""}
+		lines := []string{brandStyle.Render("MEMORY"), titleStyle.Render("Self-learning settings"), mutedStyle.Render("↑↓ select  Space toggle  Esc close"), ""}
 		for index, item := range m.features {
-			cursor, style := "  ", mutedStyle
+			cursor, style := mutedStyle.Render("·"), softStyle
+			rowStyle := lipgloss.NewStyle().Padding(0, 1)
 			if index == m.featureIdx {
-				cursor, style = "› ", brandStyle
+				cursor, style = brandStyle.Render("›"), titleStyle
+				rowStyle = rowStyle.Background(lipgloss.Color(surfaceHi))
 			}
 			check := "○"
 			if item.enabled {
 				check = "●"
 			}
-			lines = append(lines, style.Render(cursor+check+" "+item.name), mutedStyle.Render("    "+item.description))
+			lines = append(lines, rowStyle.Render(cursor+" "+style.Render(check+" "+item.name)), mutedStyle.Render("    "+item.description))
 		}
 		body = strings.Join(lines, "\n")
 	case screenError:
-		body = titleStyle.Render("OpenKyrozen needs attention") + "\n\n" + redStyle.Render(m.errorText) + "\n\n" + mutedStyle.Render("Press Enter or Esc to return to chat.")
+		body = redStyle.Render("ERROR") + "\n" + titleStyle.Render("OpenKyrozen needs attention") + "\n\n" + softStyle.Render(m.errorText) + "\n\n" + mutedStyle.Render("Press Enter or Esc to return to chat.")
 	}
 	modalWidth := maxInt(1, minInt(78, m.width-4))
-	modal := panelStyle.Copy().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(muted)).Width(modalWidth).MaxWidth(modalWidth).Render(body)
+	style := modalStyle.Copy()
+	if m.transitionTick > 0 {
+		style = style.BorderForeground(lipgloss.Color(cyan))
+	}
+	modal := style.Width(modalWidth).MaxWidth(modalWidth).Render(body)
 	return lipgloss.NewStyle().Width(maxInt(1, m.width)).Height(maxInt(1, m.height)).Align(lipgloss.Center, lipgloss.Center).Render(modal)
 }
 
-var (
-	amberStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(amber))
-	greenStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(green))
-	redStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color(red))
-)
+func rule(width int) string { return ruleStyle.Render(strings.Repeat("─", maxInt(1, width))) }
+
+func bannerRows(width int) []string {
+	inner := maxInt(26, width-2)
+	line := strings.Repeat("─", inner)
+	return []string{
+		"╭" + line + "╮",
+		"│" + centerText("◈  OPENKYROZEN  ◈", inner) + "│",
+		"│" + centerText("COMPUTER-NATIVE  /  SELF-LEARNING", inner) + "│",
+		"│" + centerText("A LOCAL WORKBENCH FOR YOUR IDEAS", inner) + "│",
+		"╰" + line + "╯",
+	}
+}
+
+func centerText(value string, width int) string {
+	if lipgloss.Width(value) > width {
+		value = string([]rune(value)[:maxInt(0, width)])
+	}
+	padding := maxInt(0, width-lipgloss.Width(value))
+	return strings.Repeat(" ", padding/2) + value + strings.Repeat(" ", padding-padding/2)
+}
+
+func startupMilestones(m model) []string {
+	phase := m.splashFrame / 3
+	if m.reducedMotion {
+		phase = 5
+	}
+	return []string{
+		startupMilestone("workspace", phase >= 2, phase == 1),
+		startupMilestone("provider", m.backendReady, !m.backendReady && phase >= 2),
+		startupMilestone("memory", m.backendReady && phase >= 5, m.backendReady && phase < 5),
+	}
+}
+
+func startupMilestone(name string, done, active bool) string {
+	icon, style := "·", mutedStyle
+	if done {
+		icon, style = "✓", greenStyle
+	} else if active {
+		icon, style = taskSpinner(1), amberStyle
+	}
+	return style.Render(icon) + " " + softStyle.Render(name)
+}
+
+func splashStatus(m model) string {
+	if m.backendReady {
+		return greenStyle.Render("READY") + "  " + softStyle.Render("Opening your workbench…")
+	}
+	return amberStyle.Render(taskSpinner(m.splashFrame)) + "  " + softStyle.Render(firstNonEmpty(m.status, "Starting the workspace…"))
+}
+
+func taskSpinner(frame int) string {
+	return []string{"◐", "◓", "◑", "◒"}[maxInt(0, frame)%4]
+}
+
+func taskState(status string, frame int) (string, lipgloss.Style, string) {
+	switch strings.ToLower(status) {
+	case "succeeded", "completed", "complete", "done":
+		return "✓", greenStyle, "completed"
+	case "running", "active", "in_progress":
+		return taskSpinner(frame), amberStyle, "running"
+	case "failed":
+		return "×", redStyle, "failed"
+	case "blocked":
+		return "⊘", redStyle, "blocked"
+	default:
+		return "○", mutedStyle, firstNonEmpty(status, "pending")
+	}
+}
+
+func receiptStyle(status string) lipgloss.Style {
+	switch strings.ToLower(status) {
+	case "blocked", "approval_denied":
+		return amberStyle
+	case "failure", "failed", "error":
+		return redStyle
+	default:
+		return greenStyle
+	}
+}
+
+func compactText(value string, width int) string {
+	value = strings.TrimSpace(value)
+	if width < 1 || lipgloss.Width(value) <= width {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= width {
+		return value
+	}
+	return string(runes[:maxInt(1, width-1)]) + "…"
+}
 
 func main() {
 	project := flag.String("project", "", "active project path")
