@@ -175,7 +175,7 @@ Type `/` as the first non-whitespace character to open the command palette. It f
 | `/api_key` | Change your API key |
 | `/learn` | Immediately scan project files into memory |
 | `/forget` | Show recent learnings; `/forget keyword` to delete bad learnings |
-| `/update` | Update the installed tool in place from the pinned `v2.0.3` GitHub wheel; restart Kyrozen after success (never pulls into a project) |
+| `/update` | Update the installed package and Bubble Tea binary; restart Kyrozen after success (never pulls into a project) |
 | `/agent auto\|coder\|researcher` | Choose automatic routing or an isolated learning profile |
 | `/learning status [profile]` | Show candidate, canary, active, retired, and rolled-back artifacts |
 | `/learning metrics [profile]` | Show verified completion, corrections, errors, cost, and latency metrics |
@@ -934,9 +934,12 @@ GitHub Actions automatically runs on every push and PR:
 - Docker build and replace-container recovery smoke test
 
 The published `v2.0.3` release is immutable and remains the pinned target for
-public installers and `/update`. A future release is a deliberate, manual
-release operation: update the pinned version, build and validate the artifacts,
-and verify both installers before publishing the new tag.
+public installers. `/update` uses its checksum-verified TUI asset when present;
+because that release predates the Bubble Tea client, it securely pins the
+current `main` revision until a release containing the TUI asset is published.
+A future release is a deliberate, manual release operation: update the pinned
+version, build and validate the artifacts, and verify both installers before
+publishing the new tag.
 
 ### Release wheel
 

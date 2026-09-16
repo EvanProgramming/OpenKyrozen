@@ -247,6 +247,8 @@ exit 0
             ["uv", "tool", "install"], 0, stdout="upgraded", stderr="",
         )
         with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
+             patch("main._release_tui_asset_available", return_value=True), \
+             patch("main._update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
              patch("main.subprocess.run", return_value=completed) as run:
             result = main._self_update()
         self.assertIn("upgraded", result)
@@ -271,6 +273,8 @@ exit 0
             ["uv", "--no-cache", "tool", "install"], 0, stdout="upgraded", stderr="",
         )
         with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
+             patch("main._release_tui_asset_available", return_value=True), \
+             patch("main._update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
              patch("main.subprocess.run", side_effect=[failed, completed]) as run:
             result = main._self_update()
         self.assertIn("upgraded", result)
@@ -292,10 +296,44 @@ exit 0
             stdout="retry also failed", stderr="",
         )
         with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
+             patch("main._release_tui_asset_available", return_value=True), \
              patch("main.subprocess.run", side_effect=[failed, retry_failed]):
             result = main._self_update()
         self.assertIn("uv exit 1", result)
         self.assertIn("retry also failed", result)
+
+    def test_update_bootstraps_main_revision_when_release_predates_tui(self):
+        import main
+
+        completed = subprocess.CompletedProcess(
+            ["uv", "tool", "install"], 0, stdout="installed from source", stderr="",
+        )
+        revision = "a" * 40
+        with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
+             patch("main._release_tui_asset_available", return_value=False), \
+             patch("main._resolve_update_revision", return_value=revision), \
+             patch("main._update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
+             patch("main.subprocess.run", return_value=completed) as run:
+            result = main._self_update()
+        command = run.call_args.args[0]
+        self.assertEqual(command[-1], f"git+{main.UPDATE_REPOSITORY_URL}@{revision}")
+        self.assertIn(f"source revision {revision[:12]}", result)
+
+    def test_launcher_promotes_pending_tui_before_launch(self):
+        import tui_launcher
+
+        with tempfile.TemporaryDirectory() as home:
+            state_bin = Path(home) / ".kyrozen" / "bin"
+            state_bin.mkdir(parents=True)
+            pending = state_bin / "openkyrozen-tui.next"
+            target = state_bin / "openkyrozen-tui"
+            pending.write_text("new tui", encoding="utf-8")
+            pending.chmod(0o700)
+            with patch("tui_launcher.Path.home", return_value=Path(home)), \
+                 patch("tui_launcher.shutil.which", return_value=None):
+                self.assertEqual(tui_launcher._tui_binary(), str(target))
+            self.assertEqual(target.read_text(encoding="utf-8"), "new tui")
+            self.assertFalse(pending.exists())
 
     def test_docker_starts_server_in_explicit_project_mode(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")

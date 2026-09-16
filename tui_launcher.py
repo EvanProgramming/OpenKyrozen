@@ -22,8 +22,16 @@ def _is_terminal() -> bool:
 
 def _tui_binary() -> str | None:
     explicit = os.environ.get("KYROZEN_TUI_BINARY", "").strip()
-    candidates = [Path(explicit)] if explicit else []
     state_bin = Path.home() / ".kyrozen" / "bin"
+    for name in ("openkyrozen-tui", "openkyrozen-tui.exe"):
+        target = state_bin / name
+        pending = target.with_name(target.name + ".next")
+        if pending.is_file():
+            try:
+                os.replace(pending, target)
+            except OSError:
+                pass
+    candidates = [Path(explicit)] if explicit else []
     candidates.extend([
         state_bin / "openkyrozen-tui",
         state_bin / "openkyrozen-tui.exe",

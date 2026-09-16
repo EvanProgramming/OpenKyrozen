@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import glob
+import importlib.metadata
 import os
 import subprocess
 import sys
@@ -65,6 +66,13 @@ def main() -> int:
             "KYROZEN_PROVIDER": "ollama",
             "KYROZEN_DISABLE_VECTOR_INDEX": "1",
         })
+        entry_points = {
+            entry.name: entry.value
+            for entry in importlib.metadata.entry_points(group="console_scripts")
+            if entry.name in {"kyrozen", "kyrozen-backend"}
+        }
+        if entry_points.get("kyrozen") != "tui_launcher:main" or entry_points.get("kyrozen-backend") != "tui_backend:main":
+            raise RuntimeError(f"installed entry points did not target the TUI bridge: {entry_points}")
         version = _run([str(kyrozen), "--version"], cwd=caller, env=env)
         if "OpenKyrozen" not in version.stdout:
             raise RuntimeError(f"unexpected version output: {version.stdout!r}")
