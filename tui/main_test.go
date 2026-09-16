@@ -103,6 +103,22 @@ func TestReducedMotionKeepsStaticFinalBanner(t *testing.T) {
 	}
 }
 
+func TestSplashRevealHasSignalLogoTaglineAndMilestones(t *testing.T) {
+	m := initialModel("", false)
+	m.width, m.height = 90, 24
+	m.reducedMotion = false
+	for frame := 0; frame <= 8; frame++ {
+		m.splashFrame = frame
+		view := m.splash()
+		if frame >= 3 && !strings.Contains(view, "OPENKYROZEN") {
+			t.Fatalf("frame %d did not reveal the logo", frame)
+		}
+		if frame >= 8 && !strings.Contains(view, "workspace") {
+			t.Fatalf("frame %d did not render startup milestones", frame)
+		}
+	}
+}
+
 func TestThinkingCoalescesAndStreamingCursorPulses(t *testing.T) {
 	m := initialModel("", false)
 	m.messages = []chatMessage{{role: "user", text: "hello"}}
@@ -138,6 +154,9 @@ func TestTaskStateTransitionAndAdaptiveRail(t *testing.T) {
 	m.tasks = []taskItem{{id: "t1", description: "Build", status: "running"}}
 	if _, rail := m.layoutWidths(); rail == 0 {
 		t.Fatal("wide layout did not allocate an activity rail")
+	}
+	if !m.animating() {
+		t.Fatal("running task did not keep its activity indicator animated")
 	}
 	m.handleBackendEvent(backendEvent{"event": "tasks", "tasks": []any{map[string]any{"id": "t1", "description": "Build", "status": "succeeded"}}})
 	if m.taskFlashID != "t1" || m.taskFlashTick == 0 {

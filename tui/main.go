@@ -270,13 +270,22 @@ func (m model) canLeaveSplash(now time.Time) bool {
 }
 
 func (m model) animating() bool {
-	return !m.reducedMotion && (m.screen == screenSplash || m.busy || m.taskFlashTick > 0 || m.transitionTick > 0)
+	return !m.reducedMotion && (m.screen == screenSplash || m.busy || m.hasRunningTask() || m.taskFlashTick > 0 || m.transitionTick > 0)
 }
 
 func (m *model) maybeMotion(cmds *[]tea.Cmd) {
 	if m.animating() {
 		*cmds = append(*cmds, motionTick())
 	}
+}
+
+func (m model) hasRunningTask() bool {
+	for _, task := range m.tasks {
+		if strings.EqualFold(task.status, "running") || strings.EqualFold(task.status, "active") || strings.EqualFold(task.status, "in_progress") {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
