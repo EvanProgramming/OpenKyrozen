@@ -219,6 +219,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, waitBackend(m.bridge))
 		m.maybeMotion(&cmds)
+	case tea.MouseWheelMsg:
+		// Capture wheel input while the TUI is active. Without mouse reporting,
+		// Warp and native terminals scroll their own screen instead of this
+		// viewport, which makes the full-screen app appear to disappear.
+		if m.screen == screenChat {
+			m.view, _ = m.view.Update(msg)
+			m.followTail = m.view.AtBottom()
+		}
 	case backendExitMsg:
 		if m.screen != screenError {
 			m.status = "Backend stopped"
@@ -490,7 +498,6 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		m.busy, m.status = true, "Generating…"
 		m.thinkingText = ""
 		m.cursorVisible = true
-		m.followTail = true
 		text := stringValue(event, "text")
 		for i := len(m.messages) - 1; i >= 0; i-- {
 			if m.messages[i].role == "assistant" && m.messages[i].streaming {
@@ -503,7 +510,6 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		m.thinkingText = firstNonEmpty(stringValue(event, "text"), "Working…")
 		m.busy = true
 		m.status = "Thinking…"
-		m.followTail = true
 	case "response":
 		text := stringValue(event, "text")
 		for i := len(m.messages) - 1; i >= 0; i-- {
@@ -511,21 +517,18 @@ func (m *model) handleBackendEvent(event backendEvent) {
 				m.messages[i].text, m.messages[i].streaming = text, false
 				m.busy = false
 				m.thinkingText = ""
-				m.followTail = true
 				return
 			}
 		}
 		m.messages = append(m.messages, chatMessage{role: "assistant", text: text})
 		m.busy = false
 		m.thinkingText = ""
-		m.followTail = true
 	case "tool_receipt":
 		if receipt, ok := event["receipt"].(map[string]any); ok {
 			m.messages = append(m.messages, chatMessage{
 				role: "receipt", status: receiptStatus(receipt),
 				text: stringValue(receipt, "action") + " — " + stringValue(receipt, "result"),
 			})
-			m.followTail = true
 		}
 	case "tasks":
 		previous := make(map[string]string, len(m.tasks))
@@ -746,6 +749,7 @@ func (m model) View() tea.View {
 	}
 	view := tea.NewView(fillBackground(content, m.width, m.height))
 	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
 	view.BackgroundColor = lipgloss.Color(ink)
 	view.ForegroundColor = lipgloss.Color(white)
 	view.WindowTitle = "OpenKyrozen"

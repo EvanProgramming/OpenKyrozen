@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
 
@@ -178,6 +179,30 @@ func TestRenderedChatFitsSmallWindow(t *testing.T) {
 		if width := lipgloss.Width(line); width > m.width {
 			t.Fatalf("chat line %d is %d cells wide at width %d", index, width, m.width)
 		}
+	}
+}
+
+func TestMouseWheelStaysInsideViewportAndPreservesManualScroll(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height = 80, 24
+	m.screen = screenChat
+	m.messages = []chatMessage{{role: "assistant", text: strings.Repeat("line of transcript\n", 80)}}
+	m.resize()
+	m.view.GotoBottom()
+	m.followTail = true
+
+	updated, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	m = updated.(model)
+	if m.followTail || m.view.AtBottom() {
+		t.Fatal("mouse wheel did not move the transcript away from the bottom")
+	}
+
+	m.handleBackendEvent(backendEvent{"event": "stream_delta", "text": "more output"})
+	if m.followTail {
+		t.Fatal("streaming output overrode the user's manual scroll position")
+	}
+	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Fatalf("TUI is not capturing cell-motion mouse input: %v", got)
 	}
 }
 
