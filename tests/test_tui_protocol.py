@@ -82,6 +82,30 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertEqual(events[1]["event"], "status")
         self.assertNotIn("sk-test-secret", self.output.getvalue())
 
+    def test_start_launches_detached_learning_worker_when_provider_is_ready(self):
+        context = type("Context", (), {
+            "active_root": Path("/tmp/openkyrozen-tui-workspace"),
+            "is_global": True,
+        })()
+        config = type("Config", (), {
+            "provider": "deepseek",
+            "model_simple": "deepseek-v4-flash",
+        })()
+        plugin = type("Plugin", (), {"load_once": lambda self: None})()
+        with patch.object(tui_backend.agent, "configure_launch_context", return_value=context), \
+                patch.object(tui_backend.agent, "detect_provider", return_value=config), \
+                patch.object(tui_backend.agent, "_prompt_and_init_deepseek", return_value=True), \
+                patch.object(tui_backend.agent, "_plugin_runtime_for_surface", return_value=plugin), \
+                patch.object(tui_backend.agent, "_run_recovered_tasks", return_value=[]), \
+                patch.object(tui_backend.agent, "_load_project_files_into_memory"), \
+                patch.object(tui_backend.agent, "_ensure_detached_learning_worker", return_value=True) as ensure_worker:
+            self.backend.start({"command": "start", "global": True}, "start-1")
+
+        ensure_worker.assert_called_once_with()
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        self.assertEqual(events[-1]["event"], "status")
+        self.assertEqual(events[-1]["state"], "ready")
+
     def test_approval_response_requires_a_correlated_request_id(self):
         payload, error = self.backend.validate({"command": "approval_response", "approved": True})
         self.assertIsNone(payload)
