@@ -136,6 +136,8 @@ class Backend:
             self.status("starting", "Restoring tasks and memory…", request_id)
             task_results = self._quiet_call(agent._run_recovered_tasks)
             self._quiet_call(agent._load_project_files_into_memory)
+            if configured and not self._quiet_call(agent._ensure_detached_learning_worker):
+                threading.Thread(target=agent._background_learning_loop, daemon=True).start()
             self.emit("tasks", request_id, tasks=[
                 {"id": item["id"], "description": item["description"], "status": item["status"]}
                 for item in agent.tasks.tasks

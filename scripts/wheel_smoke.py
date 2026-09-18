@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import glob
-import importlib.metadata
+import json
 import os
 import subprocess
 import sys
@@ -66,11 +66,10 @@ def main() -> int:
             "KYROZEN_PROVIDER": "ollama",
             "KYROZEN_DISABLE_VECTOR_INDEX": "1",
         })
-        entry_points = {
-            entry.name: entry.value
-            for entry in importlib.metadata.entry_points(group="console_scripts")
-            if entry.name in {"kyrozen", "kyrozen-backend"}
-        }
+        entry_points = json.loads(_run([
+            str(python), "-c",
+            "import importlib.metadata, json; print(json.dumps({e.name: e.value for e in importlib.metadata.entry_points(group='console_scripts') if e.name in {'kyrozen', 'kyrozen-backend'}}))",
+        ], cwd=caller, env=env).stdout)
         if entry_points.get("kyrozen") != "tui_launcher:main" or entry_points.get("kyrozen-backend") != "tui_backend:main":
             raise RuntimeError(f"installed entry points did not target the TUI bridge: {entry_points}")
         version = _run([str(kyrozen), "--version"], cwd=caller, env=env)
