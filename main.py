@@ -103,6 +103,11 @@ from rich import print as rprint
 from memory import MemoryBank
 from task_engine import TaskManager, TaskWorker, canonical_status, is_complete, is_terminal
 from event_store import stable_hash, utc_now
+from interaction import (
+    InteractionController, InteractionError, is_plan_acceptance, mode_capabilities,
+    parse_control_block, render_plan, render_question, validate_plan_proposal,
+    validate_question_request,
+)
 from learning_engine import LearningEngine
 from skill_registry import SkillRegistry
 from instruction_loader import format_instructions
@@ -604,6 +609,9 @@ _last_completion_tokens: int = 0
 _active_usage_run_id: ContextVar[str | None] = ContextVar("active_usage_run_id", default=None)
 _stream_event_callback: ContextVar[Any] = ContextVar("stream_event_callback", default=None)
 _approval_callback: ContextVar[Any] = ContextVar("approval_callback", default=None)
+_active_interaction_mode: ContextVar[str] = ContextVar("active_interaction_mode", default="agent")
+_interaction_mode_override: ContextVar[str | None] = ContextVar("interaction_mode_override", default=None)
+_interaction_controls_enabled: ContextVar[bool] = ContextVar("interaction_controls_enabled", default=True)
 _turn_cost_log: list[dict] = []  # {"tokens":int, "time":float, "tool_calls":int}
 
 
@@ -2476,7 +2484,9 @@ def _build_tools_list(capabilities: frozenset[str] | None = None) -> str:
 
 def _agent_prompt_tools_list(agent_config: dict[str, Any]) -> str:
     """Build the prompt inventory after applying the config upper bound."""
-    return _build_tools_list(effective_capabilities(agent_config))
+    configured = effective_capabilities(agent_config)
+    active = globals().get("_execution_capability_token")
+    return _build_tools_list(configured & active.capabilities if active else configured)
 
 
 TOOLS_LIST = _build_tools_list()
@@ -2514,13 +2524,39 @@ def _system_prompt(tools_list: str, agent_config: dict[str, Any] | None = None) 
         f"Relative paths such as `README.md` resolve from `{active_root}`. "
         "Use `analyze_remote_repo` only when an external repository is explicitly intended."
     )
+    interaction_mode = _active_interaction_mode.get()
+    interaction_instructions = (
+        "## Interaction mode\n"
+        f"The effective interaction mode is `{interaction_mode}`. Modes only narrow permissions.\n"
+        "Ask a question only when ambiguity materially affects scope, safety, cost, irreversible effects, or acceptance criteria. "
+        "Questions never authorize tools and must never request credentials or secrets.\n"
+        "To pause for clarification, output only this control block and no Action, TaskList, TaskDone, or DefineTool:\n"
+        "AskUser:\n```json\n"
+        '{"questions":[{"id":"scope","header":"Scope","prompt":"Which scope?","choices":[{"id":"a","label":"Option A","description":"Impact"},{"id":"b","label":"Option B","description":"Impact"}]}]}\n'
+        "```\n"
+        "Use 1-3 questions and 2-3 choices per question; clients add Other and Skip.\n"
+        "In `ask` mode, answer or investigate with read/network tools only.\n"
+        "In `plan` mode, inspect with read/network tools only, then output only a PlanProposal block. Do not execute the plan:\n"
+        "PlanProposal:\n```json\n"
+        '{"title":"Plan title","summary":"Outcome","assumptions":[],"steps":[{"id":"step-1","title":"Step","description":"Work to perform","acceptance":["Observable result"]}]}\n'
+        "```\n"
+        "Use 1-10 stable step IDs. A revision is a new version created by the runtime.\n"
+        "In `agent` mode, execute within the available capabilities and existing approval policy.\n"
+        "Legacy Plan and TaskList execution applies only in `agent` mode.\n"
+    )
+    if not _interaction_controls_enabled.get():
+        interaction_instructions = (
+            "## Interaction mode\n"
+            "This surface is non-interactive. Operate in `agent` mode within its existing capabilities and approvals. "
+            "Do not emit AskUser or PlanProposal controls.\n"
+        )
     dynamic_tool_instructions = (
         "## Dynamic tools\n"
         "Dynamic tools are enabled only when the active surface grants the `dynamic` capability and the approval policy allows registration. "
         "When a missing pure helper is genuinely needed, you may output exactly one DefineTool block; never include imports, filesystem/process/network access, secrets, permission changes, or capability grants. "
         "The runtime validates and registers it, refreshes the tool inventory, and then you may call it by its exact name:\n"
         "DefineTool:\n```python\ndef tool_name(args: str) -> str:\n    return args.strip()\n```\n"
-    ) if ALLOW_DYNAMIC_TOOLS else (
+    ) if ALLOW_DYNAMIC_TOOLS and interaction_mode == "agent" else (
         "## Dynamic tools\n"
         "Dynamic tool creation is disabled for this execution surface. Do not emit DefineTool blocks.\n"
     )
@@ -2529,6 +2565,7 @@ def _system_prompt(tools_list: str, agent_config: dict[str, Any] | None = None) 
         "You are Kyrozen, an intelligent, self-learning AI assistant with file access, "
         "shell commands, and web search. Use tools when needed; converse naturally otherwise.\n\n"
         + configured_sections + "\n\n"
+        + interaction_instructions + "\n"
         "## Available Tools\n"
         + tools_list + "\n\n"
         "## Tool invocation format\n"
@@ -2572,7 +2609,7 @@ def _system_prompt(tools_list: str, agent_config: dict[str, Any] | None = None) 
         "```\n"
         "After obtaining evidence for a task, output `TaskDone: <index>` on its own line before the next Action. TaskDone alone never proves completion.\n\n"
         "## General rules\n"
-        "- Never ask the user for permission to continue — decide and act.\n"
+        "- Ask only through AskUser and only for material ambiguity; ordinary tool approvals remain separate.\n"
         "- When analysing a repo, start with `list_dir('.')`.\n"
         "- After `write_file`, use the absolute path returned in subsequent commands.\n"
         "- For stored knowledge, use `search_memory` or `check_stored_data`.\n"
@@ -2615,12 +2652,54 @@ def _system_prompt(tools_list: str, agent_config: dict[str, Any] | None = None) 
 
 
 memory_bank = MemoryBank()
+_interaction_controller = InteractionController(
+    memory_bank.store, user_id=memory_bank.user_id, workspace_id=memory_bank.workspace_id,
+    session_id=f"surface:{_EXECUTION_SURFACE}",
+)
 skill_registry = SkillRegistry(memory_bank.store, workspace_id=memory_bank.workspace_id)
 learning_engine = LearningEngine(memory_bank, registry=skill_registry)
 _restore_self_learning_flags()
 _agent_profile_mode = "auto"
 _last_learning_run: dict[str, Any] | None = None
 _learning_notices: list[str] = []
+
+
+def interaction_envelope(user_input: str = "") -> dict[str, Any]:
+    return _interaction_controller.envelope(user_input)
+
+
+def bind_interaction_scope(session_id: str, *, user_id: str | None = None) -> None:
+    """Bind the shared task and interaction facades to one local surface."""
+    global tasks, _interaction_controller
+    owner = user_id or memory_bank.user_id
+    tasks = TaskManager(
+        memory_bank.store, workspace_id=memory_bank.workspace_id,
+        session_id=session_id, user_id=owner,
+    )
+    _interaction_controller = InteractionController(
+        memory_bank.store, user_id=owner, workspace_id=memory_bank.workspace_id,
+        session_id=session_id,
+    )
+
+
+def set_interaction_mode(mode: str) -> dict[str, Any]:
+    envelope = _interaction_controller.set_mode(mode)
+    _emit_stream_event({"event": "interaction", "interaction": envelope})
+    return envelope
+
+
+def resolve_interaction_question(request_id: str, answers: Any, *, action: str = "answer") -> dict[str, Any]:
+    return _interaction_controller.resolve_question(request_id, answers, action=action)
+
+
+def accept_interaction_plan(plan_id: str | None = None, version: int | None = None) -> tuple[dict[str, Any], bool]:
+    return _interaction_controller.accept_plan(tasks, plan_id=plan_id, version=version)
+
+
+def cancel_interaction_plan(plan_id: str | None = None, version: int | None = None) -> dict[str, Any]:
+    plan = _interaction_controller.cancel_plan(plan_id, version)
+    _emit_stream_event({"event": "interaction", "interaction": interaction_envelope()})
+    return plan
 
 
 def _record_plugin_event(event_type: str, payload: dict[str, Any]) -> None:
@@ -4525,6 +4604,10 @@ def _clean_final_response(text: str) -> str:
                      flags=re.IGNORECASE)
     cleaned = re.sub(r"TaskList:\s*```(?:json)?\s*[\s\S]*?```", "", cleaned,
                      flags=re.IGNORECASE)
+    cleaned = re.sub(r"AskUser:\s*```(?:json)?\s*[\s\S]*?```", "", cleaned,
+                     flags=re.IGNORECASE)
+    cleaned = re.sub(r"PlanProposal:\s*```(?:json)?\s*[\s\S]*?```", "", cleaned,
+                     flags=re.IGNORECASE)
     # Accept the legacy plain JSON forms too.
     cleaned = re.sub(r"Action:\s*(?:\{[\s\S]*?\}|\[[\s\S]*?\])", "", cleaned,
                      flags=re.IGNORECASE)
@@ -4564,14 +4647,37 @@ def _parse_model_response(text: str) -> dict[str, Any]:
     raw = str(text or "").strip()
     _unwrapped_calls, malformed_unwrapped = _collect_unwrapped_tool_calls(raw)
     tool_calls = [] if malformed_unwrapped else _collect_tool_calls(raw)
+    question = None
+    plan_proposal = None
+    control_error = None
+    try:
+        question_value = parse_control_block(raw, "AskUser")
+        plan_value = parse_control_block(raw, "PlanProposal")
+        if question_value is not None:
+            question = validate_question_request(question_value)
+        if plan_value is not None:
+            plan_proposal = validate_plan_proposal(plan_value)
+    except InteractionError as exc:
+        control_error = str(exc)
+    has_control = question is not None or plan_proposal is not None
+    combined_control = has_control and (
+        bool(tool_calls)
+        or bool(re.search(r"^[ \t]*(?:TaskList|TaskDone|DefineTool):", raw, re.IGNORECASE | re.MULTILINE))
+        or (question is not None and plan_proposal is not None)
+    )
     return {
         "raw": raw,
         "clean": _clean_final_response(raw),
         "has_plan": bool(re.search(r"^[ \t]*Plan:", raw, re.IGNORECASE | re.MULTILINE)),
         "has_tasklist": bool(re.search(r"^[ \t]*TaskList:", raw, re.IGNORECASE | re.MULTILINE)),
         "tool_calls": tool_calls,
+        "question": question,
+        "plan_proposal": plan_proposal,
         "unknown_action": _detect_unknown_action(raw),
-        "protocol_error": (
+        "protocol_error": control_error or (
+            "AskUser and PlanProposal must be the only control block in a response. "
+            "No tool or task action was executed."
+            if combined_control else
             "The model returned an incomplete or ambiguous unwrapped tool call. "
             "No tool was executed. Retry with one complete structured tool call."
             if malformed_unwrapped else None
@@ -4583,14 +4689,43 @@ def _observe_model_response(text: str) -> dict[str, Any]:
     """Parse a response once and merge its durable task signals once."""
     define_tool_present = bool(re.search(r"^[ \t]*DefineTool\s*:", str(text or ""),
                                          re.IGNORECASE | re.MULTILINE))
-    define_tool_registered = _attempt_define_tool(text) if define_tool_present else False
     parsed = _parse_model_response(text)
+    has_control = parsed["question"] is not None or parsed["plan_proposal"] is not None
+    define_tool_registered = (
+        _attempt_define_tool(text)
+        if define_tool_present and not has_control and not parsed["protocol_error"] else False
+    )
     parsed["define_tool_present"] = define_tool_present
     parsed["define_tool_registered"] = define_tool_registered
-    if parsed["raw"]:
+    if (parsed["raw"] and not has_control and not parsed["protocol_error"]
+            and _active_interaction_mode.get() == "agent"):
         tasks.from_llm_block(parsed["raw"])
         tasks.mark_done_from_text(parsed["raw"])
     return parsed
+
+
+def _persist_interaction_control(parsed: dict[str, Any], user_input: str) -> str | None:
+    if ((parsed.get("question") is not None or parsed.get("plan_proposal") is not None)
+            and not _interaction_controls_enabled.get()):
+        return "Interaction controls are unavailable on this non-interactive surface; no action was executed."
+    if parsed.get("question") is not None:
+        question = _interaction_controller.request_question(
+            parsed["question"], original_input=user_input,
+        )
+        _emit_stream_event({"event": "interaction", "interaction": interaction_envelope()})
+        return render_question(question)
+    if parsed.get("plan_proposal") is not None:
+        plan = _interaction_controller.propose_plan(
+            parsed["plan_proposal"], original_input=user_input,
+        )
+        _emit_stream_event({"event": "interaction", "interaction": interaction_envelope()})
+        return render_plan(plan)
+    return None
+
+
+def _interaction_gate(parsed: dict[str, Any], user_input: str) -> str | None:
+    """Stop a response before any executable path when it carries a control."""
+    return parsed.get("protocol_error") or _persist_interaction_control(parsed, user_input)
 
 
 def _deterministic_tool_summary(tool_records: list[dict[str, Any]]) -> str:
@@ -4749,6 +4884,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
 
     global _last_user_interaction, DEEPSEEK_MODEL, _execution_capability_token
     global _last_learning_run, _learning_notices
+    interaction_mode = _active_interaction_mode.get()
     _last_user_interaction = time.time()
     _touch_detached_learning_heartbeat()
     feedback = learning_engine.feedback_signal(user_input)
@@ -4765,12 +4901,13 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     learning_run = learning_engine.begin_run(resolved_profile, user_input, provider_model=provider_model)
     _active_usage_run_id.set(learning_run["run_id"])
     learned_context, learning_receipts = learning_engine.artifact_context(learning_run)
+    base_capabilities = resolve_capabilities(
+        _surface_capabilities or ("full" if _EXECUTION_SURFACE == "cli" else "workspace"),
+        default="workspace",
+    )
     _execution_capability_token = issue_capability_token(
         f"surface:{_EXECUTION_SURFACE}",
-        resolve_capabilities(
-            _surface_capabilities or ("full" if _EXECUTION_SURFACE == "cli" else "workspace"),
-            default="workspace",
-        ),
+        mode_capabilities(base_capabilities, interaction_mode),
     )
 
     # Compress old turns if context is growing too large
@@ -4830,10 +4967,10 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                        + _agent_prompt_tools_list(agent_config),
         })
 
-    if response_meta["protocol_error"]:
+    interaction_reply = _interaction_gate(response_meta, user_input)
+    if interaction_reply is not None:
         return _finish_learning_run(
-            learning_run, learning_receipts, user_input,
-            response_meta["protocol_error"], [],
+            learning_run, learning_receipts, user_input, interaction_reply, [],
             turn_prompt_total + turn_completion_total, turn_start,
         )
 
@@ -4859,10 +4996,16 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         turn_completion_total += _last_completion_tokens
         response_meta = _observe_model_response(response_text)
         tool_calls = response_meta["tool_calls"]
+        interaction_reply = _interaction_gate(response_meta, user_input)
+        if interaction_reply is not None:
+            return _finish_learning_run(
+                learning_run, learning_receipts, user_input, interaction_reply, [],
+                turn_prompt_total + turn_completion_total, turn_start,
+            )
 
     # ---- Plan enforcement: MEDIUM and COMPLEX only ----
     _llm_has_plan = response_meta["has_plan"]
-    if complexity in ("medium", "complex"):
+    if interaction_mode == "agent" and complexity in ("medium", "complex"):
         plan_attempts = 0
         while not _llm_has_plan and tool_calls and plan_attempts < 2:
             plan_attempts += 1
@@ -4877,12 +5020,12 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
             response_meta = _observe_model_response(response_text)
             tool_calls = response_meta["tool_calls"]
             _llm_has_plan = response_meta["has_plan"]
-        if response_meta["protocol_error"]:
-            return _finish_learning_run(
-                learning_run, learning_receipts, user_input,
-                response_meta["protocol_error"], [],
-                turn_prompt_total + turn_completion_total, turn_start,
-            )
+            interaction_reply = _interaction_gate(response_meta, user_input)
+            if interaction_reply is not None:
+                return _finish_learning_run(
+                    learning_run, learning_receipts, user_input, interaction_reply, [],
+                    turn_prompt_total + turn_completion_total, turn_start,
+                )
         if not _llm_has_plan and tool_calls and plan_attempts >= 2:
             # Auto‑generate a minimal plan from tool calls
             plan_lines = ["Plan:"]
@@ -4890,16 +5033,9 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 plan_lines.append(f"{i+1}. Execute {tc.get('action','?')}")
             # Don't inject — just let it proceed without plan this time
 
-    if response_meta["protocol_error"]:
-        return _finish_learning_run(
-            learning_run, learning_receipts, user_input,
-            response_meta["protocol_error"], [],
-            turn_prompt_total + turn_completion_total, turn_start,
-        )
-
     # ---- TaskList enforcement: COMPLEX only ----
     _llm_has_tasklist = response_meta["has_tasklist"]
-    if complexity == "complex" and tool_calls:
+    if interaction_mode == "agent" and complexity == "complex" and tool_calls:
         if not _llm_has_tasklist and _llm_has_plan:
             _tasks_from_plan(response_text)
             if tasks.tasks:
@@ -4919,6 +5055,24 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 _update_tasks_panel()
 
     # ---- Missing action recovery (up to 3 attempts) ----
+    if not tool_calls and interaction_mode == "plan":
+        messages.append({
+            "role": "user",
+            "content": "System: Plan mode must end with exactly one PlanProposal JSON block. "
+                       "Do not output an Action or execute the plan.",
+        })
+        response_text = _call_llm_with_spinner(messages).strip()
+        turn_prompt_total += _last_prompt_tokens
+        turn_completion_total += _last_completion_tokens
+        response_meta = _observe_model_response(response_text)
+        tool_calls = response_meta["tool_calls"]
+        interaction_reply = _interaction_gate(response_meta, user_input)
+        if interaction_reply is not None:
+            return _finish_learning_run(
+                learning_run, learning_receipts, user_input, interaction_reply, [],
+                turn_prompt_total + turn_completion_total, turn_start,
+            )
+
     if not tool_calls:
         if (_requires_tool_action(user_input) or _llm_has_plan or _llm_has_tasklist
                 or response_meta["define_tool_registered"]):
@@ -4952,6 +5106,12 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                     continue
                 response_meta = _observe_model_response(response_text)
                 tool_calls = response_meta["tool_calls"]
+                interaction_reply = _interaction_gate(response_meta, user_input)
+                if interaction_reply is not None:
+                    return _finish_learning_run(
+                        learning_run, learning_receipts, user_input, interaction_reply, [],
+                        turn_prompt_total + turn_completion_total, turn_start,
+                    )
                 if response_meta["define_tool_registered"]:
                     agent_config = load_agent_config(_get_workspace_root())
                     messages.append({
@@ -5001,6 +5161,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     round_count = 0
     incomplete_prompt_attempts = 0
     final_answer: str | None = None
+    pending_interaction_reply: str | None = None
     protocol_error_message: str | None = None
     current_reply = response_text
     has_errors = any(not record["success"] for record in tool_records)
@@ -5067,7 +5228,8 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                     "You are Kyrozen, an intelligent AI assistant. "
                     "You have just obtained the following information by running tools. "
                     "If more steps are needed to satisfy the user request, output the next Action block. "
-                    "Otherwise, output only a plain final answer."
+                    "Otherwise, output a PlanProposal block in plan mode or a plain final answer in other modes. "
+                    f"The effective interaction mode is {interaction_mode}."
                 )
             },
             {"role": "system", "content": _workspace_info()},
@@ -5080,7 +5242,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 "content": (
                     "Here are the tools you can use. "
                     "Make sure to pick an action name exactly as listed:\n"
-                    + TOOLS_LIST
+                    + _build_tools_list(_execution_capability_token.capabilities)
                 )
             },
             {"role": "user", "content": user_input},
@@ -5103,7 +5265,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                     "If you have completed a task, you **must** output `TaskDone: <index>` "
                     "(replace index with the zero-based index) **before** the next Action block. "
                     "Do not omit the `TaskDone:` line.\n"
-                    "Never ask the user for permission to continue. Automatically decide."
+                    "Use AskUser only when material ambiguity requires clarification."
                 )
             }
         ]
@@ -5125,6 +5287,12 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         next_tool_calls = step_meta["tool_calls"]
         if step_meta["protocol_error"]:
             protocol_error_message = step_meta["protocol_error"]
+            break
+
+        interaction_reply = _persist_interaction_control(step_meta, user_input)
+        if interaction_reply is not None:
+            pending_interaction_reply = interaction_reply
+            final_answer = interaction_reply
             break
 
         # ----- reject unknown action names and force re-prompting -----
@@ -5154,8 +5322,14 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
             if step_meta["protocol_error"]:
                 protocol_error_message = step_meta["protocol_error"]
                 break
+            interaction_reply = _persist_interaction_control(step_meta, user_input)
+            if interaction_reply is not None:
+                pending_interaction_reply = interaction_reply
+                final_answer = interaction_reply
+                next_tool_calls = []
+                break
 
-        if protocol_error_message:
+        if protocol_error_message or pending_interaction_reply is not None:
             break
 
         # if after 3 retries the action is still unknown, clear the list to avoid a crash
@@ -5164,6 +5338,26 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
 
         # if there are no more tool calls, the LLM might be giving a natural reply
         if not next_tool_calls:
+            if interaction_mode == "plan":
+                step_reply = _call_llm_with_spinner(summary_messages + [{
+                    "role": "user",
+                    "content": "System: Inspection is complete. Output exactly one PlanProposal JSON block now. "
+                               "Do not execute the plan.",
+                }]).strip()
+                turn_prompt_total += _last_prompt_tokens
+                turn_completion_total += _last_completion_tokens
+                step_meta = _observe_model_response(step_reply)
+                if step_meta["protocol_error"]:
+                    protocol_error_message = step_meta["protocol_error"]
+                    break
+                interaction_reply = _persist_interaction_control(step_meta, user_input)
+                if interaction_reply is not None:
+                    pending_interaction_reply = interaction_reply
+                    final_answer = interaction_reply
+                    break
+                protocol_error_message = "Plan mode requires a valid PlanProposal block; no plan was accepted or executed."
+                break
+
             # Stop once every task is terminal, but only trust model prose when
             # every durable task actually succeeded.
             all_terminal = not tasks.tasks or all(is_terminal(t) for t in tasks.tasks)
@@ -5213,28 +5407,18 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 if step_meta["protocol_error"]:
                     protocol_error_message = step_meta["protocol_error"]
                     break
+                interaction_reply = _persist_interaction_control(step_meta, user_input)
+                if interaction_reply is not None:
+                    pending_interaction_reply = interaction_reply
+                    final_answer = interaction_reply
+                    break
                 if not next_tool_calls:
                     # Still no action — don't give up yet, loop will try again
                     # (incomplete_prompt_attempts will eventually trigger the 12-nudge limit)
                     pass
             elif _is_question(step_reply):
-                summary_messages.append({
-                    "role": "user",
-                    "content": "System: Do not ask the user. Output the next Action block now."
-                })
-                step_reply = _call_llm_with_spinner(summary_messages).strip()
-                turn_prompt_total += _last_prompt_tokens
-                turn_completion_total += _last_completion_tokens
-                if not step_reply:
-                    break
-                step_meta = _observe_model_response(step_reply)
-                next_tool_calls = step_meta["tool_calls"]
-                if step_meta["protocol_error"]:
-                    protocol_error_message = step_meta["protocol_error"]
-                    break
-                if not next_tool_calls:
-                    final_answer = step_meta["clean"] or _deterministic_tool_summary(tool_records)
-                    break
+                final_answer = step_meta["clean"] or _deterministic_tool_summary(tool_records)
+                break
             else:
                 summary_messages.append({
                     "role": "user",
@@ -5250,6 +5434,11 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 next_tool_calls = step_meta["tool_calls"]
                 if step_meta["protocol_error"]:
                     protocol_error_message = step_meta["protocol_error"]
+                    break
+                interaction_reply = _persist_interaction_control(step_meta, user_input)
+                if interaction_reply is not None:
+                    pending_interaction_reply = interaction_reply
+                    final_answer = interaction_reply
                     break
                 if not next_tool_calls:
                     final_answer = step_meta["clean"] or _deterministic_tool_summary(tool_records)
@@ -5299,7 +5488,15 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 summary_messages + [{"role": "user", "content": final_msg}]
             ).strip()
             search_meta = _observe_model_response(step_reply)
-            final_answer = search_meta["clean"] or _deterministic_tool_summary(tool_records)
+            interaction_reply = _interaction_gate(search_meta, user_input)
+            if interaction_reply is not None:
+                if search_meta.get("question") is not None or search_meta.get("plan_proposal") is not None:
+                    pending_interaction_reply = interaction_reply
+                else:
+                    protocol_error_message = interaction_reply
+                final_answer = interaction_reply
+            else:
+                final_answer = search_meta["clean"] or _deterministic_tool_summary(tool_records)
             console.print(f"[{_WARNING}]Search limit reached — synthesizing final answer.[/{_WARNING}]")
             break
         # Check if all tasks reached a durable terminal state; if so, stop.
@@ -5330,7 +5527,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     # response or generated recap claim completion when any task failed,
     # blocked, cancelled, pending, or is still running.
     durable_tasks_incomplete = bool(tasks.tasks) and not all(is_complete(t) for t in tasks.tasks)
-    if durable_tasks_incomplete:
+    if durable_tasks_incomplete and pending_interaction_reply is None:
         summary = _deterministic_tool_summary(tool_records)
         final_answer = (
             f"{protocol_error_message}\n\n{summary}" if protocol_error_message else summary
@@ -5386,27 +5583,81 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
 def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None = None,
                memory_context: dict[str, Any] | None = None) -> str:
     """Run one chat turn with failure-isolated plugin lifecycle hooks."""
-    runtime = _plugin_runtime_for_surface()
-    context = {
-        "user_id": memory_bank.user_id,
-        "workspace_id": memory_bank.workspace_id,
-        "session_id": memory_bank.session_id,
-        "profile": profile or _agent_profile_mode,
-    }
-    runtime.turn_start(user_input=user_input, **context)
-    try:
-        reply = _chat_turn_impl(
-            user_input, clear_tasks=clear_tasks, profile=profile,
-            memory_context=memory_context,
+    global _execution_capability_token
+    previous_capability_token = _execution_capability_token
+    original_user_input = user_input
+    accepted_plan: dict[str, Any] | None = None
+    mode_override = _interaction_mode_override.get()
+    state = _interaction_controller.state(user_input)
+    executing_plan = state.get("executing_plan") if mode_override is None else None
+    pending_question = state.get("pending_question") if mode_override is None else None
+    pending_plan = state.get("pending_plan") if mode_override is None else None
+    if mode_override is None and pending_question:
+        resolved = _interaction_controller.resolve_question(
+            pending_question["request_id"], user_input, action="answer",
         )
-    except Exception as exc:
-        _track_fix_outcome(user_input, f"Turn failed: {type(exc).__name__}: {exc}")
-        runtime.turn_end(reply="", success=False,
-                         error=f"{type(exc).__name__}: {exc}", **context)
-        raise
-    _track_fix_outcome(user_input, reply)
-    runtime.turn_end(reply=reply, success=True, **context)
-    return reply
+        user_input = (
+            f"Original request:\n{pending_question.get('original_input', '')}\n\n"
+            f"Clarification answers:\n{json.dumps(resolved['answers'], ensure_ascii=False)}"
+        )
+        clear_tasks = False
+    elif mode_override is None and is_plan_acceptance(user_input):
+        try:
+            accepted_plan, created = _interaction_controller.accept_plan(tasks)
+        except InteractionError:
+            return "There is no pending plan to accept."
+        if not created and not _interaction_controller.state().get("executing_plan"):
+            return "Plan was already accepted."
+        user_input = (
+            "Execute the accepted plan below in Agent mode. Complete each durable task with evidence.\n\n"
+            + json.dumps(accepted_plan, ensure_ascii=False)
+        )
+        clear_tasks = False
+    elif mode_override is None and pending_plan:
+        user_input = (
+            f"Original request:\n{pending_plan.get('original_input', '')}\n\n"
+            f"Current plan v{pending_plan.get('version')}:\n{json.dumps(pending_plan, ensure_ascii=False)}\n\n"
+            f"Revision feedback:\n{user_input}"
+        )
+        clear_tasks = False
+
+    mode_token = _active_interaction_mode.set(
+        mode_override or _interaction_controller.state(user_input)["effective_mode"]
+    )
+    active_plan = accepted_plan or executing_plan
+    try:
+        runtime = _plugin_runtime_for_surface()
+        context = {
+            "user_id": memory_bank.user_id,
+            "workspace_id": memory_bank.workspace_id,
+            "session_id": memory_bank.session_id,
+            "profile": profile or _agent_profile_mode,
+        }
+        runtime.turn_start(user_input=original_user_input, **context)
+        try:
+            reply = _chat_turn_impl(
+                user_input, clear_tasks=clear_tasks, profile=profile,
+                memory_context=memory_context,
+            )
+        except Exception as exc:
+            if active_plan:
+                _interaction_controller.complete_plan(active_plan, status="failed")
+            _track_fix_outcome(original_user_input, f"Turn failed: {type(exc).__name__}: {exc}")
+            runtime.turn_end(reply="", success=False,
+                             error=f"{type(exc).__name__}: {exc}", **context)
+            raise
+        state_after = _interaction_controller.state()
+        if (active_plan and not state_after.get("pending_question") and tasks.tasks
+                and all(is_terminal(task) for task in tasks.tasks)):
+            status = "completed" if all(is_complete(task) for task in tasks.tasks) else "failed"
+            _interaction_controller.complete_plan(active_plan, status=status)
+            _emit_stream_event({"event": "interaction", "interaction": interaction_envelope()})
+        _track_fix_outcome(original_user_input, reply)
+        runtime.turn_end(reply=reply, success=True, **context)
+        return reply
+    finally:
+        _execution_capability_token = previous_capability_token
+        _active_interaction_mode.reset(mode_token)
 
 
 def _split_reply(text: str) -> tuple[str, str]:
@@ -6132,6 +6383,7 @@ def main() -> None:
         )
     except ValueError as exc:
         _cli_parser().error(str(exc))
+    bind_interaction_scope("surface:cli")
 
     if args.init:
         console.print(f"[{_ACCENT}]OpenKyrozen initialisation[/{_ACCENT}]")
@@ -6161,7 +6413,7 @@ def main() -> None:
     provider_name = startup_config.provider.title()
     model_name = startup_config.model_simple
     console.print(f"[{_ACCENT}]Kyrozen[/{_ACCENT}] [{_MUTED}]{_DOT} Provider: {provider_name} {_DOT} Model: {model_name}[/{_MUTED}]")
-    console.print(f"[{_MUTED}]Chat:[/{_MUTED}] [{_ACCENT_DIM}] /quit /exit /agent /provider /api_key /learn /update /self-learning[/{_ACCENT_DIM}]")
+    console.print(f"[{_MUTED}]Chat:[/{_MUTED}] [{_ACCENT_DIM}] /mode /ask /plan /question /agent /provider /api_key /learn /update[/{_ACCENT_DIM}]")
 
     # Compact self-learning summary
     enabled_count = sum(1 for v in _SELF_LEARNING_FLAGS.values() if v)
@@ -6203,8 +6455,12 @@ def main() -> None:
 
         _is_auto_continue = False
 
-        # clear tasks for a new user request (skip during auto‑continue)
-        if not _is_auto_continue and not user_input.startswith("/"):
+        interaction_before = interaction_envelope(user_input)
+        # A clarification answer or plan revision continues the same logical
+        # task and must not erase its durable checklist.
+        if (not _is_auto_continue and not user_input.startswith("/")
+                and not interaction_before["pending_question"]
+                and not interaction_before["pending_plan"]):
             tasks.clear()
             _clear_tasks_panel()
 
@@ -6241,6 +6497,70 @@ def main() -> None:
         if user_input.lower() == "/self-learning":
             _show_self_learning_menu()
             continue
+
+        lowered = user_input.lower()
+        if lowered == "/ask":
+            set_interaction_mode("ask")
+            console.print("Interaction mode set to ask.")
+            continue
+        if lowered.startswith("/mode"):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) == 1:
+                state = interaction_envelope()
+                console.print(f"Interaction mode: {state['preference_mode']} (effective: {state['effective_mode']})")
+            else:
+                try:
+                    state = set_interaction_mode(parts[1])
+                    console.print(f"Interaction mode set to {state['preference_mode']}.")
+                except InteractionError as exc:
+                    console.print(f"Usage: /mode auto|ask|plan|agent ({exc})")
+            continue
+        if lowered.startswith("/plan"):
+            parts = lowered.split(maxsplit=1)
+            action = parts[1] if len(parts) > 1 else ""
+            if not action:
+                set_interaction_mode("plan")
+                console.print("Interaction mode set to plan.")
+                continue
+            if action == "cancel":
+                try:
+                    cancel_interaction_plan()
+                    console.print("Pending plan cancelled.")
+                except InteractionError as exc:
+                    console.print(str(exc))
+                continue
+            if action == "accept":
+                user_input = "accept plan"
+            else:
+                console.print("Usage: /plan | /plan accept|cancel")
+                continue
+        if lowered.startswith("/question"):
+            parts = lowered.split(maxsplit=1)
+            action = parts[1] if len(parts) > 1 else ""
+            try:
+                if not action:
+                    console.print(Panel(render_question(_interaction_controller.reopen_question()), title="Question"))
+                    continue
+                if action not in {"skip", "cancel"}:
+                    console.print("Usage: /question | /question skip|cancel")
+                    continue
+                pending = _interaction_controller.state().get("pending_question")
+                if not pending:
+                    raise InteractionError("no question is pending")
+                _interaction_controller.resolve_question(
+                    pending["request_id"], {}, action=action,
+                )
+                if action == "cancel":
+                    console.print("Pending question cancelled.")
+                    continue
+                resolution = "skipped" if action == "skip" else "cancelled"
+                user_input = (
+                    f"Original request:\n{pending.get('original_input', '')}\n\n"
+                    f"Clarification was {resolution} by the user. Continue only if safe; otherwise explain the blocker."
+                )
+            except InteractionError as exc:
+                console.print(str(exc))
+                continue
 
         if user_input.lower().startswith("/tasks"):
             parts = user_input.split(maxsplit=2)
@@ -6337,7 +6657,10 @@ def main() -> None:
             console.print(f"[{_WARNING}]Prompt injection detected and filtered.[/{_WARNING}]")
 
         try:
-            reply = _chat_turn(sanitized, clear_tasks=True)
+            reply = _chat_turn(sanitized, clear_tasks=not bool(
+                interaction_before["pending_question"] or interaction_before["pending_plan"]
+                or is_plan_acceptance(sanitized)
+            ))
         except Exception as e:
             import traceback as _tb
             console.print(f"[{_ERROR}]=== EXCEPTION IN _chat_turn ===[/{_ERROR}]")

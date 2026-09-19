@@ -39,6 +39,45 @@ func TestReducerProjectsStreamingResponseTasksAndApproval(t *testing.T) {
 	}
 }
 
+func TestInteractionCardsRestoreModeQuestionAndPlan(t *testing.T) {
+	m := initialModel(".", false)
+	m.width, m.height = 120, 40
+	m.resize()
+	m.handleBackendEvent(backendEvent{"event": "interaction", "interaction": map[string]any{
+		"preference_mode": "plan", "effective_mode": "plan", "pending_question": map[string]any{
+			"request_id": "question-1", "questions": []any{map[string]any{
+				"id": "scope", "header": "Scope", "prompt": "Which target?", "choices": []any{
+					map[string]any{"id": "core", "label": "Core", "description": "Small scope"},
+					map[string]any{"id": "all", "label": "All", "description": "Broad scope"},
+				},
+			}},
+		}, "pending_plan": map[string]any{
+			"plan_id": "plan-under-question", "version": float64(1), "title": "Earlier plan",
+			"summary": "Question takes priority.", "steps": []any{map[string]any{
+				"id": "step-1", "title": "Wait", "description": "Resolve the question.", "acceptance": []any{"Answered"},
+			}},
+		},
+	}})
+	if m.screen != screenQuestion || m.interactionMode != "plan" || m.pendingQuestion == nil {
+		t.Fatalf("question interaction was not reduced: %#v", m)
+	}
+	if card := m.modal(""); !strings.Contains(card, "Which target?") || !strings.Contains(card, "Other") || !strings.Contains(card, "Skip") {
+		t.Fatalf("question card is incomplete: %s", card)
+	}
+	m.handleBackendEvent(backendEvent{"event": "interaction", "interaction": map[string]any{
+		"preference_mode": "plan", "effective_mode": "plan", "pending_question": nil,
+		"pending_plan": map[string]any{"plan_id": "plan-1", "version": float64(2), "title": "Feature", "summary": "Implement safely.", "steps": []any{
+			map[string]any{"id": "step-1", "title": "Implement", "description": "Make the change.", "acceptance": []any{"Tests pass"}},
+		}},
+	}})
+	if m.screen != screenPlan || m.pendingPlan == nil || m.pendingPlan.version != 2 {
+		t.Fatalf("plan interaction was not reduced: %#v", m)
+	}
+	if card := m.modal(""); !strings.Contains(card, "Feature") || !strings.Contains(card, "Tests pass") || !strings.Contains(card, "accept") {
+		t.Fatalf("plan card is incomplete: %s", card)
+	}
+}
+
 func TestReducedMotionSkipsSplashAndBackgroundFillsWindow(t *testing.T) {
 	m := initialModel("", true)
 	m.reducedMotion = true

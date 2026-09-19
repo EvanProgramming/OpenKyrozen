@@ -18,6 +18,59 @@ from subagents import SubAgentManager
 
 
 class ServerBoundaryTests(unittest.TestCase):
+    def test_chat_interaction_controls_persist_and_restore_without_new_endpoint(self):
+        client = TestClient(server.app)
+        with tempfile.TemporaryDirectory() as directory:
+            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="interaction-web")
+            original_sessions = server._sessions
+            server._sessions = {}
+            try:
+                with patch.object(server._agent, "memory_bank", memory), \
+                        patch.object(server, "_emit_chat_completed"):
+                    mode = client.post("/api/chat", json={
+                        "session_id": "interaction-session", "mode": "plan",
+                    })
+                    self.assertEqual(mode.status_code, 200, mode.text)
+                    self.assertEqual(mode.json()["interaction"]["preference_mode"], "plan")
+
+                    session = server._get_or_create_session("interaction-session")
+                    controller = server._interaction_for_session(session)
+                    question = controller.request_question({"questions": [{
+                        "id": "scope", "header": "Scope", "prompt": "Which target?",
+                        "choices": ["Core", "Everything"],
+                    }]}, original_input="Implement the feature")
+                    with patch.object(server, "_run_session_chat", return_value="resumed") as run:
+                        answered = client.post("/api/chat", json={
+                            "session_id": "interaction-session",
+                            "question_response": {
+                                "request_id": question["request_id"],
+                                "answers": {"scope": "Core"},
+                            },
+                        })
+                    self.assertEqual(answered.status_code, 200, answered.text)
+                    self.assertIn("Original request", run.call_args.args[1])
+                    self.assertIsNone(answered.json()["interaction"]["pending_question"])
+
+                    plan = controller.propose_plan({
+                        "title": "Feature", "summary": "Implement safely.", "assumptions": [],
+                        "steps": [{"id": "step-1", "title": "Implement",
+                                   "description": "Make the scoped change.",
+                                   "acceptance": ["Tests pass"]}],
+                    })
+                    with patch.object(server, "_run_session_chat", return_value="executed") as run:
+                        accepted = client.post("/api/chat", json={
+                            "session_id": "interaction-session",
+                            "plan_action": {"plan_id": plan["plan_id"], "version": plan["version"],
+                                            "action": "accept"},
+                        })
+                    self.assertEqual(accepted.status_code, 200, accepted.text)
+                    self.assertEqual(run.call_args.args[1], "accept plan")
+                    restored = client.get("/api/v2/sessions/interaction-session")
+                    self.assertEqual(restored.status_code, 200, restored.text)
+                    self.assertIn("interaction", restored.json())
+            finally:
+                server._sessions = original_sessions
+
     def test_json_post_boundaries_reject_non_objects_and_malformed_payloads(self):
         client = TestClient(server.app)
         endpoints = (
@@ -202,6 +255,8 @@ class ServerBoundaryTests(unittest.TestCase):
         def reply(session, message):
             seen.update(session)
             self.assertEqual(message, "Reply with exactly MCP_CHAT_OK")
+            self.assertEqual(server._agent._interaction_mode_override.get(), "agent")
+            self.assertFalse(server._agent._interaction_controls_enabled.get())
             return "MCP_CHAT_OK"
 
         with patch.object(server, "_run_session_chat", side_effect=reply):

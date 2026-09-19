@@ -9,9 +9,24 @@ import main
 from memory import MemoryBank
 from learning_engine import LearningEngine
 from task_engine import TaskManager
+from interaction import InteractionController
 
 
 class TaskConsistencyTests(unittest.TestCase):
+    def setUp(self):
+        self._original_interaction = main._interaction_controller
+        self._interaction_directory = tempfile.TemporaryDirectory()
+        controller = InteractionController(
+            MemoryBank(Path(self._interaction_directory.name) / "interaction.sqlite3").store,
+            workspace_id="legacy-tests", session_id="legacy-tests",
+        )
+        controller.set_mode("agent")
+        main._interaction_controller = controller
+
+    def tearDown(self):
+        main._interaction_controller = self._original_interaction
+        self._interaction_directory.cleanup()
+
     def test_explicit_task_ids_win_over_description_deduplication(self):
         with tempfile.TemporaryDirectory() as directory:
             store = MemoryBank(Path(directory) / "state.sqlite3").store

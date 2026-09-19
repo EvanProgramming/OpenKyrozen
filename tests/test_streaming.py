@@ -72,6 +72,10 @@ class _InlineControlProvider:
             "an: inspect first",
             " Thought: internal note ",
             "The action word and invoke word are ordinary prose.",
+            "Ask",
+            'User:\n```json\n{"questions": []}\n```\n',
+            "Plan",
+            'Proposal:\n```json\n{"steps": []}\n```',
         )
 
 
@@ -165,8 +169,10 @@ class StreamingEndpointTests(unittest.TestCase):
         self.assertLess(elapsed, 1)
         self.assertFalse(provider_complete_before_release)
         self.assertEqual(first_payload, {"event": "content", "chunk": "FIRST"})
-        self.assertEqual([item.get("event") for item in payloads[:3]], ["content", "usage", "completion"])
+        self.assertEqual([item.get("event") for item in payloads[:4]],
+                         ["content", "interaction", "usage", "completion"])
         self.assertEqual(payloads[0]["chunk"], " SECOND")
+        self.assertEqual(payloads[1]["interaction"]["preference_mode"], "auto")
         self.assertEqual(sum(text(item) == "data: [DONE]\n\n" for item in remaining), 1)
         self.assertTrue(provider.completed.is_set())
 
@@ -266,7 +272,7 @@ class StreamingEndpointTests(unittest.TestCase):
             content = "".join(item["chunk"] for item in payloads if item.get("event") == "content")
             self.assertIn("Visible progress.", content)
             self.assertIn("The action word and invoke word are ordinary prose.", content)
-            self.assertNotRegex(content, r"Action:|Thought:|Plan:|TaskDone:|DefineTool:")
+            self.assertNotRegex(content, r"Action:|Thought:|Plan:|TaskDone:|DefineTool:|AskUser:|PlanProposal:")
             self.assertNotRegex(content, r"</?\s*(?:invoke|parameter|calls|tool_calls|function_calls)\b")
             assistant_messages = [
                 event["payload"] for event in memory.store.list_events(

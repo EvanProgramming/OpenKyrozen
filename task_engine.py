@@ -198,7 +198,8 @@ class TaskManager:
         self._event(task, "task.created", {"description": description})
         return len(self.tasks) - 1
 
-    def add_ordered_plan(self, descriptions: list[str], *, task_id_prefix: str | None = None) -> None:
+    def add_ordered_plan(self, descriptions: list[str], *, task_id_prefix: str | None = None,
+                         acceptance: list[list[dict[str, Any]]] | None = None) -> None:
         """Add a numbered plan with the same durable ordering as a plain TaskList."""
         items = [str(description).strip() for description in descriptions if str(description).strip()]
         plan_id = _ordered_plan_id(items)
@@ -209,7 +210,8 @@ class TaskManager:
                     "id": plan_id, "index": position, "total": len(items),
                 }}
             task_id = f"{task_id_prefix}-{position + 1}" if task_id_prefix else None
-            self.add_task(description, task_id=task_id, checkpoint=checkpoint)
+            criteria = acceptance[position] if acceptance and position < len(acceptance) else None
+            self.add_task(description, task_id=task_id, checkpoint=checkpoint, acceptance=criteria)
 
     def set_status(self, idx: int, status: str, *, evidence: dict[str, Any] | None = None) -> bool:
         if not 0 <= idx < len(self.tasks):
@@ -287,7 +289,8 @@ class TaskManager:
             if len(group) != total or {item["index"] for item in markers} != set(range(total)):
                 continue
             if any(
-                (task.get("acceptance") and not (task.get("checkpoint") or {}).get("ordered_receipt"))
+                (any(isinstance(item, dict) and item.get("action") for item in task.get("acceptance", []))
+                 and not (task.get("checkpoint") or {}).get("ordered_receipt"))
                 or ((task.get("checkpoint") or {}).get("action")
                     and not (task.get("checkpoint") or {}).get("ordered_receipt"))
                 for task in group

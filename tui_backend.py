@@ -106,6 +106,9 @@ class Backend:
     def status(self, state: str, message: str = "", request_id: str | None = None) -> None:
         self.emit("status", request_id, state=state, message=message, busy=self._busy)
 
+    def interaction(self, request_id: str | None = None) -> None:
+        self.emit("interaction", request_id, interaction=agent.interaction_envelope())
+
     def _quiet_call(self, function: Any, *args: Any, **kwargs: Any) -> Any:
         with contextlib.redirect_stdout(self._quiet_stdout), contextlib.redirect_stderr(self._quiet_stderr):
             return function(*args, **kwargs)
@@ -127,6 +130,7 @@ class Backend:
                 project_path=project if isinstance(project, str) and project.strip() else None,
                 global_mode=global_mode,
             )
+            self._quiet_call(agent.bind_interaction_scope, "surface:tui")
             config = self._quiet_call(agent.detect_provider)
             self.status("starting", "Connecting provider…", request_id)
             configured = bool(self._quiet_call(
@@ -152,6 +156,7 @@ class Backend:
             )
             if not configured and getattr(config, "provider", "") != "ollama":
                 self.prompt_api_key(request_id=request_id)
+            self.interaction(request_id)
             self.status("ready", "Ready", request_id)
         except Exception as exc:
             self.emit("error", request_id, code="startup_failed",
@@ -256,7 +261,8 @@ class Backend:
     def _stream_projection(self, request_id: str):
         dsml = agent.DeepSeekDSMLFilter()
         buffer = ""
-        prefixes = ("action:", "tasklist:", "taskdone:", "thought:", "plan:", "definetool:", "<")
+        prefixes = ("action:", "tasklist:", "taskdone:", "thought:", "plan:", "definetool:",
+                    "askuser:", "planproposal:", "<")
 
         def emit_text(text: str) -> None:
             nonlocal buffer
@@ -285,6 +291,8 @@ class Backend:
                 self.emit("tool_receipt", request_id, receipt=event.get("tool_receipt", {}))
             elif kind == "tasks":
                 self.emit("tasks", request_id, tasks=event.get("tasks", []))
+            elif kind == "interaction":
+                self.emit("interaction", request_id, interaction=event.get("interaction", {}))
 
         return callback
 
@@ -310,9 +318,15 @@ class Backend:
             if flagged:
                 self.emit("status", request_id, state="warning",
                           message="Prompt injection text was filtered.", busy=True)
-            agent.tasks.clear()
+            state = agent.interaction_envelope(text)
+            if not state["pending_question"] and not state["pending_plan"] and not agent.is_plan_acceptance(text):
+                agent.tasks.clear()
             self.status("thinking", "Thinking…", request_id)
-            reply = self._quiet_call(agent._chat_turn, sanitized, clear_tasks=True)
+            reply = self._quiet_call(
+                agent._chat_turn, sanitized,
+                clear_tasks=not bool(state["pending_question"] or state["pending_plan"]
+                                     or agent.is_plan_acceptance(sanitized)),
+            )
             reply = agent._clean_final_response(reply)
             if len(reply.strip()) < 1:
                 self.emit("error", request_id, code="empty_response", error="The provider returned no answer.")
@@ -330,6 +344,7 @@ class Backend:
                 {"id": task["id"], "description": task["description"], "status": task["status"]}
                 for task in agent.tasks.tasks
             ])
+            self.interaction(request_id)
             self.status("ready", "Ready", request_id)
         except agent.ProviderUnavailableError as exc:
             self.emit("error", request_id, code=agent.PROVIDER_UNAVAILABLE_CODE,
@@ -406,6 +421,63 @@ class Backend:
                 self.emit("response", request_id, text=f"Agent profile set to {profile}.")
             else:
                 self.emit("response", request_id, text=f"Agent profile: {agent._agent_profile_mode}")
+        elif command in {"/ask", "ask"}:
+            agent.set_interaction_mode("ask")
+            self.emit("response", request_id, text="Interaction mode set to ask.")
+            self.interaction(request_id)
+        elif command in {"/mode", "mode"}:
+            mode = arg_text.strip().lower()
+            if not mode:
+                self.emit("prompt", request_id, kind="mode", modes=["auto", "ask", "plan", "agent"],
+                          selected=agent.interaction_envelope()["preference_mode"])
+            else:
+                try:
+                    state = agent.set_interaction_mode(mode)
+                    self.emit("response", request_id, text=f"Interaction mode set to {state['preference_mode']}.")
+                    self.interaction(request_id)
+                except agent.InteractionError as exc:
+                    self.emit("error", request_id, code="invalid_mode", error=str(exc))
+        elif command in {"/plan", "plan"}:
+            action = arg_text.strip().lower()
+            if not action:
+                agent.set_interaction_mode("plan")
+                self.emit("response", request_id, text="Interaction mode set to plan.")
+                self.interaction(request_id)
+            elif action == "accept":
+                self.submit("accept plan", request_id)
+            elif action == "cancel":
+                try:
+                    agent.cancel_interaction_plan()
+                    self.emit("response", request_id, text="Pending plan cancelled.")
+                    self.interaction(request_id)
+                except agent.InteractionError as exc:
+                    self.emit("error", request_id, code="plan_not_pending", error=str(exc))
+            else:
+                self.emit("error", request_id, code="invalid_plan_action", error="Usage: /plan | /plan accept|cancel")
+        elif command in {"/question", "question"}:
+            action = arg_text.strip().lower()
+            try:
+                if not action:
+                    agent._interaction_controller.reopen_question()
+                    self.interaction(request_id)
+                elif action in {"skip", "cancel"}:
+                    pending = agent._interaction_controller.state().get("pending_question")
+                    if not pending:
+                        raise agent.InteractionError("no question is pending")
+                    agent.resolve_interaction_question(pending["request_id"], {}, action=action)
+                    if action == "skip":
+                        self.submit(
+                            f"Original request:\n{pending.get('original_input', '')}\n\n"
+                            "Clarification was skipped. Continue only if safe; otherwise explain the blocker.",
+                            request_id,
+                        )
+                    else:
+                        self.emit("response", request_id, text="Pending question cancelled.")
+                        self.interaction(request_id)
+                else:
+                    raise agent.InteractionError("Usage: /question | /question skip|cancel")
+            except agent.InteractionError as exc:
+                self.emit("error", request_id, code="question_not_pending", error=str(exc))
         elif command in {"/update", "update"}:
             self.status("updating", "Updating OpenKyrozen…", request_id)
             result = self._quiet_call(agent._self_update)
@@ -448,6 +520,54 @@ class Backend:
             return "Memory claim forgotten." if agent.learning_engine.forget_claim(claim) else "Memory claim not found."
         return "Usage: /memory why|forget <claim-id>"
 
+    def _question_response(self, payload: dict[str, Any], request_id: str) -> None:
+        response = payload.get("question_response", payload)
+        if not isinstance(response, Mapping):
+            return
+        try:
+            pending = agent._interaction_controller.state().get("pending_question")
+            resolved = agent.resolve_interaction_question(
+                str(response.get("request_id") or ""), response.get("answers", {}),
+                action=str(response.get("action") or "answer"),
+            )
+            action = str(response.get("action") or "answer")
+            if action == "cancel":
+                self.emit("response", request_id, text="Pending question cancelled.")
+                self.interaction(request_id)
+                return
+            question = resolved["question"] if pending else {}
+            text = (f"Original request:\n{question.get('original_input', '')}\n\n"
+                    f"Clarification {action}:\n{json.dumps(resolved['answers'], ensure_ascii=False)}")
+            self.submit(text, request_id)
+        except agent.InteractionError as exc:
+            self.emit("error", request_id, code="question_not_pending", error=str(exc))
+
+    def _plan_action(self, payload: dict[str, Any], request_id: str) -> None:
+        action = str(payload.get("action") or "").lower()
+        plan_id = str(payload.get("plan_id") or "") or None
+        version = payload.get("version") if isinstance(payload.get("version"), int) and not isinstance(payload.get("version"), bool) else None
+        if version is None or version < 1:
+            self.emit("error", request_id, code="invalid_plan_action", error="plan version must be a positive integer")
+            return
+        plan = agent._interaction_controller.state().get("pending_plan")
+        if action == "accept" and not plan and agent._interaction_controller.accepted_plan(plan_id, version):
+            self.emit("response", request_id, text="Plan was already accepted.")
+            self.interaction(request_id)
+            return
+        if not plan or (plan_id and plan_id != plan.get("plan_id")) or (version is not None and version != plan.get("version")):
+            self.emit("error", request_id, code="plan_not_pending", error="plan is not pending at the requested version")
+            return
+        if action == "accept":
+            self.submit("accept plan", request_id)
+        elif action == "cancel":
+            agent.cancel_interaction_plan(plan_id, version)
+            self.emit("response", request_id, text="Pending plan cancelled.")
+            self.interaction(request_id)
+        elif action == "revise" and isinstance(payload.get("text"), str) and payload["text"].strip():
+            self.submit(payload["text"], request_id)
+        else:
+            self.emit("error", request_id, code="invalid_plan_action", error="plan action must be accept, revise, or cancel")
+
     def dispatch(self, payload: dict[str, Any]) -> None:
         command = payload.get("command")
         request_id = payload.get("request_id") or uuid.uuid4().hex
@@ -465,6 +585,10 @@ class Backend:
                 self._command(name, payload.get("args", ""), request_id)
         elif command == "approval_response":
             self.approval_response(payload)
+        elif command == "question_response":
+            self._question_response(payload, request_id)
+        elif command == "plan_action":
+            self._plan_action(payload, request_id)
         elif command == "shutdown":
             self.stop()
 
@@ -486,7 +610,7 @@ class Backend:
         if not isinstance(payload, dict):
             return None, "JSON object required."
         command = payload.get("command")
-        if command not in {"start", "submit", "command", "approval_response", "shutdown"}:
+        if command not in {"start", "submit", "command", "approval_response", "question_response", "plan_action", "shutdown"}:
             return None, "Unknown backend command."
         request_id = payload.get("request_id")
         if request_id is not None and (not isinstance(request_id, str) or len(request_id) > MAX_REQUEST_ID_CHARS):
@@ -500,6 +624,15 @@ class Backend:
                 return None, "request_id is required."
             if not isinstance(payload.get("approved"), bool):
                 return None, "approved must be boolean."
+        if command == "question_response" and not isinstance(payload.get("question_response", payload), Mapping):
+            return None, "question_response must be an object."
+        if command == "plan_action":
+            if payload.get("action") not in {"accept", "revise", "cancel"}:
+                return None, "plan action must be accept, revise, or cancel."
+            if (not isinstance(payload.get("plan_id"), str)
+                    or not isinstance(payload.get("version"), int)
+                    or isinstance(payload.get("version"), bool)):
+                return None, "plan_id and integer version are required."
         try:
             encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         except (TypeError, ValueError):

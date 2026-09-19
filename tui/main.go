@@ -27,6 +27,9 @@ const (
 	screenAPIKey       screen = "api_key"
 	screenApproval     screen = "approval"
 	screenSelfLearning screen = "self_learning"
+	screenMode         screen = "mode"
+	screenQuestion     screen = "question"
+	screenPlan         screen = "plan"
 	screenError        screen = "error"
 )
 
@@ -49,46 +52,73 @@ type featureItem struct {
 	description string
 }
 
+type interactionChoice struct{ id, label, description string }
+type interactionQuestion struct {
+	id, header, prompt string
+	choices            []interactionChoice
+}
+type questionRequest struct {
+	requestID string
+	questions []interactionQuestion
+}
+type planStep struct {
+	id, title, description string
+	acceptance             []string
+}
+type planProposal struct {
+	planID, title, summary string
+	version                int
+	steps                  []planStep
+}
+
 type model struct {
-	bridge         *bridge
-	project        string
-	global         bool
-	width          int
-	height         int
-	view           viewport.Model
-	input          textarea.Model
-	apiInput       textinput.Model
-	screen         screen
-	status         string
-	provider       string
-	modelName      string
-	workspace      string
-	messages       []chatMessage
-	tasks          []taskItem
-	palette        []command
-	paletteIndex   int
-	providerList   []string
-	providerIdx    int
-	features       []featureItem
-	featureIdx     int
-	approvalID     string
-	approvalTool   string
-	approvalArgs   string
-	errorText      string
-	splashFrame    int
-	splashStarted  time.Time
-	readyAt        time.Time
-	backendReady   bool
-	motionFrame    int
-	cursorVisible  bool
-	thinkingText   string
-	taskFlashID    string
-	taskFlashTick  int
-	followTail     bool
-	transitionTick int
-	reducedMotion  bool
-	busy           bool
-	requestCount   int
+	bridge          *bridge
+	project         string
+	global          bool
+	width           int
+	height          int
+	view            viewport.Model
+	input           textarea.Model
+	apiInput        textinput.Model
+	screen          screen
+	status          string
+	provider        string
+	modelName       string
+	workspace       string
+	messages        []chatMessage
+	tasks           []taskItem
+	palette         []command
+	paletteIndex    int
+	providerList    []string
+	providerIdx     int
+	features        []featureItem
+	featureIdx      int
+	interactionMode string
+	effectiveMode   string
+	modeIdx         int
+	pendingQuestion *questionRequest
+	questionIdx     int
+	choiceIdx       int
+	questionAnswers map[string]any
+	pendingPlan     *planProposal
+	approvalID      string
+	approvalTool    string
+	approvalArgs    string
+	errorText       string
+	splashFrame     int
+	splashStarted   time.Time
+	readyAt         time.Time
+	backendReady    bool
+	motionFrame     int
+	cursorVisible   bool
+	thinkingText    string
+	taskFlashID     string
+	taskFlashTick   int
+	followTail      bool
+	transitionTick  int
+	reducedMotion   bool
+	busy            bool
+	requestCount    int
 }
 
 type tickMsg time.Time
@@ -132,18 +162,21 @@ func initialModel(project string, global bool) model {
 	apiStyles.Cursor.Blink = !reducedMotion
 	apiInput.SetStyles(apiStyles)
 	return model{
-		bridge:        newBridge(),
-		project:       project,
-		global:        global,
-		view:          viewport.New(),
-		input:         input,
-		apiInput:      apiInput,
-		screen:        screenSplash,
-		status:        "Starting the workspace…",
-		splashStarted: time.Now(),
-		cursorVisible: true,
-		followTail:    true,
-		reducedMotion: reducedMotion,
+		bridge:          newBridge(),
+		project:         project,
+		global:          global,
+		view:            viewport.New(),
+		input:           input,
+		apiInput:        apiInput,
+		screen:          screenSplash,
+		status:          "Starting the workspace…",
+		splashStarted:   time.Now(),
+		cursorVisible:   true,
+		followTail:      true,
+		reducedMotion:   reducedMotion,
+		interactionMode: "auto",
+		effectiveMode:   "ask",
+		questionAnswers: make(map[string]any),
 	}
 }
 
@@ -317,6 +350,45 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		}
 		return nil, false
 	}
+	if m.screen == screenMode {
+		modes := []string{"auto", "ask", "plan", "agent"}
+		if key == "esc" {
+			m.screen = screenChat
+			return nil, false
+		}
+		if key == "up" || key == "k" {
+			m.modeIdx = (m.modeIdx - 1 + len(modes)) % len(modes)
+		}
+		if key == "down" || key == "j" {
+			m.modeIdx = (m.modeIdx + 1) % len(modes)
+		}
+		if key == "enter" {
+			m.send("command", map[string]any{"name": "mode", "args": modes[m.modeIdx]})
+			m.screen = screenChat
+		}
+		return nil, false
+	}
+	if m.screen == screenQuestion {
+		return m.questionKey(key), false
+	}
+	if m.screen == screenPlan {
+		if key == "a" || key == "A" || key == "enter" {
+			if m.pendingPlan != nil {
+				m.send("plan_action", map[string]any{"action": "accept", "plan_id": m.pendingPlan.planID, "version": m.pendingPlan.version})
+			}
+			m.screen = screenChat
+		} else if key == "c" || key == "C" || key == "esc" {
+			if m.pendingPlan != nil {
+				m.send("plan_action", map[string]any{"action": "cancel", "plan_id": m.pendingPlan.planID, "version": m.pendingPlan.version})
+			}
+			m.screen = screenChat
+		} else if key == "r" || key == "R" {
+			m.screen = screenChat
+			m.input.Placeholder = "Describe the plan revision…"
+			m.input.Focus()
+		}
+		return nil, false
+	}
 	if m.screen == screenProvider {
 		return m.providerKey(key), false
 	}
@@ -384,6 +456,59 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	m.input, cmd = m.input.Update(msg)
 	m.refreshPalette()
 	return cmd, false
+}
+
+func (m *model) questionKey(key string) tea.Cmd {
+	if m.pendingQuestion == nil || len(m.pendingQuestion.questions) == 0 {
+		m.screen = screenChat
+		return nil
+	}
+	question := m.pendingQuestion.questions[minInt(m.questionIdx, len(m.pendingQuestion.questions)-1)]
+	optionCount := len(question.choices) + 2 // Other and Skip are client-owned choices.
+	if key == "up" || key == "k" {
+		m.choiceIdx = (m.choiceIdx - 1 + optionCount) % optionCount
+		return nil
+	}
+	if key == "down" || key == "j" {
+		m.choiceIdx = (m.choiceIdx + 1) % optionCount
+		return nil
+	}
+	if key == "esc" {
+		m.send("question_response", map[string]any{"question_response": map[string]any{"request_id": m.pendingQuestion.requestID, "answers": map[string]any{}, "action": "cancel"}})
+		m.screen = screenChat
+		return nil
+	}
+	if key != "enter" {
+		return nil
+	}
+	if m.choiceIdx == len(question.choices)+1 {
+		m.send("question_response", map[string]any{"question_response": map[string]any{"request_id": m.pendingQuestion.requestID, "answers": map[string]any{}, "action": "skip"}})
+		m.screen = screenChat
+		return nil
+	}
+	if m.choiceIdx == len(question.choices) {
+		m.screen = screenChat
+		parts := make([]string, 0, len(m.questionAnswers)+1)
+		for _, item := range m.pendingQuestion.questions {
+			if answer := m.questionAnswers[item.id]; answer != nil {
+				parts = append(parts, item.id+": "+fmt.Sprint(answer))
+			}
+		}
+		parts = append(parts, question.id+": ")
+		m.input.SetValue(strings.Join(parts, "; "))
+		m.input.Placeholder = "Type your own clarification…"
+		m.input.Focus()
+		return nil
+	}
+	m.questionAnswers[question.id] = question.choices[m.choiceIdx].id
+	if m.questionIdx+1 < len(m.pendingQuestion.questions) {
+		m.questionIdx++
+		m.choiceIdx = 0
+		return nil
+	}
+	m.send("question_response", map[string]any{"question_response": map[string]any{"request_id": m.pendingQuestion.requestID, "answers": m.questionAnswers}})
+	m.screen = screenChat
+	return nil
 }
 
 func (m *model) submit() tea.Cmd {
@@ -512,6 +637,7 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		m.status = "Thinking…"
 	case "response":
 		text := stringValue(event, "text")
+		m.input.Placeholder = "Ask Kyrozen anything…"
 		for i := len(m.messages) - 1; i >= 0; i-- {
 			if m.messages[i].role == "assistant" && m.messages[i].streaming {
 				m.messages[i].text, m.messages[i].streaming = text, false
@@ -544,6 +670,10 @@ func (m *model) handleBackendEvent(event backendEvent) {
 				}
 			}
 		}
+	case "interaction":
+		if value, ok := event["interaction"].(map[string]any); ok {
+			m.applyInteraction(value)
+		}
 	case "prompt":
 		m.handlePrompt(event)
 	case "error":
@@ -551,6 +681,78 @@ func (m *model) handleBackendEvent(event backendEvent) {
 	case "exit":
 		m.status, m.busy = "Stopped", false
 		m.thinkingText = ""
+	}
+}
+
+func (m *model) applyInteraction(value map[string]any) {
+	m.interactionMode = firstNonEmpty(stringValue(value, "preference_mode"), "auto")
+	m.effectiveMode = firstNonEmpty(stringValue(value, "effective_mode"), m.interactionMode)
+	if raw, ok := value["pending_question"].(map[string]any); ok {
+		request := &questionRequest{requestID: stringValue(raw, "request_id")}
+		if questions, ok := raw["questions"].([]any); ok {
+			for _, value := range questions {
+				item, ok := value.(map[string]any)
+				if !ok {
+					continue
+				}
+				question := interactionQuestion{id: stringValue(item, "id"), header: stringValue(item, "header"), prompt: stringValue(item, "prompt")}
+				if choices, ok := item["choices"].([]any); ok {
+					for _, value := range choices {
+						choice, ok := value.(map[string]any)
+						if !ok {
+							continue
+						}
+						question.choices = append(question.choices, interactionChoice{id: stringValue(choice, "id"), label: stringValue(choice, "label"), description: stringValue(choice, "description")})
+					}
+				}
+				request.questions = append(request.questions, question)
+			}
+		}
+		m.pendingQuestion, m.questionIdx, m.choiceIdx = request, 0, 0
+		m.questionAnswers = make(map[string]any)
+		if len(request.questions) > 0 {
+			m.screen = screenQuestion
+			m.startTransition()
+		}
+	} else {
+		m.pendingQuestion = nil
+		if m.screen == screenQuestion {
+			m.screen = screenChat
+		}
+	}
+	if raw, ok := value["pending_plan"].(map[string]any); ok {
+		plan := &planProposal{planID: stringValue(raw, "plan_id"), title: stringValue(raw, "title"), summary: stringValue(raw, "summary")}
+		if version, ok := raw["version"].(float64); ok {
+			plan.version = int(version)
+		}
+		if version, ok := raw["version"].(int); ok {
+			plan.version = version
+		}
+		if steps, ok := raw["steps"].([]any); ok {
+			for _, value := range steps {
+				item, ok := value.(map[string]any)
+				if !ok {
+					continue
+				}
+				step := planStep{id: stringValue(item, "id"), title: stringValue(item, "title"), description: stringValue(item, "description")}
+				if acceptance, ok := item["acceptance"].([]any); ok {
+					for _, criterion := range acceptance {
+						step.acceptance = append(step.acceptance, fmt.Sprint(criterion))
+					}
+				}
+				plan.steps = append(plan.steps, step)
+			}
+		}
+		m.pendingPlan = plan
+		if m.pendingQuestion == nil {
+			m.screen = screenPlan
+			m.startTransition()
+		}
+	} else {
+		m.pendingPlan = nil
+		if m.screen == screenPlan {
+			m.screen = screenChat
+		}
 	}
 }
 
@@ -602,6 +804,17 @@ func (m *model) handlePrompt(event backendEvent) {
 			}
 		}
 		m.featureIdx, m.screen = 0, screenSelfLearning
+		m.startTransition()
+	case "mode":
+		modes := []string{"auto", "ask", "plan", "agent"}
+		m.modeIdx = 0
+		selected := stringValue(event, "selected")
+		for index, mode := range modes {
+			if mode == selected {
+				m.modeIdx = index
+			}
+		}
+		m.screen = screenMode
 		m.startTransition()
 	}
 }
@@ -786,7 +999,8 @@ func (m model) chatView() string {
 	mainWidth, panelWidth := m.layoutWidths()
 	header := lipgloss.NewStyle().Width(contentWidth).Render(
 		brandStyle.Render("OPENKYROZEN") + "  " + softStyle.Render(firstNonEmpty(m.provider, "provider pending")) +
-			"  ·  " + mutedStyle.Render(firstNonEmpty(m.modelName, "startup")),
+			"  ·  " + mutedStyle.Render(firstNonEmpty(m.modelName, "startup")) +
+			"  ·  " + brandStyle.Render(strings.ToUpper(firstNonEmpty(m.interactionMode, "auto"))),
 	)
 	if m.workspace != "" {
 		header += "\n" + mutedStyle.Render("workspace  "+compactText(m.workspace, contentWidth-11))
@@ -868,6 +1082,7 @@ func (m model) activityRail() string {
 	if m.workspace != "" {
 		lines = append(lines, "", mutedStyle.Render("WORKSPACE"), softStyle.Render(compactText(m.workspace, width)))
 	}
+	lines = append(lines, "", mutedStyle.Render("MODE"), softStyle.Render(firstNonEmpty(m.interactionMode, "auto")+" → "+firstNonEmpty(m.effectiveMode, "ask")))
 	lines = append(lines, "", titleStyle.Render(fmt.Sprintf("TASKS  %d", len(m.tasks))))
 	if len(m.tasks) == 0 {
 		lines = append(lines, mutedStyle.Render("No active tasks"))
@@ -920,6 +1135,60 @@ func (m model) modal(_ string) string {
 				check = "●"
 			}
 			lines = append(lines, rowStyle.Render(cursor+" "+style.Render(check+" "+item.name)), mutedStyle.Render("    "+item.description))
+		}
+		body = strings.Join(lines, "\n")
+	case screenMode:
+		modes := []string{"auto", "ask", "plan", "agent"}
+		lines := []string{brandStyle.Render("INTERACTION MODE"), titleStyle.Render("Choose how Kyrozen responds"), mutedStyle.Render("↑↓ select  Enter confirm  Esc cancel"), ""}
+		for index, mode := range modes {
+			cursor, style := mutedStyle.Render("·"), softStyle
+			row := lipgloss.NewStyle().Padding(0, 1)
+			if index == m.modeIdx {
+				cursor, style = brandStyle.Render("›"), titleStyle
+				row = row.Background(lipgloss.Color(surfaceHi))
+			}
+			lines = append(lines, row.Render(cursor+" "+style.Render(mode)))
+		}
+		body = strings.Join(lines, "\n")
+	case screenQuestion:
+		lines := []string{brandStyle.Render("CLARIFICATION"), titleStyle.Render("Kyrozen needs a decision")}
+		if m.pendingQuestion != nil && len(m.pendingQuestion.questions) > 0 {
+			question := m.pendingQuestion.questions[minInt(m.questionIdx, len(m.pendingQuestion.questions)-1)]
+			lines = append(lines, mutedStyle.Render(fmt.Sprintf("Question %d of %d", m.questionIdx+1, len(m.pendingQuestion.questions))), "", titleStyle.Render(question.header), softStyle.Render(question.prompt), "")
+			for index, choice := range question.choices {
+				cursor, style := mutedStyle.Render("·"), softStyle
+				if index == m.choiceIdx {
+					cursor, style = brandStyle.Render("›"), titleStyle
+				}
+				label := choice.label
+				if choice.description != "" {
+					label += " — " + choice.description
+				}
+				lines = append(lines, cursor+" "+style.Render(label))
+			}
+			extra := []string{"Other (type your own answer)", "Skip"}
+			for offset, label := range extra {
+				index := len(question.choices) + offset
+				cursor, style := mutedStyle.Render("·"), softStyle
+				if index == m.choiceIdx {
+					cursor, style = brandStyle.Render("›"), titleStyle
+				}
+				lines = append(lines, cursor+" "+style.Render(label))
+			}
+			lines = append(lines, "", mutedStyle.Render("↑↓ select  Enter confirm  Esc cancel"))
+		}
+		body = strings.Join(lines, "\n")
+	case screenPlan:
+		lines := []string{brandStyle.Render("PLAN PROPOSAL")}
+		if m.pendingPlan != nil {
+			lines = append(lines, titleStyle.Render(fmt.Sprintf("%s · v%d", m.pendingPlan.title, m.pendingPlan.version)), "", softStyle.Render(m.pendingPlan.summary), "")
+			for index, step := range m.pendingPlan.steps {
+				lines = append(lines, titleStyle.Render(fmt.Sprintf("%d. %s", index+1, step.title)), softStyle.Render(step.description))
+				for _, criterion := range step.acceptance {
+					lines = append(lines, mutedStyle.Render("   ✓ "+criterion))
+				}
+			}
+			lines = append(lines, "", greenStyle.Render("A / Enter  accept"), amberStyle.Render("R  revise"), redStyle.Render("C / Esc  cancel"))
 		}
 		body = strings.Join(lines, "\n")
 	case screenError:

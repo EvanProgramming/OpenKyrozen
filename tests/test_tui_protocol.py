@@ -1,5 +1,6 @@
 import io
 import json
+import tempfile
 import threading
 import time
 import unittest
@@ -7,6 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import tui_backend
+from interaction import InteractionController
+from event_store import EventStore
 
 
 class TUIProtocolTests(unittest.TestCase):
@@ -110,6 +113,35 @@ class TUIProtocolTests(unittest.TestCase):
         payload, error = self.backend.validate({"command": "approval_response", "approved": True})
         self.assertIsNone(payload)
         self.assertIn("request_id", error)
+
+    def test_interaction_envelope_and_structured_commands_are_correlated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = tui_backend.agent._interaction_controller
+            controller = InteractionController(
+                EventStore(Path(directory) / "state.sqlite3"),
+                workspace_id="tui", session_id="surface:tui",
+            )
+            tui_backend.agent._interaction_controller = controller
+            try:
+                question = controller.request_question({"questions": [{
+                    "id": "scope", "header": "Scope", "prompt": "Which target?",
+                    "choices": ["Core", "All"],
+                }]})
+                self.backend.interaction("state-1")
+                event = json.loads(self.output.getvalue().splitlines()[-1])
+                self.assertEqual(event["event"], "interaction")
+                self.assertEqual(event["request_id"], "state-1")
+                self.assertEqual(event["interaction"]["pending_question"]["request_id"], question["request_id"])
+                payload, error = self.backend.validate({
+                    "command": "question_response", "request_id": "turn-1",
+                    "question_response": {"request_id": question["request_id"], "answers": {}, "action": "cancel"},
+                })
+                self.assertIsNone(error)
+                self.assertIsNotNone(payload)
+                self.backend.dispatch(payload)
+                self.assertIsNone(controller.state()["pending_question"])
+            finally:
+                tui_backend.agent._interaction_controller = original
 
 
 if __name__ == "__main__":

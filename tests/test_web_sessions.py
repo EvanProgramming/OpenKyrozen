@@ -88,6 +88,18 @@ class WebSessionBrowserTests(unittest.TestCase):
                         "session.message", {"role": role, "content": content},
                         user_id="local", workspace_id="default", session_id=session_id,
                     )
+            store.append_event(
+                "interaction.question_requested", {
+                    "request_id": "browser-question", "original_input": "Implement the feature",
+                    "resume_mode": "plan", "questions": [{
+                        "id": "scope", "header": "Scope", "prompt": "Which browser target?",
+                        "choices": [
+                            {"id": "core", "label": "Core", "description": "Limit the change"},
+                            {"id": "all", "label": "All", "description": "Cover every surface"},
+                        ],
+                    }],
+                }, user_id="local", workspace_id="default", session_id="session-one",
+            )
 
             port = self._free_port()
             process, base_url = self._start_server(workspace, db_path, port)
@@ -104,6 +116,42 @@ class WebSessionBrowserTests(unittest.TestCase):
                 )
                 page.goto(base_url, wait_until="domcontentloaded")
                 page.wait_for_function("document.body.innerText.includes('UI_你好_✅')")
+                page.wait_for_function("document.body.innerText.includes('Which browser target?')")
+                self.assertEqual(page.locator('#interaction-card input[type="radio"]').count(), 2)
+                self.assertEqual(page.locator('#interaction-card input[placeholder="Other (optional)"]').count(), 1)
+                self.assertEqual(page.get_by_role("button", name="Submit answers").count(), 1)
+                page.locator('#interaction-card input[value="core"]').check()
+                page.get_by_role("button", name="Cancel").click()
+                page.wait_for_function("document.getElementById('interaction-card').hidden")
+
+                page.select_option("#mode-select", "plan")
+                page.wait_for_function("document.getElementById('status').textContent === 'Ready'")
+                self.assertEqual(
+                    self._request(base_url, "/api/v2/sessions/session-one")["interaction"]["preference_mode"],
+                    "plan",
+                )
+
+                store.append_event(
+                    "interaction.plan_proposed", {
+                        "plan_id": "browser-plan", "version": 1, "title": "Browser plan",
+                        "summary": "Exercise the plan card.", "assumptions": [],
+                        "original_input": "Implement the feature", "steps": [{
+                            "id": "step-1", "title": "Verify controls",
+                            "description": "Use the browser UI.", "acceptance": ["Controls respond"],
+                        }],
+                    }, user_id="local", workspace_id="default", session_id="session-one",
+                )
+                page.reload(wait_until="domcontentloaded")
+                page.wait_for_function("document.body.innerText.includes('Browser plan · v1')")
+                self.assertEqual(page.get_by_role("button", name="Accept").count(), 1)
+                page.get_by_role("button", name="Revise").click()
+                self.assertEqual(page.locator("#user-input").get_attribute("placeholder"),
+                                 "Describe the plan revision…")
+                page.get_by_role("button", name="Cancel").click()
+                page.wait_for_function("document.getElementById('interaction-card').hidden")
+                self.assertIsNone(
+                    self._request(base_url, "/api/v2/sessions/session-one")["interaction"]["pending_plan"]
+                )
                 self.assertEqual(
                     page.locator("#session-select").evaluate("element => element.labels[0].textContent"),
                     "Saved conversation",

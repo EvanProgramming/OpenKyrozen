@@ -7,6 +7,7 @@ from unittest.mock import patch
 import main
 from memory import MemoryBank
 from task_engine import TaskManager
+from interaction import InteractionController
 
 
 class _StubLearning:
@@ -43,6 +44,7 @@ class BugFixWorkflowTests(unittest.TestCase):
         self.original_memory = main.memory_bank
         self.original_tasks = main.tasks
         self.original_learning = main.learning_engine
+        self.original_interaction = main._interaction_controller
         self.original_root = main._get_workspace_root()
         self.original_fix_outcomes = list(main._fix_outcomes)
         self.tempdirs = []
@@ -51,6 +53,7 @@ class BugFixWorkflowTests(unittest.TestCase):
         main.memory_bank = self.original_memory
         main.tasks = self.original_tasks
         main.learning_engine = self.original_learning
+        main._interaction_controller = self.original_interaction
         main._fix_outcomes[:] = self.original_fix_outcomes
         main._set_workspace_root(self.original_root)
         for directory in self.tempdirs:
@@ -62,6 +65,10 @@ class BugFixWorkflowTests(unittest.TestCase):
         root = Path(directory.name)
         main.memory_bank = MemoryBank(root / "state.sqlite3", workspace_id="bugfix", session_id="turn")
         main.tasks = TaskManager(main.memory_bank.store, workspace_id="bugfix", session_id="turn")
+        main._interaction_controller = InteractionController(
+            main.memory_bank.store, workspace_id="bugfix", session_id="turn",
+        )
+        main._interaction_controller.set_mode("agent")
         main.learning_engine = _StubLearning()
         main._set_workspace_root(root)
         responses = [item.replace("__ROOT__", str(root)) for item in responses]

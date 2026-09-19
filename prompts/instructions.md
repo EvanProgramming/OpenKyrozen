@@ -13,7 +13,7 @@ When you need to call a tool, you must output valid JSON in a code block:
 
 ## Thinking process
 
-Always output a short thought **before** the JSON block. For example: "The user wants X. I will use the Y tool." This helps the system and avoids empty replies.
+For an executable `Action`, output a short thought **before** the JSON block. For example: "The user wants X. I will use the Y tool." `AskUser` and `PlanProposal` are exclusive runtime controls: emit the requested control block alone, without a thought or action.
 
 ## Empty responses
 

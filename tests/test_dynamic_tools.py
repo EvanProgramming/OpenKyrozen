@@ -10,10 +10,25 @@ import main
 import server
 from memory import MemoryBank
 from task_engine import TaskManager
+from interaction import InteractionController
 from fastapi.testclient import TestClient
 
 
 class DynamicToolTests(unittest.TestCase):
+    def setUp(self):
+        self._original_interaction = main._interaction_controller
+        self._interaction_directory = tempfile.TemporaryDirectory()
+        controller = InteractionController(
+            MemoryBank(Path(self._interaction_directory.name) / "interaction.sqlite3").store,
+            workspace_id="dynamic-tests", session_id="dynamic-tests",
+        )
+        controller.set_mode("agent")
+        main._interaction_controller = controller
+
+    def tearDown(self):
+        main._interaction_controller = self._original_interaction
+        self._interaction_directory.cleanup()
+
     def test_static_validator_accepts_small_pure_tool(self):
         valid, reason = validate_tool_source("def add(args):\n    return str(len(args))\n", "add")
         self.assertTrue(valid, reason)
@@ -151,6 +166,7 @@ class DynamicToolTests(unittest.TestCase):
             session_id = "dynamic-web-test"
             session = {"messages": [], "user_id": "local", "session_id": session_id,
                        "profile": "auto", "created": 0}
+            server._interaction_for_session(session).set_mode("agent")
             try:
                 with patch.dict(os.environ, {
                     "KYROZEN_WEB_CAPABILITIES": "full",

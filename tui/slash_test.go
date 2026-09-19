@@ -15,6 +15,12 @@ func TestCommandMatchesOnlyAtFirstNonWhitespaceCharacter(t *testing.T) {
 	if got := commandMatches("/tasks list"); len(got) != 1 || got[0].name != "tasks" {
 		t.Fatalf("arguments changed command filtering: %#v", got)
 	}
+	if got := commandMatches("/mode plan"); len(got) != 1 || got[0].name != "mode" {
+		t.Fatalf("mode command was not discoverable: %#v", got)
+	}
+	if got := commandMatches("/question skip"); len(got) != 1 || got[0].name != "question" {
+		t.Fatalf("question command was not discoverable: %#v", got)
+	}
 }
 
 func TestReplaceCommandPreservesArguments(t *testing.T) {

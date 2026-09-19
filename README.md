@@ -157,12 +157,17 @@ You: commit all changes with a good message
 ```
 
 Kyrozen will:
-1. Classify your request (simple / medium / complex)
-2. Choose the best model for the job
-3. Create a plan if needed
-4. Execute tools step by step
-5. Show progress in a live task panel
-6. Summarize what was done
+1. Route informational requests to Ask and actionable requests to Plan when the mode is `auto`
+2. Ask up to three structured clarification questions only when a material decision is missing
+3. Produce a versioned, reviewable plan without changing the project
+4. Materialize an accepted plan as durable tasks and execute it in Agent mode
+5. Return to the stored mode preference after execution
+
+Ask and Plan are enforced as read/network-only modes. They can inspect files,
+read Git history, and research the web, but cannot write files, run commands,
+mutate Git/browser state, or register dynamic tools. Agent mode still obeys the
+configured capability upper bound and existing approval prompts; a clarification
+answer never counts as tool approval.
 
 ### In-chat commands
 
@@ -176,6 +181,10 @@ Type `/` as the first non-whitespace character to open the command palette. It f
 | `/learn` | Immediately scan project files into memory |
 | `/forget` | Show recent learnings; `/forget keyword` to delete bad learnings |
 | `/update` | Update the installed package and Bubble Tea binary; restart Kyrozen after success (never pulls into a project) |
+| `/mode auto\|ask\|plan\|agent` | Persist the interaction preference for this CLI/TUI or web session |
+| `/ask` | Shortcut for `/mode ask` |
+| `/plan` | Shortcut for `/mode plan`; `/plan accept\|cancel` resolves a pending plan |
+| `/question` | Reopen the latest question; `/question skip\|cancel` resolves it |
 | `/agent auto\|coder\|researcher` | Choose automatic routing or an isolated learning profile |
 | `/learning status [profile]` | Show candidate, canary, active, retired, and rolled-back artifacts |
 | `/learning metrics [profile]` | Show verified completion, corrections, errors, cost, and latency metrics |
@@ -254,15 +263,27 @@ User Input
 └─────────────────┘
 ```
 
-### Task complexity routing
+### Interaction modes
 
-Kyrozen automatically classifies every request and adapts its behavior:
+The interaction preference and the learning profile are separate. `/mode`
+controls whether Kyrozen answers, plans, or acts; `/agent` continues to select
+the `coder`/`researcher` learning profile.
 
-| Level | Example triggers | Agent behavior |
-|-------|-----------------|---------------|
-| **Simple** | "hi", "what is Python", "thanks" | Direct reply, zero planning overhead |
-| **Medium** | "list files and read README" | Creates a numbered Plan, executes tools sequentially |
-| **Complex** | "audit this repo", "fix the bug and commit", "build a web app" | Full Plan → TaskList → progress tracking → never stops early |
+| Mode | Behavior | Tool boundary |
+|------|----------|---------------|
+| **Auto** | Routes informational Q&A to Ask and actionable work to Plan | Inherits the routed mode |
+| **Ask** | Answers directly or performs read-only investigation | `read`, `network` |
+| **Plan** | Inspects, asks bounded questions, and emits a versioned plan for review | `read`, `network` |
+| **Agent** | Executes accepted plans or explicitly requested work | Existing surface/config/approval intersection |
+
+Questions and plan revisions are recorded as scoped SQLite events. A plan is
+accepted only by the UI action, `/plan accept`, or an exact documented phrase
+such as `accept plan`, `execute plan`, `接受计划`, or `执行计划`. Other text while a
+plan is pending is revision feedback. The plan document stays in session state;
+it is never written into the project.
+
+Agent mode still uses the existing simple/medium/complex model selection and
+durable TaskList execution internally.
 
 ### Model auto-selection
 
@@ -621,8 +642,8 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `GET` | `/` | Dark-themed chat web UI |
 | `POST` | `/api/auth/session` | Exchange a server token for a short-lived HttpOnly browser session |
 | `DELETE` | `/api/auth/session` | Revoke the current browser session |
-| `POST` | `/api/chat` | Send a message with optional `profile`, `speaker`, `audience`, and `channel`; returns a memory receipt |
-| `POST` | `/api/chat/stream` | SSE streaming chat with the same optional profile and memory context |
+| `POST` | `/api/chat` | Send a message or typed interaction control; returns the interaction envelope and memory receipt |
+| `POST` | `/api/chat/stream` | SSE chat with typed `interaction` events and the same request controls |
 | `GET` | `/api/cost` | Token usage and cost summary |
 | `POST` | `/api/cost/reset` | Explicitly reset a durable workspace/session reporting window (requires `confirm: "reset-cost"`) |
 | `GET` | `/api/health` | Provider status + memory count |
@@ -670,6 +691,21 @@ Browser tools (`browser_open`, `browser_snapshot`, `browser_click`, `browser_typ
 `browser_close`) use an isolated profile and are available after
 `pip install playwright https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.3/openkyrozen-2.0.3-py3-none-any.whl && playwright install chromium`. Private and
 loopback destinations are blocked unless `KYROZEN_BROWSER_ALLOW_PRIVATE=1` is set.
+
+Chat requests remain backward compatible with `{"message":"..."}` and may also
+include one typed control per transition:
+
+```json
+{"session_id":"sess_example","mode":"plan"}
+{"session_id":"sess_example","question_response":{"request_id":"question_...","answers":{"scope":"all"}}}
+{"session_id":"sess_example","message":"Cover the API and TUI","plan_action":{"plan_id":"plan_...","version":2,"action":"revise"}}
+```
+
+`question_response` may use `action: "skip"` or `"cancel"`; `plan_action.action`
+is `accept`, `revise`, or `cancel`. The JSON response, SSE stream, Bubble Tea
+JSONL protocol, and session restore response expose the same
+`interaction: {preference_mode, effective_mode, pending_question, pending_plan}`
+envelope. MCP remains non-interactive and unchanged.
 
 Successful `POST /api/chat` requests emit one `chat.completed` webhook after
 the reply is produced. `POST /api/chat/stream` emits the same event only after
@@ -842,7 +878,9 @@ See `plugins/turn_logger.py` for a working example.
 | `KYROZEN_AGENT_CAPABILITIES` | Comma-separated capability/profile upper bound | `full` |
 | `KYROZEN_EXAMPLES` | JSON list of `{\"user\": ..., \"assistant\": ...}` examples | Packaged `prompts/examples.md` |
 
-The local CLI is intentionally a high-permission agent, similar to Codex or OpenClaw: it can read and write the active workspace, run shell commands, use the network, and operate Git. The Web and MCP surfaces expose the same rich `workspace` profile by default, but keep irreversible `git_reset` and LLM-generated Python tools behind the explicit `full`/`KYROZEN_ALLOW_DYNAMIC_TOOLS=1` opt-in. On the interactive CLI, dynamic registration also follows `KYROZEN_APPROVAL_MODE`; use `never` only for an explicitly automated deployment. Authentication and the command safety filter still apply.
+Agent mode on the local CLI can use the high-permission toolset, similar to Codex or OpenClaw: it can read and write the active workspace, run shell commands, use the network, and operate Git. Ask and Plan narrow that set to `read` and `network`. Web Agent mode uses the rich `workspace` profile by default but keeps irreversible `git_reset` and LLM-generated Python tools behind the explicit `full`/`KYROZEN_ALLOW_DYNAMIC_TOOLS=1` opt-in. MCP remains non-interactive. On the interactive CLI, dynamic registration also follows `KYROZEN_APPROVAL_MODE`; use `never` only for an explicitly automated deployment. Authentication and the command safety filter still apply.
+
+See the [agentic runtime roadmap](docs/agentic-runtime-roadmap.md) for deliberately deferred runtime work.
 
 ### Agent role configuration (`agent.yaml`)
 

@@ -366,6 +366,81 @@ def _get_or_create_session(session_id: str, user_id: str = "anonymous") -> dict:
         return session
 
 
+def _interaction_for_session(session: dict[str, Any]):
+    return _agent.InteractionController(
+        _agent.memory_bank.store, user_id=session.get("user_id", _SERVER_ACTOR_ID),
+        workspace_id=_agent.memory_bank.workspace_id, session_id=session["session_id"],
+    )
+
+
+def _apply_chat_controls(session: dict[str, Any], body: dict[str, Any], message: str) -> tuple[str, str | None]:
+    """Apply typed interaction controls and return (message, immediate reply)."""
+    controller = _interaction_for_session(session)
+    if body.get("question_response") is not None and body.get("plan_action") is not None:
+        raise HTTPException(400, "question_response and plan_action are mutually exclusive")
+    if "mode" in body:
+        try:
+            controller.set_mode(str(body["mode"]))
+        except _agent.InteractionError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    question_response = body.get("question_response")
+    if question_response is not None:
+        if not isinstance(question_response, dict):
+            raise HTTPException(400, "question_response must be an object")
+        request_id = str(question_response.get("request_id") or "")
+        if not request_id or len(request_id) > 100:
+            raise HTTPException(400, "question_response.request_id is required")
+        action = str(question_response.get("action") or "answer").lower()
+        answers = question_response.get("answers", {})
+        if len(json.dumps(answers, ensure_ascii=False, default=str)) > _MAX_MESSAGE_CHARS:
+            raise HTTPException(413, "question_response.answers is too large")
+        try:
+            resolved = controller.resolve_question(
+                request_id, answers, action=action,
+            )
+        except _agent.InteractionError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if action == "cancel":
+            return "", "Pending question cancelled."
+        question = resolved["question"]
+        message = (
+            f"Original request:\n{question.get('original_input', '')}\n\n"
+            f"Clarification {action}:\n{json.dumps(resolved['answers'], ensure_ascii=False)}"
+        )
+
+    plan_action = body.get("plan_action")
+    if plan_action is not None:
+        if not isinstance(plan_action, dict):
+            raise HTTPException(400, "plan_action must be an object")
+        action = str(plan_action.get("action") or "").lower()
+        plan_id = str(plan_action.get("plan_id") or "") or None
+        version_raw = plan_action.get("version")
+        version = version_raw if isinstance(version_raw, int) and not isinstance(version_raw, bool) else None
+        if not plan_id or version is None or version < 1:
+            raise HTTPException(400, "plan_action.plan_id and positive integer version are required")
+        plan = controller.state().get("pending_plan")
+        if action == "accept" and not plan and controller.accepted_plan(plan_id, version):
+            return "", "Plan was already accepted."
+        if not plan or (plan_id and plan_id != plan.get("plan_id")) or (version is not None and version != plan.get("version")):
+            raise HTTPException(409, "plan is not pending at the requested version")
+        if action == "accept":
+            message = "accept plan"
+        elif action == "cancel":
+            controller.cancel_plan(plan_id, version)
+            return "", "Pending plan cancelled."
+        elif action == "revise":
+            if not message:
+                raise HTTPException(400, "message is required to revise a plan")
+        else:
+            raise HTTPException(400, "plan_action.action must be accept, revise, or cancel")
+
+    if not message and "mode" in body:
+        mode = controller.envelope()["preference_mode"]
+        return "", f"Interaction mode set to {mode}."
+    return message, None
+
+
 def _run_session_chat(session: dict[str, Any], message: str) -> str:
     """Run the legacy global agent with an isolated per-session context.
 
@@ -374,10 +449,14 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
     another while preserving independent histories in the web layer.
     """
     with _chat_lock:
+        session_id = session.get("session_id") or session.setdefault(
+            "session_id", _normalise_session_id(session.get("id")),
+        )
+        _initialise_session_defaults(session)
         previous_messages = _agent.short_term_memory
         previous_memory_session = _agent.memory_bank.session_id
-        previous_tasks_ref = _agent.tasks.tasks
-        previous_tasks = copy.deepcopy(_agent.tasks.tasks)
+        previous_task_manager = _agent.tasks
+        previous_interaction = _agent._interaction_controller
         previous_tools = dict(_agent.AVAILABLE_TOOLS)
         previous_tools_list = _agent.TOOLS_LIST
         previous_learning_run = _agent._last_learning_run
@@ -395,9 +474,15 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
             })
             _agent.TOOLS_LIST = _agent._build_tools_list()
             _agent.short_term_memory = list(session["messages"])
+            _agent.tasks = TaskManager(
+                _agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id,
+                session_id=session_id, user_id=session["user_id"],
+            )
+            _agent.tasks.recover()
+            _agent._interaction_controller = _interaction_for_session(session)
             _agent._last_learning_run = session.get("last_learning_run")
             _agent._learning_notices = []
-            _agent.memory_bank.session_id = session.get("session_id") or session.setdefault("session_id", _normalise_session_id(session.get("id")))
+            _agent.memory_bank.session_id = session_id
             profile = session.get("profile", "auto")
             memory_context = {key: session.get(key) for key in (
                 "speaker", "audience", "channel", "authorized_speakers")}
@@ -413,6 +498,7 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
                 {"role": "assistant", "content": reply},
             ])
             session["messages"] = _agent.short_term_memory[-_MAX_SESSION_MESSAGES:]
+            session["interaction"] = _agent.interaction_envelope()
             session["updated"] = time.time()
             recalls = _agent.memory_bank.store.list_events(
                 "memory.recalled", limit=1, workspace_id=_agent.memory_bank.workspace_id,
@@ -435,9 +521,8 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
             }
             _agent.short_term_memory = previous_messages
             _agent.memory_bank.session_id = previous_memory_session
-            previous_tasks_ref.clear()
-            previous_tasks_ref.extend(previous_tasks)
-            _agent.tasks.tasks = previous_tasks_ref
+            _agent.tasks = previous_task_manager
+            _agent._interaction_controller = previous_interaction
             _agent.AVAILABLE_TOOLS.clear()
             _agent.AVAILABLE_TOOLS.update(previous_tools)
             if new_dynamic_tools and _agent.ALLOW_DYNAMIC_TOOLS:
@@ -504,12 +589,14 @@ header h1{font-size:clamp(18px,2vw,24px);letter-spacing:.04em;color:var(--brand)
 header span{font-size:12px;color:var(--muted)}
 #session-controls,#auth-controls{background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;padding:10px clamp(16px,4vw,48px);flex-wrap:wrap}
 #session-controls label,#session-limit,#auth-controls label,#auth-status{font-size:12px;color:var(--muted)}
-#session-select,#server-token{min-width:190px;max-width:100%;background:var(--ink);border:1px solid var(--line);border-radius:7px;color:var(--text);padding:8px}
+#session-select,#mode-select,#server-token{min-width:150px;max-width:100%;background:var(--ink);border:1px solid var(--line);border-radius:7px;color:var(--text);padding:8px}
 #server-token{min-width:220px}
 #session-limit{margin-left:auto}
 #auth-controls[hidden]{display:none}
 #chat{flex:1;overflow-y:auto;width:min(100%,1120px);margin:0 auto;padding:clamp(20px,5vw,52px) clamp(16px,4vw,48px);scroll-behavior:smooth}
 #chat:empty::before{content:'Start a conversation or type / for commands.';display:block;color:var(--muted);text-align:center;padding:12vh 0}
+#interaction-card{width:min(100%,1024px);margin:14px auto 0;padding:14px 17px;background:var(--surface-hi);border:1px solid var(--brand);border-radius:10px}
+#interaction-card[hidden]{display:none}#interaction-card h2{font-size:15px;color:var(--brand);margin-bottom:8px}#interaction-card fieldset{border:0;margin:12px 0}#interaction-card legend{font-weight:700;margin-bottom:6px}#interaction-card label{display:block;margin:6px 0;color:var(--text)}#interaction-card input[type=text]{width:100%;background:var(--ink);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:8px;margin-top:5px}#interaction-card ol{padding-left:22px;margin:8px 0}#interaction-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .msg{margin-bottom:22px;max-width:min(88%,860px)}
 .msg.user{margin-left:auto}
 .msg .role{font-size:11px;letter-spacing:.08em;color:var(--muted);margin-bottom:6px}
@@ -539,6 +626,8 @@ button:disabled{opacity:.45;cursor:default}
   <label for="session-select">Saved conversation</label>
   <select id="session-select" aria-describedby="session-limit"></select>
   <button type="button" id="new-session">New conversation</button>
+  <label for="mode-select">Mode</label>
+  <select id="mode-select"><option value="auto">Auto</option><option value="ask">Ask</option><option value="plan">Plan</option><option value="agent">Agent</option></select>
   <span id="session-limit" role="status"></span>
 </div>
 <div id="auth-controls" hidden>
@@ -549,6 +638,7 @@ button:disabled{opacity:.45;cursor:default}
   <span id="auth-status" role="alert"></span>
 </div>
 <div id="chat" aria-live="polite" aria-label="Conversation"></div>
+<section id="interaction-card" aria-live="polite" hidden></section>
 <div id="input-area">
   <textarea id="user-input" placeholder="Type your message..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}"></textarea>
   <button onclick="sendMessage()" id="send-btn">Send</button>
@@ -561,6 +651,7 @@ let sessionId = readActiveSession() || createSessionId();
 let recentSessions = [];
 let isStreaming = false;
 let authInFlight = false;
+let interactionState = {preference_mode: 'auto', effective_mode: 'ask', pending_question: null, pending_plan: null};
 
 class AuthRequiredError extends Error {}
 
@@ -608,6 +699,79 @@ function clearChat() {
   document.getElementById('chat').replaceChildren();
 }
 
+function renderInteraction(value) {
+  interactionState = value || interactionState;
+  document.getElementById('mode-select').value = interactionState.preference_mode || 'auto';
+  const card = document.getElementById('interaction-card');
+  card.replaceChildren();
+  const question = interactionState.pending_question;
+  const plan = interactionState.pending_plan;
+  if (!question && !plan) { card.hidden = true; return; }
+  card.hidden = false;
+  const title = document.createElement('h2');
+  title.textContent = question ? 'Clarification needed' : `${plan.title} · v${plan.version}`;
+  card.appendChild(title);
+  if (question) {
+    for (const item of question.questions || []) {
+      const fieldset = document.createElement('fieldset');
+      const legend = document.createElement('legend');
+      legend.textContent = `${item.header}: ${item.prompt}`;
+      fieldset.appendChild(legend);
+      for (const choice of item.choices || []) {
+        const label = document.createElement('label');
+        const radio = document.createElement('input');
+        radio.type = 'radio'; radio.name = `question-${item.id}`; radio.value = choice.id;
+        label.append(radio, ` ${choice.label}${choice.description ? ' — ' + choice.description : ''}`);
+        fieldset.appendChild(label);
+      }
+      const other = document.createElement('input');
+      other.type = 'text'; other.placeholder = 'Other (optional)'; other.dataset.questionId = item.id;
+      fieldset.appendChild(other); card.appendChild(fieldset);
+    }
+    const actions = document.createElement('div'); actions.id = 'interaction-actions';
+    const submit = document.createElement('button'); submit.textContent = 'Submit answers';
+    submit.onclick = () => {
+      const answers = {};
+      for (const item of question.questions || []) {
+        const selected = card.querySelector(`input[name="question-${CSS.escape(item.id)}"]:checked`);
+        const other = card.querySelector(`input[data-question-id="${CSS.escape(item.id)}"]`);
+        answers[item.id] = other && other.value.trim() ? other.value.trim() : selected ? selected.value : null;
+      }
+      submitControl({question_response: {request_id: question.request_id, answers}}, 'Answered clarification');
+    };
+    const skip = document.createElement('button'); skip.textContent = 'Skip';
+    skip.onclick = () => submitControl({question_response: {request_id: question.request_id, answers: {}, action: 'skip'}}, 'Skipped clarification');
+    const cancel = document.createElement('button'); cancel.textContent = 'Cancel';
+    cancel.onclick = () => submitControl({question_response: {request_id: question.request_id, answers: {}, action: 'cancel'}}, 'Cancelled clarification');
+    actions.append(submit, skip, cancel); card.appendChild(actions);
+  } else {
+    const summary = document.createElement('p'); summary.textContent = plan.summary; card.appendChild(summary);
+    const list = document.createElement('ol');
+    for (const step of plan.steps || []) { const item = document.createElement('li'); item.textContent = `${step.title} — ${step.description} (Acceptance: ${(step.acceptance || []).join('; ')})`; list.appendChild(item); }
+    card.appendChild(list);
+    const actions = document.createElement('div'); actions.id = 'interaction-actions';
+    const accept = document.createElement('button'); accept.textContent = 'Accept'; accept.onclick = () => submitControl({plan_action: {plan_id: plan.plan_id, version: plan.version, action: 'accept'}}, 'Accepted plan');
+    const revise = document.createElement('button'); revise.textContent = 'Revise'; revise.onclick = () => { const input = document.getElementById('user-input'); input.placeholder = 'Describe the plan revision…'; input.focus(); };
+    const cancel = document.createElement('button'); cancel.textContent = 'Cancel'; cancel.onclick = () => submitControl({plan_action: {plan_id: plan.plan_id, version: plan.version, action: 'cancel'}}, 'Cancelled plan');
+    actions.append(accept, revise, cancel); card.appendChild(actions);
+  }
+}
+
+async function submitControl(control, label) {
+  if (isStreaming) return;
+  isStreaming = true; document.getElementById('send-btn').disabled = true;
+  addMessage('user', label, false); document.getElementById('status').textContent = 'Working…';
+  try {
+    const response = await apiFetch('/api/chat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({...control, session_id: sessionId})});
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
+    if (data.reply) addMessage('assistant', String(data.reply), false);
+    renderInteraction(data.interaction);
+    document.getElementById('status').textContent = 'Ready';
+  } catch (error) { addMessage('assistant', 'Error: ' + error.message, false); document.getElementById('status').textContent = 'Error'; }
+  isStreaming = false; document.getElementById('send-btn').disabled = false; refreshSessionList().catch(() => {});
+}
+
 function renderSessionList(sessions) {
   recentSessions = Array.isArray(sessions) ? sessions : [];
   const select = document.getElementById('session-select');
@@ -644,6 +808,7 @@ async function restoreSession(nextSessionId) {
     const messages = Array.isArray(data.messages) ? data.messages : [];
     clearChat();
     messages.forEach(message => addMessage(message.role, String(message.content), false));
+    renderInteraction(data.interaction);
     renderSessionList(recentSessions);
     document.getElementById('status').textContent = messages.length
       ? `Restored ${messages.length} saved message${messages.length === 1 ? '' : 's'}.`
@@ -660,6 +825,7 @@ function startNewSession() {
   sessionId = createSessionId();
   saveActiveSession();
   clearChat();
+  renderInteraction({preference_mode: 'auto', effective_mode: 'ask', pending_question: null, pending_plan: null});
   renderSessionList(recentSessions);
   document.getElementById('status').textContent = 'New conversation ready.';
   document.getElementById('user-input').focus();
@@ -794,6 +960,7 @@ async function sendMessage() {
           contentDiv.textContent = 'Error: ' + String(parsed.error);
           contentDiv.classList.add('error');
         }
+        if (Object.prototype.hasOwnProperty.call(parsed, 'interaction')) renderInteraction(parsed.interaction);
       } catch (e) {
         streamState.parseError = true;
         contentDiv.textContent = 'Stream parse error: ' + e.message;
@@ -846,6 +1013,7 @@ document.getElementById('session-select').addEventListener('change', event => {
   if (!isStreaming) restoreSession(event.target.value);
 });
 document.getElementById('new-session').addEventListener('click', startNewSession);
+document.getElementById('mode-select').addEventListener('change', event => submitControl({mode: event.target.value}, `Mode: ${event.target.value}`));
 document.getElementById('authenticate').addEventListener('click', authenticate);
 document.getElementById('server-token').addEventListener('keydown', event => {
   if (event.key === 'Enter') { event.preventDefault(); authenticate(); }
@@ -911,17 +1079,18 @@ async def chat_page():
 async def api_chat(request: Request):
     """Non-streaming chat endpoint."""
     body = await _json_object(request)
-    msg = _validate_message(_sanitize_api_message(str(body.get("message", "")).strip()))
-    if not msg:
-        raise HTTPException(400, "Empty message")
     session_id = _normalise_session_id(body.get("session_id"))
     session = _get_or_create_session(session_id, _actor_for_request(request))
     session["profile"] = _normalise_profile(body.get("profile", session.get("profile", "auto")))
     _set_memory_context(session, body)
+    msg = _validate_message(_sanitize_api_message(str(body.get("message", "")).strip()))
+    msg, immediate_reply = _apply_chat_controls(session, body, msg)
+    if not msg and immediate_reply is None:
+        raise HTTPException(400, "Empty message")
     _audit("CHAT", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
 
     try:
-        reply = _run_session_chat(session, msg)
+        reply = immediate_reply if immediate_reply is not None else _run_session_chat(session, msg)
     except _agent.ProviderUnavailableError as exc:
         _audit("ERROR", _agent.PROVIDER_UNAVAILABLE_CODE, session["user_id"])
         raise HTTPException(
@@ -932,29 +1101,33 @@ async def api_chat(request: Request):
         _audit("ERROR", str(e), session["user_id"])
         raise HTTPException(500, str(e))
 
+    session["interaction"] = _interaction_for_session(session).envelope()
     _emit_chat_completed(session, reply, streamed=False)
     _audit("REPLY", f"len={len(reply)}", session["user_id"])
     return {"reply": reply, "session_id": session_id, "profile": session["profile"],
-            "memory_receipt": session.get("last_memory_receipt"), "cost": _cost_summary()}
+            "memory_receipt": session.get("last_memory_receipt"), "cost": _cost_summary(),
+            "interaction": session["interaction"]}
 
 
 @app.post("/api/chat/stream", dependencies=[Depends(require_api_access)])
 async def api_chat_stream(request: Request):
     """SSE streaming chat endpoint."""
     body = await _json_object(request)
-    msg = _validate_message(_sanitize_api_message(str(body.get("message", "")).strip()))
-    if not msg:
-        raise HTTPException(400, "Empty message")
     session_id = _normalise_session_id(body.get("session_id"))
     session = _get_or_create_session(session_id, _actor_for_request(request))
     session["profile"] = _normalise_profile(body.get("profile", session.get("profile", "auto")))
     _set_memory_context(session, body)
+    msg = _validate_message(_sanitize_api_message(str(body.get("message", "")).strip()))
+    msg, immediate_reply = _apply_chat_controls(session, body, msg)
+    if not msg and immediate_reply is None:
+        raise HTTPException(400, "Empty message")
     _audit("CHAT_STREAM", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
 
     class StreamProjection:
         """Pass plain deltas through while holding model control prefixes."""
 
-        prefixes = ("Thought:", "Plan:", "TaskList:", "TaskDone:", "Action:", "DefineTool:")
+        prefixes = ("Thought:", "Plan:", "TaskList:", "TaskDone:", "Action:", "DefineTool:",
+                    "AskUser:", "PlanProposal:")
 
         def __init__(self, sink):
             self.sink = sink
@@ -1003,7 +1176,7 @@ async def api_chat_stream(request: Request):
     def run_streaming_turn() -> None:
         callback_token = _agent._stream_event_callback.set(projection)
         try:
-            reply = _run_session_chat(session, msg)
+            reply = immediate_reply if immediate_reply is not None else _run_session_chat(session, msg)
             if str(reply).startswith("[LLM Error]"):
                 events.put({"event": "error", "error": str(reply)})
             else:
@@ -1032,11 +1205,17 @@ async def api_chat_stream(request: Request):
                 yield f"data: {json.dumps({'event': 'tool_receipt', 'tool_receipt': event.get('tool_receipt')}, ensure_ascii=False)}\n\n"
             elif kind == "tasks":
                 yield f"data: {json.dumps({'event': 'tasks', 'tasks': event.get('tasks', [])}, ensure_ascii=False)}\n\n"
+            elif kind == "interaction":
+                yield f"data: {json.dumps({'event': 'interaction', 'interaction': event.get('interaction', {})}, ensure_ascii=False)}\n\n"
             elif kind == "error":
                 yield f"data: {json.dumps({'event': 'error', 'code': event.get('code', 'stream_error'), 'error': event.get('error', 'stream failed')}, ensure_ascii=False)}\n\n"
                 break
             elif kind == "complete":
                 reply = str(event.get("reply", ""))
+                session["interaction"] = _interaction_for_session(session).envelope()
+                if immediate_reply is not None:
+                    yield f"data: {json.dumps({'event': 'content', 'chunk': reply}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'event': 'interaction', 'interaction': session['interaction']}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'event': 'usage', 'cost': _cost_summary()})}\n\n"
                 if session.get("last_memory_receipt"):
                     yield f"data: {json.dumps({'event': 'memory_receipt', 'memory_receipt': session['last_memory_receipt']}, ensure_ascii=False)}\n\n"
@@ -1338,7 +1517,8 @@ async def api_v2_sessions(limit: int = 100):
 async def api_v2_session(session_id: str):
     session_id = _normalise_session_id(session_id)
     session = _get_or_create_session(session_id, _SERVER_ACTOR_ID)
-    return {"session_id": session_id, "messages": session["messages"], "updated": session.get("updated")}
+    return {"session_id": session_id, "messages": session["messages"], "updated": session.get("updated"),
+            "interaction": _interaction_for_session(session).envelope()}
 
 
 @app.get("/api/v2/schedules", dependencies=[Depends(require_api_access)])
@@ -1731,7 +1911,13 @@ async def mcp_endpoint(request: Request):
         session_id = _normalise_session_id(params.get("session_id"))
         session = _get_or_create_session(session_id, _SERVER_ACTOR_ID)
         try:
-            reply = _run_session_chat(session, msg)
+            mode_token = _agent._interaction_mode_override.set("agent")
+            controls_token = _agent._interaction_controls_enabled.set(False)
+            try:
+                reply = _run_session_chat(session, msg)
+            finally:
+                _agent._interaction_controls_enabled.reset(controls_token)
+                _agent._interaction_mode_override.reset(mode_token)
         except _agent.ProviderUnavailableError as exc:
             return _mcp_error(
                 request_id,
