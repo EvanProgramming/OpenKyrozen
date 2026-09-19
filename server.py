@@ -1127,7 +1127,7 @@ async def api_chat_stream(request: Request):
         """Pass plain deltas through while holding model control prefixes."""
 
         prefixes = ("Thought:", "Plan:", "TaskList:", "TaskDone:", "Action:", "DefineTool:",
-                    "AskUser:", "PlanProposal:")
+                    "AskUser:", "AskUser\n", "PlanProposal:", "PlanProposal\n")
 
         def __init__(self, sink):
             self.sink = sink

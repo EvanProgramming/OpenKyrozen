@@ -73,9 +73,9 @@ class _InlineControlProvider:
             " Thought: internal note ",
             "The action word and invoke word are ordinary prose.",
             "Ask",
-            'User:\n```json\n{"questions": []}\n```\n',
+            'User\n```json\n{"questions": []}\n```\n',
             "Plan",
-            'Proposal:\n```json\n{"steps": []}\n```',
+            'Proposal\n```json\n{"steps": []}\n```',
         )
 
 
@@ -272,7 +272,7 @@ class StreamingEndpointTests(unittest.TestCase):
             content = "".join(item["chunk"] for item in payloads if item.get("event") == "content")
             self.assertIn("Visible progress.", content)
             self.assertIn("The action word and invoke word are ordinary prose.", content)
-            self.assertNotRegex(content, r"Action:|Thought:|Plan:|TaskDone:|DefineTool:|AskUser:|PlanProposal:")
+            self.assertNotRegex(content, r"Action:|Thought:|Plan:|TaskDone:|DefineTool:|AskUser|PlanProposal")
             self.assertNotRegex(content, r"</?\s*(?:invoke|parameter|calls|tool_calls|function_calls)\b")
             assistant_messages = [
                 event["payload"] for event in memory.store.list_events(

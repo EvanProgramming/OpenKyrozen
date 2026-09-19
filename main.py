@@ -4604,9 +4604,9 @@ def _clean_final_response(text: str) -> str:
                      flags=re.IGNORECASE)
     cleaned = re.sub(r"TaskList:\s*```(?:json)?\s*[\s\S]*?```", "", cleaned,
                      flags=re.IGNORECASE)
-    cleaned = re.sub(r"AskUser:\s*```(?:json)?\s*[\s\S]*?```", "", cleaned,
+    cleaned = re.sub(r"(?<![\w])AskUser[ \t]*:?[ \t]*\n```(?:json)?\s*[\s\S]*?```", "", cleaned,
                      flags=re.IGNORECASE)
-    cleaned = re.sub(r"PlanProposal:\s*```(?:json)?\s*[\s\S]*?```", "", cleaned,
+    cleaned = re.sub(r"(?<![\w])PlanProposal[ \t]*:?[ \t]*\n```(?:json)?\s*[\s\S]*?```", "", cleaned,
                      flags=re.IGNORECASE)
     # Accept the legacy plain JSON forms too.
     cleaned = re.sub(r"Action:\s*(?:\{[\s\S]*?\}|\[[\s\S]*?\])", "", cleaned,
@@ -4935,6 +4935,49 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     turn_prompt_total = 0
     turn_completion_total = 0
 
+    def observe_turn_response(text: str, context: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
+        """Parse once, with one side-effect-free repair for malformed interaction JSON."""
+        nonlocal turn_prompt_total, turn_completion_total
+        parsed = _observe_model_response(text)
+        if not parsed.get("protocol_error") or not re.search(
+                r"^[ \t]*(?:AskUser|PlanProposal)(?![\w])[ \t]*:?", str(text),
+                re.IGNORECASE | re.MULTILINE):
+            return text, parsed
+        question_control = bool(re.search(r"^[ \t]*AskUser(?![\w])", str(text), re.IGNORECASE | re.MULTILINE))
+        example = (
+            'AskUser:\n```json\n{"questions":[{"id":"scope","header":"Scope",'
+            '"prompt":"Which scope?","choices":[{"id":"a","label":"Option A","description":"Impact"},'
+            '{"id":"b","label":"Option B","description":"Impact"}]}]}\n```'
+            if question_control else
+            'PlanProposal:\n```json\n{"title":"Plan title","summary":"Outcome",'
+            '"assumptions":[],"steps":[{"id":"step-1","title":"Step title",'
+            '"description":"Work to perform","acceptance":["Observable result"]}]}\n```'
+        )
+        repaired = _call_llm_with_spinner(context + [{
+            "role": "assistant",
+            "content": str(text),
+        }, {
+            "role": "user",
+            "content": (
+                f"System: The interaction control was invalid ({parsed['protocol_error']}). "
+                "Re-emit the same content as exactly one fenced JSON control in the shape below. "
+                "Replace the example values, but preserve every key and JSON syntax. Output no Markdown outside "
+                f"this block, prose, Action, TaskList, TaskDone, or DefineTool.\n{example}"
+            ),
+        }]).strip()
+        turn_prompt_total += _last_prompt_tokens
+        turn_completion_total += _last_completion_tokens
+        candidate = _parse_model_response(repaired)
+        if not candidate.get("protocol_error") and not (
+                candidate.get("question") is not None or candidate.get("plan_proposal") is not None):
+            control_name = "AskUser" if question_control else "PlanProposal"
+            candidate = _parse_model_response(f"{control_name}:\n{repaired}")
+        if candidate.get("protocol_error") or not (
+                candidate.get("question") is not None or candidate.get("plan_proposal") is not None):
+            candidate["tool_calls"] = []
+            candidate["protocol_error"] = "The model could not produce a valid interaction control; no action was executed."
+        return repaired, candidate
+
     MAX_RETRIES = 3
     messages = _build_messages(user_input, learned_context, memory_context)
     response_text = _call_llm_with_spinner(messages).strip()
@@ -4957,7 +5000,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
 
     # Parse and observe each model response once.  Keep the raw response for
     # model context; use the parsed clean field for anything user-facing.
-    response_meta = _observe_model_response(response_text)
+    response_text, response_meta = observe_turn_response(response_text, messages)
     tool_calls = response_meta["tool_calls"]
     if response_meta["define_tool_registered"]:
         agent_config = load_agent_config(_get_workspace_root())
@@ -4994,7 +5037,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         response_text = _call_llm_with_spinner(messages).strip()
         turn_prompt_total += _last_prompt_tokens
         turn_completion_total += _last_completion_tokens
-        response_meta = _observe_model_response(response_text)
+        response_text, response_meta = observe_turn_response(response_text, messages)
         tool_calls = response_meta["tool_calls"]
         interaction_reply = _interaction_gate(response_meta, user_input)
         if interaction_reply is not None:
@@ -5017,7 +5060,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
             response_text = _call_llm_with_spinner(messages).strip()
             turn_prompt_total += _last_prompt_tokens
             turn_completion_total += _last_completion_tokens
-            response_meta = _observe_model_response(response_text)
+            response_text, response_meta = observe_turn_response(response_text, messages)
             tool_calls = response_meta["tool_calls"]
             _llm_has_plan = response_meta["has_plan"]
             interaction_reply = _interaction_gate(response_meta, user_input)
@@ -5064,7 +5107,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         response_text = _call_llm_with_spinner(messages).strip()
         turn_prompt_total += _last_prompt_tokens
         turn_completion_total += _last_completion_tokens
-        response_meta = _observe_model_response(response_text)
+        response_text, response_meta = observe_turn_response(response_text, messages)
         tool_calls = response_meta["tool_calls"]
         interaction_reply = _interaction_gate(response_meta, user_input)
         if interaction_reply is not None:
@@ -5104,7 +5147,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 turn_completion_total += _last_completion_tokens
                 if not response_text:
                     continue
-                response_meta = _observe_model_response(response_text)
+                response_text, response_meta = observe_turn_response(response_text, messages)
                 tool_calls = response_meta["tool_calls"]
                 interaction_reply = _interaction_gate(response_meta, user_input)
                 if interaction_reply is not None:
@@ -5283,7 +5326,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
 
         # Observe this response once.  The same parsed result drives task
         # updates, unknown-action handling, loop control, and final rendering.
-        step_meta = _observe_model_response(step_reply)
+        step_reply, step_meta = observe_turn_response(step_reply, summary_messages)
         next_tool_calls = step_meta["tool_calls"]
         if step_meta["protocol_error"]:
             protocol_error_message = step_meta["protocol_error"]
@@ -5317,7 +5360,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
             if not step_reply:
                 break
             # Re-observe the replacement response exactly once.
-            step_meta = _observe_model_response(step_reply)
+            step_reply, step_meta = observe_turn_response(step_reply, summary_messages)
             next_tool_calls = step_meta["tool_calls"]
             if step_meta["protocol_error"]:
                 protocol_error_message = step_meta["protocol_error"]
@@ -5346,7 +5389,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 }]).strip()
                 turn_prompt_total += _last_prompt_tokens
                 turn_completion_total += _last_completion_tokens
-                step_meta = _observe_model_response(step_reply)
+                step_reply, step_meta = observe_turn_response(step_reply, summary_messages)
                 if step_meta["protocol_error"]:
                     protocol_error_message = step_meta["protocol_error"]
                     break
@@ -5402,7 +5445,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 turn_completion_total += _last_completion_tokens
                 if not step_reply:
                     break
-                step_meta = _observe_model_response(step_reply)
+                step_reply, step_meta = observe_turn_response(step_reply, summary_messages)
                 next_tool_calls = step_meta["tool_calls"]
                 if step_meta["protocol_error"]:
                     protocol_error_message = step_meta["protocol_error"]
@@ -5430,7 +5473,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 turn_completion_total += _last_completion_tokens
                 if not step_reply:
                     break
-                step_meta = _observe_model_response(step_reply)
+                step_reply, step_meta = observe_turn_response(step_reply, summary_messages)
                 next_tool_calls = step_meta["tool_calls"]
                 if step_meta["protocol_error"]:
                     protocol_error_message = step_meta["protocol_error"]
@@ -5487,7 +5530,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
             step_reply = _call_llm_with_spinner(
                 summary_messages + [{"role": "user", "content": final_msg}]
             ).strip()
-            search_meta = _observe_model_response(step_reply)
+            step_reply, search_meta = observe_turn_response(step_reply, summary_messages)
             interaction_reply = _interaction_gate(search_meta, user_input)
             if interaction_reply is not None:
                 if search_meta.get("question") is not None or search_meta.get("plan_proposal") is not None:

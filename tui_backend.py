@@ -262,7 +262,7 @@ class Backend:
         dsml = agent.DeepSeekDSMLFilter()
         buffer = ""
         prefixes = ("action:", "tasklist:", "taskdone:", "thought:", "plan:", "definetool:",
-                    "askuser:", "planproposal:", "<")
+                    "askuser:", "askuser\n", "planproposal:", "planproposal\n", "<")
 
         def emit_text(text: str) -> None:
             nonlocal buffer

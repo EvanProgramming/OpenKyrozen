@@ -165,7 +165,10 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
 def parse_control_block(text: str, name: str) -> Any | None:
     """Return the JSON object from one named fenced or plain control block."""
     source = str(text or "")
-    heading = re.search(rf"^[ \t]*{re.escape(name)}:[ \t]*", source, re.IGNORECASE | re.MULTILINE)
+    heading = re.search(
+        rf"^[ \t]*{re.escape(name)}(?![\w])[ \t]*:?[ \t]*(?:\r?\n)?",
+        source, re.IGNORECASE | re.MULTILINE,
+    )
     if not heading:
         return None
     remainder = source[heading.end():].lstrip()

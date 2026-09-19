@@ -110,6 +110,9 @@ class InteractionTests(unittest.TestCase):
             'AskUser:\n```json\n{"questions": []}\n```', "AskUser",
         )
         self.assertEqual(value, {"questions": []})
+        self.assertEqual(parse_control_block(
+            'PlanProposal\n```json\n{"steps": []}\n```', "PlanProposal",
+        ), {"steps": []})
 
     def test_control_blocks_combined_with_actions_fail_closed(self):
         parsed = main._observe_model_response(
@@ -194,7 +197,8 @@ class InteractionTests(unittest.TestCase):
             responses = [
                 'Plan:\n1. Clarify the target before changing it.\n'
                 'TaskList:\n```json\n[{"id":"premature","description":"Must not execute before acceptance"}]\n```',
-                'AskUser:\n```json\n{"questions":[{"id":"scope","header":"Scope",'
+                'AskUser:\n```json\n{"questions": [}\n```',
+                '```json\n{"questions":[{"id":"scope","header":"Scope",'
                 '"prompt":"Which target?","choices":["Core","All"]}]}\n```',
                 'PlanProposal:\n```json\n{"title":"Marker","summary":"Create a marker safely.",'
                 '"assumptions":[],"steps":[{"id":"write-marker","title":"Write marker",'
