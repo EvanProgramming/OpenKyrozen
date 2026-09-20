@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCommandMatchesOnlyAtFirstNonWhitespaceCharacter(t *testing.T) {
 	if got := commandMatches("please use /provider"); len(got) != 0 {
@@ -23,8 +26,23 @@ func TestCommandMatchesOnlyAtFirstNonWhitespaceCharacter(t *testing.T) {
 	}
 }
 
+func TestInteractionCommandsAreVisibleOnTheFirstPalettePage(t *testing.T) {
+	want := []string{"mode", "ask", "plan", "question", "agent"}
+	for index, name := range want {
+		if commands[index].name != name {
+			t.Fatalf("first palette page[%d] = %q, want %q", index, commands[index].name, name)
+		}
+	}
+	m := initialModel(".", true)
+	m.palette = commandMatches("/")
+	view := m.paletteView(80)
+	if !strings.Contains(view, "1–5 OF ") || !strings.Contains(view, "↑↓ MORE") {
+		t.Fatalf("palette did not disclose hidden commands: %s", view)
+	}
+}
+
 func TestReplaceCommandPreservesArguments(t *testing.T) {
-	got := replaceCommand("  /prov --local", commands[0])
+	got := replaceCommand("  /prov --local", commandMatches("/prov")[0])
 	if got != "  /provider --local" {
 		t.Fatalf("unexpected replacement: %q", got)
 	}

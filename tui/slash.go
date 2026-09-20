@@ -12,15 +12,15 @@ type command struct {
 }
 
 var commands = []command{
-	{name: "provider", aliases: []string{"p"}, description: "Choose or configure an LLM provider"},
-	{name: "api_key", aliases: []string{"key"}, description: "Set a provider API key"},
-	{name: "learn", aliases: []string{"index"}, description: "Re-index the active workspace"},
-	{name: "tasks", aliases: []string{"task"}, description: "Show durable task progress"},
 	{name: "mode", aliases: nil, description: "Switch auto, ask, plan, or agent interaction mode"},
 	{name: "ask", aliases: nil, description: "Use read-only Ask mode"},
 	{name: "plan", aliases: nil, description: "Use Plan mode or accept/cancel a plan"},
 	{name: "question", aliases: nil, description: "Reopen, skip, or cancel clarification"},
 	{name: "agent", aliases: nil, description: "Switch auto, coder, or researcher mode"},
+	{name: "provider", aliases: []string{"p"}, description: "Choose or configure an LLM provider"},
+	{name: "api_key", aliases: []string{"key"}, description: "Set a provider API key"},
+	{name: "learn", aliases: []string{"index"}, description: "Re-index the active workspace"},
+	{name: "tasks", aliases: []string{"task"}, description: "Show durable task progress"},
 	{name: "self-learning", aliases: []string{"learning-settings"}, description: "Tune self-learning features"},
 	{name: "learning", aliases: nil, description: "Inspect learning proposals and evidence"},
 	{name: "memory", aliases: nil, description: "Explain or forget a memory claim"},

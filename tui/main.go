@@ -1032,13 +1032,17 @@ func (m model) paletteView(width int) string {
 		return ""
 	}
 	rowWidth := maxInt(1, width-2)
-	lines := []string{titleStyle.Render("COMMANDS")}
 	visible := maxInt(1, minInt(len(m.palette), 5))
 	start := 0
 	if m.paletteIndex >= visible {
 		start = m.paletteIndex - visible + 1
 	}
 	end := minInt(len(m.palette), start+visible)
+	title := fmt.Sprintf("COMMANDS %d–%d OF %d", start+1, end, len(m.palette))
+	if len(m.palette) > visible {
+		title += " · ↑↓ MORE"
+	}
+	lines := []string{titleStyle.Render(title)}
 	for index := start; index < end; index++ {
 		item := m.palette[index]
 		cursor := mutedStyle.Render("·")
