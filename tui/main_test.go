@@ -39,6 +39,18 @@ func TestReducerProjectsStreamingResponseTasksAndApproval(t *testing.T) {
 	}
 }
 
+func TestRestartEventQuitsForLauncherRelaunch(t *testing.T) {
+	m := initialModel(".", false)
+	updated, cmd := m.Update(backendLineMsg{event: backendEvent{"event": "restart"}})
+	m = updated.(model)
+	if !m.restart || m.status != "Restarting…" {
+		t.Fatalf("restart event was not reduced: %#v", m)
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("restart event did not quit the TUI")
+	}
+}
+
 func TestInteractionCardsRestoreModeQuestionAndPlan(t *testing.T) {
 	m := initialModel(".", false)
 	m.width, m.height = 120, 40

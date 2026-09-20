@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+TUI_RESTART_EXIT_CODE = 75
+
 
 def _legacy() -> None:
     import main
@@ -78,18 +80,23 @@ def main() -> None:
     else:
         env["KYROZEN_BACKEND_PYTHON"] = python or sys.executable
         env["KYROZEN_BACKEND_MODULE"] = "tui_backend"
-    try:
-        completed = subprocess.run([binary, *argv], env=env, check=False)
-    except OSError as exc:
-        print(f"OpenKyrozen TUI could not start ({exc}); using Rich fallback.", file=sys.stderr)
-        _legacy()
+    while True:
+        try:
+            completed = subprocess.run([binary, *argv], env=env, check=False)
+        except OSError as exc:
+            print(f"OpenKyrozen TUI could not start ({exc}); using Rich fallback.", file=sys.stderr)
+            _legacy()
+            return
+        if completed.returncode == TUI_RESTART_EXIT_CODE:
+            binary = _tui_binary() or binary
+            continue
+        if completed.returncode:
+            print(
+                f"OpenKyrozen TUI exited with status {completed.returncode}; using Rich fallback.",
+                file=sys.stderr,
+            )
+            _legacy()
         return
-    if completed.returncode:
-        print(
-            f"OpenKyrozen TUI exited with status {completed.returncode}; using Rich fallback.",
-            file=sys.stderr,
-        )
-        _legacy()
 
 
 if __name__ == "__main__":

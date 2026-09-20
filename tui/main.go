@@ -119,6 +119,7 @@ type model struct {
 	reducedMotion   bool
 	busy            bool
 	requestCount    int
+	restart         bool
 }
 
 type tickMsg time.Time
@@ -249,6 +250,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setError(msg.err.Error())
 		} else {
 			m.handleBackendEvent(msg.event)
+			if m.restart {
+				m.bridge.stop()
+				return m, tea.Quit
+			}
 		}
 		cmds = append(cmds, waitBackend(m.bridge))
 		m.maybeMotion(&cmds)
@@ -649,6 +654,11 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		m.messages = append(m.messages, chatMessage{role: "assistant", text: text})
 		m.busy = false
 		m.thinkingText = ""
+	case "restart":
+		m.status = "Restarting…"
+		m.busy = false
+		m.thinkingText = ""
+		m.restart = true
 	case "tool_receipt":
 		if receipt, ok := event["receipt"].(map[string]any); ok {
 			m.messages = append(m.messages, chatMessage{
@@ -1301,6 +1311,8 @@ func compactText(value string, width int) string {
 }
 
 func main() {
+	const restartExitCode = 75
+
 	project := flag.String("project", "", "active project path")
 	global := flag.Bool("global", false, "use the global workspace")
 	showVersion := flag.Bool("version", false, "show version")
@@ -1311,8 +1323,12 @@ func main() {
 	}
 	m := initialModel(*project, *global || *project == "")
 	p := tea.NewProgram(m)
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "OpenKyrozen TUI:", err)
 		os.Exit(1)
+	}
+	if m, ok := finalModel.(model); ok && m.restart {
+		os.Exit(restartExitCode)
 	}
 }

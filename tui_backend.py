@@ -481,8 +481,11 @@ class Backend:
         elif command in {"/update", "update"}:
             self.status("updating", "Updating OpenKyrozen…", request_id)
             result = self._quiet_call(agent._self_update)
-            self.emit("response", request_id, text=result)
-            self.status("ready", "Ready", request_id)
+            if result.startswith("Updated OpenKyrozen from "):
+                self.emit("restart", request_id, text=result)
+            else:
+                self.emit("response", request_id, text=result)
+                self.status("ready", "Ready", request_id)
         elif command in {"/learning", "learning"}:
             self.emit("response", request_id, text=self._learning_text(arg_text))
         elif command in {"/memory", "memory"}:

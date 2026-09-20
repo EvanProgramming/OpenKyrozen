@@ -143,6 +143,16 @@ class TUIProtocolTests(unittest.TestCase):
             finally:
                 tui_backend.agent._interaction_controller = original
 
+    def test_successful_update_requests_restart(self):
+        with patch.object(
+                tui_backend.agent, "_self_update",
+                return_value="Updated OpenKyrozen from source revision abc123:\ndone",
+        ):
+            self.backend._command("/update", {}, "update-1")
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        self.assertEqual(events[-1]["event"], "restart")
+        self.assertEqual(events[-1]["request_id"], "update-1")
+
 
 if __name__ == "__main__":
     unittest.main()
