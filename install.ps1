@@ -114,6 +114,16 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) { Fail "OpenKyrozen installation failed from release $releaseTag." }
 try { & $uvCommand.Source tool update-shell *> $null } catch { }
 
+$ghBootstrap = Join-Path $localBin "kyrozen-bootstrap-gh.exe"
+if (Test-Path $ghBootstrap) {
+    & $ghBootstrap *> $null
+    if ($LASTEXITCODE -eq 0) {
+        Info "GitHub CLI 2.101.0 installed with checksum verification."
+    } else {
+        Warn "GitHub CLI bootstrap failed; /github login will retry when first used."
+    }
+}
+
 function Test-GoCompatible([string]$CommandPath) {
     try {
         $text = (& $CommandPath version | Out-String).Trim()

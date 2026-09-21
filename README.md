@@ -61,7 +61,7 @@
 
 OpenKyrozen is a **self-learning AI agent** that runs in your terminal. Unlike a typical chatbot, it:
 
-- **Uses 31 runtime tools** — 29 base file/shell/web/git/browser actions plus two SQLite memory actions
+- **Uses 39 runtime tools** — 37 base file/shell/web/git/browser/graph/GitHub actions plus two SQLite memory actions
 - **Learns continuously** — background learning creates evidence-backed proposals and only promotes repeated or validated improvements
 - **Works with any LLM** — DeepSeek, OpenAI, Claude, Gemini, or local Ollama models
 - **Runs on any OS** — macOS, Linux, and Windows (with automatic terminal capability detection)
@@ -140,7 +140,7 @@ The v2.0.3 release wheel was built and validated by GitHub Actions; see the [v2.
 
 ### Terminal mode
 
-Once launched, `kyrozen` opens a full-screen Bubble Tea interface with an animated OpenKyrozen banner, high-contrast black background, white text, slate panels, streamed responses, and a responsive task panel. Type naturally — the agent understands plain English (and Chinese, Japanese, Korean). The direct `python main.py` command remains the Rich recovery/development entry point.
+Once launched, `kyrozen` opens a full-screen Bubble Tea interface with an animated OpenKyrozen banner, high-contrast black background, white text, slate panels, streamed responses, and a responsive task panel. A bounded project graph is always visible: wide terminals show it in the upper-right activity rail and narrow terminals show a compact graph strip. Press `g` or run `/graph open` for the explorer. Type naturally — the agent understands plain English (and Chinese, Japanese, Korean). The direct `python main.py` command remains the Rich recovery/development entry point.
 
 Bare `kyrozen` always uses the persistent global workspace at
 `~/.kyrozen/workspace`; changing directories does not switch projects. Use
@@ -178,14 +178,18 @@ Type `/` as the first non-whitespace character to open the command palette. It f
 | `/quit` or `/exit` | Exit the agent |
 | `/provider` | Switch to a different LLM provider (interactive menu) |
 | `/api_key` | Change your API key |
-| `/learn` | Immediately scan project files into memory |
+| `/learn` | Perform a clean refresh of the private Graphify project index |
 | `/forget` | Show recent learnings; `/forget keyword` to delete bad learnings |
-| `/update` | Update the installed package and Bubble Tea binary; restart Kyrozen after success (never pulls into a project) |
+| `/update` | Atomically update OpenKyrozen, bundled skills, Graphify, managed GitHub CLI, and Bubble Tea; restart after success |
 | `/mode auto\|ask\|plan\|agent` | Persist the interaction preference for this CLI/TUI or web session |
 | `/ask` | Shortcut for `/mode ask` |
 | `/plan` | Shortcut for `/mode plan`; `/plan accept\|cancel` resolves a pending plan |
 | `/question` | Reopen the latest question; `/question skip\|cancel` resolves it |
 | `/agent auto\|coder\|researcher` | Choose automatic routing or an isolated learning profile |
+| `/graph status` | Show private index health; `/graph refresh [--full]` rebuilds it and `/graph open` opens the TUI explorer |
+| `/github status` | Check `gh` authentication; `/github login` safely suspends the TUI for browser login |
+| `/skills` | Show built-in, local, and learned skill versions and status |
+| `/ponytail off\|lite\|full\|ultra` | Set the scoped coding-simplicity preference |
 | `/learning status [profile]` | Show candidate, canary, active, retired, and rolled-back artifacts |
 | `/learning metrics [profile]` | Show verified completion, corrections, errors, cost, and latency metrics |
 | `/learning evidence <id>` | Print the proof card, replay, applicability, and outcome receipts |
@@ -248,7 +252,7 @@ User Input
          │  Response + tool calls
          ▼
 ┌─────────────────┐
-│  Tool Executor   │──► 31 runtime tools (file I/O, shell, git, web, memory, browser)
+│  Tool Executor   │──► 39 runtime tools (file I/O, shell, git, web, memory, browser, graph, GitHub)
 └────────┬────────┘
          │  Tool results fed back to LLM
          │  (up to 50 tool-call rounds per turn)
@@ -366,11 +370,16 @@ tool and workspace gates still apply. Learned artifacts remain separately
 outcome-verified and follow their canary/promotion lifecycle; plugins remain
 hook extensions rather than permission-bearing skill packages.
 
+OpenKyrozen also seeds three release-versioned built-ins: Graphify `0.9.64`,
+GitHub CLI `2.101.0`, and Ponytail `4.10.0`. Their manifests declare source,
+license, checksum, activation, and capability requirements. They update only
+through `/update`; local skills and executable plugins are left untouched.
+
 | # | Registry feature | Bounded effect |
 |---:|---|---|
 | 1 | Conversation learning | Extract candidate facts from new conversation logs |
-| 2 | Project-file loading | Incrementally update scoped Python-file snapshots |
-| 3 | Code-entry aging | Remove snapshots for deleted Python files |
+| 2 | Project intelligence | Incrementally refresh a private local Graphify code index |
+| 3 | Legacy code-entry aging | Remove pre-Graphify `FILE:` snapshots only |
 | 4 | Tool auto-debugging | Record findings from repeated tool failures |
 | 5 | Memory consolidation | Deduplicate and summarize non-trivial memories |
 | 6 | Tool review | Record bounded tool-improvement suggestions |
@@ -393,7 +402,7 @@ hook extensions rather than permission-bearing skill packages.
 
 ## 🛠 Tools Reference
 
-All 31 runtime tools accept a plain-string `args` field in a JSON action block.
+All 39 runtime tools accept a plain-string `args` field in a JSON action block.
 The [generated runtime inventory](docs/tool-inventory.md) is authoritative for
 tool names, capability labels, MCP input schemas, and the live HTTP endpoint
 list:
@@ -559,7 +568,7 @@ private users.
 
 ### Memory storage
 
-OpenKyrozen v2 uses **SQLite as the source of truth** (`~/.kyrozen/v2/openkyrozen.sqlite3`) and ChromaDB as a rebuildable semantic index. Personal conversations, tasks, and learning are shared in the global state store. `FILE:` snapshots and their vector metadata use a stable scope derived from the active root, so switching projects never removes or recalls another project's indexed files. The default global workspace is `~/.kyrozen/workspace`; `kyrozen --project PATH` works directly on the original project files without a mirror or copy-back layer. If ChromaDB is unavailable, SQLite keeps durable keyword retrieval.
+OpenKyrozen v2 uses **SQLite as the source of truth** (`~/.kyrozen/v2/openkyrozen.sqlite3`) and ChromaDB as a rebuildable semantic index for conversational memory. Personal conversations, tasks, and learning are shared in the global state store. Project source is not repeatedly copied into memory: Graphify maintains an incremental, code-only mirror and graph under `~/.kyrozen/v2/graphs/<source-scope>/`. The private mirror never writes `graphify-out` into the project. The default global workspace is `~/.kyrozen/workspace`; `kyrozen --project PATH` operates on the original project while its graph remains private. If ChromaDB is unavailable, SQLite keeps durable keyword retrieval.
 
 Import an existing v1 store without deleting it:
 

@@ -7,7 +7,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 
 ## Runtime tools
 
-- Built-in runtime tools: **31**
+- Built-in runtime tools: **39**
 - Names with the `git_` prefix: **14**
 - The CLI Action contract is a plain string in the `args` field.
 - Web and MCP exposure is filtered by the configured capability profile.
@@ -37,6 +37,14 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `git_show` | `read` | Show details of a git object (commit, tag, etc). Args format: "HEAD" or commit hash. | `args`: string |
 | `git_stash` | `git` | Stash or unstash working directory changes. | `args`: string |
 | `git_status` | `read` | Show git status of a repository. Args format: "path" (default "."). | `args`: string |
+| `github_cli` | `git` | Run GitHub CLI arguments directly without a shell. Agent mode and approval are required. | `args`: string |
+| `github_read` | `network` | Run an allowlisted read-only GitHub CLI command. | `args`: string |
+| `github_status` | `network` | Inspect GitHub CLI installation and authentication without exposing tokens. | `args`: string |
+| `graph_explain` | `read` | Explain one graph node. Args: node label. | `args`: string |
+| `graph_path` | `read` | Trace the shortest graph path. Args: left\|right. | `args`: string |
+| `graph_query` | `read` | Query the private Graphify index. Args: a project question. | `args`: string |
+| `graph_refresh` | `read` | Refresh the private local code graph. Pass --full for a clean rebuild. | `args`: string |
+| `graph_status` | `read` | Return the private Graphify index state and a bounded mini graph. | `args`: string |
 | `list_dir` | `read` | List contents of a directory. Args format: "path" (default "."). | `path`: string |
 | `list_tree` | `read` | Recursively list the directory tree of the given path. Args format: "path" (default "."). | `path`: string |
 | `read_file` | `read` | Read content from a file. Args format: "path". | `path`: string; required: `path` |

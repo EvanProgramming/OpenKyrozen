@@ -1,0 +1,17 @@
+{
+  "name": "ponytail",
+  "id": "builtin.ponytail",
+  "version": "4.10.0",
+  "description": "Minimal, root-cause-first coding guidance adapted from Ponytail.",
+  "source": "builtin",
+  "upstream": "https://github.com/DietrichGebert/ponytail",
+  "license": "MIT",
+  "checksum": "sha256:85fb6f2540f13e4732c25812bd22711bbcc089e9731bbdab3cdde886e3d53939",
+  "permissions": [],
+  "profiles": ["coder"],
+  "triggers": ["build", "code", "fix", "implement", "refactor", "test"],
+  "always_on": true,
+  "activation": {"mode": "coding", "default": "full", "updates": "openkyrozen-release-only"},
+  "required_capabilities": [],
+  "default_level": "full"
+}

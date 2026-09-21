@@ -25,10 +25,13 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(project["scripts"]["kyrozen"], "tui_launcher:main")
         self.assertEqual(project["scripts"]["kyrozen-backend"], "tui_backend:main")
         self.assertEqual(project["scripts"]["kyrozen-web"], "server:main_entry")
+        self.assertEqual(project["scripts"]["kyrozen-bootstrap-gh"], "github_cli:main")
         self.assertIn("tui_launcher", document["tool"]["setuptools"]["py-modules"])
         self.assertIn("tui_backend", document["tool"]["setuptools"]["py-modules"])
         self.assertIn("workspace_context", document["tool"]["setuptools"]["py-modules"])
         self.assertIn("learning_worker", document["tool"]["setuptools"]["py-modules"])
+        self.assertIn("project_graph", document["tool"]["setuptools"]["py-modules"])
+        self.assertIn("github_cli", document["tool"]["setuptools"]["py-modules"])
 
     def test_full_development_setup_includes_browser_and_core_test_path(self):
         with (ROOT / "pyproject.toml").open("rb") as handle:
@@ -249,6 +252,7 @@ exit 0
         with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
              patch("main._release_tui_asset_available", return_value=True), \
              patch("main._update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
+             patch("main.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
              patch("main.subprocess.run", return_value=completed) as run:
             result = main._self_update()
         self.assertIn("upgraded", result)
@@ -275,6 +279,7 @@ exit 0
         with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
              patch("main._release_tui_asset_available", return_value=True), \
              patch("main._update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
+             patch("main.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
              patch("main.subprocess.run", side_effect=[failed, completed]) as run:
             result = main._self_update()
         self.assertIn("upgraded", result)
@@ -313,6 +318,7 @@ exit 0
              patch("main._release_tui_asset_available", return_value=False), \
              patch("main._resolve_update_revision", return_value=revision), \
              patch("main._update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
+             patch("main.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
              patch("main.subprocess.run", return_value=completed) as run:
             result = main._self_update()
         command = run.call_args.args[0]

@@ -3,6 +3,7 @@ Agent capabilities: file I/O, shell commands, web search.
 """
 
 import os
+import json
 import shlex
 import subprocess
 import re
@@ -56,12 +57,24 @@ _BLOCKED_RE = re.compile("|".join(_BLOCKED_PATTERNS), re.IGNORECASE)
 # Python-level path checks cannot sandbox arbitrary shell programs.
 _WORKSPACE_ROOT: Path = Path.cwd().resolve()
 _BROWSER = BrowserManager()
+_PROJECT_GRAPH: Any = None
+_GITHUB_CLI: Any = None
 
 
 def set_workspace_root(path: str | os.PathLike[str]) -> None:
     """Set the root directory allowed by file and directory tools."""
     global _WORKSPACE_ROOT
     _WORKSPACE_ROOT = Path(path).expanduser().resolve()
+
+
+def set_project_graph(graph: Any) -> None:
+    global _PROJECT_GRAPH
+    _PROJECT_GRAPH = graph
+
+
+def set_github_cli(client: Any) -> None:
+    global _GITHUB_CLI
+    _GITHUB_CLI = client
 
 
 def _resolve_workspace_path(raw_path: str) -> Path:
@@ -1010,6 +1023,58 @@ def browser_close(args: str) -> str:
     return _BROWSER.close(args.strip())
 
 
+def graph_status(_args: str = "") -> str:
+    """Return the private Graphify index state and a bounded mini graph."""
+    if _PROJECT_GRAPH is None:
+        return "Error: project graph is not configured."
+    return json.dumps(_PROJECT_GRAPH.snapshot(), ensure_ascii=False, indent=2)
+
+
+def graph_query(args: str) -> str:
+    """Query the private Graphify index. Args: a project question."""
+    return _PROJECT_GRAPH.query(args) if _PROJECT_GRAPH is not None else "Error: project graph is not configured."
+
+
+def graph_explain(args: str) -> str:
+    """Explain one graph node. Args: node label."""
+    return _PROJECT_GRAPH.explain(args) if _PROJECT_GRAPH is not None else "Error: project graph is not configured."
+
+
+def graph_path(args: str) -> str:
+    """Trace the shortest graph path. Args: left|right."""
+    if _PROJECT_GRAPH is None:
+        return "Error: project graph is not configured."
+    parts = str(args).split("|", 1)
+    if len(parts) != 2:
+        return "Error: graph_path requires left|right."
+    return _PROJECT_GRAPH.path(parts[0], parts[1])
+
+
+def graph_refresh(args: str = "") -> str:
+    """Refresh the private local code graph. Pass --full for a clean rebuild."""
+    if _PROJECT_GRAPH is None:
+        return "Error: project graph is not configured."
+    state = _PROJECT_GRAPH.refresh(full=str(args).strip().lower() in {"full", "--full"})
+    return json.dumps(state, ensure_ascii=False, indent=2)
+
+
+def github_status(args: str = "") -> str:
+    """Inspect GitHub CLI installation and authentication without exposing tokens."""
+    if _GITHUB_CLI is None:
+        return "Error: GitHub CLI is not configured."
+    return json.dumps(_GITHUB_CLI.status(str(args).strip() or None), ensure_ascii=False, indent=2)
+
+
+def github_read(args: str | list[str]) -> str:
+    """Run an allowlisted read-only GitHub CLI command."""
+    return _GITHUB_CLI.run(args, read_only=True) if _GITHUB_CLI is not None else "Error: GitHub CLI is not configured."
+
+
+def github_cli(args: str | list[str]) -> str:
+    """Run GitHub CLI arguments directly without a shell. Agent mode and approval are required."""
+    return _GITHUB_CLI.run(args) if _GITHUB_CLI is not None else "Error: GitHub CLI is not configured."
+
+
 AVAILABLE_TOOLS: dict[str, Any] = {
     "write_file": write_file,
     "read_file": read_file,
@@ -1040,6 +1105,14 @@ AVAILABLE_TOOLS: dict[str, Any] = {
     "browser_click": browser_click,
     "browser_type": browser_type,
     "browser_close": browser_close,
+    "graph_status": graph_status,
+    "graph_query": graph_query,
+    "graph_explain": graph_explain,
+    "graph_path": graph_path,
+    "graph_refresh": graph_refresh,
+    "github_status": github_status,
+    "github_read": github_read,
+    "github_cli": github_cli,
 }
 
 # Capability labels let local CLI, Web, and MCP surfaces expose the same rich
@@ -1077,6 +1150,14 @@ _TOOL_CAPABILITIES: dict[str, str] = {
     "git_stash": "git",
     "git_reset": "destructive",
     "git_remote": "git",
+    "graph_status": "read",
+    "graph_query": "read",
+    "graph_explain": "read",
+    "graph_path": "read",
+    "graph_refresh": "read",
+    "github_status": "network",
+    "github_read": "network",
+    "github_cli": "git",
 }
 
 _CAPABILITY_PROFILES: dict[str, frozenset[str]] = {

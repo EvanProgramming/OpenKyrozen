@@ -1,0 +1,17 @@
+{
+  "name": "graphify",
+  "id": "builtin.graphify",
+  "version": "0.9.64",
+  "description": "Query-first local project intelligence backed by Graphify.",
+  "source": "builtin",
+  "upstream": "https://github.com/Graphify-Labs/graphify",
+  "license": "Apache-2.0 AND MIT",
+  "checksum": "sha256:e34fc1a2819bb281d90a78707e2d6b195ca9555e6bc1880083fc93122219859b",
+  "permissions": ["workspace.read"],
+  "profiles": ["coder", "researcher"],
+  "triggers": ["architecture", "codebase", "dependency", "implement", "project", "refactor", "repository", "trace"],
+  "always_on": true,
+  "activation": {"mode": "always", "updates": "openkyrozen-release-only"},
+  "required_capabilities": ["read"],
+  "tools": ["graph_status", "graph_query", "graph_explain", "graph_path", "graph_refresh"]
+}

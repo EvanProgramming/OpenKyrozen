@@ -28,7 +28,7 @@ Current repository test count at this snapshot: **223 unittest cases**.
 The implementation is local-only. It does not fine-tune weights, synchronize a
 cloud memory, edit harness source, grant capabilities, or create dynamic tools.
 The base `tools.py` registry exposes 29 actions; the terminal runtime adds
-`search_memory` and `check_stored_data`, for 31 runtime actions.
+`search_memory` and `check_stored_data`, for 39 runtime actions.
 
 ## Terminal workflow
 
@@ -238,6 +238,8 @@ diagnostic only and is not treated as a release claim.
 
 ## Verification snapshot commands
 
+Current repository test count at this snapshot: **233 unittest cases**.
+
 The post-#54 snapshot ran the repository's current checks and smoke coverage:
 
 ```bash
@@ -272,9 +274,10 @@ make benchmark
 git diff --check
 ```
 
-The historical post-#54 verification passed the 130 discovered tests, the API
+The historical post-#54 verification passed the 130 discovered tests; the current
+repository contains 233 discovered tests. The historical run also covered the API
 health/scoping smoke, the CLI command-loop smoke, and the five-case
-clean/evolved benchmark described above. `make check` reports the live 31-tool
+clean/evolved benchmark described above. `make check` reports the live 39-tool
 runtime inventory, including 14 `git_` tools. A new artifact is not immediate:
 wait for an eligible run, at least
 60 seconds of idle time, reviewer evidence, and then the two-success plus

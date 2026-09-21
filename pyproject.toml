@@ -25,6 +25,7 @@ classifiers = [
 dependencies = [
     "chromadb>=0.4.0",
     "cryptography>=42.0.0",
+    "graphifyy==0.9.64",
     "googlesearch-python>=1.2.3",
     "openai>=1.0.0",
     "PyYAML>=6.0",
@@ -43,6 +44,7 @@ all = ["fastapi", "uvicorn", "anthropic>=0.30.0", "google-generativeai>=0.8.0", 
 kyrozen = "tui_launcher:main"
 kyrozen-backend = "tui_backend:main"
 kyrozen-web = "server:main_entry"
+kyrozen-bootstrap-gh = "github_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/EvanProgramming/OpenKyrozen"
@@ -50,15 +52,16 @@ Repository = "https://github.com/EvanProgramming/OpenKyrozen"
 Issues = "https://github.com/EvanProgramming/OpenKyrozen/issues"
 
 [tool.setuptools]
-py-modules = ["main", "tui_launcher", "tui_backend", "memory", "providers", "server", "tools", "event_store", "interaction", "learning_engine", "learning_benchmark", "learning_worker", "migration", "task_engine", "scheduler", "skill_registry", "browser_manager", "instruction_loader", "agent_config", "subagents", "capability_tokens", "tool_registry", "dynamic_tools", "plugin_runtime", "workspace_context"]
+py-modules = ["main", "tui_launcher", "tui_backend", "memory", "providers", "server", "tools", "event_store", "interaction", "learning_engine", "learning_benchmark", "learning_worker", "migration", "task_engine", "scheduler", "skill_registry", "browser_manager", "instruction_loader", "agent_config", "subagents", "capability_tokens", "tool_registry", "dynamic_tools", "plugin_runtime", "workspace_context", "project_graph", "github_cli"]
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["plugins*", "prompts*"]
+include = ["plugins*", "prompts*", "builtin_skills*"]
 
 [tool.setuptools.package-data]
 plugins = ["*.py"]
 prompts = ["*.md"]
+builtin_skills = ["manifest.json", "NOTICE.md", "*/SKILL.md", "*/skill.json", "*/LICENSE*", "*/NOTICE"]
 
 [tool.setuptools.data-files]
 "share/openkyrozen" = ["agent.yaml"]

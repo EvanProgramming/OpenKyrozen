@@ -1,0 +1,16 @@
+{
+  "name": "github-cli",
+  "id": "builtin.github-cli",
+  "version": "2.101.0",
+  "description": "GitHub workflows through the official shell-free gh integration.",
+  "source": "builtin",
+  "upstream": "https://github.com/cli/cli",
+  "license": "MIT",
+  "checksum": "sha256:766f2e627389366ed3c1305db1a6c2ba726f50e32278e01496b58c24121e7e74",
+  "permissions": ["network", "git.read", "git.write"],
+  "profiles": ["coder", "researcher"],
+  "triggers": ["github", "issue", "pull-request", "repository", "release", "workflow"],
+  "activation": {"mode": "triggered", "updates": "openkyrozen-release-only"},
+  "required_capabilities": ["network", "git"],
+  "tools": ["github_status", "github_read", "github_cli"]
+}

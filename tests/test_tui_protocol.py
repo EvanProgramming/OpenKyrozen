@@ -100,7 +100,7 @@ class TUIProtocolTests(unittest.TestCase):
                 patch.object(tui_backend.agent, "_prompt_and_init_deepseek", return_value=True), \
                 patch.object(tui_backend.agent, "_plugin_runtime_for_surface", return_value=plugin), \
                 patch.object(tui_backend.agent, "_run_recovered_tasks", return_value=[]), \
-                patch.object(tui_backend.agent, "_load_project_files_into_memory"), \
+                patch.object(tui_backend.agent, "_project_graph", None), \
                 patch.object(tui_backend.agent, "_ensure_detached_learning_worker", return_value=True) as ensure_worker:
             self.backend.start({"command": "start", "global": True}, "start-1")
 
@@ -152,6 +152,46 @@ class TUIProtocolTests(unittest.TestCase):
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
         self.assertEqual(events[-1]["event"], "restart")
         self.assertEqual(events[-1]["request_id"], "update-1")
+
+    def test_graph_requests_are_correlated_bounded_and_support_refresh(self):
+        class Graph:
+            def explore(self, **kwargs):
+                return {"status": "ready", "nodes": 1, "edges": 0, "communities": 1,
+                        "mini": {"nodes": [{"id": "n", "label": kwargs.get("query", "node")}], "edges": []}}
+
+            def refresh_async(self, **kwargs):
+                callback = kwargs.get("callback")
+                if callback:
+                    callback({"status": "ready"})
+                return True
+
+            def path(self, left, right):
+                return f"{left} -> {right}"
+
+        with patch.object(tui_backend.agent, "_project_graph", Graph()):
+            self.backend.dispatch({"command": "graph_request", "request_id": "graph-1", "action": "search", "query": "main"})
+            self.backend.dispatch({"command": "graph_request", "request_id": "graph-2", "action": "path", "left": "a", "right": "b"})
+            self.backend.dispatch({"command": "graph_request", "request_id": "graph-3", "action": "refresh"})
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        self.assertTrue(all(event["event"] == "graph_state" for event in events))
+        self.assertEqual(events[0]["request_id"], "graph-1")
+        self.assertEqual(events[0]["graph"]["mini"]["nodes"][0]["label"], "main")
+        self.assertIn("a -> b", events[1]["graph"]["detail"])
+        self.assertTrue(all(len(line.encode("utf-8")) <= tui_backend.MAX_LINE_BYTES
+                            for line in self.output.getvalue().splitlines()))
+
+    def test_github_login_emits_terminal_safe_prompt(self):
+        client = type("Client", (), {
+            "binary": lambda self: "/managed/gh",
+            "hostname": lambda self: "ghe.example",
+        })()
+        with patch.object(tui_backend.agent, "_github_cli", client):
+            self.backend._command("/github login", {}, "gh-1")
+        event = json.loads(self.output.getvalue().splitlines()[-1])
+        self.assertEqual(event["event"], "prompt")
+        self.assertEqual(event["kind"], "github_auth")
+        self.assertEqual(event["binary"], "/managed/gh")
+        self.assertEqual(event["hostname"], "ghe.example")
 
 
 if __name__ == "__main__":

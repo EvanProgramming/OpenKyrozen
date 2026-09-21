@@ -233,6 +233,60 @@ func TestRenderedChatFitsSmallWindow(t *testing.T) {
 	}
 }
 
+func TestGraphStateRendersWideNarrowAndExplorer(t *testing.T) {
+	m := initialModel("", false)
+	m.handleBackendEvent(backendEvent{"event": "graph_state", "graph": map[string]any{
+		"status": "ready", "nodes": float64(2), "edges": float64(1), "communities": float64(2),
+		"mini": map[string]any{
+			"nodes": []any{
+				map[string]any{"id": "a", "label": "main", "community": float64(0), "degree": float64(1), "source": "main.py"},
+				map[string]any{"id": "b", "label": "tools", "community": float64(1), "degree": float64(1), "source": "tools.py"},
+			},
+			"edges": []any{map[string]any{"source": "a", "target": "b", "relation": "calls"}},
+		},
+	}})
+	m.width, m.height = 140, 40
+	m.resize()
+	if rail := m.activityRail(); !strings.Contains(rail, "PROJECT GRAPH") || !strings.Contains(rail, "2 nodes") {
+		t.Fatalf("wide graph rail is incomplete: %s", rail)
+	}
+	m.width = 80
+	if compact := m.graphCompact(); !strings.Contains(compact, "READY") || !strings.Contains(compact, "2 nodes") {
+		t.Fatalf("narrow graph state is incomplete: %s", compact)
+	}
+	m.screen = screenGraph
+	if view := m.graphExplorer(); !strings.Contains(view, "main") || !strings.Contains(view, "neighbors") {
+		t.Fatalf("graph explorer is incomplete: %s", view)
+	}
+	m.height = 24
+	if view := m.graphExplorer(); !strings.Contains(view, "Esc close") {
+		t.Fatalf("graph explorer controls were clipped in a short terminal: %s", view)
+	}
+}
+
+func TestGraphKeyboardAndMouseControlsStayBounded(t *testing.T) {
+	m := initialModel("", false)
+	m.screen = screenGraph
+	m.graph = graphSnapshot{status: "ready", communities: 2, miniNodes: []graphNode{{id: "a", label: "a"}, {id: "b", label: "b"}}}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = updated.(model)
+	if m.graphSelected != 1 {
+		t.Fatal("down did not move graph selection")
+	}
+	updated, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	m = updated.(model)
+	if m.graphZoom != 1 {
+		t.Fatal("mouse wheel did not zoom graph")
+	}
+	for range 20 {
+		updated, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+		m = updated.(model)
+	}
+	if m.graphZoom != -1 {
+		t.Fatalf("graph zoom escaped its lower bound: %d", m.graphZoom)
+	}
+}
+
 func TestMouseWheelStaysInsideViewportAndPreservesManualScroll(t *testing.T) {
 	m := initialModel("", true)
 	m.width, m.height = 80, 24

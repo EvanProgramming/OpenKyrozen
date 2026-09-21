@@ -96,6 +96,13 @@ if ! install_openkyrozen; then
 fi
 "$uv_bin" tool update-shell >/dev/null 2>&1 || true
 
+gh_bootstrap="$(command -v kyrozen-bootstrap-gh 2>/dev/null || true)"
+if [ -n "$gh_bootstrap" ] && "$gh_bootstrap" >/dev/null 2>&1; then
+    info 'GitHub CLI 2.101.0 installed with checksum verification.'
+else
+    warn 'GitHub CLI bootstrap failed; /github login will retry when first used.'
+fi
+
 checksum() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$1" | awk '{print $1}'

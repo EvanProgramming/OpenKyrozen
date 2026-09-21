@@ -6,7 +6,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import main
 import server
@@ -27,6 +27,7 @@ class LearningDispatcherTests(unittest.TestCase):
         self.original_hydrated_preferences = dict(main._hydrated_preferences)
         self.original_preference_scope = main._preference_scope
         self.original_graph = {key: list(value) for key, value in main._knowledge_graph.items()}
+        self.original_project_graph = main._project_graph
         self.original_libraries = set(main._known_libraries)
 
     def tearDown(self):
@@ -44,6 +45,7 @@ class LearningDispatcherTests(unittest.TestCase):
         main._preference_scope = self.original_preference_scope
         main._knowledge_graph.clear()
         main._knowledge_graph.update({key: list(value) for key, value in self.original_graph.items()})
+        main._project_graph = self.original_project_graph
         main._known_libraries.clear()
         main._known_libraries.update(self.original_libraries)
 
@@ -72,6 +74,12 @@ class LearningDispatcherTests(unittest.TestCase):
             root = Path(directory)
             (root / "effect.py").write_text("VALUE = 7\n", encoding="utf-8")
             self._isolated_runtime(root)
+            main._project_graph = Mock()
+            main._project_graph.snapshot.return_value = {
+                "status": "missing", "nodes": 0, "edges": 0, "communities": 0,
+                "mini": {"nodes": [], "edges": []},
+            }
+            main._project_graph.refresh_async.return_value = True
             main._last_project_scan_time = 0
 
             scan = main.dispatch_learning_cycle(
@@ -85,8 +93,8 @@ class LearningDispatcherTests(unittest.TestCase):
                     "SELECT content FROM files WHERE rel_path=? AND user_id=? AND workspace_id=?",
                     ("effect.py", "learning-user", main.memory_bank.file_scope_id),
                 ).fetchone()
-            self.assertIsNotNone(file_row)
-            self.assertIn("VALUE = 7", file_row["content"])
+            self.assertIsNone(file_row)
+            main._project_graph.refresh_async.assert_called_once_with()
 
             main.memory_bank.add_log("FACT: a real memory must be scored")
             scored = main.dispatch_learning_cycle(

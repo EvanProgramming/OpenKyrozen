@@ -11,6 +11,46 @@ from skill_registry import SkillRegistry
 
 
 class SkillRegistryTests(unittest.TestCase):
+    def test_packaged_builtins_seed_with_pinned_versions_and_match_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = SkillRegistry(EventStore(root / "state.sqlite3"), root=root / "installed")
+            seeded = registry.seed_builtins()
+            self.assertEqual({item["manifest"]["name"] for item in seeded}, {"graphify", "github-cli", "ponytail"})
+            versions = {item["name"]: item["version"] for item in registry.list("active")}
+            self.assertEqual(versions, {"graphify": "0.9.64", "github-cli": "2.101.0", "ponytail": "4.10.0"})
+            matched = {item["name"] for item in registry.match("coder", "implement a GitHub repository fix")}
+            self.assertIn("graphify", matched)
+            self.assertIn("ponytail", matched)
+
+            installed = root / "installed" / "graphify" / "0.9.64" / "SKILL.md"
+            installed.write_text("corrupt", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "checksum"):
+                registry._read_manifest(installed.parent, runtime_matchable=True)
+            registry.seed_builtins()
+            self.assertIn("Graphify project intelligence", installed.read_text(encoding="utf-8"))
+
+    def test_builtin_upgrade_retains_previous_version_for_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "old"
+            source.mkdir()
+            body = "# Graphify old\n"
+            (source / "SKILL.md").write_text(body, encoding="utf-8")
+            import hashlib
+            (source / "skill.json").write_text(json.dumps({
+                "name": "graphify", "version": "0.9.63", "source": "builtin",
+                "description": "old", "permissions": ["workspace.read"],
+                "profiles": ["coder", "researcher"], "triggers": ["project"],
+                "checksum": "sha256:" + hashlib.sha256(body.encode()).hexdigest(),
+            }), encoding="utf-8")
+            registry = SkillRegistry(EventStore(root / "state.sqlite3"), root=root / "installed")
+            old = registry.install(source, activate=True, source_name="builtin")
+            registry.seed_builtins()
+            previous = next(item for item in registry.list() if item["id"] == old["id"])
+            self.assertEqual(previous["status"], "rolled_back")
+            self.assertTrue(Path(previous["path"]).is_dir())
+
     def test_skill_install_validates_permissions_and_requires_explicit_activation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

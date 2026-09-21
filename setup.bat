@@ -47,6 +47,9 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+echo [INFO] Installing checksum-verified GitHub CLI 2.101.0...
+python -m github_cli >nul 2>nul
+if errorlevel 1 echo [WARN] GitHub CLI bootstrap failed; /github login will retry when first used.
 if exist "%ProgramFiles%\Go\bin\go.exe" (
     set "GO=%ProgramFiles%\Go\bin\go.exe"
 ) else (

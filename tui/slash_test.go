@@ -41,6 +41,19 @@ func TestInteractionCommandsAreVisibleOnTheFirstPalettePage(t *testing.T) {
 	}
 }
 
+func TestNativeSkillCommandsAreDiscoverable(t *testing.T) {
+	matches := commandMatches("/")
+	found := map[string]bool{}
+	for _, item := range matches {
+		found[item.name] = true
+	}
+	for _, name := range []string{"graph", "github", "skills", "ponytail"} {
+		if !found[name] {
+			t.Fatalf("/%s is missing from the command palette", name)
+		}
+	}
+}
+
 func TestReplaceCommandPreservesArguments(t *testing.T) {
 	got := replaceCommand("  /prov --local", commandMatches("/prov")[0])
 	if got != "  /provider --local" {

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import importlib.resources
 import os
 import re
 import shutil
@@ -30,6 +32,7 @@ class SkillRegistry:
         self.workspace_id = workspace_id
         self.root = Path(root or os.environ.get("KYROZEN_SKILLS_DIR", Path.home() / ".kyrozen" / "v2" / "skills")).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self.disabled_builtins: set[str] = set()
 
     @staticmethod
     def _validate_runtime_match_fields(manifest: dict[str, Any]) -> None:
@@ -79,6 +82,11 @@ class SkillRegistry:
             "entrypoint": str(data.get("entrypoint", "SKILL.md")),
             **data,
         }
+        if manifest.get("source") == "builtin":
+            expected = str(manifest.get("checksum", ""))
+            actual = "sha256:" + hashlib.sha256((source / "SKILL.md").read_bytes()).hexdigest()
+            if expected != actual:
+                raise ValueError("built-in skill checksum mismatch")
         if manifest.get("source") == "learned":
             profiles = manifest.get("profiles", [])
             triggers = manifest.get("triggers", [])
@@ -116,12 +124,43 @@ class SkillRegistry:
         for child in source_path.rglob("*"):
             if child.is_symlink():
                 raise ValueError("Symlinked skill files are not allowed")
-        manifest = self._read_manifest(source_path, runtime_matchable=source_name == "local")
+        manifest = self._read_manifest(source_path, runtime_matchable=source_name in {"local", "builtin"})
         target = self.root / manifest["name"] / manifest["version"]
         target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.copytree(source_path, target)
+        if target.exists() and source_name == "builtin":
+            try:
+                existing_manifest = self._read_manifest(target, runtime_matchable=True)
+            except (OSError, ValueError, json.JSONDecodeError):
+                existing_manifest = {}
+            if existing_manifest.get("checksum") == manifest.get("checksum"):
+                skill_id = self.store.upsert_skill(
+                    name=manifest["name"], version=manifest["version"], path=str(target),
+                    description=manifest["description"], permissions=manifest["permissions"],
+                    status="active", source="builtin", manifest=manifest, workspace_id=self.workspace_id,
+                )
+                return {"id": skill_id, "status": "active", "manifest": manifest,
+                        "validation": self.validate(skill_id), "existing": True}
+        if source_name == "builtin":
+            staging_root = Path(tempfile.mkdtemp(prefix=f".{manifest['name']}-", dir=target.parent))
+            staged = staging_root / "payload"
+            backup = target.with_name(target.name + ".previous")
+            try:
+                shutil.copytree(source_path, staged)
+                shutil.rmtree(backup, ignore_errors=True)
+                if target.exists():
+                    target.replace(backup)
+                staged.replace(target)
+                shutil.rmtree(backup, ignore_errors=True)
+            except Exception:
+                if not target.exists() and backup.exists():
+                    backup.replace(target)
+                raise
+            finally:
+                shutil.rmtree(staging_root, ignore_errors=True)
+        else:
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(source_path, target)
         status = "candidate"
         skill_id = self.store.upsert_skill(
             name=manifest["name"], version=manifest["version"], path=str(target),
@@ -133,6 +172,21 @@ class SkillRegistry:
             self.store.set_skill_status(skill_id, "active", workspace_id=self.workspace_id)
             status = "active"
         return {"id": skill_id, "status": status, "manifest": manifest, "validation": validation}
+
+    def seed_builtins(self) -> list[dict[str, Any]]:
+        """Install the immutable skill payload shipped by this OpenKyrozen release."""
+        root = importlib.resources.files("builtin_skills")
+        manifest = json.loads(root.joinpath("manifest.json").read_text(encoding="utf-8"))
+        installed: list[dict[str, Any]] = []
+        for name in manifest.get("skills", []):
+            with importlib.resources.as_file(root.joinpath(str(name))) as source:
+                item = self.install(source, activate=True, source_name="builtin")
+            for previous in self.list("active"):
+                if (previous["id"] != item["id"] and previous["name"] == item["manifest"]["name"]
+                        and previous.get("source") == "builtin"):
+                    self.store.set_skill_status(previous["id"], "rolled_back", workspace_id=self.workspace_id)
+            installed.append(item)
+        return installed
 
     def install_learned(self, body: str, manifest: dict[str, Any], *, status: str = "canary") -> dict[str, Any]:
         """Install one immutable, content-addressed learned artifact."""
@@ -180,7 +234,7 @@ class SkillRegistry:
         path = Path(skill["path"]).resolve()
         try:
             path.relative_to(self.root)
-            manifest = self._read_manifest(path, runtime_matchable=skill.get("source") == "local")
+            manifest = self._read_manifest(path, runtime_matchable=skill.get("source") in {"local", "builtin"})
             return {"success": True, "checks": ["contained path", "SKILL.md", "manifest", "declared permissions"],
                     "name": manifest["name"], "version": manifest["version"]}
         except Exception as exc:
@@ -216,11 +270,15 @@ class SkillRegistry:
             elif source == "local":
                 if status != "active" or profile not in manifest.get("profiles", []):
                     continue
+            elif source == "builtin":
+                if (status != "active" or profile not in manifest.get("profiles", [])
+                        or skill["name"] in self.disabled_builtins):
+                    continue
             else:
                 continue
             triggers = self._terms(" ".join(str(item) for item in manifest.get("triggers", [])))
             overlap = len(task_terms & triggers)
-            if not overlap:
+            if not overlap and not (source == "builtin" and manifest.get("always_on")):
                 continue
             try:
                 body = (Path(skill["path"]) / "SKILL.md").read_text(encoding="utf-8")

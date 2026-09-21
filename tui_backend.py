@@ -109,6 +109,10 @@ class Backend:
     def interaction(self, request_id: str | None = None) -> None:
         self.emit("interaction", request_id, interaction=agent.interaction_envelope())
 
+    def graph_state(self, request_id: str | None = None, **extra: Any) -> None:
+        state = agent.project_graph_snapshot()
+        self.emit("graph_state", request_id, graph={**state, **extra})
+
     def _quiet_call(self, function: Any, *args: Any, **kwargs: Any) -> Any:
         with contextlib.redirect_stdout(self._quiet_stdout), contextlib.redirect_stderr(self._quiet_stderr):
             return function(*args, **kwargs)
@@ -139,7 +143,15 @@ class Backend:
             self._quiet_call(agent._plugin_runtime_for_surface().load_once)
             self.status("starting", "Restoring tasks and memory…", request_id)
             task_results = self._quiet_call(agent._run_recovered_tasks)
-            self._quiet_call(agent._load_project_files_into_memory)
+            graph = agent._project_graph
+            if graph is not None:
+                previous_graph = graph.snapshot()
+                started = graph.refresh_async(callback=lambda _state: self.graph_state())
+                self.emit("graph_state", request_id, graph=previous_graph | {
+                    "status": "indexing" if started else previous_graph.get("status", "missing"),
+                })
+            else:
+                self.graph_state(request_id)
             if configured and not self._quiet_call(agent._ensure_detached_learning_worker):
                 threading.Thread(target=agent._background_learning_loop, daemon=True).start()
             self.emit("tasks", request_id, tasks=[
@@ -392,9 +404,10 @@ class Backend:
             else:
                 self.prompt_api_key(request_id)
         elif command in {"/learn", "learn"}:
-            self.status("learning", "Indexing workspace files…", request_id)
+            self.status("learning", "Refreshing the private project graph…", request_id)
             self._quiet_call(agent._load_project_files_into_memory, force=True)
-            self.emit("response", request_id, text="Project files re-learned and stored in memory.")
+            self.graph_state(request_id)
+            self.emit("response", request_id, text="Private project graph refreshed.")
             self.status("ready", "Ready", request_id)
         elif command in {"/self-learning", "self_learning"}:
             if isinstance(args, Mapping) and args.get("feature") in agent._SELF_LEARNING_FLAGS:
@@ -486,6 +499,58 @@ class Backend:
             else:
                 self.emit("response", request_id, text=result)
                 self.status("ready", "Ready", request_id)
+        elif command in {"/graph", "graph"}:
+            parts = arg_text.strip().split(maxsplit=1)
+            action = parts[0].lower() if parts else "open"
+            if action in {"open", "status"}:
+                self.graph_state(request_id)
+                if action == "open":
+                    self.emit("prompt", request_id, kind="graph")
+            elif action == "refresh":
+                full = len(parts) > 1 and parts[1].strip() == "--full"
+                self.status("learning", "Refreshing project graph…", request_id)
+                if agent._project_graph is None:
+                    self.emit("error", request_id, code="graph_unavailable", error="Project graph is not configured.")
+                else:
+                    state = self._quiet_call(agent._project_graph.refresh, full=full)
+                    self.emit("graph_state", request_id, graph=state | {"mini": agent._project_graph.snapshot().get("mini", {})})
+                    self.status("ready", "Ready", request_id)
+            else:
+                self.emit("error", request_id, code="invalid_graph_command", error="Usage: /graph [open|status|refresh [--full]]")
+        elif command in {"/github", "github"}:
+            parts = arg_text.strip().split(maxsplit=1)
+            action = parts[0].lower() if parts else "status"
+            client = agent._github_cli
+            if client is None:
+                self.emit("error", request_id, code="github_unavailable", error="GitHub CLI is not configured.")
+            elif action == "status":
+                self.emit("github_state", request_id, github=client.status())
+            elif action == "login":
+                if not client.binary():
+                    installed = self._quiet_call(client.install_managed)
+                    if not installed.get("success"):
+                        self.emit("error", request_id, code="github_install_failed", error=installed.get("message", "GitHub CLI installation failed."))
+                        return
+                self.emit("prompt", request_id, kind="github_auth", binary=client.binary(), hostname=client.hostname())
+            elif action == "run" and len(parts) > 1:
+                if self._approval("github_cli", parts[1]):
+                    self.emit("response", request_id, text=self._quiet_call(client.run, parts[1]))
+            else:
+                self.emit("error", request_id, code="invalid_github_command", error="Usage: /github status | /github login | /github run <gh arguments>")
+        elif command in {"/skills", "skills"}:
+            rows = agent.skill_registry.list()
+            self.emit("response", request_id, text="\n".join(
+                ["Built-in and installed skills:"] + [f"- {item['name']} {item['version']} ({item['source']}, {item['status']})" for item in rows]
+            ))
+        elif command in {"/ponytail", "ponytail"}:
+            level = arg_text.strip().lower()
+            if not level:
+                self.emit("response", request_id, text=f"Ponytail: {agent._ponytail_level}")
+            else:
+                try:
+                    self.emit("response", request_id, text=f"Ponytail: {agent.set_ponytail_level(level)}")
+                except ValueError as exc:
+                    self.emit("error", request_id, code="invalid_ponytail_level", error=str(exc))
         elif command in {"/learning", "learning"}:
             self.emit("response", request_id, text=self._learning_text(arg_text))
         elif command in {"/memory", "memory"}:
@@ -571,6 +636,35 @@ class Backend:
         else:
             self.emit("error", request_id, code="invalid_plan_action", error="plan action must be accept, revise, or cancel")
 
+    def _graph_request(self, payload: dict[str, Any], request_id: str) -> None:
+        graph = agent._project_graph
+        if graph is None:
+            self.emit("error", request_id, code="graph_unavailable", error="Project graph is not configured.")
+            return
+        action = str(payload.get("action") or "snapshot")
+        if action == "snapshot":
+            community = payload.get("community")
+            self.emit("graph_state", request_id, graph=graph.explore(
+                community=community if isinstance(community, int) and not isinstance(community, bool) else None,
+                limit=30,
+            ))
+        elif action == "search":
+            self.emit("graph_state", request_id, graph=graph.explore(query=str(payload.get("query") or "")[:200], limit=30))
+        elif action == "neighbors":
+            self.emit("graph_state", request_id, graph=graph.explore(node_id=str(payload.get("node_id") or "")[:200], limit=30))
+        elif action == "path":
+            detail = graph.path(str(payload.get("left") or "")[:200], str(payload.get("right") or "")[:200])
+            self.emit("graph_state", request_id, graph=graph.explore(limit=30) | {"detail": detail})
+        elif action == "refresh":
+            full = bool(payload.get("full", False))
+            previous = graph.explore(limit=30)
+            started = graph.refresh_async(full=full, callback=lambda _state: self.emit(
+                "graph_state", request_id, graph=graph.explore(limit=30),
+            ))
+            self.emit("graph_state", request_id, graph=previous | {
+                "status": "indexing" if started else previous.get("status", "indexing")
+            })
+
     def dispatch(self, payload: dict[str, Any]) -> None:
         command = payload.get("command")
         request_id = payload.get("request_id") or uuid.uuid4().hex
@@ -592,6 +686,8 @@ class Backend:
             self._question_response(payload, request_id)
         elif command == "plan_action":
             self._plan_action(payload, request_id)
+        elif command == "graph_request":
+            self._graph_request(payload, request_id)
         elif command == "shutdown":
             self.stop()
 
@@ -613,7 +709,7 @@ class Backend:
         if not isinstance(payload, dict):
             return None, "JSON object required."
         command = payload.get("command")
-        if command not in {"start", "submit", "command", "approval_response", "question_response", "plan_action", "shutdown"}:
+        if command not in {"start", "submit", "command", "approval_response", "question_response", "plan_action", "graph_request", "shutdown"}:
             return None, "Unknown backend command."
         request_id = payload.get("request_id")
         if request_id is not None and (not isinstance(request_id, str) or len(request_id) > MAX_REQUEST_ID_CHARS):
@@ -636,6 +732,9 @@ class Backend:
                     or not isinstance(payload.get("version"), int)
                     or isinstance(payload.get("version"), bool)):
                 return None, "plan_id and integer version are required."
+        if command == "graph_request":
+            if payload.get("action") not in {"snapshot", "search", "neighbors", "path", "refresh"}:
+                return None, "invalid graph action."
         try:
             encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         except (TypeError, ValueError):

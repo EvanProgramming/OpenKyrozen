@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -30,6 +31,8 @@ const (
 	screenMode         screen = "mode"
 	screenQuestion     screen = "question"
 	screenPlan         screen = "plan"
+	screenGraph        screen = "graph"
+	screenGithubAuth   screen = "github_auth"
 	screenError        screen = "error"
 )
 
@@ -80,6 +83,7 @@ type model struct {
 	view            viewport.Model
 	input           textarea.Model
 	apiInput        textinput.Model
+	graphInput      textinput.Model
 	screen          screen
 	status          string
 	provider        string
@@ -101,6 +105,14 @@ type model struct {
 	choiceIdx       int
 	questionAnswers map[string]any
 	pendingPlan     *planProposal
+	graph           graphSnapshot
+	graphSelected   int
+	graphZoom       int
+	graphCommunity  int
+	graphSearching  bool
+	graphPathStart  string
+	githubBinary    string
+	githubHostname  string
 	approvalID      string
 	approvalTool    string
 	approvalArgs    string
@@ -124,6 +136,7 @@ type model struct {
 
 type tickMsg time.Time
 type backendStartedMsg struct{ err error }
+type githubAuthDoneMsg struct{ err error }
 
 const (
 	splashMinimumDuration = 2400 * time.Millisecond
@@ -162,6 +175,10 @@ func initialModel(project string, global bool) model {
 	apiStyles.Cursor.Color = lipgloss.Color(cyan)
 	apiStyles.Cursor.Blink = !reducedMotion
 	apiInput.SetStyles(apiStyles)
+	graphInput := textinput.New()
+	graphInput.Placeholder = "Search nodes"
+	graphInput.CharLimit = 200
+	graphInput.SetStyles(apiStyles)
 	return model{
 		bridge:          newBridge(),
 		project:         project,
@@ -169,6 +186,7 @@ func initialModel(project string, global bool) model {
 		view:            viewport.New(),
 		input:           input,
 		apiInput:        apiInput,
+		graphInput:      graphInput,
 		screen:          screenSplash,
 		status:          "Starting the workspace…",
 		splashStarted:   time.Now(),
@@ -178,6 +196,7 @@ func initialModel(project string, global bool) model {
 		interactionMode: "auto",
 		effectiveMode:   "ask",
 		questionAnswers: make(map[string]any),
+		graphCommunity:  -1,
 	}
 }
 
@@ -261,10 +280,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Capture wheel input while the TUI is active. Without mouse reporting,
 		// Warp and native terminals scroll their own screen instead of this
 		// viewport, which makes the full-screen app appear to disappear.
-		if m.screen == screenChat {
+		if m.screen == screenGraph {
+			if msg.Button == tea.MouseWheelUp {
+				m.graphZoom = minInt(5, m.graphZoom+1)
+			} else {
+				m.graphZoom = maxInt(-1, m.graphZoom-1)
+			}
+		} else if m.screen == screenChat {
 			m.view, _ = m.view.Update(msg)
 			m.followTail = m.view.AtBottom()
 		}
+	case tea.MouseClickMsg:
+		if m.screen == screenGraph && msg.Button == tea.MouseLeft {
+			nodes := m.visibleGraphNodes()
+			miniHeight := minInt(14, maxInt(8, maxInt(1, m.height-2)/3))
+			firstNodeRow := miniHeight + 5
+			if m.graphSearching {
+				firstNodeRow += 2
+			}
+			index := msg.Y - firstNodeRow
+			if index >= 0 && index < len(nodes) {
+				m.graphSelected = index
+			}
+		}
+	case githubAuthDoneMsg:
+		m.screen = screenChat
+		if msg.err != nil {
+			m.messages = append(m.messages, chatMessage{role: "assistant", text: "GitHub authentication was not completed: " + msg.err.Error()})
+		}
+		m.send("command", map[string]any{"name": "/github status"})
 	case backendExitMsg:
 		if m.screen != screenError {
 			m.status = "Backend stopped"
@@ -355,6 +399,20 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		}
 		return nil, false
 	}
+	if m.screen == screenGithubAuth {
+		if key == "esc" {
+			m.screen = screenChat
+			return nil, false
+		}
+		if key == "enter" && m.githubBinary != "" {
+			command := exec.Command(m.githubBinary, "auth", "login", "--hostname", firstNonEmpty(m.githubHostname, "github.com"), "--web", "--git-protocol", "https")
+			return tea.ExecProcess(command, func(err error) tea.Msg { return githubAuthDoneMsg{err: err} }), false
+		}
+		return nil, false
+	}
+	if m.screen == screenGraph {
+		return m.graphKey(msg), false
+	}
 	if m.screen == screenMode {
 		modes := []string{"auto", "ask", "plan", "agent"}
 		if key == "esc" {
@@ -431,6 +489,11 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.followTail = m.view.AtBottom()
 		return nil, false
 	}
+	if key == "g" && len(m.palette) == 0 && strings.TrimSpace(m.input.Value()) == "" {
+		m.screen = screenGraph
+		m.send("graph_request", map[string]any{"action": "snapshot"})
+		return nil, false
+	}
 	if len(m.palette) > 0 {
 		switch key {
 		case "up", "ctrl+p":
@@ -461,6 +524,68 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	m.input, cmd = m.input.Update(msg)
 	m.refreshPalette()
 	return cmd, false
+}
+
+func (m *model) graphKey(msg tea.KeyPressMsg) tea.Cmd {
+	key := msg.String()
+	if m.graphSearching {
+		if key == "esc" {
+			m.graphSearching = false
+			m.graphInput.Blur()
+			return nil
+		}
+		if key == "enter" {
+			m.send("graph_request", map[string]any{"action": "search", "query": m.graphInput.Value()})
+			m.graphSearching = false
+			m.graphInput.Blur()
+			m.graphSelected = 0
+			return nil
+		}
+		var cmd tea.Cmd
+		m.graphInput, cmd = m.graphInput.Update(msg)
+		return cmd
+	}
+	nodes := m.visibleGraphNodes()
+	switch key {
+	case "esc":
+		m.screen = screenChat
+	case "up", "k", "left", "h":
+		m.graphSelected = maxInt(0, m.graphSelected-1)
+	case "down", "j", "right", "l":
+		m.graphSelected = minInt(maxInt(0, len(nodes)-1), m.graphSelected+1)
+	case "+", "=":
+		m.graphZoom = minInt(5, m.graphZoom+1)
+	case "-":
+		m.graphZoom = maxInt(-1, m.graphZoom-1)
+	case "/":
+		m.graphSearching = true
+		m.graphInput.Reset()
+		return m.graphInput.Focus()
+	case "tab":
+		if m.graph.communities <= 0 || m.graphCommunity >= m.graph.communities-1 {
+			m.graphCommunity = -1
+		} else {
+			m.graphCommunity++
+		}
+		m.graphSelected = 0
+	case "enter":
+		if len(nodes) > 0 {
+			m.send("graph_request", map[string]any{"action": "neighbors", "node_id": nodes[m.graphSelected].id})
+			m.graphSelected = 0
+		}
+	case "p":
+		if len(nodes) > 0 {
+			if m.graphPathStart == "" {
+				m.graphPathStart = nodes[m.graphSelected].id
+			} else {
+				m.send("graph_request", map[string]any{"action": "path", "left": m.graphPathStart, "right": nodes[m.graphSelected].id})
+				m.graphPathStart = ""
+			}
+		}
+	case "r":
+		m.send("graph_request", map[string]any{"action": "refresh"})
+	}
+	return nil
 }
 
 func (m *model) questionKey(key string) tea.Cmd {
@@ -684,6 +809,13 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		if value, ok := event["interaction"].(map[string]any); ok {
 			m.applyInteraction(value)
 		}
+	case "graph_state":
+		m.graph = parseGraph(event["graph"])
+		m.graphSelected = minInt(m.graphSelected, maxInt(0, len(m.graph.miniNodes)-1))
+	case "github_state":
+		if value, ok := event["github"].(map[string]any); ok {
+			m.messages = append(m.messages, chatMessage{role: "assistant", text: firstNonEmpty(stringValue(value, "message"), "GitHub CLI status unavailable.")})
+		}
 	case "prompt":
 		m.handlePrompt(event)
 	case "error":
@@ -826,6 +958,14 @@ func (m *model) handlePrompt(event backendEvent) {
 		}
 		m.screen = screenMode
 		m.startTransition()
+	case "graph":
+		m.screen = screenGraph
+		m.startTransition()
+	case "github_auth":
+		m.githubBinary = stringValue(event, "binary")
+		m.githubHostname = firstNonEmpty(stringValue(event, "hostname"), "github.com")
+		m.screen = screenGithubAuth
+		m.startTransition()
 	}
 }
 
@@ -964,6 +1104,8 @@ func (m model) View() tea.View {
 	var content string
 	if m.screen == screenSplash {
 		content = m.splash()
+	} else if m.screen == screenGraph {
+		content = m.graphExplorer()
 	} else {
 		content = m.chatView()
 		if m.screen != screenChat {
@@ -1014,6 +1156,9 @@ func (m model) chatView() string {
 	)
 	if m.workspace != "" {
 		header += "\n" + mutedStyle.Render("workspace  "+compactText(m.workspace, contentWidth-11))
+	}
+	if panelWidth == 0 {
+		header += "\n" + m.graphCompact()
 	}
 	main := quietStyle.Copy().Width(mainWidth).MaxWidth(mainWidth).Height(m.historyHeight()).MaxHeight(m.historyHeight()).Render(m.view.View())
 	if panelWidth > 0 {
@@ -1089,7 +1234,13 @@ func (m model) progressBlock(width int) string {
 func (m model) activityRail() string {
 	_, panelWidth := m.layoutWidths()
 	width := maxInt(1, panelWidth-2)
-	lines := []string{titleStyle.Render("ACTIVITY"), rule(width), mutedStyle.Render("PROVIDER"), softStyle.Render(firstNonEmpty(m.provider, "pending"))}
+	graphStatus := firstNonEmpty(m.graph.status, "missing")
+	lines := []string{
+		titleStyle.Render("PROJECT GRAPH") + "  " + graphStatusStyle(graphStatus).Render(strings.ToUpper(graphStatus)),
+		m.graphMini(minInt(22, width), 8),
+		mutedStyle.Render(fmt.Sprintf("%d nodes · %d edges", m.graph.nodes, m.graph.edges)),
+		"", titleStyle.Render("ACTIVITY"), rule(width), mutedStyle.Render("PROVIDER"), softStyle.Render(firstNonEmpty(m.provider, "pending")),
+	}
 	if m.modelName != "" {
 		lines = append(lines, mutedStyle.Render(compactText(m.modelName, width)))
 	}
@@ -1205,6 +1356,11 @@ func (m model) modal(_ string) string {
 			lines = append(lines, "", greenStyle.Render("A / Enter  accept"), amberStyle.Render("R  revise"), redStyle.Render("C / Esc  cancel"))
 		}
 		body = strings.Join(lines, "\n")
+	case screenGithubAuth:
+		body = brandStyle.Render("GITHUB AUTHENTICATION") + "\n" + titleStyle.Render("Sign in through GitHub CLI") + "\n\n" +
+			softStyle.Render("OpenKyrozen will suspend the TUI while gh opens the browser login for "+firstNonEmpty(m.githubHostname, "github.com")+".") +
+			"\n" + mutedStyle.Render("Credentials remain owned by gh and are never read by OpenKyrozen.") +
+			"\n\n" + greenStyle.Render("Enter  continue") + "    " + redStyle.Render("Esc  cancel")
 	case screenError:
 		body = redStyle.Render("ERROR") + "\n" + titleStyle.Render("OpenKyrozen needs attention") + "\n\n" + softStyle.Render(m.errorText) + "\n\n" + mutedStyle.Render("Press Enter or Esc to return to chat.")
 	}

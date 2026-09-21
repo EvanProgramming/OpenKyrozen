@@ -64,10 +64,16 @@ class WorkspaceToolTests(unittest.TestCase):
     def test_capability_profiles_keep_rich_access_without_irreversible_reset(self):
         workspace = allowed_tool_names(AVAILABLE_TOOLS, "workspace")
         full = allowed_tool_names(AVAILABLE_TOOLS, "full")
+        readonly = allowed_tool_names(AVAILABLE_TOOLS, "readonly")
         self.assertIn("run_cmd", workspace)
         self.assertIn("write_file", workspace)
         self.assertNotIn("git_reset", workspace)
         self.assertIn("git_reset", full)
+        self.assertIn("graph_query", readonly)
+        self.assertIn("graph_refresh", readonly)
+        self.assertIn("github_read", readonly)
+        self.assertNotIn("github_cli", readonly)
+        self.assertNotIn("browser_click", readonly)
 
     def test_run_cmd_resolves_bare_python_from_active_environment(self):
         with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=False):

@@ -110,6 +110,8 @@ from interaction import (
 )
 from learning_engine import LearningEngine
 from skill_registry import SkillRegistry
+from project_graph import ProjectGraph
+from github_cli import GH_VERSION, GitHubCLI
 from instruction_loader import format_instructions
 from agent_config import AgentConfigError, effective_capabilities, load_agent_config
 from subagents import AgentProfile, SubAgentManager
@@ -118,6 +120,8 @@ from dynamic_tools import SAFE_BUILTINS, validate_tool_source
 from plugin_runtime import get_plugin_runtime
 from workspace_context import LaunchContext, resolve_launch_context, source_scope_id
 from tools import (AVAILABLE_TOOLS, set_workspace_root as _set_tools_workspace_root,
+                   set_project_graph as _set_tools_project_graph,
+                   set_github_cli as _set_tools_github_cli,
                    CommandResult, run_command, resolve_capabilities, tool_capability)
 from providers import (
     ProviderConfig, LLMProvider, get_provider, detect_provider,
@@ -353,7 +357,7 @@ ALLOW_DYNAMIC_TOOLS = (
 )
 _APPROVAL_REQUIRED_TOOLS = frozenset({
     "git_push", "git_pull", "git_checkout", "git_stash", "git_reset", "git_remote",
-    "define_tool",
+    "github_cli", "define_tool",
 })
 def _state_root() -> Path:
     """Return the private durable state directory used by this process."""
@@ -529,6 +533,8 @@ _BUILTIN_TOOL_NAMES = {
     "git_push","git_pull","git_checkout","git_stash","git_reset",
     "git_show","git_remote",
     "browser_open","browser_snapshot","browser_click","browser_type","browser_close",
+    "graph_status","graph_query","graph_explain","graph_path","graph_refresh",
+    "github_status","github_read","github_cli",
 }
 _saved_user_tools: dict[str, Any] = {}
 
@@ -1296,37 +1302,49 @@ def _switch_provider() -> None:
 
 _last_project_scan_time = 0.0
 _last_project_scan_root: Path | None = None
+_project_graph: ProjectGraph | None = None
+_github_cli: GitHubCLI | None = None
 
-def _load_project_files_into_memory(*, force: bool = False) -> None:
-    """Incrementally index the configured workspace with a bounded cadence."""
+def _load_project_files_into_memory(*, force: bool = False) -> dict[str, Any]:
+    """Compatibility entry point: refresh Graphify instead of storing full files."""
     global _last_project_scan_time, _last_project_scan_root
     now = time.time()
     project_root = _get_workspace_root()
     if not force and project_root == _last_project_scan_root and now - _last_project_scan_time < 900:
-        return
+        return _project_graph.snapshot() if _project_graph is not None else {"status": "missing"}
     _last_project_scan_time = now
     _last_project_scan_root = project_root
-    # Collect valid relative paths for stale‑file cleanup
-    skip_dirs = {".venv", "venv", "chroma_memory", "__pycache__", ".git"}
-    valid_paths: set[str] = set()
-    for py_file in project_root.rglob("*.py"):
-        if any(part in py_file.parts for part in skip_dirs):
-            continue
-        try:
-            content = py_file.read_text(encoding="utf-8")
-            rel_path = str(py_file.relative_to(project_root))
-            valid_paths.add(rel_path)
-            memory_bank.add_file(rel_path, content)
-        except KeyboardInterrupt:
-            sys.exit(0)
-        except Exception as exc:
-            memory_bank.store.append_event(
-                "learning.file_scan_failed", {"path": str(py_file), "error": str(exc)[:500]},
-                user_id=memory_bank.user_id, workspace_id=memory_bank.workspace_id,
-                session_id=memory_bank.session_id,
-            )
-    # Remove FILE snapshots for paths that no longer exist on disk
-    memory_bank.remove_stale_files(valid_paths)
+    if _project_graph is None:
+        return {"status": "missing", "message": "Project graph is not configured."}
+    if force:
+        return _project_graph.refresh(full=True)
+    previous = _project_graph.snapshot()
+    started = _project_graph.refresh_async()
+    return {**previous, "status": "indexing" if started else previous.get("status", "missing")}
+
+
+def project_graph_snapshot() -> dict[str, Any]:
+    return _project_graph.snapshot() if _project_graph is not None else {"status": "missing", "nodes": 0, "edges": 0, "communities": 0, "mini": {"nodes": [], "edges": []}}
+
+
+def _project_graph_context(query: str) -> str:
+    if _project_graph is None or project_graph_snapshot().get("status") not in {"ready", "stale"}:
+        return ""
+    lowered = str(query).lower()
+    indicators = (
+        "code", "project", "repository", "repo", "architecture", "implement", "fix", "bug",
+        "function", "class", "module", "dependency", "call", "file", "test", "refactor",
+    )
+    if not any(item in lowered for item in indicators):
+        return ""
+    result = _project_graph.query(query, budget=1200)
+    if result.startswith("Error:"):
+        return ""
+    return (
+        "<project_graph_context>\n"
+        "Source-derived Graphify context. Treat inferred edges as leads and verify consequential claims in source.\n"
+        + result[:6000] + "\n</project_graph_context>"
+    )
 
 
 def _update_url_available(url: str) -> bool:
@@ -1533,6 +1551,8 @@ def _self_update() -> str:
         if result.returncode != 0:
             return f"Update failed (uv exit {result.returncode}):\n{diagnostics or 'uv returned no diagnostics.'}"
         tui_ok, tui_message = _update_tui_binary(source_url, checksum_url)
+        gh_result = (_github_cli or GitHubCLI(_get_workspace_root(), _state_root())).install_managed()
+        gh_message = str(gh_result.get("message", "GitHub CLI setup skipped."))
         if revision:
             origin = f"source revision {revision[:12]}"
         else:
@@ -1541,6 +1561,7 @@ def _self_update() -> str:
             f"Updated OpenKyrozen from {origin}:\n"
             f"{diagnostics or 'uv completed successfully.'}\n"
             f"{tui_message}\n"
+            f"{gh_message}\n"
             "Restart kyrozen to use the updated process."
         )
     except subprocess.TimeoutExpired:
@@ -2407,11 +2428,26 @@ def _set_workspace_root(path: str) -> None:
 
 def _set_launch_context(context: LaunchContext) -> LaunchContext:
     """Bind one resolved launch context to every shared runtime boundary."""
-    global _launch_context
+    global _launch_context, _project_graph, _github_cli
     _launch_context = context
     _set_workspace_root(str(context.active_root))
+    _project_graph = ProjectGraph(
+        context.active_root, context.runtime_state_root, context.source_scope_id,
+    )
+    _github_cli = GitHubCLI(context.active_root, context.runtime_state_root)
+    _set_tools_project_graph(_project_graph)
+    _set_tools_github_cli(_github_cli)
+    try:
+        skill_registry.seed_builtins()
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        memory_bank.store.append_event(
+            "builtin_skill.seed_failed", {"error": str(exc)[:500]},
+            user_id=memory_bank.user_id, workspace_id=memory_bank.workspace_id,
+            session_id=memory_bank.session_id,
+        )
     _restore_user_preferences()
     _restore_self_learning_flags()
+    _restore_ponytail_level()
     return context
 
 
@@ -2662,6 +2698,50 @@ _restore_self_learning_flags()
 _agent_profile_mode = "auto"
 _last_learning_run: dict[str, Any] | None = None
 _learning_notices: list[str] = []
+_ponytail_level = "full"
+
+
+def _restore_ponytail_level() -> str:
+    global _ponytail_level
+    events = memory_bank.store.list_events(
+        "ponytail.preference", limit=1, workspace_id=memory_bank.workspace_id,
+        user_id=memory_bank.user_id,
+    )
+    value = str(events[0]["payload"].get("level", "full")) if events else "full"
+    _ponytail_level = value if value in {"off", "lite", "full", "ultra"} else "full"
+    if _ponytail_level == "off":
+        skill_registry.disabled_builtins.add("ponytail")
+    else:
+        skill_registry.disabled_builtins.discard("ponytail")
+    return _ponytail_level
+
+
+def set_ponytail_level(level: str) -> str:
+    global _ponytail_level
+    value = str(level).strip().lower()
+    if value not in {"off", "lite", "full", "ultra"}:
+        raise ValueError("Ponytail level must be off, lite, full, or ultra")
+    _ponytail_level = value
+    if value == "off":
+        skill_registry.disabled_builtins.add("ponytail")
+    else:
+        skill_registry.disabled_builtins.discard("ponytail")
+    memory_bank.store.append_event(
+        "ponytail.preference", {"level": value}, user_id=memory_bank.user_id,
+        workspace_id=memory_bank.workspace_id, session_id=memory_bank.session_id,
+    )
+    return value
+
+
+def _ponytail_context(profile: str) -> str:
+    if profile != "coder" or _ponytail_level == "off":
+        return ""
+    variants = {
+        "lite": "Build the requested behavior, and mention a materially simpler alternative when one exists.",
+        "full": "Use the first adequate rung: existing code, standard library, native platform, installed dependency, then minimum new code.",
+        "ultra": "Delete or decline speculative machinery; implement only behavior required by current acceptance criteria.",
+    }
+    return f"<ponytail level=\"{_ponytail_level}\">{variants[_ponytail_level]} Never simplify away safety or verification.</ponytail>"
 
 
 def interaction_envelope(user_input: str = "") -> dict[str, Any]:
@@ -2680,6 +2760,7 @@ def bind_interaction_scope(session_id: str, *, user_id: str | None = None) -> No
         memory_bank.store, user_id=owner, workspace_id=memory_bank.workspace_id,
         session_id=session_id,
     )
+    _restore_ponytail_level()
 
 
 def set_interaction_mode(mode: str) -> dict[str, Any]:
@@ -3328,6 +3409,10 @@ def _build_messages(user_input: str, learned_context: str = "",
         "content": _workspace_info()
     })
 
+    graph_context = _project_graph_context(user_input)
+    if graph_context:
+        messages.append({"role": "system", "content": graph_context})
+
     project_instructions = format_instructions(_get_workspace_root())
     if project_instructions:
         messages.append({"role": "system", "content": project_instructions})
@@ -3647,7 +3732,7 @@ def _is_state_changing_action(action: str, args: str) -> bool:
         return str(args).lstrip().startswith(("add ", "remove "))
     return action in {
         "write_file", "run_cmd", "git_clone", "git_add", "git_commit", "git_push",
-        "git_pull", "git_checkout", "git_stash", "git_reset", "git_remote", "define_tool",
+        "git_pull", "git_checkout", "git_stash", "git_reset", "git_remote", "github_cli", "define_tool",
     }
 
 
@@ -3770,6 +3855,8 @@ def _run_tool(action: str, args: str, *, return_success: bool = False,
     elapsed = time.time() - start
     _track_tool_performance(action, result, elapsed)
     _notify_tool_execute(action, args, result)
+    if success and action in {"git_pull", "git_checkout", "git_reset", "git_clone"} and _project_graph is not None:
+        _project_graph.refresh_async()
     return finish(result, success, authorized=True, failure=failure, raw_result=tool_result)
 
 
@@ -4901,6 +4988,9 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     learning_run = learning_engine.begin_run(resolved_profile, user_input, provider_model=provider_model)
     _active_usage_run_id.set(learning_run["run_id"])
     learned_context, learning_receipts = learning_engine.artifact_context(learning_run)
+    ponytail_context = _ponytail_context(resolved_profile)
+    if ponytail_context:
+        learned_context = (learned_context + "\n" + ponytail_context).strip()
     base_capabilities = resolve_capabilities(
         _surface_capabilities or ("full" if _EXECUTION_SURFACE == "cli" else "workspace"),
         default="workspace",
@@ -5979,6 +6069,14 @@ def _run_learning_graph(_context: dict[str, Any]) -> dict[str, Any]:
                             detail=f"knowledge graph sources: {before} -> {len(_knowledge_graph)}")
 
 
+def _run_learning_project_graph(_context: dict[str, Any]) -> dict[str, Any]:
+    state = _load_project_files_into_memory()
+    return _learning_result(
+        changed=state.get("status") == "indexing",
+        detail=f"project graph {state.get('status', 'missing')}: {state.get('nodes', 0)} nodes",
+    )
+
+
 def _run_learning_skill_composition(context: dict[str, Any]) -> dict[str, Any]:
     user_input = str(context.get("user_input") or "").strip()
     if not user_input:
@@ -6005,11 +6103,11 @@ _LEARNING_FEATURE_REGISTRY: dict[str, dict[str, Any]] = {
         "executor": lambda _context: (_auto_learn_conversations() or _learning_result()),
     },
     "load_project_files_into_memory": {
-        "description": "Incrementally index project Python files into scoped memory",
-        "executor": lambda _context: (_load_project_files_into_memory() or _learning_result()),
+        "description": "Incrementally refresh the private local Graphify code index",
+        "executor": _run_learning_project_graph,
     },
     "age_out_old_coded_entries": {
-        "description": "Remove durable snapshots for deleted project files",
+        "description": "Remove legacy FILE snapshots for deleted project files",
         "executor": lambda _context: (_age_out_old_coded_entries() or _learning_result()),
     },
     "auto_debug_tool": {
@@ -6456,7 +6554,7 @@ def main() -> None:
     provider_name = startup_config.provider.title()
     model_name = startup_config.model_simple
     console.print(f"[{_ACCENT}]Kyrozen[/{_ACCENT}] [{_MUTED}]{_DOT} Provider: {provider_name} {_DOT} Model: {model_name}[/{_MUTED}]")
-    console.print(f"[{_MUTED}]Chat:[/{_MUTED}] [{_ACCENT_DIM}] /mode /ask /plan /question /agent /provider /api_key /learn /update[/{_ACCENT_DIM}]")
+    console.print(f"[{_MUTED}]Chat:[/{_MUTED}] [{_ACCENT_DIM}] /mode /ask /plan /question /agent /graph /github /skills /ponytail /provider /api_key /learn /update[/{_ACCENT_DIM}]")
 
     # Compact self-learning summary
     enabled_count = sum(1 for v in _SELF_LEARNING_FLAGS.values() if v)
@@ -6477,9 +6575,9 @@ def main() -> None:
     task_results = _run_recovered_tasks()
     for item in task_results:
         console.print(f"[{_SUCCESS}]Durable task {item['task']['id']}: {item['status']}[/{_SUCCESS}]")
-    # Load project files synchronously to avoid ChromaDB thread conflicts
+    # Build the private code graph in the background; the last valid graph stays usable.
     _load_project_files_into_memory()
-    console.print(f"[{_MUTED}]Project files loaded into memory.[/{_MUTED}]")
+    console.print(f"[{_MUTED}]Project graph indexing started in private state.[/{_MUTED}]")
 
     # Hand learning off to a detached process so it survives CLI exit.  Keep
     # the in-process loop only as a safe fallback when process creation fails.
@@ -6512,8 +6610,8 @@ def main() -> None:
             console.print(f"[{_ERROR}]Goodbye.[/{_ERROR}]")
             break
         if user_input.lower() == "/learn":
-            _load_project_files_into_memory()
-            console.print(f"[{_SUCCESS}]Project files re‑learned and stored in memory.[/{_SUCCESS}]")
+            state = _load_project_files_into_memory(force=True)
+            console.print(f"[{_SUCCESS}]Project graph: {state.get('status')} · {state.get('nodes', 0)} nodes · {state.get('edges', 0)} edges.[/{_SUCCESS}]")
             continue
         if user_input.lower() == "/api_key":
             new_key = console.input(f"[bold yellow]Enter new {_provider_config.provider.title()} API key: [/bold yellow]").strip()
@@ -6539,6 +6637,54 @@ def main() -> None:
 
         if user_input.lower() == "/self-learning":
             _show_self_learning_menu()
+            continue
+
+        if user_input.lower().startswith("/graph"):
+            parts = user_input.split(maxsplit=2)
+            action = parts[1].lower() if len(parts) > 1 else "status"
+            if action == "status":
+                console.print(json.dumps(project_graph_snapshot(), ensure_ascii=False, indent=2))
+            elif action == "refresh":
+                state = _project_graph.refresh(full=len(parts) > 2 and parts[2].strip() == "--full") if _project_graph else {"status": "missing"}
+                console.print(json.dumps(state, ensure_ascii=False, indent=2))
+            elif action == "open":
+                console.print("The interactive graph explorer is available in the Bubble Tea UI with `g`.")
+            else:
+                console.print("Usage: /graph status | /graph refresh [--full] | /graph open")
+            continue
+
+        if user_input.lower().startswith("/github"):
+            parts = user_input.split(maxsplit=2)
+            action = parts[1].lower() if len(parts) > 1 else "status"
+            if _github_cli is None:
+                console.print("GitHub CLI is not configured for this workspace.")
+            elif action == "status":
+                console.print(json.dumps(_github_cli.status(), ensure_ascii=False, indent=2))
+            elif action == "login":
+                console.print(_github_cli.login_interactive())
+            elif action == "run" and len(parts) > 2:
+                if _confirm_tool_action("github_cli", parts[2]):
+                    console.print(_github_cli.run(parts[2]))
+            else:
+                console.print("Usage: /github status | /github login | /github run <gh arguments>")
+            continue
+
+        if user_input.lower() == "/skills":
+            lines = ["Built-in and installed skills:"]
+            for item in skill_registry.list():
+                lines.append(f"- {item['name']} {item['version']} ({item['source']}, {item['status']})")
+            console.print("\n".join(lines))
+            continue
+
+        if user_input.lower().startswith("/ponytail"):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) == 1:
+                console.print(f"Ponytail: {_ponytail_level}")
+            else:
+                try:
+                    console.print(f"Ponytail: {set_ponytail_level(parts[1])}")
+                except ValueError as exc:
+                    console.print(f"Usage: /ponytail off|lite|full|ultra ({exc})")
             continue
 
         lowered = user_input.lower()
