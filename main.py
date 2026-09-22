@@ -4856,6 +4856,8 @@ def _safe_fstring(s: str) -> str:
 
 def _tasks_from_plan(text: str) -> None:
     """Parse a Plan block and create pending tasks."""
+    if tasks.tasks:
+        return
     plan_match = re.search(
         r"Plan:\s*\n(.*?)(?=\n\s*(?:Action|TaskList|$))",
         text,
