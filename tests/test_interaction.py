@@ -130,6 +130,31 @@ class InteractionTests(unittest.TestCase):
         self.assertFalse(created_after_completion)
         self.assertEqual(len(manager.tasks), 1)
 
+    def test_provider_plan_text_cannot_duplicate_an_accepted_checklist(self):
+        previous_tasks = main.tasks
+        manager = TaskManager(self.store, workspace_id="workspace", session_id="session")
+        proposal = self.controller.propose_plan({
+            "title": "Eight steps", "summary": "Execute once.", "assumptions": [],
+            "steps": [
+                {"id": f"step-{index}", "title": f"Step {index}",
+                 "description": f"Perform step {index}.", "acceptance": [f"Step {index} done"]}
+                for index in range(8)
+            ],
+        })
+        self.controller.accept_plan(
+            manager, plan_id=proposal["plan_id"], version=proposal["version"],
+        )
+        main.tasks = manager
+        try:
+            repeated = "Plan:\n" + "\n".join(
+                f"{index}. Perform step {index}." for index in range(1, 9)
+            )
+            main._tasks_from_plan(repeated)
+            main._tasks_from_plan(repeated)
+            self.assertEqual(len(manager.tasks), 8)
+        finally:
+            main.tasks = previous_tasks
+
     def test_exact_acceptance_phrases_and_control_parser(self):
         self.assertTrue(is_plan_acceptance("Execute plan."))
         self.assertTrue(is_plan_acceptance("执行计划。"))
