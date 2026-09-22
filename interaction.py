@@ -182,6 +182,53 @@ def parse_control_block(text: str, name: str) -> Any | None:
         raise InteractionError(f"{name} contains invalid JSON: {exc.msg}") from exc
 
 
+def normalize_provider_control(text: str) -> tuple[str, dict[str, Any]] | None:
+    """Map a bounded provider JSON shape to one non-executable control."""
+    source = str(text or "").strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*([\s\S]*?)\s*```", source, re.IGNORECASE)
+    if fenced:
+        source = fenced.group(1).strip()
+    try:
+        value = json.loads(source)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict):
+        return None
+
+    executable_keys = {"action", "args", "arguments", "command", "tool", "tool_calls"}
+    stack: list[Any] = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            if executable_keys & {str(key).lower() for key in item}:
+                return None
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+
+    mode = str(value.get("mode") or "").strip().lower()
+    if mode == "plan" or value.get("do_not_execute_until_approved") is True:
+        steps = []
+        for index, step in enumerate(value.get("steps") or [], 1):
+            if not isinstance(step, dict):
+                return None
+            steps.append({
+                "id": str(step.get("id") or step.get("step_id") or f"step-{step.get('step', index)}"),
+                "title": step.get("title") or f"Step {index}",
+                "description": step.get("description") or step.get("details"),
+                "acceptance": step.get("acceptance") or step.get("acceptance_criteria"),
+            })
+        return "PlanProposal", {
+            "title": value.get("title") or value.get("plan_name"),
+            "summary": value.get("summary") or value.get("overview"),
+            "assumptions": value.get("assumptions") or [],
+            "steps": steps,
+        }
+    if mode == "ask" or value.get("ask_user") is True:
+        return "AskUser", {"questions": value.get("questions")}
+    return None
+
+
 def route_mode(preference: str, user_input: str, *, pending_plan: bool = False,
                executing_plan: bool = False) -> str:
     if executing_plan:
