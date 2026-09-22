@@ -51,6 +51,19 @@ func TestRestartEventQuitsForLauncherRelaunch(t *testing.T) {
 	}
 }
 
+func TestBackendWaitBatchesBufferedEvents(t *testing.T) {
+	b := &bridge{events: make(chan backendLineMsg, 3)}
+	for _, event := range []string{"status", "stream_delta", "response"} {
+		b.events <- backendLineMsg{event: backendEvent{"event": event}}
+	}
+	close(b.events)
+
+	message, ok := waitBackend(b)().(backendEventsMsg)
+	if !ok || len(message.lines) != 3 {
+		t.Fatalf("buffered backend events were not batched: %#v", message)
+	}
+}
+
 func TestInteractionCardsRestoreModeQuestionAndPlan(t *testing.T) {
 	m := initialModel(".", false)
 	m.width, m.height = 120, 40
@@ -186,6 +199,30 @@ func TestThinkingCoalescesAndStreamingCursorPulses(t *testing.T) {
 	second := m.history(60)
 	if !strings.Contains(first, "▌") || !strings.Contains(second, "▌") || first == second {
 		t.Fatal("streaming cursor did not pulse")
+	}
+}
+
+func TestStreamingAssistantSkipsMarkdownUntilResponse(t *testing.T) {
+	m := initialModel("", true)
+	m.messages = []chatMessage{{role: "assistant", text: "**bold**", streaming: true}}
+
+	streaming := m.history(60)
+	if !strings.Contains(streaming, "**bold**") {
+		t.Fatalf("streaming output was parsed as Markdown: %q", streaming)
+	}
+	if m.messages[0].renderedWidth != 0 {
+		t.Fatal("streaming output populated the completed-message render cache")
+	}
+
+	m.handleBackendEvent(backendEvent{"event": "response", "text": "**bold**"})
+	completed := m.history(60)
+	if strings.Contains(completed, "**bold**") || m.messages[0].renderedWidth == 0 {
+		t.Fatalf("completed output did not render Markdown once: %q", completed)
+	}
+	rendered := m.messages[0].rendered
+	m.history(60)
+	if m.messages[0].rendered != rendered {
+		t.Fatal("completed Markdown render was not reused")
 	}
 }
 

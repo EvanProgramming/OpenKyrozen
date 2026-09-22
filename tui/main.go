@@ -37,10 +37,12 @@ const (
 )
 
 type chatMessage struct {
-	role      string
-	text      string
-	status    string
-	streaming bool
+	role          string
+	text          string
+	status        string
+	streaming     bool
+	rendered      string
+	renderedWidth int
 }
 
 type taskItem struct {
@@ -137,6 +139,7 @@ type model struct {
 type tickMsg time.Time
 type backendStartedMsg struct{ err error }
 type githubAuthDoneMsg struct{ err error }
+type backendEventsMsg struct{ lines []backendLineMsg }
 
 const (
 	splashMinimumDuration = 2400 * time.Millisecond
@@ -218,11 +221,22 @@ func motionTick() tea.Cmd {
 
 func waitBackend(b *bridge) tea.Cmd {
 	return func() tea.Msg {
-		event, ok := <-b.events
+		line, ok := <-b.events
 		if !ok {
 			return backendExitMsg{}
 		}
-		return event
+		lines := []backendLineMsg{line}
+		for {
+			select {
+			case line, ok = <-b.events:
+				if !ok {
+					return backendEventsMsg{lines: lines}
+				}
+				lines = append(lines, line)
+			default:
+				return backendEventsMsg{lines: lines}
+			}
+		}
 	}
 }
 
@@ -264,15 +278,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.send("start", map[string]any{"project": m.project, "global": m.global})
 			cmds = append(cmds, waitBackend(m.bridge))
 		}
-	case backendLineMsg:
-		if msg.err != nil {
-			m.setError(msg.err.Error())
-		} else {
-			m.handleBackendEvent(msg.event)
+	case backendEventsMsg:
+		for _, line := range msg.lines {
+			m.reduceBackendLine(line)
 			if m.restart {
 				m.bridge.stop()
 				return m, tea.Quit
 			}
+		}
+		cmds = append(cmds, waitBackend(m.bridge))
+		m.maybeMotion(&cmds)
+	case backendLineMsg:
+		m.reduceBackendLine(msg)
+		if m.restart {
+			m.bridge.stop()
+			return m, tea.Quit
 		}
 		cmds = append(cmds, waitBackend(m.bridge))
 		m.maybeMotion(&cmds)
@@ -771,6 +791,8 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		for i := len(m.messages) - 1; i >= 0; i-- {
 			if m.messages[i].role == "assistant" && m.messages[i].streaming {
 				m.messages[i].text, m.messages[i].streaming = text, false
+				m.messages[i].rendered = ""
+				m.messages[i].renderedWidth = 0
 				m.busy = false
 				m.thinkingText = ""
 				return
@@ -824,6 +846,14 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		m.status, m.busy = "Stopped", false
 		m.thinkingText = ""
 	}
+}
+
+func (m *model) reduceBackendLine(line backendLineMsg) {
+	if line.err != nil {
+		m.setError(line.err.Error())
+		return
+	}
+	m.handleBackendEvent(line.event)
 }
 
 func (m *model) applyInteraction(value map[string]any) {
@@ -1065,12 +1095,13 @@ func (m *model) syncViewport() {
 	}
 }
 
-func (m model) history(width int) string {
+func (m *model) history(width int) string {
 	if len(m.messages) == 0 {
 		return softStyle.Render("No messages yet. Start with a question, or type / for commands.")
 	}
 	var lines []string
-	for _, message := range m.messages {
+	for index := range m.messages {
+		message := &m.messages[index]
 		label, body := "KYROZEN", message.text
 		labelStyle := brandStyle
 		switch message.role {
@@ -1082,8 +1113,13 @@ func (m model) history(width int) string {
 			status := strings.ToUpper(firstNonEmpty(message.status, "success"))
 			label, labelStyle = "TOOL RECEIPT · "+status, receiptStyle(message.status)
 		}
-		if message.role == "assistant" && body != "" {
-			body = renderMarkdown(body, width-2)
+		if message.role == "assistant" && body != "" && !message.streaming {
+			renderWidth := maxInt(1, width-2)
+			if message.renderedWidth != renderWidth {
+				message.rendered = renderMarkdown(body, renderWidth)
+				message.renderedWidth = renderWidth
+			}
+			body = message.rendered
 		} else if body != "" {
 			body = softStyle.Render(body)
 		}
