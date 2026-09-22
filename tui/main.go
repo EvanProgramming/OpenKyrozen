@@ -1213,7 +1213,7 @@ func (m model) chatView() string {
 	header := lipgloss.NewStyle().Width(contentWidth).Render(
 		brandStyle.Render("OPENKYROZEN") + "  " + softStyle.Render(firstNonEmpty(m.provider, "provider pending")) +
 			"  ·  " + mutedStyle.Render(firstNonEmpty(m.modelName, "startup")) +
-			"  ·  " + brandStyle.Render(strings.ToUpper(firstNonEmpty(m.interactionMode, "auto"))),
+			"  ·  " + brandStyle.Render(strings.ToUpper(firstNonEmpty(m.effectiveMode, m.interactionMode, "ask"))),
 	)
 	if m.workspace != "" {
 		header += "\n" + mutedStyle.Render("workspace  "+compactText(m.workspace, contentWidth-11))
@@ -1308,7 +1308,9 @@ func (m model) activityRail() string {
 	if m.workspace != "" {
 		lines = append(lines, "", mutedStyle.Render("WORKSPACE"), softStyle.Render(compactText(m.workspace, width)))
 	}
-	lines = append(lines, "", mutedStyle.Render("MODE"), softStyle.Render(firstNonEmpty(m.interactionMode, "auto")+" → "+firstNonEmpty(m.effectiveMode, "ask")))
+	lines = append(lines, "", mutedStyle.Render("MODE"), softStyle.Render(
+		"preference "+firstNonEmpty(m.interactionMode, "auto")+" · active "+firstNonEmpty(m.effectiveMode, "ask"),
+	))
 	lines = append(lines, "", titleStyle.Render(fmt.Sprintf("TASKS  %d", len(m.tasks))))
 	if len(m.tasks) == 0 {
 		lines = append(lines, mutedStyle.Render("No active tasks"))
