@@ -107,6 +107,7 @@ type model struct {
 	choiceIdx       int
 	questionAnswers map[string]any
 	pendingPlan     *planProposal
+	planScroll      int
 	graph           graphSnapshot
 	graphSelected   int
 	graphZoom       int
@@ -306,6 +307,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.graphZoom = maxInt(-1, m.graphZoom-1)
 			}
+		} else if m.screen == screenPlan {
+			if msg.Button == tea.MouseWheelUp {
+				m.scrollPlan(-3)
+			} else {
+				m.scrollPlan(3)
+			}
 		} else if m.screen == screenChat {
 			m.view, _ = m.view.Update(msg)
 			m.followTail = m.view.AtBottom()
@@ -455,17 +462,30 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return m.questionKey(key), false
 	}
 	if m.screen == screenPlan {
-		if key == "a" || key == "A" || key == "enter" {
+		switch key {
+		case "up", "k":
+			m.scrollPlan(-1)
+		case "down", "j":
+			m.scrollPlan(1)
+		case "pgup":
+			m.scrollPlan(-m.planPageHeight())
+		case "pgdown":
+			m.scrollPlan(m.planPageHeight())
+		case "home":
+			m.planScroll = 0
+		case "end":
+			m.planScroll = m.planMaxScroll()
+		case "a", "A", "enter":
 			if m.pendingPlan != nil {
 				m.send("plan_action", map[string]any{"action": "accept", "plan_id": m.pendingPlan.planID, "version": m.pendingPlan.version})
 			}
 			m.screen = screenChat
-		} else if key == "c" || key == "C" || key == "esc" {
+		case "c", "C", "esc":
 			if m.pendingPlan != nil {
 				m.send("plan_action", map[string]any{"action": "cancel", "plan_id": m.pendingPlan.planID, "version": m.pendingPlan.version})
 			}
 			m.screen = screenChat
-		} else if key == "r" || key == "R" {
+		case "r", "R":
 			m.screen = screenChat
 			m.input.Placeholder = "Describe the plan revision…"
 			m.input.Focus()
@@ -915,6 +935,9 @@ func (m *model) applyInteraction(value map[string]any) {
 				plan.steps = append(plan.steps, step)
 			}
 		}
+		if m.pendingPlan == nil || m.pendingPlan.planID != plan.planID || m.pendingPlan.version != plan.version {
+			m.planScroll = 0
+		}
 		m.pendingPlan = plan
 		if m.pendingQuestion == nil {
 			m.screen = screenPlan
@@ -922,6 +945,7 @@ func (m *model) applyInteraction(value map[string]any) {
 		}
 	} else {
 		m.pendingPlan = nil
+		m.planScroll = 0
 		if m.screen == screenPlan {
 			m.screen = screenChat
 		}
@@ -1034,6 +1058,7 @@ func (m *model) resize() {
 	m.apiInput.SetWidth(maxInt(1, minInt(68, m.width-14)))
 	m.view.SetWidth(mainWidth)
 	m.view.SetHeight(m.historyHeight())
+	m.planScroll = minInt(m.planScroll, m.planMaxScroll())
 	m.syncViewport()
 }
 
@@ -1301,6 +1326,7 @@ func (m model) activityRail() string {
 func (m model) taskPanel() string { return m.activityRail() }
 
 func (m model) modal(_ string) string {
+	modalWidth := maxInt(1, minInt(78, m.width-4))
 	var body string
 	switch m.screen {
 	case screenProvider:
@@ -1380,18 +1406,7 @@ func (m model) modal(_ string) string {
 		}
 		body = strings.Join(lines, "\n")
 	case screenPlan:
-		lines := []string{brandStyle.Render("PLAN PROPOSAL")}
-		if m.pendingPlan != nil {
-			lines = append(lines, titleStyle.Render(fmt.Sprintf("%s · v%d", m.pendingPlan.title, m.pendingPlan.version)), "", softStyle.Render(m.pendingPlan.summary), "")
-			for index, step := range m.pendingPlan.steps {
-				lines = append(lines, titleStyle.Render(fmt.Sprintf("%d. %s", index+1, step.title)), softStyle.Render(step.description))
-				for _, criterion := range step.acceptance {
-					lines = append(lines, mutedStyle.Render("   ✓ "+criterion))
-				}
-			}
-			lines = append(lines, "", greenStyle.Render("A / Enter  accept"), amberStyle.Render("R  revise"), redStyle.Render("C / Esc  cancel"))
-		}
-		body = strings.Join(lines, "\n")
+		body = m.planModal(maxInt(1, modalWidth-4))
 	case screenGithubAuth:
 		body = brandStyle.Render("GITHUB AUTHENTICATION") + "\n" + titleStyle.Render("Sign in through GitHub CLI") + "\n\n" +
 			softStyle.Render("OpenKyrozen will suspend the TUI while gh opens the browser login for "+firstNonEmpty(m.githubHostname, "github.com")+".") +
@@ -1400,13 +1415,53 @@ func (m model) modal(_ string) string {
 	case screenError:
 		body = redStyle.Render("ERROR") + "\n" + titleStyle.Render("OpenKyrozen needs attention") + "\n\n" + softStyle.Render(m.errorText) + "\n\n" + mutedStyle.Render("Press Enter or Esc to return to chat.")
 	}
-	modalWidth := maxInt(1, minInt(78, m.width-4))
 	style := modalStyle.Copy()
 	if m.transitionTick > 0 {
 		style = style.BorderForeground(lipgloss.Color(cyan))
 	}
 	modal := style.Width(modalWidth).MaxWidth(modalWidth).Render(body)
 	return lipgloss.NewStyle().Width(maxInt(1, m.width)).Height(maxInt(1, m.height)).Align(lipgloss.Center, lipgloss.Center).Render(modal)
+}
+
+func (m model) planPageHeight() int {
+	return maxInt(1, m.height-12)
+}
+
+func (m model) planLines(width int) []string {
+	if m.pendingPlan == nil {
+		return nil
+	}
+	lines := []string{softStyle.Render(m.pendingPlan.summary), ""}
+	for index, step := range m.pendingPlan.steps {
+		lines = append(lines, titleStyle.Render(fmt.Sprintf("%d. %s", index+1, step.title)), softStyle.Render(step.description))
+		for _, criterion := range step.acceptance {
+			lines = append(lines, mutedStyle.Render("   ✓ "+criterion))
+		}
+	}
+	return strings.Split(lipgloss.Wrap(strings.Join(lines, "\n"), maxInt(1, width), ""), "\n")
+}
+
+func (m model) planMaxScroll() int {
+	modalWidth := maxInt(1, minInt(78, m.width-4))
+	return maxInt(0, len(m.planLines(maxInt(1, modalWidth-4)))-m.planPageHeight())
+}
+
+func (m *model) scrollPlan(delta int) {
+	m.planScroll = maxInt(0, minInt(m.planMaxScroll(), m.planScroll+delta))
+}
+
+func (m model) planModal(width int) string {
+	if m.pendingPlan == nil {
+		return brandStyle.Render("PLAN PROPOSAL")
+	}
+	lines := m.planLines(width)
+	pageHeight := m.planPageHeight()
+	start := maxInt(0, minInt(m.planScroll, maxInt(0, len(lines)-pageHeight)))
+	end := minInt(len(lines), start+pageHeight)
+	position := mutedStyle.Render(fmt.Sprintf("Lines %d–%d of %d  ·  ↑↓/PgUp/PgDn scroll", start+1, end, len(lines)))
+	header := brandStyle.Render("PLAN PROPOSAL") + "\n" + titleStyle.Render(fmt.Sprintf("%s · v%d", m.pendingPlan.title, m.pendingPlan.version))
+	footer := position + "\n" + greenStyle.Render("A / Enter  accept") + "    " + amberStyle.Render("R  revise") + "    " + redStyle.Render("C / Esc  cancel")
+	return header + "\n\n" + strings.Join(lines[start:end], "\n") + "\n\n" + footer
 }
 
 func rule(width int) string { return ruleStyle.Render(strings.Repeat("─", maxInt(1, width))) }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -359,6 +360,39 @@ func TestModalContentFitsSmallWindow(t *testing.T) {
 		if width := lipgloss.Width(line); width > m.width {
 			t.Fatalf("modal line %d is %d cells wide at width %d", index, width, m.width)
 		}
+	}
+}
+
+func TestLongPlanModalScrollsAndKeepsActionsVisible(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height = 80, 16
+	m.screen = screenPlan
+	m.pendingPlan = &planProposal{planID: "plan-1", version: 1, title: "Long plan", summary: strings.Repeat("summary ", 20)}
+	for index := range 8 {
+		m.pendingPlan.steps = append(m.pendingPlan.steps, planStep{
+			title:       fmt.Sprintf("Step %d", index+1),
+			description: strings.Repeat("detailed work ", 8),
+			acceptance:  []string{fmt.Sprintf("criterion-%d", index+1)},
+		})
+	}
+	m.resize()
+
+	first := m.View().Content
+	if !strings.Contains(first, "A / Enter  accept") || !strings.Contains(first, "PgUp/PgDn scroll") {
+		t.Fatalf("plan actions or scroll hint were clipped: %s", first)
+	}
+	if strings.Contains(first, "criterion-8") {
+		t.Fatal("long plan unexpectedly fit without scrolling")
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
+	m = updated.(model)
+	last := m.View().Content
+	if !strings.Contains(last, "criterion-8") || !strings.Contains(last, "A / Enter  accept") {
+		t.Fatalf("last plan page or actions were not visible after scrolling: %s", last)
+	}
+	if got := len(strings.Split(last, "\n")); got != m.height {
+		t.Fatalf("plan view rendered %d rows for a %d-row terminal", got, m.height)
 	}
 }
 
