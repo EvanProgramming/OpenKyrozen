@@ -218,7 +218,7 @@ def _task_manager(session_id: str | None) -> TaskManager:
     """Build a task manager bound to the authenticated deployment scope."""
     return TaskManager(
         _agent.memory_bank.store,
-        workspace_id=_agent.memory_bank.workspace_id,
+        workspace_id=_agent.interaction_workspace_id(),
         session_id=session_id,
         user_id=_SERVER_ACTOR_ID,
     )
@@ -369,7 +369,7 @@ def _get_or_create_session(session_id: str, user_id: str = "anonymous") -> dict:
 def _interaction_for_session(session: dict[str, Any]):
     return _agent.InteractionController(
         _agent.memory_bank.store, user_id=session.get("user_id", _SERVER_ACTOR_ID),
-        workspace_id=_agent.memory_bank.workspace_id, session_id=session["session_id"],
+        workspace_id=_agent.interaction_workspace_id(), session_id=session["session_id"],
     )
 
 
@@ -475,7 +475,7 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
             _agent.TOOLS_LIST = _agent._build_tools_list()
             _agent.short_term_memory = list(session["messages"])
             _agent.tasks = TaskManager(
-                _agent.memory_bank.store, workspace_id=_agent.memory_bank.workspace_id,
+                _agent.memory_bank.store, workspace_id=_agent.interaction_workspace_id(),
                 session_id=session_id, user_id=session["user_id"],
             )
             _agent.tasks.recover()

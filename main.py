@@ -2748,16 +2748,25 @@ def interaction_envelope(user_input: str = "") -> dict[str, Any]:
     return _interaction_controller.envelope(user_input)
 
 
+def interaction_workspace_id(context: LaunchContext | None = None) -> str:
+    """Keep project interaction state separate without splitting global memory."""
+    active = context if context is not None else _launch_context
+    if isinstance(active, LaunchContext) and not active.is_global:
+        return active.source_scope_id
+    return memory_bank.workspace_id
+
+
 def bind_interaction_scope(session_id: str, *, user_id: str | None = None) -> None:
     """Bind the shared task and interaction facades to one local surface."""
     global tasks, _interaction_controller
     owner = user_id or memory_bank.user_id
+    workspace_id = interaction_workspace_id()
     tasks = TaskManager(
-        memory_bank.store, workspace_id=memory_bank.workspace_id,
+        memory_bank.store, workspace_id=workspace_id,
         session_id=session_id, user_id=owner,
     )
     _interaction_controller = InteractionController(
-        memory_bank.store, user_id=owner, workspace_id=memory_bank.workspace_id,
+        memory_bank.store, user_id=owner, workspace_id=workspace_id,
         session_id=session_id,
     )
     _restore_ponytail_level()
