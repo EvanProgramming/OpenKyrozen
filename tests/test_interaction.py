@@ -339,6 +339,8 @@ class InteractionTests(unittest.TestCase):
                 'TaskDone: 0\nMarker created and verified.',
             ]
             try:
+                stream_events = []
+                stream_token = main._stream_event_callback.set(stream_events.append)
                 with patch.object(main, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
                         patch.object(main, "_touch_detached_learning_heartbeat"), \
                         patch.object(main, "dispatch_learning_cycle"), \
@@ -359,6 +361,11 @@ class InteractionTests(unittest.TestCase):
                     suspended = main._chat_turn("accept plan")
                     self.assertIn("Which accepted check", suspended)
                     self.assertIsNotNone(main._interaction_controller.state()["executing_plan"])
+                    self.assertTrue(any(
+                        event.get("event") == "interaction"
+                        and event.get("interaction", {}).get("effective_mode") == "agent"
+                        for event in stream_events
+                    ))
                     executed = main._chat_turn("Read contents")
                 self.assertIn("Marker created", executed)
                 self.assertEqual((root / "marker.txt").read_text(encoding="utf-8"), "ready")
@@ -372,6 +379,8 @@ class InteractionTests(unittest.TestCase):
                 self.assertEqual(state["preference_mode"], "auto")
                 self.assertEqual(state["effective_mode"], "ask")
             finally:
+                if 'stream_token' in locals():
+                    main._stream_event_callback.reset(stream_token)
                 (main.tasks, main._interaction_controller, main.learning_engine,
                  previous_root, main._execution_capability_token) = original
                 main._set_workspace_root(previous_root)
