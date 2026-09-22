@@ -392,11 +392,12 @@ class StreamingEndpointTests(unittest.TestCase):
     def test_generic_invoke_tags_split_at_every_boundary_stay_out_of_sse(self):
         marker = _SplitGenericInvokeProvider.marker
         expected = "Visible progress.  after marker."
-        for split in range(1, len(marker)):
-            stream_filter = main.DeepSeekDSMLFilter()
-            content = stream_filter.feed("Visible progress. " + marker[:split])
-            content += stream_filter.feed(marker[split:] + " after marker.", final=True)
-            self.assertEqual(content, expected, split)
+        for control in (marker, '<action>\nrun_cmd\ncurl -w "HTTP_%{http_code}" /\n</action>'):
+            for split in range(1, len(control)):
+                stream_filter = main.DeepSeekDSMLFilter()
+                content = stream_filter.feed("Visible progress. " + control[:split])
+                content += stream_filter.feed(control[split:] + " after marker.", final=True)
+                self.assertEqual(content, expected, (control, split))
 
         session_id = "stream-generic-invoke-regression"
         provider = _SplitGenericInvokeProvider()

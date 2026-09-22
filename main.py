@@ -3679,6 +3679,21 @@ def _collect_tool_calls(text: str) -> list[dict]:
             if args:
                 _add({"action": TOOL_ALIASES.get(raw_action, raw_action), "args": args})
 
+    xml_action_pattern = re.compile(
+        r"<\s*action\s*>\s*(?P<name>[A-Za-z_]\w*)[ \t]*\r?\n"
+        r"(?P<args>[\s\S]*?)</\s*action\s*>",
+        re.IGNORECASE,
+    )
+    xml_actions = list(xml_action_pattern.finditer(text))
+    # Provider XML is accepted only as one complete, unambiguous action block.
+    if len(xml_actions) == 1 and not re.search(
+            r"<\s*action\s*>[\s\S]*<\s*action\s*>", text, re.IGNORECASE):
+        xml_action = xml_actions[0]
+        raw_action = xml_action.group("name").strip().lower()
+        args = html.unescape(xml_action.group("args").strip())
+        if args and _is_valid_action(raw_action):
+            _add({"action": TOOL_ALIASES.get(raw_action, raw_action), "args": args})
+
     for data in _collect_unwrapped_tool_calls(text)[0]:
         if _is_valid_action(data.get("action")):
             _add(data)
@@ -4378,15 +4393,15 @@ class DeepSeekDSMLFilter:
         r"(?i)(?<![\w])(?P<kind>Action|Thought|Plan|TaskList|TaskDone|DefineTool)\s*:"
     )
     _GENERIC_OPEN_RE = re.compile(
-        r"<\s*(?P<kind>invoke|parameter|calls|tool_calls|function_calls|tool_use|notes|thought|reasoning)\b[^>]*>",
+        r"<\s*(?P<kind>action|invoke|parameter|calls|tool_calls|function_calls|tool_use|notes|thought|reasoning)\b[^>]*>",
         re.IGNORECASE,
     )
     _GENERIC_CLOSE_RE = re.compile(
-        r"</\s*(?P<kind>invoke|parameter|calls|tool_calls|function_calls|tool_use|notes|thought|reasoning)\s*>",
+        r"</\s*(?P<kind>action|invoke|parameter|calls|tool_calls|function_calls|tool_use|notes|thought|reasoning)\s*>",
         re.IGNORECASE,
     )
     _GENERIC_KINDS = (
-        "invoke", "parameter", "calls", "tool_calls", "function_calls",
+        "action", "invoke", "parameter", "calls", "tool_calls", "function_calls",
         "tool_use", "notes", "thought", "reasoning",
     )
     _ACTION_MARKER_RE = _ACTION_MARKER_RE
@@ -4520,7 +4535,7 @@ class DeepSeekDSMLFilter:
         kind = match.group("kind").lower()
         close_kinds = (
             "parameter" if kind == "parameter" else
-            "invoke|calls|tool_calls|function_calls|tool_use|notes|thought|reasoning"
+            "action|invoke|calls|tool_calls|function_calls|tool_use|notes|thought|reasoning"
         )
         close = re.compile(rf"</\s*(?:{close_kinds})\s*>", re.IGNORECASE).search(value, match.end())
         return close.end() if close else None
