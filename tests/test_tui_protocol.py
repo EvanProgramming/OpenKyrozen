@@ -72,6 +72,13 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertEqual([event["event"] for event in events], ["stream_delta", "tool_receipt", "tasks"])
         self.assertEqual(events[0]["request_id"], "turn-1")
 
+    def test_provider_shaped_plan_json_is_not_streamed_as_chat_text(self):
+        callback = self.backend._stream_projection("turn-plan")
+        callback({"event": "content", "chunk": '{"mode":"plan","plan_name":"Safe",'})
+        callback({"event": "content", "chunk": '"overview":"Wait","steps":[]}'})
+        callback({"event": "model_complete"})
+        self.assertEqual(self.output.getvalue(), "")
+
     def test_provider_setup_emits_ready_and_masks_key_flow(self):
         config = tui_backend.agent.ProviderConfig(provider="deepseek")
         with patch.object(tui_backend.agent, "_provider_config", config), \

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -113,6 +114,27 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(parse_control_block(
             'PlanProposal\n```json\n{"steps": []}\n```', "PlanProposal",
         ), {"steps": []})
+
+    def test_provider_shaped_plan_is_normalized_but_actions_are_not(self):
+        shaped = json.dumps({
+            "plan_name": "Status page", "mode": "plan",
+            "do_not_execute_until_approved": True,
+            "overview": "Build after approval.", "assumptions": ["Python exists"],
+            "steps": [{"step": 1, "title": "Create page", "details": "Write index.html.",
+                       "acceptance_criteria": ["index.html exists"]}],
+        })
+        parsed = main._observe_model_response(shaped)
+        self.assertEqual(parsed["plan_proposal"]["title"], "Status page")
+        self.assertEqual(parsed["plan_proposal"]["steps"][0]["id"], "step-1")
+        self.assertEqual(parsed["tool_calls"], [])
+
+        executable = json.dumps({
+            "mode": "plan", "plan_name": "Unsafe", "overview": "Write now.",
+            "steps": [{"title": "Write", "details": "Write README.",
+                       "acceptance_criteria": ["written"], "action": "write_file"}],
+        })
+        rejected = main._observe_model_response(executable)
+        self.assertIsNone(rejected["plan_proposal"])
 
     def test_control_blocks_combined_with_actions_fail_closed(self):
         parsed = main._observe_model_response(

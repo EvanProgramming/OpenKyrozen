@@ -1127,7 +1127,8 @@ async def api_chat_stream(request: Request):
         """Pass plain deltas through while holding model control prefixes."""
 
         prefixes = ("Thought:", "Plan:", "TaskList:", "TaskDone:", "Action:", "DefineTool:",
-                    "AskUser:", "AskUser\n", "PlanProposal:", "PlanProposal\n")
+                    "AskUser:", "AskUser\n", "PlanProposal:", "PlanProposal\n",
+                    "{", "[", "```json")
 
         def __init__(self, sink):
             self.sink = sink
@@ -1163,7 +1164,9 @@ async def api_chat_stream(request: Request):
                 return
             text = self.buffer
             self.buffer = ""
-            if _agent._collect_tool_calls(text) or any(
+            if _agent.normalize_provider_control(text):
+                text = ""
+            elif _agent._collect_tool_calls(text) or any(
                     text.lstrip().lower().startswith(prefix.lower()) for prefix in self.prefixes
             ):
                 text = _agent._clean_final_response(text)

@@ -122,6 +122,18 @@ class _SplitGenericInvokeProvider:
 
 
 class StreamingEndpointTests(unittest.TestCase):
+    def test_reasoning_and_tool_use_tags_are_filtered_at_every_boundary(self):
+        marker = (
+            "<notes><thought>private</thought>"
+            "<tool_use><read_file><path>README.md</path></read_file></tool_use></notes>"
+        )
+        expected = "Visible  answer."
+        for split in range(1, len(marker)):
+            stream_filter = main.DeepSeekDSMLFilter()
+            content = stream_filter.feed("Visible " + marker[:split])
+            content += stream_filter.feed(marker[split:] + " answer.", final=True)
+            self.assertEqual(content, expected, split)
+
     def test_first_sse_content_arrives_before_provider_stream_completes(self):
         session_id = "stream-timing-regression"
         provider = _DelayedProvider()

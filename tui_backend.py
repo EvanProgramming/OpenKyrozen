@@ -274,7 +274,8 @@ class Backend:
         dsml = agent.DeepSeekDSMLFilter()
         buffer = ""
         prefixes = ("action:", "tasklist:", "taskdone:", "thought:", "plan:", "definetool:",
-                    "askuser:", "askuser\n", "planproposal:", "planproposal\n", "<")
+                    "askuser:", "askuser\n", "planproposal:", "planproposal\n", "<",
+                    "{", "[", "```json")
 
         def emit_text(text: str) -> None:
             nonlocal buffer
@@ -295,7 +296,7 @@ class Backend:
             elif kind == "model_complete":
                 emit_text(dsml.feed("", final=True))
                 if buffer:
-                    cleaned = agent._clean_final_response(buffer)
+                    cleaned = "" if agent.normalize_provider_control(buffer) else agent._clean_final_response(buffer)
                     if cleaned:
                         self.emit("stream_delta", request_id, text=_redact(cleaned))
                     buffer = ""
