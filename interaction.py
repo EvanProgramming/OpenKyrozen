@@ -195,7 +195,36 @@ def normalize_provider_control(text: str) -> tuple[str, dict[str, Any]] | None:
     if not isinstance(value, dict):
         return None
 
-    executable_keys = {"action", "args", "arguments", "command", "tool", "tool_calls"}
+    executable_keys = {
+        "action", "args", "arguments", "command", "commands", "content", "path", "tool", "tool_calls",
+    }
+    mode = str(value.get("mode") or "").strip().lower()
+    if mode == "plan" or value.get("do_not_execute_until_approved") is True:
+        if executable_keys & {str(key).lower() for key in value}:
+            return None
+        steps = []
+        for index, step in enumerate(value.get("steps") or [], 1):
+            if not isinstance(step, dict):
+                return None
+            description = step.get("description") or step.get("details") or step.get("title")
+            if not description:
+                return None
+            steps.append({
+                "id": str(step.get("id") or step.get("step_id") or f"step-{step.get('step', index)}"),
+                "title": step.get("title") or str(description)[:120],
+                "description": description,
+                "acceptance": (
+                    step.get("acceptance") or step.get("acceptance_criteria")
+                    or ["Step completed with observable evidence"]
+                ),
+            })
+        return "PlanProposal", {
+            "title": value.get("title") or value.get("plan_name"),
+            "summary": value.get("summary") or value.get("overview") or value.get("goal"),
+            "assumptions": value.get("assumptions") or [],
+            "steps": steps,
+        }
+
     stack: list[Any] = [value]
     while stack:
         item = stack.pop()
@@ -206,24 +235,6 @@ def normalize_provider_control(text: str) -> tuple[str, dict[str, Any]] | None:
         elif isinstance(item, list):
             stack.extend(item)
 
-    mode = str(value.get("mode") or "").strip().lower()
-    if mode == "plan" or value.get("do_not_execute_until_approved") is True:
-        steps = []
-        for index, step in enumerate(value.get("steps") or [], 1):
-            if not isinstance(step, dict):
-                return None
-            steps.append({
-                "id": str(step.get("id") or step.get("step_id") or f"step-{step.get('step', index)}"),
-                "title": step.get("title") or f"Step {index}",
-                "description": step.get("description") or step.get("details"),
-                "acceptance": step.get("acceptance") or step.get("acceptance_criteria"),
-            })
-        return "PlanProposal", {
-            "title": value.get("title") or value.get("plan_name"),
-            "summary": value.get("summary") or value.get("overview"),
-            "assumptions": value.get("assumptions") or [],
-            "steps": steps,
-        }
     if mode == "ask" or value.get("ask_user") is True:
         return "AskUser", {"questions": value.get("questions")}
     return None
