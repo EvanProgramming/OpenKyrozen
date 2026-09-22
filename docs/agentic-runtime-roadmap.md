@@ -21,3 +21,24 @@ is intentionally deferred rather than hidden behind speculative abstractions:
 
 MCP remains intentionally non-interactive. Tool approvals remain distinct from
 clarification questions on every future surface.
+
+## Release acceptance
+
+Run `make agent-acceptance` for the deterministic plan-to-deployment workflow.
+`make wheel-smoke` repeats the same check against a newly installed wheel from
+outside the checkout. It verifies plan approval, Agent-mode execution, durable
+receipts, generated files, and a real loopback HTTP deployment without using a
+provider key.
+
+Live-provider validation is optional and must be reported as unverified unless
+it is actually run. To exercise it manually, create a temporary project and
+state database, then run the installed UI with the configured provider:
+
+```bash
+work_dir="$(mktemp -d)"
+mkdir "$work_dir/project"
+KYROZEN_DB_PATH="$work_dir/state.sqlite3" kyrozen --project "$work_dir/project"
+```
+
+Select Plan mode, request a small locally served page, accept the proposal, and
+confirm the task receipts and deployment check before reporting a live pass.

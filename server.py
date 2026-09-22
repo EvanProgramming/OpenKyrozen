@@ -231,7 +231,7 @@ def _task_worker(session_id: str | None) -> TaskWorker:
 
 def _task_scopes(statuses: set[str]) -> set[str | None]:
     rows = _agent.memory_bank.store.list_tasks(
-        workspace_id=_agent.memory_bank.workspace_id,
+        workspace_id=_agent.interaction_workspace_id(),
         statuses=statuses,
         limit=10000,
         user_id=_SERVER_ACTOR_ID,
@@ -1376,7 +1376,7 @@ async def api_v2_create_task(request: Request):
 @app.post("/api/v2/tasks/{task_id}/resume", dependencies=[Depends(require_api_access)])
 async def api_v2_resume_task(task_id: str):
     candidates = _agent.memory_bank.store.list_tasks(
-        workspace_id=_agent.memory_bank.workspace_id,
+        workspace_id=_agent.interaction_workspace_id(),
         statuses={"pending", "running", "failed", "blocked"},
         limit=10000,
         user_id=_SERVER_ACTOR_ID,
@@ -1504,7 +1504,7 @@ async def api_v2_events(event_type: str | None = None, session_id: str | None = 
     session = _normalise_session_id(session_id) if session_id else None
     return {"events": _agent.memory_bank.store.list_events(
         event_type=event_type, limit=max(1, min(limit, 500)),
-        workspace_id=_agent.memory_bank.workspace_id, session_id=session, user_id=_SERVER_ACTOR_ID,
+        workspace_id=_agent.interaction_workspace_id(), session_id=session, user_id=_SERVER_ACTOR_ID,
     )}
 
 
