@@ -735,6 +735,23 @@ class TaskConsistencyTests(unittest.TestCase):
             main._collect_tool_calls("run_cmd:\n```bash\nprintf newline-fence\n```")[-1],
             {"action": "run_cmd", "args": "printf newline-fence"},
         )
+        dsml = (
+            '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="execute_terminal_command">'
+            '<｜｜DSML｜｜ parameter name="args" string="true">'
+            'curl http://127.0.0.1:8765/?a=1&amp;b=2'
+            '</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>'
+        )
+        self.assertEqual(
+            main._collect_tool_calls(dsml),
+            [{"action": "execute_terminal_command", "args": "curl http://127.0.0.1:8765/?a=1&b=2"}],
+        )
+        self.assertEqual(main._collect_tool_calls(dsml.replace("｜｜DSML｜｜", "｜DSML｜")), [
+            {"action": "execute_terminal_command", "args": "curl http://127.0.0.1:8765/?a=1&b=2"},
+        ])
+        self.assertEqual(main._collect_tool_calls(dsml.replace(
+            '</｜｜DSML｜｜ parameter>',
+            '</｜｜DSML｜｜ parameter><｜｜DSML｜｜ parameter name="path">x</｜｜DSML｜｜ parameter>',
+        )), [])
 
         malformed = main._parse_model_response("run_cmd: ```bash\nprintf alias-ok")
         self.assertEqual(malformed["tool_calls"], [])
