@@ -223,6 +223,56 @@ class InteractionTests(unittest.TestCase):
                 main._execution_capability_token = previous_token
                 main._set_workspace_root(previous_root)
 
+    def test_accepted_plan_rejects_unrelated_mutation_before_execution(self):
+        previous = (
+            main.tasks, main._interaction_controller, main._execution_capability_token,
+            main._get_workspace_root(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = EventStore(root / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="bound", session_id="surface:tui")
+            controller = InteractionController(
+                store, workspace_id="bound", session_id="surface:tui",
+            )
+            proposal = controller.propose_plan({
+                "title": "Create page", "summary": "Create only the accepted page.",
+                "assumptions": [], "steps": [{
+                    "id": "page", "title": "Create index.html",
+                    "description": "Write index.html with the requested markup.",
+                    "acceptance": ["index.html exists"],
+                }],
+            })
+            controller.accept_plan(
+                manager, plan_id=proposal["plan_id"], version=proposal["version"],
+            )
+            main.tasks = manager
+            main._interaction_controller = controller
+            main._set_workspace_root(root)
+            main._execution_capability_token = issue_capability_token(
+                "test:accepted-plan", frozenset({"write"}),
+            )
+            try:
+                operations: set[str] = set()
+                rejected = main._execute_turn_action(
+                    "write_file", "README.md|wrong", operation_scope="bound",
+                    successful_operations=operations,
+                )
+                self.assertFalse(rejected.success)
+                self.assertEqual(rejected.failure, "plan_action_mismatch")
+                self.assertFalse((root / "README.md").exists())
+
+                accepted = main._execute_turn_action(
+                    "write_file", "index.html|ready", operation_scope="bound",
+                    successful_operations=operations,
+                )
+                self.assertTrue(accepted.success, accepted.result)
+                self.assertEqual((root / "index.html").read_text(encoding="utf-8"), "ready")
+            finally:
+                (main.tasks, main._interaction_controller, main._execution_capability_token,
+                 previous_root) = previous
+                main._set_workspace_root(previous_root)
+
     def test_mocked_provider_flow_questions_revision_acceptance_and_agent_receipt(self):
         class LearningStub:
             def feedback_signal(self, _text): return None

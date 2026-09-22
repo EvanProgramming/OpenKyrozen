@@ -317,6 +317,25 @@ class TaskManager:
                 return previous
         return None
 
+    def mutation_matches_current_task(self, action: str, args: str) -> tuple[bool, str]:
+        """Authorize a mutation only when it belongs to the next ordered task."""
+        current = next((
+            task for task in self.tasks
+            if canonical_status(task.get("status", "pending")) in {"pending", "running"}
+        ), None)
+        if current is None:
+            return False, "the accepted plan has no pending task"
+        if self._receipt_match_score(current, action, args) > 0:
+            return True, ""
+        if _ordered_plan_info(current) is None or not _ordered_action_compatible(
+                current.get("description", ""), action):
+            return False, f"the next accepted step is: {current.get('description', '')}"
+        if _receipt_action(action) == "write_file":
+            target = str(args).split("|", 1)[0].strip().replace("\\", "/").rsplit("/", 1)[-1]
+            if not target or target.lower() not in str(current.get("description", "")).lower():
+                return False, f"the next accepted step does not name {target or 'that file'}"
+        return True, ""
+
     def record_evidence(self, *, task_id: str | None = None, action: str, result: str, success: bool,
                         acceptance: str | None = None, args: str | None = None,
                         receipt_id: str | None = None) -> dict[str, Any]:
