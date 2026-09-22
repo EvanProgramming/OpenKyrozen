@@ -190,6 +190,38 @@ class InteractionTests(unittest.TestCase):
         rejected = main._observe_model_response(executable)
         self.assertIsNone(rejected["plan_proposal"])
 
+    def test_plan_mode_converts_plain_plan_and_discards_early_actions(self):
+        mode_token = main._active_interaction_mode.set("plan")
+        previous_controller = main._interaction_controller
+        main._interaction_controller = self.controller
+        try:
+            parsed = main._parse_model_response(
+                "Plan:\n"
+                "1. Create index.html with the requested heading.\n"
+                "2. Serve it locally and verify HTTP 200.\n"
+                'Action: {"action":"write_file","args":"index.html|unsafe"}'
+            )
+            self.assertEqual(parsed["tool_calls"], [])
+            self.assertIsNone(parsed["protocol_error"])
+            rendered = main._interaction_gate(parsed, "Create a local page")
+            self.assertIn("Create index.html", rendered)
+            self.assertEqual(len(self.controller.state()["pending_plan"]["steps"]), 2)
+            self.assertEqual(
+                self.store.list_events(
+                    "execution.receipt", workspace_id="workspace", session_id="session",
+                ),
+                [],
+            )
+
+            action_only = main._parse_model_response(
+                'Action: {"action":"run_cmd","args":"python -m http.server"}'
+            )
+            self.assertEqual(action_only["tool_calls"], [])
+            self.assertIn("rejected an executable action", action_only["protocol_error"])
+        finally:
+            main._interaction_controller = previous_controller
+            main._active_interaction_mode.reset(mode_token)
+
     def test_control_blocks_combined_with_actions_fail_closed(self):
         parsed = main._observe_model_response(
             'AskUser:\n```json\n{"questions":[{"id":"scope","header":"Scope",'
