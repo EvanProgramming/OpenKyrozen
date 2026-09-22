@@ -236,6 +236,19 @@ class InteractionTests(unittest.TestCase):
             )
             self.assertEqual(action_only["tool_calls"], [])
             self.assertIn("rejected an executable action", action_only["protocol_error"])
+
+            markdown = main._parse_model_response(
+                "PlanProposal:\n\n**Goal:** Build locally.\n\n**Planned changes**\n\n"
+                "1. **Create `index.html`** with no dependencies.\n"
+                "   - Include a visible heading.\n"
+                "2. **Serve on port 8765** with Python.\n"
+                "3. **Verify HTTP 200** with curl.\n"
+                "4. **Stop the server** and release the port.\n"
+                "\n- This trailing note is not another step."
+            )
+            self.assertIsNone(markdown["protocol_error"])
+            self.assertEqual(len(markdown["plan_proposal"]["steps"]), 4)
+            self.assertEqual(markdown["plan_proposal"]["steps"][0]["id"], "step-1")
         finally:
             main._interaction_controller = previous_controller
             main._active_interaction_mode.reset(mode_token)

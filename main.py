@@ -4756,24 +4756,31 @@ def _remove_task_blocks(text: str) -> str:
 
 
 def _legacy_plan_value(text: str) -> dict[str, Any] | None:
-    """Convert a bounded numbered Plan block into a proposal value."""
+    """Convert a bounded numbered Markdown plan into a proposal value."""
     match = re.search(
-        r"^[ \t]*Plan:[ \t]*\n(?P<body>[\s\S]*?)(?=^[ \t]*(?:Action|TaskList|TaskDone|DefineTool):|\Z)",
+        r"^[ \t]*(?:Plan|PlanProposal):[ \t]*\n(?P<body>[\s\S]*?)"
+        r"(?=^[ \t]*(?:Action|TaskList|TaskDone|DefineTool):|\Z)",
         str(text or ""), re.IGNORECASE | re.MULTILINE,
     )
     if not match:
         return None
+    lines = match.group("body").splitlines()
+    numbered = [
+        item.group(1).strip() for line in lines
+        if (item := re.match(r"^[ \t]*\d+[.)][ \t]+(.+?)\s*$", line))
+    ]
+    descriptions = numbered or [
+        item.group(1).strip() for line in lines
+        if (item := re.match(r"^[ \t]*[-*][ \t]+(.+?)\s*$", line))
+    ]
     steps = []
-    for line in match.group("body").splitlines():
-        item = re.match(r"^[ \t]*(?:\d+[.)]|[-*])[ \t]+(.+?)\s*$", line)
-        if item:
-            description = item.group(1).strip()
-            steps.append({
-                "id": f"step-{len(steps) + 1}",
-                "title": description[:120],
-                "description": description,
-                "acceptance": ["Step completed with observable evidence"],
-            })
+    for description in descriptions:
+        steps.append({
+            "id": f"step-{len(steps) + 1}",
+            "title": description.strip("*_ ")[:120],
+            "description": description,
+            "acceptance": ["Step completed with observable evidence"],
+        })
     if not 1 <= len(steps) <= 10:
         return None
     return {
@@ -4813,6 +4820,14 @@ def _parse_model_response(text: str) -> dict[str, Any]:
             plan_proposal = validate_plan_proposal(plan_value)
     except InteractionError as exc:
         control_error = str(exc)
+    markdown_proposal = bool(re.search(r"^[ \t]*PlanProposal:", raw, re.IGNORECASE | re.MULTILINE))
+    if (plan_proposal is None and _active_interaction_mode.get() == "plan"
+            and (tool_calls or markdown_proposal)):
+        legacy_plan = _legacy_plan_value(raw)
+        if legacy_plan is not None:
+            plan_proposal = validate_plan_proposal(legacy_plan)
+            tool_calls = []
+            control_error = None
     has_control = question is not None or plan_proposal is not None
     combined_control = has_control and (
         bool(tool_calls)
