@@ -4862,7 +4862,8 @@ def _observe_model_response(text: str) -> dict[str, Any]:
     parsed["define_tool_registered"] = define_tool_registered
     if (parsed["raw"] and not has_control and not parsed["protocol_error"]
             and _active_interaction_mode.get() == "agent"):
-        tasks.from_llm_block(parsed["raw"])
+        if not _interaction_controller.state().get("executing_plan"):
+            tasks.from_llm_block(parsed["raw"])
         tasks.mark_done_from_text(parsed["raw"])
     return parsed
 

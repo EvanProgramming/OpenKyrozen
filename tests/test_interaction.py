@@ -133,12 +133,16 @@ class InteractionTests(unittest.TestCase):
 
     def test_provider_plan_text_cannot_duplicate_an_accepted_checklist(self):
         previous_tasks = main.tasks
+        previous_controller = main._interaction_controller
         manager = TaskManager(self.store, workspace_id="workspace", session_id="session")
         proposal = self.controller.propose_plan({
             "title": "Eight steps", "summary": "Execute once.", "assumptions": [],
             "steps": [
                 {"id": f"step-{index}", "title": f"Step {index}",
-                 "description": f"Perform step {index}.", "acceptance": [f"Step {index} done"]}
+                 "description": (
+                     "Create index.html with the requested content."
+                     if index == 0 else f"Perform step {index}."
+                 ), "acceptance": [f"Step {index} done"]}
                 for index in range(8)
             ],
         })
@@ -146,15 +150,29 @@ class InteractionTests(unittest.TestCase):
             manager, plan_id=proposal["plan_id"], version=proposal["version"],
         )
         main.tasks = manager
+        main._interaction_controller = self.controller
+        mode_token = main._active_interaction_mode.set("agent")
         try:
             repeated = "Plan:\n" + "\n".join(
                 f"{index}. Perform step {index}." for index in range(1, 9)
             )
             main._tasks_from_plan(repeated)
             main._tasks_from_plan(repeated)
+            main._observe_model_response(
+                "TaskList:\n```json\n"
+                + json.dumps([f"Use run_cmd to perform step {index}" for index in range(1, 9)])
+                + "\n```"
+            )
             self.assertEqual(len(manager.tasks), 8)
+            evidence = manager.record_evidence(
+                action="write_file", args="index.html|ready", result="Wrote index.html", success=True,
+            )
+            self.assertEqual(evidence["task_id"], manager.tasks[0]["id"])
+            self.assertEqual(manager.tasks[0]["status"], "succeeded")
         finally:
             main.tasks = previous_tasks
+            main._interaction_controller = previous_controller
+            main._active_interaction_mode.reset(mode_token)
 
     def test_exact_acceptance_phrases_and_control_parser(self):
         self.assertTrue(is_plan_acceptance("Execute plan."))
