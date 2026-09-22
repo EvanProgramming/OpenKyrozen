@@ -3879,6 +3879,17 @@ def _execute_turn_action(action: str, args: Any, *, operation_scope: str,
         )
     args = str(args)
     operation_id = _operation_id(operation_scope, canonical, args)
+    if (_is_state_changing_action(canonical, args)
+            and _interaction_controller.state().get("executing_plan")):
+        allowed, reason = tasks.mutation_matches_current_task(canonical, args)
+        if not allowed:
+            result = f"Error: action does not match the accepted plan; {reason}."
+            _notify_tool_execute(canonical, args, result)
+            return _make_execution_receipt(
+                action=canonical, args=args, authorized=False, started_at=started_at,
+                success=False, result=result, operation_scope=operation_scope,
+                failure="plan_action_mismatch",
+            )
     if _is_state_changing_action(canonical, args) and operation_id in successful_operations:
         result = "Error: duplicate successful state-changing action refused for this turn."
         _notify_tool_execute(canonical, args, result)
