@@ -15,6 +15,7 @@ from interaction import (
 )
 from task_engine import TaskManager
 from capability_tokens import issue_capability_token
+from workspace_context import resolve_launch_context
 
 
 class InteractionTests(unittest.TestCase):
@@ -35,6 +36,34 @@ class InteractionTests(unittest.TestCase):
         base = frozenset({"read", "write", "shell", "network", "git", "browser", "dynamic"})
         self.assertEqual(mode_capabilities(base, "plan"), frozenset({"read", "network"}))
         self.assertEqual(mode_capabilities(frozenset({"read"}), "agent"), frozenset({"read"}))
+
+    def test_project_interaction_state_is_isolated_from_other_projects(self):
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as first, \
+                tempfile.TemporaryDirectory() as second:
+            first_context = resolve_launch_context(home=home, project_path=first)
+            second_context = resolve_launch_context(home=home, project_path=second)
+            first_scope = main.interaction_workspace_id(first_context)
+            second_scope = main.interaction_workspace_id(second_context)
+            self.assertNotEqual(first_scope, second_scope)
+
+            first_controller = InteractionController(
+                self.store, workspace_id=first_scope, session_id="surface:tui",
+            )
+            first_controller.propose_plan({
+                "title": "First", "summary": "Only the first project.", "assumptions": [],
+                "steps": [{"id": "one", "title": "One", "description": "Change first.",
+                           "acceptance": ["First changed"]}],
+            })
+            second_controller = InteractionController(
+                self.store, workspace_id=second_scope, session_id="surface:tui",
+            )
+            self.assertIsNotNone(first_controller.state()["pending_plan"])
+            self.assertIsNone(second_controller.state()["pending_plan"])
+
+            global_context = resolve_launch_context(home=home, global_mode=True)
+            self.assertEqual(
+                main.interaction_workspace_id(global_context), main.memory_bank.workspace_id,
+            )
 
     def test_question_bounds_and_event_reconstruction(self):
         question = self.controller.request_question({"questions": [{
