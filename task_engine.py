@@ -58,7 +58,10 @@ _ORDERED_ACTION_FAMILIES = {
 _ORDERED_ACTION_HINTS = {
     "inspect": ("read", "inspect", "list", "directory", "repo", "repository", "structure", "tree"),
     "write": ("write", "edit", "add", "update", "create", "modify", "append"),
-    "execute": ("run", "test", "execute", "command", "suite", "pytest"),
+    "execute": (
+        "run", "test", "execute", "command", "suite", "pytest",
+        "start", "serve", "verify", "check", "stop", "kill",
+    ),
     "review": ("diff", "review", "compare"),
     "status": ("status", "clean"),
     "stage": ("stage", "staging"),

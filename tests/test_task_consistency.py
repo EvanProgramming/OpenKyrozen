@@ -410,6 +410,22 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertIn("unmatched_reason", evidence)
             self.assertEqual([task["status"] for task in unmatched.tasks], ["pending", "pending"])
 
+            lifecycle = TaskManager(store, workspace_id="project", session_id="server-lifecycle")
+            lifecycle.from_llm_block(
+                "TaskList:\n```json\n"
+                '["Start HTTP server and capture its PID", '
+                '"Verify HTTP 200 with curl", "Stop the server and confirm the port is closed"]\n'
+                "```"
+            )
+            for args in ("python3 -m http.server 8765", "curl http://localhost:8765", "kill 123"):
+                allowed, _reason = lifecycle.mutation_matches_current_task("run_cmd", args)
+                self.assertTrue(allowed)
+                evidence = lifecycle.record_evidence(
+                    action="run_cmd", args=args, result="verified", success=True,
+                )
+                self.assertIn("task_id", evidence)
+            self.assertEqual([task["status"] for task in lifecycle.tasks], ["succeeded"] * 3)
+
             mismatch = TaskManager(store, workspace_id="project", session_id="mismatch")
             mismatch.from_llm_block(
                 "TaskList:\n```json\n[\"Write the file\", \"Run the tests\"]\n```"
