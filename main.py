@@ -4755,6 +4755,35 @@ def _remove_task_blocks(text: str) -> str:
     return _clean_final_response(text)
 
 
+def _legacy_plan_value(text: str) -> dict[str, Any] | None:
+    """Convert a bounded numbered Plan block into a proposal value."""
+    match = re.search(
+        r"^[ \t]*Plan:[ \t]*\n(?P<body>[\s\S]*?)(?=^[ \t]*(?:Action|TaskList|TaskDone|DefineTool):|\Z)",
+        str(text or ""), re.IGNORECASE | re.MULTILINE,
+    )
+    if not match:
+        return None
+    steps = []
+    for line in match.group("body").splitlines():
+        item = re.match(r"^[ \t]*(?:\d+[.)]|[-*])[ \t]+(.+?)\s*$", line)
+        if item:
+            description = item.group(1).strip()
+            steps.append({
+                "id": f"step-{len(steps) + 1}",
+                "title": description[:120],
+                "description": description,
+                "acceptance": ["Step completed with observable evidence"],
+            })
+    if not 1 <= len(steps) <= 10:
+        return None
+    return {
+        "title": steps[0]["title"],
+        "summary": "Review and approve these steps before execution.",
+        "assumptions": [],
+        "steps": steps,
+    }
+
+
 def _parse_model_response(text: str) -> dict[str, Any]:
     """Parse one model response exactly once for the turn state machine."""
     raw = str(text or "").strip()
@@ -4772,6 +4801,12 @@ def _parse_model_response(text: str) -> dict[str, Any]:
                 name, value = normalized
                 question_value = value if name == "AskUser" else None
                 plan_value = value if name == "PlanProposal" else None
+        if (question_value is None and plan_value is None and tool_calls
+                and _active_interaction_mode.get() == "plan"):
+            plan_value = _legacy_plan_value(raw)
+            if plan_value is not None:
+                # A usable plan wins over provider attempts to execute it early.
+                tool_calls = []
         if question_value is not None:
             question = validate_question_request(question_value)
         if plan_value is not None:
@@ -4784,6 +4819,13 @@ def _parse_model_response(text: str) -> dict[str, Any]:
         or bool(re.search(r"^[ \t]*(?:TaskList|TaskDone|DefineTool):", raw, re.IGNORECASE | re.MULTILINE))
         or (question is not None and plan_proposal is not None)
     )
+    disallowed_plan_action = (
+        _active_interaction_mode.get() == "plan"
+        and any(tool_capability(_operation_action(call.get("action", ""))) not in {"read", "network"}
+                for call in tool_calls)
+    )
+    if disallowed_plan_action:
+        tool_calls = []
     return {
         "raw": raw,
         "clean": _clean_final_response(raw),
@@ -4797,6 +4839,8 @@ def _parse_model_response(text: str) -> dict[str, Any]:
             "AskUser and PlanProposal must be the only control block in a response. "
             "No tool or task action was executed."
             if combined_control else
+            "Plan mode rejected an executable action; no action was executed. Retry with one PlanProposal block."
+            if disallowed_plan_action else
             "The model returned an incomplete or ambiguous unwrapped tool call. "
             "No tool was executed. Retry with one complete structured tool call."
             if malformed_unwrapped else None
