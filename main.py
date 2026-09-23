@@ -105,7 +105,7 @@ from task_engine import TaskManager, TaskWorker, canonical_status, is_complete, 
 from event_store import stable_hash, utc_now
 from interaction import (
     InteractionController, InteractionError, is_plan_acceptance, mode_capabilities,
-    parse_control_block, render_plan, render_question, validate_plan_proposal,
+    normalize_provider_control, parse_control_block, render_plan, render_question, validate_plan_proposal,
     validate_question_request,
 )
 from learning_engine import LearningEngine
@@ -4357,14 +4357,17 @@ class DeepSeekDSMLFilter:
         r"(?i)(?<![\w])(?P<kind>Action|Thought|Plan|TaskList|TaskDone|DefineTool)\s*:"
     )
     _GENERIC_OPEN_RE = re.compile(
-        r"<\s*(?P<kind>invoke|parameter|calls|tool_calls|function_calls)\b[^>]*>",
+        r"<\s*(?P<kind>invoke|parameter|calls|tool_calls|function_calls|tool_use|notes|thought|reasoning)\b[^>]*>",
         re.IGNORECASE,
     )
     _GENERIC_CLOSE_RE = re.compile(
-        r"</\s*(?P<kind>invoke|parameter|calls|tool_calls|function_calls)\s*>",
+        r"</\s*(?P<kind>invoke|parameter|calls|tool_calls|function_calls|tool_use|notes|thought|reasoning)\s*>",
         re.IGNORECASE,
     )
-    _GENERIC_KINDS = ("invoke", "parameter", "calls", "tool_calls", "function_calls")
+    _GENERIC_KINDS = (
+        "invoke", "parameter", "calls", "tool_calls", "function_calls",
+        "tool_use", "notes", "thought", "reasoning",
+    )
     _ACTION_MARKER_RE = _ACTION_MARKER_RE
     _CONTROL_PREFIXES = tuple(
         item[:length].lower()
@@ -4494,7 +4497,10 @@ class DeepSeekDSMLFilter:
     @classmethod
     def _generic_block_end(cls, value: str, match: re.Match[str]) -> int | None:
         kind = match.group("kind").lower()
-        close_kinds = "parameter" if kind == "parameter" else "invoke|calls|tool_calls|function_calls"
+        close_kinds = (
+            "parameter" if kind == "parameter" else
+            "invoke|calls|tool_calls|function_calls|tool_use|notes|thought|reasoning"
+        )
         close = re.compile(rf"</\s*(?:{close_kinds})\s*>", re.IGNORECASE).search(value, match.end())
         return close.end() if close else None
 
@@ -4760,6 +4766,12 @@ def _parse_model_response(text: str) -> dict[str, Any]:
     try:
         question_value = parse_control_block(raw, "AskUser")
         plan_value = parse_control_block(raw, "PlanProposal")
+        if question_value is None and plan_value is None:
+            normalized = normalize_provider_control(raw)
+            if normalized is not None:
+                name, value = normalized
+                question_value = value if name == "AskUser" else None
+                plan_value = value if name == "PlanProposal" else None
         if question_value is not None:
             question = validate_question_request(question_value)
         if plan_value is not None:
