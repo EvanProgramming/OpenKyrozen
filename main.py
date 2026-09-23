@@ -66,6 +66,7 @@ if _UNICODE_OK:    _SPINNER_FRAMES = ["◜", "◠", "◝", "◞", "◡", "◟"];
 else:               _SPINNER_FRAMES = ["/", "-", "\\", "|"];             _BAR_FILL = "#"; _BAR_EMPTY = "."; _CHECK = "+"; _CIRCLE = "o"; _HALF = ">"; _BOX_TL = "+"; _BOX_H = "-"; _BOX_BL = "+"; _BOX_V = "|"; _DOT = "."; _NBHYPHEN = "-"
 
 import ast
+import html
 import json
 import os
 import queue
@@ -3657,6 +3658,26 @@ def _collect_tool_calls(text: str) -> list[dict]:
                 and _is_valid_action(obj.get("action"))
                 and len(obj) <= 3):  # action, args + optionally one more key
             _add(obj)
+
+    marker = r"(?:｜｜DSML｜｜|｜DSML｜|\|\|DSML\|\||\|DSML\|)"
+    invoke_pattern = re.compile(
+        rf"<{marker}\s*invoke\s+name=[\"'](?P<name>[^\"']+)[\"'][^>]*>"
+        rf"(?P<body>[\s\S]*?)</{marker}\s*invoke\s*>",
+        re.IGNORECASE,
+    )
+    parameter_pattern = re.compile(
+        rf"<{marker}\s*parameter\s+name=[\"'](?P<name>[^\"']+)[\"'][^>]*>"
+        rf"(?P<value>[\s\S]*?)</{marker}\s*parameter\s*>",
+        re.IGNORECASE,
+    )
+    for invoke in invoke_pattern.finditer(text):
+        parameters = list(parameter_pattern.finditer(invoke.group("body")))
+        raw_action = invoke.group("name").strip().lower()
+        if (len(parameters) == 1 and parameters[0].group("name").strip().lower() == "args"
+                and _is_valid_action(raw_action)):
+            args = html.unescape(parameters[0].group("value").strip())
+            if args:
+                _add({"action": TOOL_ALIASES.get(raw_action, raw_action), "args": args})
 
     for data in _collect_unwrapped_tool_calls(text)[0]:
         if _is_valid_action(data.get("action")):
