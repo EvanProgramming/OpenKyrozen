@@ -396,6 +396,24 @@ func TestLongPlanModalScrollsAndKeepsActionsVisible(t *testing.T) {
 	}
 }
 
+func TestEffectiveAgentModeIsProminentDuringPlanExecution(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height = 125, 39
+	m.screen = screenChat
+	m.applyInteraction(map[string]any{
+		"preference_mode": "plan",
+		"effective_mode":  "agent",
+	})
+	m.resize()
+	view := m.View().Content
+	if !strings.Contains(view, "AGENT") {
+		t.Fatalf("header did not show effective Agent mode: %s", view)
+	}
+	if !strings.Contains(view, "preference plan") || !strings.Contains(view, "agent") {
+		t.Fatalf("activity rail did not distinguish preference and active mode: %s", view)
+	}
+}
+
 func TestProviderKeyIsMaskedAndApprovalArgsAreRedacted(t *testing.T) {
 	m := initialModel("", false)
 	m.width, m.height = 60, 16

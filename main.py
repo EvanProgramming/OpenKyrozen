@@ -5779,6 +5779,10 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
             "Execute the accepted plan below in Agent mode. Complete each durable task with evidence.\n\n"
             + json.dumps(accepted_plan, ensure_ascii=False)
         )
+        _emit_stream_event({
+            "event": "interaction",
+            "interaction": _interaction_controller.envelope(user_input),
+        })
         clear_tasks = False
     elif mode_override is None and pending_plan:
         user_input = (
