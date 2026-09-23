@@ -112,6 +112,15 @@ print("installed artifact auth/task behavior passed")
         if "installed artifact auth/task behavior passed" not in probe.stdout:
             raise RuntimeError(f"installed artifact behavior probe failed:\n{probe.stdout}{probe.stderr}")
 
+        acceptance_env = env.copy()
+        acceptance_env["KYROZEN_ACCEPTANCE_INSTALLED"] = "1"
+        acceptance = _run(
+            [str(python), str(ROOT / "scripts" / "agent_workflow_acceptance.py")],
+            cwd=caller, env=acceptance_env,
+        )
+        if "Agent workflow acceptance passed." not in acceptance.stdout:
+            raise RuntimeError(f"installed agent workflow acceptance failed:\n{acceptance.stdout}{acceptance.stderr}")
+
     print("Wheel installation smoke passed: kyrozen ran from an unrelated directory.")
     return 0
 

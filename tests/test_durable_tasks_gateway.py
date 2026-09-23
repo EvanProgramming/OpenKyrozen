@@ -12,6 +12,7 @@ from pathlib import Path
 
 from event_store import EventStore
 from task_engine import TaskManager
+from workspace_context import source_scope_id
 
 
 class DurableTaskGatewayTests(unittest.TestCase):
@@ -90,8 +91,9 @@ class DurableTaskGatewayTests(unittest.TestCase):
             db_path = root / "state.sqlite3"
             skills_path = root / "skills"
             store = EventStore(db_path)
+            workspace_id = source_scope_id(workspace)
             recovery_manager = TaskManager(
-                store, user_id="local", workspace_id="default", session_id="restart-session"
+                store, user_id="local", workspace_id=workspace_id, session_id="restart-session"
             )
             recovery_index = recovery_manager.add_task(
                 "recover a running file task",
@@ -99,7 +101,7 @@ class DurableTaskGatewayTests(unittest.TestCase):
             )
             recovery_manager.set_status(recovery_index, "running")
             command_manager = TaskManager(
-                store, user_id="local", workspace_id="default", session_id="restart-command-session"
+                store, user_id="local", workspace_id=workspace_id, session_id="restart-command-session"
             )
             command_index = command_manager.add_task(
                 "fail a recovered command task",
@@ -110,7 +112,7 @@ class DurableTaskGatewayTests(unittest.TestCase):
             )
             command_manager.set_status(command_index, "running")
             failed_manager = TaskManager(
-                store, user_id="local", workspace_id="default", session_id="resume-session"
+                store, user_id="local", workspace_id=workspace_id, session_id="resume-session"
             )
             failed_index = failed_manager.add_task("resume only when requested")
             failed_manager.set_status(failed_index, "failed")

@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from event_store import EventStore
+from workspace_context import source_scope_id
 
 
 class WebSessionBrowserTests(unittest.TestCase):
@@ -79,6 +80,7 @@ class WebSessionBrowserTests(unittest.TestCase):
             (workspace / "home").mkdir()
             db_path = root / "state.sqlite3"
             store = EventStore(db_path)
+            interaction_workspace_id = source_scope_id(workspace)
             for session_id, messages in {
                 "session-one": [("user", "first user"), ("assistant", "UI_你好_✅")],
                 "session-two": [("user", "second user"), ("assistant", "Second_会话_✅")],
@@ -98,7 +100,7 @@ class WebSessionBrowserTests(unittest.TestCase):
                             {"id": "all", "label": "All", "description": "Cover every surface"},
                         ],
                     }],
-                }, user_id="local", workspace_id="default", session_id="session-one",
+                }, user_id="local", workspace_id=interaction_workspace_id, session_id="session-one",
             )
 
             port = self._free_port()
@@ -139,7 +141,7 @@ class WebSessionBrowserTests(unittest.TestCase):
                             "id": "step-1", "title": "Verify controls",
                             "description": "Use the browser UI.", "acceptance": ["Controls respond"],
                         }],
-                    }, user_id="local", workspace_id="default", session_id="session-one",
+                    }, user_id="local", workspace_id=interaction_workspace_id, session_id="session-one",
                 )
                 page.reload(wait_until="domcontentloaded")
                 page.wait_for_function("document.body.innerText.includes('Browser plan · v1')")

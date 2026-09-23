@@ -1,4 +1,4 @@
-.PHONY: install install-core run clean lint test test-core tui-test check docs-check shell-check benchmark wheel-smoke docker-smoke git-status git-diff git-log web
+.PHONY: install install-core run clean lint test test-core tui-test check docs-check shell-check benchmark agent-acceptance wheel-smoke docker-smoke git-status git-diff git-log web
 
 # Tests parse the benchmark target's stdout as JSON; do not inject GNU make's
 # recursive directory banners into that machine-readable output.
@@ -64,7 +64,7 @@ clean:
 
 # Syntax check
 lint:
-	$(VENV_PYTHON) -m compileall -q main.py tui_launcher.py tui_backend.py main_debug.py server.py tools.py memory.py event_store.py interaction.py task_engine.py learning_engine.py learning_benchmark.py learning_worker.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py workspace_context.py project_graph.py github_cli.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py scripts/wheel_smoke.py
+	$(VENV_PYTHON) -m compileall -q main.py tui_launcher.py tui_backend.py main_debug.py server.py tools.py memory.py event_store.py interaction.py task_engine.py learning_engine.py learning_benchmark.py learning_worker.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py workspace_context.py project_graph.py github_cli.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py scripts/agent_workflow_acceptance.py scripts/wheel_smoke.py
 	@echo "Python syntax OK."
 	@echo "All files pass syntax check."
 
@@ -91,6 +91,9 @@ wheel-smoke:
 	$(VENV_PYTHON) -m pip install build -q
 	$(VENV_PYTHON) scripts/wheel_smoke.py
 
+agent-acceptance:
+	$(VENV_PYTHON) scripts/agent_workflow_acceptance.py
+
 docs-check:
 	$(VENV_PYTHON) scripts/generate_tool_inventory.py --check
 	$(VENV_PYTHON) scripts/check_docs.py
@@ -107,7 +110,7 @@ docker-smoke:
 # Quick verification
 check:
 	@echo "Checking Python syntax..."
-	@$(VENV_PYTHON) -m py_compile main.py tui_launcher.py tui_backend.py main_debug.py server.py tools.py memory.py event_store.py interaction.py task_engine.py learning_engine.py learning_benchmark.py learning_worker.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py workspace_context.py project_graph.py github_cli.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py scripts/wheel_smoke.py
+	@$(VENV_PYTHON) -m py_compile main.py tui_launcher.py tui_backend.py main_debug.py server.py tools.py memory.py event_store.py interaction.py task_engine.py learning_engine.py learning_benchmark.py learning_worker.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py workspace_context.py project_graph.py github_cli.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py scripts/agent_workflow_acceptance.py scripts/wheel_smoke.py
 	@echo "  Python modules: OK"
 	@echo "Checking git tools..."
 	@$(VENV_PYTHON) -c "from tools import AVAILABLE_TOOLS; git = [k for k in AVAILABLE_TOOLS if k.startswith('git_')]; print(f'  {len(git)} git tools, {len(AVAILABLE_TOOLS)} total tools')"
