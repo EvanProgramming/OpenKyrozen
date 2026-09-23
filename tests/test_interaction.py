@@ -187,7 +187,7 @@ class InteractionTests(unittest.TestCase):
             'PlanProposal\n```json\n{"steps": []}\n```', "PlanProposal",
         ), {"steps": []})
 
-    def test_provider_shaped_plan_is_normalized_but_actions_are_not(self):
+    def test_provider_shaped_plan_discards_executable_step_metadata(self):
         shaped = json.dumps({
             "plan_name": "Status page", "mode": "plan",
             "do_not_execute_until_approved": True,
@@ -201,12 +201,21 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(parsed["tool_calls"], [])
 
         executable = json.dumps({
-            "mode": "plan", "plan_name": "Unsafe", "overview": "Write now.",
+            "mode": "plan", "plan_name": "Safe proposal", "goal": "Write after acceptance.",
             "steps": [{"title": "Write", "details": "Write README.",
-                       "acceptance_criteria": ["written"], "action": "write_file"}],
+                       "action": "write_file", "path": "README.md", "content": "unsafe"}],
         })
-        rejected = main._observe_model_response(executable)
-        self.assertIsNone(rejected["plan_proposal"])
+        sanitized = main._observe_model_response(executable)
+        self.assertEqual(sanitized["tool_calls"], [])
+        self.assertEqual(sanitized["plan_proposal"]["title"], "Safe proposal")
+        self.assertEqual(
+            set(sanitized["plan_proposal"]["steps"][0]),
+            {"id", "title", "description", "acceptance"},
+        )
+        self.assertEqual(
+            sanitized["plan_proposal"]["steps"][0]["acceptance"],
+            ["Step completed with observable evidence"],
+        )
 
     def test_plan_mode_converts_plain_plan_and_discards_early_actions(self):
         mode_token = main._active_interaction_mode.set("plan")
