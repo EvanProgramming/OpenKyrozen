@@ -3812,6 +3812,7 @@ def _make_execution_receipt(*, action: str, args: Any, authorized: bool, started
 
 def _run_tool(action: str, args: str, *, return_success: bool = False,
               return_receipt: bool = False, operation_scope: str = "") -> str | tuple[str, bool] | ExecutionReceipt:
+    global _execution_capability_token
     started_at = utc_now()
 
     def finish(result: str, success: bool = False, authorized: bool = False,
@@ -3871,6 +3872,11 @@ def _run_tool(action: str, args: str, *, return_success: bool = False,
         result = f"Error: invalid agent configuration: {exc}"
         _notify_tool_execute(action, args, result)
         return finish(result, failure="invalid_configuration")
+    if time.time() >= _execution_capability_token.expires_at:
+        _execution_capability_token = issue_capability_token(
+            _execution_capability_token.subject,
+            _execution_capability_token.capabilities,
+        )
     if not _execution_capability_token.allows(required_capability):
         result = f"Error: tool '{action}' requires capability '{required_capability}'"
         _notify_tool_execute(action, args, result)
