@@ -753,6 +753,23 @@ class TaskConsistencyTests(unittest.TestCase):
             '</｜｜DSML｜｜ parameter><｜｜DSML｜｜ parameter name="path">x</｜｜DSML｜｜ parameter>',
         )), [])
 
+        xml_action = (
+            '<action>\nexecute_terminal_command\n'
+            'curl -s -w "HTTP_%{http_code}" "http://127.0.0.1:8765/?a=1&amp;b=2"\n'
+            '</action>'
+        )
+        self.assertEqual(main._collect_tool_calls(xml_action), [{
+            "action": "execute_terminal_command",
+            "args": 'curl -s -w "HTTP_%{http_code}" "http://127.0.0.1:8765/?a=1&b=2"',
+        }])
+        self.assertEqual(main._clean_final_response(xml_action), "")
+        self.assertEqual(main._collect_tool_calls('<action>\nunknown_tool\ntrue\n</action>'), [])
+        self.assertEqual(main._collect_tool_calls('<action>\nrun_cmd\n\n</action>'), [])
+        self.assertEqual(main._collect_tool_calls(xml_action + xml_action), [])
+        self.assertEqual(main._collect_tool_calls(
+            '<action>\nrun_cmd\n<action>\nrun_cmd\ntrue\n</action>\n</action>'
+        ), [])
+
         malformed = main._parse_model_response("run_cmd: ```bash\nprintf alias-ok")
         self.assertEqual(malformed["tool_calls"], [])
         self.assertIn("No tool was executed", malformed["protocol_error"])
