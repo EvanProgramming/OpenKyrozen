@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -33,6 +35,8 @@ const (
 	screenPlan         screen = "plan"
 	screenGraph        screen = "graph"
 	screenGithubAuth   screen = "github_auth"
+	screenSettings     screen = "settings"
+	screenUpdating     screen = "updating"
 	screenError        screen = "error"
 )
 
@@ -40,6 +44,8 @@ type chatMessage struct {
 	role          string
 	text          string
 	status        string
+	toolAction    string
+	toolDetail    string
 	streaming     bool
 	rendered      string
 	renderedWidth int
@@ -77,64 +83,66 @@ type planProposal struct {
 }
 
 type model struct {
-	bridge          *bridge
-	project         string
-	global          bool
-	width           int
-	height          int
-	view            viewport.Model
-	input           textarea.Model
-	apiInput        textinput.Model
-	graphInput      textinput.Model
-	screen          screen
-	status          string
-	provider        string
-	modelName       string
-	workspace       string
-	messages        []chatMessage
-	tasks           []taskItem
-	palette         []command
-	paletteIndex    int
-	providerList    []string
-	providerIdx     int
-	features        []featureItem
-	featureIdx      int
-	interactionMode string
-	effectiveMode   string
-	modeIdx         int
-	pendingQuestion *questionRequest
-	questionIdx     int
-	choiceIdx       int
-	questionAnswers map[string]any
-	pendingPlan     *planProposal
-	planScroll      int
-	graph           graphSnapshot
-	graphSelected   int
-	graphZoom       int
-	graphCommunity  int
-	graphSearching  bool
-	graphPathStart  string
-	githubBinary    string
-	githubHostname  string
-	approvalID      string
-	approvalTool    string
-	approvalArgs    string
-	errorText       string
-	splashFrame     int
-	splashStarted   time.Time
-	readyAt         time.Time
-	backendReady    bool
-	motionFrame     int
-	cursorVisible   bool
-	thinkingText    string
-	taskFlashID     string
-	taskFlashTick   int
-	followTail      bool
-	transitionTick  int
-	reducedMotion   bool
-	busy            bool
-	requestCount    int
-	restart         bool
+	bridge           *bridge
+	project          string
+	global           bool
+	width            int
+	height           int
+	view             viewport.Model
+	input            textarea.Model
+	apiInput         textinput.Model
+	graphInput       textinput.Model
+	screen           screen
+	status           string
+	provider         string
+	modelName        string
+	workspace        string
+	messages         []chatMessage
+	tasks            []taskItem
+	palette          []command
+	paletteIndex     int
+	providerList     []string
+	providerIdx      int
+	features         []featureItem
+	featureIdx       int
+	interactionMode  string
+	effectiveMode    string
+	modeIdx          int
+	pendingQuestion  *questionRequest
+	questionIdx      int
+	choiceIdx        int
+	questionAnswers  map[string]any
+	pendingPlan      *planProposal
+	planScroll       int
+	graph            graphSnapshot
+	graphSelected    int
+	graphZoom        int
+	graphCommunity   int
+	graphSearching   bool
+	graphPathStart   string
+	githubBinary     string
+	githubHostname   string
+	approvalID       string
+	approvalTool     string
+	approvalArgs     string
+	errorText        string
+	splashFrame      int
+	splashStarted    time.Time
+	readyAt          time.Time
+	backendReady     bool
+	motionFrame      int
+	cursorVisible    bool
+	thinkingText     string
+	taskFlashID      string
+	taskFlashTick    int
+	followTail       bool
+	transitionTick   int
+	reducedMotion    bool
+	showToolDetails  bool
+	updateInProgress bool
+	busy             bool
+	requestCount     int
+	restart          bool
 }
 
 type tickMsg time.Time
@@ -145,12 +153,75 @@ type backendEventsMsg struct{ lines []backendLineMsg }
 const (
 	splashMinimumDuration = 2400 * time.Millisecond
 	readyHoldDuration     = 300 * time.Millisecond
+	mouseWheelScrollStep  = 5
 )
 
 var uiSensitiveArgRE = regexp.MustCompile(`(?i)(api[_-]?key|secret|password|token)\s*[:=]\s*[^\s,;]+`)
 
+type uiSettings struct {
+	ShowToolDetails bool `json:"show_tool_details"`
+}
+
+func uiSettingsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".kyrozen", "ui_settings.json")
+}
+
+func loadUISettings() uiSettings {
+	path := uiSettingsPath()
+	if path == "" {
+		return uiSettings{}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return uiSettings{}
+	}
+	var settings uiSettings
+	if json.Unmarshal(data, &settings) != nil {
+		return uiSettings{}
+	}
+	return settings
+}
+
+func saveUISettings(settings uiSettings) error {
+	path := uiSettingsPath()
+	if path == "" {
+		return fmt.Errorf("could not determine the user settings path")
+	}
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(directory, ".ui_settings-*")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryName, path)
+}
+
 func initialModel(project string, global bool) model {
 	reducedMotion := os.Getenv("KYROZEN_REDUCED_MOTION") == "1"
+	settings := loadUISettings()
 	input := textarea.New()
 	input.Placeholder = "Ask Kyrozen anything…"
 	input.Prompt = "› "
@@ -183,11 +254,14 @@ func initialModel(project string, global bool) model {
 	graphInput.Placeholder = "Search nodes"
 	graphInput.CharLimit = 200
 	graphInput.SetStyles(apiStyles)
+	transcript := viewport.New()
+	transcript.MouseWheelEnabled = true
+	transcript.MouseWheelDelta = mouseWheelScrollStep
 	return model{
 		bridge:          newBridge(),
 		project:         project,
 		global:          global,
-		view:            viewport.New(),
+		view:            transcript,
 		input:           input,
 		apiInput:        apiInput,
 		graphInput:      graphInput,
@@ -197,6 +271,7 @@ func initialModel(project string, global bool) model {
 		cursorVisible:   true,
 		followTail:      true,
 		reducedMotion:   reducedMotion,
+		showToolDetails: settings.ShowToolDetails,
 		interactionMode: "auto",
 		effectiveMode:   "ask",
 		questionAnswers: make(map[string]any),
@@ -227,6 +302,9 @@ func waitBackend(b *bridge) tea.Cmd {
 			return backendExitMsg{}
 		}
 		lines := []backendLineMsg{line}
+		if isUpdateStatus(line) {
+			return backendEventsMsg{lines: lines}
+		}
 		for {
 			select {
 			case line, ok = <-b.events:
@@ -234,11 +312,18 @@ func waitBackend(b *bridge) tea.Cmd {
 					return backendEventsMsg{lines: lines}
 				}
 				lines = append(lines, line)
+				if isUpdateStatus(line) {
+					return backendEventsMsg{lines: lines}
+				}
 			default:
 				return backendEventsMsg{lines: lines}
 			}
 		}
 	}
+}
+
+func isUpdateStatus(line backendLineMsg) bool {
+	return line.err == nil && stringValue(line.event, "event") == "status" && stringValue(line.event, "state") == "updating"
 }
 
 func (m *model) send(command string, payload map[string]any) {
@@ -261,6 +346,7 @@ func (m *model) setError(message string) {
 	m.screen = screenError
 	m.busy = false
 	m.thinkingText = ""
+	m.updateInProgress = false
 	if !m.reducedMotion {
 		m.transitionTick = 4
 	}
@@ -314,7 +400,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.scrollPlan(3)
 			}
 		} else if m.screen == screenChat {
-			m.view, _ = m.view.Update(msg)
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				m.view.ScrollUp(mouseWheelScrollStep)
+			case tea.MouseWheelDown:
+				m.view.ScrollDown(mouseWheelScrollStep)
+			default:
+				m.view, _ = m.view.Update(msg)
+			}
 			m.followTail = m.view.AtBottom()
 		}
 	case tea.MouseClickMsg:
@@ -387,7 +480,7 @@ func (m model) canLeaveSplash(now time.Time) bool {
 }
 
 func (m model) animating() bool {
-	return !m.reducedMotion && (m.screen == screenSplash || m.busy || m.hasRunningTask() || m.taskFlashTick > 0 || m.transitionTick > 0)
+	return !m.reducedMotion && (m.screen == screenSplash || m.updateInProgress || m.busy || m.hasRunningTask() || m.taskFlashTick > 0 || m.transitionTick > 0)
 }
 
 func (m *model) maybeMotion(cmds *[]tea.Cmd) {
@@ -409,6 +502,9 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	key := msg.String()
 	if key == "ctrl+c" {
 		return nil, true
+	}
+	if m.updateInProgress {
+		return nil, false
 	}
 	if m.screen == screenError {
 		if key == "esc" || key == "enter" {
@@ -497,6 +593,19 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	}
 	if m.screen == screenSelfLearning {
 		return m.featureKey(key), false
+	}
+	if m.screen == screenSettings {
+		if key == "esc" {
+			m.screen = screenChat
+			return nil, false
+		}
+		if key == "space" || key == "enter" {
+			m.showToolDetails = !m.showToolDetails
+			if err := saveUISettings(uiSettings{ShowToolDetails: m.showToolDetails}); err != nil {
+				m.setError("Could not save UI settings: " + err.Error())
+			}
+		}
+		return nil, false
 	}
 	if m.screen == screenAPIKey {
 		if key == "esc" {
@@ -687,6 +796,13 @@ func (m *model) submit() tea.Cmd {
 		return nil
 	}
 	if strings.HasPrefix(strings.TrimLeftFunc(m.input.Value(), unicode.IsSpace), "/") {
+		if strings.EqualFold(text, "/settings") {
+			m.screen = screenSettings
+			m.input.Reset()
+			m.palette = nil
+			m.input.SetHeight(m.composerHeight())
+			return nil
+		}
 		m.send("command", map[string]any{"name": text})
 		if strings.EqualFold(text, "/quit") || strings.EqualFold(text, "/exit") {
 			return tea.Quit
@@ -773,8 +889,20 @@ func stringValue(event map[string]any, key string) string {
 func (m *model) handleBackendEvent(event backendEvent) {
 	switch stringValue(event, "event") {
 	case "status":
-		m.status = firstNonEmpty(stringValue(event, "message"), stringValue(event, "state"))
-		if state := stringValue(event, "state"); state == "thinking" || state == "starting" {
+		state := stringValue(event, "state")
+		m.status = firstNonEmpty(stringValue(event, "message"), state)
+		if state == "updating" {
+			m.updateInProgress = true
+			m.screen = screenUpdating
+			m.busy = false
+			m.thinkingText = ""
+		} else if m.updateInProgress && (state == "ready" || state == "error") {
+			m.updateInProgress = false
+			if m.screen == screenUpdating {
+				m.screen = screenChat
+			}
+		}
+		if state == "thinking" || state == "starting" {
 			m.busy = state == "thinking"
 		}
 	case "ready":
@@ -807,6 +935,15 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		m.status = "Thinking…"
 	case "response":
 		text := stringValue(event, "text")
+		if m.updateInProgress {
+			m.updateInProgress = false
+			m.errorText = firstNonEmpty(text, "The update did not complete.")
+			m.status = "Update failed"
+			m.screen = screenError
+			m.busy = false
+			m.thinkingText = ""
+			return
+		}
 		m.input.Placeholder = "Ask Kyrozen anything…"
 		for i := len(m.messages) - 1; i >= 0; i-- {
 			if m.messages[i].role == "assistant" && m.messages[i].streaming {
@@ -830,7 +967,8 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		if receipt, ok := event["receipt"].(map[string]any); ok {
 			m.messages = append(m.messages, chatMessage{
 				role: "receipt", status: receiptStatus(receipt),
-				text: stringValue(receipt, "action") + " — " + stringValue(receipt, "result"),
+				text: stringValue(receipt, "action"), toolAction: stringValue(receipt, "action"),
+				toolDetail: safeToolDetail(stringValue(receipt, "result")),
 			})
 		}
 	case "tasks":
@@ -1034,6 +1172,10 @@ func safeApprovalArgs(value string) string {
 	return strings.TrimSpace(value)
 }
 
+func safeToolDetail(value string) string {
+	return strings.TrimSpace(uiSensitiveArgRE.ReplaceAllString(value, "$1=<redacted>"))
+}
+
 func receiptStatus(receipt map[string]any) string {
 	if success, ok := receipt["success"].(bool); ok && success {
 		return "success"
@@ -1111,12 +1253,15 @@ func (m *model) syncViewport() {
 	if m.width < 1 || m.height < 1 {
 		return
 	}
+	offset := m.view.YOffset()
 	mainWidth, _ := m.layoutWidths()
 	m.view.SetWidth(mainWidth)
 	m.view.SetHeight(m.historyHeight())
 	m.view.SetContent(m.history(mainWidth))
 	if m.followTail {
 		m.view.GotoBottom()
+	} else {
+		m.view.SetYOffset(offset)
 	}
 }
 
@@ -1136,7 +1281,12 @@ func (m *model) history(width int) string {
 			label, labelStyle = "THINKING", amberStyle
 		case "receipt":
 			status := strings.ToUpper(firstNonEmpty(message.status, "success"))
-			label, labelStyle = "TOOL RECEIPT · "+status, receiptStyle(message.status)
+			action := firstNonEmpty(message.toolAction, message.text, "unknown tool")
+			label, labelStyle = "TOOL · "+action+" · "+status, receiptStyle(message.status)
+			body = ""
+			if m.showToolDetails {
+				body = message.toolDetail
+			}
 		}
 		if message.role == "assistant" && body != "" && !message.streaming {
 			renderWidth := maxInt(1, width-2)
@@ -1167,6 +1317,8 @@ func (m model) View() tea.View {
 		content = m.splash()
 	} else if m.screen == screenGraph {
 		content = m.graphExplorer()
+	} else if m.screen == screenUpdating {
+		content = m.updatingView()
 	} else {
 		content = m.chatView()
 		if m.screen != screenChat {
@@ -1180,6 +1332,25 @@ func (m model) View() tea.View {
 	view.ForegroundColor = lipgloss.Color(white)
 	view.WindowTitle = "OpenKyrozen"
 	return view
+}
+
+func (m model) updatingView() string {
+	width := maxInt(1, m.width-8)
+	lines := []string{
+		brandStyle.Render("OPENKYROZEN"),
+		"",
+		titleStyle.Render("Updating OpenKyrozen"),
+		"",
+		amberStyle.Render(taskSpinner(m.motionFrame) + " " + firstNonEmpty(m.status, "Updating files and preparing the restart…")),
+		"",
+		softStyle.Render("Your workspace is temporarily locked while the update is installed."),
+		softStyle.Render("OpenKyrozen will restart automatically when it is ready."),
+		"",
+		mutedStyle.Render("Ctrl+C  emergency quit"),
+	}
+	return lipgloss.NewStyle().Width(maxInt(1, m.width)).Height(maxInt(1, m.height)).Align(lipgloss.Center, lipgloss.Center).Render(
+		lipgloss.NewStyle().Width(width).MaxWidth(width).Align(lipgloss.Center).Render(strings.Join(lines, "\n")),
+	)
 }
 
 func (m model) splash() string {
@@ -1366,6 +1537,20 @@ func (m model) modal(_ string) string {
 			lines = append(lines, rowStyle.Render(cursor+" "+style.Render(check+" "+item.name)), mutedStyle.Render("    "+item.description))
 		}
 		body = strings.Join(lines, "\n")
+	case screenSettings:
+		value := "HIDDEN"
+		valueStyle := mutedStyle
+		if m.showToolDetails {
+			value, valueStyle = "VISIBLE", amberStyle
+		}
+		body = strings.Join([]string{
+			brandStyle.Render("SETTINGS"),
+			titleStyle.Render("Display settings"),
+			mutedStyle.Render("Space / Enter toggle  ·  Esc close"),
+			"",
+			brandStyle.Render("›") + " " + titleStyle.Render("Show tool details") + "  " + valueStyle.Render(value),
+			mutedStyle.Render("Tool names and semantic status are always shown. Results stay hidden by default."),
+		}, "\n")
 	case screenMode:
 		modes := []string{"auto", "ask", "plan", "agent"}
 		lines := []string{brandStyle.Render("INTERACTION MODE"), titleStyle.Render("Choose how Kyrozen responds"), mutedStyle.Render("↑↓ select  Enter confirm  Esc cancel"), ""}

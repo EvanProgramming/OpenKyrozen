@@ -65,6 +65,77 @@ func TestBackendWaitBatchesBufferedEvents(t *testing.T) {
 	}
 }
 
+func TestBackendWaitStopsBatchAtUpdateNotification(t *testing.T) {
+	b := &bridge{events: make(chan backendLineMsg, 2)}
+	b.events <- backendLineMsg{event: backendEvent{"event": "status", "state": "updating", "message": "Updating OpenKyrozen…"}}
+	b.events <- backendLineMsg{event: backendEvent{"event": "restart"}}
+
+	message, ok := waitBackend(b)().(backendEventsMsg)
+	if !ok || len(message.lines) != 1 || !isUpdateStatus(message.lines[0]) {
+		t.Fatalf("update notification was not a batch barrier: %#v", message)
+	}
+}
+
+func TestUpdatingLocksInputButKeepsEmergencyQuit(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height = 80, 24
+	m.screen = screenChat
+	updated, _ := m.Update(backendLineMsg{event: backendEvent{
+		"event": "status", "state": "updating", "message": "Updating OpenKyrozen…",
+	}})
+	m = updated.(model)
+	if m.screen != screenUpdating || !m.updateInProgress || !strings.Contains(m.View().Content, "Updating OpenKyrozen") {
+		t.Fatalf("update lock notification was not rendered: %#v", m)
+	}
+	before := m.input.Value()
+	if _, quit := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter}); quit || m.input.Value() != before {
+		t.Fatal("normal input was accepted while the update lock was active")
+	}
+	if _, quit := m.handleKey(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}); !quit {
+		t.Fatal("Ctrl+C was not preserved as an emergency quit")
+	}
+}
+
+func TestToolDetailsAreHiddenByDefaultAndPersistWhenEnabled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := initialModel("", true)
+	m.handleBackendEvent(backendEvent{"event": "tool_receipt", "receipt": map[string]any{
+		"action": "read_file", "result": "secret file contents", "success": true,
+	}})
+	m.handleBackendEvent(backendEvent{"event": "tool_receipt", "receipt": map[string]any{
+		"action": "inspect_config", "result": "api_key=super-secret", "success": true,
+	}})
+	hidden := m.history(100)
+	if !strings.Contains(hidden, "TOOL · read_file · SUCCESS") || strings.Contains(hidden, "secret file contents") || strings.Contains(hidden, "super-secret") {
+		t.Fatalf("tool receipt default visibility is unsafe: %q", hidden)
+	}
+	m.screen = screenSettings
+	if _, quit := m.handleKey(tea.KeyPressMsg{Code: tea.KeySpace}); quit || !m.showToolDetails {
+		t.Fatal("settings toggle did not enable tool details")
+	}
+	m.screen = screenChat
+	shown := m.history(100)
+	if !strings.Contains(shown, "secret file contents") || strings.Contains(shown, "super-secret") || !strings.Contains(shown, "api_key=<redacted>") {
+		t.Fatalf("enabled tool details were not rendered: %q", shown)
+	}
+	if loaded := loadUISettings(); !loaded.ShowToolDetails {
+		t.Fatal("tool detail setting was not persisted")
+	}
+	if fresh := initialModel("", true); !fresh.showToolDetails {
+		t.Fatal("persisted tool detail setting was not loaded")
+	}
+}
+
+func TestSettingsSlashCommandOpensLocalScreen(t *testing.T) {
+	m := initialModel("", true)
+	m.screen = screenChat
+	m.input.SetValue("  /settings")
+	m.submit()
+	if m.screen != screenSettings || m.input.Value() != "" {
+		t.Fatalf("/settings was not handled locally: screen=%s input=%q", m.screen, m.input.Value())
+	}
+}
+
 func TestInteractionCardsRestoreModeQuestionAndPlan(t *testing.T) {
 	m := initialModel(".", false)
 	m.width, m.height = 120, 40
@@ -334,8 +405,12 @@ func TestMouseWheelStaysInsideViewportAndPreservesManualScroll(t *testing.T) {
 	m.view.GotoBottom()
 	m.followTail = true
 
+	beforeWheel := m.view.YOffset()
 	updated, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	m = updated.(model)
+	if beforeWheel-m.view.YOffset() != mouseWheelScrollStep {
+		t.Fatalf("mouse wheel did not use the configured fast step: before=%d after=%d", beforeWheel, m.view.YOffset())
+	}
 	if m.followTail || m.view.AtBottom() {
 		t.Fatal("mouse wheel did not move the transcript away from the bottom")
 	}
@@ -349,6 +424,29 @@ func TestMouseWheelStaysInsideViewportAndPreservesManualScroll(t *testing.T) {
 	}
 }
 
+func TestStreamingPreservesManualViewportOffset(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height = 80, 24
+	m.screen = screenChat
+	m.messages = []chatMessage{{role: "assistant", text: strings.Repeat("line of transcript\n", 100)}}
+	m.resize()
+	m.view.GotoBottom()
+	m.followTail = true
+	m.view.ScrollUp(mouseWheelScrollStep * 3)
+	m.followTail = false
+	before := m.view.YOffset()
+	updated, _ := m.Update(backendLineMsg{event: backendEvent{"event": "stream_delta", "text": "more output"}})
+	m = updated.(model)
+	if m.followTail || m.view.YOffset() != before {
+		t.Fatalf("streaming changed the manually selected viewport offset: before=%d after=%d", before, m.view.YOffset())
+	}
+	m.height = 10
+	m.resize()
+	if m.view.PastBottom() {
+		t.Fatal("resize left the viewport beyond the available content")
+	}
+}
+
 func TestModalContentFitsSmallWindow(t *testing.T) {
 	m := initialModel("", false)
 	m.width, m.height = 60, 16
@@ -359,6 +457,22 @@ func TestModalContentFitsSmallWindow(t *testing.T) {
 	for index, line := range strings.Split(m.View().Content, "\n") {
 		if width := lipgloss.Width(line); width > m.width {
 			t.Fatalf("modal line %d is %d cells wide at width %d", index, width, m.width)
+		}
+	}
+}
+
+func TestUpdateAndSettingsViewsFitSmallWindow(t *testing.T) {
+	for _, screen := range []screen{screenUpdating, screenSettings} {
+		m := initialModel("", true)
+		m.width, m.height = 60, 16
+		m.screen = screen
+		m.updateInProgress = screen == screenUpdating
+		m.status = "Updating OpenKyrozen…"
+		m.resize()
+		for index, line := range strings.Split(m.View().Content, "\n") {
+			if width := lipgloss.Width(line); width > m.width {
+				t.Fatalf("%s line %d is %d cells wide at width %d", screen, index, width, m.width)
+			}
 		}
 	}
 }
