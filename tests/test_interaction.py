@@ -262,6 +262,59 @@ class InteractionTests(unittest.TestCase):
             main._interaction_controller = previous_controller
             main._active_interaction_mode.reset(mode_token)
 
+    def test_plan_mode_repairs_rejected_action_into_proposal(self):
+        class LearningStub:
+            def feedback_signal(self, _text): return None
+            def route_profile(self, _text, _profile=None): return "coder"
+            def begin_run(self, profile, _task, provider_model=None):
+                return {"run_id": "plan-repair", "profile": profile, "provider_model": provider_model}
+            def artifact_context(self, _run): return "", []
+
+        class RuntimeStub:
+            def turn_start(self, **_kwargs): return None
+            def turn_end(self, **_kwargs): return None
+
+        original = (
+            main.tasks, main._interaction_controller, main.learning_engine,
+            main._get_workspace_root(), main._execution_capability_token,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = EventStore(root / "state.sqlite3")
+            main.tasks = TaskManager(store, workspace_id="repair", session_id="repair")
+            main._interaction_controller = InteractionController(
+                store, workspace_id="repair", session_id="repair",
+            )
+            main._interaction_controller.set_mode("plan")
+            main.learning_engine = LearningStub()
+            main._set_workspace_root(root)
+            responses = [
+                'Action: {"action":"write_file","args":"unsafe.txt|bad"}',
+                'PlanProposal:\n```json\n{"title":"Safe plan","summary":"Write only after approval.",'
+                '"assumptions":[],"steps":[{"id":"write","title":"Write file",'
+                '"description":"Create the requested file.","acceptance":["File exists"]}]}\n```',
+            ]
+            try:
+                with patch.object(main, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
+                        patch.object(main, "_touch_detached_learning_heartbeat"), \
+                        patch.object(main, "dispatch_learning_cycle"), \
+                        patch.object(main, "_summarize_old_turns"), \
+                        patch.object(main, "_build_messages", return_value=[]), \
+                        patch.object(main, "_classify_complexity", return_value="simple"), \
+                        patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
+                        patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
+                                     result, records, tokens, started: result):
+                    reply = main._chat_turn("Create the file")
+                self.assertIn("Safe plan (v1)", reply)
+                self.assertFalse((root / "unsafe.txt").exists())
+                self.assertEqual(
+                    main._interaction_controller.state()["pending_plan"]["title"], "Safe plan",
+                )
+            finally:
+                (main.tasks, main._interaction_controller, main.learning_engine,
+                 previous_root, main._execution_capability_token) = original
+                main._set_workspace_root(previous_root)
+
     def test_control_blocks_combined_with_actions_fail_closed(self):
         parsed = main._observe_model_response(
             'AskUser:\n```json\n{"questions":[{"id":"scope","header":"Scope",'

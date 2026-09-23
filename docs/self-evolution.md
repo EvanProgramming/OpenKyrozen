@@ -238,7 +238,7 @@ diagnostic only and is not treated as a release claim.
 
 ## Verification snapshot commands
 
-Current repository test count at this snapshot: **241 unittest cases**.
+Current repository test count at this snapshot: **242 unittest cases**.
 
 The post-#54 snapshot ran the repository's current checks and smoke coverage:
 
@@ -275,7 +275,7 @@ git diff --check
 ```
 
 The historical post-#54 verification passed the 130 discovered tests; the current
-repository contains 241 discovered tests. The historical run also covered the API
+repository contains 242 discovered tests. The historical run also covered the API
 health/scoping smoke, the CLI command-loop smoke, and the five-case
 clean/evolved benchmark described above. `make check` reports the live 39-tool
 runtime inventory, including 14 `git_` tools. A new artifact is not immediate:
