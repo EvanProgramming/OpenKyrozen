@@ -5165,9 +5165,12 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         """Parse once, with one side-effect-free repair for malformed interaction JSON."""
         nonlocal turn_prompt_total, turn_completion_total
         parsed = _observe_model_response(text)
-        if not parsed.get("protocol_error") or not re.search(
-                r"^[ \t]*(?:AskUser|PlanProposal)(?![\w])[ \t]*:?", str(text),
-                re.IGNORECASE | re.MULTILINE):
+        has_control_marker = re.search(
+            r"^[ \t]*(?:AskUser|PlanProposal)(?![\w])[ \t]*:?", str(text),
+            re.IGNORECASE | re.MULTILINE,
+        )
+        if not parsed.get("protocol_error") or (
+                not has_control_marker and _active_interaction_mode.get() != "plan"):
             return text, parsed
         question_control = bool(re.search(r"^[ \t]*AskUser(?![\w])", str(text), re.IGNORECASE | re.MULTILINE))
         example = (
@@ -5202,6 +5205,8 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 candidate.get("question") is not None or candidate.get("plan_proposal") is not None):
             candidate["tool_calls"] = []
             candidate["protocol_error"] = "The model could not produce a valid interaction control; no action was executed."
+        candidate["define_tool_present"] = False
+        candidate["define_tool_registered"] = False
         return repaired, candidate
 
     MAX_RETRIES = 3
