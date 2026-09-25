@@ -20,7 +20,7 @@ class DistributionTests(unittest.TestCase):
         with (ROOT / "pyproject.toml").open("rb") as handle:
             document = tomllib.load(handle)
         project = document["project"]
-        self.assertEqual(project["version"], "2.0.3")
+        self.assertEqual(project["version"], "2.0.4")
         self.assertEqual(project["requires-python"], ">=3.12,<3.14")
         self.assertEqual(project["scripts"]["kyrozen"], "tui_launcher:main")
         self.assertEqual(project["scripts"]["kyrozen-backend"], "tui_backend:main")
@@ -78,12 +78,12 @@ class DistributionTests(unittest.TestCase):
     def test_public_install_paths_pin_the_verified_release(self):
         release_url = (
             "https://github.com/EvanProgramming/OpenKyrozen/releases/download/"
-            "v2.0.3/openkyrozen-2.0.3-py3-none-any.whl"
+            "v2.0.4/openkyrozen-2.0.4-py3-none-any.whl"
         )
         for readme in sorted(ROOT.glob("README*.md")):
             text = readme.read_text(encoding="utf-8")
             with self.subTest(readme=readme.name):
-                self.assertIn("raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.3/", text)
+                self.assertIn("raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.4/", text)
                 self.assertIn(release_url, text)
                 self.assertNotIn("pypi.org", text.lower())
                 self.assertNotIn("uv tool upgrade openkyrozen", text)
@@ -101,7 +101,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn('PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"', text)
         self.assertIn("grep -Fq '$HOME/.local/bin'", text)
         self.assertIn('tool install --python', text)
-        self.assertIn("release_version='2.0.3'", text)
+        self.assertIn("release_version='2.0.4'", text)
         self.assertIn("releases/download", text)
         self.assertIn("--with fastapi --with uvicorn", text)
         self.assertIn("--no-cache", text)
@@ -130,7 +130,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("[Environment]::GetEnvironmentVariable(\"Path\", \"User\")", text)
         self.assertIn("SetEnvironmentVariable(\"Path\"", text)
         self.assertIn("tool install --python", text)
-        self.assertIn("v2.0.3", text)
+        self.assertIn("v2.0.4", text)
         self.assertIn("releases/download", text)
         self.assertIn("--with fastapi --with uvicorn", text)
         self.assertIn("--no-cache", text)
@@ -165,7 +165,7 @@ if [ "$1" = "tool" ] && [ "$2" = "install" ]; then
 fi
 if [ "$1" = "--no-cache" ] && [ "$2" = "tool" ] && [ "$3" = "install" ]; then
     mkdir -p "$HOME/.local/bin"
-    printf '%s\n' '#!/bin/sh' 'if [ "$1" = "--version" ]; then printf "%s\n" "OpenKyrozen 2.0.3"; fi' > "$HOME/.local/bin/kyrozen"
+    printf '%s\n' '#!/bin/sh' 'if [ "$1" = "--version" ]; then printf "%s\n" "OpenKyrozen 2.0.4"; fi' > "$HOME/.local/bin/kyrozen"
     chmod +x "$HOME/.local/bin/kyrozen"
     exit 0
 fi
@@ -219,7 +219,7 @@ exit 0
                     self.assertIn(marker, result.stdout)
 
         import server
-        self.assertEqual(server.app.version, "2.0.3")
+        self.assertEqual(server.app.version, "2.0.4")
 
     def test_web_parser_accepts_project_and_server_flags(self):
         import server
@@ -265,7 +265,7 @@ exit 0
         self.assertIn("--with", command)
         self.assertIn("fastapi", command)
         self.assertIn("uvicorn", command)
-        self.assertTrue(command[-1].endswith("/v2.0.3/openkyrozen-2.0.3-py3-none-any.whl"))
+        self.assertTrue(command[-1].endswith("/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl"))
 
     def test_update_retries_without_uv_cache_after_install_failure(self):
         import main

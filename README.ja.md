@@ -90,16 +90,16 @@ OpenKyrozen はターミナルで動作する**自己学習型 AI エージェ�
 macOS または Linux：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.3/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.4/install.sh | sh
 ```
 
 Windows PowerShell：
 
 ```powershell
-irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.3/install.ps1 | iex
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.4/install.ps1 | iex
 ```
 
-インストーラーは不変の GitHub `v2.0.3` リリース wheel を取得し、OS、アーキテクチャ、Python、ネットワーク、ユーザーパスの書き込み可否を確認します。必要なら `uv` を導入し、分離された `uv` ツール環境に Web 依存関係を用意して、プライベートな `~/.kyrozen` 状態ディレクトリを作成し、`kyrozen --version` と `kyrozen --help` を検証します。API キーを読み取り、表示、アップロードすることはありません。初回の `kyrozen` 起動でプロバイダー設定を案内します。
+インストーラーは不変の GitHub `v2.0.4` リリース wheel を取得し、OS、アーキテクチャ、Python、ネットワーク、ユーザーパスの書き込み可否を確認します。必要なら `uv` を導入し、分離された `uv` ツール環境に Web 依存関係を用意して、プライベートな `~/.kyrozen` 状態ディレクトリを作成し、`kyrozen --version` と `kyrozen --help` を検証します。API キーを読み取り、表示、アップロードすることはありません。初回の `kyrozen` 起動でプロバイダー設定を案内します。
 
 ### 開発専用のソースチェックアウト
 
@@ -123,14 +123,14 @@ run.bat
 ### 固定 GitHub リリースからのインストール
 
 ```bash
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.3/openkyrozen-2.0.3-py3-none-any.whl'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl'
 uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
 
 # 対応済みの Python 環境ではこちらも使用できます：
 pip install fastapi uvicorn "$release_url"
 ```
 
-v2.0.3 のリリース wheel は GitHub Actions でビルド・検証済みです。詳しくは [v2.0.3 リリース](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.3) を参照してください。インストール後は任意の呼び出し元ディレクトリから `kyrozen` と `kyrozen-web` を実行できます。暗号化されたプロバイダー設定は `~/.kyrozen_config.json` に保存されます。
+v2.0.4 のリリース wheel は GitHub Actions でビルド・検証済みです。詳しくは [v2.0.4 リリース](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.4) を参照してください。インストール後は任意の呼び出し元ディレクトリから `kyrozen` と `kyrozen-web` を実行できます。暗号化されたプロバイダー設定は `~/.kyrozen_config.json` に保存されます。
 
 ---
 
@@ -171,7 +171,7 @@ Kyrozen は：
 | `/api_key` | API キーを変更 |
 | `/learn` | プロジェクトファイルを即座にメモリにスキャン |
 | `/forget` | 最近の学習を表示；`/forget キーワード` で誤った学習を削除 |
-| `/update` | 固定された GitHub `v2.0.3` wheel でインストール済みツールを更新；成功後に Kyrozen を再起動（プロジェクトへ git pull しない） |
+| `/update` | 固定された GitHub `v2.0.4` wheel でインストール済みツールを更新；成功後に Kyrozen を再起動（プロジェクトへ git pull しない） |
 | `/self-learning` | 個別の自己学習機能をオン/オフ |
 
 ### Web UI モード
@@ -444,7 +444,7 @@ curl -sS -X DELETE http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
 ## 🌐 Web UI と REST API
 
 ```bash
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.3/openkyrozen-2.0.3-py3-none-any.whl'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl'
 pip install fastapi uvicorn "$release_url"
 kyrozen-web --port 8000
 # http://localhost:8000 を開く
@@ -472,6 +472,7 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `GET` | `/api/v2/learning` | 学習提案の状態 |
 | `GET` | `/api/v2/learning/metrics?profile=...` | 完了、訂正、エラー、ツール、token、遅延メトリクス |
 | `GET` | `/api/v2/learning/features` | 20 機能の権威あるレジストリと最新実行状態 |
+| `POST` | `/api/v2/learning/provider` | Local または Remote の学習実行環境を選択 |
 | `GET` | `/api/v2/learning/{proposal_id}/evidence` | proof card、適用性、replay、結果 receipt |
 | `POST` | `/api/v2/learning/{proposal_id}/replay` | candidate/predecessor のペア replay 結果を記録 |
 | `POST` | `/api/v2/learning/{proposal_id}/omission` | artifact 有/無のペア結果を記録 |
@@ -665,7 +666,7 @@ GitHub Actions がプッシュと PR ごとに自動実行：
 - Windows PowerShell インストーラーの構文とヘルプ経路のチェック
 - Docker ビルドとコンテナ置換後の復元スモークテスト
 
-公開済みの `v2.0.3` リリースは不変であり、公開インストーラーと `/update` は
+公開済みの `v2.0.4` リリースは不変であり、公開インストーラーと `/update` は
 このリリースに固定されています。将来のリリースは意図的な手動作業として、
 固定バージョンを更新し、成果物と両方のインストーラーを検証してから新しい
 タグを公開してください。
@@ -674,7 +675,7 @@ GitHub Actions がプッシュと PR ごとに自動実行：
 
 ```bash
 # 不変の GitHub リリース（インストーラーが uv と Python の設定も行います）
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.3/openkyrozen-2.0.3-py3-none-any.whl'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl'
 uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
 pip install fastapi uvicorn "$release_url"
 

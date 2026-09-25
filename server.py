@@ -257,6 +257,8 @@ def _run_task_worker_cycle() -> None:
 def _run_scheduled_job(job: dict[str, Any]) -> None:
     payload = job.get("payload", {})
     if payload.get("type") == "learning_cycle":
+        if _agent.learning_runtime()["status"] != "ready":
+            return
         _agent.dispatch_learning_cycle(surface="web", trigger="scheduled", max_features=4)
         return
     if payload.get("type") == "task_worker":
@@ -1417,7 +1419,32 @@ async def api_v2_learning_metrics(profile: str | None = None):
 @app.get("/api/v2/learning/features", dependencies=[Depends(require_api_access)])
 async def api_v2_learning_features():
     """Expose the authoritative registry and the latest durable run status."""
-    return {"features": _agent.learning_feature_status()}
+    return {
+        "policy": _agent.learning_policy(),
+        "runtime": _agent.learning_runtime(),
+        "provider_class": _agent._learning_provider_class(),
+        "cost_source": _agent.learning_cost_source(),
+        "features": _agent.learning_feature_status(),
+    }
+
+
+@app.post("/api/v2/learning/provider", dependencies=[Depends(require_api_access)])
+async def api_v2_learning_provider(request: Request):
+    """Select the user-owned Local or Remote learning runtime."""
+    body = await _json_object(request)
+    mode = body.get("mode")
+    if not isinstance(mode, str):
+        raise HTTPException(400, "mode must be local or remote")
+    try:
+        _agent.set_learning_policy(mode)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "policy": _agent.learning_policy(),
+        "runtime": _agent.learning_runtime(),
+        "provider_class": _agent._learning_provider_class(),
+        "cost_source": _agent.learning_cost_source(),
+    }
 
 
 @app.get("/api/v2/learning/{proposal_id}/evidence", dependencies=[Depends(require_api_access)])
@@ -2164,7 +2191,8 @@ async def startup():
     if not any(job.get("payload", {}).get("type") == "task_worker" for job in _scheduler.list_jobs()):
         _scheduler.schedule_every("durable-task-worker", 1.0, payload={"type": "task_worker"},
                                   job_id="job_durable_task_worker", delay_seconds=0)
-    if not any(job.get("payload", {}).get("type") == "learning_cycle" for job in _scheduler.list_jobs()):
+    if (_agent.learning_runtime()["status"] == "ready"
+            and not any(job.get("payload", {}).get("type") == "learning_cycle" for job in _scheduler.list_jobs())):
         _scheduler.schedule_every("learning-cycle", 30.0, payload={"type": "learning_cycle"},
                                   job_id="job_learning_cycle", delay_seconds=0)
     _scheduler.start()

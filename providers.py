@@ -636,7 +636,7 @@ class OllamaNativeProvider(LLMProvider):
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         model = model or self.config.model_simple
         url = f"{self._base}/api/chat"
-        payload = {"model": model, "messages": messages, "stream": False}
+        payload = {"model": model, "messages": messages, "stream": False, "think": False}
         started = time.monotonic()
         try:
             resp = self._requests.post(url, json=payload, timeout=120)
@@ -647,7 +647,7 @@ class OllamaNativeProvider(LLMProvider):
                 "prompt_tokens": data.get("prompt_eval_count", 0) or 0,
                 "completion_tokens": data.get("eval_count", 0) or 0,
             }
-            _track_cost(self.config.provider, usage_dict, model=model,
+            _track_cost("ollama", usage_dict, model=model,
                         latency_ms=round((time.monotonic() - started) * 1000))
             return text.strip(), usage_dict
         except Exception as e:

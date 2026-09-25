@@ -6,7 +6,8 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from unittest.mock import ANY, Mock, patch
 
 import main
 import server
@@ -29,6 +30,8 @@ class LearningDispatcherTests(unittest.TestCase):
         self.original_graph = {key: list(value) for key, value in main._knowledge_graph.items()}
         self.original_project_graph = main._project_graph
         self.original_libraries = set(main._known_libraries)
+        self.original_provider = main.llm_provider
+        self.original_provider_config = main._provider_config
 
     def tearDown(self):
         main.memory_bank = self.original_memory
@@ -48,6 +51,8 @@ class LearningDispatcherTests(unittest.TestCase):
         main._project_graph = self.original_project_graph
         main._known_libraries.clear()
         main._known_libraries.update(self.original_libraries)
+        main.llm_provider = self.original_provider
+        main._provider_config = self.original_provider_config
 
     def _isolated_runtime(self, root: Path) -> None:
         memory = MemoryBank(
@@ -251,15 +256,107 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertTrue(any(event["event_type"] == "learning.feature_completed" for event in events))
 
     def test_web_scheduler_uses_the_shared_dispatcher(self):
-        with patch.object(server._agent, "dispatch_learning_cycle", return_value=[]) as dispatch:
+        with patch.object(server._agent, "learning_runtime", return_value={"status": "ready"}), \
+             patch.object(server._agent, "dispatch_learning_cycle", return_value=[]) as dispatch:
             server._run_scheduled_job({"payload": {"type": "learning_cycle"}})
         dispatch.assert_called_once_with(surface="web", trigger="scheduled", max_features=4)
+
+    def test_setup_required_blocks_remote_learning_and_reports_reason(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._isolated_runtime(Path(directory))
+            remote = Mock()
+            main.llm_provider = remote
+            self.assertIsNone(main._learning_model_response([{"role": "system", "content": "test"}], feature="test"))
+            remote.chat.assert_not_called()
+            self.assertEqual(main._learning_provider_class(), "none")
+            status = main.learning_feature_status()
+            self.assertEqual(status[0]["policy"], "setup_required")
+            self.assertIn("Choose Local or Remote", status[0]["skip_reason"])
+            payload = asyncio.run(server.api_v2_learning_features())
+            self.assertEqual(payload["provider_class"], "none")
+            self.assertEqual(payload["cost_source"], "No learning model selected")
+            events = main.memory_bank.store.list_events(
+                "learning.model_skipped", limit=1,
+                user_id="learning-user", workspace_id="learning-project",
+            )
+            self.assertIn("Choose Local or Remote", events[0]["payload"]["reason"])
+
+    def test_local_learning_never_uses_fallback_and_rejects_remote_endpoint(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.dict(os.environ, {"KYROZEN_LEARNING_OLLAMA_BASE_URL": "http://localhost:11434/v1"}, clear=False):
+            self._isolated_runtime(Path(directory))
+            main._set_learning_runtime("local", "ready", model="qwen2.5:7b")
+            local = Mock()
+            local.chat.return_value = ("local result", {"prompt_tokens": 1, "completion_tokens": 1})
+            with patch.object(main, "get_provider", return_value=local) as provider, \
+                 patch.object(main, "get_fallback_provider") as fallback:
+                self.assertEqual(main._learning_model_response([{"role": "system", "content": "test"}], feature="test"), "local result")
+            provider.assert_called_once()
+            self.assertEqual(provider.call_args.args[0].provider, "ollama_native")
+            self.assertEqual(provider.call_args.args[0].base_url, "http://localhost:11434/v1")
+            fallback.assert_not_called()
+            local.chat.assert_called_once_with(ANY, "qwen2.5:7b")
+            with patch.dict(os.environ, {"KYROZEN_LEARNING_OLLAMA_BASE_URL": "https://api.example.test/v1"}, clear=False), \
+                 patch.object(main, "get_provider") as provider:
+                self.assertIsNone(main._learning_model_response([{"role": "system", "content": "test"}], feature="test"))
+            provider.assert_not_called()
+
+    def test_remote_learning_reuses_chat_provider_and_marks_learning_surface(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._isolated_runtime(Path(directory))
+            main._set_learning_runtime("remote", "ready")
+            remote = Mock()
+            remote.chat.return_value = ("remote result", {})
+            main.llm_provider = remote
+            main._provider_config = main.ProviderConfig(provider="deepseek", model_simple="configured-model")
+            self.assertEqual(main._learning_model_response([{"role": "system", "content": "test"}], feature="test"), "remote result")
+            remote.chat.assert_called_once_with(ANY, "configured-model")
+
+    def test_local_bootstrap_marks_resource_failure_durably(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._isolated_runtime(Path(directory))
+            main._set_learning_runtime("local", "installing", model="qwen2.5:7b")
+            with patch.object(main, "_local_learning_resources_ok", return_value=(False, "need RAM")):
+                main._bootstrap_local_learning()
+            runtime = main.learning_runtime()
+            self.assertEqual((runtime["mode"], runtime["status"]), ("local", "failed"))
+            self.assertEqual(runtime["detail"], "need RAM")
+
+    def test_local_bootstrap_marks_pull_failure_durably(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._isolated_runtime(Path(directory))
+            main._set_learning_runtime("local", "installing", model="qwen2.5:7b")
+            failed_pull = SimpleNamespace(returncode=1, stdout="", stderr="download failed")
+            with patch.object(main, "_local_learning_resources_ok", return_value=(True, "")), \
+                 patch.object(main, "_ollama_command", return_value="ollama"), \
+                 patch.object(main, "_ollama_ready", return_value=True), \
+                 patch.object(main.subprocess, "run", return_value=failed_pull):
+                main._bootstrap_local_learning()
+            self.assertEqual(main.learning_runtime()["status"], "failed")
+            self.assertIn("download failed", main.learning_runtime()["detail"])
+
+    def test_local_bootstrap_reuses_ollama_and_smokes_qwen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._isolated_runtime(Path(directory))
+            main._set_learning_runtime("local", "installing", model="qwen2.5:7b")
+            completed = SimpleNamespace(returncode=0, stdout="NAME ID SIZE\nqwen2.5:7b x 4.7 GB", stderr="")
+            local = Mock()
+            local.chat.return_value = ("OK", {})
+            with patch.object(main, "_local_learning_resources_ok", return_value=(True, "")), \
+                 patch.object(main, "_ollama_command", return_value="ollama"), \
+                 patch.object(main, "_ollama_ready", return_value=True), \
+                 patch.object(main.subprocess, "run", return_value=completed), \
+                 patch.object(main, "get_provider", return_value=local):
+                main._bootstrap_local_learning()
+            self.assertEqual(main.learning_runtime()["status"], "ready")
+            local.chat.assert_called_once_with(ANY, "qwen2.5:7b")
 
     def test_cli_idle_loop_uses_the_shared_dispatcher(self):
         original_interaction = main._last_user_interaction
         main._last_user_interaction = 0
         try:
-            with patch.object(main.time, "sleep", side_effect=[None, KeyboardInterrupt]), \
+            with patch.object(main, "learning_runtime", return_value={"status": "ready"}), \
+                 patch.object(main.time, "sleep", side_effect=[None, KeyboardInterrupt]), \
                  patch.object(main, "dispatch_learning_cycle", return_value=[]) as dispatch:
                 with self.assertRaises(KeyboardInterrupt):
                     main._background_learning_loop()
@@ -268,7 +365,8 @@ class LearningDispatcherTests(unittest.TestCase):
         dispatch.assert_called_once_with(surface="cli", trigger="background", max_features=4)
 
     def test_web_startup_persists_a_learning_cycle_job(self):
-        with patch.object(server._agent, "_prompt_and_init_deepseek"), \
+        with patch.object(server._agent, "learning_runtime", return_value={"status": "ready"}), \
+             patch.object(server._agent, "_prompt_and_init_deepseek"), \
              patch.object(server._agent, "_set_workspace_root"), \
              patch.object(server._agent, "_load_project_files_into_memory"), \
              patch.object(server, "_load_plugins"), \

@@ -19,7 +19,7 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-var version = "2.0.3"
+var version = "2.0.4"
 
 type screen string
 
@@ -83,66 +83,71 @@ type planProposal struct {
 }
 
 type model struct {
-	bridge           *bridge
-	project          string
-	global           bool
-	width            int
-	height           int
-	view             viewport.Model
-	input            textarea.Model
-	apiInput         textinput.Model
-	graphInput       textinput.Model
-	screen           screen
-	status           string
-	provider         string
-	modelName        string
-	workspace        string
-	messages         []chatMessage
-	tasks            []taskItem
-	palette          []command
-	paletteIndex     int
-	providerList     []string
-	providerIdx      int
-	features         []featureItem
-	featureIdx       int
-	interactionMode  string
-	effectiveMode    string
-	modeIdx          int
-	pendingQuestion  *questionRequest
-	questionIdx      int
-	choiceIdx        int
-	questionAnswers  map[string]any
-	pendingPlan      *planProposal
-	planScroll       int
-	graph            graphSnapshot
-	graphSelected    int
-	graphZoom        int
-	graphCommunity   int
-	graphSearching   bool
-	graphPathStart   string
-	githubBinary     string
-	githubHostname   string
-	approvalID       string
-	approvalTool     string
-	approvalArgs     string
-	errorText        string
-	splashFrame      int
-	splashStarted    time.Time
-	readyAt          time.Time
-	backendReady     bool
-	motionFrame      int
-	cursorVisible    bool
-	thinkingText     string
-	taskFlashID      string
-	taskFlashTick    int
-	followTail       bool
-	transitionTick   int
-	reducedMotion    bool
-	showToolDetails  bool
-	updateInProgress bool
-	busy             bool
-	requestCount     int
-	restart          bool
+	bridge             *bridge
+	project            string
+	global             bool
+	width              int
+	height             int
+	view               viewport.Model
+	input              textarea.Model
+	apiInput           textinput.Model
+	graphInput         textinput.Model
+	screen             screen
+	status             string
+	provider           string
+	modelName          string
+	workspace          string
+	messages           []chatMessage
+	tasks              []taskItem
+	palette            []command
+	paletteIndex       int
+	providerList       []string
+	providerIdx        int
+	features           []featureItem
+	featureIdx         int
+	learningMode       string
+	learningStatus     string
+	learningModel      string
+	learningDetail     string
+	learningCostSource string
+	interactionMode    string
+	effectiveMode      string
+	modeIdx            int
+	pendingQuestion    *questionRequest
+	questionIdx        int
+	choiceIdx          int
+	questionAnswers    map[string]any
+	pendingPlan        *planProposal
+	planScroll         int
+	graph              graphSnapshot
+	graphSelected      int
+	graphZoom          int
+	graphCommunity     int
+	graphSearching     bool
+	graphPathStart     string
+	githubBinary       string
+	githubHostname     string
+	approvalID         string
+	approvalTool       string
+	approvalArgs       string
+	errorText          string
+	splashFrame        int
+	splashStarted      time.Time
+	readyAt            time.Time
+	backendReady       bool
+	motionFrame        int
+	cursorVisible      bool
+	thinkingText       string
+	taskFlashID        string
+	taskFlashTick      int
+	followTail         bool
+	transitionTick     int
+	reducedMotion      bool
+	showToolDetails    bool
+	updateInProgress   bool
+	busy               bool
+	requestCount       int
+	restart            bool
 }
 
 type tickMsg time.Time
@@ -865,6 +870,14 @@ func (m *model) featureKey(key string) tea.Cmd {
 		m.screen = screenChat
 		return nil
 	}
+	if key == "l" || key == "L" {
+		m.send("command", map[string]any{"name": "self_learning", "args": map[string]any{"mode": "local"}})
+		return nil
+	}
+	if key == "r" || key == "R" {
+		m.send("command", map[string]any{"name": "self_learning", "args": map[string]any{"mode": "remote"}})
+		return nil
+	}
 	if len(m.features) == 0 {
 		return nil
 	}
@@ -1137,6 +1150,13 @@ func (m *model) handlePrompt(event backendEvent) {
 				}
 			}
 		}
+		if runtime, ok := event["runtime"].(map[string]any); ok {
+			m.learningMode = stringValue(runtime, "mode")
+			m.learningStatus = stringValue(runtime, "status")
+			m.learningModel = stringValue(runtime, "model")
+			m.learningDetail = stringValue(runtime, "detail")
+		}
+		m.learningCostSource = stringValue(event, "cost_source")
 		m.featureIdx, m.screen = 0, screenSelfLearning
 		m.startTransition()
 	case "mode":
@@ -1522,7 +1542,11 @@ func (m model) modal(_ string) string {
 	case screenApproval:
 		body = amberStyle.Render("!  APPROVAL REQUIRED") + "\n" + titleStyle.Render("Confirm this action") + "\n\n" + softStyle.Render(m.approvalTool) + "\n" + softStyle.Render(m.approvalArgs) + "\n\n" + mutedStyle.Render("This may change local or remote state.") + "\n\n" + greenStyle.Render("Y / Enter  approve") + "    " + redStyle.Render("N / Esc  deny")
 	case screenSelfLearning:
-		lines := []string{brandStyle.Render("MEMORY"), titleStyle.Render("Self-learning settings"), mutedStyle.Render("↑↓ select  Space toggle  Esc close"), ""}
+		runtime := firstNonEmpty(m.learningMode, "setup_required") + " / " + firstNonEmpty(m.learningStatus, "setup_required")
+		if m.learningModel != "" {
+			runtime += " / " + m.learningModel
+		}
+		lines := []string{brandStyle.Render("MEMORY"), titleStyle.Render("Self-learning settings"), mutedStyle.Render(runtime), mutedStyle.Render(m.learningDetail), mutedStyle.Render(m.learningCostSource), mutedStyle.Render("L local free Qwen2.5  ·  R remote API  ·  ↑↓ select  Space toggle  Esc close"), ""}
 		for index, item := range m.features {
 			cursor, style := mutedStyle.Render("·"), softStyle
 			rowStyle := lipgloss.NewStyle().Padding(0, 1)

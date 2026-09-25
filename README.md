@@ -92,16 +92,16 @@ Think of it as an AI teammate that gets smarter every time you use it.
 On macOS or Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.3/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.4/install.sh | sh
 ```
 
 On Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.3/install.ps1 | iex
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.4/install.ps1 | iex
 ```
 
-The installer fetches the immutable `v2.0.3` GitHub release wheel and checksum-verified TUI source asset, checks the operating system, architecture, Python, network, and writable user paths; installs `uv` when needed; provisions the Web dependencies in an isolated `uv` tool environment; reuses or installs Go 1.27.1 locally; builds the Bubble Tea binary atomically; retries once with `uv --no-cache` if an incomplete local cache is encountered; creates private `~/.kyrozen` state directories; and verifies `kyrozen --version` and `kyrozen --help`. If the TUI asset or build is unavailable, `kyrozen` clearly falls back to the Rich recovery interface. It never reads, prints, or uploads API keys. The first `kyrozen` launch guides provider setup.
+The installer fetches the immutable `v2.0.4` GitHub release wheel and checksum-verified TUI source asset, checks the operating system, architecture, Python, network, and writable user paths; installs `uv` when needed; provisions the Web dependencies in an isolated `uv` tool environment; reuses or installs Go 1.27.1 locally; builds the Bubble Tea binary atomically; retries once with `uv --no-cache` if an incomplete local cache is encountered; creates private `~/.kyrozen` state directories; and verifies `kyrozen --version` and `kyrozen --help`. If the TUI asset or build is unavailable, `kyrozen` clearly falls back to the Rich recovery interface. It never reads, prints, or uploads API keys. The first `kyrozen` launch guides provider setup.
 
 ### Development-only source checkout
 
@@ -125,14 +125,14 @@ These commands intentionally run in project mode (`--project .`) and are for rep
 ### Pinned GitHub release installation
 
 ```bash
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.3/openkyrozen-2.0.3-py3-none-any.whl'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl'
 uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
 
 # Or use pip in an existing supported environment:
 pip install fastapi uvicorn "$release_url"
 ```
 
-The v2.0.3 release wheel was built and validated by GitHub Actions; see the [v2.0.3 release](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.3). After installation, `kyrozen` and `kyrozen-web` work from any caller directory. The encrypted provider configuration is saved to `~/.kyrozen_config.json`.
+The v2.0.4 release wheel was built and validated by GitHub Actions; see the [v2.0.4 release](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.4). After installation, `kyrozen` and `kyrozen-web` work from any caller directory. The encrypted provider configuration is saved to `~/.kyrozen_config.json`.
 
 ---
 
@@ -334,13 +334,21 @@ stores `learning.feature_started`, `learning.feature_completed`, or
 whether it changed durable or in-memory state; `changed: false` is an honest
 no-op when the required evidence or input is absent.
 
-The CLI starts a singleton detached learning worker. It waits while the CLI is
-active, then continues dispatching up to four features every 30 seconds after
-the terminal exits. Web and Gateway processes use the durable `learning_cycle`
-scheduler job. Feature switches from `/self-learning` are persisted in SQLite,
-so disabled features stay disabled across restarts. Chat turns also dispatch
-the input-dependent preference and technology features. Inspect the latest
-status with `GET /api/v2/learning/features`. Dynamic tools remain response-time
+Each workspace starts in `setup_required`: learning asks you to choose **Local**
+or **Remote** rather than quietly spending API money. Use `/self-learning` in
+the CLI/TUI or `POST /api/v2/learning/provider` with `{"mode":"local"}` or
+`{"mode":"remote"}`. The API reports the selected mode, setup state, model,
+and failure detail through `GET /api/v2/learning/features`.
+
+Local is free of API charges. After you explicitly select it, OpenKyrozen checks
+for 12 GB of system RAM (not GPU VRAM) and 8 GB free disk, reuses or installs Ollama, downloads only
+`qwen2.5:7b`, verifies it, and performs a local smoke chat before enabling
+semantic learning. It accepts only `localhost`, `127.0.0.1`, or `::1`, uses no
+remote fallback, and records a durable actionable failure if setup cannot finish.
+Remote reuses the configured chat provider and model; its usage records are
+tagged `surface=learning`. Deterministic learning—outcomes, preferences,
+retrieval, indexing, and scoring—remains model-free. Feature switches and the
+mode persist per workspace across restarts. Dynamic tools remain response-time
 operations protected by explicit capability and approval gates, and rollback
 remains user-directed via `/forget` or an explicit learning rollback command.
 
@@ -635,7 +643,7 @@ with the same provider, model, configuration, and observable product behavior.
 ## 🌐 Web UI & REST API
 
 ```bash
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.3/openkyrozen-2.0.3-py3-none-any.whl'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl'
 pip install fastapi uvicorn "$release_url"
 kyrozen-web --port 8000
 # Open http://localhost:8000
@@ -664,6 +672,7 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `POST` | `/api/v2/learning/capsules` | Import a capsule as an inactive candidate |
 | `GET` | `/api/v2/learning/constitution` | Inspect the immutable user-owned learning policy |
 | `GET` | `/api/v2/learning/features` | Authoritative 20-feature registry and latest run status |
+| `POST` | `/api/v2/learning/provider` | Choose Local setup or Remote provider-backed learning |
 | `GET` | `/api/v2/learning/metrics?profile=...` | Profile completion, correction, error, tool, token, and latency metrics |
 | `GET` | `/api/v2/learning/{proposal_id}/capsule` | Export a redacted, harness-neutral experience capsule |
 | `GET` | `/api/v2/learning/{proposal_id}/evidence` | Proof card, applicability, replay, and outcome receipts |
@@ -698,7 +707,7 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 
 Browser tools (`browser_open`, `browser_snapshot`, `browser_click`, `browser_type`, and
 `browser_close`) use an isolated profile and are available after
-`pip install playwright https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.3/openkyrozen-2.0.3-py3-none-any.whl && playwright install chromium`. Private and
+`pip install playwright https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl && playwright install chromium`. Private and
 loopback destinations are blocked unless `KYROZEN_BROWSER_ALLOW_PRIVATE=1` is set.
 
 Chat requests remain backward compatible with `{"message":"..."}` and may also
@@ -980,7 +989,7 @@ GitHub Actions automatically runs on every push and PR:
 - Windows PowerShell installer syntax/help check
 - Docker build and replace-container recovery smoke test
 
-The published `v2.0.3` release is immutable and remains the pinned target for
+The published `v2.0.4` release is immutable and remains the pinned target for
 public installers. `/update` uses its checksum-verified TUI asset when present;
 because that release predates the Bubble Tea client, it securely pins the
 current `main` revision until a release containing the TUI asset is published.
@@ -992,7 +1001,7 @@ publishing the new tag.
 
 ```bash
 # Immutable GitHub release (use the one-line installer for uv + Python setup)
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.3/openkyrozen-2.0.3-py3-none-any.whl'
+release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl'
 uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
 pip install fastapi uvicorn "$release_url"  # existing supported environment
 

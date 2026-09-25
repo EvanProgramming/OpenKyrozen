@@ -175,6 +175,23 @@ class EventStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_learning_feature_flags_scope
                     ON learning_feature_flags(user_id, workspace_id, name);
+                CREATE TABLE IF NOT EXISTS learning_policies (
+                    user_id TEXT NOT NULL DEFAULT 'local',
+                    workspace_id TEXT NOT NULL DEFAULT 'default',
+                    mode TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, workspace_id)
+                );
+                CREATE TABLE IF NOT EXISTS learning_runtime (
+                    user_id TEXT NOT NULL DEFAULT 'local',
+                    workspace_id TEXT NOT NULL DEFAULT 'default',
+                    mode TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, workspace_id)
+                );
                 CREATE TABLE IF NOT EXISTS scheduled_jobs (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -725,6 +742,60 @@ class EventStore:
                 "VALUES(?,?,?,?,?) ON CONFLICT(name,user_id,workspace_id) DO UPDATE SET "
                 "enabled=excluded.enabled,updated_at=excluded.updated_at",
                 (str(name), user_id, workspace_id, int(bool(enabled)), utc_now()),
+            )
+
+    def get_learning_policy(self, *, user_id: str = "local",
+                            workspace_id: str = "default") -> str:
+        """Legacy policy accessor; new callers should use get_learning_runtime."""
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT mode FROM learning_policies WHERE user_id=? AND workspace_id=?",
+                (user_id, workspace_id),
+            ).fetchone()
+        return str(row["mode"]) if row else "setup_required"
+
+    def set_learning_policy(self, mode: str, *, user_id: str = "local",
+                            workspace_id: str = "default") -> None:
+        if mode not in {"local_only", "ollama_only", "setup_required", "local", "remote"}:
+            raise ValueError("unknown learning policy")
+        with self._lock, self.connection() as db:
+            db.execute(
+                "INSERT INTO learning_policies(user_id,workspace_id,mode,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(user_id,workspace_id) DO UPDATE SET mode=excluded.mode,updated_at=excluded.updated_at",
+                (user_id, workspace_id, mode, utc_now()),
+            )
+
+    def get_learning_runtime(self, *, user_id: str = "local",
+                             workspace_id: str = "default") -> dict[str, str]:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT mode,model,status,detail,updated_at FROM learning_runtime "
+                "WHERE user_id=? AND workspace_id=?", (user_id, workspace_id),
+            ).fetchone()
+            if row:
+                return dict(row)
+            legacy = db.execute(
+                "SELECT mode FROM learning_policies WHERE user_id=? AND workspace_id=?",
+                (user_id, workspace_id),
+            ).fetchone()
+        detail = "Choose Local or Remote learning before semantic learning can run."
+        if legacy:
+            detail = "Previous learning policy requires a Local or Remote choice."
+        self.set_learning_runtime("setup_required", "setup_required", detail=detail,
+                                  user_id=user_id, workspace_id=workspace_id)
+        return self.get_learning_runtime(user_id=user_id, workspace_id=workspace_id)
+
+    def set_learning_runtime(self, mode: str, status: str, *, model: str = "",
+                             detail: str = "", user_id: str = "local",
+                             workspace_id: str = "default") -> None:
+        if mode not in {"setup_required", "local", "remote"}:
+            raise ValueError("learning mode must be setup_required, local, or remote")
+        with self._lock, self.connection() as db:
+            db.execute(
+                "INSERT INTO learning_runtime(user_id,workspace_id,mode,model,status,detail,updated_at) "
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id,workspace_id) DO UPDATE SET "
+                "mode=excluded.mode,model=excluded.model,status=excluded.status,detail=excluded.detail,updated_at=excluded.updated_at",
+                (user_id, workspace_id, mode, model, status, detail, utc_now()),
             )
 
     def list_proposals(self, *, status: str | None = None, workspace_id: str = "default", limit: int = 100,

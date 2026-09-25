@@ -160,6 +160,15 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertEqual(events[-1]["event"], "restart")
         self.assertEqual(events[-1]["request_id"], "update-1")
 
+    def test_self_learning_prompt_includes_runtime_and_cost_source(self):
+        with patch.object(tui_backend.agent, "learning_runtime", return_value={"mode": "local"}), \
+                patch.object(tui_backend.agent, "learning_cost_source", return_value="Local CPU/RAM/disk; no API cost"):
+            self.backend._command("/self-learning", {}, "learning-1")
+        event = json.loads(self.output.getvalue().splitlines()[-1])
+        self.assertEqual(event["event"], "prompt")
+        self.assertEqual(event["runtime"]["mode"], "local")
+        self.assertEqual(event["cost_source"], "Local CPU/RAM/disk; no API cost")
+
     def test_graph_requests_are_correlated_bounded_and_support_refresh(self):
         class Graph:
             def explore(self, **kwargs):

@@ -78,6 +78,7 @@ Parameterized names are part of the contract; clients may substitute a value for
 | `GET` | `/api/v2/learning/constitution` |
 | `GET` | `/api/v2/learning/features` |
 | `GET` | `/api/v2/learning/metrics` |
+| `POST` | `/api/v2/learning/provider` |
 | `GET` | `/api/v2/learning/{proposal_id}/capsule` |
 | `GET` | `/api/v2/learning/{proposal_id}/evidence` |
 | `POST` | `/api/v2/learning/{proposal_id}/omission` |

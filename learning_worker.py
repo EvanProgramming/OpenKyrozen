@@ -166,6 +166,11 @@ def worker_main() -> int:
 
         agent.configure_launch_context()
         agent._prompt_and_init_deepseek(interactive=False)
+        if agent.learning_runtime()["status"] != "ready":
+            agent._record_learning_event("learning.worker_skipped", {
+                "reason": "learning runtime is not ready",
+            })
+            return 0
         agent._record_learning_event("learning.worker_started", {
             "workspace_root": str(Path(workspace_root).resolve()),
             "pid": os.getpid(),

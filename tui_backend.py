@@ -411,7 +411,15 @@ class Backend:
             self.emit("response", request_id, text="Private project graph refreshed.")
             self.status("ready", "Ready", request_id)
         elif command in {"/self-learning", "self_learning"}:
-            if isinstance(args, Mapping) and args.get("feature") in agent._SELF_LEARNING_FLAGS:
+            if isinstance(args, Mapping) and (args.get("mode") or args.get("policy")):
+                try:
+                    mode = agent.set_learning_policy(str(args.get("mode") or args["policy"]))
+                    self.emit("response", request_id, text=f"learning mode: {mode}")
+                    self.emit("prompt", request_id, kind="self_learning", features=self._features(),
+                              runtime=agent.learning_runtime(), cost_source=agent.learning_cost_source())
+                except ValueError as exc:
+                    self.emit("error", request_id, text=str(exc))
+            elif isinstance(args, Mapping) and args.get("feature") in agent._SELF_LEARNING_FLAGS:
                 feature = str(args["feature"])
                 enabled = bool(args.get("enabled", not agent._SELF_LEARNING_FLAGS[feature]))
                 agent._SELF_LEARNING_FLAGS[feature] = enabled
@@ -421,7 +429,8 @@ class Backend:
                 )
                 self.emit("response", request_id, text=f"{feature}: {'enabled' if enabled else 'disabled'}")
             else:
-                self.emit("prompt", request_id, kind="self_learning", features=self._features())
+                self.emit("prompt", request_id, kind="self_learning", features=self._features(),
+                          runtime=agent.learning_runtime(), cost_source=agent.learning_cost_source())
         elif command in {"/tasks", "tasks"}:
             self.emit("tasks", request_id, tasks=[
                 {"id": task["id"], "description": task["description"], "status": task["status"]}
