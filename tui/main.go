@@ -475,6 +475,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case tea.PasteMsg:
+		if m.updateInProgress {
+			break
+		}
+		var cmd tea.Cmd
+		switch m.screen {
+		case screenAPIKey:
+			m.apiInput, cmd = m.apiInput.Update(msg)
+		case screenGraph:
+			if m.graphSearching {
+				m.graphInput, cmd = m.graphInput.Update(msg)
+			}
+		case screenChat:
+			m.input, cmd = m.input.Update(msg)
+			m.refreshPalette()
+		}
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	}
 	m.syncViewport()
 	return m, tea.Batch(cmds...)
@@ -1257,6 +1276,8 @@ func (m model) composerHeight() int {
 	return 3
 }
 
+func (m model) compactChat() bool { return m.height > 0 && m.height < 14 }
+
 func (m model) historyHeight() int {
 	return maxInt(1, m.height-m.chatChromeHeight())
 }
@@ -1295,7 +1316,10 @@ func (m model) usageSummary() string {
 
 func (m model) chatChromeHeight() int {
 	width := m.contentWidth()
-	nonViewport := []string{m.chatHeader(), rule(width)}
+	nonViewport := []string{m.chatHeader()}
+	if !m.compactChat() {
+		nonViewport = append(nonViewport, rule(width))
+	}
 	if progress := m.progressBlock(width); progress != "" {
 		nonViewport = append(nonViewport, progress)
 	}
@@ -1303,11 +1327,7 @@ func (m model) chatChromeHeight() int {
 		nonViewport = append(nonViewport, m.paletteView(width))
 	}
 	nonViewport = append(nonViewport, m.composer(width), m.chatFooter(width))
-	height := len(nonViewport)
-	for _, block := range nonViewport {
-		height += lipgloss.Height(block)
-	}
-	return height
+	return lipgloss.Height(strings.Join(nonViewport, "\n"))
 }
 
 func maxInt(a, b int) int {
@@ -1315,6 +1335,17 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func limitRows(value string, height int) string {
+	if height < 1 {
+		return ""
+	}
+	lines := strings.Split(value, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func minInt(a, b int) int {
@@ -1429,7 +1460,7 @@ func (m model) updatingView() string {
 }
 
 func (m model) splash() string {
-	width := minInt(56, maxInt(28, m.width-4))
+	width := maxInt(1, minInt(56, m.width-4))
 	rows := bannerRows(width)
 	visible := len(rows)
 	if !m.reducedMotion {
@@ -1457,11 +1488,18 @@ func (m model) chatView() string {
 	contentWidth := m.contentWidth()
 	mainWidth, panelWidth := m.layoutWidths()
 	header := m.chatHeader()
-	main := quietStyle.Copy().Width(mainWidth).MaxWidth(mainWidth).Height(m.historyHeight()).MaxHeight(m.historyHeight()).Render(m.view.View())
+	historyHeight := m.historyHeight()
+	main := quietStyle.Copy().Width(mainWidth).MaxWidth(mainWidth).Height(historyHeight).MaxHeight(historyHeight).Render(
+		limitRows(m.view.View(), historyHeight),
+	)
 	if panelWidth > 0 {
 		main = lipgloss.JoinHorizontal(lipgloss.Top, main, "  ", m.activityRail())
 	}
-	blocks := []string{header, rule(contentWidth), main}
+	blocks := []string{header}
+	if !m.compactChat() {
+		blocks = append(blocks, rule(contentWidth))
+	}
+	blocks = append(blocks, main)
 	if progress := m.progressBlock(contentWidth); progress != "" {
 		blocks = append(blocks, progress)
 	}
@@ -1478,6 +1516,11 @@ func (m model) chatHeader() string {
 	compact := m.width < 80 || m.height < 16
 	modelLabel := firstNonEmpty(m.provider, "provider pending") + " · " + firstNonEmpty(m.modelName, "model pending")
 	mode := strings.ToUpper(firstNonEmpty(m.effectiveMode, m.interactionMode, "ask"))
+	if m.height > 0 && m.height < 12 {
+		return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(
+			brandStyle.Render("OPENKYROZEN") + "  " + mutedStyle.Render(mode),
+		)
+	}
 	lines := []string{
 		brandStyle.Render("OPENKYROZEN") + "  " + mutedStyle.Render(mode),
 		softStyle.Render("MODEL  ") + softStyle.Render(compactText(modelLabel, width-8)),
@@ -1494,8 +1537,14 @@ func (m model) chatHeader() string {
 }
 
 func (m model) chatFooter(width int) string {
+	if width < 80 || m.height < 18 {
+		status := compactText(firstNonEmpty(m.status, "Ready"), maxInt(4, width/4))
+		return mutedStyle.Copy().Width(width).MaxWidth(width).Render(
+			compactText("○ "+status+" · ↵ send · / commands · ^C quit", width),
+		)
+	}
 	hints := "Enter send  ·  ↑↓ commands  ·  PgUp/PgDn scroll  ·  Ctrl+C quit"
-	if width >= 80 && m.height >= 16 {
+	if width >= 80 && m.height >= 18 {
 		hints = "Enter send  ·  Shift+Enter newline  ·  ↑↓ commands  ·  PgUp/PgDn scroll  ·  Ctrl+C quit"
 	}
 	status := mutedStyle.Render("○ " + firstNonEmpty(m.status, "Ready"))
@@ -1539,6 +1588,9 @@ func (m model) paletteView(width int) string {
 }
 
 func (m model) composer(width int) string {
+	if m.height > 0 && m.height < 12 {
+		return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(m.input.View())
+	}
 	style := quietStyle.Copy().Width(width).MaxWidth(width).BorderTop(true).BorderBottom(true).BorderForeground(lipgloss.Color(border))
 	if m.input.Focused() {
 		style = style.BorderBottomForeground(lipgloss.Color(cyan))
@@ -1603,7 +1655,7 @@ func (m model) activityRail() string {
 	// Keep the rail inside the transcript row budget. Without this cap,
 	// JoinHorizontal adopts a task-heavy rail's natural height and pushes the
 	// composer/footer below the terminal viewport.
-	return lipgloss.NewStyle().Width(maxInt(1, panelWidth)).MaxWidth(maxInt(1, panelWidth)).Height(height).MaxHeight(height).BorderLeft(true).BorderForeground(lipgloss.Color(border)).PaddingLeft(2).Render(strings.Join(lines, "\n"))
+	return lipgloss.NewStyle().Width(maxInt(1, panelWidth)).MaxWidth(maxInt(1, panelWidth)).Height(height).MaxHeight(height).BorderLeft(true).BorderForeground(lipgloss.Color(border)).PaddingLeft(2).Render(limitRows(strings.Join(lines, "\n"), height))
 }
 
 func (m model) taskPanel() string { return m.activityRail() }
@@ -1777,7 +1829,10 @@ func (m model) planModal(width int) string {
 func rule(width int) string { return ruleStyle.Render(strings.Repeat("─", maxInt(1, width))) }
 
 func bannerRows(width int) []string {
-	inner := maxInt(26, width-2)
+	if width < 8 {
+		return []string{centerText("OPENKYROZEN", width)}
+	}
+	inner := width - 2
 	line := strings.Repeat("─", inner)
 	return []string{
 		"╭" + line + "╮",

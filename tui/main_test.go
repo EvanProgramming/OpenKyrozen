@@ -185,6 +185,46 @@ func TestChatFitsLargeAndFullScreenTerminalSizes(t *testing.T) {
 	}
 }
 
+func TestSmallChatKeepsComposerAndFooterVisible(t *testing.T) {
+	for _, size := range [][2]int{{20, 8}, {30, 10}, {60, 12}, {60, 16}} {
+		m := initialModel("", true)
+		m.width, m.height, m.screen = size[0], size[1], screenChat
+		m.provider, m.modelName = "deepseek", "deepseek-chat"
+		m.resize()
+		content := m.View().Content
+		if !strings.Contains(content, "Kyrozen") {
+			t.Fatalf("terminal %dx%d hid the composer: %s", size[0], size[1], content)
+		}
+		if !strings.Contains(content, "send") {
+			t.Fatalf("terminal %dx%d hid the footer: %s", size[0], size[1], content)
+		}
+	}
+}
+
+func TestPasteMsgReachesChatComposer(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height, m.screen = 80, 24, screenChat
+	m.resize()
+	updated, _ := m.Update(tea.PasteMsg{Content: `/attach "/tmp/file with spaces.png"`})
+	m = updated.(model)
+	if got := m.input.Value(); got != `/attach "/tmp/file with spaces.png"` {
+		t.Fatalf("paste was not delivered to the composer: %q", got)
+	}
+}
+
+func TestSplashFitsNarrowTerminalSizes(t *testing.T) {
+	for width := 1; width <= 60; width++ {
+		m := initialModel("", true)
+		m.width, m.height, m.screen = width, 8, screenSplash
+		m.reducedMotion = true
+		for index, line := range strings.Split(m.View().Content, "\n") {
+			if renderedWidth := lipgloss.Width(line); renderedWidth > width {
+				t.Fatalf("splash width %d line %d is %d cells wide", width, index, renderedWidth)
+			}
+		}
+	}
+}
+
 func assertChatFits(t *testing.T, width, height int) {
 	t.Helper()
 	m := initialModel("", true)
