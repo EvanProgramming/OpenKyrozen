@@ -160,21 +160,65 @@ func TestUsageEventAppearsInChatAndSettings(t *testing.T) {
 
 func TestChatFitsResponsiveTerminalSizes(t *testing.T) {
 	for _, size := range [][2]int{{60, 16}, {80, 24}, {110, 24}, {140, 40}} {
-		m := initialModel("", true)
-		m.width, m.height = size[0], size[1]
-		m.screen = screenChat
-		m.provider, m.modelName = "deepseek", "deepseek-chat"
-		m.messages = []chatMessage{{role: "assistant", text: strings.Repeat("A readable response with wrapping. ", 20)}}
-		m.resize()
-		lines := strings.Split(m.View().Content, "\n")
-		if len(lines) != m.height {
-			t.Fatalf("terminal %dx%d rendered %d rows", m.width, m.height, len(lines))
+		assertChatFits(t, size[0], size[1])
+	}
+}
+
+func TestChatFitsArbitraryTerminalSizes(t *testing.T) {
+	for width := 1; width <= 160; width++ {
+		for height := 1; height <= 50; height++ {
+			assertChatFits(t, width, height)
 		}
-		for index, line := range lines {
-			if width := lipgloss.Width(line); width > m.width {
-				t.Fatalf("terminal %dx%d line %d is %d cells wide", m.width, m.height, index, width)
-			}
+	}
+}
+
+func TestChatFitsLargeAndFullScreenTerminalSizes(t *testing.T) {
+	widths := []int{1, 2, 3, 4, 5, 10, 20, 39, 40, 59, 60, 79, 80, 99, 100, 109, 110, 119, 120, 140, 160, 200, 240, 300, 400, 512, 800}
+	heights := []int{1, 2, 3, 4, 5, 8, 12, 15, 16, 17, 23, 24, 30, 40, 50, 60, 80, 100, 120, 160, 200}
+	for _, width := range widths {
+		for _, height := range heights {
+			assertChatFits(t, width, height)
 		}
+	}
+	for _, size := range [][2]int{{1920, 1080}, {2560, 1440}} {
+		assertChatFits(t, size[0], size[1])
+	}
+}
+
+func assertChatFits(t *testing.T, width, height int) {
+	t.Helper()
+	m := initialModel("", true)
+	m.width, m.height = width, height
+	m.screen = screenChat
+	m.provider, m.modelName = "deepseek", "deepseek-chat"
+	m.messages = []chatMessage{{role: "assistant", text: "A response that must remain readable at every terminal size."}}
+	m.resize()
+	lines := strings.Split(m.View().Content, "\n")
+	if len(lines) != height {
+		t.Fatalf("terminal %dx%d rendered %d rows", width, height, len(lines))
+	}
+	for index, line := range lines {
+		if renderedWidth := lipgloss.Width(line); renderedWidth > width {
+			t.Fatalf("terminal %dx%d line %d is %d cells wide", width, height, index, renderedWidth)
+		}
+	}
+}
+
+func TestActivityRailCannotPushComposerOffscreen(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height = 120, 30
+	m.screen = screenChat
+	m.provider, m.modelName = "deepseek", "deepseek-v4-flash"
+	for index := 0; index < 5; index++ {
+		m.tasks = append(m.tasks, taskItem{id: fmt.Sprintf("task-%d", index), description: "Task details", status: "completed"})
+	}
+	m.resize()
+	content := m.View().Content
+	if !strings.Contains(content, "Ctrl+C quit") {
+		t.Fatalf("footer was pushed below a 120x30 terminal: %s", content)
+	}
+	if !strings.Contains(content, "Kyrozen anything") {
+		t.Fatalf("composer was not rendered at a 120x30 terminal: %s", content)
 	}
 }
 

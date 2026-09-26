@@ -1557,24 +1557,35 @@ func (m model) progressBlock(width int) string {
 func (m model) activityRail() string {
 	_, panelWidth := m.layoutWidths()
 	width := maxInt(1, panelWidth-2)
+	height := m.historyHeight()
+	compact := height < 22
 	graphStatus := firstNonEmpty(m.graph.status, "missing")
-	lines := []string{
-		titleStyle.Render("PROJECT GRAPH") + "  " + graphStatusStyle(graphStatus).Render(strings.ToUpper(graphStatus)),
-		m.graphMini(minInt(22, width), 8),
-		mutedStyle.Render(fmt.Sprintf("%d nodes · %d edges", m.graph.nodes, m.graph.edges)),
-		"", titleStyle.Render("ACTIVITY"), rule(width), mutedStyle.Render("PROVIDER"), softStyle.Render(firstNonEmpty(m.provider, "pending")),
+	lines := []string{titleStyle.Render("ACTIVITY")}
+	if !compact {
+		lines = []string{
+			titleStyle.Render("PROJECT GRAPH") + "  " + graphStatusStyle(graphStatus).Render(strings.ToUpper(graphStatus)),
+			m.graphMini(minInt(22, width), 8),
+			mutedStyle.Render(fmt.Sprintf("%d nodes · %d edges", m.graph.nodes, m.graph.edges)),
+			"", titleStyle.Render("ACTIVITY"), rule(width), mutedStyle.Render("PROVIDER"), softStyle.Render(firstNonEmpty(m.provider, "pending")),
+		}
+	} else {
+		lines = append(lines, rule(width), mutedStyle.Render("PROVIDER"), softStyle.Render(firstNonEmpty(m.provider, "pending")))
 	}
 	if m.modelName != "" {
 		lines = append(lines, mutedStyle.Render(compactText(m.modelName, width)))
 	}
-	if m.workspace != "" {
+	if m.workspace != "" && !compact {
 		lines = append(lines, "", mutedStyle.Render("WORKSPACE"), softStyle.Render(compactText(m.workspace, width)))
 	}
 	lines = append(lines, "", mutedStyle.Render("USAGE"), softStyle.Render(m.usageSummary()))
-	lines = append(lines, "", mutedStyle.Render("MODE"), softStyle.Render(
-		"preference "+firstNonEmpty(m.interactionMode, "auto")+" · active "+firstNonEmpty(m.effectiveMode, "ask"),
-	))
-	lines = append(lines, "", titleStyle.Render(fmt.Sprintf("TASKS  %d", len(m.tasks))))
+	if !compact {
+		lines = append(lines, "", mutedStyle.Render("MODE"), softStyle.Render(
+			"preference "+firstNonEmpty(m.interactionMode, "auto")+" · active "+firstNonEmpty(m.effectiveMode, "ask"),
+		))
+		lines = append(lines, "", titleStyle.Render(fmt.Sprintf("TASKS  %d", len(m.tasks))))
+	} else {
+		lines = append(lines, "", titleStyle.Render(fmt.Sprintf("TASKS  %d", len(m.tasks))))
+	}
 	if len(m.tasks) == 0 {
 		lines = append(lines, mutedStyle.Render("No active tasks"))
 	}
@@ -1583,9 +1594,16 @@ func (m model) activityRail() string {
 		if task.id == m.taskFlashID && m.taskFlashTick > 0 && task.status == "succeeded" {
 			label = "completed ·"
 		}
-		lines = append(lines, stateStyle.Render(icon)+" "+softStyle.Render(compactText(task.description, width-4)), stateStyle.Render(label))
+		if compact {
+			lines = append(lines, stateStyle.Render(icon)+" "+softStyle.Render(compactText(task.description, width-12))+" "+stateStyle.Render(label))
+		} else {
+			lines = append(lines, stateStyle.Render(icon)+" "+softStyle.Render(compactText(task.description, width-4)), stateStyle.Render(label))
+		}
 	}
-	return lipgloss.NewStyle().Width(maxInt(1, panelWidth)).MaxWidth(maxInt(1, panelWidth)).BorderLeft(true).BorderForeground(lipgloss.Color(border)).PaddingLeft(2).Render(strings.Join(lines, "\n"))
+	// Keep the rail inside the transcript row budget. Without this cap,
+	// JoinHorizontal adopts a task-heavy rail's natural height and pushes the
+	// composer/footer below the terminal viewport.
+	return lipgloss.NewStyle().Width(maxInt(1, panelWidth)).MaxWidth(maxInt(1, panelWidth)).Height(height).MaxHeight(height).BorderLeft(true).BorderForeground(lipgloss.Color(border)).PaddingLeft(2).Render(strings.Join(lines, "\n"))
 }
 
 func (m model) taskPanel() string { return m.activityRail() }
