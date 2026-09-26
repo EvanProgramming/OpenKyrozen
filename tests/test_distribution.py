@@ -251,6 +251,7 @@ exit 0
         )
         with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
              patch("main._release_tui_asset_available", return_value=True), \
+             patch("main._resolve_update_revision", return_value=None), \
              patch("main._update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
              patch("main.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
              patch("main.subprocess.run", return_value=completed) as run:
@@ -278,6 +279,7 @@ exit 0
         )
         with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
              patch("main._release_tui_asset_available", return_value=True), \
+             patch("main._resolve_update_revision", return_value=None), \
              patch("main._update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
              patch("main.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
              patch("main.subprocess.run", side_effect=[failed, completed]) as run:
@@ -302,10 +304,29 @@ exit 0
         )
         with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
              patch("main._release_tui_asset_available", return_value=True), \
+             patch("main._resolve_update_revision", return_value=None), \
              patch("main.subprocess.run", side_effect=[failed, retry_failed]):
             result = main._self_update()
         self.assertIn("uv exit 1", result)
         self.assertIn("retry also failed", result)
+
+    def test_update_prefers_current_main_revision_over_stale_release_assets(self):
+        import main
+
+        completed = subprocess.CompletedProcess(
+            ["uv", "tool", "install"], 0, stdout="installed from source", stderr="",
+        )
+        revision = "b" * 40
+        with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
+             patch("main._release_tui_asset_available", return_value=True), \
+             patch("main._resolve_update_revision", return_value=revision), \
+             patch("main._update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
+             patch("main.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
+             patch("main.subprocess.run", return_value=completed) as run:
+            result = main._self_update()
+        command = run.call_args.args[0]
+        self.assertEqual(command[-1], f"git+{main.UPDATE_REPOSITORY_URL}@{revision}")
+        self.assertIn(f"source revision {revision[:12]}", result)
 
     def test_update_bootstraps_main_revision_when_release_predates_tui(self):
         import main

@@ -1574,8 +1574,13 @@ def _self_update() -> str:
         f"{sys.version_info.major}.{sys.version_info.minor}"
         if sys.version_info[:2] in {(3, 12), (3, 13)} else "3.12"
     )
-    release_tui = _release_tui_asset_available()
-    revision = None if release_tui else _resolve_update_revision()
+    # Prefer the immutable current main commit so /update delivers fixes that
+    # landed after the last tagged release. Fall back to the verified release
+    # asset when the repository revision cannot be resolved.
+    revision = _resolve_update_revision()
+    release_tui = revision is None and _release_tui_asset_available()
+    if revision is None and not release_tui:
+        return "No verified update source was available; the existing installation was kept."
     package_spec = RELEASE_WHEEL_URL
     source_url, checksum_url = TUI_SOURCE_URL, TUI_CHECKSUM_URL
     if revision:
