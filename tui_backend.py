@@ -106,6 +106,25 @@ class Backend:
     def status(self, state: str, message: str = "", request_id: str | None = None) -> None:
         self.emit("status", request_id, state=state, message=message, busy=self._busy)
 
+    def usage(self, request_id: str | None = None) -> None:
+        """Project the durable workspace usage summary without exposing content."""
+        try:
+            totals = agent.memory_bank.store.usage_totals(
+                user_id=agent.memory_bank.user_id,
+                workspace_id=agent.memory_bank.workspace_id,
+            )
+            self.emit("usage", request_id, scope="workspace", attempts=totals["attempts"],
+                      authoritative_attempts=totals["authoritative_attempts"],
+                      estimated_attempts=totals["estimated_attempts"],
+                      unknown_attempts=totals["unknown_attempts"],
+                      prompt_tokens=totals["prompt_tokens"],
+                      completion_tokens=totals["completion_tokens"],
+                      reasoning_tokens=totals["reasoning_tokens"],
+                      cost_picos=totals["cost_picos"])
+        except Exception:
+            # Usage is presentation-only; an unavailable ledger must not break chat.
+            return
+
     def interaction(self, request_id: str | None = None) -> None:
         self.emit("interaction", request_id, interaction=agent.interaction_envelope())
 
@@ -166,6 +185,7 @@ class Backend:
                 mode="global" if context.is_global else "project",
                 recovered=len(task_results or []),
             )
+            self.usage(request_id)
             if not configured and getattr(config, "provider", "") != "ollama":
                 self.prompt_api_key(request_id=request_id)
             self.interaction(request_id)
@@ -358,6 +378,7 @@ class Backend:
                 for task in agent.tasks.tasks
             ])
             self.interaction(request_id)
+            self.usage(request_id)
             self.status("ready", "Ready", request_id)
         except agent.ProviderUnavailableError as exc:
             self.emit("error", request_id, code=agent.PROVIDER_UNAVAILABLE_CODE,

@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import tui_backend
@@ -115,6 +116,31 @@ class TUIProtocolTests(unittest.TestCase):
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
         self.assertEqual(events[-1]["event"], "status")
         self.assertEqual(events[-1]["state"], "ready")
+
+    def test_usage_projection_reads_workspace_ledger(self):
+        class Store:
+            def usage_totals(self, **kwargs):
+                self.kwargs = kwargs
+                return {
+                    "attempts": 2,
+                    "authoritative_attempts": 2,
+                    "estimated_attempts": 0,
+                    "unknown_attempts": 0,
+                    "prompt_tokens": 120,
+                    "completion_tokens": 80,
+                    "reasoning_tokens": 10,
+                    "cost_picos": 2500000000,
+                }
+
+        memory = SimpleNamespace(user_id="local", workspace_id="workspace", store=Store())
+        with patch.object(tui_backend.agent, "memory_bank", memory):
+            self.backend.usage("usage-1")
+        event = json.loads(self.output.getvalue().strip())
+        self.assertEqual(event["event"], "usage")
+        self.assertEqual(event["request_id"], "usage-1")
+        self.assertEqual(event["scope"], "workspace")
+        self.assertEqual(event["cost_picos"], 2500000000)
+        self.assertNotIn("workspace", event.get("error", ""))
 
     def test_approval_response_requires_a_correlated_request_id(self):
         payload, error = self.backend.validate({"command": "approval_response", "approved": True})

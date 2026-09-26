@@ -136,6 +136,48 @@ func TestSettingsSlashCommandOpensLocalScreen(t *testing.T) {
 	}
 }
 
+func TestUsageEventAppearsInChatAndSettings(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height = 110, 24
+	m.screen = screenChat
+	m.handleBackendEvent(backendEvent{"event": "ready", "provider": "deepseek", "model": "deepseek-chat"})
+	m.handleBackendEvent(backendEvent{
+		"event": "usage", "scope": "workspace", "attempts": 3,
+		"prompt_tokens": 1200, "completion_tokens": 800, "reasoning_tokens": 100,
+		"cost_picos": 12500000000,
+	})
+	m.resize()
+	chat := m.View().Content
+	if !strings.Contains(chat, "MODEL") || !strings.Contains(chat, "deepseek-chat") || !strings.Contains(chat, "USAGE") || !strings.Contains(chat, "$0.01") {
+		t.Fatalf("chat header omitted model or usage summary: %s", chat)
+	}
+	m.screen = screenSettings
+	settings := m.View().Content
+	if !strings.Contains(settings, "SESSION") || !strings.Contains(settings, "MEMORY") || !strings.Contains(settings, "workspace") {
+		t.Fatalf("settings did not show session details: %s", settings)
+	}
+}
+
+func TestChatFitsResponsiveTerminalSizes(t *testing.T) {
+	for _, size := range [][2]int{{60, 16}, {80, 24}, {110, 24}, {140, 40}} {
+		m := initialModel("", true)
+		m.width, m.height = size[0], size[1]
+		m.screen = screenChat
+		m.provider, m.modelName = "deepseek", "deepseek-chat"
+		m.messages = []chatMessage{{role: "assistant", text: strings.Repeat("A readable response with wrapping. ", 20)}}
+		m.resize()
+		lines := strings.Split(m.View().Content, "\n")
+		if len(lines) != m.height {
+			t.Fatalf("terminal %dx%d rendered %d rows", m.width, m.height, len(lines))
+		}
+		for index, line := range lines {
+			if width := lipgloss.Width(line); width > m.width {
+				t.Fatalf("terminal %dx%d line %d is %d cells wide", m.width, m.height, index, width)
+			}
+		}
+	}
+}
+
 func TestInteractionCardsRestoreModeQuestionAndPlan(t *testing.T) {
 	m := initialModel(".", false)
 	m.width, m.height = 120, 40

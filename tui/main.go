@@ -83,71 +83,77 @@ type planProposal struct {
 }
 
 type model struct {
-	bridge             *bridge
-	project            string
-	global             bool
-	width              int
-	height             int
-	view               viewport.Model
-	input              textarea.Model
-	apiInput           textinput.Model
-	graphInput         textinput.Model
-	screen             screen
-	status             string
-	provider           string
-	modelName          string
-	workspace          string
-	messages           []chatMessage
-	tasks              []taskItem
-	palette            []command
-	paletteIndex       int
-	providerList       []string
-	providerIdx        int
-	features           []featureItem
-	featureIdx         int
-	learningMode       string
-	learningStatus     string
-	learningModel      string
-	learningDetail     string
-	learningCostSource string
-	interactionMode    string
-	effectiveMode      string
-	modeIdx            int
-	pendingQuestion    *questionRequest
-	questionIdx        int
-	choiceIdx          int
-	questionAnswers    map[string]any
-	pendingPlan        *planProposal
-	planScroll         int
-	graph              graphSnapshot
-	graphSelected      int
-	graphZoom          int
-	graphCommunity     int
-	graphSearching     bool
-	graphPathStart     string
-	githubBinary       string
-	githubHostname     string
-	approvalID         string
-	approvalTool       string
-	approvalArgs       string
-	errorText          string
-	splashFrame        int
-	splashStarted      time.Time
-	readyAt            time.Time
-	backendReady       bool
-	motionFrame        int
-	cursorVisible      bool
-	thinkingText       string
-	taskFlashID        string
-	taskFlashTick      int
-	followTail         bool
-	transitionTick     int
-	reducedMotion      bool
-	showToolDetails    bool
-	updateInProgress   bool
-	busy               bool
-	requestCount       int
-	restart            bool
+	bridge                *bridge
+	project               string
+	global                bool
+	width                 int
+	height                int
+	view                  viewport.Model
+	input                 textarea.Model
+	apiInput              textinput.Model
+	graphInput            textinput.Model
+	screen                screen
+	status                string
+	provider              string
+	modelName             string
+	workspace             string
+	messages              []chatMessage
+	tasks                 []taskItem
+	palette               []command
+	paletteIndex          int
+	providerList          []string
+	providerIdx           int
+	features              []featureItem
+	featureIdx            int
+	learningMode          string
+	learningStatus        string
+	learningModel         string
+	learningDetail        string
+	learningCostSource    string
+	usageScope            string
+	usageAttempts         int
+	usagePromptTokens     int
+	usageCompletionTokens int
+	usageReasoningTokens  int
+	usageCostPicos        int
+	interactionMode       string
+	effectiveMode         string
+	modeIdx               int
+	pendingQuestion       *questionRequest
+	questionIdx           int
+	choiceIdx             int
+	questionAnswers       map[string]any
+	pendingPlan           *planProposal
+	planScroll            int
+	graph                 graphSnapshot
+	graphSelected         int
+	graphZoom             int
+	graphCommunity        int
+	graphSearching        bool
+	graphPathStart        string
+	githubBinary          string
+	githubHostname        string
+	approvalID            string
+	approvalTool          string
+	approvalArgs          string
+	errorText             string
+	splashFrame           int
+	splashStarted         time.Time
+	readyAt               time.Time
+	backendReady          bool
+	motionFrame           int
+	cursorVisible         bool
+	thinkingText          string
+	taskFlashID           string
+	taskFlashTick         int
+	followTail            bool
+	transitionTick        int
+	reducedMotion         bool
+	showToolDetails       bool
+	updateInProgress      bool
+	busy                  bool
+	requestCount          int
+	restart               bool
 }
 
 type tickMsg time.Time
@@ -930,6 +936,13 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		if m.screen == screenSplash && (m.reducedMotion || m.canLeaveSplash(time.Now())) {
 			m.screen = screenChat
 		}
+	case "usage":
+		m.usageScope = firstNonEmpty(stringValue(event, "scope"), "workspace")
+		m.usageAttempts = numberValue(event["attempts"])
+		m.usagePromptTokens = numberValue(event["prompt_tokens"])
+		m.usageCompletionTokens = numberValue(event["completion_tokens"])
+		m.usageReasoningTokens = numberValue(event["reasoning_tokens"])
+		m.usageCostPicos = numberValue(event["cost_picos"])
 	case "stream_delta":
 		m.busy, m.status = true, "Generating…"
 		m.thinkingText = ""
@@ -1245,14 +1258,56 @@ func (m model) composerHeight() int {
 }
 
 func (m model) historyHeight() int {
-	height := m.height - 10
-	if m.thinkingText != "" || m.busy {
-		height--
+	return maxInt(1, m.height-m.chatChromeHeight())
+}
+
+func formatUsageTokens(value int) string {
+	if value <= 0 {
+		return "0"
+	}
+	if value < 1000 {
+		return fmt.Sprintf("%d", value)
+	}
+	if value < 1_000_000 {
+		return fmt.Sprintf("%.1fK", float64(value)/1000)
+	}
+	return fmt.Sprintf("%.1fM", float64(value)/1_000_000)
+}
+
+func formatUsageCost(picos int) string {
+	if picos <= 0 {
+		return "$0.00"
+	}
+	dollars := float64(picos) / 1_000_000_000_000
+	if dollars < 0.01 {
+		return "<$0.01"
+	}
+	return fmt.Sprintf("$%.2f", dollars)
+}
+
+func (m model) usageSummary() string {
+	tokens := m.usagePromptTokens + m.usageCompletionTokens + m.usageReasoningTokens
+	if m.usageAttempts == 0 && tokens == 0 && m.usageCostPicos == 0 {
+		return "No usage yet"
+	}
+	return fmt.Sprintf("%s tokens · %s · %d call(s)", formatUsageTokens(tokens), formatUsageCost(m.usageCostPicos), m.usageAttempts)
+}
+
+func (m model) chatChromeHeight() int {
+	width := m.contentWidth()
+	nonViewport := []string{m.chatHeader(), rule(width)}
+	if progress := m.progressBlock(width); progress != "" {
+		nonViewport = append(nonViewport, progress)
 	}
 	if len(m.palette) > 0 {
-		height -= minInt(6, len(m.palette)+1)
+		nonViewport = append(nonViewport, m.paletteView(width))
 	}
-	return maxInt(1, height)
+	nonViewport = append(nonViewport, m.composer(width), m.chatFooter(width))
+	height := len(nonViewport)
+	for _, block := range nonViewport {
+		height += lipgloss.Height(block)
+	}
+	return height
 }
 
 func maxInt(a, b int) int {
@@ -1401,17 +1456,7 @@ func (m model) splash() string {
 func (m model) chatView() string {
 	contentWidth := m.contentWidth()
 	mainWidth, panelWidth := m.layoutWidths()
-	header := lipgloss.NewStyle().Width(contentWidth).Render(
-		brandStyle.Render("OPENKYROZEN") + "  " + softStyle.Render(firstNonEmpty(m.provider, "provider pending")) +
-			"  ·  " + mutedStyle.Render(firstNonEmpty(m.modelName, "startup")) +
-			"  ·  " + brandStyle.Render(strings.ToUpper(firstNonEmpty(m.effectiveMode, m.interactionMode, "ask"))),
-	)
-	if m.workspace != "" {
-		header += "\n" + mutedStyle.Render("workspace  "+compactText(m.workspace, contentWidth-11))
-	}
-	if panelWidth == 0 {
-		header += "\n" + m.graphCompact()
-	}
+	header := m.chatHeader()
 	main := quietStyle.Copy().Width(mainWidth).MaxWidth(mainWidth).Height(m.historyHeight()).MaxHeight(m.historyHeight()).Render(m.view.View())
 	if panelWidth > 0 {
 		main = lipgloss.JoinHorizontal(lipgloss.Top, main, "  ", m.activityRail())
@@ -1424,14 +1469,40 @@ func (m model) chatView() string {
 		blocks = append(blocks, m.paletteView(contentWidth))
 	}
 	blocks = append(blocks, m.composer(contentWidth))
-	footer := mutedStyle.Render("Enter send  ·  Shift+Enter newline  ·  ↑↓ commands  ·  PgUp/PgDn scroll  ·  Ctrl+C quit")
-	if m.busy {
-		footer = amberStyle.Render(taskSpinner(m.motionFrame)+" "+firstNonEmpty(m.status, "Working…")) + "  " + footer
-	} else {
-		footer = mutedStyle.Render("○ "+firstNonEmpty(m.status, "Ready")) + "  " + footer
-	}
-	blocks = append(blocks, footer)
+	blocks = append(blocks, m.chatFooter(contentWidth))
 	return strings.Join(blocks, "\n")
+}
+
+func (m model) chatHeader() string {
+	width := m.contentWidth()
+	compact := m.width < 80 || m.height < 16
+	modelLabel := firstNonEmpty(m.provider, "provider pending") + " · " + firstNonEmpty(m.modelName, "model pending")
+	mode := strings.ToUpper(firstNonEmpty(m.effectiveMode, m.interactionMode, "ask"))
+	lines := []string{
+		brandStyle.Render("OPENKYROZEN") + "  " + mutedStyle.Render(mode),
+		softStyle.Render("MODEL  ") + softStyle.Render(compactText(modelLabel, width-8)),
+		softStyle.Render("USAGE  ") + softStyle.Render(compactText(m.usageSummary(), width-8)),
+	}
+	if !compact && m.workspace != "" {
+		lines = append(lines, mutedStyle.Render("WORKSPACE  "+compactText(m.workspace, width-11)))
+	}
+	_, panelWidth := m.layoutWidths()
+	if !compact && panelWidth == 0 && m.height >= 18 {
+		lines = append(lines, m.graphCompact())
+	}
+	return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(strings.Join(lines, "\n"))
+}
+
+func (m model) chatFooter(width int) string {
+	hints := "Enter send  ·  ↑↓ commands  ·  PgUp/PgDn scroll  ·  Ctrl+C quit"
+	if width >= 80 && m.height >= 16 {
+		hints = "Enter send  ·  Shift+Enter newline  ·  ↑↓ commands  ·  PgUp/PgDn scroll  ·  Ctrl+C quit"
+	}
+	status := mutedStyle.Render("○ " + firstNonEmpty(m.status, "Ready"))
+	if m.busy {
+		status = amberStyle.Render(taskSpinner(m.motionFrame) + " " + firstNonEmpty(m.status, "Working…"))
+	}
+	return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(status + "  " + mutedStyle.Render(hints))
 }
 
 func (m model) paletteView(width int) string {
@@ -1499,6 +1570,7 @@ func (m model) activityRail() string {
 	if m.workspace != "" {
 		lines = append(lines, "", mutedStyle.Render("WORKSPACE"), softStyle.Render(compactText(m.workspace, width)))
 	}
+	lines = append(lines, "", mutedStyle.Render("USAGE"), softStyle.Render(m.usageSummary()))
 	lines = append(lines, "", mutedStyle.Render("MODE"), softStyle.Render(
 		"preference "+firstNonEmpty(m.interactionMode, "auto")+" · active "+firstNonEmpty(m.effectiveMode, "ask"),
 	))
@@ -1567,11 +1639,19 @@ func (m model) modal(_ string) string {
 		if m.showToolDetails {
 			value, valueStyle = "VISIBLE", amberStyle
 		}
+		usageScope := firstNonEmpty(m.usageScope, "workspace")
+		learning := firstNonEmpty(m.learningMode, "not configured") + " · " + firstNonEmpty(m.learningStatus, "waiting")
 		body = strings.Join([]string{
 			brandStyle.Render("SETTINGS"),
-			titleStyle.Render("Display settings"),
+			titleStyle.Render("Session and display"),
 			mutedStyle.Render("Space / Enter toggle  ·  Esc close"),
 			"",
+			brandStyle.Render("SESSION"),
+			softStyle.Render("MODEL  " + compactText(firstNonEmpty(m.provider, "pending")+" · "+firstNonEmpty(m.modelName, "pending"), modalWidth-10)),
+			softStyle.Render("USAGE  " + compactText(m.usageSummary()+" · "+usageScope, modalWidth-10)),
+			softStyle.Render("MEMORY  " + compactText(learning, modalWidth-10)),
+			"",
+			brandStyle.Render("DISPLAY"),
 			brandStyle.Render("›") + " " + titleStyle.Render("Show tool details") + "  " + valueStyle.Render(value),
 			mutedStyle.Render("Tool names and semantic status are always shown. Results stay hidden by default."),
 		}, "\n")
@@ -1630,6 +1710,7 @@ func (m model) modal(_ string) string {
 	if m.transitionTick > 0 {
 		style = style.BorderForeground(lipgloss.Color(cyan))
 	}
+	body = lipgloss.NewStyle().Width(maxInt(1, modalWidth-4)).MaxWidth(maxInt(1, modalWidth-4)).Render(body)
 	modal := style.Width(modalWidth).MaxWidth(modalWidth).Render(body)
 	return lipgloss.NewStyle().Width(maxInt(1, m.width)).Height(maxInt(1, m.height)).Align(lipgloss.Center, lipgloss.Center).Render(modal)
 }
