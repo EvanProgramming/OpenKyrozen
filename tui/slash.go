@@ -17,6 +17,7 @@ var commands = []command{
 	{name: "plan", aliases: nil, description: "Use Plan mode or accept/cancel a plan"},
 	{name: "question", aliases: nil, description: "Reopen, skip, or cancel clarification"},
 	{name: "agent", aliases: nil, description: "Switch auto, coder, or researcher mode"},
+	{name: "attach", aliases: nil, description: "Stage files; drop paths after /attach"},
 	{name: "graph", aliases: nil, description: "Open, inspect, or refresh the project graph"},
 	{name: "github", aliases: []string{"gh"}, description: "Check or authenticate GitHub CLI"},
 	{name: "skills", aliases: nil, description: "Show built-in and installed skill versions"},

@@ -28,6 +28,93 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertIsNone(payload)
         self.assertIn("too long", error)
 
+    def test_attach_stages_quoted_files_and_rejects_invalid_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            image = root / "image one.png"
+            image.write_bytes(b"fake-png")
+            notes = root / "notes.txt"
+            notes.write_text("notes", encoding="utf-8")
+            missing = root / "missing.txt"
+
+            with patch.object(tui_backend.agent, "_get_workspace_root", return_value=workspace):
+                self.backend._command(f'/attach "{image}" "{notes}"', {}, "attach-1")
+                self.backend._command(f'/attach "{notes}" "{missing}"', {}, "attach-2")
+
+            events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+            self.assertEqual(events[0]["event"], "response")
+            self.assertIn("attachments/", events[0]["text"])
+            self.assertEqual(events[-1]["code"], "attach_failed")
+            self.assertEqual(len(self.backend._staged_attachments), 2)
+            for item, content in zip(self.backend._staged_attachments, (b"fake-png", b"notes")):
+                self.assertEqual((workspace / item["path"]).read_bytes(), content)
+
+    def test_attach_rejects_symlinks_and_oversized_files_without_copying(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            regular = root / "regular.txt"
+            regular.write_text("safe", encoding="utf-8")
+            oversized = root / "oversized.bin"
+            with oversized.open("wb") as handle:
+                handle.truncate(tui_backend.MAX_ATTACHMENT_BYTES + 1)
+            symlink = root / "link.txt"
+            try:
+                symlink.symlink_to(regular)
+            except OSError:
+                symlink = None
+
+            with patch.object(tui_backend.agent, "_get_workspace_root", return_value=workspace):
+                self.backend._command(f"/attach {oversized}", {}, "attach-large")
+                if symlink is not None:
+                    self.backend._command(f"/attach {symlink}", {}, "attach-link")
+
+            self.assertEqual(self.backend._staged_attachments, [])
+            self.assertFalse((workspace / "attachments").exists())
+            errors = [json.loads(line) for line in self.output.getvalue().splitlines()]
+            self.assertTrue(all(event["code"] == "attach_failed" for event in errors))
+
+    def test_staged_attachments_are_sent_to_next_turn_and_retry_after_failure(self):
+        self.backend._staged_attachments = [{"path": "attachments/batch/notes.txt", "bytes": 5}]
+        tasks = SimpleNamespace(tasks=[], clear=lambda: None)
+        memory = SimpleNamespace(add_log=lambda _text: None)
+        with patch.object(tui_backend.agent, "llm_provider", object()), \
+                patch.object(tui_backend.agent, "_sanitize_input", return_value=("question", False)), \
+                patch.object(tui_backend.agent, "interaction_envelope", return_value={
+                    "pending_question": None, "pending_plan": None,
+                }), \
+                patch.object(tui_backend.agent, "is_plan_acceptance", return_value=False), \
+                patch.object(tui_backend.agent, "tasks", tasks), \
+                patch.object(tui_backend.agent, "memory_bank", memory), \
+                patch.object(tui_backend.agent, "_chat_turn", side_effect=tui_backend.agent.ProviderUnavailableError("offline")), \
+                patch.object(self.backend, "interaction"), \
+                patch.object(self.backend, "usage"):
+            self.backend._run_submit("question", "turn-failed")
+        self.assertEqual(len(self.backend._staged_attachments), 1)
+
+        with patch.object(tui_backend.agent, "llm_provider", object()), \
+                patch.object(tui_backend.agent, "_sanitize_input", return_value=("question", False)), \
+                patch.object(tui_backend.agent, "interaction_envelope", return_value={
+                    "pending_question": None, "pending_plan": None,
+                }), \
+                patch.object(tui_backend.agent, "is_plan_acceptance", return_value=False), \
+                patch.object(tui_backend.agent, "tasks", tasks), \
+                patch.object(tui_backend.agent, "memory_bank", memory), \
+                patch.object(tui_backend.agent, "_chat_turn", return_value="answer") as chat, \
+                patch.object(tui_backend.agent, "_clean_final_response", return_value="answer"), \
+                patch.object(tui_backend.agent, "_split_reply", return_value=("", "answer")), \
+                patch.object(self.backend, "interaction"), \
+                patch.object(self.backend, "usage"):
+            self.backend._run_submit("question", "turn-success")
+
+        prompt = chat.call_args.args[0]
+        self.assertIn("attachments/batch/notes.txt", prompt)
+        self.assertIn("User request:\nquestion", prompt)
+        self.assertEqual(self.backend._staged_attachments, [])
+
     def test_emit_is_one_json_object_per_line_and_redacts_secrets(self):
         self.backend.emit("response", "r1", text="token=should-not-leak")
         line = self.output.getvalue().strip()

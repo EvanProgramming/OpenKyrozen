@@ -12,10 +12,13 @@ import io
 import json
 import os
 import re
+import shlex
+import shutil
 import sys
 import threading
 import uuid
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 os.environ.setdefault("KYROZEN_EXECUTION_SURFACE", "tui")
@@ -35,6 +38,8 @@ MAX_TEXT_CHARS = 12_000
 MAX_ARGS_CHARS = 4_000
 MAX_REQUEST_ID_CHARS = 100
 APPROVAL_TIMEOUT_SECONDS = 15 * 60
+MAX_ATTACHMENTS = 10
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 _SENSITIVE_KEY_RE = re.compile(r"(?i)(api[_-]?key|secret|password|token)")
 
 _OUTPUT_LOCK = threading.Lock()
@@ -82,6 +87,7 @@ class Backend:
         self._workers: set[threading.Thread] = set()
         self._pending_approvals: dict[str, tuple[threading.Event, dict[str, bool]]] = {}
         self._approval_lock = threading.Lock()
+        self._staged_attachments: list[dict[str, Any]] = []
 
     def emit(self, event: str, request_id: str | None = None, **payload: Any) -> None:
         message: dict[str, Any] = {
@@ -339,6 +345,84 @@ class Backend:
         self._workers.add(worker)
         worker.start()
 
+    def _attach(self, args: str, request_id: str) -> None:
+        try:
+            raw_paths = shlex.split(args)
+            if not raw_paths:
+                raise ValueError("Usage: /attach PATH [PATH ...]")
+            if len(self._staged_attachments) + len(raw_paths) > MAX_ATTACHMENTS:
+                raise ValueError(f"At most {MAX_ATTACHMENTS} files can be staged per turn.")
+
+            sources: list[tuple[Path, int]] = []
+            for raw_path in raw_paths:
+                candidate = Path(raw_path).expanduser()
+                if not candidate.is_absolute():
+                    candidate = Path.cwd() / candidate
+                if candidate.is_symlink():
+                    raise ValueError(f"Symlinks are not accepted: {raw_path}")
+                try:
+                    source = candidate.resolve(strict=True)
+                except FileNotFoundError as exc:
+                    raise ValueError(f"File not found: {raw_path}") from exc
+                if not source.is_file():
+                    raise ValueError(f"Not a regular file: {raw_path}")
+                size = source.stat().st_size
+                if size > MAX_ATTACHMENT_BYTES:
+                    raise ValueError(
+                        f"File exceeds the 25 MB limit: {raw_path} ({size} bytes)"
+                    )
+                sources.append((source, size))
+
+            workspace = Path(agent._get_workspace_root()).expanduser().resolve()
+            attachments_root = workspace / "attachments"
+            if attachments_root.exists() and attachments_root.is_symlink():
+                raise ValueError("The workspace attachments directory cannot be a symlink.")
+            attachments_root.mkdir(parents=True, exist_ok=True)
+            if attachments_root.resolve().parent != workspace:
+                raise ValueError("The workspace attachments directory is outside the workspace.")
+
+            batch_dir = attachments_root / uuid.uuid4().hex
+            batch_dir.mkdir()
+            staged: list[dict[str, Any]] = []
+            try:
+                for source, size in sources:
+                    destination = batch_dir / source.name
+                    counter = 2
+                    while destination.exists():
+                        destination = batch_dir / f"{source.stem}-{counter}{source.suffix}"
+                        counter += 1
+                    shutil.copyfile(source, destination)
+                    staged.append({
+                        "path": destination.relative_to(workspace).as_posix(),
+                        "bytes": size,
+                    })
+            except Exception:
+                shutil.rmtree(batch_dir, ignore_errors=True)
+                raise
+
+            self._staged_attachments.extend(staged)
+            details = "\n".join(f"- {item['path']} ({item['bytes']} bytes)" for item in staged)
+            self.emit(
+                "response", request_id,
+                text=f"Staged {len(staged)} file{'s' if len(staged) != 1 else ''}:\n"
+                     f"{details}\nType your question to use them.",
+            )
+        except (OSError, ValueError) as exc:
+            self.emit("error", request_id, code="attach_failed", error=str(exc))
+
+    def _attachment_prompt(self, text: str) -> str:
+        if not self._staged_attachments:
+            return text
+        details = "\n".join(
+            f"- {item['path']} ({item['bytes']} bytes)"
+            for item in self._staged_attachments
+        )
+        return (
+            "The user attached these files to this request. They are available in the "
+            "active workspace; use existing file tools with these relative paths as needed:\n"
+            f"{details}\n\nUser request:\n{text}"
+        )
+
     def _run_submit(self, text: str, request_id: str) -> None:
         stream_token = agent._stream_event_callback.set(self._stream_projection(request_id))
         approval_token = agent._approval_callback.set(self._approval)
@@ -356,7 +440,7 @@ class Backend:
                 agent.tasks.clear()
             self.status("thinking", "Thinking…", request_id)
             reply = self._quiet_call(
-                agent._chat_turn, sanitized,
+                agent._chat_turn, self._attachment_prompt(sanitized),
                 clear_tasks=not bool(state["pending_question"] or state["pending_plan"]
                                      or agent.is_plan_acceptance(sanitized)),
             )
@@ -364,6 +448,7 @@ class Backend:
             if len(reply.strip()) < 1:
                 self.emit("error", request_id, code="empty_response", error="The provider returned no answer.")
                 return
+            self._staged_attachments.clear()
             agent.short_term_memory.extend([
                 {"role": "user", "content": text},
                 {"role": "assistant", "content": reply},
@@ -425,6 +510,8 @@ class Backend:
                 self.set_api_key(arg_text.strip(), request_id)
             else:
                 self.prompt_api_key(request_id)
+        elif command in {"/attach", "attach"}:
+            self._attach(arg_text, request_id)
         elif command in {"/learn", "learn"}:
             self.status("learning", "Refreshing the private project graph…", request_id)
             self._quiet_call(agent._load_project_files_into_memory, force=True)

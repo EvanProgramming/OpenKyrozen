@@ -54,6 +54,16 @@ func TestNativeSkillCommandsAreDiscoverable(t *testing.T) {
 	}
 }
 
+func TestAttachCommandIsDiscoverable(t *testing.T) {
+	matches := commandMatches("/attach")
+	if len(matches) != 1 || matches[0].name != "attach" {
+		t.Fatalf("attach command is not discoverable: %#v", matches)
+	}
+	if !strings.Contains(matches[0].description, "drop paths") {
+		t.Fatalf("attach command does not explain drag-and-drop usage: %q", matches[0].description)
+	}
+}
+
 func TestReplaceCommandPreservesArguments(t *testing.T) {
 	got := replaceCommand("  /prov --local", commandMatches("/prov")[0])
 	if got != "  /provider --local" {
