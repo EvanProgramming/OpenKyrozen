@@ -12,12 +12,70 @@ from unittest.mock import patch
 import server
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from history import HistoryManager
 from providers import ProviderConfig
 from memory import MemoryBank
 from subagents import SubAgentManager
+from workspace_context import source_scope_id
 
 
 class ServerBoundaryTests(unittest.TestCase):
+    def test_history_api_lists_tree_rejects_stale_or_unconfirmed_rollbacks_and_restores(self):
+        client = TestClient(server.app)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "workspace"
+            state = Path(directory) / "state"
+            root.mkdir()
+            state.mkdir()
+            workspace_id = server._agent.interaction_workspace_id()
+            memory = MemoryBank(
+                state / "history.sqlite3", user_id=server._SERVER_ACTOR_ID,
+                workspace_id=workspace_id,
+            )
+            session_id = "history-api-session"
+            manager = HistoryManager(
+                memory.store, root, state, source_scope_id=source_scope_id(root),
+                user_id=server._SERVER_ACTOR_ID, workspace_id=workspace_id, session_id=session_id,
+            )
+            (root / "file.txt").write_text("before", encoding="utf-8")
+            baseline = manager.ensure_root(conversation=[], interaction={}, tasks=[])
+            (root / "file.txt").write_text("after", encoding="utf-8")
+            current = manager.commit_turn(
+                manager.begin_turn(conversation=[], interaction={}, tasks=[]),
+                user_message="change", assistant_message="done", conversation=[], interaction={}, tasks=[],
+            )
+            original_sessions = server._sessions
+            server._sessions = {}
+            try:
+                with patch.object(server._agent, "memory_bank", memory), \
+                        patch.object(server._agent, "history_manager", return_value=manager), \
+                        patch.object(server, "_server_capabilities", return_value=frozenset({"read", "write"})):
+                    listed = client.get(f"/api/v2/sessions/{session_id}/history")
+                    self.assertEqual(listed.status_code, 200, listed.text)
+                    self.assertEqual(listed.json()["current_node_id"], current["id"])
+                    self.assertEqual([node["id"] for node in listed.json()["nodes"]], [baseline["id"], current["id"]])
+
+                    unconfirmed = client.post(
+                        f"/api/v2/sessions/{session_id}/history/{baseline['id']}/rollback",
+                        json={"confirm": "yes"},
+                    )
+                    self.assertEqual(unconfirmed.status_code, 400, unconfirmed.text)
+                    stale = client.post(
+                        f"/api/v2/sessions/{session_id}/history/{baseline['id']}/rollback",
+                        json={"confirm": "rollback", "expected_head_id": baseline["id"]},
+                    )
+                    self.assertEqual(stale.status_code, 409, stale.text)
+                    restored = client.post(
+                        f"/api/v2/sessions/{session_id}/history/{baseline['id']}/rollback",
+                        json={"confirm": "rollback", "expected_head_id": current["id"]},
+                    )
+                    self.assertEqual(restored.status_code, 200, restored.text)
+                    self.assertTrue(restored.json()["preserved_memory"])
+                    self.assertEqual((root / "file.txt").read_text(encoding="utf-8"), "before")
+                    self.assertEqual(manager.current()["id"], baseline["id"])
+            finally:
+                server._sessions = original_sessions
+
     def test_chat_interaction_controls_persist_and_restore_without_new_endpoint(self):
         client = TestClient(server.app)
         with tempfile.TemporaryDirectory() as directory:
@@ -652,6 +710,8 @@ print(json.dumps({
         self.assertIn("/api/auth/session", html)
         self.assertIn("credentials: 'same-origin'", html)
         self.assertIn("apiFetch('/api/chat/stream'", html)
+        self.assertIn('id="history-panel"', html)
+        self.assertIn("Restore here", html)
         self.assertNotIn("localStorage.setItem('server-token'", html)
 
     def test_profile_validation(self):

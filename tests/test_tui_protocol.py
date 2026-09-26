@@ -186,6 +186,21 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertEqual(events[-1]["event"], "restart")
         self.assertEqual(events[-1]["request_id"], "update-1")
 
+    def test_history_commands_require_explicit_rollback_confirmation(self):
+        current = {"id": "hist_current"}
+        with patch.object(tui_backend.agent, "history_text", return_value="* hist_current"), \
+                patch.object(tui_backend.agent, "history_manager", return_value=SimpleNamespace(current=lambda: current)), \
+                patch.object(tui_backend.agent, "restore_history", return_value={"recovery": {"id": "hist_recovery"}}) as restore:
+            self.backend._command("history", "", "history-1")
+            self.backend._command("rollback", "hist_current", "rollback-1")
+            self.backend._command("rollback", "hist_current confirm", "rollback-2")
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        self.assertEqual(events[0]["event"], "response")
+        self.assertEqual(events[0]["text"], "* hist_current")
+        self.assertEqual(events[1]["code"], "rollback_confirmation_required")
+        self.assertEqual(events[2]["event"], "response")
+        restore.assert_called_once_with("hist_current", confirm="rollback", expected_head="hist_current")
+
     def test_self_learning_prompt_includes_runtime_and_cost_source(self):
         with patch.object(tui_backend.agent, "learning_runtime", return_value={"mode": "local"}), \
                 patch.object(tui_backend.agent, "learning_cost_source", return_value="Local CPU/RAM/disk; no API cost"):

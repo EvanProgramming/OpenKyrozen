@@ -30,7 +30,7 @@ def stable_hash(value: str) -> str:
 class EventStore:
     """Small transactional store shared by memory, tasks, and learning."""
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self, path: str | os.PathLike[str] | None = None):
         configured = path or os.environ.get("KYROZEN_DB_PATH")
@@ -259,6 +259,33 @@ class EventStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_usage_resets_scope
                     ON usage_resets(scope, user_id, workspace_id, session_id, created_at);
+                CREATE TABLE IF NOT EXISTS history_nodes (
+                    id TEXT PRIMARY KEY,
+                    parent_id TEXT,
+                    kind TEXT NOT NULL DEFAULT 'turn',
+                    summary TEXT NOT NULL DEFAULT '',
+                    user_message TEXT NOT NULL DEFAULT '',
+                    assistant_message TEXT NOT NULL DEFAULT '',
+                    conversation TEXT NOT NULL DEFAULT '[]',
+                    interaction TEXT NOT NULL DEFAULT '{}',
+                    tasks TEXT NOT NULL DEFAULT '[]',
+                    snapshot_relpath TEXT NOT NULL,
+                    file_summary TEXT NOT NULL DEFAULT '{}',
+                    user_id TEXT NOT NULL DEFAULT 'local',
+                    workspace_id TEXT NOT NULL DEFAULT 'default',
+                    session_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_history_nodes_scope
+                    ON history_nodes(user_id, workspace_id, session_id, created_at);
+                CREATE TABLE IF NOT EXISTS history_heads (
+                    user_id TEXT NOT NULL DEFAULT 'local',
+                    workspace_id TEXT NOT NULL DEFAULT 'default',
+                    session_id TEXT NOT NULL,
+                    head_id TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, workspace_id, session_id)
+                );
                 """
             )
             existing = db.execute("SELECT version FROM schema_migrations WHERE version=?", (self.SCHEMA_VERSION,)).fetchone()
@@ -308,7 +335,7 @@ class EventStore:
         params.append(max(1, min(limit, 10000)))
         with self.connection() as db:
             rows = db.execute(
-                f"SELECT * FROM events WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT ?",
+                f"SELECT * FROM events WHERE {' AND '.join(clauses)} ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 params,
             ).fetchall()
         return [dict(row, payload=self._loads(row["payload"], {})) for row in rows]
@@ -328,6 +355,120 @@ class EventStore:
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def history_head(self, *, user_id: str = "local", workspace_id: str = "default",
+                     session_id: str) -> str | None:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT head_id FROM history_heads WHERE user_id=? AND workspace_id=? AND session_id=?",
+                (user_id, workspace_id, session_id),
+            ).fetchone()
+        return row["head_id"] if row else None
+
+    def history_node(self, node_id: str, *, user_id: str = "local", workspace_id: str = "default",
+                     session_id: str | None = None) -> dict[str, Any] | None:
+        clauses = ["id=?", "user_id=?", "workspace_id=?"]
+        params: list[Any] = [node_id, user_id, workspace_id]
+        if session_id is not None:
+            clauses.append("session_id=?")
+            params.append(session_id)
+        with self.connection() as db:
+            row = db.execute(
+                f"SELECT * FROM history_nodes WHERE {' AND '.join(clauses)}", params,
+            ).fetchone()
+        if row is None:
+            return None
+        return self._decode_history_row(dict(row))
+
+    def list_history_nodes(self, *, user_id: str = "local", workspace_id: str = "default",
+                           session_id: str, include_recovery: bool = False,
+                           limit: int = 10000) -> list[dict[str, Any]]:
+        clauses = ["user_id=?", "workspace_id=?", "session_id=?"]
+        params: list[Any] = [user_id, workspace_id, session_id]
+        if not include_recovery:
+            clauses.append("kind != 'recovery'")
+        params.append(max(1, min(int(limit), 10000)))
+        with self.connection() as db:
+            rows = db.execute(
+                f"SELECT * FROM history_nodes WHERE {' AND '.join(clauses)} "
+                "ORDER BY created_at ASC, id ASC LIMIT ?", params,
+            ).fetchall()
+        return [self._decode_history_row(dict(row)) for row in rows]
+
+    @classmethod
+    def _decode_history_row(cls, row: dict[str, Any]) -> dict[str, Any]:
+        for field, fallback in (("conversation", []), ("interaction", {}),
+                                ("tasks", []), ("file_summary", {})):
+            row[field] = cls._loads(row.get(field, ""), fallback)
+        return row
+
+    def insert_history_node(self, node: dict[str, Any], *, set_head: bool = False,
+                            expected_head: str | None = None) -> bool:
+        fields = (
+            node["id"], node.get("parent_id"), node.get("kind", "turn"), node.get("summary", ""),
+            node.get("user_message", ""), node.get("assistant_message", ""), self._json(node.get("conversation", [])),
+            self._json(node.get("interaction", {})), self._json(node.get("tasks", [])), node["snapshot_relpath"],
+            self._json(node.get("file_summary", {})), node.get("user_id", "local"),
+            node.get("workspace_id", "default"), node["session_id"], node["created_at"],
+        )
+        with self._lock, self.connection() as db:
+            if set_head:
+                current = db.execute(
+                    "SELECT head_id FROM history_heads WHERE user_id=? AND workspace_id=? AND session_id=?",
+                    (node.get("user_id", "local"), node.get("workspace_id", "default"), node["session_id"]),
+                ).fetchone()
+                current_id = current["head_id"] if current else None
+                if expected_head is not None and current_id != expected_head:
+                    return False
+            db.execute(
+                "INSERT INTO history_nodes(id,parent_id,kind,summary,user_message,assistant_message,conversation,"
+                "interaction,tasks,snapshot_relpath,file_summary,user_id,workspace_id,session_id,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", fields,
+            )
+            if set_head:
+                db.execute(
+                    "INSERT INTO history_heads(user_id,workspace_id,session_id,head_id,updated_at) VALUES(?,?,?,?,?) "
+                    "ON CONFLICT(user_id,workspace_id,session_id) DO UPDATE SET head_id=excluded.head_id,updated_at=excluded.updated_at",
+                    (node.get("user_id", "local"), node.get("workspace_id", "default"), node["session_id"],
+                     node["id"], node["created_at"]),
+                )
+        return True
+
+    def set_history_head(self, node_id: str, *, user_id: str = "local", workspace_id: str = "default",
+                         session_id: str, expected_head: str | None = None) -> bool:
+        now = utc_now()
+        with self._lock, self.connection() as db:
+            current = db.execute(
+                "SELECT head_id FROM history_heads WHERE user_id=? AND workspace_id=? AND session_id=?",
+                (user_id, workspace_id, session_id),
+            ).fetchone()
+            current_id = current["head_id"] if current else None
+            if expected_head is not None and current_id != expected_head:
+                return False
+            db.execute(
+                "INSERT INTO history_heads(user_id,workspace_id,session_id,head_id,updated_at) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(user_id,workspace_id,session_id) DO UPDATE SET head_id=excluded.head_id,updated_at=excluded.updated_at",
+                (user_id, workspace_id, session_id, node_id, now),
+            )
+        return True
+
+    def replace_tasks(self, tasks: list[dict[str, Any]], *, user_id: str = "local",
+                      workspace_id: str = "default", session_id: str | None = None) -> None:
+        with self._lock, self.connection() as db:
+            clauses = ["user_id=?", "workspace_id=?", "session_id IS ?"]
+            params: list[Any] = [user_id, workspace_id, session_id]
+            db.execute(f"DELETE FROM tasks WHERE {' AND '.join(clauses)}", params)
+            for task in tasks:
+                now = task.get("updated_at") or utc_now()
+                db.execute(
+                    "INSERT INTO tasks(id,parent_id,description,status,priority,dependencies,acceptance,attempts,checkpoint,evidence,"
+                    "user_id,workspace_id,session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (task["id"], task.get("parent_id"), task.get("description", ""), task.get("status", "pending"),
+                     int(task.get("priority", 0)), self._json(task.get("dependencies", [])),
+                     self._json(task.get("acceptance", [])), int(task.get("attempts", 0)),
+                     self._json(task.get("checkpoint", {})), self._json(task.get("evidence", [])),
+                     user_id, workspace_id, session_id, task.get("created_at", now), now),
+                )
 
     def record_usage_attempt(
             self, *, attempt_id: str, provider: str, model: str, surface: str,

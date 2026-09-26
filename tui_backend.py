@@ -530,6 +530,26 @@ class Backend:
             else:
                 self.emit("response", request_id, text=result)
                 self.status("ready", "Ready", request_id)
+        elif command in {"/history", "history"}:
+            self.emit("response", request_id, text=agent.history_text())
+        elif command in {"/rollback", "rollback"}:
+            parts = arg_text.strip().split()
+            if len(parts) != 2 or parts[1].lower() != "confirm":
+                self.emit("error", request_id, code="rollback_confirmation_required",
+                          error="Usage: /rollback <history-node-id> confirm")
+            else:
+                try:
+                    current = agent.history_manager().current()
+                    if current is None:
+                        raise agent.HistoryError("no history has been recorded for this conversation")
+                    result = self._quiet_call(
+                        agent.restore_history, parts[0], confirm="rollback", expected_head=current["id"],
+                    )
+                    self.emit("response", request_id,
+                              text=f"Restored {parts[0]}. Recovery point: {result['recovery']['id']}")
+                    self.interaction(request_id)
+                except agent.HistoryError as exc:
+                    self.emit("error", request_id, code="rollback_failed", error=str(exc))
         elif command in {"/graph", "graph"}:
             parts = arg_text.strip().split(maxsplit=1)
             action = parts[0].lower() if parts else "open"

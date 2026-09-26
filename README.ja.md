@@ -493,6 +493,8 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `POST` | `/api/v2/skills/{skill_id}/rollback` | skill を rollback |
 | `GET` | `/api/v2/sessions` | 永続 session の一覧 |
 | `GET` | `/api/v2/sessions/{session_id}` | session context の復元/読取 |
+| `GET` | `/api/v2/sessions/{session_id}/history` | 会話の履歴ツリーとファイル変更概要 |
+| `POST` | `/api/v2/sessions/{session_id}/history/{node_id}/rollback` | 履歴ノードを復元（`confirm: "rollback"` が必要） |
 | `GET` | `/api/v2/agents` | 専用 sub-agent profile の一覧 |
 | `POST` | `/api/v2/agents/run` | 分離 memory と能力で sub-agent を実行 |
 | `GET` | `/api/cost` | token 使用量とコストサマリー |

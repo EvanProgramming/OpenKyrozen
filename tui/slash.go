@@ -25,6 +25,8 @@ var commands = []command{
 	{name: "api_key", aliases: []string{"key"}, description: "Set a provider API key"},
 	{name: "learn", aliases: []string{"index"}, description: "Re-index the active workspace"},
 	{name: "tasks", aliases: []string{"task"}, description: "Show durable task progress"},
+	{name: "history", aliases: nil, description: "Show the conversation history tree"},
+	{name: "rollback", aliases: nil, description: "Restore a history node: /rollback <id> confirm"},
 	{name: "self-learning", aliases: []string{"learning-settings"}, description: "Tune self-learning features"},
 	{name: "learning", aliases: nil, description: "Inspect learning proposals and evidence"},
 	{name: "memory", aliases: nil, description: "Explain or forget a memory claim"},

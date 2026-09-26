@@ -96,6 +96,8 @@ Parameterized names are part of the contract; clients may substitute a value for
 | `POST` | `/api/v2/schedules/{job_id}/disable` |
 | `GET` | `/api/v2/sessions` |
 | `GET` | `/api/v2/sessions/{session_id}` |
+| `GET` | `/api/v2/sessions/{session_id}/history` |
+| `POST` | `/api/v2/sessions/{session_id}/history/{node_id}/rollback` |
 | `GET` | `/api/v2/skills` |
 | `POST` | `/api/v2/skills/install` |
 | `POST` | `/api/v2/skills/{skill_id}/activate` |

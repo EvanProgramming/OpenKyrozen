@@ -365,6 +365,9 @@ def _get_or_create_session(session_id: str, user_id: str = "anonymous") -> dict:
                 del _sessions[oldest]
         session = _sessions[session_id]
         _initialise_session_defaults(session)
+        current = _agent.history_manager(session_id).current()
+        if current is not None and current.get("kind") != "recovery":
+            session["messages"] = list(current.get("conversation", []))[-_MAX_SESSION_MESSAGES:]
         return session
 
 
@@ -373,6 +376,35 @@ def _interaction_for_session(session: dict[str, Any]):
         _agent.memory_bank.store, user_id=session.get("user_id", _SERVER_ACTOR_ID),
         workspace_id=_agent.interaction_workspace_id(), session_id=session["session_id"],
     )
+
+
+def _history_for_session(session_id: str):
+    return _agent.history_manager(session_id)
+
+
+def _ensure_history_baseline(session: dict[str, Any]):
+    manager = _history_for_session(session["session_id"])
+    current = manager.current()
+    if current is None:
+        tasks = _agent.memory_bank.store.list_tasks(
+            workspace_id=manager.workspace_id, session_id=session["session_id"], user_id=_SERVER_ACTOR_ID,
+        )
+        current = manager.ensure_root(
+            conversation=list(session.get("messages", [])),
+            interaction=_interaction_for_session(session).state(), tasks=tasks,
+            legacy=bool(session.get("messages")),
+        )
+    elif current.get("kind") != "recovery":
+        session["messages"] = list(current.get("conversation", []))[-_MAX_SESSION_MESSAGES:]
+    return manager, current
+
+
+def _public_history_node(node: dict[str, Any], current_id: str | None = None) -> dict[str, Any]:
+    return {
+        "id": node["id"], "parent_id": node.get("parent_id"), "kind": node.get("kind"),
+        "summary": node.get("summary", ""), "created_at": node.get("created_at"),
+        "file_summary": node.get("file_summary", {}), "current": node["id"] == current_id,
+    }
 
 
 def _apply_chat_controls(session: dict[str, Any], body: dict[str, Any], message: str) -> tuple[str, str | None]:
@@ -614,6 +646,11 @@ button:disabled{opacity:.45;cursor:default}
 #status{font-size:12px;color:var(--muted);text-align:center;padding:6px 16px 12px;background:var(--surface)}
 .cost{font-size:11px;color:var(--success)}
 .error{color:var(--error)}
+#history-panel{width:min(100%,1120px);margin:0 auto;padding:12px clamp(16px,4vw,48px);background:var(--surface);border-bottom:1px solid var(--line)}
+#history-panel[hidden]{display:none}#history-panel h2{font-size:14px;color:var(--brand);margin-bottom:6px}
+#history-tree,#history-tree ul{list-style:none;margin:0;padding-left:18px}#history-tree{padding-left:0}
+.history-node{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:5px 0;font-size:12px;color:var(--muted)}
+.history-node.current{color:var(--success)}.history-node button{padding:5px 9px;font-size:11px}.history-node .node-id{font-family:monospace;color:var(--text)}
 @media(max-width:640px){#session-limit{width:100%;margin-left:0}.msg{max-width:100%}#input-area{align-items:stretch}#input-area button{padding:10px 12px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
 </style>
@@ -628,10 +665,16 @@ button:disabled{opacity:.45;cursor:default}
   <label for="session-select">Saved conversation</label>
   <select id="session-select" aria-describedby="session-limit"></select>
   <button type="button" id="new-session">New conversation</button>
+  <button type="button" id="toggle-history" aria-expanded="false" aria-controls="history-panel">History</button>
   <label for="mode-select">Mode</label>
   <select id="mode-select"><option value="auto">Auto</option><option value="ask">Ask</option><option value="plan">Plan</option><option value="agent">Agent</option></select>
   <span id="session-limit" role="status"></span>
 </div>
+<section id="history-panel" aria-labelledby="history-title" hidden>
+  <h2 id="history-title">Conversation history</h2>
+  <div id="history-status" role="status">Loading history…</div>
+  <ul id="history-tree" role="tree" aria-label="Conversation history tree"></ul>
+</section>
 <div id="auth-controls" hidden>
   <label for="server-token">Server token</label>
   <input id="server-token" type="password" autocomplete="current-password" spellcheck="false"
@@ -651,6 +694,7 @@ const SESSION_STORAGE_KEY = 'openkyrozen.active-session';
 const SESSION_LIST_LIMIT = 100;
 let sessionId = readActiveSession() || createSessionId();
 let recentSessions = [];
+let historyState = {nodes: [], current_node_id: ''};
 let isStreaming = false;
 let authInFlight = false;
 let interactionState = {preference_mode: 'auto', effective_mode: 'ask', pending_question: null, pending_plan: null};
@@ -793,6 +837,86 @@ function renderSessionList(sessions) {
     : `Showing ${recentSessions.length} saved sessions. Older durable history is never deleted here.`;
 }
 
+function renderHistory(data) {
+  historyState = data || {nodes: [], current_node_id: ''};
+  const tree = document.getElementById('history-tree');
+  const status = document.getElementById('history-status');
+  tree.replaceChildren();
+  const nodes = Array.isArray(historyState.nodes) ? historyState.nodes : [];
+  const children = new Map();
+  for (const node of nodes) {
+    const key = node.parent_id || '';
+    if (!children.has(key)) children.set(key, []);
+    children.get(key).push(node);
+  }
+  function addBranch(parentId, list, depth) {
+    for (const node of children.get(parentId) || []) {
+      const item = document.createElement('li'); item.setAttribute('role', 'treeitem');
+      const row = document.createElement('div');
+      row.className = 'history-node' + (node.id === historyState.current_node_id ? ' current' : '');
+      const branch = document.createElement('ul'); branch.setAttribute('role', 'group');
+      branch.id = `history-branch-${node.id}`;
+      const childNodes = children.get(node.id) || [];
+      if (childNodes.length) {
+        const toggle = document.createElement('button'); toggle.type = 'button';
+        toggle.textContent = 'Collapse'; toggle.setAttribute('aria-expanded', 'true');
+        toggle.setAttribute('aria-controls', branch.id);
+        toggle.onclick = () => {
+          const expanded = toggle.getAttribute('aria-expanded') === 'true';
+          toggle.setAttribute('aria-expanded', String(!expanded));
+          toggle.textContent = expanded ? 'Expand' : 'Collapse';
+          branch.hidden = expanded;
+        };
+        row.appendChild(toggle);
+      }
+      const marker = node.id === historyState.current_node_id ? ' current' : '';
+      const changes = node.file_summary && node.file_summary.changes || {};
+      const label = document.createElement('span');
+      label.innerHTML = `<span class="node-id">${escapeHtml(node.id)}</span> · ${escapeHtml(node.summary || 'baseline')} · ${escapeHtml(String(node.created_at || '').replace('T', ' ').slice(0, 19))} · files +${changes.added || 0} ~${changes.changed || 0} -${changes.deleted || 0}${marker}`;
+      row.appendChild(label);
+      const restore = document.createElement('button'); restore.type = 'button'; restore.textContent = 'Restore here';
+      restore.disabled = node.id === historyState.current_node_id || isStreaming;
+      restore.setAttribute('aria-label', `Restore history node ${node.id}`);
+      restore.onclick = () => rollbackHistory(node);
+      row.appendChild(restore); item.appendChild(row);
+      addBranch(node.id, branch, depth + 1); if (branch.children.length) item.appendChild(branch);
+      list.appendChild(item);
+    }
+  }
+  addBranch('', tree, 0);
+  status.textContent = nodes.length ? `${nodes.length} recorded node${nodes.length === 1 ? '' : 's'}. Memory is preserved during rollback.` : 'No history nodes recorded yet.';
+}
+
+async function loadHistory() {
+  try {
+    const response = await apiFetch(`/api/v2/sessions/${encodeURIComponent(sessionId)}/history`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || 'Could not load history');
+    renderHistory(data);
+  } catch (error) {
+    if (error instanceof AuthRequiredError) return;
+    document.getElementById('history-status').textContent = 'Could not load history.';
+  }
+}
+
+async function rollbackHistory(node) {
+  const changes = node.file_summary && node.file_summary.changes || {};
+  const message = `Restore “${node.summary || 'this point'}”?\n\nWorkspace changes: +${changes.added || 0} added, ~${changes.changed || 0} changed, -${changes.deleted || 0} deleted.\n\nA recovery point will be kept. Durable memory and learning are preserved.`;
+  if (isStreaming || !window.confirm(message)) return;
+  try {
+    const response = await apiFetch(`/api/v2/sessions/${encodeURIComponent(sessionId)}/history/${encodeURIComponent(node.id)}/rollback`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({confirm: 'rollback', expected_head_id: historyState.current_node_id})
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || 'Rollback failed');
+    await restoreSession(sessionId); await loadHistory();
+    document.getElementById('status').textContent = `Restored ${node.id}. Recovery point: ${data.recovery_node_id}`;
+  } catch (error) {
+    document.getElementById('status').textContent = 'Rollback failed: ' + error.message;
+  }
+}
+
 async function refreshSessionList() {
   const response = await apiFetch(`/api/v2/sessions?limit=${SESSION_LIST_LIMIT}`);
   if (!response.ok) throw new Error('Could not load saved conversations');
@@ -831,6 +955,7 @@ function startNewSession() {
   renderSessionList(recentSessions);
   document.getElementById('status').textContent = 'New conversation ready.';
   document.getElementById('user-input').focus();
+  loadHistory().catch(() => {});
 }
 
 async function loadCost() {
@@ -1012,15 +1137,20 @@ async function sendMessage() {
 }
 
 document.getElementById('session-select').addEventListener('change', event => {
-  if (!isStreaming) restoreSession(event.target.value);
+  if (!isStreaming) { restoreSession(event.target.value).then(loadHistory).catch(() => {}); }
 });
 document.getElementById('new-session').addEventListener('click', startNewSession);
+document.getElementById('toggle-history').addEventListener('click', event => {
+  const panel = document.getElementById('history-panel');
+  panel.hidden = !panel.hidden; event.target.setAttribute('aria-expanded', String(!panel.hidden));
+  if (!panel.hidden) loadHistory().catch(() => {});
+});
 document.getElementById('mode-select').addEventListener('change', event => submitControl({mode: event.target.value}, `Mode: ${event.target.value}`));
 document.getElementById('authenticate').addEventListener('click', authenticate);
 document.getElementById('server-token').addEventListener('keydown', event => {
   if (event.key === 'Enter') { event.preventDefault(); authenticate(); }
 });
-initialiseSessions();
+initialiseSessions().then(loadHistory).catch(() => {});
 </script>
 </body>
 </html>"""
@@ -1535,6 +1665,57 @@ async def api_v2_events(event_type: str | None = None, session_id: str | None = 
     )}
 
 
+@app.get("/api/v2/sessions/{session_id}/history", dependencies=[Depends(require_api_access)])
+async def api_v2_session_history(session_id: str):
+    session_id = _normalise_session_id(session_id)
+    with _chat_lock:
+        session = _get_or_create_session(session_id, _SERVER_ACTOR_ID)
+        manager, current = _ensure_history_baseline(session)
+        nodes = manager.list()
+        return {
+            "session_id": session_id, "current_node_id": current["id"],
+            "nodes": [_public_history_node(node, current["id"]) for node in nodes],
+        }
+
+
+@app.post("/api/v2/sessions/{session_id}/history/{node_id}/rollback",
+          dependencies=[Depends(require_api_access)])
+async def api_v2_session_history_rollback(session_id: str, node_id: str, request: Request):
+    if "write" not in _server_capabilities("web"):
+        raise HTTPException(403, "History rollback requires workspace write capability")
+    body = await _json_object(request)
+    if body.get("confirm") != "rollback":
+        raise HTTPException(400, 'confirm must be "rollback"')
+    expected_head = body.get("expected_head_id")
+    if expected_head is not None and (not isinstance(expected_head, str) or len(expected_head) > 100):
+        raise HTTPException(400, "expected_head_id must be a string")
+    session_id = _normalise_session_id(session_id)
+    with _chat_lock:
+        session = _get_or_create_session(session_id, _SERVER_ACTOR_ID)
+        manager, current = _ensure_history_baseline(session)
+        try:
+            target, recovery = manager.rollback(
+                node_id, confirm="rollback", expected_head=expected_head,
+                current_conversation=list(session.get("messages", [])),
+                current_interaction=_interaction_for_session(session).state(),
+                current_tasks=_agent.memory_bank.store.list_tasks(
+                    workspace_id=manager.workspace_id, session_id=session_id, user_id=_SERVER_ACTOR_ID,
+                ),
+            )
+        except _agent.HistoryError as exc:
+            message = str(exc)
+            status = 409 if "changed" in message else 404 if "not found" in message else 400
+            raise HTTPException(status, message) from exc
+        session["messages"] = list(target.get("conversation", []))[-_MAX_SESSION_MESSAGES:]
+        session["interaction"] = target.get("interaction", {})
+        session["updated"] = time.time()
+        _audit("HISTORY_ROLLBACK", f"session={session_id} target={target['id']} recovery={recovery['id']}", _SERVER_ACTOR_ID)
+        return {
+            "status": "rolled_back", "session_id": session_id, "node_id": target["id"],
+            "recovery_node_id": recovery["id"], "preserved_memory": True,
+        }
+
+
 @app.get("/api/v2/sessions", dependencies=[Depends(require_api_access)])
 async def api_v2_sessions(limit: int = 100):
     return {"sessions": _agent.memory_bank.store.list_sessions(
@@ -1546,7 +1727,8 @@ async def api_v2_sessions(limit: int = 100):
 @app.get("/api/v2/sessions/{session_id}", dependencies=[Depends(require_api_access)])
 async def api_v2_session(session_id: str):
     session_id = _normalise_session_id(session_id)
-    session = _get_or_create_session(session_id, _SERVER_ACTOR_ID)
+    with _chat_lock:
+        session = _get_or_create_session(session_id, _SERVER_ACTOR_ID)
     return {"session_id": session_id, "messages": session["messages"], "updated": session.get("updated"),
             "interaction": _interaction_for_session(session).envelope()}
 

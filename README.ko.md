@@ -492,6 +492,8 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `POST` | `/api/v2/skills/{skill_id}/rollback` | skill rollback |
 | `GET` | `/api/v2/sessions` | 영속 session 조회 |
 | `GET` | `/api/v2/sessions/{session_id}` | session context 복구/읽기 |
+| `GET` | `/api/v2/sessions/{session_id}/history` | 대화 기록 트리와 파일 변경 요약 조회 |
+| `POST` | `/api/v2/sessions/{session_id}/history/{node_id}/rollback` | 기록 노드 복원 (`confirm: "rollback"` 필요) |
 | `GET` | `/api/v2/agents` | 전문 sub-agent profile 조회 |
 | `POST` | `/api/v2/agents/run` | 격리된 memory와 capability로 sub-agent 실행 |
 | `GET` | `/api/cost` | token 사용량 및 비용 요약 |

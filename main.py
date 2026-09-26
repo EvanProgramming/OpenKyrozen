@@ -121,6 +121,7 @@ from capability_tokens import issue_capability_token
 from dynamic_tools import SAFE_BUILTINS, validate_tool_source
 from plugin_runtime import get_plugin_runtime
 from workspace_context import LaunchContext, resolve_launch_context, source_scope_id
+from history import HistoryError, HistoryManager, TurnToken
 from tools import (AVAILABLE_TOOLS, set_workspace_root as _set_tools_workspace_root,
                    set_project_graph as _set_tools_project_graph,
                    set_github_cli as _set_tools_github_cli,
@@ -2794,8 +2795,9 @@ def interaction_workspace_id(context: LaunchContext | None = None) -> str:
 
 def bind_interaction_scope(session_id: str, *, user_id: str | None = None) -> None:
     """Bind the shared task and interaction facades to one local surface."""
-    global tasks, _interaction_controller
+    global tasks, _interaction_controller, short_term_memory
     owner = user_id or memory_bank.user_id
+    memory_bank.session_id = session_id
     workspace_id = interaction_workspace_id()
     tasks = TaskManager(
         memory_bank.store, workspace_id=workspace_id,
@@ -2805,7 +2807,46 @@ def bind_interaction_scope(session_id: str, *, user_id: str | None = None) -> No
         memory_bank.store, user_id=owner, workspace_id=workspace_id,
         session_id=session_id,
     )
+    current = history_manager(session_id).current()
+    if current is not None and current.get("kind") != "recovery":
+        short_term_memory = list(current.get("conversation", []))
     _restore_ponytail_level()
+
+
+def history_manager(session_id: str | None = None) -> HistoryManager:
+    """Return the history service bound to the active workspace and session."""
+    active_session = session_id or memory_bank.session_id or f"surface:{_EXECUTION_SURFACE}"
+    return HistoryManager(
+        memory_bank.store, _get_workspace_root(), _state_root(),
+        source_scope_id=source_scope_id(_get_workspace_root()), user_id=memory_bank.user_id,
+        workspace_id=interaction_workspace_id(), session_id=active_session,
+    )
+
+
+def history_text(session_id: str | None = None) -> str:
+    return history_manager(session_id).tree_text()
+
+
+def restore_history(node_id: str, *, confirm: str, expected_head: str | None = None,
+                    session_id: str | None = None) -> dict[str, Any]:
+    """Restore one history node and rebind the local runtime to its state."""
+    manager = history_manager(session_id)
+    current = manager.current()
+    if current is None:
+        raise HistoryError("no history has been recorded for this conversation")
+    target, recovery = manager.rollback(
+        node_id, confirm=confirm, expected_head=expected_head,
+        current_conversation=list(globals().get("short_term_memory", [])),
+        current_interaction=_interaction_controller.state(),
+        current_tasks=list(tasks.tasks),
+    )
+    bind_interaction_scope(manager.session_id, user_id=memory_bank.user_id)
+    if _project_graph is not None:
+        try:
+            _project_graph.refresh_async(callback=None)
+        except Exception:
+            pass
+    return {"target": target, "recovery": recovery}
 
 
 def set_interaction_mode(mode: str) -> dict[str, Any]:
@@ -6069,6 +6110,18 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
     global _execution_capability_token
     previous_capability_token = _execution_capability_token
     original_user_input = user_input
+    history_token: TurnToken | None = None
+    try:
+        history_token = history_manager().begin_turn(
+            conversation=list(short_term_memory), interaction=_interaction_controller.state(user_input),
+            tasks=list(tasks.tasks),
+        )
+    except Exception as exc:
+        memory_bank.store.append_event(
+            "history.record_failed", {"stage": "begin", "error": str(exc)[:500]},
+            user_id=memory_bank.user_id, workspace_id=memory_bank.workspace_id,
+            session_id=memory_bank.session_id,
+        )
     accepted_plan: dict[str, Any] | None = None
     mode_override = _interaction_mode_override.get()
     state = _interaction_controller.state(user_input)
@@ -6141,6 +6194,21 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
             _emit_stream_event({"event": "interaction", "interaction": interaction_envelope()})
         _track_fix_outcome(original_user_input, reply)
         runtime.turn_end(reply=reply, success=True, **context)
+        if history_token is not None:
+            try:
+                history_manager().commit_turn(
+                    history_token, user_message=original_user_input, assistant_message=reply,
+                    conversation=list(short_term_memory) + [
+                        {"role": "user", "content": original_user_input},
+                        {"role": "assistant", "content": _clean_final_response(reply)},
+                    ], interaction=_interaction_controller.state(), tasks=list(tasks.tasks),
+                )
+            except Exception as exc:
+                memory_bank.store.append_event(
+                    "history.record_failed", {"stage": "commit", "error": str(exc)[:500]},
+                    user_id=memory_bank.user_id, workspace_id=memory_bank.workspace_id,
+                    session_id=memory_bank.session_id,
+                )
         return reply
     finally:
         _execution_capability_token = previous_capability_token
@@ -7134,6 +7202,39 @@ def main() -> None:
                     console.print(json.dumps(result or {"status": "queued"}, ensure_ascii=False, indent=2, default=str))
             else:
                 console.print("Usage: /tasks list | /tasks resume <task-id>")
+            continue
+
+        if user_input.lower() == "/history" or user_input.lower().startswith("/history "):
+            console.print(Panel(history_text(), title="Conversation history", border_style=_ACCENT))
+            continue
+
+        if user_input.lower().startswith("/rollback"):
+            parts = user_input.split(maxsplit=1)
+            node_id = parts[1].strip() if len(parts) > 1 else ""
+            if not node_id:
+                console.print("Usage: /rollback <history-node-id>")
+                continue
+            target = history_manager().store.history_node(
+                node_id, user_id=memory_bank.user_id, workspace_id=interaction_workspace_id(),
+                session_id=memory_bank.session_id or f"surface:{_EXECUTION_SURFACE}",
+            )
+            if target is None:
+                console.print("History node not found.")
+                continue
+            changes = target.get("file_summary", {}).get("changes", {})
+            console.print(
+                f"Restore {node_id}: +{changes.get('added', 0)} added, "
+                f"~{changes.get('changed', 0)} changed, -{changes.get('deleted', 0)} deleted. "
+                "Durable memory is preserved."
+            )
+            if console.input('Type "rollback" to confirm: ').strip().lower() != "rollback":
+                console.print("Rollback cancelled.")
+                continue
+            try:
+                result = restore_history(node_id, confirm="rollback", expected_head=history_manager().current()["id"])
+                console.print(f"Restored {node_id}. Recovery point: {result['recovery']['id']}")
+            except HistoryError as exc:
+                console.print(f"Rollback failed: {exc}")
             continue
 
         if user_input.lower().startswith("/agent"):

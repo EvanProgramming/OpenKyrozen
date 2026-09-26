@@ -179,6 +179,8 @@ Type `/` as the first non-whitespace character to open the command palette. It f
 | `/provider` | Switch to a different LLM provider (interactive menu) |
 | `/api_key` | Change your API key |
 | `/learn` | Perform a clean refresh of the private Graphify project index |
+| `/history` | Show the current conversation's immutable history tree and file deltas |
+| `/rollback <history-node-id>` | Show the selected node's changes and require `rollback` confirmation before restoring it; memory is preserved |
 | `/forget` | Show recent learnings; `/forget keyword` to delete bad learnings |
 | `/update` | Atomically update OpenKyrozen, bundled skills, Graphify, managed GitHub CLI, and Bubble Tea; restart after success |
 | `/mode auto\|ask\|plan\|agent` | Persist the interaction preference for this CLI/TUI or web session |
@@ -691,6 +693,8 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `POST` | `/api/v2/schedules/{job_id}/disable` | Disable a scheduled job |
 | `GET` | `/api/v2/sessions` | List durable sessions |
 | `GET` | `/api/v2/sessions/{session_id}` | Resume/read a session context |
+| `GET` | `/api/v2/sessions/{session_id}/history` | List the conversation's tree of completed turns and file-change summaries |
+| `POST` | `/api/v2/sessions/{session_id}/history/{node_id}/rollback` | Restore a node's transcript, interaction/task state, and workspace snapshot; send `{"confirm":"rollback","expected_head_id":"..."}` |
 | `GET` | `/api/v2/skills` | List installed candidate/active skills |
 | `POST` | `/api/v2/skills/install` | Install and validate a local `SKILL.md` package |
 | `POST` | `/api/v2/skills/{skill_id}/activate` | Activate a validated skill |
@@ -724,6 +728,14 @@ is `accept`, `revise`, or `cancel`. The JSON response, SSE stream, Bubble Tea
 JSONL protocol, and session restore response expose the same
 `interaction: {preference_mode, effective_mode, pending_question, pending_plan}`
 envelope. MCP remains non-interactive and unchanged.
+
+Every completed agent turn is recorded as an immutable node in the selected
+conversation's history tree. The web History panel, `/history`, and the TUI
+command palette show the tree and file deltas. Restoring a node keeps its
+descendants as alternate branches, creates a hidden recovery point, restores
+the workspace outside the project under `~/.kyrozen/v2/history/`, and keeps
+durable memory, learning, usage, and audit events. Rollback requires explicit
+confirmation; `expected_head_id` prevents overwriting a newer change.
 
 Successful `POST /api/chat` requests emit one `chat.completed` webhook after
 the reply is produced. `POST /api/chat/stream` emits the same event only after

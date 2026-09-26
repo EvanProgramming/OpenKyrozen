@@ -495,6 +495,8 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `POST` | `/api/v2/skills/{skill_id}/rollback` | 回滚技能 |
 | `GET` | `/api/v2/sessions` | 列出持久化会话 |
 | `GET` | `/api/v2/sessions/{session_id}` | 恢复/读取会话上下文 |
+| `GET` | `/api/v2/sessions/{session_id}/history` | 列出会话历史树和文件变更摘要 |
+| `POST` | `/api/v2/sessions/{session_id}/history/{node_id}/rollback` | 恢复历史节点（需要 `confirm: "rollback"`） |
 | `GET` | `/api/v2/agents` | 查看专用子 Agent profile |
 | `POST` | `/api/v2/agents/run` | 使用独立记忆和权限运行子 Agent |
 | `GET` | `/api/cost` | Token 用量和费用摘要 |

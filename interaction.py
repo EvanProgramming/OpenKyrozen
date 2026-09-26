@@ -284,7 +284,9 @@ class InteractionController:
             limit=10_000, workspace_id=self.workspace_id, session_id=self.session_id,
             user_id=self.user_id,
         )
-        return [event for event in reversed(events) if str(event.get("event_type", "")).startswith("interaction.")]
+        return [event for event in reversed(events)
+                if str(event.get("event_type", "")).startswith("interaction.")
+                or event.get("event_type") == "history.restored"]
 
     def state(self, user_input: str = "") -> dict[str, Any]:
         preference = "auto"
@@ -293,7 +295,14 @@ class InteractionController:
         executing = None
         for event in self._history():
             event_type, payload = event["event_type"], event.get("payload", {})
-            if event_type == "interaction.mode_changed":
+            if event_type == "history.restored":
+                restored = payload.get("interaction") if isinstance(payload, dict) else None
+                if isinstance(restored, dict):
+                    preference = restored.get("preference_mode", preference)
+                    question = restored.get("pending_question")
+                    plan = restored.get("pending_plan")
+                    executing = restored.get("executing_plan")
+            elif event_type == "interaction.mode_changed":
                 preference = payload.get("mode", preference)
             elif event_type in {"interaction.question_requested", "interaction.question_reopened"}:
                 question = payload
