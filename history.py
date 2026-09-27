@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from context_compaction import retain_context_digests
+
 from event_store import EventStore, utc_now
 
 
@@ -188,7 +190,7 @@ class HistoryManager:
         return {
             "id": node_id, "parent_id": parent_id, "kind": kind, "summary": summary[:240],
             "user_message": user_message[:12000], "assistant_message": assistant_message[:12000],
-            "conversation": conversation[-32:], "interaction": interaction, "tasks": tasks,
+            "conversation": retain_context_digests(conversation, 32), "interaction": interaction, "tasks": tasks,
             "snapshot_relpath": snapshot_relpath, "file_summary": file_summary,
             "user_id": self.user_id, "workspace_id": self.workspace_id, "session_id": self.session_id,
             "created_at": utc_now(),

@@ -298,7 +298,6 @@ class InteractionTests(unittest.TestCase):
                 with patch.object(main, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
                         patch.object(main, "_touch_detached_learning_heartbeat"), \
                         patch.object(main, "dispatch_learning_cycle"), \
-                        patch.object(main, "_summarize_old_turns"), \
                         patch.object(main, "_build_messages", return_value=[]), \
                         patch.object(main, "_classify_complexity", return_value="simple"), \
                         patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
@@ -469,7 +468,6 @@ class InteractionTests(unittest.TestCase):
                 with patch.object(main, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
                         patch.object(main, "_touch_detached_learning_heartbeat"), \
                         patch.object(main, "dispatch_learning_cycle"), \
-                        patch.object(main, "_summarize_old_turns"), \
                         patch.object(main, "_build_messages", return_value=[]), \
                         patch.object(main, "_build_memory_context", return_value=""), \
                         patch.object(main, "_classify_complexity", return_value="simple"), \

@@ -355,6 +355,7 @@ class ProviderConfig:
     base_url: str = ""
     model_simple: str = ""
     model_complex: str = ""
+    context_window_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if not self.model_simple:
@@ -836,6 +837,13 @@ def detect_provider() -> ProviderConfig:
         os.environ.get("KYROZEN_MODEL_COMPLEX", "")
         or config_data.get("model_complex", "")
     )
+    context_window_raw = os.environ.get("KYROZEN_CONTEXT_WINDOW_TOKENS", "") or config_data.get("context_window_tokens")
+    try:
+        context_window_tokens = int(context_window_raw) if context_window_raw not in (None, "") else None
+    except (TypeError, ValueError):
+        context_window_tokens = None
+    if isinstance(context_window_tokens, int) and (context_window_tokens < 1 or context_window_tokens > 10_000_000):
+        context_window_tokens = None
 
     # Auto-decrypt if config was saved encrypted
     if api_key and config_data.get("encrypted"):
@@ -849,6 +857,7 @@ def detect_provider() -> ProviderConfig:
                 base_url=base_url,
                 model_simple=model_simple,
                 model_complex=model_complex,
+                context_window_tokens=context_window_tokens,
             ))
         except Exception:
             pass  # non-critical — will encrypt on next explicit save
@@ -859,6 +868,7 @@ def detect_provider() -> ProviderConfig:
         base_url=base_url,
         model_simple=model_simple,
         model_complex=model_complex,
+        context_window_tokens=context_window_tokens,
     )
 
 
@@ -939,6 +949,10 @@ def save_provider_config_encrypted(config: ProviderConfig) -> None:
     existing["api_key"] = encrypt_api_key(config.api_key)
     existing["model_simple"] = config.model_simple
     existing["model_complex"] = config.model_complex
+    if config.context_window_tokens is None:
+        existing.pop("context_window_tokens", None)
+    else:
+        existing["context_window_tokens"] = config.context_window_tokens
     existing["encrypted"] = True
     existing["encryption"] = "fernet"
     try:
