@@ -130,7 +130,7 @@ if __name__ == "__main__":
             with patch.object(main, "_plugin_runtime_for_surface", return_value=_RuntimeStub()), \
                     patch.object(main, "_touch_detached_learning_heartbeat"), \
                     patch.object(main, "dispatch_learning_cycle"), \
-                    patch.object(main, "_summarize_old_turns"), \
+                    patch.object(main, "_summarize_context_with_chat_model"), \
                     patch.object(main, "_build_messages", return_value=[]), \
                     patch.object(main, "_build_memory_context", return_value=""), \
                     patch.object(main, "_classify_complexity", return_value="simple"), \
