@@ -144,7 +144,7 @@ func (m model) graphMini(width, height int) string {
 
 func (m model) graphCompact() string {
 	status := firstNonEmpty(m.graph.status, "missing")
-	return m.graphMini(9, 3) + "  " + graphStatusStyle(status).Render(strings.ToUpper(status)) +
+	return graphStatusStyle(status).Render("◇ "+strings.ToUpper(status)) +
 		mutedStyle.Render(fmt.Sprintf("  %d nodes · %d edges", m.graph.nodes, m.graph.edges))
 }
 
@@ -152,7 +152,7 @@ func (m model) graphExplorer() string {
 	width, height := maxInt(1, m.width-4), maxInt(1, m.height-2)
 	status := firstNonEmpty(m.graph.status, "missing")
 	lines := []string{
-		brandStyle.Render("PROJECT GRAPH") + "  " + graphStatusStyle(status).Render(strings.ToUpper(status)),
+		brandStyle.Render("◆ PROJECT GRAPH") + "  " + graphStatusStyle(status).Render(strings.ToUpper(status)),
 		mutedStyle.Render(fmt.Sprintf("%d nodes · %d edges · %d communities", m.graph.nodes, m.graph.edges, m.graph.communities)),
 		"",
 		m.graphMini(minInt(48, maxInt(22, width/2)), minInt(14, maxInt(8, height/3))),
@@ -164,12 +164,14 @@ func (m model) graphExplorer() string {
 	nodes := m.visibleGraphNodes()
 	for index, node := range nodes {
 		marker, style := "·", softStyle
+		rowStyle := lipgloss.NewStyle()
 		if index == minInt(m.graphSelected, maxInt(0, len(nodes)-1)) {
 			marker, style = "›", titleStyle
+			rowStyle = rowStyle.Background(lipgloss.Color(surfaceHi)).Padding(0, 1)
 		}
 		color := communityColors[node.community%len(communityColors)]
 		row := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render("●") + " " + style.Render(compactText(node.label, maxInt(8, width-20)))
-		lines = append(lines, marker+" "+row+mutedStyle.Render(fmt.Sprintf("  degree %d", node.degree)))
+		lines = append(lines, rowStyle.Render(marker+" "+row+mutedStyle.Render(fmt.Sprintf("  degree %d", node.degree))))
 	}
 	if len(nodes) == 0 {
 		lines = append(lines, mutedStyle.Render(firstNonEmpty(m.graph.message, "No indexed nodes yet.")))
@@ -200,9 +202,15 @@ func (m model) graphExplorer() string {
 			}
 		}
 	}
-	help := "↑↓/hjkl select · +/- zoom · / search · Tab communities · Enter neighbors · p path · r refresh · Esc close"
-	lines = append(lines, "", mutedStyle.Render(help))
-	return lipgloss.NewStyle().Width(width).MaxWidth(width).Height(height).MaxHeight(height).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color(cyan)).Padding(0, 1).Render(strings.Join(lines, "\n"))
+	help := "↑↓ select · Enter open · Esc close"
+	if width >= 60 {
+		help = "↑↓ select · / search · Enter neighbors · r refresh · Esc close"
+	}
+	if width >= 100 {
+		help = "↑↓/hjkl select · +/- zoom · / search · Tab communities · Enter neighbors · p path · r refresh · Esc close"
+	}
+	lines = append(lines, "", contextStyle.Copy().Width(maxInt(1, width-2)).Render(mutedStyle.Render(help)))
+	return lipgloss.NewStyle().Background(lipgloss.Color(deep)).Width(width).MaxWidth(width).Height(height).MaxHeight(height).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(cyan)).Padding(0, 1).Render(strings.Join(lines, "\n"))
 }
 
 func (m model) visibleGraphNodes() []graphNode {

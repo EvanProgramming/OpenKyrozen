@@ -48,6 +48,19 @@ func TestThemeContrastAgainstBlackCanvas(t *testing.T) {
 	}
 }
 
+func TestThemeContrastAcrossCockpitSurfaces(t *testing.T) {
+	for _, background := range []string{deep, surface, surfaceHi} {
+		for _, foreground := range []string{white, offWhite, muted, cyan, green, amber, red} {
+			if ratio := contrast(foreground, background); ratio < 4.5 {
+				t.Fatalf("%s has insufficient contrast on %s: %.2f", foreground, background, ratio)
+			}
+		}
+	}
+	if ratio := contrast(border, surface); ratio < 3 {
+		t.Fatalf("border contrast is too low on the primary surface: %.2f", ratio)
+	}
+}
+
 func TestMarkdownRolesKeepCyanForEmphasis(t *testing.T) {
 	if *markdownStyles.Document.Color != white || *markdownStyles.Text.Color != white || *markdownStyles.Paragraph.Color != white {
 		t.Fatal("ordinary markdown text is not white-first")

@@ -10,18 +10,18 @@ import (
 )
 
 const (
-	ink       = "#000000"
-	deep      = "#080B0E"
-	surface   = "#141A1F"
-	surfaceHi = "#202A31"
-	border    = "#53616B"
-	white     = "#FFFFFF"
-	offWhite  = "#E7EDF1"
-	muted     = "#AAB6BE"
-	cyan      = "#00F0FF"
-	green     = "#55D187"
-	amber     = "#F0B35A"
-	red       = "#F4778D"
+	ink       = "#060A0D"
+	deep      = "#0B1117"
+	surface   = "#111A22"
+	surfaceHi = "#192632"
+	border    = "#587180"
+	white     = "#F6FBFD"
+	offWhite  = "#DBE7EC"
+	muted     = "#A9BBC4"
+	cyan      = "#2DE2E6"
+	green     = "#7CE38B"
+	amber     = "#F6C177"
+	red       = "#F38BA8"
 )
 
 var (
@@ -33,7 +33,19 @@ var (
 	ruleStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color(border))
 	quietStyle = lipgloss.NewStyle().Background(lipgloss.Color(deep)).Padding(0, 1)
 	focusStyle = lipgloss.NewStyle().Background(lipgloss.Color(surface)).BorderBottom(true).BorderForeground(lipgloss.Color(cyan)).Padding(0, 1)
-	modalStyle = lipgloss.NewStyle().Background(lipgloss.Color(surface)).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color(border)).Padding(1, 2)
+	modalStyle = lipgloss.NewStyle().Background(lipgloss.Color(surface)).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(border)).Padding(1, 2)
+
+	contextStyle    = lipgloss.NewStyle().Background(lipgloss.Color(deep))
+	badgeStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color(cyan)).Background(lipgloss.Color(surfaceHi)).Bold(true).Padding(0, 1)
+	sectionStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color(muted)).Bold(true)
+	welcomeStyle    = lipgloss.NewStyle().Background(lipgloss.Color(deep)).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(border)).Padding(1, 2)
+	assistantStyle  = lipgloss.NewStyle().BorderLeft(true).BorderForeground(lipgloss.Color(border)).PaddingLeft(1)
+	userStyle       = lipgloss.NewStyle().Background(lipgloss.Color(surface)).BorderLeft(true).BorderForeground(lipgloss.Color(cyan)).Padding(0, 1)
+	thinkingStyle   = lipgloss.NewStyle().BorderLeft(true).BorderForeground(lipgloss.Color(amber)).PaddingLeft(1)
+	receiptBoxStyle = lipgloss.NewStyle().Background(lipgloss.Color(deep)).Padding(0, 1)
+	paletteStyle    = lipgloss.NewStyle().Background(lipgloss.Color(surface)).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(border)).Padding(0, 1)
+	composerStyle   = lipgloss.NewStyle().Background(lipgloss.Color(deep)).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(border)).Padding(0, 1)
+	activityStyle   = lipgloss.NewStyle().Background(lipgloss.Color(deep)).BorderLeft(true).BorderForeground(lipgloss.Color(border)).PaddingLeft(1)
 
 	amberStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(amber))
 	greenStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(green))

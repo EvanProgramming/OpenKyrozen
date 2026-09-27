@@ -148,8 +148,11 @@ func TestUsageEventAppearsInChatAndSettings(t *testing.T) {
 	})
 	m.resize()
 	chat := m.View().Content
-	if !strings.Contains(chat, "MODEL") || !strings.Contains(chat, "deepseek-chat") || !strings.Contains(chat, "USAGE") || !strings.Contains(chat, "$0.01") {
+	if !strings.Contains(chat, "deepseek-chat") || !strings.Contains(chat, "2.1K TOK") || !strings.Contains(chat, "$0.01") {
 		t.Fatalf("chat header omitted model or usage summary: %s", chat)
+	}
+	if got := lipgloss.Height(m.chatHeader()); got != 1 {
+		t.Fatalf("context bar rendered %d rows, want 1", got)
 	}
 	m.screen = screenSettings
 	settings := m.View().Content
@@ -437,7 +440,7 @@ func TestToolReceiptsKeepSemanticStatus(t *testing.T) {
 func TestTaskStateTransitionAndAdaptiveRail(t *testing.T) {
 	m := initialModel("", false)
 	m.reducedMotion = false
-	m.width = 140
+	m.width, m.height = 140, 30
 	m.tasks = []taskItem{{id: "t1", description: "Build", status: "running"}}
 	if _, rail := m.layoutWidths(); rail == 0 {
 		t.Fatal("wide layout did not allocate an activity rail")
@@ -452,6 +455,82 @@ func TestTaskStateTransitionAndAdaptiveRail(t *testing.T) {
 	m.width = 90
 	if _, rail := m.layoutWidths(); rail != 0 {
 		t.Fatal("medium layout did not collapse the rail")
+	}
+}
+
+func TestFocusedCockpitRailBreakpointAndCompactGraph(t *testing.T) {
+	m := initialModel("", true)
+	m.graph = graphSnapshot{status: "ready", nodes: 12, edges: 18}
+	for _, size := range [][2]int{{119, 40}, {120, 23}} {
+		m.width, m.height = size[0], size[1]
+		if _, rail := m.layoutWidths(); rail != 0 {
+			t.Fatalf("terminal %dx%d unexpectedly rendered a rail", size[0], size[1])
+		}
+		if header := m.chatHeader(); !strings.Contains(header, "READY") {
+			t.Fatalf("terminal %dx%d lost compact graph state: %s", size[0], size[1], header)
+		}
+	}
+	m.width, m.height = 120, 24
+	if _, rail := m.layoutWidths(); rail == 0 {
+		t.Fatal("120x24 did not enable the contextual rail")
+	}
+	if header := m.chatHeader(); strings.Contains(header, "◇ READY") {
+		t.Fatalf("wide header duplicated graph telemetry: %s", header)
+	}
+}
+
+func TestFocusedCockpitMessageHierarchyAndEmptyState(t *testing.T) {
+	m := initialModel("", true)
+	empty := m.history(80)
+	if !strings.Contains(empty, "WORKSPACE READY") || !strings.Contains(empty, "/plan") || !strings.Contains(empty, "/graph") {
+		t.Fatalf("empty state is incomplete: %s", empty)
+	}
+	m.messages = []chatMessage{
+		{role: "user", text: "Review this"},
+		{role: "assistant", text: "Working **carefully**.", streaming: true},
+		{role: "thinking", text: "Inspecting the graph"},
+		{role: "receipt", toolAction: "read_file", status: "success", toolDetail: "private details"},
+	}
+	history := m.history(80)
+	for _, label := range []string{"YOU", "KYROZEN", "THINKING", "TOOL · read_file · SUCCESS", "▌"} {
+		if !strings.Contains(history, label) {
+			t.Fatalf("message hierarchy omitted %q: %s", label, history)
+		}
+	}
+	if strings.Contains(history, "private details") {
+		t.Fatalf("collapsed tool receipt exposed details: %s", history)
+	}
+}
+
+func TestFocusedCockpitDoesNotDuplicateModelTelemetry(t *testing.T) {
+	m := initialModel("/tmp/workspace", true)
+	m.width, m.height, m.screen = 140, 40, screenChat
+	m.modelName = "deepseek-v4-flash"
+	m.usageScope, m.usageAttempts = "workspace", 4
+	m.usagePromptTokens, m.usageCompletionTokens, m.usageReasoningTokens = 5400, 1800, 620
+	m.resize()
+	view := m.View().Content
+	if got := strings.Count(view, "deepseek-v4-flash"); got != 1 {
+		t.Fatalf("model telemetry appeared %d times, want once: %s", got, view)
+	}
+	if got := strings.Count(view, "7.8K TOK"); got != 1 || !strings.Contains(view, "4 calls · workspace") {
+		t.Fatalf("session usage hierarchy is incomplete or duplicated: %s", view)
+	}
+}
+
+func TestFocusedCockpitPaletteAndModalUseUnifiedFrame(t *testing.T) {
+	m := initialModel("", true)
+	m.palette = commandMatches("/")
+	palette := m.paletteView(80)
+	if !strings.Contains(palette, "╭") || !strings.Contains(palette, "COMMANDS") {
+		t.Fatalf("command palette lost the cockpit frame: %s", palette)
+	}
+	m.width, m.height, m.screen = 80, 24, screenApproval
+	m.approvalTool = "run_cmd"
+	m.resize()
+	modal := m.View().Content
+	if !strings.Contains(modal, "╭") || !strings.Contains(modal, "APPROVAL REQUIRED") {
+		t.Fatalf("approval modal lost the cockpit frame: %s", modal)
 	}
 }
 

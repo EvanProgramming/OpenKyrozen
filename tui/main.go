@@ -1247,7 +1247,11 @@ func boolValue(values map[string]any, key string) bool {
 func (m *model) resize() {
 	width := m.contentWidth()
 	mainWidth, _ := m.layoutWidths()
-	m.input.SetWidth(width)
+	composerWidth := width
+	if m.height >= 12 {
+		composerWidth = maxInt(1, width-4)
+	}
+	m.input.SetWidth(composerWidth)
 	m.input.SetHeight(m.composerHeight())
 	m.apiInput.SetWidth(maxInt(1, minInt(68, m.width-14)))
 	m.view.SetWidth(mainWidth)
@@ -1262,11 +1266,11 @@ func (m model) contentWidth() int {
 
 func (m model) layoutWidths() (int, int) {
 	available := m.contentWidth()
-	if m.width < 110 {
+	if m.width < 120 || m.height < 24 {
 		return available, 0
 	}
 	railWidth := minInt(30, maxInt(24, available/4))
-	return maxInt(1, available-railWidth-2), railWidth
+	return maxInt(1, available-railWidth-1), railWidth
 }
 
 func (m model) composerHeight() int {
@@ -1317,9 +1321,6 @@ func (m model) usageSummary() string {
 func (m model) chatChromeHeight() int {
 	width := m.contentWidth()
 	nonViewport := []string{m.chatHeader()}
-	if !m.compactChat() {
-		nonViewport = append(nonViewport, rule(width))
-	}
 	if progress := m.progressBlock(width); progress != "" {
 		nonViewport = append(nonViewport, progress)
 	}
@@ -1373,7 +1374,20 @@ func (m *model) syncViewport() {
 
 func (m *model) history(width int) string {
 	if len(m.messages) == 0 {
-		return softStyle.Render("No messages yet. Start with a question, or type / for commands.")
+		if width < 28 {
+			return softStyle.Render(compactText("Ready — ask anything", width))
+		}
+		body := strings.Join([]string{
+			brandStyle.Render("◆  WORKSPACE READY"),
+			titleStyle.Render("What will we build?"),
+			mutedStyle.Render("Ask naturally, or start with a focused workflow."),
+			"",
+			softStyle.Render("/plan") + mutedStyle.Render(" plan") + "   " +
+				softStyle.Render("/attach") + mutedStyle.Render(" context") + "   " +
+				softStyle.Render("/graph") + mutedStyle.Render(" inspect"),
+		}, "\n")
+		boxWidth := maxInt(1, minInt(68, width-8))
+		return welcomeStyle.Copy().Width(boxWidth).MaxWidth(boxWidth).Render(body)
 	}
 	var lines []string
 	for index := range m.messages {
@@ -1394,8 +1408,9 @@ func (m *model) history(width int) string {
 				body = message.toolDetail
 			}
 		}
+		innerWidth := maxInt(1, width-5)
 		if message.role == "assistant" && body != "" && !message.streaming {
-			renderWidth := maxInt(1, width-2)
+			renderWidth := innerWidth
 			if message.renderedWidth != renderWidth {
 				message.rendered = renderMarkdown(body, renderWidth)
 				message.renderedWidth = renderWidth
@@ -1411,10 +1426,27 @@ func (m *model) history(width int) string {
 			}
 			body += cursor
 		}
-		block := labelStyle.Render(label) + "\n" + body
-		lines = append(lines, lipgloss.NewStyle().Width(maxInt(1, width-2)).Render(block))
+		if width < 12 {
+			lines = append(lines, softStyle.Render(compactText(label+" "+body, width)))
+			continue
+		}
+		block := labelStyle.Render(label)
+		if body != "" {
+			block += "\n" + body
+		}
+		boxWidth := maxInt(1, width-5)
+		style := assistantStyle
+		switch message.role {
+		case "user":
+			style = userStyle
+		case "thinking":
+			style = thinkingStyle
+		case "receipt":
+			style = receiptBoxStyle
+		}
+		lines = append(lines, style.Copy().Width(boxWidth).MaxWidth(boxWidth).Render(block))
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n\n")
 }
 
 func (m model) View() tea.View {
@@ -1489,16 +1521,13 @@ func (m model) chatView() string {
 	mainWidth, panelWidth := m.layoutWidths()
 	header := m.chatHeader()
 	historyHeight := m.historyHeight()
-	main := quietStyle.Copy().Width(mainWidth).MaxWidth(mainWidth).Height(historyHeight).MaxHeight(historyHeight).Render(
+	main := lipgloss.NewStyle().Width(mainWidth).MaxWidth(mainWidth).Height(historyHeight).MaxHeight(historyHeight).Render(
 		limitRows(m.view.View(), historyHeight),
 	)
 	if panelWidth > 0 {
-		main = lipgloss.JoinHorizontal(lipgloss.Top, main, "  ", m.activityRail())
+		main = lipgloss.JoinHorizontal(lipgloss.Top, main, " ", m.activityRail())
 	}
 	blocks := []string{header}
-	if !m.compactChat() {
-		blocks = append(blocks, rule(contentWidth))
-	}
 	blocks = append(blocks, main)
 	if progress := m.progressBlock(contentWidth); progress != "" {
 		blocks = append(blocks, progress)
@@ -1513,52 +1542,88 @@ func (m model) chatView() string {
 
 func (m model) chatHeader() string {
 	width := m.contentWidth()
-	compact := m.width < 80 || m.height < 16
-	modelLabel := firstNonEmpty(m.provider, "provider pending") + " · " + firstNonEmpty(m.modelName, "model pending")
+	if width < 4 {
+		return brandStyle.Render(compactText("K", width))
+	}
+	innerWidth := maxInt(1, width-2)
+	brand := "◆ OPENKYROZEN"
+	if innerWidth < 24 {
+		brand = "◆ KYROZEN"
+	}
+	left := brandStyle.Render(compactText(brand, innerWidth))
 	mode := strings.ToUpper(firstNonEmpty(m.effectiveMode, m.interactionMode, "ask"))
-	if m.height > 0 && m.height < 12 {
-		return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(
-			brandStyle.Render("OPENKYROZEN") + "  " + mutedStyle.Render(mode),
-		)
+
+	statusText := compactText(firstNonEmpty(m.status, "Ready"), maxInt(4, minInt(18, innerWidth/3)))
+	status := mutedStyle.Render("● " + statusText)
+	if m.busy {
+		status = amberStyle.Render(taskSpinner(m.motionFrame) + " " + statusText)
+	} else if strings.EqualFold(statusText, "ready") {
+		status = greenStyle.Render("● READY")
 	}
-	lines := []string{
-		brandStyle.Render("OPENKYROZEN") + "  " + mutedStyle.Render(mode),
-		softStyle.Render("MODEL  ") + softStyle.Render(compactText(modelLabel, width-8)),
-		softStyle.Render("USAGE  ") + softStyle.Render(compactText(m.usageSummary(), width-8)),
+	right := ""
+	leftBudget := innerWidth
+	if innerWidth >= 38 {
+		right = status
+		leftBudget = maxInt(1, innerWidth-lipgloss.Width(right)-2)
 	}
-	if !compact && m.workspace != "" {
-		lines = append(lines, mutedStyle.Render("WORKSPACE  "+compactText(m.workspace, width-11)))
+	add := func(item string) {
+		candidate := left + mutedStyle.Render("  ·  ") + item
+		if lipgloss.Width(candidate) <= leftBudget {
+			left = candidate
+		}
 	}
+	add(badgeStyle.Render(mode))
 	_, panelWidth := m.layoutWidths()
-	if !compact && panelWidth == 0 && m.height >= 18 {
-		lines = append(lines, m.graphCompact())
+	if panelWidth == 0 {
+		graphStatus := strings.ToUpper(firstNonEmpty(m.graph.status, "missing"))
+		add(graphStatusStyle(graphStatus).Render("◇ " + graphStatus))
 	}
-	return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(strings.Join(lines, "\n"))
+	if m.modelName != "" {
+		add(softStyle.Render(compactText(m.modelName, 22)))
+	}
+	tokens := m.usagePromptTokens + m.usageCompletionTokens + m.usageReasoningTokens
+	usage := formatUsageTokens(tokens) + " TOK"
+	if m.usageCostPicos > 0 {
+		usage += " · " + formatUsageCost(m.usageCostPicos)
+	}
+	add(mutedStyle.Render(usage))
+
+	row := left
+	if right != "" {
+		gap := maxInt(2, innerWidth-lipgloss.Width(left)-lipgloss.Width(right))
+		row += strings.Repeat(" ", gap) + right
+	}
+	return contextStyle.Copy().Width(innerWidth).MaxWidth(innerWidth).Render(row)
 }
 
 func (m model) chatFooter(width int) string {
-	if width < 80 || m.height < 18 {
-		status := compactText(firstNonEmpty(m.status, "Ready"), maxInt(4, width/4))
-		return mutedStyle.Copy().Width(width).MaxWidth(width).Render(
-			compactText("○ "+status+" · ↵ send · / commands · ^C quit", width),
-		)
+	if width < 4 {
+		return ""
 	}
-	hints := "Enter send  ·  ↑↓ commands  ·  PgUp/PgDn scroll  ·  Ctrl+C quit"
-	if width >= 80 && m.height >= 18 {
-		hints = "Enter send  ·  Shift+Enter newline  ·  ↑↓ commands  ·  PgUp/PgDn scroll  ·  Ctrl+C quit"
+	hints := "↵ send · / commands · ^C quit"
+	if width >= 72 && m.height >= 18 {
+		hints = "Enter send · Shift+Enter newline · / commands · PgUp/PgDn scroll · Ctrl+C quit"
 	}
-	status := mutedStyle.Render("○ " + firstNonEmpty(m.status, "Ready"))
-	if m.busy {
-		status = amberStyle.Render(taskSpinner(m.motionFrame) + " " + firstNonEmpty(m.status, "Working…"))
+	workspace := ""
+	if m.workspace != "" && width >= 52 {
+		workspace = compactText(filepath.Base(m.workspace), maxInt(8, width/4))
 	}
-	return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(status + "  " + mutedStyle.Render(hints))
+	if workspace == "" {
+		return mutedStyle.Copy().Width(width).MaxWidth(width).Render(compactText(hints, width))
+	}
+	right := compactText(hints, maxInt(1, width-lipgloss.Width(workspace)-2))
+	gap := maxInt(2, width-lipgloss.Width(workspace)-lipgloss.Width(right))
+	return mutedStyle.Copy().Width(width).MaxWidth(width).Render(workspace + strings.Repeat(" ", gap) + right)
 }
 
 func (m model) paletteView(width int) string {
 	if len(m.palette) == 0 {
 		return ""
 	}
-	rowWidth := maxInt(1, width-2)
+	if width < 12 {
+		return titleStyle.Render(compactText("COMMANDS", width))
+	}
+	rowWidth := maxInt(1, width-6)
 	visible := maxInt(1, minInt(len(m.palette), 5))
 	start := 0
 	if m.paletteIndex >= visible {
@@ -1569,7 +1634,7 @@ func (m model) paletteView(width int) string {
 	if len(m.palette) > visible {
 		title += " · ↑↓ MORE"
 	}
-	lines := []string{titleStyle.Render(title)}
+	lines := []string{sectionStyle.Render(title)}
 	for index := start; index < end; index++ {
 		item := m.palette[index]
 		cursor := mutedStyle.Render("·")
@@ -1581,19 +1646,22 @@ func (m model) paletteView(width int) string {
 				cursor = brandStyle.Render("»")
 			}
 		}
-		row := cursor + " " + softStyle.Render("/"+item.name) + "  " + mutedStyle.Render(item.description)
+		descriptionWidth := maxInt(1, rowWidth-len(item.name)-5)
+		row := cursor + " " + titleStyle.Render("/"+item.name) + "  " + mutedStyle.Render(compactText(item.description, descriptionWidth))
 		lines = append(lines, rowStyle.MaxWidth(rowWidth).Render(row))
 	}
-	return strings.Join(lines, "\n")
+	panelWidth := maxInt(1, width-4)
+	return paletteStyle.Copy().Width(panelWidth).MaxWidth(panelWidth).Render(strings.Join(lines, "\n"))
 }
 
 func (m model) composer(width int) string {
 	if m.height > 0 && m.height < 12 {
 		return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(m.input.View())
 	}
-	style := quietStyle.Copy().Width(width).MaxWidth(width).BorderTop(true).BorderBottom(true).BorderForeground(lipgloss.Color(border))
+	panelWidth := maxInt(1, width-4)
+	style := composerStyle.Copy().Width(panelWidth).MaxWidth(panelWidth)
 	if m.input.Focused() {
-		style = style.BorderBottomForeground(lipgloss.Color(cyan))
+		style = style.BorderForeground(lipgloss.Color(cyan))
 	}
 	return style.Render(m.input.View())
 }
@@ -1603,59 +1671,65 @@ func (m model) progressBlock(width int) string {
 		return ""
 	}
 	message := firstNonEmpty(m.thinkingText, m.status, "Working…")
-	return lipgloss.NewStyle().Width(width).Render(amberStyle.Render(taskSpinner(m.motionFrame)) + " " + softStyle.Render(message))
+	innerWidth := maxInt(1, width-2)
+	line := amberStyle.Render(taskSpinner(m.motionFrame)) + " " + softStyle.Render(compactText(message, maxInt(1, innerWidth-3)))
+	return contextStyle.Copy().Width(innerWidth).MaxWidth(innerWidth).Render(line)
 }
 
 func (m model) activityRail() string {
 	_, panelWidth := m.layoutWidths()
 	width := maxInt(1, panelWidth-2)
+	textWidth := maxInt(1, width-2)
 	height := m.historyHeight()
-	compact := height < 22
 	graphStatus := firstNonEmpty(m.graph.status, "missing")
-	lines := []string{titleStyle.Render("ACTIVITY")}
-	if !compact {
-		lines = []string{
-			titleStyle.Render("PROJECT GRAPH") + "  " + graphStatusStyle(graphStatus).Render(strings.ToUpper(graphStatus)),
-			m.graphMini(minInt(22, width), 8),
-			mutedStyle.Render(fmt.Sprintf("%d nodes · %d edges", m.graph.nodes, m.graph.edges)),
-			"", titleStyle.Render("ACTIVITY"), rule(width), mutedStyle.Render("PROVIDER"), softStyle.Render(firstNonEmpty(m.provider, "pending")),
-		}
-	} else {
-		lines = append(lines, rule(width), mutedStyle.Render("PROVIDER"), softStyle.Render(firstNonEmpty(m.provider, "pending")))
+	mapHeight := 3
+	if height >= 22 {
+		mapHeight = 5
 	}
-	if m.modelName != "" {
-		lines = append(lines, mutedStyle.Render(compactText(m.modelName, width)))
-	}
-	if m.workspace != "" && !compact {
-		lines = append(lines, "", mutedStyle.Render("WORKSPACE"), softStyle.Render(compactText(m.workspace, width)))
-	}
-	lines = append(lines, "", mutedStyle.Render("USAGE"), softStyle.Render(m.usageSummary()))
-	if !compact {
-		lines = append(lines, "", mutedStyle.Render("MODE"), softStyle.Render(
-			"preference "+firstNonEmpty(m.interactionMode, "auto")+" · active "+firstNonEmpty(m.effectiveMode, "ask"),
-		))
-		lines = append(lines, "", titleStyle.Render(fmt.Sprintf("TASKS  %d", len(m.tasks))))
-	} else {
-		lines = append(lines, "", titleStyle.Render(fmt.Sprintf("TASKS  %d", len(m.tasks))))
+	lines := []string{
+		sectionStyle.Render("PROJECT GRAPH") + "  " + graphStatusStyle(graphStatus).Render(strings.ToUpper(graphStatus)),
+		m.graphMini(minInt(22, textWidth), mapHeight),
+		mutedStyle.Render(fmt.Sprintf("%d nodes · %d edges", m.graph.nodes, m.graph.edges)),
+		"",
+		sectionStyle.Render(fmt.Sprintf("TASKS  %d", len(m.tasks))),
 	}
 	if len(m.tasks) == 0 {
 		lines = append(lines, mutedStyle.Render("No active tasks"))
 	}
-	for _, task := range m.tasks {
+	maxTasks := maxInt(1, height-mapHeight-12)
+	for index, task := range m.tasks {
+		if index >= maxTasks {
+			lines = append(lines, mutedStyle.Render(fmt.Sprintf("+%d more", len(m.tasks)-index)))
+			break
+		}
 		icon, stateStyle, label := taskState(task.status, m.motionFrame)
 		if task.id == m.taskFlashID && m.taskFlashTick > 0 && task.status == "succeeded" {
 			label = "completed ·"
 		}
-		if compact {
-			lines = append(lines, stateStyle.Render(icon)+" "+softStyle.Render(compactText(task.description, width-12))+" "+stateStyle.Render(label))
-		} else {
-			lines = append(lines, stateStyle.Render(icon)+" "+softStyle.Render(compactText(task.description, width-4)), stateStyle.Render(label))
-		}
+		row := stateStyle.Render(icon) + " " + softStyle.Render(compactText(task.description, maxInt(4, textWidth-lipgloss.Width(label)-4))) + " " + stateStyle.Render(label)
+		lines = append(lines, row)
+	}
+	workspace := "global workspace"
+	if m.workspace != "" {
+		workspace = filepath.Base(m.workspace)
+	}
+	usage := "No usage yet"
+	if m.usageAttempts > 0 {
+		usage = fmt.Sprintf("%d calls · %s", m.usageAttempts, firstNonEmpty(m.usageScope, "workspace"))
+	}
+	lines = append(lines, "", sectionStyle.Render("SESSION"), softStyle.Render(compactText(workspace, textWidth)), mutedStyle.Render(compactText(usage, textWidth)))
+	preferredMode := firstNonEmpty(m.interactionMode, "auto")
+	activeMode := firstNonEmpty(m.effectiveMode, "ask")
+	if m.interactionMode != "" && m.effectiveMode != "" && preferredMode != activeMode {
+		lines = append(lines,
+			mutedStyle.Render(compactText("preference "+preferredMode, textWidth)),
+			mutedStyle.Render(compactText("active "+activeMode, textWidth)),
+		)
 	}
 	// Keep the rail inside the transcript row budget. Without this cap,
 	// JoinHorizontal adopts a task-heavy rail's natural height and pushes the
 	// composer/footer below the terminal viewport.
-	return lipgloss.NewStyle().Width(maxInt(1, panelWidth)).MaxWidth(maxInt(1, panelWidth)).Height(height).MaxHeight(height).BorderLeft(true).BorderForeground(lipgloss.Color(border)).PaddingLeft(2).Render(limitRows(strings.Join(lines, "\n"), height))
+	return activityStyle.Copy().Width(width).MaxWidth(width).Height(height).MaxHeight(height).Render(limitRows(strings.Join(lines, "\n"), height))
 }
 
 func (m model) taskPanel() string { return m.activityRail() }
