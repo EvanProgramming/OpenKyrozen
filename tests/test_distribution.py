@@ -29,6 +29,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("tui_launcher", document["tool"]["setuptools"]["py-modules"])
         self.assertIn("tui_backend", document["tool"]["setuptools"]["py-modules"])
         self.assertIn("workspace_context", document["tool"]["setuptools"]["py-modules"])
+        self.assertIn("context_compaction", document["tool"]["setuptools"]["py-modules"])
         self.assertIn("learning_worker", document["tool"]["setuptools"]["py-modules"])
         self.assertIn("project_graph", document["tool"]["setuptools"]["py-modules"])
         self.assertIn("github_cli", document["tool"]["setuptools"]["py-modules"])
