@@ -5,7 +5,7 @@ version: 1
 
 provider:
   name: deepseek
-  model: deepseek-chat
+  model: deepseek-flash
   max_tokens: 4096
 
 role:

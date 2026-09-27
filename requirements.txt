@@ -12,6 +12,9 @@ rich>=13.0.0
 # pip install anthropic
 # anthropic>=0.30.0
 
-# Optional: Google Gemini
-# pip install google-generativeai
-# google-generativeai>=0.8.0
+# Optional: Google Gemini and Vertex AI
+# pip install google-genai
+# google-genai>=1.0.0
+
+# Optional: Perplexity Agent API, Amazon Bedrock, and Azure Entra auth
+# pip install perplexityai boto3 azure-identity

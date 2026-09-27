@@ -1,13 +1,13 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12%2B-blue?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/DeepSeek%20%7C%20OpenAI%20%7C%20Claude%20%7C%20Gemini%20%7C%20Ollama-API-green?logo=openai" alt="Multi-Provider">
+  <img src="https://img.shields.io/badge/18%20LLM%20Providers-API-green?logo=openai" alt="Multi-Provider">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
   <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="License">
   <img src="https://img.shields.io/badge/CI-passing-brightgreen" alt="CI">
 </p>
 
 <h1 align="center">✨ OpenKyrozen ✨</h1>
-<p align="center"><strong>자기 학습형 AI 에이전트 — DeepSeek · OpenAI · Claude · Gemini · Ollama</strong></p>
+<p align="center"><strong>자기 학습형 AI 에이전트 — 18개 주요 LLM 제공자 지원</strong></p>
 <p align="center">터미널 네이티브 완전 자율 AI 에이전트. <em>모든 상호작용에서 학습</em>하고,<br>파일 시스템 조작, Git 관리, 버그 수정, 그리고 지속적인 자기 진화를 실현합니다.</p>
 
 <p align="center">
@@ -62,7 +62,7 @@ OpenKyrozen은 터미널에서 실행되는 **자기 학습형 AI 에이전트**
 
 - **39개 런타임 도구** — 파일, 셸, 웹, Git, 브라우저, 그래프, GitHub 기본 작업 37개와 SQLite 메모리 작업 2개
 - **지속적 학습** — 20개 기능을 제한된 dispatcher로 실행하고 사실 추출, 스킬 발명, 전략 최적화를 기록
-- **다양한 LLM 지원** — DeepSeek, OpenAI, Claude, Gemini, 또는 로컬 Ollama 모델
+- **주요 LLM 제공자 지원** — DeepSeek, OpenAI, Anthropic, Google, Z.AI, Kimi, OpenRouter, Groq, Mistral, xAI, Together, Fireworks, Cohere, Azure OpenAI, Perplexity, Bedrock, Vertex, Ollama
 - **크로스 플랫폼** — macOS, Linux, Windows (터미널 기능 자동 감지 포함)
 - **내장 Web UI** — 브라우저 기반 채팅 인터페이스 및 REST API 통합
 
@@ -211,12 +211,12 @@ docker run -p 8000:8000 \
          │
          ▼
 ┌─────────────────┐
-│   모델 선택기   │──► deepseek-v4-flash / deepseek-v4-pro / gpt-4o / claude / gemini / llama
+│   모델 선택기   │──► deepseek-flash / deepseek-v4-pro / gpt-6-luna / gpt-6-astra / Gemini 3 / GLM / Kimi
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│   LLM 제공자    │──► 5개 백엔드, 자동 폴백 체인 포함
+│   LLM 제공자    │──► 18개 백엔드, 자동 폴백 체인 포함
 └────────┬────────┘
          │  응답 + 도구 호출
          ▼
@@ -251,17 +251,20 @@ Kyrozen은 모든 요청을 자동 분류하고 동작을 조정합니다:
 에이전트는 간단한 작업과 복잡한 작업에 서로 다른 모델을 선택합니다. 재정의할 수 있습니다:
 
 ```bash
-export KYROZEN_MODEL_SIMPLE=deepseek-v4-flash
+export KYROZEN_MODEL_SIMPLE=deepseek-flash
 export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
 ```
 
 | 제공자 | 간단한 작업 (기본값) | 복잡한 작업 (기본값) |
 |--------|-------------------|---------------------|
-| DeepSeek | `deepseek-v4-flash` | `deepseek-v4-pro` |
-| OpenAI | `gpt-4o` | `gpt-4o` |
-| Anthropic | `claude-sonnet-4-20250514` | `claude-sonnet-4-20250514` |
-| Google | `gemini-2.5-flash` | `gemini-2.5-pro` |
+| DeepSeek | `deepseek-flash` | `deepseek-v4-pro` |
+| OpenAI | `gpt-6-luna` | `gpt-6-astra` |
+| Anthropic | `claude-haiku-4-5` | `claude-fable-5-1` |
+| Google | `gemini-3.5-flash-lite` | `gemini-3.1-pro-preview` |
 | Ollama | `llama3.2` | `llama3.2` |
+| Z.AI / GLM | `glm-5.3-flash` | `glm-5.3` |
+| Moonshot / Kimi | `kimi-k2.6` | `kimi-k3` |
+| 기타 제공자 | 유효한 제공자 기본 모델 1개 | 유효한 제공자 기본 모델 1개 |
 
 ### 제공자 관리
 
@@ -617,7 +620,7 @@ def register():
 {
   "provider": "deepseek",
   "api_key": "<암호화됨>",
-  "model_simple": "deepseek-v4-flash",
+  "model_simple": "deepseek-flash",
   "model_complex": "deepseek-v4-pro",
   "encrypted": true
 }
@@ -683,7 +686,7 @@ pip install fastapi uvicorn "$release_url"
 # 로컬 체크아웃 전용 (개발)
 pip install .                   # 코어 + CLI
 pip install '.[web]'            # + Web UI
-pip install '.[all]'            # + Claude + Gemini + Web + Playwright
+pip install '.[all]'            # + 네이티브 클라우드 어댑터 + Web + Playwright
 ```
 
 ---
@@ -694,7 +697,7 @@ pip install '.[all]'            # + Claude + Gemini + Web + Playwright
 OpenKyrozen/
 ├── main.py              # 코어 에이전트 루프, 자기 학습, 채팅 턴 로직
 ├── tools.py             # 기본 도구 29개; main.py가 SQLite 메모리 작업 2개 추가
-├── providers.py         # 멀티 LLM 추상화 (5개 제공자 + 폴백)
+├── providers.py         # 멀티 LLM 추상화 (18개 제공자 + 폴백)
 ├── memory.py            # SQLite 사실 메모리 + 재생성 가능한 Chroma 인덱스
 ├── server.py            # FastAPI 웹 서버 + REST API + 채팅 UI
 ├── workspace_context.py # 전역/프로젝트 시작 루트 해결
@@ -723,7 +726,7 @@ OpenKyrozen은 훌륭한 오픈소스 프로젝트 위에 구축되었습니다.
 | **Chroma** | [chroma-core/chroma](https://github.com/chroma-core/chroma) | 장기 메모리와 의미 검색을 지원하는 벡터 데이터베이스 |
 | **FastAPI** | [fastapi/fastapi](https://github.com/fastapi/fastapi) | 웹 서버, REST API, 실시간 스트리밍 엔드포인트 |
 | **Rich** | [Textualize/rich](https://github.com/Textualize/rich) | 터미널 UI — 패널, 프로그레스 바, 구문 강조, 실시간 표시 |
-| **OpenAI Python** | [openai/openai-python](https://github.com/openai/openai-python) | DeepSeek, OpenAI, Ollama 제공자를 위한 통합 API 클라이언트 |
+| **OpenAI Python** | [openai/openai-python](https://github.com/openai/openai-python) | 호환 제공자를 위한 OpenAI 호환 전송 계층 |
 | **Uvicorn** | [encode/uvicorn](https://github.com/encode/uvicorn) | 프로덕션 웹 배포용 ASGI 서버 |
 | **googlesearch-python** | [Nv7-GitHub/googlesearch](https://github.com/Nv7-GitHub/googlesearch) | DuckDuckGo 사용 불가 시 웹 검색 폴백 |
 

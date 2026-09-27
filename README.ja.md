@@ -1,13 +1,13 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12%2B-blue?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/DeepSeek%20%7C%20OpenAI%20%7C%20Claude%20%7C%20Gemini%20%7C%20Ollama-API-green?logo=openai" alt="Multi-Provider">
+  <img src="https://img.shields.io/badge/18%20LLM%20Providers-API-green?logo=openai" alt="Multi-Provider">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
   <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="License">
   <img src="https://img.shields.io/badge/CI-passing-brightgreen" alt="CI">
 </p>
 
 <h1 align="center">✨ OpenKyrozen ✨</h1>
-<p align="center"><strong>自己学習型 AI エージェント — DeepSeek · OpenAI · Claude · Gemini · Ollama</strong></p>
+<p align="center"><strong>自己学習型 AI エージェント — 18 の主要 LLM プロバイダーに対応</strong></p>
 <p align="center">ターミナルネイティブな完全自律型 AI エージェント。<em>あらゆる対話から学習</em>し、<br>ファイルシステム操作、Git 管理、バグ修正、そして継続的な自己進化を実現します。</p>
 
 <p align="center">
@@ -62,7 +62,7 @@ OpenKyrozen はターミナルで動作する**自己学習型 AI エージェ�
 
 - **39 個のランタイムツール** — ファイル、シェル、Web、Git、ブラウザー、グラフ、GitHub の37個の基本操作と、SQLite メモリ操作2個
 - **継続的な学習** — 20 の機能を有界 dispatcher で実行し、事実の抽出、スキルの発明、戦略の最適化を記録します
-- **あらゆる LLM に対応** — DeepSeek、OpenAI、Claude、Gemini、またはローカルの Ollama モデル
+- **主要な LLM プロバイダーに対応** — DeepSeek、OpenAI、Anthropic、Google、Z.AI、Kimi、OpenRouter、Groq、Mistral、xAI、Together、Fireworks、Cohere、Azure OpenAI、Perplexity、Bedrock、Vertex、Ollama
 - **クロスプラットフォーム** — macOS、Linux、Windows（端末機能の自動検出付き）
 - **Web UI を内蔵** — ブラウザベースのチャットインターフェースと REST API による統合
 
@@ -211,12 +211,12 @@ Web インターフェースは、リアルタイムストリーミング、コ�
          │
          ▼
 ┌─────────────────┐
-│  モデル選択器   │──► deepseek-v4-flash / deepseek-v4-pro / gpt-4o / claude / gemini / llama
+│  モデル選択器   │──► deepseek-flash / deepseek-v4-pro / gpt-6-luna / gpt-6-astra / Gemini 3 / GLM / Kimi
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│   LLM プロバイダー │──► 5 つのバックエンド、自動フォールバックチェーン付き
+│   LLM プロバイダー │──► 18 のバックエンド、自動フォールバックチェーン付き
 └────────┬────────┘
          │  応答 + ツール呼び出し
          ▼
@@ -251,17 +251,20 @@ Kyrozen はすべてのリクエストを自動分類し、動作を適応させ
 エージェントは簡単なタスクと複雑なタスクで異なるモデルを選択します。これらは上書き可能です：
 
 ```bash
-export KYROZEN_MODEL_SIMPLE=deepseek-v4-flash
+export KYROZEN_MODEL_SIMPLE=deepseek-flash
 export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
 ```
 
 | プロバイダー | 簡単なタスク（デフォルト） | 複雑なタスク（デフォルト） |
 |-------------|------------------------|--------------------------|
-| DeepSeek | `deepseek-v4-flash` | `deepseek-v4-pro` |
-| OpenAI | `gpt-4o` | `gpt-4o` |
-| Anthropic | `claude-sonnet-4-20250514` | `claude-sonnet-4-20250514` |
-| Google | `gemini-2.5-flash` | `gemini-2.5-pro` |
+| DeepSeek | `deepseek-flash` | `deepseek-v4-pro` |
+| OpenAI | `gpt-6-luna` | `gpt-6-astra` |
+| Anthropic | `claude-haiku-4-5` | `claude-fable-5-1` |
+| Google | `gemini-3.5-flash-lite` | `gemini-3.1-pro-preview` |
 | Ollama | `llama3.2` | `llama3.2` |
+| Z.AI / GLM | `glm-5.3-flash` | `glm-5.3` |
+| Moonshot / Kimi | `kimi-k2.6` | `kimi-k3` |
+| その他のプロバイダー | 有効なプロバイダー既定モデル1つ | 有効なプロバイダー既定モデル1つ |
 
 ### プロバイダー管理
 
@@ -619,7 +622,7 @@ def register():
 {
   "provider": "deepseek",
   "api_key": "<暗号化>",
-  "model_simple": "deepseek-v4-flash",
+  "model_simple": "deepseek-flash",
   "model_complex": "deepseek-v4-pro",
   "encrypted": true
 }
@@ -686,7 +689,7 @@ pip install fastapi uvicorn "$release_url"
 # ローカルチェックアウトのみ（開発）
 pip install .                   # コア + CLI
 pip install '.[web]'            # + Web UI
-pip install '.[all]'            # + Claude + Gemini + Web + Playwright
+pip install '.[all]'            # + クラウドアダプター + Web + Playwright
 ```
 
 ---
@@ -697,7 +700,7 @@ pip install '.[all]'            # + Claude + Gemini + Web + Playwright
 OpenKyrozen/
 ├── main.py              # コアエージェントループ、自己学習、チャットターンロジック
 ├── tools.py             # 29 個の基本ツール；main.py が SQLite メモリ操作2個を追加
-├── providers.py         # マルチ LLM 抽象化（5 プロバイダー + フォールバック）
+├── providers.py         # マルチ LLM 抽象化（18 プロバイダー + フォールバック）
 ├── memory.py            # SQLite の事実メモリ + 再構築可能な Chroma インデックス
 ├── server.py            # FastAPI Web サーバー + REST API + チャット UI
 ├── workspace_context.py # グローバル/プロジェクト起動ルートの解決
@@ -726,7 +729,7 @@ OpenKyrozen は優れたオープンソースプロジェクトの上に構築�
 | **Chroma** | [chroma-core/chroma](https://github.com/chroma-core/chroma) | 長期メモリと意味検索を支えるベクトルデータベース |
 | **FastAPI** | [fastapi/fastapi](https://github.com/fastapi/fastapi) | Web サーバー、REST API、リアルタイムストリーミングエンドポイント |
 | **Rich** | [Textualize/rich](https://github.com/Textualize/rich) | ターミナル UI — パネル、プログレスバー、シンタックスハイライト、ライブ表示 |
-| **OpenAI Python** | [openai/openai-python](https://github.com/openai/openai-python) | DeepSeek、OpenAI、Ollama プロバイダー向け統一 API クライアント |
+| **OpenAI Python** | [openai/openai-python](https://github.com/openai/openai-python) | 互換 API プロバイダー向けの OpenAI 互換トランスポート |
 | **Uvicorn** | [encode/uvicorn](https://github.com/encode/uvicorn) | 本番 Web デプロイ用 ASGI サーバー |
 | **googlesearch-python** | [Nv7-GitHub/googlesearch](https://github.com/Nv7-GitHub/googlesearch) | DuckDuckGo が利用不可時の Web 検索フォールバック |
 

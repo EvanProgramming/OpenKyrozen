@@ -1,13 +1,13 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12%2B-blue?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/DeepSeek%20%7C%20OpenAI%20%7C%20Claude%20%7C%20Gemini%20%7C%20Ollama-API-green?logo=openai" alt="Multi-Provider">
+  <img src="https://img.shields.io/badge/18%20LLM%20Providers-API-green?logo=openai" alt="Multi-Provider">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
   <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="License">
   <img src="https://img.shields.io/badge/CI-passing-brightgreen" alt="CI">
 </p>
 
 <h1 align="center">✨ OpenKyrozen ✨</h1>
-<p align="center"><strong>Self‑learning AI Agent — DeepSeek · OpenAI · Claude · Gemini · Ollama</strong></p>
+<p align="center"><strong>Self‑learning AI Agent — 18 common LLM providers</strong></p>
 <p align="center">A terminal-native AI agent that <em>learns from verified outcomes</em>,<br>operates your filesystem, manages git, fixes bugs, and improves itself over time.</p>
 
 <p align="center">
@@ -63,7 +63,7 @@ OpenKyrozen is a **self-learning AI agent** that runs in your terminal. Unlike a
 
 - **Uses 39 runtime tools** — 37 base file/shell/web/git/browser/graph/GitHub actions plus two SQLite memory actions
 - **Learns continuously** — background learning creates evidence-backed proposals and only promotes repeated or validated improvements
-- **Works with any LLM** — DeepSeek, OpenAI, Claude, Gemini, or local Ollama models
+- **Works with common LLM providers** — OpenAI, Anthropic, Google, DeepSeek, Ollama, Z.AI, Kimi, OpenRouter, Groq, Mistral, xAI, Together, Fireworks, Cohere, Azure OpenAI, Perplexity, Bedrock, and Vertex
 - **Runs on any OS** — macOS, Linux, and Windows (with automatic terminal capability detection)
 - **Has a Web UI** — browser-based chat interface with REST API for integration
 
@@ -86,6 +86,9 @@ Think of it as an AI teammate that gets smarter every time you use it.
 | **Anthropic (Claude)** | [console.anthropic.com](https://console.anthropic.com) | ~$3.00/M input tokens |
 | **Google (Gemini)** | [aistudio.google.com](https://aistudio.google.com) | ~$0.15/M input tokens |
 | **Ollama** | [ollama.com](https://ollama.com) | Free (runs locally) |
+| **Z.AI / GLM, Moonshot / Kimi** | [Z.AI](https://z.ai) · [Moonshot](https://platform.moonshot.cn) | Provider pricing |
+| **OpenRouter, Groq, Mistral, xAI, Together AI, Fireworks AI, Cohere** | Provider consoles | Provider pricing |
+| **Azure OpenAI, Perplexity, Amazon Bedrock, Google Vertex AI** | Provider/cloud account | Account or region pricing |
 
 ### One-line installer
 
@@ -248,12 +251,12 @@ User Input
          │
          ▼
 ┌─────────────────┐
-│  Model Selector  │──► deepseek-v4-flash / deepseek-v4-pro / gpt-4o / claude / gemini / llama
+│  Model Selector  │──► deepseek-flash / deepseek-v4-pro / gpt-6-luna / gpt-6-astra / Gemini 3 / GLM / Kimi
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│   LLM Provider   │──► 5 backends with automatic fallback chain
+│   LLM Provider   │──► 18 backends with automatic fallback chain
 └────────┬────────┘
          │  Response + tool calls
          ▼
@@ -364,25 +367,28 @@ durable TaskList execution internally.
 The agent picks different models for simple vs complex tasks. You can override these:
 
 ```bash
-export KYROZEN_MODEL_SIMPLE=deepseek-v4-flash
+export KYROZEN_MODEL_SIMPLE=deepseek-flash
 export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
 ```
 
 | Provider | Simple tasks (default) | Complex tasks (default) |
 |----------|----------------------|------------------------|
-| DeepSeek | `deepseek-v4-flash` | `deepseek-v4-pro` |
-| OpenAI | `gpt-4o` | `gpt-4o` |
-| Anthropic | `claude-sonnet-4-20250514` | `claude-sonnet-4-20250514` |
-| Google | `gemini-2.5-flash` | `gemini-2.5-pro` |
+| DeepSeek | `deepseek-flash` | `deepseek-v4-pro` |
+| OpenAI | `gpt-6-luna` | `gpt-6-astra` |
+| Anthropic | `claude-haiku-4-5` | `claude-fable-5-1` |
+| Google | `gemini-3.5-flash-lite` | `gemini-3.1-pro-preview` |
 | Ollama | `llama3.2` | `llama3.2` |
+| Z.AI / GLM | `glm-5.3-flash` | `glm-5.3` |
+| Moonshot / Kimi | `kimi-k2.6` | `kimi-k3` |
+| Other providers | One documented provider default | One documented provider default |
 
 ### Model-window context compaction
 
 OpenKyrozen estimates the complete model-visible prompt before every foreground
-model call and reserves 4,096 response tokens. It compacts only when that
+ model call and reserves 4,096 response tokens. It compacts only when that
 input would exceed the active model's declared context window—not at a fixed
-character count. DeepSeek V4, Gemini 2.5 Flash/Pro, Claude Sonnet 4, GPT-4o,
-and Llama 3.2 have built-in windows. For a custom model, set an explicit
+character count. Current DeepSeek, Gemini 3, Claude 5, GPT-6, GLM, Kimi,
+and the documented compatible-provider defaults have built-in windows. For a custom model, set an explicit
 window with the encrypted provider configuration's `context_window_tokens`
 value or:
 
@@ -979,6 +985,15 @@ See `plugins/turn_logger.py` for a working example.
 | `OPENAI_API_KEY` | OpenAI API key | — |
 | `ANTHROPIC_API_KEY` | Anthropic API key | — |
 | `GEMINI_API_KEY` | Google Gemini API key | — |
+| `ZAI_API_KEY` / `MOONSHOT_API_KEY` | Z.AI/GLM or Moonshot/Kimi API key | — |
+| `OPENROUTER_API_KEY` / `GROQ_API_KEY` | OpenRouter or Groq API key | — |
+| `MISTRAL_API_KEY` / `XAI_API_KEY` | Mistral or xAI API key | — |
+| `TOGETHER_API_KEY` / `FIREWORKS_API_KEY` | Together AI or Fireworks AI API key | — |
+| `COHERE_API_KEY` / `PERPLEXITY_API_KEY` | Cohere or Perplexity API key | — |
+| `AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_ENDPOINT` | Azure OpenAI API key/endpoint; Entra identity is also supported | — |
+| `AWS_REGION` / `AWS_DEFAULT_REGION` | Bedrock region; boto3 uses the default AWS credential chain | — |
+| `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` | Vertex project/location; Google ADC is used | — |
+| `OLLAMA_MODEL_SIMPLE` / `OLLAMA_MODEL_COMPLEX` | Optional Ollama model overrides; otherwise `/api/tags` is discovered | — |
 | `KYROZEN_API_KEY` | Universal API key (overrides provider-specific) | — |
 | `KYROZEN_MODEL_SIMPLE` | Model for simple/medium tasks | Provider default |
 | `KYROZEN_MODEL_COMPLEX` | Model for complex tasks | Provider default |
@@ -1030,7 +1045,7 @@ example.
 {
   "provider": "deepseek",
   "api_key": "<encrypted>",
-  "model_simple": "deepseek-v4-flash",
+  "model_simple": "deepseek-flash",
   "model_complex": "deepseek-v4-pro",
   "encrypted": true,
   "encryption": "fernet"
@@ -1113,7 +1128,7 @@ pip install fastapi uvicorn "$release_url"  # existing supported environment
 # Local checkout only (development)
 pip install .
 pip install '.[web]'
-pip install '.[all]'            # + Claude + Gemini + Web + Playwright
+pip install '.[all]'            # + native cloud adapters + Web + Playwright
 ```
 
 ---
@@ -1127,7 +1142,7 @@ OpenKyrozen/
 ├── tui_launcher.py      # TUI discovery with clear Rich fallback
 ├── tui_backend.py       # Bounded JSONL bridge to the Python agent
 ├── tools.py             # 29 base tools; main.py adds two memory actions
-├── providers.py         # Multi-LLM abstraction (5 providers + fallback)
+├── providers.py         # Multi-LLM abstraction (18 providers + fallback)
 ├── memory.py            # SQLite memory with optional rebuildable Chroma index
 ├── server.py            # FastAPI web server + REST API + native HTML/CSS chat UI
 ├── learning_worker.py   # Detached durable self-learning worker
@@ -1163,7 +1178,7 @@ OpenKyrozen is built on top of incredible open-source work. We're grateful to ev
 | **Lip Gloss** | [charmbracelet/lipgloss](https://github.com/charmbracelet/lipgloss) | Terminal layout, color, borders, and explicit backgrounds |
 | **Glamour** | [charmbracelet/glamour](https://github.com/charmbracelet/glamour) | Markdown rendering for streamed assistant responses |
 | **Rich** | [Textualize/rich](https://github.com/Textualize/rich) | Recovery/development CLI rendering and Python-side diagnostics |
-| **OpenAI Python** | [openai/openai-python](https://github.com/openai/openai-python) | Unified API client for DeepSeek, OpenAI, and Ollama providers |
+| **OpenAI Python** | [openai/openai-python](https://github.com/openai/openai-python) | OpenAI-compatible transport for the compatible providers |
 | **Uvicorn** | [encode/uvicorn](https://github.com/encode/uvicorn) | ASGI server for production web deployments |
 | **googlesearch-python** | [Nv7-GitHub/googlesearch](https://github.com/Nv7-GitHub/googlesearch) | Web search fallback when DuckDuckGo is unavailable |
 

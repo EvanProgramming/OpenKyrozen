@@ -1,13 +1,13 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12%2B-blue?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/DeepSeek%20%7C%20OpenAI%20%7C%20Claude%20%7C%20Gemini%20%7C%20Ollama-API-green?logo=openai" alt="Multi-Provider">
+  <img src="https://img.shields.io/badge/18%20LLM%20Providers-API-green?logo=openai" alt="Multi-Provider">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
   <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="License">
   <img src="https://img.shields.io/badge/CI-passing-brightgreen" alt="CI">
 </p>
 
 <h1 align="center">✨ OpenKyrozen ✨</h1>
-<p align="center"><strong>自学习 AI 智能体 — DeepSeek · OpenAI · Claude · Gemini · Ollama</strong></p>
+<p align="center"><strong>自学习 AI 智能体 — 支持 18 个常用 LLM 服务商</strong></p>
 <p align="center">一款终端原生的全自主 AI 智能体，能够<em>从每次交互中学习</em>，<br>操作文件系统、管理 Git、修复 Bug，并随时间不断自我进化。</p>
 
 <p align="center">
@@ -62,7 +62,7 @@ OpenKyrozen 是一款在终端中运行的**自学习 AI 智能体**。与普通
 
 - **39 项运行时工具** — 37 项文件、Shell、网页、Git、浏览器、图谱和 GitHub 基础动作，加上两个 SQLite 记忆动作
 - **持续学习** — 通过有界 dispatcher 运行 20 项功能，提取事实、发明技能并记录策略优化
-- **兼容多种大模型** — DeepSeek、OpenAI、Claude、Gemini，或本地 Ollama 模型
+- **支持主流 LLM 服务商** — DeepSeek、OpenAI、Anthropic、Google、Z.AI、Kimi、OpenRouter、Groq、Mistral、xAI、Together、Fireworks、Cohere、Azure OpenAI、Perplexity、Bedrock、Vertex 和 Ollama
 - **跨平台运行** — macOS、Linux、Windows（自动检测终端能力）
 - **内置 Web 界面** — 浏览器端聊天界面，带 REST API 用于集成
 
@@ -207,12 +207,12 @@ Web 界面提供暗色主题的聊天 UI，支持实时流式输出、费用追�
          │
          ▼
 ┌─────────────────┐
-│   模型选择器    │──► deepseek-v4-flash / deepseek-v4-pro / gpt-4o / claude / gemini / llama
+│   模型选择器    │──► deepseek-flash / deepseek-v4-pro / gpt-6-luna / gpt-6-astra / Gemini 3 / GLM / Kimi
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│   LLM 服务商    │──► 5 个后端，带自动回退链
+│   LLM 服务商    │──► 18 个后端，带自动回退链
 └────────┬────────┘
          │  响应 + 工具调用
          ▼
@@ -247,17 +247,20 @@ Kyrozen 自动对每个请求进行分类并调整行为：
 智能体针对简单任务和复杂任务选择不同模型。你可以覆盖这些默认值：
 
 ```bash
-export KYROZEN_MODEL_SIMPLE=deepseek-v4-flash
+export KYROZEN_MODEL_SIMPLE=deepseek-flash
 export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
 ```
 
 | 服务商 | 简单任务（默认） | 复杂任务（默认） |
 |--------|-----------------|-----------------|
-| DeepSeek | `deepseek-v4-flash` | `deepseek-v4-pro` |
-| OpenAI | `gpt-4o` | `gpt-4o` |
-| Anthropic | `claude-sonnet-4-20250514` | `claude-sonnet-4-20250514` |
-| Google | `gemini-2.5-flash` | `gemini-2.5-pro` |
+| DeepSeek | `deepseek-flash` | `deepseek-v4-pro` |
+| OpenAI | `gpt-6-luna` | `gpt-6-astra` |
+| Anthropic | `claude-haiku-4-5` | `claude-fable-5-1` |
+| Google | `gemini-3.5-flash-lite` | `gemini-3.1-pro-preview` |
 | Ollama | `llama3.2` | `llama3.2` |
+| Z.AI / GLM | `glm-5.3-flash` | `glm-5.3` |
+| Moonshot / Kimi | `kimi-k2.6` | `kimi-k3` |
+| 其他服务商 | 一个有效的服务商默认模型 | 一个有效的服务商默认模型 |
 
 ### 服务商管理
 
@@ -629,7 +632,7 @@ def register():
 {
   "provider": "deepseek",
   "api_key": "<加密>",
-  "model_simple": "deepseek-v4-flash",
+  "model_simple": "deepseek-flash",
   "model_complex": "deepseek-v4-pro",
   "encrypted": true,
   "encryption": "fernet"
@@ -696,7 +699,7 @@ pip install fastapi uvicorn "$release_url"
 # 仅限本地源码检出（开发）
 pip install .                   # 核心 + CLI
 pip install '.[web]'            # + Web UI
-pip install '.[all]'            # + Claude + Gemini + Web + Playwright
+pip install '.[all]'            # + 原生云适配器 + Web + Playwright
 ```
 
 ---
@@ -707,7 +710,7 @@ pip install '.[all]'            # + Claude + Gemini + Web + Playwright
 OpenKyrozen/
 ├── main.py              # 核心智能体循环、自学习、对话逻辑
 ├── tools.py             # 29 项基础工具；main.py 再加入两个 SQLite 记忆动作
-├── providers.py         # 多 LLM 抽象层（5 个服务商 + 回退）
+├── providers.py         # 多 LLM 抽象层（18 个服务商 + 回退）
 ├── memory.py            # SQLite 事实记忆 + 可重建 Chroma 索引
 ├── server.py            # FastAPI Web 服务器 + REST API + 聊天 UI
 ├── workspace_context.py # 全局/项目启动根目录解析
@@ -736,7 +739,7 @@ OpenKyrozen 建立在优秀的开源项目之上。我们感谢每一位维护�
 | **Chroma** | [chroma-core/chroma](https://github.com/chroma-core/chroma) | 支撑长期记忆和语义回忆的向量数据库 |
 | **FastAPI** | [fastapi/fastapi](https://github.com/fastapi/fastapi) | Web 服务器、REST API 和实时流式端点 |
 | **Rich** | [Textualize/rich](https://github.com/Textualize/rich) | 终端 UI——面板、进度条、语法高亮和实时显示 |
-| **OpenAI Python** | [openai/openai-python](https://github.com/openai/openai-python) | DeepSeek、OpenAI 和 Ollama 服务商的统一 API 客户端 |
+| **OpenAI Python** | [openai/openai-python](https://github.com/openai/openai-python) | 兼容服务商使用的 OpenAI 兼容传输层 |
 | **Uvicorn** | [encode/uvicorn](https://github.com/encode/uvicorn) | 生产环境 Web 部署的 ASGI 服务器 |
 | **googlesearch-python** | [Nv7-GitHub/googlesearch](https://github.com/Nv7-GitHub/googlesearch) | DuckDuckGo 不可用时的网页搜索回退 |
 

@@ -205,7 +205,7 @@ class Backend:
                     previous_version=onboarding_previous_version,
                     version=getattr(agent, "RELEASE_VERSION", ""),
                 )
-            elif not configured and getattr(config, "provider", "") != "ollama":
+            elif not configured and not self._quiet_call(agent.provider_is_configured, config):
                 self.prompt_api_key(request_id=request_id)
             self.interaction(request_id)
             self.status("ready", "Ready", request_id)
@@ -219,7 +219,7 @@ class Backend:
         self.emit(
             "prompt", request_id, kind="api_key", masked=True, provider=provider,
             env_var=agent.PROVIDER_ENV_VARS.get(provider, ""),
-            message=f"Enter the {provider.title()} API key. It is stored encrypted locally.",
+            message=f"Enter the {agent.PROVIDER_DISPLAY_NAMES.get(provider, provider)} API key. It is stored encrypted locally.",
             onboarding=bool(self._onboarding_kind),
         )
 
@@ -228,7 +228,9 @@ class Backend:
         self.emit(
             "prompt", request_id, kind="provider", current=current,
             providers=[
-                {"name": name, "model": models[0], "local": name == "ollama"}
+                {"name": name, "display_name": agent.PROVIDER_DISPLAY_NAMES.get(name, name),
+                 "model": models[0], "local": name == "ollama",
+                 "auto_selection": name in agent.PROVIDER_AUTO_SELECTION}
                 for name, models in agent.PROVIDER_DEFAULT_MODELS.items()
             ],
             onboarding=bool(self._onboarding_kind),
@@ -253,7 +255,8 @@ class Backend:
             self.prompt_provider(request_id)
             return
         if self._onboarding_kind == "update":
-            if agent.llm_provider is None and getattr(agent._provider_config, "provider", "") != "ollama":
+            if agent.llm_provider is None and not self._quiet_call(
+                    agent.provider_is_configured, agent._provider_config or self._quiet_call(agent.detect_provider)):
                 self.prompt_api_key(request_id=request_id)
             else:
                 self._complete_onboarding(request_id)
@@ -272,7 +275,7 @@ class Backend:
         if api_key is None and provider != current.provider:
             config.api_key = ""
         try:
-            if config.api_key or provider == "ollama":
+            if config.api_key or self._quiet_call(agent.provider_is_configured, config):
                 self._quiet_call(agent.save_provider_config_encrypted, config)
             configured = bool(self._quiet_call(
                 agent._prompt_and_init_deepseek, interactive=False, config=config,
@@ -281,14 +284,14 @@ class Backend:
                 "ready", request_id, configured=configured, provider=provider,
                 model=config.model_simple, workspace=str(agent._get_workspace_root()),
             )
-            if not configured and provider != "ollama":
+            if not configured and not self._quiet_call(agent.provider_is_configured, config):
                 self.prompt_api_key(request_id=request_id)
             elif self._onboarding_kind == "new":
                 self._prompt_onboarding_learning(request_id)
             elif self._onboarding_kind == "update":
                 self._complete_onboarding(request_id)
             else:
-                self.status("ready", f"Using {provider.title()}.", request_id)
+                self.status("ready", f"Using {agent.PROVIDER_DISPLAY_NAMES.get(provider, provider)}.", request_id)
         except Exception as exc:
             self.emit("error", request_id, code="provider_setup_failed",
                       error=f"{type(exc).__name__}: {_redact(exc)}")

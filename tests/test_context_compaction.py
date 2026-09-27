@@ -47,9 +47,9 @@ class ContextCompactionTests(unittest.TestCase):
         self.assertEqual(state.status["compaction"]["status"], "not_needed")
 
     def test_catalog_aliases_and_environment_override_resolve_context_windows(self):
-        self.assertEqual(ContextState("deepseek-chat").window_tokens, 1_048_576)
-        self.assertEqual(ContextState("gemini-2.5-pro").window_tokens, 1_048_576)
-        self.assertEqual(ContextState("claude-sonnet-4").window_tokens, 200_000)
+        self.assertEqual(ContextState("deepseek-flash").window_tokens, 1_048_576)
+        self.assertEqual(ContextState("gemini-3.1-pro-preview").window_tokens, 1_048_576)
+        self.assertEqual(ContextState("claude-fable-5-1").window_tokens, 1_000_000)
         self.assertEqual(ContextState("llama3.2").window_tokens, 131_072)
         with patch.dict(os.environ, {"KYROZEN_CONTEXT_WINDOW_TOKENS": "64000"}, clear=False):
             self.assertEqual(detect_provider().context_window_tokens, 64_000)

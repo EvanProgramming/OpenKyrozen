@@ -23,7 +23,11 @@ class AgentConfigError(ValueError):
     """Raised when an agent configuration is missing or violates the schema."""
 
 
-SUPPORTED_PROVIDERS = frozenset({"deepseek", "openai", "anthropic", "google", "ollama"})
+SUPPORTED_PROVIDERS = frozenset({
+    "deepseek", "openai", "anthropic", "google", "ollama", "glm", "kimi",
+    "openrouter", "groq", "mistral", "xai", "together", "fireworks", "cohere",
+    "azure_openai", "perplexity", "bedrock", "vertex",
+})
 CAPABILITY_NAMES = frozenset({
     "read", "write", "shell", "network", "git", "browser", "destructive", "dynamic",
     "readonly", "workspace", "full",
@@ -80,7 +84,7 @@ def _packaged_prompt(name: str, fallback: str) -> str:
 def _default_config() -> dict[str, Any]:
     return {
         "version": 1,
-        "provider": {"name": "deepseek", "model": "deepseek-chat", "max_tokens": 4096},
+        "provider": {"name": "deepseek", "model": "deepseek-flash", "max_tokens": 4096},
         "role": {"name": "assistant", "system": _packaged_prompt("role.md", _FALLBACK_ROLE)},
         "instructions": _packaged_prompt("instructions.md", _FALLBACK_INSTRUCTIONS),
         "examples": [{

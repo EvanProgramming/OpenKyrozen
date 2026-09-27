@@ -133,6 +133,8 @@ from providers import (
     PROVIDER_FALLBACKS,
     get_fallback_provider, get_cost_summary, reset_cost_tracker, usage_scope,
     save_provider_config_encrypted, encrypt_api_key, decrypt_api_key,
+    model_for_complexity, provider_is_configured, resolve_ollama_models,
+    PROVIDER_DISPLAY_NAMES,
 )
 from context_compaction import (
     ContextState, compact_for_pressure, message_fingerprint, retain_context_digests,
@@ -429,9 +431,9 @@ _provider_config: ProviderConfig | None = None
 llm_provider: LLMProvider | None = None
 
 # Backward-compatible aliases (used throughout the codebase)
-DEEPSEEK_MODEL_SIMPLE = "deepseek-v4-flash"   # set at init time from provider
+DEEPSEEK_MODEL_SIMPLE = "deepseek-flash"   # set at init time from provider
 DEEPSEEK_MODEL_COMPLEX = "deepseek-v4-pro"
-MODEL_NAME = "deepseek-v4-flash"  # updated at init
+MODEL_NAME = "deepseek-flash"  # updated at init
 # -------- Self-learning feature flags (toggled via /self-learning) --------
 # Keep this list as the public feature contract.  The dispatcher below binds
 # each name to exactly one bounded executor and both CLI and Web use it.
@@ -1380,10 +1382,15 @@ def _prompt_and_init_deepseek(
     _provider_config = config or detect_provider()
     llm_provider = None
 
-    # Ollama's local OpenAI-compatible endpoint deliberately has no credential.
-    if not _provider_config.api_key:
-        if _provider_config.provider == "ollama":
-            console.print("Ollama selected: no API key is required; using the configured local endpoint.")
+    # Ollama, Bedrock, Vertex, and Azure Entra may use documented ambient auth.
+    if not provider_is_configured(_provider_config):
+        if _provider_config.provider in {"ollama", "bedrock", "vertex"}:
+            console.print(
+                f"{PROVIDER_DISPLAY_NAMES.get(_provider_config.provider, _provider_config.provider)} selected: "
+                "using ambient/local credentials."
+            )
+        elif _provider_config.provider == "azure_openai" and _provider_config.base_url:
+            console.print("Azure OpenAI selected: using the configured endpoint and ambient Entra credentials.")
         elif not interactive:
             env_var = PROVIDER_ENV_VARS.get(_provider_config.provider, "")
             hint = f" Set {env_var} or KYROZEN_API_KEY before sending chat requests." if env_var else ""
@@ -1413,7 +1420,7 @@ def _prompt_and_init_deepseek(
             _provider_config.api_key = key
             save_provider_config_encrypted(_provider_config)
 
-    # Set provider-specific env var for subprocesses / SDK auto-detection
+    # Set provider-specific env var for subprocesses / SDK auto-detection.
     env_var = PROVIDER_ENV_VARS.get(_provider_config.provider, "")
     if env_var:
         os.environ[env_var] = _provider_config.api_key
@@ -1446,7 +1453,7 @@ def _switch_provider() -> None:
     console.print(f"\n[bold {_ACCENT}]═══ Switch LLM Provider ═══[/bold {_ACCENT}]")
     for i, p in enumerate(providers_list):
         marker = " ●" if _provider_config.provider == p else "  "
-        console.print(f"  [{_MUTED}]{i+1}.[/{_MUTED}]{marker} {p.title()}")
+        console.print(f"  [{_MUTED}]{i+1}.[/{_MUTED}]{marker} {PROVIDER_DISPLAY_NAMES.get(p, p)}")
     console.print()
 
     choice = console.input("[bold cyan]Choose provider (number) or 'cancel': [/bold cyan]").strip().lower()
@@ -1457,7 +1464,7 @@ def _switch_provider() -> None:
         if 0 <= idx < len(providers_list):
             new_provider = providers_list[idx]
             if new_provider == _provider_config.provider:
-                console.print(f"[{_WARNING}]Already using {new_provider.title()}.[/{_WARNING}]")
+                console.print(f"[{_WARNING}]Already using {PROVIDER_DISPLAY_NAMES.get(new_provider, new_provider)}.[/{_WARNING}]")
                 return
             _provider_config.provider = new_provider
             _provider_config.model_simple = PROVIDER_DEFAULT_MODELS[new_provider][0]
@@ -1467,7 +1474,7 @@ def _switch_provider() -> None:
             env_var = PROVIDER_ENV_VARS.get(new_provider, "")
             if env_var:
                 key = console.input(
-                    f"[bold yellow]Enter {new_provider.title()} API key "
+                    f"[bold yellow]Enter {PROVIDER_DISPLAY_NAMES.get(new_provider, new_provider)} API key "
                     f"(or press Enter to use {env_var}): [/bold yellow]"
                 ).strip()
                 if key:
@@ -1486,7 +1493,7 @@ def _switch_provider() -> None:
             MODEL_NAME = f"{new_provider} ({DEEPSEEK_MODEL_SIMPLE})"
             llm_provider = get_provider(_provider_config)
 
-            console.print(f"[{_SUCCESS}]Switched to {new_provider.title()} ({DEEPSEEK_MODEL_SIMPLE}).[/{_SUCCESS}]")
+            console.print(f"[{_SUCCESS}]Switched to {PROVIDER_DISPLAY_NAMES.get(new_provider, new_provider)} ({DEEPSEEK_MODEL_SIMPLE}).[/{_SUCCESS}]")
         else:
             console.print(f"[{_ERROR}]Invalid number.[/{_ERROR}]")
     except ValueError:
@@ -4273,10 +4280,7 @@ def _execute_durable_task(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def _select_model(user_input: str) -> str:
-    """Auto-select the best DeepSeek model based on task complexity.
-    Simple queries → fast model (deepseek-chat / V4).
-    Complex tasks → reasoning model (deepseek-reasoner / R1).
-    """
+    """Select the configured provider's current simple/complex model."""
     text = user_input.lower().strip()
 
     # Complexity signals: length, multi-step, technical depth
@@ -4360,9 +4364,11 @@ def _select_model(user_input: str) -> str:
     if any(kw in user_input for kw in _cjk_research_keywords):
         complexity_score += 1
 
-    if complexity_score >= 3:
-        return DEEPSEEK_MODEL_COMPLEX
-    return DEEPSEEK_MODEL_SIMPLE
+    config = _provider_config or ProviderConfig(provider="deepseek")
+    if config.provider == "ollama":
+        simple, complex_model = resolve_ollama_models(config)
+        config.model_simple, config.model_complex = simple, complex_model
+    return model_for_complexity(config, complexity_score >= 3)
 
 
 def _provider_timeout_seconds() -> float:
