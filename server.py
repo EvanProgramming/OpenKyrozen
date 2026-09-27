@@ -41,6 +41,7 @@ from task_engine import TaskManager, TaskWorker
 from scheduler import JobScheduler
 from tools import allowed_tool_names, resolve_capabilities, tool_capability
 from capability_tokens import issue_capability_token
+from context_compaction import retain_context_digests
 
 try:
     from fastapi import FastAPI, Request, HTTPException, Depends
@@ -353,11 +354,17 @@ def _get_or_create_session(session_id: str, user_id: str = "anonymous") -> dict:
                 payload = event.get("payload", {})
                 if payload.get("role") in {"user", "assistant"} and payload.get("content"):
                     messages.append({"role": payload["role"], "content": payload["content"]})
+            context_events = _agent.memory_bank.store.list_events(
+                event_type="context.status", limit=1,
+                workspace_id=_agent.memory_bank.workspace_id, session_id=session_id,
+                user_id=user_id,
+            )
             _sessions[session_id] = {
-                "messages": messages[-_MAX_SESSION_MESSAGES:],
+                "messages": retain_context_digests(messages, _MAX_SESSION_MESSAGES),
                 "user_id": user_id,
                 "session_id": session_id,
                 "created": time.time(),
+                "context": context_events[0]["payload"] if context_events else None,
             }
             # Keep only last 100 sessions
             if len(_sessions) > 100:
@@ -367,7 +374,7 @@ def _get_or_create_session(session_id: str, user_id: str = "anonymous") -> dict:
         _initialise_session_defaults(session)
         current = _agent.history_manager(session_id).current()
         if current is not None and current.get("kind") != "recovery":
-            session["messages"] = list(current.get("conversation", []))[-_MAX_SESSION_MESSAGES:]
+            session["messages"] = retain_context_digests(list(current.get("conversation", [])), _MAX_SESSION_MESSAGES)
         return session
 
 
@@ -395,7 +402,7 @@ def _ensure_history_baseline(session: dict[str, Any]):
             legacy=bool(session.get("messages")),
         )
     elif current.get("kind") != "recovery":
-        session["messages"] = list(current.get("conversation", []))[-_MAX_SESSION_MESSAGES:]
+        session["messages"] = retain_context_digests(list(current.get("conversation", [])), _MAX_SESSION_MESSAGES)
     return manager, current
 
 
@@ -531,9 +538,10 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
                 {"role": "user", "content": message},
                 {"role": "assistant", "content": reply},
             ])
-            session["messages"] = _agent.short_term_memory[-_MAX_SESSION_MESSAGES:]
+            session["messages"] = retain_context_digests(_agent.short_term_memory, _MAX_SESSION_MESSAGES)
             session["interaction"] = _agent.interaction_envelope()
             session["updated"] = time.time()
+            session["context"] = _agent.context_usage()
             recalls = _agent.memory_bank.store.list_events(
                 "memory.recalled", limit=1, workspace_id=_agent.memory_bank.workspace_id,
                 session_id=_agent.memory_bank.session_id, user_id=_SERVER_ACTOR_ID,
@@ -543,6 +551,13 @@ def _run_session_chat(session: dict[str, Any], message: str) -> str:
             for role, content in (("user", message), ("assistant", reply)):
                 _agent.memory_bank.store.append_event(
                     "session.message", {"role": role, "content": content},
+                    user_id=session.get("user_id", "anonymous"),
+                    workspace_id=_agent.memory_bank.workspace_id,
+                    session_id=_agent.memory_bank.session_id,
+                )
+            if session["context"]:
+                _agent.memory_bank.store.append_event(
+                    "context.status", session["context"],
                     user_id=session.get("user_id", "anonymous"),
                     workspace_id=_agent.memory_bank.workspace_id,
                     session_id=_agent.memory_bank.session_id,
@@ -645,6 +660,7 @@ button:disabled{opacity:.45;cursor:default}
 :is(button,input,select,textarea):focus-visible{outline:3px solid var(--brand);outline-offset:2px}
 #status{font-size:12px;color:var(--muted);text-align:center;padding:6px 16px 12px;background:var(--surface)}
 .cost{font-size:11px;color:var(--success)}
+.context{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:7px;padding:5px 8px}.context summary{cursor:pointer;color:var(--text);white-space:nowrap}.context dl{display:grid;grid-template-columns:auto auto;gap:3px 9px;margin:8px 0 1px}.context dt{color:var(--muted)}.context dd{margin:0;color:var(--text)}
 .error{color:var(--error)}
 #history-panel{width:min(100%,1120px);margin:0 auto;padding:12px clamp(16px,4vw,48px);background:var(--surface);border-bottom:1px solid var(--line)}
 #history-panel[hidden]{display:none}#history-panel h2{font-size:14px;color:var(--brand);margin-bottom:6px}
@@ -660,6 +676,10 @@ button:disabled{opacity:.45;cursor:default}
   <h1>OpenKyrozen</h1>
   <span>Self-learning AI Agent</span>
   <span class="cost" id="cost-display"></span>
+  <details class="context" id="context-details">
+    <summary id="context-display">Context: unavailable</summary>
+    <dl id="context-breakdown"></dl>
+  </details>
 </header>
 <div id="session-controls">
   <label for="session-select">Saved conversation</label>
@@ -813,6 +833,7 @@ async function submitControl(control, label) {
     if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
     if (data.reply) addMessage('assistant', String(data.reply), false);
     renderInteraction(data.interaction);
+    renderContext(data.context);
     document.getElementById('status').textContent = 'Ready';
   } catch (error) { addMessage('assistant', 'Error: ' + error.message, false); document.getElementById('status').textContent = 'Error'; }
   isStreaming = false; document.getElementById('send-btn').disabled = false; refreshSessionList().catch(() => {});
@@ -835,6 +856,52 @@ function renderSessionList(sessions) {
   document.getElementById('session-limit').textContent = recentSessions.length >= SESSION_LIST_LIMIT
     ? 'Showing the newest 100 saved sessions. Older durable sessions remain saved.'
     : `Showing ${recentSessions.length} saved sessions. Older durable history is never deleted here.`;
+}
+
+function contextTokenLabel(value) {
+  const tokens = Number(value);
+  if (!Number.isFinite(tokens)) return 'unknown';
+  return tokens >= 1000 ? `${(tokens / 1000).toFixed(tokens >= 100000 ? 0 : 1).replace(/\.0$/, '')}K` : String(tokens);
+}
+
+function renderContext(context) {
+  const display = document.getElementById('context-display');
+  const breakdown = document.getElementById('context-breakdown');
+  if (!context || !Number.isFinite(Number(context.input_tokens))) {
+    display.textContent = 'Context: unavailable';
+    breakdown.replaceChildren();
+    return;
+  }
+  const input = contextTokenLabel(context.input_tokens);
+  const window = Number(context.window_tokens);
+  display.textContent = Number.isFinite(window) && window > 0
+    ? `Context: ${input} / ${contextTokenLabel(window)} tokens`
+    : `Context: ${input} tokens (window unknown)`;
+  const rows = [
+    ['Input', `${input} tokens (${context.input_source || 'estimated'})`],
+    ['Reserve', `${contextTokenLabel(context.reserve_tokens)} tokens`],
+    ['Remaining', context.remaining_tokens == null ? 'unknown' : `${contextTokenLabel(context.remaining_tokens)} tokens`],
+    ['Model / source', `${context.model || 'unknown'} (${context.window_source || 'unknown'})`],
+  ];
+  const labels = {
+    fixed_instructions: 'Fixed instructions', memory: 'Memory', conversation: 'Conversation',
+    tool_results: 'Tool results', pending_request: 'Pending request',
+  };
+  for (const [key, label] of Object.entries(labels)) {
+    const value = context.breakdown && context.breakdown[key];
+    if (Number(value) > 0) rows.push([label, `${contextTokenLabel(value)} tokens (estimated)`]);
+  }
+  const compaction = context.compaction || {};
+  if (compaction.status && compaction.status !== 'not_needed') {
+    const omitted = compaction.omitted_entries ? `; ${compaction.omitted_entries} older entries` : '';
+    rows.push(['Latest compaction', `${String(compaction.status).replaceAll('_', ' ')}${omitted}`]);
+  }
+  breakdown.replaceChildren();
+  for (const [label, value] of rows) {
+    const term = document.createElement('dt'); term.textContent = label;
+    const definition = document.createElement('dd'); definition.textContent = value;
+    breakdown.append(term, definition);
+  }
 }
 
 function renderHistory(data) {
@@ -935,6 +1002,7 @@ async function restoreSession(nextSessionId) {
     clearChat();
     messages.forEach(message => addMessage(message.role, String(message.content), false));
     renderInteraction(data.interaction);
+    renderContext(data.context);
     renderSessionList(recentSessions);
     document.getElementById('status').textContent = messages.length
       ? `Restored ${messages.length} saved message${messages.length === 1 ? '' : 's'}.`
@@ -952,6 +1020,7 @@ function startNewSession() {
   saveActiveSession();
   clearChat();
   renderInteraction({preference_mode: 'auto', effective_mode: 'ask', pending_question: null, pending_plan: null});
+  renderContext(null);
   renderSessionList(recentSessions);
   document.getElementById('status').textContent = 'New conversation ready.';
   document.getElementById('user-input').focus();
@@ -1088,6 +1157,7 @@ async function sendMessage() {
           contentDiv.classList.add('error');
         }
         if (Object.prototype.hasOwnProperty.call(parsed, 'interaction')) renderInteraction(parsed.interaction);
+        if (Object.prototype.hasOwnProperty.call(parsed, 'context')) renderContext(parsed.context);
       } catch (e) {
         streamState.parseError = true;
         contentDiv.textContent = 'Stream parse error: ' + e.message;
@@ -1238,7 +1308,7 @@ async def api_chat(request: Request):
     _audit("REPLY", f"len={len(reply)}", session["user_id"])
     return {"reply": reply, "session_id": session_id, "profile": session["profile"],
             "memory_receipt": session.get("last_memory_receipt"), "cost": _cost_summary(),
-            "interaction": session["interaction"]}
+            "interaction": session["interaction"], "context": session.get("context")}
 
 
 @app.post("/api/chat/stream", dependencies=[Depends(require_api_access)])
@@ -1352,6 +1422,7 @@ async def api_chat_stream(request: Request):
                     yield f"data: {json.dumps({'event': 'content', 'chunk': reply}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'event': 'interaction', 'interaction': session['interaction']}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'event': 'usage', 'cost': _cost_summary()})}\n\n"
+                yield f"data: {json.dumps({'event': 'context', 'context': session.get('context')}, ensure_ascii=False)}\n\n"
                 if session.get("last_memory_receipt"):
                     yield f"data: {json.dumps({'event': 'memory_receipt', 'memory_receipt': session['last_memory_receipt']}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'event': 'completion', 'status': 'completed'})}\n\n"
@@ -1706,7 +1777,7 @@ async def api_v2_session_history_rollback(session_id: str, node_id: str, request
             message = str(exc)
             status = 409 if "changed" in message else 404 if "not found" in message else 400
             raise HTTPException(status, message) from exc
-        session["messages"] = list(target.get("conversation", []))[-_MAX_SESSION_MESSAGES:]
+        session["messages"] = retain_context_digests(list(target.get("conversation", [])), _MAX_SESSION_MESSAGES)
         session["interaction"] = target.get("interaction", {})
         session["updated"] = time.time()
         _audit("HISTORY_ROLLBACK", f"session={session_id} target={target['id']} recovery={recovery['id']}", _SERVER_ACTOR_ID)
@@ -1730,7 +1801,7 @@ async def api_v2_session(session_id: str):
     with _chat_lock:
         session = _get_or_create_session(session_id, _SERVER_ACTOR_ID)
     return {"session_id": session_id, "messages": session["messages"], "updated": session.get("updated"),
-            "interaction": _interaction_for_session(session).envelope()}
+            "interaction": _interaction_for_session(session).envelope(), "context": session.get("context")}
 
 
 @app.get("/api/v2/schedules", dependencies=[Depends(require_api_access)])

@@ -308,6 +308,29 @@ export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
 | Google | `gemini-2.5-flash` | `gemini-2.5-pro` |
 | Ollama | `llama3.2` | `llama3.2` |
 
+### Model-window context compaction
+
+OpenKyrozen estimates the complete model-visible prompt before every foreground
+model call and reserves 4,096 response tokens. It compacts only when that
+input would exceed the active model's declared context window—not at a fixed
+character count. DeepSeek V4, Gemini 2.5 Flash/Pro, Claude Sonnet 4, GPT-4o,
+and Llama 3.2 have built-in windows. For a custom model, set an explicit
+window with the encrypted provider configuration's `context_window_tokens`
+value or:
+
+```bash
+export KYROZEN_CONTEXT_WINDOW_TOKENS=128000
+```
+
+Unknown models are never proactively compacted. If their provider reports a
+recognized context overflow, OpenKyrozen compacts older conversation/tool
+results with the active chat model and retries the original request once. The
+newest complete turns, fixed instructions, and pending work are retained. If
+the summary call fails, only the oldest compactable entries are trimmed and an
+untrusted omission marker is kept. The web header always shows a token meter;
+expand it for estimated category sizes, reserve, source labels, and the latest
+compaction result. Prompt, memory, and instruction text are never displayed.
+
 ### Provider management
 
 Switch providers anytime — in chat with `/provider`, or via environment:
@@ -398,7 +421,7 @@ through `/update`; local skills and executable plugins are left untouched.
 | 9 | Strategy distillation | Distill strategies after sufficient recent usage |
 | 10 | Technology discovery | Queue bounded documentation fetches for new libraries |
 | 11 | Skill invention | Create candidate reusable workflows from repeated work |
-| 12 | Context compression | Summarize old turns after the context threshold |
+| 12 | Context compression | Foreground model-window pressure compacts older context |
 | 13 | Outcome-verified evolution | Review one eligible trajectory and canary |
 | 14 | Dynamic-tool definition | Observe the inventory; never grant capability automatically |
 | 15 | Preference detection | Persist newly detected user preference signals |
@@ -661,8 +684,8 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `GET` | `/` | Dark-themed chat web UI |
 | `POST` | `/api/auth/session` | Exchange a server token for a short-lived HttpOnly browser session |
 | `DELETE` | `/api/auth/session` | Revoke the current browser session |
-| `POST` | `/api/chat` | Send a message or typed interaction control; returns the interaction envelope and memory receipt |
-| `POST` | `/api/chat/stream` | SSE chat with typed `interaction` events and the same request controls |
+| `POST` | `/api/chat` | Send a message or typed control; returns interaction, memory receipt, and content-free `context` status |
+| `POST` | `/api/chat/stream` | SSE chat with typed `interaction` and `context` completion events |
 | `GET` | `/api/cost` | Token usage and cost summary |
 | `POST` | `/api/cost/reset` | Explicitly reset a durable workspace/session reporting window (requires `confirm: "reset-cost"`) |
 | `GET` | `/api/health` | Provider status + memory count |
@@ -692,7 +715,7 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `POST` | `/api/v2/schedules` | Create a durable interval or one-shot Gateway job |
 | `POST` | `/api/v2/schedules/{job_id}/disable` | Disable a scheduled job |
 | `GET` | `/api/v2/sessions` | List durable sessions |
-| `GET` | `/api/v2/sessions/{session_id}` | Resume/read a session context |
+| `GET` | `/api/v2/sessions/{session_id}` | Resume/read a session context and its latest context status |
 | `GET` | `/api/v2/sessions/{session_id}/history` | List the conversation's tree of completed turns and file-change summaries |
 | `POST` | `/api/v2/sessions/{session_id}/history/{node_id}/rollback` | Restore a node's transcript, interaction/task state, and workspace snapshot; send `{"confirm":"rollback","expected_head_id":"..."}` |
 | `GET` | `/api/v2/skills` | List installed candidate/active skills |

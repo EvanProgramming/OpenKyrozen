@@ -181,8 +181,8 @@ class StreamingEndpointTests(unittest.TestCase):
         self.assertLess(elapsed, 1)
         self.assertFalse(provider_complete_before_release)
         self.assertEqual(first_payload, {"event": "content", "chunk": "FIRST"})
-        self.assertEqual([item.get("event") for item in payloads[:4]],
-                         ["content", "interaction", "usage", "completion"])
+        self.assertEqual([item.get("event") for item in payloads[:5]],
+                         ["content", "interaction", "usage", "context", "completion"])
         self.assertEqual(payloads[0]["chunk"], " SECOND")
         self.assertEqual(payloads[1]["interaction"]["preference_mode"], "auto")
         self.assertEqual(sum(text(item) == "data: [DONE]\n\n" for item in remaining), 1)
