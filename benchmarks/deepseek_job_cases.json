@@ -1,0 +1,7 @@
+[
+  [
+    "code_diagnosis",
+    "Inspect fast_mode_fixture.py in this project. What happens when average([]) runs? Name the Python exception and suggest the smallest guard. Do not edit files.",
+    ["ZeroDivisionError", "empty"]
+  ]
+]

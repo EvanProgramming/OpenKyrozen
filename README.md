@@ -186,6 +186,8 @@ Type `/` as the first non-whitespace character to open the command palette. It f
 | `/forget` | Show recent learnings; `/forget keyword` to delete bad learnings |
 | `/update` | Atomically update OpenKyrozen, bundled skills, Graphify, managed GitHub CLI, and Bubble Tea; restart after success |
 | `/mode auto\|ask\|plan\|agent` | Persist the interaction preference for this CLI/TUI or web session |
+| `/fast off\|jev\|kev` | Toggle optional Jev or local Kev-0.8B decisions independently of interaction mode |
+| `/decision-assist off\|jev\|kev` | Enable typed checks for learning, memory relevance, and untrusted tool output |
 | `/ask` | Shortcut for `/mode ask` |
 | `/plan` | Shortcut for `/mode plan`; `/plan accept\|cancel` resolves a pending plan |
 | `/question` | Reopen the latest question; `/question skip\|cancel` resolves it |
@@ -272,6 +274,70 @@ User Input
 ```
 
 ### Interaction modes
+
+Fast is a separate, off-by-default session setting. Use `/fast jev` with the paid Jev API and
+`TYPESAFE_API_KEY` or enter a separately encrypted Jev key; use `/fast kev` to
+install the 0.8B model into `~/.kyrozen/kev` and wait for a live check. Kev
+needs Apple Silicon or a supported CUDA/ROCm GPU and 8 GB free disk.
+Kev-0.8B is less accurate than Jev. Jev sends decision context to TypeSafe;
+Kev keeps that context on the device. `/fast off` restores ordinary routing.
+Fast decisions can choose the simple or reasoning LLM, task complexity, and
+learning profile. They never change capabilities, approve tools, or accept plans.
+Only a clarification already supported by the user's request or saved preference
+can be resolved automatically. Diagnostics are available through
+`GET /api/v2/fast/diagnostics?session_id=...`; requests and secrets are omitted.
+For a live paired benchmark, start `kyrozen-web` with a working LLM provider,
+then run `python benchmarks/fast_mode.py --backend kev --repeats 3 --mode ask`
+(or use `--backend jev` with Jev access). The report separates setup time, end-to-end turn latency,
+decision latency, LLM usage, and simple answer checks. The benchmark reports
+regressions as well as speedups.
+[Fast benchmark protocol and raw audit](docs/fast-mode-benchmark.md) are
+available for repeatable Kev and Jev runs. No aggregate Fast speedup is
+promoted here until a paired run demonstrates one with the same LLM
+configuration and workload.
+[TypeSafe's agent guidance](https://docs.typesafe.ai/introduction/coding-agents)
+describes typed decisions; the [Kev README](https://github.com/jaredpalmer/kev)
+documents the local checkpoint and its measured limits.
+
+Decision Assist is separate from Fast and is also off by default. Use
+`/decision-assist jev` for screened public snippets or `/decision-assist kev`
+for local private-context checks after the one-time consent prompt; use
+`/decision-assist revoke` to withdraw the local consent. These
+checks review inferred learning evidence, rerank competing memories, and flag
+instruction-like tool output. They never write the response, activate a claim
+by themselves, grant tool permission, or replace the existing user approval
+gates. Jev calls are paid and leave the workspace; Kev stays local and is less
+accurate. Failed, low-confidence, or privacy-screened checks use the existing
+path. Revoke local access with `/decision-assist off` and re-enable it only
+after consenting again. The web and TUI expose the same backend and health
+state; `/api/v2/decision-assist` reports status, and diagnostics record only
+backend, model, timing, confidence, token counts, outcome, and fallback reason.
+Run the non-mutating labeled shadow checks with
+`python benchmarks/decision_assist.py --backend kev` (or `--backend jev` with
+access); the current smoke result and its quality gate are recorded in
+`docs/decision-assist-validation.md`.
+
+The integrated comparison tests the three real Decision Assist paths with the
+backend off and with live Kev. The current run demonstrates one qualified
+benefit in evidence review:
+
+| Evidence-review metric | Assist off | Kev |
+| --- | ---: | ---: |
+| Accepted typed decisions | 0/9 | 3/9 |
+| Accuracy among accepted decisions | N/A | 3/3 (100%) |
+| Accepted-decision coverage | 0% | 33.3% |
+
+Kev added three accurate supportive evidence decisions and abstained on the
+six uncertain or contradictory cases. This is the only Decision Assist result
+currently promoted as a measured benefit. Memory reranking and tool-output
+review did not meet the improvement criterion in this run, so they are not
+presented as benefits here. Repeat the integrated benchmark with
+`python benchmarks/decision_assist_compare.py --backend kev --repeats 3` (or
+`--backend jev` with access). The raw result is
+`benchmarks/results/decision_assist_compare_2026-09-27_kev.json`.
+[Full Decision Assist metrics and audit](docs/decision-assist-validation.md)
+define evidence accuracy over accepted decisions and retain the memory/tool
+quality measurements.
 
 The interaction preference and the learning profile are separate. `/mode`
 controls whether Kyrozen answers, plans, or acts; `/agent` continues to select
@@ -688,6 +754,8 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `DELETE` | `/api/auth/session` | Revoke the current browser session |
 | `POST` | `/api/chat` | Send a message or typed control; returns interaction, memory receipt, and content-free `context` status |
 | `POST` | `/api/chat/stream` | SSE chat with typed `interaction` and `context` completion events |
+| `GET` | `/api/v2/fast/diagnostics?session_id=...` | Scoped Fast decisions and LLM usage without prompt content |
+| `GET` | `/api/v2/decision-assist` | Decision Assist backend, consent, and health state |
 | `GET` | `/api/cost` | Token usage and cost summary |
 | `POST` | `/api/cost/reset` | Explicitly reset a durable workspace/session reporting window (requires `confirm: "reset-cost"`) |
 | `GET` | `/api/health` | Provider status + memory count |

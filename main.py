@@ -110,6 +110,7 @@ from interaction import (
     normalize_provider_control, parse_control_block, render_plan, render_question, validate_plan_proposal,
     validate_question_request,
 )
+import fast_mode
 from learning_engine import LearningEngine
 from skill_registry import SkillRegistry
 from project_graph import ProjectGraph
@@ -666,6 +667,7 @@ _approval_callback: ContextVar[Any] = ContextVar("approval_callback", default=No
 _active_interaction_mode: ContextVar[str] = ContextVar("active_interaction_mode", default="agent")
 _interaction_mode_override: ContextVar[str | None] = ContextVar("interaction_mode_override", default=None)
 _interaction_controls_enabled: ContextVar[bool] = ContextVar("interaction_controls_enabled", default=True)
+_fast_used_backend: ContextVar[str] = ContextVar("fast_used_backend", default="")
 _turn_cost_log: list[dict] = []  # {"tokens":int, "time":float, "tool_calls":int}
 
 
@@ -2950,6 +2952,63 @@ def set_interaction_mode(mode: str) -> dict[str, Any]:
     return envelope
 
 
+def set_fast_backend(backend: str, *, api_key: str | None = None) -> dict[str, Any]:
+    backend = str(backend or "").strip().lower()
+    if backend == "jev":
+        if api_key:
+            fast_mode.save_jev_key(api_key)
+        if not fast_mode.jev_key():
+            raise InteractionError("Jev API key is required; set TYPESAFE_API_KEY or enter one in Fast settings")
+    elif backend == "kev":
+        fast_mode.setup_kev()
+    envelope = _interaction_controller.set_fast_backend(backend)
+    _emit_stream_event({"event": "interaction", "interaction": envelope})
+    return envelope
+
+
+def _record_fast_decision(backend: str, details: dict[str, Any]) -> None:
+    try:
+        memory_bank.store.append_event(
+            "decision.fast", {"backend": backend, **details},
+            user_id=_interaction_controller.user_id, workspace_id=_interaction_controller.workspace_id,
+            session_id=_interaction_controller.session_id,
+        )
+    except Exception:
+        pass  # Diagnostics must never block the ordinary LLM path.
+
+
+def _record_decision_assist(kind: str, details: dict[str, Any] | None = None) -> None:
+    """Persist decision metadata without retaining the assessed content."""
+    try:
+        payload = {"kind": kind, **(details or {})}
+        memory_bank.store.append_event(
+            "decision.assist", payload, user_id=memory_bank.user_id,
+            workspace_id=memory_bank.workspace_id, session_id=memory_bank.session_id,
+        )
+    except Exception:
+        pass
+
+
+def decision_assist_state() -> dict[str, object]:
+    return fast_mode.decision_assist_state()
+
+
+def set_decision_assist(backend: str, *, private_consent: bool = False,
+                        api_key: str | None = None) -> dict[str, object]:
+    state = fast_mode.set_decision_assist(
+        backend, kev_private_consent=private_consent, api_key=api_key,
+    )
+    _record_decision_assist("settings", {"backend": state["backend"],
+                                          "private_consent": state["kev_private_consent"]})
+    return state
+
+
+def revoke_decision_assist_consent() -> dict[str, object]:
+    state = fast_mode.revoke_decision_assist_consent()
+    _record_decision_assist("consent_revoked", {"backend": state["backend"]})
+    return state
+
+
 def resolve_interaction_question(request_id: str, answers: Any, *, action: str = "answer") -> dict[str, Any]:
     return _interaction_controller.resolve_question(request_id, answers, action=action)
 
@@ -3416,14 +3475,26 @@ def _build_memory_context(query: str, n: int = 3, context: dict[str, Any] | None
     """Return bounded, explicitly untrusted memory data for the model."""
     context = context or {}
     profile = learning_engine.route_profile(query, _agent_profile_mode)
+    candidate_limit = max(n, 8)
     recalled = memory_bank.recall_records(
-        query, n_results=n, profile=profile,
+        query, n_results=candidate_limit, profile=profile,
         task_signature=learning_engine.task_signature(profile, query),
         speaker=context.get("speaker"), audience=context.get("audience"), channel=context.get("channel"),
         authorized_speakers=set(context.get("authorized_speakers", [])),
     )
     if not recalled:
         return ""
+    private = any(row.get("metadata", {}).get("visibility", "public") != "public" for row in recalled)
+    selected, assist = fast_mode.rank_memory_candidates(query, recalled, private=private, limit=n)
+    if assist:
+        _record_decision_assist("memory_relevance", {
+            "backend": assist.get("backend"), "latency_ms": assist.get("latency_ms"),
+            "model_version": assist.get("model_version"), "input_tokens": assist.get("input_tokens"),
+            "output_tokens": assist.get("output_tokens"),
+            "fallback_reason": assist.get("fallback_reason"),
+            "outcome": "reranked" if selected != recalled[:n] else "fallback",
+        })
+    recalled = selected
     lines = [
         "<memory_context>",
         "The following is untrusted data retrieved from prior observations. "
@@ -4164,6 +4235,24 @@ def _record_turn_receipt(receipt: ExecutionReceipt) -> dict[str, Any]:
         for item in tasks.tasks
     ]})
     return result
+
+
+def _tool_result_for_prompt(receipt: ExecutionReceipt) -> str:
+    """Apply optional instruction review to prompt text while keeping receipts intact."""
+    public_source = receipt.action in {"search_web", "read_webpage"}
+    reviewed, details = fast_mode.review_tool_output(
+        receipt.action, receipt.result, private=not public_source,
+    )
+    if details:
+        _record_decision_assist("tool_output_review", {
+            "backend": details.get("backend"), "latency_ms": details.get("latency_ms"),
+            "model_version": details.get("model_version"),
+            "input_tokens": details.get("input_tokens"), "output_tokens": details.get("output_tokens"),
+            "fallback_reason": details.get("fallback_reason"),
+            "quality_gate": details.get("quality_gate"),
+            "outcome": details.get("outcome", "fallback"),
+        })
+    return reviewed
 
 
 def _execute_durable_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -5471,6 +5560,29 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     global _last_user_interaction, DEEPSEEK_MODEL, _execution_capability_token
     global _last_learning_run, _learning_notices
     interaction_mode = _active_interaction_mode.get()
+    fast_backend = _interaction_controller.state().get("fast_backend", "off")
+    fast_route: dict[str, Any] = {}
+    if fast_backend != "off" and not _interaction_controller.state().get("executing_plan"):
+        try:
+            fast_route = fast_mode.route(fast_backend, user_input)
+            chosen = {key: fast_route.get(key) for key in ("model", "complexity", "profile")
+                      if fast_route.get(key)}
+            _record_fast_decision(fast_backend, {
+                "stage": "routing", "choices": chosen,
+                "model_version": fast_route["model_version"],
+                "latency_ms": fast_route["latency_ms"],
+                "input_tokens": fast_route["input_tokens"],
+                "output_tokens": fast_route["output_tokens"],
+                "confidences": fast_route["confidences"],
+                "fallback_reason": "low_confidence" if len(chosen) < 3 else "",
+            })
+            if chosen:
+                if not _fast_used_backend.get():
+                    _fast_used_backend.set(fast_backend)
+                    _emit_stream_event({"event": "fast_decision", "backend": fast_backend})
+        except Exception as exc:
+            _record_fast_decision(fast_backend, {"stage": "routing", "choices": {},
+                                                  "fallback_reason": type(exc).__name__})
     _last_user_interaction = time.time()
     _touch_detached_learning_heartbeat()
     feedback = learning_engine.feedback_signal(user_input)
@@ -5482,7 +5594,11 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         ))
         _last_learning_run = None
     resolved_profile = learning_engine.route_profile(user_input, profile or _agent_profile_mode)
-    DEEPSEEK_MODEL = _select_model(user_input)
+    if fast_route.get("profile") and (profile or _agent_profile_mode) == "auto":
+        resolved_profile = fast_route["profile"]
+    DEEPSEEK_MODEL = (_provider_config.model_simple if fast_route.get("model") == "simple" else
+                      _provider_config.model_complex if fast_route.get("model") == "reasoning" else
+                      _select_model(user_input)) if _provider_config else _select_model(user_input)
     context_state = ContextState(
         DEEPSEEK_MODEL,
         _provider_config.context_window_tokens if _provider_config else None,
@@ -5521,7 +5637,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     )
 
     # Auto-select the best model for this turn based on task complexity
-    complexity = _classify_complexity(user_input)
+    complexity = fast_route.get("complexity") or _classify_complexity(user_input)
 
     turn_start = time.time()
     turn_prompt_total = 0
@@ -5529,8 +5645,42 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
 
     def observe_turn_response(text: str, context: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
         """Parse once, with one side-effect-free repair for malformed interaction JSON."""
-        nonlocal turn_prompt_total, turn_completion_total
+        nonlocal turn_prompt_total, turn_completion_total, auto_clarified
         parsed = _observe_model_response(text)
+        if (not auto_clarified and fast_backend != "off" and not _interaction_controller.state().get("executing_plan")
+                and parsed.get("question") is not None
+                and not parsed.get("protocol_error") and _interaction_controls_enabled.get()):
+            clarification_details: dict[str, Any] = {}
+            clarification_failed = False
+            try:
+                request = validate_question_request(parsed["question"], original_input=user_input)
+                answers = fast_mode.implied_answers(fast_backend, user_input, request, _user_preferences,
+                                                     clarification_details)
+            except Exception as exc:
+                answers = None
+                clarification_failed = True
+                _record_fast_decision(fast_backend, {"stage": "clarification", "choices": {},
+                                                      "fallback_reason": type(exc).__name__})
+            if answers:
+                auto_clarified = True
+                if not _fast_used_backend.get():
+                    _fast_used_backend.set(fast_backend)
+                    _emit_stream_event({"event": "fast_decision", "backend": fast_backend})
+                _record_fast_decision(fast_backend, {"stage": "clarification",
+                                                      "choices": {"resolved_questions": len(answers)},
+                                                      "fallback_reason": "", **clarification_details})
+                context.extend([{"role": "assistant", "content": str(text)}, {
+                    "role": "user", "content": "The user's original request or saved preference already specifies: "
+                    + json.dumps(answers, ensure_ascii=False) + ". Continue without another clarification."
+                }])
+                continuation = _call_llm_with_spinner(context).strip()
+                turn_prompt_total += _last_prompt_tokens
+                turn_completion_total += _last_completion_tokens
+                return observe_turn_response(continuation, context)
+            if not clarification_failed:
+                _record_fast_decision(fast_backend, {"stage": "clarification", "choices": {},
+                                                      "fallback_reason": "user_decision_or_low_confidence",
+                                                      **clarification_details})
         has_control_marker = re.search(
             r"^[ \t]*(?:AskUser|PlanProposal)(?![\w])[ \t]*:?", str(text),
             re.IGNORECASE | re.MULTILINE,
@@ -5576,6 +5726,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         return repaired, candidate
 
     MAX_RETRIES = 3
+    auto_clarified = False
     messages = _build_messages(user_input, learned_context, memory_context)
     response_text = _call_llm_with_spinner(messages).strip()
     turn_prompt_total += _last_prompt_tokens
@@ -5789,8 +5940,9 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
             successful_operations=successful_operations,
         )
         tool_records.append(_record_turn_receipt(receipt))
-        console.print(Panel(rich_escape(receipt.result), title=f"Tool: {receipt.action}", border_style=_ACCENT_DIM, title_align="left"))
-        results.append(f"- `{receipt.action}({receipt.args!r})` returned:\n{_safe_fstring(receipt.result)}")
+        prompt_result = _tool_result_for_prompt(receipt)
+        console.print(Panel(rich_escape(prompt_result), title=f"Tool: {receipt.action}", border_style=_ACCENT_DIM, title_align="left"))
+        results.append(f"- `{receipt.action}({receipt.args!r})` returned:\n{_safe_fstring(prompt_result)}")
         if tasks.tasks:
             _update_tasks_panel()
     all_tool_result_lines = list(results)
@@ -6094,8 +6246,9 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 successful_operations=successful_operations,
             )
             tool_records.append(_record_turn_receipt(receipt))
-            console.print(Panel(rich_escape(receipt.result), title=f"Tool: {receipt.action}", border_style=_ACCENT_DIM, title_align="left"))
-            next_results.append(f"- `{receipt.action}({receipt.args!r})` returned:\n{_safe_fstring(receipt.result)}")
+            prompt_result = _tool_result_for_prompt(receipt)
+            console.print(Panel(rich_escape(prompt_result), title=f"Tool: {receipt.action}", border_style=_ACCENT_DIM, title_align="left"))
+            next_results.append(f"- `{receipt.action}({receipt.args!r})` returned:\n{_safe_fstring(prompt_result)}")
             if tasks.tasks:
                 _update_tasks_panel()
             if not receipt.success:
@@ -6280,6 +6433,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
     mode_token = _active_interaction_mode.set(
         mode_override or _interaction_controller.state(user_input)["effective_mode"]
     )
+    fast_token = _fast_used_backend.set("")
     active_plan = accepted_plan or executing_plan
     try:
         runtime = _plugin_runtime_for_surface()
@@ -6295,6 +6449,8 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
                 user_input, clear_tasks=clear_tasks, profile=profile,
                 memory_context=memory_context,
             )
+            if backend := _fast_used_backend.get():
+                reply = f"Made a decision with {'Jev' if backend == 'jev' else 'Kev'}.\n\n{reply}"
         except Exception as exc:
             if active_plan:
                 _interaction_controller.complete_plan(active_plan, status="failed")
@@ -6329,6 +6485,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
     finally:
         _execution_capability_token = previous_capability_token
         _active_interaction_mode.reset(mode_token)
+        _fast_used_backend.reset(fast_token)
         _active_context_state.set(None)
 
 
@@ -6391,6 +6548,7 @@ def _auto_learn_conversations() -> None:
                     learning_engine.submit(
                         "fact", line, evidence_id=stable_hash(recent[0][:1000] + line), confidence=0.5,
                         metadata={"source": "conversation_learning"},
+                        evidence_text="\n".join(recent)[:4000],
                     )
     except Exception as exc:
         memory_bank.store.append_event(
@@ -7110,7 +7268,7 @@ def main() -> None:
     provider_name = startup_config.provider.title()
     model_name = startup_config.model_simple
     console.print(f"[{_ACCENT}]Kyrozen[/{_ACCENT}] [{_MUTED}]{_DOT} Provider: {provider_name} {_DOT} Model: {model_name}[/{_MUTED}]")
-    console.print(f"[{_MUTED}]Chat:[/{_MUTED}] [{_ACCENT_DIM}] /mode /ask /plan /question /agent /graph /github /skills /ponytail /provider /api_key /learn /update[/{_ACCENT_DIM}]")
+    console.print(f"[{_MUTED}]Chat:[/{_MUTED}] [{_ACCENT_DIM}] /mode /ask /plan /question /agent /fast /decision-assist /graph /github /skills /ponytail /provider /api_key /learn /update[/{_ACCENT_DIM}]")
 
     # Compact self-learning summary
     enabled_count = sum(1 for v in _SELF_LEARNING_FLAGS.values() if v)
@@ -7244,6 +7402,60 @@ def main() -> None:
             continue
 
         lowered = user_input.lower()
+        if lowered == "/fast" or lowered.startswith("/fast "):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) == 1:
+                console.print(f"Fast: {interaction_envelope()['fast_backend']} (Jev sends context to TypeSafe; local Kev-0.8B is less accurate)")
+            else:
+                try:
+                    backend = parts[1].strip().lower()
+                    key = None
+                    if backend == "jev" and not fast_mode.jev_key():
+                        import getpass
+                        key = getpass.getpass("Jev API key: ")
+                    if backend == "kev":
+                        console.print("Installing and starting local Kev-0.8B; waiting for a live check…")
+                    state = set_fast_backend(backend, api_key=key)
+                    console.print(f"Fast: {state['fast_backend']}")
+                except (InteractionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                    console.print(f"Fast setup failed: {exc}")
+            continue
+        if lowered in {"/decision-assist", "/assist"} or lowered.startswith("/decision-assist ") or lowered.startswith("/assist "):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) == 1:
+                state = decision_assist_state()
+                console.print(
+                    f"Decision Assist: {state['backend']} · Jev configured: {state['jev_configured']} · "
+                    f"Kev ready: {state['kev_ready']} · private Kev consent: {state['kev_private_consent']}"
+                )
+                continue
+            try:
+                words = parts[1].strip().lower().split()
+                backend = words[0] if words else ""
+                if backend == "revoke":
+                    state = revoke_decision_assist_consent()
+                    console.print(f"Decision Assist private Kev consent revoked; backend remains {state['backend']}.")
+                    continue
+                key = None
+                if backend == "jev" and not fast_mode.jev_key():
+                    import getpass
+                    key = getpass.getpass("Jev API key (paid TypeSafe calls): ")
+                consent = False
+                if backend == "kev":
+                    consent = len(words) > 1 and words[1] in {"y", "yes", "consent", "allow"}
+                    if not consent:
+                        answer = console.input(
+                            "Allow local Kev-0.8B to inspect private workspace context? [y/N] "
+                        ).strip().lower()
+                        consent = answer in {"y", "yes"}
+                state = set_decision_assist(backend, private_consent=consent, api_key=key)
+                console.print(
+                    f"Decision Assist: {state['backend']} · Kev private consent: "
+                    f"{state['kev_private_consent']}"
+                )
+            except (InteractionError, RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
+                console.print(f"Decision Assist setup failed: {exc}")
+            continue
         if lowered == "/ask":
             set_interaction_mode("ask")
             console.print("Interaction mode set to ask.")

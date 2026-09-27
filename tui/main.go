@@ -92,6 +92,8 @@ type model struct {
 	view                      viewport.Model
 	input                     textarea.Model
 	apiInput                  textinput.Model
+	fastKeyInput              bool
+	decisionAssistBackend     string
 	graphInput                textinput.Model
 	screen                    screen
 	status                    string
@@ -118,6 +120,7 @@ type model struct {
 	usageReasoningTokens      int
 	usageCostPicos            int
 	interactionMode           string
+	fastBackend               string
 	effectiveMode             string
 	modeIdx                   int
 	pendingQuestion           *questionRequest
@@ -324,6 +327,7 @@ func initialModel(project string, global bool) model {
 		onboardingKind:            onboardingKind,
 		onboardingPreviousVersion: onboardingPreviousVersion,
 		interactionMode:           "auto",
+		fastBackend:               "off",
 		effectiveMode:             "ask",
 		questionAnswers:           make(map[string]any),
 		graphCommunity:            -1,
@@ -699,6 +703,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if m.screen == screenAPIKey {
 		if key == "esc" {
 			m.apiInput.Reset()
+			m.fastKeyInput = false
 			if m.onboardingKind != "" {
 				m.screen = screenOnboarding
 				m.onboardingWaiting = false
@@ -708,7 +713,12 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 			return nil, false
 		}
 		if key == "enter" {
-			m.send("command", map[string]any{"name": "api_key", "args": map[string]any{"api_key": m.apiInput.Value()}})
+			if m.fastKeyInput {
+				m.send("command", map[string]any{"name": "fast", "args": map[string]any{"backend": "jev", "api_key": m.apiInput.Value()}})
+				m.fastKeyInput = false
+			} else {
+				m.send("command", map[string]any{"name": "api_key", "args": map[string]any{"api_key": m.apiInput.Value()}})
+			}
 			m.apiInput.Reset()
 			if m.onboardingKind != "" {
 				m.screen = screenOnboarding
@@ -1158,6 +1168,10 @@ func (m *model) reduceBackendLine(line backendLineMsg) {
 
 func (m *model) applyInteraction(value map[string]any) {
 	m.interactionMode = firstNonEmpty(stringValue(value, "preference_mode"), "auto")
+	m.fastBackend = firstNonEmpty(stringValue(value, "fast_backend"), "off")
+	if assist, ok := value["decision_assist"].(map[string]any); ok {
+		m.decisionAssistBackend = firstNonEmpty(stringValue(assist, "backend"), "off")
+	}
 	m.effectiveMode = firstNonEmpty(stringValue(value, "effective_mode"), m.interactionMode)
 	if raw, ok := value["pending_question"].(map[string]any); ok {
 		request := &questionRequest{requestID: stringValue(raw, "request_id")}
@@ -1254,11 +1268,18 @@ func (m *model) handlePrompt(event backendEvent) {
 		m.screen = screenOnboarding
 		m.startTransition()
 	case "api_key":
+		m.fastKeyInput = false
 		m.onboardingWaiting = false
 		m.screen = screenAPIKey
 		m.startTransition()
 		m.apiInput.Reset()
 		m.apiInput.Placeholder = firstNonEmpty(stringValue(event, "message"), "Enter API key")
+		m.apiInput.Focus()
+	case "fast_key":
+		m.fastKeyInput = true
+		m.screen = screenAPIKey
+		m.apiInput.Reset()
+		m.apiInput.Placeholder = "Enter Jev API key"
 		m.apiInput.Focus()
 	case "provider":
 		m.onboardingWaiting = false
@@ -1841,6 +1862,8 @@ func (m model) activityRail() string {
 		usage = fmt.Sprintf("%d calls · %s", m.usageAttempts, firstNonEmpty(m.usageScope, "workspace"))
 	}
 	lines = append(lines, "", sectionStyle.Render("SESSION"), softStyle.Render(compactText(workspace, textWidth)), mutedStyle.Render(compactText(usage, textWidth)))
+	lines = append(lines, mutedStyle.Render(compactText("Fast: "+firstNonEmpty(m.fastBackend, "off"), textWidth)))
+	lines = append(lines, mutedStyle.Render(compactText("Decision Assist: "+firstNonEmpty(m.decisionAssistBackend, "off"), textWidth)))
 	preferredMode := firstNonEmpty(m.interactionMode, "auto")
 	activeMode := firstNonEmpty(m.effectiveMode, "ask")
 	if m.interactionMode != "" && m.effectiveMode != "" && preferredMode != activeMode {
@@ -1904,7 +1927,7 @@ func (m model) modal(_ string) string {
 			}, "\n")
 		}
 	case screenAPIKey:
-		body = brandStyle.Render("PROVIDER SETUP") + "\n" + titleStyle.Render("Add your API key") + "\n" + mutedStyle.Render("Your key is masked and stored encrypted locally.") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.apiInput.View()) + "\n\n" + mutedStyle.Render("Enter confirm  ·  Esc cancel")
+		body = brandStyle.Render("API KEY SETUP") + "\n" + titleStyle.Render("Add your API key") + "\n" + mutedStyle.Render("Your key is masked and stored encrypted locally.") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.apiInput.View()) + "\n\n" + mutedStyle.Render("Enter confirm  ·  Esc cancel")
 	case screenApproval:
 		body = amberStyle.Render("!  APPROVAL REQUIRED") + "\n" + titleStyle.Render("Confirm this action") + "\n\n" + softStyle.Render(m.approvalTool) + "\n" + softStyle.Render(m.approvalArgs) + "\n\n" + mutedStyle.Render("This may change local or remote state.") + "\n\n" + greenStyle.Render("Y / Enter  approve") + "    " + redStyle.Render("N / Esc  deny")
 	case screenSelfLearning:

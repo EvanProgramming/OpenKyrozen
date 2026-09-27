@@ -11,6 +11,7 @@ from event_store import EventStore
 
 
 INTERACTION_MODES = frozenset({"auto", "ask", "plan", "agent"})
+FAST_BACKENDS = frozenset({"off", "jev", "kev"})
 READ_ONLY_CAPABILITIES = frozenset({"read", "network"})
 PLAN_ACCEPT_PHRASES = frozenset({
     "accept plan", "execute plan",
@@ -290,6 +291,7 @@ class InteractionController:
 
     def state(self, user_input: str = "") -> dict[str, Any]:
         preference = "auto"
+        fast_backend = "off"
         question = None
         plan = None
         executing = None
@@ -299,11 +301,14 @@ class InteractionController:
                 restored = payload.get("interaction") if isinstance(payload, dict) else None
                 if isinstance(restored, dict):
                     preference = restored.get("preference_mode", preference)
+                    fast_backend = restored.get("fast_backend", fast_backend)
                     question = restored.get("pending_question")
                     plan = restored.get("pending_plan")
                     executing = restored.get("executing_plan")
             elif event_type == "interaction.mode_changed":
                 preference = payload.get("mode", preference)
+            elif event_type == "interaction.fast_changed":
+                fast_backend = payload.get("backend", "off")
             elif event_type in {"interaction.question_requested", "interaction.question_reopened"}:
                 question = payload
             elif event_type == "interaction.question_resolved" and question and payload.get("request_id") == question.get("request_id"):
@@ -328,6 +333,7 @@ class InteractionController:
             effective = question["resume_mode"]
         return {
             "preference_mode": preference,
+            "fast_backend": fast_backend if fast_backend in FAST_BACKENDS else "off",
             "effective_mode": effective,
             "pending_question": question,
             "pending_plan": plan,
@@ -337,8 +343,15 @@ class InteractionController:
     def envelope(self, user_input: str = "") -> dict[str, Any]:
         state = self.state(user_input)
         return {key: state[key] for key in (
-            "preference_mode", "effective_mode", "pending_question", "pending_plan",
+            "preference_mode", "effective_mode", "fast_backend", "pending_question", "pending_plan",
         )}
+
+    def set_fast_backend(self, backend: str) -> dict[str, Any]:
+        backend = str(backend or "").strip().lower()
+        if backend not in FAST_BACKENDS:
+            raise InteractionError("fast backend must be off, jev, or kev")
+        self._append("interaction.fast_changed", {"backend": backend})
+        return self.envelope()
 
     def set_mode(self, mode: str) -> dict[str, Any]:
         mode = str(mode or "").strip().lower()

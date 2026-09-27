@@ -17,6 +17,8 @@ var commands = []command{
 	{name: "plan", aliases: nil, description: "Use Plan mode or accept/cancel a plan"},
 	{name: "question", aliases: nil, description: "Reopen, skip, or cancel clarification"},
 	{name: "agent", aliases: nil, description: "Switch auto, coder, or researcher mode"},
+	{name: "fast", aliases: nil, description: "Switch Fast off, Jev API, or local Kev-0.8B (less accurate)"},
+	{name: "decision-assist", aliases: []string{"assist"}, description: "Enable Jev/Kev checks for learning, memory, and tool output"},
 	{name: "attach", aliases: nil, description: "Stage files; drop paths after /attach"},
 	{name: "graph", aliases: nil, description: "Open, inspect, or refresh the project graph"},
 	{name: "github", aliases: []string{"gh"}, description: "Check or authenticate GitHub CLI"},

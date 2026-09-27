@@ -809,6 +809,7 @@ func TestEffectiveAgentModeIsProminentDuringPlanExecution(t *testing.T) {
 	m.applyInteraction(map[string]any{
 		"preference_mode": "plan",
 		"effective_mode":  "agent",
+		"fast_backend":    "kev",
 	})
 	m.resize()
 	view := m.View().Content
@@ -817,6 +818,9 @@ func TestEffectiveAgentModeIsProminentDuringPlanExecution(t *testing.T) {
 	}
 	if !strings.Contains(view, "preference plan") || !strings.Contains(view, "agent") {
 		t.Fatalf("activity rail did not distinguish preference and active mode: %s", view)
+	}
+	if !strings.Contains(view, "Fast: kev") {
+		t.Fatalf("activity rail did not show Fast setting: %s", view)
 	}
 }
 

@@ -16,6 +16,7 @@ import ipaddress
 import copy
 import re
 import asyncio
+import subprocess
 import queue
 import secrets
 import math
@@ -419,6 +420,34 @@ def _apply_chat_controls(session: dict[str, Any], body: dict[str, Any], message:
     controller = _interaction_for_session(session)
     if body.get("question_response") is not None and body.get("plan_action") is not None:
         raise HTTPException(400, "question_response and plan_action are mutually exclusive")
+    if "decision_assist_backend" in body:
+        backend = str(body.get("decision_assist_backend") or "").strip().lower()
+        try:
+            _agent.set_decision_assist(
+                backend,
+                private_consent=bool(body.get("decision_assist_private_consent", False)),
+                api_key=body.get("jev_api_key") if isinstance(body.get("jev_api_key"), str) else None,
+            )
+        except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+    if "fast_backend" in body:
+        backend = str(body["fast_backend"] or "").strip().lower()
+        if backend not in {"off", "jev", "kev"}:
+            raise HTTPException(400, "fast_backend must be off, jev, or kev")
+        try:
+            if backend == "jev":
+                key = body.get("jev_api_key")
+                if key is not None:
+                    if not isinstance(key, str):
+                        raise ValueError("jev_api_key must be text")
+                    _agent.fast_mode.save_jev_key(key)
+                if not _agent.fast_mode.jev_key():
+                    raise ValueError("Jev API key is required")
+            elif backend == "kev":
+                _agent.fast_mode.setup_kev()
+            controller.set_fast_backend(backend)
+        except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            raise HTTPException(400, str(exc)) from exc
     if "mode" in body:
         try:
             controller.set_mode(str(body["mode"]))
@@ -476,6 +505,10 @@ def _apply_chat_controls(session: dict[str, Any], body: dict[str, Any], message:
         else:
             raise HTTPException(400, "plan_action.action must be accept, revise, or cancel")
 
+    if not message and ("fast_backend" in body or "decision_assist_backend" in body):
+        if "decision_assist_backend" in body:
+            return "", f"Decision Assist: {_agent.decision_assist_state()['backend']}."
+        return "", f"Fast: {controller.envelope()['fast_backend']}."
     if not message and "mode" in body:
         mode = controller.envelope()["preference_mode"]
         return "", f"Interaction mode set to {mode}."
@@ -688,6 +721,17 @@ button:disabled{opacity:.45;cursor:default}
   <button type="button" id="toggle-history" aria-expanded="false" aria-controls="history-panel">History</button>
   <label for="mode-select">Mode</label>
   <select id="mode-select"><option value="auto">Auto</option><option value="ask">Ask</option><option value="plan">Plan</option><option value="agent">Agent</option></select>
+  <label for="fast-select">Fast</label>
+  <select id="fast-select" aria-describedby="fast-note"><option value="off">Off</option><option value="jev">Jev API</option><option value="kev">Local Kev-0.8B</option></select>
+  <input id="fast-key" type="password" autocomplete="off" placeholder="Jev API key" hidden>
+  <button type="button" id="fast-apply" hidden>Enable Jev</button>
+  <span id="fast-note">Jev uses a paid API and sends decision context to TypeSafe. Kev runs locally but is less accurate than Jev.</span>
+  <label for="decision-assist-select">Decision Assist</label>
+  <select id="decision-assist-select" aria-describedby="decision-assist-note"><option value="off">Off</option><option value="jev">Jev</option><option value="kev">Kev</option></select>
+  <input id="decision-assist-key" type="password" autocomplete="off" placeholder="Jev API key" hidden>
+  <button type="button" id="decision-assist-apply" hidden>Enable Jev checks</button>
+  <label><input id="decision-assist-consent" type="checkbox"> allow local Kev to inspect private context</label>
+  <span id="decision-assist-note">Checks learning evidence, memory relevance, and suspicious tool instructions. Jev uses paid TypeSafe calls; it never approves tools.</span>
   <span id="session-limit" role="status"></span>
 </div>
 <section id="history-panel" aria-labelledby="history-title" hidden>
@@ -717,7 +761,8 @@ let recentSessions = [];
 let historyState = {nodes: [], current_node_id: ''};
 let isStreaming = false;
 let authInFlight = false;
-let interactionState = {preference_mode: 'auto', effective_mode: 'ask', pending_question: null, pending_plan: null};
+let interactionState = {preference_mode: 'auto', effective_mode: 'ask', fast_backend: 'off', pending_question: null, pending_plan: null};
+let decisionAssistState = {backend: 'off', kev_private_consent: false};
 
 class AuthRequiredError extends Error {}
 
@@ -768,6 +813,9 @@ function clearChat() {
 function renderInteraction(value) {
   interactionState = value || interactionState;
   document.getElementById('mode-select').value = interactionState.preference_mode || 'auto';
+  document.getElementById('fast-select').value = interactionState.fast_backend || 'off';
+  document.getElementById('fast-key').hidden = true;
+  document.getElementById('fast-apply').hidden = true;
   const card = document.getElementById('interaction-card');
   card.replaceChildren();
   const question = interactionState.pending_question;
@@ -823,6 +871,15 @@ function renderInteraction(value) {
   }
 }
 
+function renderDecisionAssist(value) {
+  decisionAssistState = value || decisionAssistState;
+  document.getElementById('decision-assist-select').value = decisionAssistState.backend || 'off';
+  document.getElementById('decision-assist-consent').checked = Boolean(decisionAssistState.kev_private_consent);
+  const showKey = decisionAssistState.backend === 'jev' && !decisionAssistState.jev_configured;
+  document.getElementById('decision-assist-key').hidden = !showKey;
+  document.getElementById('decision-assist-apply').hidden = !showKey;
+}
+
 async function submitControl(control, label) {
   if (isStreaming) return;
   isStreaming = true; document.getElementById('send-btn').disabled = true;
@@ -832,10 +889,11 @@ async function submitControl(control, label) {
     const data = await response.json();
     if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
     if (data.reply) addMessage('assistant', String(data.reply), false);
+    if (data.decision_assist) renderDecisionAssist(data.decision_assist);
     renderInteraction(data.interaction);
     renderContext(data.context);
     document.getElementById('status').textContent = 'Ready';
-  } catch (error) { addMessage('assistant', 'Error: ' + error.message, false); document.getElementById('status').textContent = 'Error'; }
+  } catch (error) { addMessage('assistant', 'Error: ' + error.message, false); renderInteraction(interactionState); document.getElementById('status').textContent = 'Error'; }
   isStreaming = false; document.getElementById('send-btn').disabled = false; refreshSessionList().catch(() => {});
 }
 
@@ -1019,7 +1077,7 @@ function startNewSession() {
   sessionId = createSessionId();
   saveActiveSession();
   clearChat();
-  renderInteraction({preference_mode: 'auto', effective_mode: 'ask', pending_question: null, pending_plan: null});
+  renderInteraction({preference_mode: 'auto', effective_mode: 'ask', fast_backend: 'off', pending_question: null, pending_plan: null});
   renderContext(null);
   renderSessionList(recentSessions);
   document.getElementById('status').textContent = 'New conversation ready.';
@@ -1148,6 +1206,10 @@ async function sendMessage() {
           full += String(parsed.chunk);
           contentDiv.textContent = full;
         }
+        if (parsed.event === 'fast_decision') {
+          const name = parsed.backend === 'jev' ? 'Jev' : 'Kev';
+          addMessage('assistant', `Made a decision with ${name}.`, false);
+        }
         if (Object.prototype.hasOwnProperty.call(parsed, 'cost')) {
           document.getElementById('cost-display').textContent = String(parsed.cost);
         }
@@ -1216,11 +1278,53 @@ document.getElementById('toggle-history').addEventListener('click', event => {
   if (!panel.hidden) loadHistory().catch(() => {});
 });
 document.getElementById('mode-select').addEventListener('change', event => submitControl({mode: event.target.value}, `Mode: ${event.target.value}`));
+document.getElementById('fast-select').addEventListener('change', event => {
+  const backend = event.target.value;
+  document.getElementById('fast-key').hidden = backend !== 'jev';
+  document.getElementById('fast-apply').hidden = backend !== 'jev';
+  if (backend !== 'jev') {
+    if (backend === 'kev') document.getElementById('status').textContent = 'Installing and checking local Kev…';
+    submitControl({fast_backend: backend}, `Fast: ${backend}`);
+  }
+});
+document.getElementById('fast-apply').addEventListener('click', () => {
+  const key = document.getElementById('fast-key').value.trim();
+  const control = {fast_backend: 'jev'};
+  if (key) control.jev_api_key = key;
+  document.getElementById('fast-key').value = '';
+  submitControl(control, 'Fast: Jev');
+});
+document.getElementById('decision-assist-select').addEventListener('change', event => {
+  const backend = event.target.value;
+  const consent = document.getElementById('decision-assist-consent').checked;
+  if (backend === 'kev' && !consent) {
+    document.getElementById('status').textContent = 'Check the private-context consent box to enable Kev.';
+    event.target.value = decisionAssistState.backend || 'off';
+    return;
+  }
+  if (backend === 'jev' && !decisionAssistState.jev_configured) {
+    document.getElementById('decision-assist-key').hidden = false;
+    document.getElementById('decision-assist-apply').hidden = false;
+    return;
+  }
+  submitControl({decision_assist_backend: backend, decision_assist_private_consent: consent}, `Decision Assist: ${backend}`);
+});
+document.getElementById('decision-assist-apply').addEventListener('click', () => {
+  const key = document.getElementById('decision-assist-key').value.trim();
+  if (!key) return;
+  document.getElementById('decision-assist-key').value = '';
+  submitControl({decision_assist_backend: 'jev', jev_api_key: key}, 'Decision Assist: Jev');
+});
+document.getElementById('decision-assist-consent').addEventListener('change', event => {
+  const backend = document.getElementById('decision-assist-select').value;
+  const selected = !event.target.checked && backend === 'kev' ? 'off' : backend;
+  submitControl({decision_assist_backend: selected, decision_assist_private_consent: event.target.checked}, 'Decision Assist consent updated');
+});
 document.getElementById('authenticate').addEventListener('click', authenticate);
 document.getElementById('server-token').addEventListener('keydown', event => {
   if (event.key === 'Enter') { event.preventDefault(); authenticate(); }
 });
-initialiseSessions().then(loadHistory).catch(() => {});
+initialiseSessions().then(loadHistory).then(() => apiFetch('/api/v2/decision-assist')).then(r => r.json()).then(renderDecisionAssist).catch(() => {});
 </script>
 </body>
 </html>"""
@@ -1277,6 +1381,33 @@ async def chat_page():
     return CHAT_HTML
 
 
+@app.get("/api/v2/fast/diagnostics", dependencies=[Depends(require_api_access)])
+async def fast_diagnostics(request: Request, session_id: str):
+    session = _get_or_create_session(_normalise_session_id(session_id), _actor_for_request(request))
+    controller = _interaction_for_session(session)
+    store = _agent.memory_bank.store
+    events = store.list_events(
+        "decision.fast", limit=100, user_id=controller.user_id,
+        workspace_id=controller.workspace_id, session_id=controller.session_id,
+    )
+    usage = store.usage_totals(user_id=controller.user_id, workspace_id=_agent.memory_bank.workspace_id,
+                               session_id=controller.session_id)
+    assist_events = store.list_events(
+        "decision.assist", limit=100, user_id=controller.user_id,
+        workspace_id=controller.workspace_id, session_id=controller.session_id,
+    )
+    return {"fast_backend": controller.state()["fast_backend"],
+            "decision_assist": _agent.decision_assist_state(),
+            "decisions": [event["payload"] for event in events],
+            "assist_decisions": [event["payload"] for event in assist_events],
+            "llm_usage": usage}
+
+
+@app.get("/api/v2/decision-assist", dependencies=[Depends(require_api_access)])
+async def decision_assist_status():
+    return _agent.decision_assist_state()
+
+
 @app.post("/api/chat", dependencies=[Depends(require_api_access)])
 async def api_chat(request: Request):
     """Non-streaming chat endpoint."""
@@ -1286,7 +1417,9 @@ async def api_chat(request: Request):
     session["profile"] = _normalise_profile(body.get("profile", session.get("profile", "auto")))
     _set_memory_context(session, body)
     msg = _validate_message(_sanitize_api_message(str(body.get("message", "")).strip()))
-    msg, immediate_reply = _apply_chat_controls(session, body, msg)
+    msg, immediate_reply = (await asyncio.to_thread(_apply_chat_controls, session, body, msg)
+                            if "fast_backend" in body or "decision_assist_backend" in body
+                            else _apply_chat_controls(session, body, msg))
     if not msg and immediate_reply is None:
         raise HTTPException(400, "Empty message")
     _audit("CHAT", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
@@ -1307,6 +1440,7 @@ async def api_chat(request: Request):
     _emit_chat_completed(session, reply, streamed=False)
     _audit("REPLY", f"len={len(reply)}", session["user_id"])
     return {"reply": reply, "session_id": session_id, "profile": session["profile"],
+            "decision_assist": _agent.decision_assist_state(),
             "memory_receipt": session.get("last_memory_receipt"), "cost": _cost_summary(),
             "interaction": session["interaction"], "context": session.get("context")}
 
@@ -1320,7 +1454,9 @@ async def api_chat_stream(request: Request):
     session["profile"] = _normalise_profile(body.get("profile", session.get("profile", "auto")))
     _set_memory_context(session, body)
     msg = _validate_message(_sanitize_api_message(str(body.get("message", "")).strip()))
-    msg, immediate_reply = _apply_chat_controls(session, body, msg)
+    msg, immediate_reply = (await asyncio.to_thread(_apply_chat_controls, session, body, msg)
+                            if "fast_backend" in body or "decision_assist_backend" in body
+                            else _apply_chat_controls(session, body, msg))
     if not msg and immediate_reply is None:
         raise HTTPException(400, "Empty message")
     _audit("CHAT_STREAM", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
@@ -1412,6 +1548,8 @@ async def api_chat_stream(request: Request):
                 yield f"data: {json.dumps({'event': 'tasks', 'tasks': event.get('tasks', [])}, ensure_ascii=False)}\n\n"
             elif kind == "interaction":
                 yield f"data: {json.dumps({'event': 'interaction', 'interaction': event.get('interaction', {})}, ensure_ascii=False)}\n\n"
+            elif kind == "fast_decision":
+                yield f"data: {json.dumps({'event': 'fast_decision', 'backend': event.get('backend', '')})}\n\n"
             elif kind == "error":
                 yield f"data: {json.dumps({'event': 'error', 'code': event.get('code', 'stream_error'), 'error': event.get('error', 'stream failed')}, ensure_ascii=False)}\n\n"
                 break

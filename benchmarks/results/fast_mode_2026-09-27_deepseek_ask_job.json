@@ -1,0 +1,129 @@
+{
+  "protocol": "openkyrozen-fast-live-v1",
+  "backend": "kev",
+  "correctness_method": "case keyword checks; not a semantic quality evaluation",
+  "first_activation_ms": 348.57,
+  "later_activation_median_ms": 214.26,
+  "speedup": 0.777,
+  "excluded_pairs": [],
+  "workloads": {
+    "code_diagnosis": {
+      "pairs": 3,
+      "off_median_ms": 13893.51,
+      "fast_median_ms": 17883.96,
+      "speedup": 0.777
+    }
+  },
+  "summary": {
+    "off": {
+      "turns": 3,
+      "median_ms": 13893.51,
+      "p95_ms": 60693.99,
+      "correct": 3,
+      "llm_calls": 12,
+      "llm_tokens": 35949,
+      "median_decision_ms": 0,
+      "decisions": 0,
+      "fallbacks": 0,
+      "provider_errors": 0
+    },
+    "kev": {
+      "turns": 3,
+      "median_ms": 17883.96,
+      "p95_ms": 24246.04,
+      "correct": 3,
+      "llm_calls": 8,
+      "llm_tokens": 24617,
+      "median_decision_ms": 109.44,
+      "decisions": 0,
+      "fallbacks": 3,
+      "provider_errors": 0
+    }
+  },
+  "rows": [
+    {
+      "case": "code_diagnosis",
+      "backend": "off",
+      "repeat": 0,
+      "session_id": "fast-benchmark-f0a229712e8e43b59a64e579b5c887f8",
+      "latency_ms": 60693.99,
+      "provider_error": false,
+      "correct": true,
+      "decision_ms": 0,
+      "decision_count": 0,
+      "fallback_count": 0,
+      "llm_calls": 6,
+      "llm_tokens": 16674
+    },
+    {
+      "case": "code_diagnosis",
+      "backend": "kev",
+      "repeat": 0,
+      "session_id": "fast-benchmark-fcf03fc260034e7ebbf327dfa4596d78",
+      "latency_ms": 17883.96,
+      "provider_error": false,
+      "correct": true,
+      "decision_ms": 112.18,
+      "decision_count": 0,
+      "fallback_count": 1,
+      "llm_calls": 2,
+      "llm_tokens": 5561
+    },
+    {
+      "case": "code_diagnosis",
+      "backend": "kev",
+      "repeat": 1,
+      "session_id": "fast-benchmark-120ab97dd94f4963bcdf368669dcdb19",
+      "latency_ms": 24246.04,
+      "provider_error": false,
+      "correct": true,
+      "decision_ms": 86.59,
+      "decision_count": 0,
+      "fallback_count": 1,
+      "llm_calls": 3,
+      "llm_tokens": 9678
+    },
+    {
+      "case": "code_diagnosis",
+      "backend": "off",
+      "repeat": 1,
+      "session_id": "fast-benchmark-dd121099e8be4461ac757ca2ccb120db",
+      "latency_ms": 13893.51,
+      "provider_error": false,
+      "correct": true,
+      "decision_ms": 0,
+      "decision_count": 0,
+      "fallback_count": 0,
+      "llm_calls": 3,
+      "llm_tokens": 9694
+    },
+    {
+      "case": "code_diagnosis",
+      "backend": "off",
+      "repeat": 2,
+      "session_id": "fast-benchmark-073432dfde4045748d19afe9090dff21",
+      "latency_ms": 13237.83,
+      "provider_error": false,
+      "correct": true,
+      "decision_ms": 0,
+      "decision_count": 0,
+      "fallback_count": 0,
+      "llm_calls": 3,
+      "llm_tokens": 9581
+    },
+    {
+      "case": "code_diagnosis",
+      "backend": "kev",
+      "repeat": 2,
+      "session_id": "fast-benchmark-1fdb2bace40b40acb35873e74d29d960",
+      "latency_ms": 11322.82,
+      "provider_error": false,
+      "correct": true,
+      "decision_ms": 109.44,
+      "decision_count": 0,
+      "fallback_count": 1,
+      "llm_calls": 3,
+      "llm_tokens": 9378
+    }
+  ]
+}

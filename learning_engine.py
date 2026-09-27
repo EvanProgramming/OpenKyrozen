@@ -483,8 +483,20 @@ class LearningEngine:
         if existing:
             count = self.store.add_proposal_evidence(existing["id"], evidence_id or stable_hash(f"{key}:{value}"))
             if count >= 2 and not conflict:
+                evidence_review = self._review_claim_evidence(
+                    display, list(existing.get("evidence", [])) + ([evidence_id] if evidence_id else []),
+                    private=visibility != "public",
+                )
+                if evidence_review is False:
+                    validation = {**existing["validation"], **metadata,
+                                  "stage": "candidate", "decision_review": "not_supported"}
+                    self.store.update_proposal(existing["id"], status="candidate", validation=validation)
+                    return {"status": "candidate", "proposal_id": existing["id"],
+                            "evidence_count": count, "needs_clarification": True}
                 validation = {**existing["validation"], **metadata, "success": True,
                               "evidence_count": count, "stage": "active"}
+                if evidence_review is True:
+                    validation["decision_review"] = "supported"
                 self.store.update_proposal(existing["id"], status="active", confidence=0.8, validation=validation)
                 memory_id = self.memory.add_log(display, kind=kind, status="active", confidence=0.8,
                                                 metadata={**metadata, "proposal_id": existing["id"]})
@@ -608,6 +620,59 @@ class LearningEngine:
             workspace_id=self.memory.workspace_id, limit=10000)
             if proposal.get("validation", {}).get("skill_id") == skill_id), None)
 
+    def _review_claim_evidence(self, claim: str, evidence_ids: list[str], *, private: bool,
+                               evidence_text: str | None = None) -> bool | None:
+        """Return True/False for a confident typed review, None on advisory fallback."""
+        try:
+            from fast_mode import decision_assist
+            events = self.store.list_events(limit=5000, workspace_id=self.memory.workspace_id,
+                                            user_id=self.memory.user_id)
+            by_id = {event["id"]: event.get("payload", {}) for event in events}
+            evidence = [by_id[item] for item in evidence_ids if item in by_id]
+            if not evidence and evidence_text:
+                evidence = [{"source": "learning_receipt", "text": self._clean(evidence_text)}]
+            if not evidence:
+                return None
+            diagnostics: dict[str, object] = {}
+            result = decision_assist(
+                "learning_evidence", {"claim": claim[:1200], "evidence": evidence[:5]},
+                {"verdict": {"type": "choice", "instructions": "Does the evidence support this claim?",
+                             "criteria": {"support": "Evidence supports the claim",
+                                           "contradict": "Evidence contradicts the claim",
+                                           "insufficient": "Evidence is insufficient"}}},
+                private=private, diagnostics=diagnostics,
+            )
+            if not result:
+                if diagnostics:
+                    self.store.append_event(
+                        "learning.evidence_review", {**diagnostics, "outcome": "fallback"},
+                        user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
+                        session_id=self.memory.session_id,
+                    )
+                return None
+            answer = result["answers"].get("verdict")
+            probabilities = answer.get("probabilities", {}) if isinstance(answer, dict) else {}
+            confidence = float(answer.get("confidence", 0)) if isinstance(answer, dict) else 0
+            choice = answer.get("choice") if isinstance(answer, dict) else None
+            accepted = (choice in {"support", "contradict", "insufficient"}
+                        and isinstance(probabilities, dict)
+                        and float(probabilities.get(choice, 0)) >= 0.8 and confidence >= 0.75)
+            self.store.append_event(
+                "learning.evidence_review", {
+                    "backend": result.get("backend"), "model_version": result.get("model_version"),
+                    "latency_ms": result.get("latency_ms"), "confidence": confidence,
+                    "input_tokens": result.get("input_tokens"), "output_tokens": result.get("output_tokens"),
+                    "fallback_reason": result.get("fallback_reason"),
+                    "outcome": choice if accepted else "fallback",
+                }, user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
+                session_id=self.memory.session_id,
+            )
+            if not accepted:
+                return None
+            return choice == "support"
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+            return None
+
     def _reconcile_artifact(self, skill_id: str) -> str | None:
         if not skill_id or self.registry is None:
             return None
@@ -677,7 +742,8 @@ class LearningEngine:
                                 session_id=self.memory.session_id)
 
     def submit(self, kind: str, content: str, *, evidence_id: str | None = None,
-               confidence: float = 0.4, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+               confidence: float = 0.4, metadata: dict[str, Any] | None = None,
+               evidence_text: str | None = None) -> dict[str, Any]:
         """Backward-compatible fact proposal path; executable kinds never auto-promote."""
         content = self._clean(content)
         if not content or content in {"—", "-"}:
@@ -691,7 +757,22 @@ class LearningEngine:
             confidence = min(0.95, max(existing.get("confidence", 0.0), confidence) + 0.2)
             if kind in {"skill", "tool", "code_patch", "policy"} or count < 2:
                 return {"status": "candidate", "proposal_id": existing["id"], "evidence_count": count}
+            evidence_review = self._review_claim_evidence(
+                content, list(existing.get("evidence", [])),
+                private=(metadata or {}).get("visibility") != "public",
+                evidence_text=evidence_text,
+            )
+            if evidence_review is False:
+                self.store.update_proposal(
+                    existing["id"], status="candidate",
+                    validation={**existing.get("validation", {}), "evidence_count": count,
+                                "decision_review": "not_supported"},
+                )
+                return {"status": "candidate", "proposal_id": existing["id"],
+                        "evidence_count": count, "needs_clarification": True}
             validation = {"success": True, "checks": ["repeated independent observations"], "evidence_count": count}
+            if evidence_review is True:
+                validation["decision_review"] = "supported"
             self.store.update_proposal(existing["id"], status="active", confidence=confidence, validation=validation)
             memory_id = self.memory.add_log(content, kind=kind, status="active", confidence=confidence,
                                             metadata={**(metadata or {}), "proposal_id": existing["id"],

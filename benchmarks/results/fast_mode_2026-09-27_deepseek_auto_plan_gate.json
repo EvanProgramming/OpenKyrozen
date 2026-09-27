@@ -1,0 +1,129 @@
+{
+  "protocol": "openkyrozen-fast-live-v1",
+  "backend": "kev",
+  "correctness_method": "case keyword checks; not a semantic quality evaluation",
+  "first_activation_ms": 85.74,
+  "later_activation_median_ms": 70.0,
+  "speedup": 1.03,
+  "excluded_pairs": [],
+  "workloads": {
+    "code_diagnosis": {
+      "pairs": 3,
+      "off_median_ms": 22277.84,
+      "fast_median_ms": 21622.57,
+      "speedup": 1.03
+    }
+  },
+  "summary": {
+    "off": {
+      "turns": 3,
+      "median_ms": 22277.84,
+      "p95_ms": 29420.7,
+      "correct": 0,
+      "llm_calls": 11,
+      "llm_tokens": 39901,
+      "median_decision_ms": 0,
+      "decisions": 0,
+      "fallbacks": 0,
+      "provider_errors": 0
+    },
+    "kev": {
+      "turns": 3,
+      "median_ms": 21622.57,
+      "p95_ms": 32574.33,
+      "correct": 0,
+      "llm_calls": 11,
+      "llm_tokens": 37447,
+      "median_decision_ms": 103.27,
+      "decisions": 0,
+      "fallbacks": 3,
+      "provider_errors": 0
+    }
+  },
+  "rows": [
+    {
+      "case": "code_diagnosis",
+      "backend": "off",
+      "repeat": 0,
+      "session_id": "fast-benchmark-741276bcc5b24437be89598164f2ccbd",
+      "latency_ms": 22277.84,
+      "provider_error": false,
+      "correct": false,
+      "decision_ms": 0,
+      "decision_count": 0,
+      "fallback_count": 0,
+      "llm_calls": 2,
+      "llm_tokens": 10757
+    },
+    {
+      "case": "code_diagnosis",
+      "backend": "kev",
+      "repeat": 0,
+      "session_id": "fast-benchmark-471d4e6a530d484c84d4e22720c0a0fc",
+      "latency_ms": 32574.33,
+      "provider_error": false,
+      "correct": false,
+      "decision_ms": 123.7,
+      "decision_count": 0,
+      "fallback_count": 1,
+      "llm_calls": 5,
+      "llm_tokens": 18568
+    },
+    {
+      "case": "code_diagnosis",
+      "backend": "kev",
+      "repeat": 1,
+      "session_id": "fast-benchmark-032af80d392045cc8c1fd1487e646903",
+      "latency_ms": 21622.57,
+      "provider_error": false,
+      "correct": false,
+      "decision_ms": 103.27,
+      "decision_count": 0,
+      "fallback_count": 1,
+      "llm_calls": 3,
+      "llm_tokens": 9602
+    },
+    {
+      "case": "code_diagnosis",
+      "backend": "off",
+      "repeat": 1,
+      "session_id": "fast-benchmark-c4a3d3c7c97d419192a844e87d9b51a4",
+      "latency_ms": 20776.18,
+      "provider_error": false,
+      "correct": false,
+      "decision_ms": 0,
+      "decision_count": 0,
+      "fallback_count": 0,
+      "llm_calls": 3,
+      "llm_tokens": 9813
+    },
+    {
+      "case": "code_diagnosis",
+      "backend": "off",
+      "repeat": 2,
+      "session_id": "fast-benchmark-3cc12eabce0f4b039b35e0dbe1067aee",
+      "latency_ms": 29420.7,
+      "provider_error": false,
+      "correct": false,
+      "decision_ms": 0,
+      "decision_count": 0,
+      "fallback_count": 0,
+      "llm_calls": 6,
+      "llm_tokens": 19331
+    },
+    {
+      "case": "code_diagnosis",
+      "backend": "kev",
+      "repeat": 2,
+      "session_id": "fast-benchmark-0d23a0d8692248e88aed1f9902ad23f1",
+      "latency_ms": 20113.16,
+      "provider_error": false,
+      "correct": false,
+      "decision_ms": 86.56,
+      "decision_count": 0,
+      "fallback_count": 1,
+      "llm_calls": 3,
+      "llm_tokens": 9277
+    }
+  ]
+}

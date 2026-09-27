@@ -270,6 +270,26 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertIsNone(payload)
         self.assertIn("request_id", error)
 
+    def test_fast_command_prompts_for_jev_key_and_reports_kev_setup_failure(self):
+        with patch.object(tui_backend.agent.fast_mode, "jev_key", return_value=""):
+            self.backend._command("/fast jev", {}, "fast-key")
+        with patch.object(tui_backend.agent, "set_fast_backend", side_effect=RuntimeError("unsupported")):
+            self.backend._command("/fast kev", {}, "fast-kev")
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        self.assertEqual(events[0]["kind"], "fast_key")
+        self.assertEqual(events[-1]["code"], "fast_setup_failed")
+
+    def test_decision_assist_command_reports_status_and_requires_explicit_kev_consent(self):
+        with patch.object(tui_backend.agent, "decision_assist_state", return_value={
+            "backend": "off", "kev_private_consent": False,
+            "jev_configured": False, "kev_ready": False,
+        }), patch.object(tui_backend.agent, "set_decision_assist", side_effect=ValueError("consent required")):
+            self.backend._command("/decision-assist", {}, "assist-status")
+            self.backend._command("/decision-assist kev", {}, "assist-kev")
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        self.assertIn("Decision Assist: off", events[0]["text"])
+        self.assertEqual(events[-1]["code"], "decision_assist_setup_failed")
+
     def test_interaction_envelope_and_structured_commands_are_correlated(self):
         with tempfile.TemporaryDirectory() as directory:
             original = tui_backend.agent._interaction_controller

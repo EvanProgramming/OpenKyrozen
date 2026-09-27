@@ -485,6 +485,8 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `GET/POST` | `/api/v2/memory/claims` | 型、帰属、スコープ付き memory claim の一覧/作成 |
 | `GET/DELETE` | `/api/v2/memory/claims/{claim_id}` | claim の説明、または単独依存を含む削除 |
 | `GET` | `/api/v2/events` | runtime、session、task、learning の監査イベント |
+| `GET` | `/api/v2/decision-assist` | Decision Assist の backend、同意、health 状態 |
+| `GET` | `/api/v2/fast/diagnostics?session_id=...` | prompt 内容なしの Fast 判断と LLM 使用量 |
 | `GET/POST` | `/api/v2/schedules` | 永続 interval/one-shot Gateway job |
 | `POST` | `/api/v2/schedules/{job_id}/disable` | スケジュール job を無効化 |
 | `GET` | `/api/v2/skills` | candidate/active skill の一覧 |

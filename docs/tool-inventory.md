@@ -72,7 +72,9 @@ Parameterized names are part of the contract; clients may substitute a value for
 | `GET` | `/api/memory` |
 | `GET` | `/api/v2/agents` |
 | `POST` | `/api/v2/agents/run` |
+| `GET` | `/api/v2/decision-assist` |
 | `GET` | `/api/v2/events` |
+| `GET` | `/api/v2/fast/diagnostics` |
 | `GET` | `/api/v2/learning` |
 | `POST` | `/api/v2/learning/capsules` |
 | `GET` | `/api/v2/learning/constitution` |

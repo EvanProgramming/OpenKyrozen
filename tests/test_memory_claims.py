@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from learning_engine import LearningEngine
 from memory import MemoryBank
@@ -42,6 +43,22 @@ class MemoryClaimTests(unittest.TestCase):
         again = self.engine.remember_claim(key="format", value="prose", evidence_id="two")
         self.assertEqual(again["status"], "candidate")
         self.assertTrue(again["needs_clarification"])
+
+    def test_decision_assist_contradiction_keeps_inferred_claim_candidate(self):
+        first = self.engine.remember_claim(key="editor", value="vim", evidence_id="one")
+        self.assertEqual(first["status"], "candidate")
+        with patch.object(self.engine, "_review_claim_evidence", return_value=False):
+            second = self.engine.remember_claim(key="editor", value="vim", evidence_id="two")
+        self.assertEqual(second["status"], "candidate")
+        self.assertTrue(second["needs_clarification"])
+        self.assertIsNone(self.engine.resolve_claim("editor"))
+
+    def test_learning_submit_does_not_activate_contradicted_fact(self):
+        self.engine.submit("fact", "The service uses Python", evidence_id="one")
+        with patch.object(self.engine, "_review_claim_evidence", return_value=False):
+            result = self.engine.submit("fact", "The service uses Python", evidence_id="two")
+        self.assertEqual(result["status"], "candidate")
+        self.assertTrue(result["needs_clarification"])
 
     def test_forget_deactivates_dependent_artifact(self):
         claim = self.engine.remember_claim(key="test command", value="pytest", authority="owner")
