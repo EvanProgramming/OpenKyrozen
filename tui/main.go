@@ -983,6 +983,21 @@ func (m *model) featureKey(key string) tea.Cmd {
 		m.send("command", map[string]any{"name": "self_learning", "args": map[string]any{"mode": "remote", "onboarding": m.onboardingSelfLearning}})
 		return nil
 	}
+	if m.onboardingSelfLearning {
+		switch key {
+		case "up", "k":
+			m.featureIdx = 0
+		case "down", "j":
+			m.featureIdx = 1
+		case "enter":
+			mode := "local"
+			if m.featureIdx == 1 {
+				mode = "remote"
+			}
+			m.send("command", map[string]any{"name": "self_learning", "args": map[string]any{"mode": mode, "onboarding": true}})
+		}
+		return nil
+	}
 	if len(m.features) == 0 {
 		return nil
 	}
@@ -1893,6 +1908,29 @@ func (m model) modal(_ string) string {
 	case screenApproval:
 		body = amberStyle.Render("!  APPROVAL REQUIRED") + "\n" + titleStyle.Render("Confirm this action") + "\n\n" + softStyle.Render(m.approvalTool) + "\n" + softStyle.Render(m.approvalArgs) + "\n\n" + mutedStyle.Render("This may change local or remote state.") + "\n\n" + greenStyle.Render("Y / Enter  approve") + "    " + redStyle.Render("N / Esc  deny")
 	case screenSelfLearning:
+		if m.onboardingSelfLearning {
+			localCursor, localStyle := mutedStyle.Render("·"), softStyle
+			remoteCursor, remoteStyle := mutedStyle.Render("·"), softStyle
+			if m.featureIdx == 0 {
+				localCursor, localStyle = brandStyle.Render("›"), titleStyle
+			} else {
+				remoteCursor, remoteStyle = brandStyle.Render("›"), titleStyle
+			}
+			body = strings.Join([]string{
+				brandStyle.Render("MEMORY"),
+				titleStyle.Render("Choose self-learning"),
+				mutedStyle.Render("Pick how Kyrozen should learn during setup."),
+				"",
+				mutedStyle.Render("↑↓ select  Enter continue  L/R choose directly  Esc cancel"),
+				localCursor + " " + localStyle.Render("L  Local Qwen2.5"),
+				softStyle.Render("   Private, CPU/RAM/disk only; no API cost."),
+				remoteCursor + " " + remoteStyle.Render("R  Remote provider-backed"),
+				softStyle.Render("   Uses your configured provider and API key."),
+				"",
+				greenStyle.Render("Choose one to finish setup."),
+			}, "\n")
+			break
+		}
 		runtime := firstNonEmpty(m.learningMode, "setup_required") + " / " + firstNonEmpty(m.learningStatus, "setup_required")
 		if m.learningModel != "" {
 			runtime += " / " + m.learningModel

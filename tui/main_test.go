@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -709,6 +711,45 @@ func TestModalContentFitsSmallWindow(t *testing.T) {
 		if width := lipgloss.Width(line); width > m.width {
 			t.Fatalf("modal line %d is %d cells wide at width %d", index, width, m.width)
 		}
+	}
+}
+
+func TestOnboardingSelfLearningModalStaysCompact(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height, m.screen = 117, 35, screenSelfLearning
+	m.onboardingSelfLearning = true
+	m.features = []featureItem{{name: "auto_learn_conversations", description: "Extract durable facts"}}
+	m.resize()
+
+	modal := m.modal("")
+	if !strings.Contains(modal, "Choose self-learning") || !strings.Contains(modal, "Local Qwen2.5") {
+		t.Fatalf("onboarding choice screen is incomplete: %s", modal)
+	}
+	if strings.Contains(modal, "auto_learn_conversations") {
+		t.Fatalf("onboarding rendered the full feature catalog: %s", modal)
+	}
+	if height := lipgloss.Height(modal); height > m.height {
+		t.Fatalf("onboarding modal rendered %d rows for a %d-row terminal", height, m.height)
+	}
+	for index, line := range strings.Split(modal, "\n") {
+		if width := lipgloss.Width(line); width > m.width {
+			t.Fatalf("onboarding modal line %d is %d cells wide at width %d", index, width, m.width)
+		}
+	}
+
+	var sent bytes.Buffer
+	m.bridge.stdin = bufio.NewWriter(&sent)
+	m.featureKey("enter")
+	if m.features[0].enabled {
+		t.Fatal("Enter toggled a feature instead of continuing onboarding")
+	}
+	if !strings.Contains(sent.String(), `"mode":"local"`) || !strings.Contains(sent.String(), `"onboarding":true`) {
+		t.Fatalf("Enter did not continue with the selected onboarding mode: %s", sent.String())
+	}
+
+	m.onboardingSelfLearning = false
+	if normal := m.modal(""); !strings.Contains(normal, "auto_learn_conversations") {
+		t.Fatal("normal self-learning settings lost the feature catalog")
 	}
 }
 
