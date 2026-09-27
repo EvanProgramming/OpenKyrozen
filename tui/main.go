@@ -25,6 +25,7 @@ type screen string
 
 const (
 	screenSplash       screen = "splash"
+	screenOnboarding   screen = "onboarding"
 	screenChat         screen = "chat"
 	screenProvider     screen = "provider"
 	screenAPIKey       screen = "api_key"
@@ -83,77 +84,81 @@ type planProposal struct {
 }
 
 type model struct {
-	bridge                *bridge
-	project               string
-	global                bool
-	width                 int
-	height                int
-	view                  viewport.Model
-	input                 textarea.Model
-	apiInput              textinput.Model
-	graphInput            textinput.Model
-	screen                screen
-	status                string
-	provider              string
-	modelName             string
-	workspace             string
-	messages              []chatMessage
-	tasks                 []taskItem
-	palette               []command
-	paletteIndex          int
-	providerList          []string
-	providerIdx           int
-	features              []featureItem
-	featureIdx            int
-	learningMode          string
-	learningStatus        string
-	learningModel         string
-	learningDetail        string
-	learningCostSource    string
-	usageScope            string
-	usageAttempts         int
-	usagePromptTokens     int
-	usageCompletionTokens int
-	usageReasoningTokens  int
-	usageCostPicos        int
-	interactionMode       string
-	effectiveMode         string
-	modeIdx               int
-	pendingQuestion       *questionRequest
-	questionIdx           int
-	choiceIdx             int
-	questionAnswers       map[string]any
-	pendingPlan           *planProposal
-	planScroll            int
-	graph                 graphSnapshot
-	graphSelected         int
-	graphZoom             int
-	graphCommunity        int
-	graphSearching        bool
-	graphPathStart        string
-	githubBinary          string
-	githubHostname        string
-	approvalID            string
-	approvalTool          string
-	approvalArgs          string
-	errorText             string
-	splashFrame           int
-	splashStarted         time.Time
-	readyAt               time.Time
-	backendReady          bool
-	motionFrame           int
-	cursorVisible         bool
-	thinkingText          string
-	taskFlashID           string
-	taskFlashTick         int
-	followTail            bool
-	transitionTick        int
-	reducedMotion         bool
-	showToolDetails       bool
-	updateInProgress      bool
-	busy                  bool
-	requestCount          int
-	restart               bool
+	bridge                    *bridge
+	project                   string
+	global                    bool
+	width                     int
+	height                    int
+	view                      viewport.Model
+	input                     textarea.Model
+	apiInput                  textinput.Model
+	graphInput                textinput.Model
+	screen                    screen
+	status                    string
+	provider                  string
+	modelName                 string
+	workspace                 string
+	messages                  []chatMessage
+	tasks                     []taskItem
+	palette                   []command
+	paletteIndex              int
+	providerList              []string
+	providerIdx               int
+	features                  []featureItem
+	featureIdx                int
+	learningMode              string
+	learningStatus            string
+	learningModel             string
+	learningDetail            string
+	learningCostSource        string
+	usageScope                string
+	usageAttempts             int
+	usagePromptTokens         int
+	usageCompletionTokens     int
+	usageReasoningTokens      int
+	usageCostPicos            int
+	interactionMode           string
+	effectiveMode             string
+	modeIdx                   int
+	pendingQuestion           *questionRequest
+	questionIdx               int
+	choiceIdx                 int
+	questionAnswers           map[string]any
+	pendingPlan               *planProposal
+	planScroll                int
+	graph                     graphSnapshot
+	graphSelected             int
+	graphZoom                 int
+	graphCommunity            int
+	graphSearching            bool
+	graphPathStart            string
+	githubBinary              string
+	githubHostname            string
+	approvalID                string
+	approvalTool              string
+	approvalArgs              string
+	errorText                 string
+	splashFrame               int
+	splashStarted             time.Time
+	readyAt                   time.Time
+	backendReady              bool
+	motionFrame               int
+	cursorVisible             bool
+	thinkingText              string
+	taskFlashID               string
+	taskFlashTick             int
+	followTail                bool
+	transitionTick            int
+	reducedMotion             bool
+	showToolDetails           bool
+	updateInProgress          bool
+	onboardingKind            string
+	onboardingPreviousVersion string
+	onboardingWaiting         bool
+	onboardingSelfLearning    bool
+	busy                      bool
+	requestCount              int
+	restart                   bool
 }
 
 type tickMsg time.Time
@@ -170,7 +175,9 @@ const (
 var uiSensitiveArgRE = regexp.MustCompile(`(?i)(api[_-]?key|secret|password|token)\s*[:=]\s*[^\s,;]+`)
 
 type uiSettings struct {
-	ShowToolDetails bool `json:"show_tool_details"`
+	ShowToolDetails    bool   `json:"show_tool_details"`
+	LastSeenVersion    string `json:"last_seen_version"`
+	OnboardingComplete bool   `json:"onboarding_complete"`
 }
 
 func uiSettingsPath() string {
@@ -195,6 +202,36 @@ func loadUISettings() uiSettings {
 		return uiSettings{}
 	}
 	return settings
+}
+
+func hasPriorInstallation() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	for _, path := range []string{
+		filepath.Join(home, ".kyrozen_config.json"),
+		filepath.Join(home, ".kyrozen", "v2", "openkyrozen.sqlite3"),
+		filepath.Join(home, ".kyrozen", "ui_settings.json"),
+	} {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func onboardingStatus(settings uiSettings) (string, string) {
+	if settings.LastSeenVersion == "" {
+		if hasPriorInstallation() {
+			return "update", "previous installation"
+		}
+		return "new", ""
+	}
+	if settings.LastSeenVersion != version {
+		return "update", settings.LastSeenVersion
+	}
+	return "", ""
 }
 
 func saveUISettings(settings uiSettings) error {
@@ -233,6 +270,7 @@ func saveUISettings(settings uiSettings) error {
 func initialModel(project string, global bool) model {
 	reducedMotion := os.Getenv("KYROZEN_REDUCED_MOTION") == "1"
 	settings := loadUISettings()
+	onboardingKind, onboardingPreviousVersion := onboardingStatus(settings)
 	input := textarea.New()
 	input.Placeholder = "Ask Kyrozen anything…"
 	input.Prompt = "› "
@@ -269,24 +307,26 @@ func initialModel(project string, global bool) model {
 	transcript.MouseWheelEnabled = true
 	transcript.MouseWheelDelta = mouseWheelScrollStep
 	return model{
-		bridge:          newBridge(),
-		project:         project,
-		global:          global,
-		view:            transcript,
-		input:           input,
-		apiInput:        apiInput,
-		graphInput:      graphInput,
-		screen:          screenSplash,
-		status:          "Starting the workspace…",
-		splashStarted:   time.Now(),
-		cursorVisible:   true,
-		followTail:      true,
-		reducedMotion:   reducedMotion,
-		showToolDetails: settings.ShowToolDetails,
-		interactionMode: "auto",
-		effectiveMode:   "ask",
-		questionAnswers: make(map[string]any),
-		graphCommunity:  -1,
+		bridge:                    newBridge(),
+		project:                   project,
+		global:                    global,
+		view:                      transcript,
+		input:                     input,
+		apiInput:                  apiInput,
+		graphInput:                graphInput,
+		screen:                    screenSplash,
+		status:                    "Starting the workspace…",
+		splashStarted:             time.Now(),
+		cursorVisible:             true,
+		followTail:                true,
+		reducedMotion:             reducedMotion,
+		showToolDetails:           settings.ShowToolDetails,
+		onboardingKind:            onboardingKind,
+		onboardingPreviousVersion: onboardingPreviousVersion,
+		interactionMode:           "auto",
+		effectiveMode:             "ask",
+		questionAnswers:           make(map[string]any),
+		graphCommunity:            -1,
 	}
 }
 
@@ -373,7 +413,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.setError("Could not start the Python backend: " + msg.err.Error())
 		} else {
-			m.send("start", map[string]any{"project": m.project, "global": m.global})
+			payload := map[string]any{"project": m.project, "global": m.global}
+			if m.onboardingKind != "" {
+				payload["onboarding"] = m.onboardingKind
+				payload["onboarding_previous_version"] = m.onboardingPreviousVersion
+			}
+			m.send("start", payload)
 			cmds = append(cmds, waitBackend(m.bridge))
 		}
 	case backendEventsMsg:
@@ -536,9 +581,21 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if m.updateInProgress {
 		return nil, false
 	}
+	if m.screen == screenOnboarding {
+		if key == "enter" && !m.onboardingWaiting {
+			m.onboardingWaiting = true
+			m.status = "Preparing setup…"
+			m.send("command", map[string]any{"name": "onboarding_continue"})
+		}
+		return nil, false
+	}
 	if m.screen == screenError {
 		if key == "esc" || key == "enter" {
-			m.screen = screenChat
+			if m.onboardingKind != "" {
+				m.screen = screenOnboarding
+			} else {
+				m.screen = screenChat
+			}
 		}
 		return nil, false
 	}
@@ -631,7 +688,9 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		}
 		if key == "space" || key == "enter" {
 			m.showToolDetails = !m.showToolDetails
-			if err := saveUISettings(uiSettings{ShowToolDetails: m.showToolDetails}); err != nil {
+			settings := loadUISettings()
+			settings.ShowToolDetails = m.showToolDetails
+			if err := saveUISettings(settings); err != nil {
 				m.setError("Could not save UI settings: " + err.Error())
 			}
 		}
@@ -640,13 +699,23 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if m.screen == screenAPIKey {
 		if key == "esc" {
 			m.apiInput.Reset()
-			m.screen = screenChat
+			if m.onboardingKind != "" {
+				m.screen = screenOnboarding
+				m.onboardingWaiting = false
+			} else {
+				m.screen = screenChat
+			}
 			return nil, false
 		}
 		if key == "enter" {
 			m.send("command", map[string]any{"name": "api_key", "args": map[string]any{"api_key": m.apiInput.Value()}})
 			m.apiInput.Reset()
-			m.screen = screenChat
+			if m.onboardingKind != "" {
+				m.screen = screenOnboarding
+				m.onboardingWaiting = true
+			} else {
+				m.screen = screenChat
+			}
 			return nil, false
 		}
 		var cmd tea.Cmd
@@ -872,7 +941,12 @@ func (m *model) refreshPalette() {
 
 func (m *model) providerKey(key string) tea.Cmd {
 	if key == "esc" {
-		m.screen = screenChat
+		if m.onboardingKind != "" {
+			m.screen = screenOnboarding
+			m.onboardingWaiting = false
+		} else {
+			m.screen = screenChat
+		}
 		return nil
 	}
 	if key == "up" || key == "k" {
@@ -885,22 +959,28 @@ func (m *model) providerKey(key string) tea.Cmd {
 	}
 	if key == "enter" && len(m.providerList) > 0 {
 		m.send("command", map[string]any{"name": "provider", "args": map[string]any{"provider": m.providerList[m.providerIdx]}})
-		m.screen = screenChat
+		if m.onboardingKind != "" {
+			m.onboardingWaiting = true
+		} else {
+			m.screen = screenChat
+		}
 	}
 	return nil
 }
 
 func (m *model) featureKey(key string) tea.Cmd {
 	if key == "esc" {
-		m.screen = screenChat
+		if m.onboardingKind == "" {
+			m.screen = screenChat
+		}
 		return nil
 	}
 	if key == "l" || key == "L" {
-		m.send("command", map[string]any{"name": "self_learning", "args": map[string]any{"mode": "local"}})
+		m.send("command", map[string]any{"name": "self_learning", "args": map[string]any{"mode": "local", "onboarding": m.onboardingSelfLearning}})
 		return nil
 	}
 	if key == "r" || key == "R" {
-		m.send("command", map[string]any{"name": "self_learning", "args": map[string]any{"mode": "remote"}})
+		m.send("command", map[string]any{"name": "self_learning", "args": map[string]any{"mode": "remote", "onboarding": m.onboardingSelfLearning}})
 		return nil
 	}
 	if len(m.features) == 0 {
@@ -1041,6 +1121,8 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		if value, ok := event["github"].(map[string]any); ok {
 			m.messages = append(m.messages, chatMessage{role: "assistant", text: firstNonEmpty(stringValue(value, "message"), "GitHub CLI status unavailable.")})
 		}
+	case "onboarding_complete":
+		m.completeOnboarding()
 	case "prompt":
 		m.handlePrompt(event)
 	case "error":
@@ -1150,13 +1232,21 @@ func parseTasks(value any) []taskItem {
 
 func (m *model) handlePrompt(event backendEvent) {
 	switch stringValue(event, "kind") {
+	case "onboarding":
+		m.onboardingKind = firstNonEmpty(stringValue(event, "onboarding"), m.onboardingKind)
+		m.onboardingPreviousVersion = stringValue(event, "previous_version")
+		m.onboardingWaiting = false
+		m.screen = screenOnboarding
+		m.startTransition()
 	case "api_key":
+		m.onboardingWaiting = false
 		m.screen = screenAPIKey
 		m.startTransition()
 		m.apiInput.Reset()
 		m.apiInput.Placeholder = firstNonEmpty(stringValue(event, "message"), "Enter API key")
 		m.apiInput.Focus()
 	case "provider":
+		m.onboardingWaiting = false
 		m.providerList = nil
 		if providers, ok := event["providers"].([]any); ok {
 			for _, raw := range providers {
@@ -1174,6 +1264,8 @@ func (m *model) handlePrompt(event backendEvent) {
 		m.screen = screenApproval
 		m.startTransition()
 	case "self_learning":
+		m.onboardingSelfLearning = boolValue(event, "onboarding")
+		m.onboardingWaiting = false
 		m.features = nil
 		if features, ok := event["features"].([]any); ok {
 			for _, raw := range features {
@@ -1211,6 +1303,22 @@ func (m *model) handlePrompt(event backendEvent) {
 		m.screen = screenGithubAuth
 		m.startTransition()
 	}
+}
+
+func (m *model) completeOnboarding() {
+	settings := loadUISettings()
+	settings.LastSeenVersion = version
+	settings.OnboardingComplete = true
+	if err := saveUISettings(settings); err != nil {
+		m.setError("Could not save onboarding state: " + err.Error())
+		return
+	}
+	m.onboardingKind = ""
+	m.onboardingPreviousVersion = ""
+	m.onboardingWaiting = false
+	m.onboardingSelfLearning = false
+	m.screen = screenChat
+	m.status = "Ready"
 }
 
 func (m *model) startTransition() {
@@ -1753,6 +1861,33 @@ func (m model) modal(_ string) string {
 			lines = append(lines, mutedStyle.Render("No providers are available."))
 		}
 		body = strings.Join(lines, "\n")
+	case screenOnboarding:
+		if m.onboardingKind == "update" {
+			previous := firstNonEmpty(m.onboardingPreviousVersion, "an earlier release")
+			body = strings.Join([]string{
+				brandStyle.Render("OPENKYROZEN UPDATE"),
+				titleStyle.Render("Your setup is already here"),
+				softStyle.Render(fmt.Sprintf("Updated from %s to %s.", previous, version)),
+				mutedStyle.Render("Your provider, workspace, memory, and settings stay in place."),
+				"",
+				greenStyle.Render("Enter  continue"),
+				mutedStyle.Render("Ctrl+C  quit"),
+			}, "\n")
+		} else {
+			body = strings.Join([]string{
+				brandStyle.Render("WELCOME TO OPENKYROZEN"),
+				titleStyle.Render("Let’s get your workspace ready"),
+				softStyle.Render("This first-run setup takes care of the provider and self-learning choices."),
+				mutedStyle.Render("Nothing is sent anywhere until you choose a provider and start chatting."),
+				"",
+				brandStyle.Render("1") + "  Choose a provider",
+				brandStyle.Render("2") + "  Add a key if that provider needs one",
+				brandStyle.Render("3") + "  Choose local or remote self-learning",
+				"",
+				greenStyle.Render("Enter  begin setup"),
+				mutedStyle.Render("Ctrl+C  quit"),
+			}, "\n")
+		}
 	case screenAPIKey:
 		body = brandStyle.Render("PROVIDER SETUP") + "\n" + titleStyle.Render("Add your API key") + "\n" + mutedStyle.Render("Your key is masked and stored encrypted locally.") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.apiInput.View()) + "\n\n" + mutedStyle.Render("Enter confirm  ·  Esc cancel")
 	case screenApproval:
@@ -1762,7 +1897,11 @@ func (m model) modal(_ string) string {
 		if m.learningModel != "" {
 			runtime += " / " + m.learningModel
 		}
-		lines := []string{brandStyle.Render("MEMORY"), titleStyle.Render("Self-learning settings"), mutedStyle.Render(runtime), mutedStyle.Render(m.learningDetail), mutedStyle.Render(m.learningCostSource), mutedStyle.Render("L local free Qwen2.5  ·  R remote API  ·  ↑↓ select  Space toggle  Esc close"), ""}
+		hint := "L local free Qwen2.5  ·  R remote API  ·  ↑↓ select  Space toggle  Esc close"
+		if m.onboardingSelfLearning {
+			hint = "L local free Qwen2.5  ·  R remote provider-backed learning  ·  choose one to finish setup"
+		}
+		lines := []string{brandStyle.Render("MEMORY"), titleStyle.Render("Self-learning settings"), mutedStyle.Render(runtime), mutedStyle.Render(m.learningDetail), mutedStyle.Render(m.learningCostSource), mutedStyle.Render(hint), ""}
 		for index, item := range m.features {
 			cursor, style := mutedStyle.Render("·"), softStyle
 			rowStyle := lipgloss.NewStyle().Padding(0, 1)
@@ -1999,15 +2138,24 @@ func compactText(value string, width int) string {
 func main() {
 	const restartExitCode = 75
 
+	arguments := os.Args[1:]
+	forceOnboarding := len(arguments) > 0 && strings.EqualFold(arguments[0], "onboarding")
+	if forceOnboarding {
+		arguments = arguments[1:]
+	}
 	project := flag.String("project", "", "active project path")
 	global := flag.Bool("global", false, "use the global workspace")
 	showVersion := flag.Bool("version", false, "show version")
-	flag.Parse()
+	_ = flag.CommandLine.Parse(arguments)
 	if *showVersion {
 		fmt.Printf("OpenKyrozen %s\n", version)
 		return
 	}
 	m := initialModel(*project, *global || *project == "")
+	if forceOnboarding {
+		m.onboardingKind = "new"
+		m.onboardingPreviousVersion = ""
+	}
 	p := tea.NewProgram(m)
 	finalModel, err := p.Run()
 	if err != nil {

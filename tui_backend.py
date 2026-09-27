@@ -88,6 +88,7 @@ class Backend:
         self._pending_approvals: dict[str, tuple[threading.Event, dict[str, bool]]] = {}
         self._approval_lock = threading.Lock()
         self._staged_attachments: list[dict[str, Any]] = []
+        self._onboarding_kind = ""
 
     def emit(self, event: str, request_id: str | None = None, **payload: Any) -> None:
         message: dict[str, Any] = {
@@ -150,6 +151,10 @@ class Backend:
                       workspace=str(agent._get_workspace_root()))
             return
         self._started = True
+        self._onboarding_kind = str(payload.get("onboarding") or "").strip().lower()
+        if self._onboarding_kind not in {"new", "update"}:
+            self._onboarding_kind = ""
+        onboarding_previous_version = str(payload.get("onboarding_previous_version") or "").strip()
         project = payload.get("project")
         global_mode = bool(payload.get("global", not project))
         try:
@@ -192,7 +197,13 @@ class Backend:
                 recovered=len(task_results or []),
             )
             self.usage(request_id)
-            if not configured and getattr(config, "provider", "") != "ollama":
+            if self._onboarding_kind:
+                self.emit(
+                    "prompt", request_id, kind="onboarding", onboarding=self._onboarding_kind,
+                    previous_version=onboarding_previous_version,
+                    version=getattr(agent, "RELEASE_VERSION", ""),
+                )
+            elif not configured and getattr(config, "provider", "") != "ollama":
                 self.prompt_api_key(request_id=request_id)
             self.interaction(request_id)
             self.status("ready", "Ready", request_id)
@@ -207,6 +218,7 @@ class Backend:
             "prompt", request_id, kind="api_key", masked=True, provider=provider,
             env_var=agent.PROVIDER_ENV_VARS.get(provider, ""),
             message=f"Enter the {provider.title()} API key. It is stored encrypted locally.",
+            onboarding=bool(self._onboarding_kind),
         )
 
     def prompt_provider(self, request_id: str | None = None) -> None:
@@ -217,7 +229,32 @@ class Backend:
                 {"name": name, "model": models[0], "local": name == "ollama"}
                 for name, models in agent.PROVIDER_DEFAULT_MODELS.items()
             ],
+            onboarding=bool(self._onboarding_kind),
         )
+
+    def _prompt_onboarding_learning(self, request_id: str | None = None) -> None:
+        self.emit(
+            "prompt", request_id, kind="self_learning", features=self._features(),
+            runtime=agent.learning_runtime(), cost_source=agent.learning_cost_source(),
+            onboarding=True,
+        )
+
+    def _complete_onboarding(self, request_id: str | None = None) -> None:
+        kind = self._onboarding_kind
+        self._onboarding_kind = ""
+        self.emit("onboarding_complete", request_id, kind=kind)
+        self.interaction(request_id)
+        self.status("ready", "Ready", request_id)
+
+    def _continue_onboarding(self, request_id: str | None = None) -> None:
+        if self._onboarding_kind == "new":
+            self.prompt_provider(request_id)
+            return
+        if self._onboarding_kind == "update":
+            if agent.llm_provider is None and getattr(agent._provider_config, "provider", "") != "ollama":
+                self.prompt_api_key(request_id=request_id)
+            else:
+                self._complete_onboarding(request_id)
 
     def configure_provider(self, provider: str, api_key: str | None = None,
                            request_id: str | None = None) -> None:
@@ -244,6 +281,10 @@ class Backend:
             )
             if not configured and provider != "ollama":
                 self.prompt_api_key(request_id=request_id)
+            elif self._onboarding_kind == "new":
+                self._prompt_onboarding_learning(request_id)
+            elif self._onboarding_kind == "update":
+                self._complete_onboarding(request_id)
             else:
                 self.status("ready", f"Using {provider.title()}.", request_id)
         except Exception as exc:
@@ -264,7 +305,12 @@ class Backend:
             self.emit("ready", request_id, configured=configured,
                       provider=config.provider, model=config.model_simple,
                       workspace=str(agent._get_workspace_root()))
-            self.status("ready" if configured else "waiting", "Provider configured." if configured else "Provider unavailable.", request_id)
+            if configured and self._onboarding_kind == "new":
+                self._prompt_onboarding_learning(request_id)
+            elif configured and self._onboarding_kind == "update":
+                self._complete_onboarding(request_id)
+            else:
+                self.status("ready" if configured else "waiting", "Provider configured." if configured else "Provider unavailable.", request_id)
         except Exception as exc:
             self.emit("error", request_id, code="api_key_setup_failed",
                       error=f"{type(exc).__name__}: {_redact(exc)}")
@@ -503,6 +549,8 @@ class Backend:
                 self.configure_provider(arg_text.strip(), request_id=request_id)
             else:
                 self.prompt_provider(request_id)
+        elif command in {"onboarding_continue", "/onboarding_continue"}:
+            self._continue_onboarding(request_id)
         elif command in {"/api_key", "api_key"}:
             if isinstance(args, Mapping) and isinstance(args.get("api_key"), str):
                 self.set_api_key(args["api_key"], request_id)
@@ -523,8 +571,11 @@ class Backend:
                 try:
                     mode = agent.set_learning_policy(str(args.get("mode") or args["policy"]))
                     self.emit("response", request_id, text=f"learning mode: {mode}")
-                    self.emit("prompt", request_id, kind="self_learning", features=self._features(),
-                              runtime=agent.learning_runtime(), cost_source=agent.learning_cost_source())
+                    if args.get("onboarding") and self._onboarding_kind == "new":
+                        self._complete_onboarding(request_id)
+                    else:
+                        self.emit("prompt", request_id, kind="self_learning", features=self._features(),
+                                  runtime=agent.learning_runtime(), cost_source=agent.learning_cost_source())
                 except ValueError as exc:
                     self.emit("error", request_id, text=str(exc))
             elif isinstance(args, Mapping) and args.get("feature") in agent._SELF_LEARNING_FLAGS:

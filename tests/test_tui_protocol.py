@@ -204,6 +204,42 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertEqual(events[-1]["event"], "status")
         self.assertEqual(events[-1]["state"], "ready")
 
+    def test_new_install_onboarding_defers_provider_prompt(self):
+        context = type("Context", (), {
+            "active_root": Path("/tmp/openkyrozen-onboarding-workspace"),
+            "is_global": True,
+        })()
+        config = type("Config", (), {
+            "provider": "deepseek",
+            "model_simple": "deepseek-v4-flash",
+        })()
+        plugin = type("Plugin", (), {"load_once": lambda self: None})()
+        with patch.object(tui_backend.agent, "configure_launch_context", return_value=context), \
+                patch.object(tui_backend.agent, "detect_provider", return_value=config), \
+                patch.object(tui_backend.agent, "_prompt_and_init_deepseek", return_value=False), \
+                patch.object(tui_backend.agent, "_plugin_runtime_for_surface", return_value=plugin), \
+                patch.object(tui_backend.agent, "_run_recovered_tasks", return_value=[]), \
+                patch.object(tui_backend.agent, "_project_graph", None), \
+                patch.object(tui_backend.agent, "_ensure_detached_learning_worker", return_value=True):
+            self.backend.start({"command": "start", "global": True, "onboarding": "new"}, "new-1")
+
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        prompts = [event for event in events if event["event"] == "prompt"]
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(prompts[0]["kind"], "onboarding")
+        self.assertNotIn("api_key", [event.get("kind") for event in prompts])
+
+    def test_onboarding_learning_choice_completes_setup(self):
+        self.backend._onboarding_kind = "new"
+        with patch.object(tui_backend.agent, "set_learning_policy", return_value="remote"), \
+                patch.object(self.backend, "interaction"), \
+                patch.object(self.backend, "status"):
+            self.backend._command("self_learning", {"mode": "remote", "onboarding": True}, "learning-1")
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        self.assertEqual([event["event"] for event in events], ["response", "onboarding_complete"])
+        self.assertEqual(events[-1]["kind"], "new")
+        self.assertEqual(self.backend._onboarding_kind, "")
+
     def test_usage_projection_reads_workspace_ledger(self):
         class Store:
             def usage_totals(self, **kwargs):

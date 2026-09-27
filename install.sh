@@ -233,4 +233,4 @@ printf '%s\n' '' 'Installation complete.' \
   '  kyrozen --project .     Work directly in the current project' \
   '  kyrozen-web             Start the local web server' \
   '' 'Restart your shell if the kyrozen command is not yet available.' \
-  'The first kyrozen launch will guide you through provider setup; this installer never handles API keys.'
+  'The first kyrozen launch will open Bubble Tea onboarding for provider and self-learning setup; updates preserve existing settings. This installer never handles API keys.'

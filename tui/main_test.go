@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +12,49 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
+
+func TestOnboardingDistinguishesNewAndUpdatedInstall(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	fresh := initialModel("", true)
+	if fresh.onboardingKind != "new" {
+		t.Fatalf("fresh install was classified as %q", fresh.onboardingKind)
+	}
+	fresh.width, fresh.height, fresh.screen = 80, 24, screenOnboarding
+	fresh.resize()
+	if !strings.Contains(fresh.View().Content, "WELCOME TO OPENKYROZEN") {
+		t.Fatal("fresh install did not render the themed welcome screen")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(uiSettingsPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(uiSettings{LastSeenVersion: "2.0.3", OnboardingComplete: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(uiSettingsPath(), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	updated := initialModel("", true)
+	if updated.onboardingKind != "update" || updated.onboardingPreviousVersion != "2.0.3" {
+		t.Fatalf("updated install was classified as %q from %q", updated.onboardingKind, updated.onboardingPreviousVersion)
+	}
+}
+
+func TestOnboardingCompletionPersistsVersionAndReturnsToChat(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := initialModel("", true)
+	m.screen, m.onboardingKind = screenOnboarding, "new"
+	m.handleBackendEvent(backendEvent{"event": "onboarding_complete", "kind": "new"})
+	if m.screen != screenChat || m.onboardingKind != "" {
+		t.Fatalf("onboarding did not return to chat: screen=%s kind=%q", m.screen, m.onboardingKind)
+	}
+	settings := loadUISettings()
+	if settings.LastSeenVersion != version || !settings.OnboardingComplete {
+		t.Fatalf("onboarding completion was not persisted: %#v", settings)
+	}
+}
 
 func TestReducerProjectsStreamingResponseTasksAndApproval(t *testing.T) {
 	m := initialModel(".", false)

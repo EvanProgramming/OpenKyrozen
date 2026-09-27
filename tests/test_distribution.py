@@ -381,6 +381,21 @@ exit 0
         self.assertEqual([call.args[0][0] for call in run.call_args_list], ["old-tui", "new-tui"])
         legacy.assert_not_called()
 
+    def test_launcher_passes_onboarding_subcommand_to_bubble_tea(self):
+        import tui_launcher
+
+        result = subprocess.CompletedProcess(["tui"], 0)
+        with patch("tui_launcher._is_terminal", return_value=True), \
+             patch("tui_launcher._tui_binary", return_value="tui"), \
+             patch("tui_launcher._backend_command", return_value=("backend", None)), \
+             patch("tui_launcher.subprocess.run", return_value=result) as run, \
+             patch("tui_launcher._legacy") as legacy, \
+             patch("tui_launcher.sys.argv", ["kyrozen", "onboarding"]):
+            tui_launcher.main()
+
+        self.assertEqual(run.call_args.args[0], ["tui", "onboarding"])
+        legacy.assert_not_called()
+
     def test_docker_starts_server_in_explicit_project_mode(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn('"server.py", "--project", "/app"', dockerfile)

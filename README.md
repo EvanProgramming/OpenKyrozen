@@ -101,7 +101,9 @@ On Windows PowerShell:
 irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.4/install.ps1 | iex
 ```
 
-The installer fetches the immutable `v2.0.4` GitHub release wheel and checksum-verified TUI source asset, checks the operating system, architecture, Python, network, and writable user paths; installs `uv` when needed; provisions the Web dependencies in an isolated `uv` tool environment; reuses or installs Go 1.27.1 locally; builds the Bubble Tea binary atomically; retries once with `uv --no-cache` if an incomplete local cache is encountered; creates private `~/.kyrozen` state directories; and verifies `kyrozen --version` and `kyrozen --help`. If the TUI asset or build is unavailable, `kyrozen` clearly falls back to the Rich recovery interface. It never reads, prints, or uploads API keys. The first `kyrozen` launch guides provider setup.
+The installer fetches the immutable `v2.0.4` GitHub release wheel and checksum-verified TUI source asset, checks the operating system, architecture, Python, network, and writable user paths; installs `uv` when needed; provisions the Web dependencies in an isolated `uv` tool environment; reuses or installs Go 1.27.1 locally; builds the Bubble Tea binary atomically; retries once with `uv --no-cache` if an incomplete local cache is encountered; creates private `~/.kyrozen` state directories; and verifies `kyrozen --version` and `kyrozen --help`. If the TUI asset or build is unavailable, `kyrozen` clearly falls back to the Rich recovery interface. It never reads, prints, or uploads API keys. The first `kyrozen` launch opens a themed Bubble Tea onboarding flow for provider, API-key, and self-learning setup; later updates show a short migration notice and keep existing settings.
+
+To reopen setup later, run `kyrozen onboarding`. This reuses the same themed onboarding flow without deleting your saved provider key, memory, or workspace.
 
 ### Development-only source checkout
 

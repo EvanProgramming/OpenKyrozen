@@ -54,8 +54,12 @@ def _backend_command() -> tuple[str | None, str | None]:
 
 def main() -> None:
     argv = sys.argv[1:]
+    onboarding_requested = bool(argv and argv[0].lower() == "onboarding")
     # These paths are intentionally handled by the legacy entry point: they
     # are one-shot commands, not interactive terminal sessions.
+    if onboarding_requested and (not _is_terminal() or os.environ.get("KYROZEN_DISABLE_TUI") == "1"):
+        print("kyrozen onboarding requires an interactive Bubble Tea terminal.", file=sys.stderr)
+        return
     if (not _is_terminal() or os.environ.get("KYROZEN_DISABLE_TUI") == "1" or
             any(flag in argv for flag in ("--help", "--version", "--init")) or
             argv[:1] in (["migrate"], ["learning"])):
