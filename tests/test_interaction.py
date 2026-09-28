@@ -330,6 +330,123 @@ class InteractionTests(unittest.TestCase):
                  previous_root, main._execution_capability_token) = original
                 main._set_workspace_root(previous_root)
 
+    def test_plan_prompt_advertises_only_read_and_network_tools(self):
+        mode_token = main._active_interaction_mode.set("plan")
+        controls_token = main._interaction_controls_enabled.set(True)
+        previous_token = main._execution_capability_token
+        main._execution_capability_token = issue_capability_token(
+            "test:plan-prompt", frozenset({"read", "write", "shell", "network", "git", "dynamic"}),
+        )
+        try:
+            prompt = main._system_prompt("deliberately ignored")
+        finally:
+            main._execution_capability_token = previous_token
+            main._interaction_controls_enabled.reset(controls_token)
+            main._active_interaction_mode.reset(mode_token)
+        self.assertIn("PlanProposal", prompt)
+        self.assertIn("read_file", prompt)
+        self.assertIn("search_web", prompt)
+        for forbidden in ("write_file", "run_cmd", "TaskList", "TaskDone", "DefineTool", "git_commit"):
+            self.assertNotIn(forbidden, prompt)
+
+    def test_plan_recovery_exhaustion_is_stable_and_never_executes_mutations(self):
+        class LearningStub:
+            def feedback_signal(self, _text): return None
+            def route_profile(self, _text, _profile=None): return "coder"
+            def begin_run(self, profile, _task, provider_model=None):
+                return {"run_id": "plan-exhaust", "profile": profile, "provider_model": provider_model}
+            def artifact_context(self, _run): return "", []
+
+        class RuntimeStub:
+            def turn_start(self, **_kwargs): return None
+            def turn_end(self, **_kwargs): return None
+
+        original = (main.tasks, main._interaction_controller, main.learning_engine,
+                    main._get_workspace_root(), main._execution_capability_token)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = EventStore(root / "state.sqlite3")
+            main.tasks = TaskManager(store, workspace_id="exhaust", session_id="exhaust")
+            main._interaction_controller = InteractionController(store, workspace_id="exhaust", session_id="exhaust")
+            main._interaction_controller.set_mode("plan")
+            main.learning_engine = LearningStub()
+            main._set_workspace_root(root)
+            responses = [
+                'Action: {"action":"write_file","args":"unsafe.txt|bad"}',
+                'Action: {"action":"run_cmd","args":"touch unsafe.txt"}',
+                'Action: {"action":"write_file","args":"unsafe.txt|bad"}',
+                'Action: {"action":"run_cmd","args":"touch unsafe.txt"}',
+            ]
+            try:
+                with patch.object(main, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
+                        patch.object(main, "_touch_detached_learning_heartbeat"), \
+                        patch.object(main, "dispatch_learning_cycle"), \
+                        patch.object(main, "_build_messages", return_value=[]), \
+                        patch.object(main, "_classify_complexity", return_value="complex"), \
+                        patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
+                        patch.object(main, "_execute_turn_action", side_effect=AssertionError("mutation executed")), \
+                        patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
+                                     result, records, tokens, started: result):
+                    reply = main._chat_turn("Fix the project")
+                self.assertIn("bounded recovery", reply)
+                self.assertIn("no changes were made", reply)
+                self.assertFalse((root / "unsafe.txt").exists())
+            finally:
+                (main.tasks, main._interaction_controller, main.learning_engine,
+                 previous_root, main._execution_capability_token) = original
+                main._set_workspace_root(previous_root)
+
+    def test_plan_inspection_spans_rounds_and_repairs_malformed_proposal(self):
+        class LearningStub:
+            def feedback_signal(self, _text): return None
+            def route_profile(self, _text, _profile=None): return "coder"
+            def begin_run(self, profile, _task, provider_model=None):
+                return {"run_id": "plan-inspect", "profile": profile, "provider_model": provider_model}
+            def artifact_context(self, _run): return "", []
+
+        class RuntimeStub:
+            def turn_start(self, **_kwargs): return None
+            def turn_end(self, **_kwargs): return None
+
+        original = (main.tasks, main._interaction_controller, main.learning_engine,
+                    main._get_workspace_root(), main._execution_capability_token)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "note.txt").write_text("evidence", encoding="utf-8")
+            store = EventStore(root / "state.sqlite3")
+            main.tasks = TaskManager(store, workspace_id="inspect", session_id="inspect")
+            main._interaction_controller = InteractionController(store, workspace_id="inspect", session_id="inspect")
+            main._interaction_controller.set_mode("plan")
+            main.learning_engine = LearningStub()
+            main._set_workspace_root(root)
+            records = []
+            responses = [
+                'Action: {"action":"read_file","args":"note.txt"}',
+                'Action: {"action":"list_dir","args":"."}',
+                'PlanProposal:\n```json\n{"title":"Broken","steps":[}\n```',
+                'PlanProposal:\n```json\n{"title":"Evidence plan","summary":"Use inspected evidence.",'
+                '"assumptions":[],"steps":[{"id":"step-1","title":"Apply change",'
+                '"description":"Apply the approved change.","acceptance":["Change verified"]}]}\n```',
+            ]
+            try:
+                with patch.object(main, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
+                        patch.object(main, "_touch_detached_learning_heartbeat"), \
+                        patch.object(main, "dispatch_learning_cycle"), \
+                        patch.object(main, "_build_messages", return_value=[]), \
+                        patch.object(main, "_build_memory_context", return_value=""), \
+                        patch.object(main, "_classify_complexity", return_value="complex"), \
+                        patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
+                        patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
+                                     result, tool_records, tokens, started: records.extend(tool_records) or result):
+                    reply = main._chat_turn("Plan the evidence-backed change")
+                self.assertIn("Evidence plan", reply)
+                self.assertEqual([record["action"] for record in records], ["read_file", "list_dir"])
+                self.assertEqual(main._interaction_controller.state()["effective_mode"], "plan")
+            finally:
+                (main.tasks, main._interaction_controller, main.learning_engine,
+                 previous_root, main._execution_capability_token) = original
+                main._set_workspace_root(previous_root)
+
     def test_control_blocks_combined_with_actions_fail_closed(self):
         parsed = main._observe_model_response(
             'AskUser:\n```json\n{"questions":[{"id":"scope","header":"Scope",'
