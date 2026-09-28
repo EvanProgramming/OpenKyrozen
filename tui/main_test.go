@@ -560,9 +560,38 @@ func TestFocusedCockpitRailBreakpointAndCompactGraph(t *testing.T) {
 
 func TestFocusedCockpitMessageHierarchyAndEmptyState(t *testing.T) {
 	m := initialModel("", true)
-	empty := m.history(80)
-	if !strings.Contains(empty, "WORKSPACE READY") || !strings.Contains(empty, "/plan") || !strings.Contains(empty, "/graph") {
+	m.width, m.height = 120, 30
+	mainWidth, _ := m.layoutWidths()
+	empty := m.history(mainWidth)
+	if !strings.Contains(empty, "OPENKYROZEN") || !strings.Contains(empty, "WORKSPACE READY") || !strings.Contains(empty, "/plan") || !strings.Contains(empty, "/graph") {
 		t.Fatalf("empty state is incomplete: %s", empty)
+	}
+	if lipgloss.Height(empty) != m.historyHeight() {
+		t.Fatalf("empty state height is %d, want %d", lipgloss.Height(empty), m.historyHeight())
+	}
+	bannerLine := -1
+	for index, line := range strings.Split(empty, "\n") {
+		if strings.Contains(line, "◈  OPENKYROZEN  ◈") {
+			bannerLine = index
+			break
+		}
+	}
+	if bannerLine < 3 || bannerLine > m.historyHeight()-4 {
+		t.Fatalf("empty-state banner is not vertically centered: line %d of %d", bannerLine, m.historyHeight())
+	}
+	for _, size := range [][2]int{{60, 16}, {80, 24}, {120, 30}, {140, 40}} {
+		sized := initialModel("", true)
+		sized.width, sized.height, sized.screen = size[0], size[1], screenChat
+		sized.resize()
+		content := sized.View().Content
+		if !strings.Contains(content, "OPENKYROZEN") || len(strings.Split(content, "\n")) != size[1] {
+			t.Fatalf("%dx%d empty state lost the banner or terminal bounds", size[0], size[1])
+		}
+		for index, line := range strings.Split(content, "\n") {
+			if width := lipgloss.Width(line); width > size[0] {
+				t.Fatalf("%dx%d empty-state line %d is %d cells wide", size[0], size[1], index, width)
+			}
+		}
 	}
 	m.messages = []chatMessage{
 		{role: "user", text: "Review this"},
@@ -578,6 +607,9 @@ func TestFocusedCockpitMessageHierarchyAndEmptyState(t *testing.T) {
 	}
 	if strings.Contains(history, "private details") {
 		t.Fatalf("collapsed tool receipt exposed details: %s", history)
+	}
+	if strings.Contains(history, "◈  OPENKYROZEN  ◈") {
+		t.Fatal("empty-state banner remained after the conversation started")
 	}
 }
 

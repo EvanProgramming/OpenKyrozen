@@ -38,7 +38,6 @@ var (
 	contextStyle    = lipgloss.NewStyle().Background(lipgloss.Color(deep))
 	badgeStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color(cyan)).Background(lipgloss.Color(surfaceHi)).Bold(true).Padding(0, 1)
 	sectionStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color(muted)).Bold(true)
-	welcomeStyle    = lipgloss.NewStyle().Background(lipgloss.Color(deep)).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(border)).Padding(1, 2)
 	assistantStyle  = lipgloss.NewStyle().BorderLeft(true).BorderForeground(lipgloss.Color(border)).PaddingLeft(1)
 	userStyle       = lipgloss.NewStyle().Background(lipgloss.Color(surface)).BorderLeft(true).BorderForeground(lipgloss.Color(cyan)).Padding(0, 1)
 	thinkingStyle   = lipgloss.NewStyle().BorderLeft(true).BorderForeground(lipgloss.Color(amber)).PaddingLeft(1)

@@ -1591,20 +1591,22 @@ func (m *model) syncViewport() {
 
 func (m *model) history(width int) string {
 	if len(m.messages) == 0 {
-		if width < 28 {
-			return softStyle.Render(compactText("Ready — ask anything", width))
+		if width < 44 || (m.height > 0 && m.historyHeight() < 9) {
+			return brandStyle.Render(compactText("◆ OPENKYROZEN  ·  READY — ASK ANYTHING", width))
 		}
-		body := strings.Join([]string{
-			brandStyle.Render("◆  WORKSPACE READY"),
-			titleStyle.Render("What will we build?"),
-			mutedStyle.Render("Ask naturally, or start with a focused workflow."),
-			"",
-			softStyle.Render("/plan") + mutedStyle.Render(" plan") + "   " +
-				softStyle.Render("/attach") + mutedStyle.Render(" context") + "   " +
-				softStyle.Render("/graph") + mutedStyle.Render(" inspect"),
-		}, "\n")
-		boxWidth := maxInt(1, minInt(68, width-8))
-		return welcomeStyle.Copy().Width(boxWidth).MaxWidth(boxWidth).Render(body)
+		bannerWidth := maxInt(1, minInt(72, width-8))
+		rows := bannerRows(bannerWidth)
+		for index, row := range rows {
+			style := brandStyle
+			if index == 3 {
+				style = softStyle
+			}
+			rows[index] = style.Render(row)
+		}
+		rows = append(rows, "", greenStyle.Render("● WORKSPACE READY"),
+			mutedStyle.Render(compactText("Ask anything  ·  /plan  ·  /attach  ·  /graph", bannerWidth)))
+		content := strings.Join(rows, "\n")
+		return lipgloss.NewStyle().Width(width).MaxWidth(width).Height(m.historyHeight()).MaxHeight(m.historyHeight()).Align(lipgloss.Center, lipgloss.Center).Render(content)
 	}
 	var lines []string
 	for index := range m.messages {
