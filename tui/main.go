@@ -1601,6 +1601,9 @@ func (m *model) syncViewport() {
 
 func (m *model) history(width int) string {
 	if len(m.messages) == 0 {
+		if m.screen != screenChat {
+			return ""
+		}
 		content := renderOpenKyrozenBanner(m.motionFrame, !m.reducedMotion)
 		if lipgloss.Width(content) > width || lipgloss.Height(content) > m.historyHeight() {
 			content = brandStyle.Render(compactText("OPENKYROZEN", width))

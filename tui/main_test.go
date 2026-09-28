@@ -560,7 +560,7 @@ func TestFocusedCockpitRailBreakpointAndCompactGraph(t *testing.T) {
 
 func TestFocusedCockpitMessageHierarchyAndEmptyState(t *testing.T) {
 	m := initialModel("", true)
-	m.width, m.height = 120, 30
+	m.width, m.height, m.screen = 120, 30, screenChat
 	mainWidth, _ := m.layoutWidths()
 	empty := m.history(mainWidth)
 	for _, unwanted := range []string{"WORKSPACE READY", "/plan", "/attach", "/graph", "ASK ANYTHING"} {
@@ -588,12 +588,12 @@ func TestFocusedCockpitMessageHierarchyAndEmptyState(t *testing.T) {
 	if !strings.Contains(compact, "OPENKYROZEN") || strings.Contains(compact, "░") {
 		t.Fatalf("narrow empty state did not use the compact wordmark: %s", compact)
 	}
-	for _, size := range [][2]int{{60, 16}, {80, 24}, {120, 30}, {140, 40}} {
+	for _, size := range [][2]int{{1, 1}, {20, 8}, {40, 12}, {60, 16}, {80, 24}, {120, 30}, {140, 40}, {200, 60}, {800, 200}} {
 		sized := initialModel("", true)
 		sized.width, sized.height, sized.screen = size[0], size[1], screenChat
 		sized.resize()
 		content := sized.View().Content
-		if size[0] < 80 && !strings.Contains(content, "OPENKYROZEN") {
+		if size[0] >= 11 && size[0] < 80 && !strings.Contains(content, "OPENKYROZEN") {
 			t.Fatalf("%dx%d empty state lost the compact wordmark", size[0], size[1])
 		}
 		if size[0] >= 80 && (!strings.Contains(content, "█") || !strings.Contains(content, "░")) {
@@ -638,6 +638,21 @@ func TestFocusedCockpitMessageHierarchyAndEmptyState(t *testing.T) {
 	}
 	if strings.Contains(history, "░") {
 		t.Fatal("empty-state banner remained after the conversation started")
+	}
+}
+
+func TestEmptyBannerIsHiddenOutsideChat(t *testing.T) {
+	for _, current := range []screen{
+		screenSplash, screenOnboarding, screenProvider, screenAPIKey, screenApproval,
+		screenSelfLearning, screenMode, screenQuestion, screenPlan, screenGraph,
+		screenGithubAuth, screenSettings, screenUpdating, screenError,
+	} {
+		m := initialModel("", true)
+		m.width, m.height, m.screen = 120, 30, current
+		m.resize()
+		if content := m.View().Content; strings.Contains(content, "░") {
+			t.Fatalf("empty banner remained visible on %s screen", current)
+		}
 	}
 }
 
