@@ -21,6 +21,14 @@ import (
 
 var version = "2.0.4"
 
+var openKyrozenBanner = []string{
+	"███ ██  ███ █ █ █ █ █ █ ██  ███ ███ ███ █ █",
+	"█ █ █ █ █   ███ ██  █ █ █ █ █ █   █ █   ███",
+	"█ █ ██  ██  ███ █    █  ██  █ █  █  ██  ███",
+	"█ █ █   █   █ █ ██   █  ██  █ █ █   █   █ █",
+	"███ █   ███ █ █ █ █  █  █ █ ███ ███ ███ █ █",
+}
+
 type screen string
 
 const (
@@ -1591,20 +1599,16 @@ func (m *model) syncViewport() {
 
 func (m *model) history(width int) string {
 	if len(m.messages) == 0 {
-		if width < 28 {
-			return softStyle.Render(compactText("Ready — ask anything", width))
+		rows := openKyrozenBanner
+		if lipgloss.Width(rows[0]) > width || len(rows) > m.historyHeight() {
+			rows = []string{compactText("OPENKYROZEN", width)}
 		}
-		body := strings.Join([]string{
-			brandStyle.Render("◆  WORKSPACE READY"),
-			titleStyle.Render("What will we build?"),
-			mutedStyle.Render("Ask naturally, or start with a focused workflow."),
-			"",
-			softStyle.Render("/plan") + mutedStyle.Render(" plan") + "   " +
-				softStyle.Render("/attach") + mutedStyle.Render(" context") + "   " +
-				softStyle.Render("/graph") + mutedStyle.Render(" inspect"),
-		}, "\n")
-		boxWidth := maxInt(1, minInt(68, width-8))
-		return welcomeStyle.Copy().Width(boxWidth).MaxWidth(boxWidth).Render(body)
+		styled := make([]string, len(rows))
+		for index, row := range rows {
+			styled[index] = brandStyle.Render(row)
+		}
+		content := strings.Join(styled, "\n")
+		return lipgloss.NewStyle().Width(width).MaxWidth(width).Height(m.historyHeight()).MaxHeight(m.historyHeight()).Align(lipgloss.Center, lipgloss.Center).Render(content)
 	}
 	var lines []string
 	for index := range m.messages {

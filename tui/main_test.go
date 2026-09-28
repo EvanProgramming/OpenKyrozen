@@ -560,9 +560,44 @@ func TestFocusedCockpitRailBreakpointAndCompactGraph(t *testing.T) {
 
 func TestFocusedCockpitMessageHierarchyAndEmptyState(t *testing.T) {
 	m := initialModel("", true)
-	empty := m.history(80)
-	if !strings.Contains(empty, "WORKSPACE READY") || !strings.Contains(empty, "/plan") || !strings.Contains(empty, "/graph") {
-		t.Fatalf("empty state is incomplete: %s", empty)
+	m.width, m.height = 120, 30
+	mainWidth, _ := m.layoutWidths()
+	empty := m.history(mainWidth)
+	for _, unwanted := range []string{"WORKSPACE READY", "/plan", "/attach", "/graph", "ASK ANYTHING"} {
+		if strings.Contains(empty, unwanted) {
+			t.Fatalf("empty state contains unwanted text %q: %s", unwanted, empty)
+		}
+	}
+	if lipgloss.Height(empty) != m.historyHeight() {
+		t.Fatalf("empty state height is %d, want %d", lipgloss.Height(empty), m.historyHeight())
+	}
+	bannerLine := -1
+	for index, line := range strings.Split(empty, "\n") {
+		if strings.Contains(line, openKyrozenBanner[0]) {
+			bannerLine = index
+			break
+		}
+	}
+	if bannerLine < 2 || bannerLine > m.historyHeight()-len(openKyrozenBanner)-2 {
+		t.Fatalf("empty-state banner is not vertically centered: line %d of %d", bannerLine, m.historyHeight())
+	}
+	compact := m.history(20)
+	if !strings.Contains(compact, "OPENKYROZEN") || strings.Contains(compact, openKyrozenBanner[0]) {
+		t.Fatalf("narrow empty state did not use the compact wordmark: %s", compact)
+	}
+	for _, size := range [][2]int{{60, 16}, {80, 24}, {120, 30}, {140, 40}} {
+		sized := initialModel("", true)
+		sized.width, sized.height, sized.screen = size[0], size[1], screenChat
+		sized.resize()
+		content := sized.View().Content
+		if !strings.Contains(content, openKyrozenBanner[0]) || len(strings.Split(content, "\n")) != size[1] {
+			t.Fatalf("%dx%d empty state lost the block banner or terminal bounds", size[0], size[1])
+		}
+		for index, line := range strings.Split(content, "\n") {
+			if width := lipgloss.Width(line); width > size[0] {
+				t.Fatalf("%dx%d empty-state line %d is %d cells wide", size[0], size[1], index, width)
+			}
+		}
 	}
 	m.messages = []chatMessage{
 		{role: "user", text: "Review this"},
@@ -578,6 +613,9 @@ func TestFocusedCockpitMessageHierarchyAndEmptyState(t *testing.T) {
 	}
 	if strings.Contains(history, "private details") {
 		t.Fatalf("collapsed tool receipt exposed details: %s", history)
+	}
+	if strings.Contains(history, openKyrozenBanner[0]) {
+		t.Fatal("empty-state banner remained after the conversation started")
 	}
 }
 
