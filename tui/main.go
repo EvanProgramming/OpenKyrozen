@@ -22,11 +22,13 @@ import (
 var version = "2.0.4"
 
 var openKyrozenBanner = []string{
-	"███ ██  ███ █ █ █ █ █ █ ██  ███ ███ ███ █ █",
-	"█ █ █ █ █   ███ ██  █ █ █ █ █ █   █ █   ███",
-	"█ █ ██  ██  ███ █    █  ██  █ █  █  ██  ███",
-	"█ █ █   █   █ █ ██   █  ██  █ █ █   █   █ █",
-	"███ █   ███ █ █ █ █  █  █ █ ███ ███ ███ █ █",
+	" ███  ████  █████ █   █ █   █ █   █ ████   ███  █████ █████ █   █",
+	"█   █ █   █ █     ██  █ █  █  █   █ █   █ █   █     █ █     ██  █",
+	"█   █ █   █ █     ██  █ █ █    █ █  █   █ █   █    █  █     ██  █",
+	"█   █ ████  ████  █ █ █ ██      █   ████  █   █   █   ████  █ █ █",
+	"█   █ █     █     █  ██ █ █     █   █ █   █   █  █    █     █  ██",
+	"█   █ █     █     █  ██ █  █    █   █  █  █   █ █     █     █  ██",
+	" ███  █     █████ █   █ █   █   █   █   █  ███  █████ █████ █   █",
 }
 
 type screen string
@@ -571,7 +573,7 @@ func (m model) canLeaveSplash(now time.Time) bool {
 }
 
 func (m model) animating() bool {
-	return !m.reducedMotion && (m.screen == screenSplash || m.updateInProgress || m.busy || m.hasRunningTask() || m.taskFlashTick > 0 || m.transitionTick > 0)
+	return !m.reducedMotion && (m.screen == screenSplash || (m.screen == screenChat && len(m.messages) == 0) || m.updateInProgress || m.busy || m.hasRunningTask() || m.taskFlashTick > 0 || m.transitionTick > 0)
 }
 
 func (m *model) maybeMotion(cmds *[]tea.Cmd) {
@@ -1599,15 +1601,10 @@ func (m *model) syncViewport() {
 
 func (m *model) history(width int) string {
 	if len(m.messages) == 0 {
-		rows := openKyrozenBanner
-		if lipgloss.Width(rows[0]) > width || len(rows) > m.historyHeight() {
-			rows = []string{compactText("OPENKYROZEN", width)}
+		content := renderOpenKyrozenBanner(m.motionFrame, !m.reducedMotion)
+		if lipgloss.Width(content) > width || lipgloss.Height(content) > m.historyHeight() {
+			content = brandStyle.Render(compactText("OPENKYROZEN", width))
 		}
-		styled := make([]string, len(rows))
-		for index, row := range rows {
-			styled[index] = brandStyle.Render(row)
-		}
-		content := strings.Join(styled, "\n")
 		return lipgloss.NewStyle().Width(width).MaxWidth(width).Height(m.historyHeight()).MaxHeight(m.historyHeight()).Align(lipgloss.Center, lipgloss.Center).Render(content)
 	}
 	var lines []string
@@ -1668,6 +1665,40 @@ func (m *model) history(width int) string {
 		lines = append(lines, style.Copy().Width(boxWidth).MaxWidth(boxWidth).Render(block))
 	}
 	return strings.Join(lines, "\n\n")
+}
+
+func renderOpenKyrozenBanner(frame int, animated bool) string {
+	glyphs := make([][]rune, len(openKyrozenBanner))
+	for index, row := range openKyrozenBanner {
+		glyphs[index] = []rune(row)
+	}
+	width := len(glyphs[0]) + 2
+	height := len(glyphs) + 1
+	highlightX := -10
+	if animated {
+		highlightX = (frame/2)%(width+12) - 6
+	}
+	front, highlight, shadow := brandStyle.Render("█"), titleStyle.Render("█"), ruleStyle.Render("░")
+	lines := make([]string, height)
+	for y := 0; y < height; y++ {
+		var line strings.Builder
+		for x := 0; x < width; x++ {
+			isFront := y < len(glyphs) && x < len(glyphs[y]) && glyphs[y][x] != ' '
+			isShadow := y > 0 && x > 1 && x-2 < len(glyphs[y-1]) && glyphs[y-1][x-2] != ' '
+			switch {
+			case isFront && x >= highlightX-1 && x <= highlightX+1:
+				line.WriteString(highlight)
+			case isFront:
+				line.WriteString(front)
+			case isShadow:
+				line.WriteString(shadow)
+			default:
+				line.WriteByte(' ')
+			}
+		}
+		lines[y] = line.String()
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m model) View() tea.View {

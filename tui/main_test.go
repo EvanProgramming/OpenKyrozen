@@ -571,18 +571,21 @@ func TestFocusedCockpitMessageHierarchyAndEmptyState(t *testing.T) {
 	if lipgloss.Height(empty) != m.historyHeight() {
 		t.Fatalf("empty state height is %d, want %d", lipgloss.Height(empty), m.historyHeight())
 	}
+	if !strings.Contains(empty, "█") || !strings.Contains(empty, "░") {
+		t.Fatalf("empty state lost the readable face or 3D shadow: %s", empty)
+	}
 	bannerLine := -1
 	for index, line := range strings.Split(empty, "\n") {
-		if strings.Contains(line, openKyrozenBanner[0]) {
+		if strings.Contains(line, "█") {
 			bannerLine = index
 			break
 		}
 	}
-	if bannerLine < 2 || bannerLine > m.historyHeight()-len(openKyrozenBanner)-2 {
+	if bannerLine < 2 || bannerLine > m.historyHeight()-lipgloss.Height(renderOpenKyrozenBanner(0, false))-2 {
 		t.Fatalf("empty-state banner is not vertically centered: line %d of %d", bannerLine, m.historyHeight())
 	}
 	compact := m.history(20)
-	if !strings.Contains(compact, "OPENKYROZEN") || strings.Contains(compact, openKyrozenBanner[0]) {
+	if !strings.Contains(compact, "OPENKYROZEN") || strings.Contains(compact, "░") {
 		t.Fatalf("narrow empty state did not use the compact wordmark: %s", compact)
 	}
 	for _, size := range [][2]int{{60, 16}, {80, 24}, {120, 30}, {140, 40}} {
@@ -590,14 +593,33 @@ func TestFocusedCockpitMessageHierarchyAndEmptyState(t *testing.T) {
 		sized.width, sized.height, sized.screen = size[0], size[1], screenChat
 		sized.resize()
 		content := sized.View().Content
-		if !strings.Contains(content, openKyrozenBanner[0]) || len(strings.Split(content, "\n")) != size[1] {
-			t.Fatalf("%dx%d empty state lost the block banner or terminal bounds", size[0], size[1])
+		if size[0] < 80 && !strings.Contains(content, "OPENKYROZEN") {
+			t.Fatalf("%dx%d empty state lost the compact wordmark", size[0], size[1])
+		}
+		if size[0] >= 80 && (!strings.Contains(content, "█") || !strings.Contains(content, "░")) {
+			t.Fatalf("%dx%d empty state lost the 3D wordmark", size[0], size[1])
+		}
+		if len(strings.Split(content, "\n")) != size[1] {
+			t.Fatalf("%dx%d empty state exceeded terminal height", size[0], size[1])
 		}
 		for index, line := range strings.Split(content, "\n") {
 			if width := lipgloss.Width(line); width > size[0] {
 				t.Fatalf("%dx%d empty-state line %d is %d cells wide", size[0], size[1], index, width)
 			}
 		}
+	}
+	m.reducedMotion = false
+	m.motionFrame = 12
+	animated := m.history(mainWidth)
+	m.motionFrame = 32
+	if animated == m.history(mainWidth) || !m.animating() {
+		t.Fatal("empty banner did not animate its light sweep")
+	}
+	m.reducedMotion = true
+	still := m.history(mainWidth)
+	m.motionFrame = 64
+	if still != m.history(mainWidth) || m.animating() {
+		t.Fatal("reduced motion did not freeze the banner")
 	}
 	m.messages = []chatMessage{
 		{role: "user", text: "Review this"},
@@ -614,7 +636,7 @@ func TestFocusedCockpitMessageHierarchyAndEmptyState(t *testing.T) {
 	if strings.Contains(history, "private details") {
 		t.Fatalf("collapsed tool receipt exposed details: %s", history)
 	}
-	if strings.Contains(history, openKyrozenBanner[0]) {
+	if strings.Contains(history, "░") {
 		t.Fatal("empty-state banner remained after the conversation started")
 	}
 }
