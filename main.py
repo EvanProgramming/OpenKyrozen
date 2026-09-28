@@ -2751,6 +2751,42 @@ def _system_prompt(tools_list: str, agent_config: dict[str, Any] | None = None) 
         "## Dynamic tools\n"
         "Dynamic tool creation is disabled for this execution surface. Do not emit DefineTool blocks.\n"
     )
+    if interaction_mode in {"ask", "plan"} and _interaction_controls_enabled.get():
+        active = globals().get("_execution_capability_token")
+        readonly_capabilities = (
+            mode_capabilities(active.capabilities, interaction_mode) if active else
+            mode_capabilities(effective_capabilities(agent_config), interaction_mode)
+        )
+        readonly_tools = _build_tools_list(readonly_capabilities)
+        readonly_mode = (
+            "Answer the user after read-only inspection. Use AskUser only when material ambiguity prevents a safe answer."
+            if interaction_mode == "ask" else
+            "Inspect read-only state as needed, then return exactly one PlanProposal. The plan is not executed until explicit acceptance."
+        )
+        return (
+            "You are Kyrozen, an intelligent AI assistant operating in a read-only interaction mode.\n\n"
+            "## Configured role\n"
+            f"Name: {role['name']}\n"
+            "Execution-oriented configured instructions and examples are inactive until Agent mode.\n\n"
+            "## Interaction mode\n"
+            f"The effective interaction mode is `{interaction_mode}`. {readonly_mode}\n"
+            "Clarification may use only this standalone control:\n"
+            "AskUser:\n```json\n"
+            '{"questions":[{"id":"scope","header":"Scope","prompt":"Which scope?","choices":[{"id":"a","label":"Option A","description":"Impact"},{"id":"b","label":"Option B","description":"Impact"}]}]}\n'
+            "```\n"
+            + (
+                "The final plan must use this standalone control:\n"
+                "PlanProposal:\n```json\n"
+                '{"title":"Plan title","summary":"Outcome","assumptions":[],"steps":[{"id":"step-1","title":"Step","description":"Work to perform after acceptance","acceptance":["Observable result"]}]}\n'
+                "```\nUse 1-10 stable step IDs. Output no task or execution controls.\n"
+                if interaction_mode == "plan" else ""
+            )
+            + "\n## Available read-only tools\n" + readonly_tools + "\n\n"
+            "## Read-only tool invocation\n"
+            "When inspection is needed, output exactly one listed Action with a plain string `args` value. "
+            "Never invent an action name. After inspection, answer in Ask mode or emit the PlanProposal in Plan mode.\n\n"
+            + cwd_note
+        )
     # Build system prompt via safe concatenation (no f‑string to avoid format‑spec collisions)
     return (
         "You are Kyrozen, an intelligent, self-learning AI assistant with file access, "
@@ -3669,7 +3705,7 @@ TOOLS_LIST = _build_tools_list()
 _logs_count_at_last_learn = 0
 short_term_memory: list[dict[str, str]] = [
     {"role": "user", "content": "Hello, are you ready to help me?"},
-    {"role": "assistant", "content": "Yes! I can use tools like search_web and write_file. How can I help?"},
+    {"role": "assistant", "content": "Yes. I can use the tools permitted by the active interaction mode. How can I help?"},
 ]
 
 
@@ -3693,7 +3729,7 @@ def _build_messages(user_input: str, learned_context: str = "",
         messages.append({"role": "system", "content": graph_context})
 
     project_instructions = format_instructions(_get_workspace_root())
-    if project_instructions:
+    if project_instructions and _active_interaction_mode.get() == "agent":
         messages.append({"role": "system", "content": project_instructions})
 
     # Retrieve failure records if relevant
@@ -3703,7 +3739,7 @@ def _build_messages(user_input: str, learned_context: str = "",
         messages.append({"role": "system", "content": failure_block})
 
     # Inject bug-fix workflow guidance when user reports a bug
-    if _is_bug_report(user_input):
+    if _active_interaction_mode.get() == "agent" and _is_bug_report(user_input):
         bug_guidance = (
             "BUG-FIX WORKFLOW ACTIVE: The user is reporting a bug or error. "
             "Follow this protocol EXACTLY:\n"
@@ -3718,7 +3754,8 @@ def _build_messages(user_input: str, learned_context: str = "",
         messages.append({"role": "system", "content": bug_guidance})
 
     fix_state = _latest_fix_workflow()
-    if fix_state and str(fix_state.get("stage")) not in _FIX_TERMINAL_STAGES:
+    if (_active_interaction_mode.get() == "agent" and fix_state
+            and str(fix_state.get("stage")) not in _FIX_TERMINAL_STAGES):
         current_stage = str(fix_state.get("stage", "reported"))
         stage_index = _FIX_WORKFLOW_STAGES.index(current_stage) if current_stage in _FIX_WORKFLOW_STAGES else 0
         next_stage = _FIX_WORKFLOW_STAGES[min(stage_index + 1, len(_FIX_WORKFLOW_STAGES) - 1)]
@@ -3740,7 +3777,8 @@ def _build_messages(user_input: str, learned_context: str = "",
                        "git branch", "git checkout", "commit this", "push this",
                        "merge branch", "create a branch", "switch branch",
                        "提交代码", "推送代码", "创建分支", "合并分支"]
-    if any(ind in user_input.lower() for ind in git_indicators):
+    if (_active_interaction_mode.get() == "agent"
+            and any(ind in user_input.lower() for ind in git_indicators)):
         git_guidance = (
             "GIT WORKFLOW ACTIVE: The user is requesting git operations. "
             "Follow this protocol:\n"
@@ -3763,7 +3801,7 @@ def _build_messages(user_input: str, learned_context: str = "",
     if mem_ctx:
         messages.append({"role": "system", "content": mem_ctx})
 
-    if learned_context:
+    if learned_context and _active_interaction_mode.get() == "agent":
         messages.append({"role": "system", "content": learned_context})
 
     for msg in retain_context_digests(short_term_memory, SHORT_TERM_CAP * 2):
@@ -5652,10 +5690,10 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         mode_capabilities(base_capabilities, interaction_mode),
     )
 
-    if clear_tasks:
+    if clear_tasks and interaction_mode == "agent":
         tasks.clear()
 
-    fix_workflow = _prepare_fix_workflow(user_input)
+    fix_workflow = _prepare_fix_workflow(user_input) if interaction_mode == "agent" else None
 
     # Input-dependent learning belongs to the same durable dispatcher as idle
     # and scheduled work.  It is still bounded and cannot grant capabilities:
@@ -5712,6 +5750,8 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 _record_fast_decision(fast_backend, {"stage": "clarification", "choices": {},
                                                       "fallback_reason": "user_decision_or_low_confidence",
                                                       **clarification_details})
+        if _active_interaction_mode.get() == "plan":
+            return text, parsed
         has_control_marker = re.search(
             r"^[ \t]*(?:AskUser|PlanProposal)(?![\w])[ \t]*:?", str(text),
             re.IGNORECASE | re.MULTILINE,
@@ -5756,6 +5796,55 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         candidate["define_tool_registered"] = False
         return repaired, candidate
 
+    def recover_plan_response(text: str, parsed: dict[str, Any],
+                              context: list[dict[str, str]]) -> tuple[str, dict[str, Any], bool]:
+        """Bound Plan-mode recovery to read-only inspection or one valid control."""
+        nonlocal turn_prompt_total, turn_completion_total
+
+        def valid(candidate: dict[str, Any]) -> bool:
+            if (candidate.get("protocol_error") or candidate.get("unknown_action")
+                    or candidate.get("unsupported_action_protocol")
+                    or candidate.get("define_tool_present")):
+                return False
+            if candidate.get("question") is not None or candidate.get("plan_proposal") is not None:
+                return True
+            calls = candidate.get("tool_calls") or []
+            return bool(calls) and all(
+                tool_capability(_operation_action(call.get("action", ""))) in {"read", "network"}
+                for call in calls
+            )
+
+        if interaction_mode != "plan" or valid(parsed):
+            return text, parsed, False
+        for _attempt in range(3):
+            context = context + [
+                {"role": "assistant", "content": str(text)},
+                {"role": "user", "content": (
+                    "System: Plan mode is read-only. The previous response was invalid and no changes were made. "
+                    "Continue with exactly one listed read-only Action, ask one material clarification with AskUser, "
+                    "or finish with exactly one valid PlanProposal. Output no task, execution, or tool-definition controls."
+                )},
+            ]
+            text = _call_llm_with_spinner(context).strip()
+            turn_prompt_total += _last_prompt_tokens
+            turn_completion_total += _last_completion_tokens
+            parsed = _observe_model_response(text)
+            if (not parsed.get("protocol_error") and not parsed.get("tool_calls")
+                    and parsed.get("question") is None and parsed.get("plan_proposal") is None):
+                control_name = (
+                    "AskUser" if re.search(r'"questions"\s*:', text) else
+                    "PlanProposal" if re.search(r'"(?:title|plan_name)"\s*:', text)
+                    and re.search(r'"steps"\s*:', text) else ""
+                )
+                if control_name:
+                    candidate = _observe_model_response(f"{control_name}:\n{text}")
+                    if not candidate.get("protocol_error"):
+                        parsed = candidate
+            if valid(parsed):
+                return text, parsed, False
+        parsed["tool_calls"] = []
+        return text, parsed, True
+
     MAX_RETRIES = 3
     auto_clarified = False
     messages = _build_messages(user_input, learned_context, memory_context)
@@ -5766,7 +5855,11 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     if not response_text or not response_text.strip():
         messages.append({
             "role": "user",
-            "content": "System: You returned nothing. Please output your Thought and JSON Action now.",
+            "content": (
+                "System: You returned nothing. Use one read-only inspection Action, AskUser, or PlanProposal now."
+                if interaction_mode == "plan" else
+                "System: You returned nothing. Please output your Thought and JSON Action now."
+            ),
         })
         response_text = _call_llm_with_spinner(messages).strip()
         turn_prompt_total += _last_prompt_tokens
@@ -5780,6 +5873,15 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     # Parse and observe each model response once.  Keep the raw response for
     # model context; use the parsed clean field for anything user-facing.
     response_text, response_meta = observe_turn_response(response_text, messages)
+    response_text, response_meta, plan_recovery_exhausted = recover_plan_response(
+        response_text, response_meta, messages,
+    )
+    if plan_recovery_exhausted:
+        return _finish_learning_run(
+            learning_run, learning_receipts, user_input,
+            "Plan mode could not produce a valid read-only inspection or PlanProposal after bounded recovery; no changes were made.",
+            [], turn_prompt_total + turn_completion_total, turn_start,
+        )
     tool_calls = response_meta["tool_calls"]
     if response_meta["define_tool_registered"]:
         agent_config = load_agent_config(_get_workspace_root())
@@ -5806,10 +5908,14 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         _notify_tool_execute(
             unknown_action, "", f"Error: unknown tool '{unknown_action}'",
         )
+        allowed_actions = sorted(
+            name for name in AVAILABLE_TOOLS
+            if tool_capability(name) in _execution_capability_token.capabilities
+        )
         msg = (
             f"System: Action '{unknown_action}' is not recognized. "
             "You must use one of the following actions: "
-            + ", ".join(sorted(AVAILABLE_TOOLS.keys())) + ".\n"
+            + ", ".join(allowed_actions) + ".\n"
             "Do not invent new action names. Pick from the list and output an Action block."
         )
         messages.append({"role": "user", "content": msg})
@@ -5876,29 +5982,10 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
             if tasks.tasks:
                 _update_tasks_panel()
 
-    # ---- Missing action recovery (up to 3 attempts) ----
-    if not tool_calls and interaction_mode == "plan":
-        messages.append({
-            "role": "user",
-            "content": "System: Plan mode must end with exactly one PlanProposal JSON block. "
-                       "Do not output an Action or execute the plan.",
-        })
-        response_text = _call_llm_with_spinner(messages).strip()
-        turn_prompt_total += _last_prompt_tokens
-        turn_completion_total += _last_completion_tokens
-        response_text, response_meta = observe_turn_response(response_text, messages)
-        tool_calls = response_meta["tool_calls"]
-        interaction_reply = _interaction_gate(response_meta, user_input)
-        if interaction_reply is not None:
-            return _finish_learning_run(
-                learning_run, learning_receipts, user_input, interaction_reply, [],
-                turn_prompt_total + turn_completion_total, turn_start,
-            )
-
     if not tool_calls:
-        if (_requires_tool_action(user_input) or _llm_has_plan or _llm_has_tasklist
+        if (interaction_mode == "agent" and (_requires_tool_action(user_input) or _llm_has_plan or _llm_has_tasklist
                 or response_meta["define_tool_registered"]
-                or response_meta["unsupported_action_protocol"]):
+                or response_meta["unsupported_action_protocol"])):
             action_retries = 0
             while not tool_calls and action_retries < 3:
                 action_retries += 1
@@ -6101,6 +6188,30 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 )
             }
         ]
+        if interaction_mode in {"ask", "plan"}:
+            completion_instruction = (
+                "or finish with exactly one PlanProposal"
+                if interaction_mode == "plan" else
+                "or finish with a direct answer"
+            )
+            summary_messages = [
+                {"role": "system", "content": (
+                    f"You are Kyrozen in read-only {interaction_mode.title()} mode. Use only the listed inspection tools. "
+                    f"Continue inspecting when evidence is still needed; otherwise {completion_instruction}."
+                )},
+                {"role": "system", "content": _workspace_info()},
+                {"role": "system", "content": (
+                    "Available read-only tools:\n"
+                    + _build_tools_list(_execution_capability_token.capabilities)
+                )},
+                {"role": "user", "content": user_input},
+                {"role": "assistant", "content": current_reply},
+                {"role": "user", "content": (
+                    f"Read-only inspection results:\n{tool_results_text}\n\n"
+                    "Continue with one listed inspection Action, ask a material clarification, "
+                    f"{completion_instruction}. No changes have been authorized."
+                )},
+            ]
         step_reply = _call_llm_with_spinner(summary_messages).strip()
         turn_prompt_total += _last_prompt_tokens
         turn_completion_total += _last_completion_tokens
@@ -6116,6 +6227,15 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         # Observe this response once.  The same parsed result drives task
         # updates, unknown-action handling, loop control, and final rendering.
         step_reply, step_meta = observe_turn_response(step_reply, summary_messages)
+        step_reply, step_meta, plan_recovery_exhausted = recover_plan_response(
+            step_reply, step_meta, summary_messages,
+        )
+        if plan_recovery_exhausted:
+            protocol_error_message = (
+                "Plan mode could not produce a valid read-only inspection or PlanProposal after bounded recovery; "
+                "no changes were made."
+            )
+            break
         next_tool_calls = step_meta["tool_calls"]
         if step_meta["protocol_error"]:
             protocol_error_message = step_meta["protocol_error"]
@@ -6166,7 +6286,10 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
             msg = (
                 f"System: Action '{unknown_action}' is not recognized.\n"
                 "You **must** use one of the following action names exactly:\n"
-                + ", ".join(sorted(AVAILABLE_TOOLS.keys())) + "\n"
+                + ", ".join(sorted(
+                    name for name in AVAILABLE_TOOLS
+                    if tool_capability(name) in _execution_capability_token.capabilities
+                )) + "\n"
                 "Do not invent new names. Output an Action block now."
             )
             # re-prompt the LLM
@@ -6200,23 +6323,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         # if there are no more tool calls, the LLM might be giving a natural reply
         if not next_tool_calls:
             if interaction_mode == "plan":
-                step_reply = _call_llm_with_spinner(summary_messages + [{
-                    "role": "user",
-                    "content": "System: Inspection is complete. Output exactly one PlanProposal JSON block now. "
-                               "Do not execute the plan.",
-                }]).strip()
-                turn_prompt_total += _last_prompt_tokens
-                turn_completion_total += _last_completion_tokens
-                step_reply, step_meta = observe_turn_response(step_reply, summary_messages)
-                if step_meta["protocol_error"]:
-                    protocol_error_message = step_meta["protocol_error"]
-                    break
-                interaction_reply = _persist_interaction_control(step_meta, user_input)
-                if interaction_reply is not None:
-                    pending_interaction_reply = interaction_reply
-                    final_answer = interaction_reply
-                    break
-                protocol_error_message = "Plan mode requires a valid PlanProposal block; no plan was accepted or executed."
+                protocol_error_message = "Plan mode ended without a valid PlanProposal; no changes were made."
                 break
 
             # Stop once every task is terminal, but only trust model prose when
@@ -6407,7 +6514,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
 
     # If tasks were completed, generate a summary so the user knows what happened
     total_tools_executed = len(tool_records)
-    if total_tools_executed >= 2 and not durable_tasks_incomplete:
+    if total_tools_executed >= 2 and not durable_tasks_incomplete and interaction_mode == "agent":
         summary_prompt = (
             "You just completed a multi-step task. Summarise your work below.\n\n"
             "## What was accomplished\n"
