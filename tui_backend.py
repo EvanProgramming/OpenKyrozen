@@ -644,6 +644,8 @@ class Backend:
                     f"Kev: {'ready' if state['kev_ready'] else 'not ready'}). "
                     "Use /decision-assist off|jev|kev yes, or revoke."
                 ))
+            elif backend == "jev" and not (agent.fast_mode.jev_key() or (isinstance(args, Mapping) and args.get("api_key"))):
+                self.emit("prompt", request_id, kind="decision_assist_key", message="Enter Jev API key (stored encrypted locally)")
             else:
                 try:
                     consent = bool(args.get("private_consent", False)) if isinstance(args, Mapping) else False
@@ -654,6 +656,7 @@ class Backend:
                         self.emit("response", request_id, text=(
                             f"Decision Assist private Kev consent revoked; backend remains {state['backend']}."
                         ))
+                        self.interaction(request_id)
                         return
                     if len(words) > 1 and words[1] in {"yes", "y", "consent", "allow"}:
                         consent = True
@@ -665,6 +668,7 @@ class Backend:
                         f"Decision Assist: {state['backend']}. Private Kev consent: "
                         f"{'yes' if state['kev_private_consent'] else 'no'}."
                     ))
+                    self.interaction(request_id)
                 except (agent.InteractionError, RuntimeError, OSError, ValueError) as exc:
                     self.emit("error", request_id, code="decision_assist_setup_failed", error=str(exc))
         elif command in {"/mode", "mode"}:

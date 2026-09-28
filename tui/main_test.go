@@ -184,6 +184,37 @@ func TestSettingsSlashCommandOpensLocalScreen(t *testing.T) {
 	}
 }
 
+func TestSettingsExposeInteractionControlsAndKeepCommandDispatch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := initialModel("", true)
+	m.width, m.height, m.screen = 100, 30, screenSettings
+	m.applyInteraction(map[string]any{
+		"preference_mode": "plan",
+		"fast_backend":    "kev",
+		"decision_assist": map[string]any{"backend": "jev", "kev_private_consent": false},
+	})
+	view := m.View().Content
+	for _, want := range []string{"Show tool details", "Interaction mode", "Fast backend", "Decision Assist", "Kev private context", "PLAN", "KEV", "JEV"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("settings omitted %q: %s", want, view)
+		}
+	}
+
+	var sent bytes.Buffer
+	m.bridge.stdin = bufio.NewWriter(&sent)
+	m.settingsIdx = 1
+	if _, quit := m.handleKey(tea.KeyPressMsg{Code: tea.KeyRight}); quit {
+		t.Fatal("settings interaction mode change unexpectedly quit")
+	}
+	var command map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(sent.Bytes()), &command); err != nil {
+		t.Fatalf("settings did not send valid command: %v", err)
+	}
+	if command["command"] != "command" || command["name"] != "mode" || command["args"] != "agent" {
+		t.Fatalf("settings sent unexpected mode command: %#v", command)
+	}
+}
+
 func TestUsageEventAppearsInChatAndSettings(t *testing.T) {
 	m := initialModel("", true)
 	m.width, m.height = 110, 24

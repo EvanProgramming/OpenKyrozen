@@ -93,7 +93,9 @@ type model struct {
 	input                     textarea.Model
 	apiInput                  textinput.Model
 	fastKeyInput              bool
+	decisionAssistKeyInput    bool
 	decisionAssistBackend     string
+	decisionAssistConsent     bool
 	graphInput                textinput.Model
 	screen                    screen
 	status                    string
@@ -154,6 +156,7 @@ type model struct {
 	transitionTick            int
 	reducedMotion             bool
 	showToolDetails           bool
+	settingsIdx               int
 	updateInProgress          bool
 	onboardingKind            string
 	onboardingPreviousVersion string
@@ -328,6 +331,7 @@ func initialModel(project string, global bool) model {
 		onboardingPreviousVersion: onboardingPreviousVersion,
 		interactionMode:           "auto",
 		fastBackend:               "off",
+		settingsIdx:               0,
 		effectiveMode:             "ask",
 		questionAnswers:           make(map[string]any),
 		graphCommunity:            -1,
@@ -686,24 +690,13 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return m.featureKey(key), false
 	}
 	if m.screen == screenSettings {
-		if key == "esc" {
-			m.screen = screenChat
-			return nil, false
-		}
-		if key == "space" || key == "enter" {
-			m.showToolDetails = !m.showToolDetails
-			settings := loadUISettings()
-			settings.ShowToolDetails = m.showToolDetails
-			if err := saveUISettings(settings); err != nil {
-				m.setError("Could not save UI settings: " + err.Error())
-			}
-		}
-		return nil, false
+		return m.settingsKey(key), false
 	}
 	if m.screen == screenAPIKey {
 		if key == "esc" {
 			m.apiInput.Reset()
 			m.fastKeyInput = false
+			m.decisionAssistKeyInput = false
 			if m.onboardingKind != "" {
 				m.screen = screenOnboarding
 				m.onboardingWaiting = false
@@ -716,6 +709,9 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 			if m.fastKeyInput {
 				m.send("command", map[string]any{"name": "fast", "args": map[string]any{"backend": "jev", "api_key": m.apiInput.Value()}})
 				m.fastKeyInput = false
+			} else if m.decisionAssistKeyInput {
+				m.send("command", map[string]any{"name": "decision-assist", "args": map[string]any{"backend": "jev", "api_key": m.apiInput.Value()}})
+				m.decisionAssistKeyInput = false
 			} else {
 				m.send("command", map[string]any{"name": "api_key", "args": map[string]any{"api_key": m.apiInput.Value()}})
 			}
@@ -907,6 +903,7 @@ func (m *model) submit() tea.Cmd {
 	if strings.HasPrefix(strings.TrimLeftFunc(m.input.Value(), unicode.IsSpace), "/") {
 		if strings.EqualFold(text, "/settings") {
 			m.screen = screenSettings
+			m.settingsIdx = 0
 			m.input.Reset()
 			m.palette = nil
 			m.input.SetHeight(m.composerHeight())
@@ -1020,6 +1017,73 @@ func (m *model) featureKey(key string) tea.Cmd {
 		item.enabled = !item.enabled
 		m.features[m.featureIdx] = item
 		m.send("command", map[string]any{"name": "self_learning", "args": map[string]any{"feature": item.name, "enabled": item.enabled}})
+	}
+	return nil
+}
+
+func (m *model) settingsKey(key string) tea.Cmd {
+	const settingCount = 5
+	if key == "esc" {
+		m.screen = screenChat
+		return nil
+	}
+	switch key {
+	case "up", "k":
+		m.settingsIdx = (m.settingsIdx - 1 + settingCount) % settingCount
+	case "down", "j":
+		m.settingsIdx = (m.settingsIdx + 1) % settingCount
+	case "left", "h":
+		return m.changeSetting(-1)
+	case "right", "l", "space", "enter":
+		return m.changeSetting(1)
+	}
+	return nil
+}
+
+func cycleSetting(current string, values []string, delta int) string {
+	index := 0
+	for candidate, value := range values {
+		if value == current {
+			index = candidate
+			break
+		}
+	}
+	index = (index + delta + len(values)) % len(values)
+	return values[index]
+}
+
+func (m *model) changeSetting(delta int) tea.Cmd {
+	switch m.settingsIdx {
+	case 0:
+		m.showToolDetails = !m.showToolDetails
+		settings := loadUISettings()
+		settings.ShowToolDetails = m.showToolDetails
+		if err := saveUISettings(settings); err != nil {
+			m.setError("Could not save UI settings: " + err.Error())
+		}
+	case 1:
+		mode := cycleSetting(firstNonEmpty(m.interactionMode, "auto"), []string{"auto", "ask", "plan", "agent"}, delta)
+		m.send("command", map[string]any{"name": "mode", "args": mode})
+	case 2:
+		backend := cycleSetting(firstNonEmpty(m.fastBackend, "off"), []string{"off", "jev", "kev"}, delta)
+		m.send("command", map[string]any{"name": "fast", "args": map[string]any{"backend": backend}})
+	case 3:
+		backend := cycleSetting(firstNonEmpty(m.decisionAssistBackend, "off"), []string{"off", "jev", "kev"}, delta)
+		if backend == "kev" && !m.decisionAssistConsent {
+			m.settingsIdx = 4
+			return nil
+		}
+		m.send("command", map[string]any{"name": "decision-assist", "args": map[string]any{
+			"backend": backend, "private_consent": m.decisionAssistConsent,
+		}})
+	case 4:
+		if m.decisionAssistBackend == "kev" && m.decisionAssistConsent {
+			m.send("command", map[string]any{"name": "decision-assist", "args": map[string]any{"backend": "revoke"}})
+			return nil
+		}
+		m.send("command", map[string]any{"name": "decision-assist", "args": map[string]any{
+			"backend": "kev", "private_consent": true,
+		}})
 	}
 	return nil
 }
@@ -1171,6 +1235,7 @@ func (m *model) applyInteraction(value map[string]any) {
 	m.fastBackend = firstNonEmpty(stringValue(value, "fast_backend"), "off")
 	if assist, ok := value["decision_assist"].(map[string]any); ok {
 		m.decisionAssistBackend = firstNonEmpty(stringValue(assist, "backend"), "off")
+		m.decisionAssistConsent = boolValue(assist, "kev_private_consent")
 	}
 	m.effectiveMode = firstNonEmpty(stringValue(value, "effective_mode"), m.interactionMode)
 	if raw, ok := value["pending_question"].(map[string]any); ok {
@@ -1277,6 +1342,14 @@ func (m *model) handlePrompt(event backendEvent) {
 		m.apiInput.Focus()
 	case "fast_key":
 		m.fastKeyInput = true
+		m.decisionAssistKeyInput = false
+		m.screen = screenAPIKey
+		m.apiInput.Reset()
+		m.apiInput.Placeholder = "Enter Jev API key"
+		m.apiInput.Focus()
+	case "decision_assist_key":
+		m.fastKeyInput = false
+		m.decisionAssistKeyInput = true
 		m.screen = screenAPIKey
 		m.apiInput.Reset()
 		m.apiInput.Placeholder = "Enter Jev API key"
@@ -1880,6 +1953,14 @@ func (m model) activityRail() string {
 
 func (m model) taskPanel() string { return m.activityRail() }
 
+func (m model) settingsRow(index int, label, value string) string {
+	cursor, labelStyle := mutedStyle.Render("·"), softStyle
+	if index == m.settingsIdx {
+		cursor, labelStyle = brandStyle.Render("›"), titleStyle
+	}
+	return cursor + " " + labelStyle.Render(label) + "  " + mutedStyle.Render(value)
+}
+
 func (m model) modal(_ string) string {
 	modalWidth := maxInt(1, minInt(78, m.width-4))
 	var body string
@@ -1978,26 +2059,33 @@ func (m model) modal(_ string) string {
 		}
 		body = strings.Join(lines, "\n")
 	case screenSettings:
-		value := "HIDDEN"
-		valueStyle := mutedStyle
-		if m.showToolDetails {
-			value, valueStyle = "VISIBLE", amberStyle
-		}
 		usageScope := firstNonEmpty(m.usageScope, "workspace")
 		learning := firstNonEmpty(m.learningMode, "not configured") + " · " + firstNonEmpty(m.learningStatus, "waiting")
+		toolDetails := "HIDDEN"
+		if m.showToolDetails {
+			toolDetails = "VISIBLE"
+		}
+		consent := "OFF"
+		if m.decisionAssistConsent {
+			consent = "ON"
+		}
 		body = strings.Join([]string{
 			brandStyle.Render("SETTINGS"),
-			titleStyle.Render("Session and display"),
-			mutedStyle.Render("Space / Enter toggle  ·  Esc close"),
+			titleStyle.Render("Controls and session"),
+			mutedStyle.Render("↑↓ select  ←→/Space change  ·  Esc close"),
+			"",
+			brandStyle.Render("CONTROLS"),
+			m.settingsRow(0, "Show tool details", toolDetails),
+			m.settingsRow(1, "Interaction mode", strings.ToUpper(firstNonEmpty(m.interactionMode, "auto"))),
+			m.settingsRow(2, "Fast backend", strings.ToUpper(firstNonEmpty(m.fastBackend, "off"))),
+			m.settingsRow(3, "Decision Assist", strings.ToUpper(firstNonEmpty(m.decisionAssistBackend, "off"))),
+			m.settingsRow(4, "Kev private context", consent),
+			mutedStyle.Render("Jev needs an API key. Kev needs explicit private-context consent."),
 			"",
 			brandStyle.Render("SESSION"),
 			softStyle.Render("MODEL  " + compactText(firstNonEmpty(m.provider, "pending")+" · "+firstNonEmpty(m.modelName, "pending"), modalWidth-10)),
 			softStyle.Render("USAGE  " + compactText(m.usageSummary()+" · "+usageScope, modalWidth-10)),
 			softStyle.Render("MEMORY  " + compactText(learning, modalWidth-10)),
-			"",
-			brandStyle.Render("DISPLAY"),
-			brandStyle.Render("›") + " " + titleStyle.Render("Show tool details") + "  " + valueStyle.Render(value),
-			mutedStyle.Render("Tool names and semantic status are always shown. Results stay hidden by default."),
 		}, "\n")
 	case screenMode:
 		modes := []string{"auto", "ask", "plan", "agent"}

@@ -290,6 +290,14 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertIn("Decision Assist: off", events[0]["text"])
         self.assertEqual(events[-1]["code"], "decision_assist_setup_failed")
 
+    def test_decision_assist_jev_prompts_for_missing_key(self):
+        with patch.object(tui_backend.agent.fast_mode, "jev_key", return_value=""):
+            self.backend._command("/decision-assist jev", {}, "assist-key")
+        event = json.loads(self.output.getvalue().strip())
+        self.assertEqual(event["event"], "prompt")
+        self.assertEqual(event["kind"], "decision_assist_key")
+        self.assertEqual(event["request_id"], "assist-key")
+
     def test_interaction_envelope_and_structured_commands_are_correlated(self):
         with tempfile.TemporaryDirectory() as directory:
             original = tui_backend.agent._interaction_controller

@@ -34,7 +34,7 @@ var commands = []command{
 	{name: "learning", aliases: nil, description: "Inspect learning proposals and evidence"},
 	{name: "memory", aliases: nil, description: "Explain or forget a memory claim"},
 	{name: "forget", aliases: nil, description: "Review recent learnings"},
-	{name: "settings", aliases: nil, description: "Configure terminal display and tool-detail visibility"},
+	{name: "settings", aliases: nil, description: "Configure display, interaction mode, Fast, and Decision Assist"},
 	{name: "update", aliases: nil, description: "Update the installed agent"},
 	{name: "quit", aliases: []string{"exit"}, description: "Close OpenKyrozen"},
 }
