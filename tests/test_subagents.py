@@ -68,6 +68,30 @@ class SubAgentTests(unittest.TestCase):
             self.assertFalse(result["tool_records"][0]["success"])
             self.assertFalse(result["tool_records"][0]["authorized"])
 
+    def test_action_loop_retries_unsupported_provider_wrapper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "notes.txt").write_text("safe", encoding="utf-8")
+            previous_root = main._get_workspace_root()
+            main._set_workspace_root(root)
+            profile = AgentProfile("reviewer", "Review files.", "readonly", max_steps=3,
+                                   evolution_enabled=False)
+            responses = [
+                '<SSAI_ACTION> Input: {"path":"notes.txt"} </SSAI_ACTION>',
+                'Action: {"action":"read_file","args":"notes.txt"}',
+                "The notes were read successfully.",
+            ]
+            try:
+                with patch.object(main, "_get_llm_response", side_effect=responses):
+                    result = main._run_subagent_llm(profile, "Read notes.txt", [], {"read_file"})
+            finally:
+                main._set_workspace_root(previous_root)
+            self.assertEqual(result["result"], "The notes were read successfully.")
+            self.assertEqual(len(result["tool_records"]), 2)
+            self.assertFalse(result["tool_records"][0]["success"])
+            self.assertTrue(result["tool_records"][1]["success"])
+            self.assertNotIn("SSAI_ACTION", result["result"])
+
     def test_manager_persists_tool_receipts_failures_and_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")

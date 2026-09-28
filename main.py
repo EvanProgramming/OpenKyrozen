@@ -230,6 +230,20 @@ def _detect_unknown_action(text: str) -> str | None:
     return None
 
 
+_UNSUPPORTED_ACTION_PROTOCOL_RE = re.compile(
+    r"(?is)<\s*ssai_action\b[^>]*>(?:[\s\S]*?</\s*ssai_action\s*>|[\s\S]*\Z)"
+)
+_UNSUPPORTED_ACTION_PROTOCOL_MESSAGE = (
+    "The model returned an unsupported tool-call wrapper. "
+    "No tool was executed; retry with one Action JSON block."
+)
+
+
+def _has_unsupported_action_protocol(text: str) -> bool:
+    """Detect the provider wrapper that is not an executable tool call."""
+    return bool(_UNSUPPORTED_ACTION_PROTOCOL_RE.search(str(text or "")))
+
+
 def _workspace_info() -> str:
     """Return the active workspace and the selected launch mode."""
     root = _get_workspace_root()
@@ -3155,9 +3169,10 @@ def _run_subagent_llm_result(profile: AgentProfile, task: str, context: list[dic
         if not calls:
             unknown = _detect_unknown_action(response)
             malformed = bool(re.search(r"\bAction\s*:", response, re.IGNORECASE))
-            if unknown or malformed:
+            unsupported_protocol = _has_unsupported_action_protocol(response)
+            if unknown or malformed or unsupported_protocol:
                 executed_steps += 1
-                rejected_action = unknown or "malformed"
+                rejected_action = unknown or ("unsupported_protocol" if unsupported_protocol else "malformed")
                 _notify_tool_execute(
                     str(rejected_action), "",
                     "Error: malformed or unknown Action rejected; no tool was executed.",
@@ -3192,7 +3207,9 @@ def _run_subagent_llm_result(profile: AgentProfile, task: str, context: list[dic
         ])
         response = _get_llm_response(messages).strip()
 
-    if _collect_tool_calls(response) or re.search(r"\bAction\s*:", response, re.IGNORECASE):
+    if (_collect_tool_calls(response)
+            or re.search(r"\bAction\s*:", response, re.IGNORECASE)
+            or _has_unsupported_action_protocol(response)):
         successful = sum(1 for item in tool_records if item.get("success"))
         response = (
             f"Sub-agent action limit reached after {executed_steps} step(s); "
@@ -4857,16 +4874,16 @@ class DeepSeekDSMLFilter:
         r"(?i)(?<![\w])(?P<kind>Action|Thought|Plan|TaskList|TaskDone|DefineTool)\s*:"
     )
     _GENERIC_OPEN_RE = re.compile(
-        r"<\s*(?P<kind>action|invoke|parameter|calls|tool_calls|function_calls|tool_use|notes|thought|reasoning)\b[^>]*>",
+        r"<\s*(?P<kind>action|invoke|parameter|calls|tool_calls|function_calls|tool_use|notes|thought|reasoning|ssai_action)\b[^>]*>",
         re.IGNORECASE,
     )
     _GENERIC_CLOSE_RE = re.compile(
-        r"</\s*(?P<kind>action|invoke|parameter|calls|tool_calls|function_calls|tool_use|notes|thought|reasoning)\s*>",
+        r"</\s*(?P<kind>action|invoke|parameter|calls|tool_calls|function_calls|tool_use|notes|thought|reasoning|ssai_action)\s*>",
         re.IGNORECASE,
     )
     _GENERIC_KINDS = (
         "action", "invoke", "parameter", "calls", "tool_calls", "function_calls",
-        "tool_use", "notes", "thought", "reasoning",
+        "tool_use", "notes", "thought", "reasoning", "ssai_action",
     )
     _ACTION_MARKER_RE = _ACTION_MARKER_RE
     _CONTROL_PREFIXES = tuple(
@@ -4999,6 +5016,7 @@ class DeepSeekDSMLFilter:
         kind = match.group("kind").lower()
         close_kinds = (
             "parameter" if kind == "parameter" else
+            "ssai_action" if kind == "ssai_action" else
             "action|invoke|calls|tool_calls|function_calls|tool_use|notes|thought|reasoning"
         )
         close = re.compile(rf"</\s*(?:{close_kinds})\s*>", re.IGNORECASE).search(value, match.end())
@@ -5209,6 +5227,9 @@ def _clean_final_response(text: str) -> str:
     cleaned = DeepSeekDSMLFilter().feed(str(text or ""), final=True).strip()
     if not cleaned:
         return ""
+    cleaned = _UNSUPPORTED_ACTION_PROTOCOL_RE.sub("", cleaned).strip()
+    if not cleaned:
+        return ""
     # Remove fenced protocol blocks first.  The model's JSON may contain
     # braces and newlines, so a line-based JSON parser would be less reliable.
     cleaned = re.sub(r"DefineTool:\s*```(?:python)?\s*[\s\S]*?```", "", cleaned,
@@ -5350,6 +5371,7 @@ def _parse_model_response(text: str) -> dict[str, Any]:
         "question": question,
         "plan_proposal": plan_proposal,
         "unknown_action": _detect_unknown_action(raw),
+        "unsupported_action_protocol": _has_unsupported_action_protocol(raw),
         "protocol_error": control_error or (
             "AskUser and PlanProposal must be the only control block in a response. "
             "No tool or task action was executed."
@@ -5872,11 +5894,17 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
 
     if not tool_calls:
         if (_requires_tool_action(user_input) or _llm_has_plan or _llm_has_tasklist
-                or response_meta["define_tool_registered"]):
+                or response_meta["define_tool_registered"]
+                or response_meta["unsupported_action_protocol"]):
             action_retries = 0
             while not tool_calls and action_retries < 3:
                 action_retries += 1
-                if action_retries == 1:
+                if response_meta["unsupported_action_protocol"]:
+                    reminder = (
+                        f"System: {_UNSUPPORTED_ACTION_PROTOCOL_MESSAGE} "
+                        "Output only one complete Action block now."
+                    )
+                elif action_retries == 1:
                     reminder = (
                         "System: You output a protocol block but no Action block. "
                         "You **must** now output a JSON Action block to perform the work. "
@@ -5927,6 +5955,8 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 "tool_calls": 0
             })
             proposed = response_meta["clean"] or "I could not produce a user-facing response."
+            if response_meta["unsupported_action_protocol"]:
+                proposed = _UNSUPPORTED_ACTION_PROTOCOL_MESSAGE
             fix_workflow, proposed = _advance_fix_workflow(
                 fix_workflow, user_input, proposed, [], response_text,
             )
@@ -5965,6 +5995,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     has_errors = any(not record["success"] for record in tool_records)
     consecutive_search_failures = 0  # track failed search_web calls to prevent loops
     total_search_calls = sum(record["action"] == "search_web" for record in tool_records)
+    unsupported_action_retries = 0
     # check for missing arguments errors
     _args_missing_errors = [
         "requires a command",
@@ -6092,6 +6123,35 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
             pending_interaction_reply = interaction_reply
             final_answer = interaction_reply
             break
+
+        if step_meta["unsupported_action_protocol"] and not next_tool_calls:
+            unsupported_action_retries += 1
+            if unsupported_action_retries >= 3:
+                protocol_error_message = _UNSUPPORTED_ACTION_PROTOCOL_MESSAGE
+                break
+            step_reply = _call_llm_with_spinner(summary_messages + [{
+                "role": "user",
+                "content": (
+                    f"System: {_UNSUPPORTED_ACTION_PROTOCOL_MESSAGE} "
+                    "Re-emit the next tool call exactly as one Action JSON block."
+                ),
+            }]).strip()
+            turn_prompt_total += _last_prompt_tokens
+            turn_completion_total += _last_completion_tokens
+            if not step_reply:
+                continue
+            step_reply, step_meta = observe_turn_response(step_reply, summary_messages)
+            next_tool_calls = step_meta["tool_calls"]
+            if step_meta["protocol_error"]:
+                protocol_error_message = step_meta["protocol_error"]
+                break
+            interaction_reply = _persist_interaction_control(step_meta, user_input)
+            if interaction_reply is not None:
+                pending_interaction_reply = interaction_reply
+                final_answer = interaction_reply
+                break
+            if not next_tool_calls and step_meta["unsupported_action_protocol"]:
+                continue
 
         # ----- reject unknown action names and force re-prompting -----
         _unknown_tool_retries = 0

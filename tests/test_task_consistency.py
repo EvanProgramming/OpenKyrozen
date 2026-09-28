@@ -828,6 +828,52 @@ class TaskConsistencyTests(unittest.TestCase):
         self.assertEqual(provider.call_count, 1)
         self.assertIn("No tool was executed", reply)
 
+    def test_unsupported_ssai_action_is_retried_without_leaking_protocol(self):
+        raw = 'I need to inspect the workspace. <SSAI_ACTION> Input: {"path":"."} </SSAI_ACTION>'
+        parsed = main._parse_model_response(raw)
+        self.assertTrue(parsed["unsupported_action_protocol"])
+        self.assertEqual(parsed["clean"], "I need to inspect the workspace.")
+
+        class StubLearning:
+            def feedback_signal(self, _text):
+                return None
+
+            def route_profile(self, _text, _profile=None):
+                return "coder"
+
+            def begin_run(self, profile, _task, provider_model=None):
+                return {"run_id": "ssai-retry", "profile": profile, "provider_model": provider_model}
+
+            def artifact_context(self, _run):
+                return "", []
+
+        original_root = main._get_workspace_root()
+        original_tasks, original_learning = main.tasks, main.learning_engine
+        with tempfile.TemporaryDirectory() as directory:
+            main._set_workspace_root(Path(directory))
+            main.tasks = TaskManager(MemoryBank(Path(directory) / "state.sqlite3").store,
+                                     workspace_id="project", session_id="ssai-retry")
+            main.learning_engine = StubLearning()
+            try:
+                with patch.object(main, "_classify_complexity", return_value="simple"), \
+                     patch.object(main, "_build_messages", return_value=[]), \
+                     patch.object(main, "_build_memory_context", return_value=""), \
+                     patch.object(main, "_call_llm_with_spinner", side_effect=[
+                         raw,
+                         'Action: {"action":"list_dir","args":"."}',
+                         "Workspace inspected successfully.",
+                     ]) as provider, \
+                     patch.object(main, "_finish_learning_run",
+                                  side_effect=lambda run, receipts, task, result, records, tokens, started: result):
+                    reply = main._chat_turn("check the workspace", clear_tasks=True)
+            finally:
+                main._set_workspace_root(original_root)
+                main.tasks, main.learning_engine = original_tasks, original_learning
+
+        self.assertEqual(provider.call_count, 3)
+        self.assertEqual(reply, "Workspace inspected successfully.")
+        self.assertNotIn("SSAI_ACTION", reply)
+
     def test_failed_operation_can_retry_and_provider_deadline_is_honest(self):
         operations: set[str] = set()
         with patch.object(main, "run_command", side_effect=[
