@@ -73,6 +73,16 @@ class TUIProtocolTests(unittest.TestCase):
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
         self.assertEqual([event["code"] for event in events], ["busy", "unknown_session"])
 
+    def test_project_command_creates_missing_directory_before_binding_chat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "new" / "project"
+            with patch.object(self.backend, "_bind_chat") as bind, \
+                    patch.object(self.backend, "_emit_bound_state"):
+                self.backend._command("project", str(project), "create-project")
+            self.assertTrue(project.is_dir())
+            self.assertEqual(Path(bind.call_args.kwargs["project_path"]), project.resolve())
+            self.assertTrue(bind.call_args.kwargs["create"])
+
     def test_attach_stages_quoted_files_and_rejects_invalid_batch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -758,7 +758,11 @@ class Backend:
                     self.emit("error", request_id, code="busy", error="Cannot open a project while a turn is running.")
                     return
                 try:
-                    self._bind_chat(self._new_chat_id(), project_path=path, create=True)
+                    project_path = Path(path).expanduser()
+                    project_path.mkdir(parents=True, exist_ok=True)
+                    self._bind_chat(
+                        self._new_chat_id(), project_path=str(project_path.resolve()), create=True,
+                    )
                 except (OSError, ValueError) as exc:
                     self.emit("error", request_id, code="project_open_failed", error=str(exc))
                     return

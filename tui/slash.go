@@ -18,7 +18,7 @@ var commands = []command{
 	{name: "question", aliases: nil, description: "Reopen, skip, or cancel clarification"},
 	{name: "agent", aliases: nil, description: "Switch auto, coder, or researcher mode"},
 	{name: "new", aliases: nil, description: "Start a new chat in the current project"},
-	{name: "project", aliases: nil, description: "Open a directory as a new project chat"},
+	{name: "project", aliases: nil, description: "Create or open a directory as a new project chat"},
 	{name: "sessions", aliases: nil, description: "Show project and chat navigation"},
 	{name: "session", aliases: nil, description: "Switch chat: /session <id>"},
 	{name: "fast", aliases: nil, description: "Switch Fast off, Jev API, or local Kev-0.8B (less accurate)"},

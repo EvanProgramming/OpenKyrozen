@@ -1442,6 +1442,13 @@ func (m *model) applyNavigation(event backendEvent) {
 			m.navigation = append(m.navigation, group)
 		}
 	}
+	m.navigationIndex = 0
+	for index, target := range m.navigationTargets() {
+		if target.scopeID == m.activeScopeID && target.id == m.activeSessionID {
+			m.navigationIndex = index
+			break
+		}
+	}
 	m.messages = nil
 	if messages, ok := event["messages"].([]any); ok {
 		for _, raw := range messages {
@@ -2148,31 +2155,52 @@ func (m model) navigationTargets() []navigationTarget {
 func (m model) navigationSidebar(panelWidth, height int) string {
 	width := maxInt(1, panelWidth-2)
 	textWidth := maxInt(1, width-2)
-	lines := []string{sectionStyle.Render("PROJECTS & CHATS"), mutedStyle.Render("Ctrl+B · N new · P project"), ""}
+	lines := []string{
+		sectionStyle.Render("PROJECTS & CHATS"),
+		brandStyle.Render("N  + New chat"),
+		brandStyle.Render("P  + New project"),
+		mutedStyle.Render("Ctrl+B focus / close"),
+		"",
+	}
+	body := []string{}
+	selectedRow, activeRow := -1, -1
 	index := 0
 	for _, group := range m.navigation {
 		groupStyle := softStyle
 		if group.scopeID == m.activeScopeID {
 			groupStyle = brandStyle
 		}
-		lines = append(lines, groupStyle.Render(compactText(group.name, textWidth)))
+		body = append(body, groupStyle.Render(compactText(group.name, textWidth)))
 		if len(group.chats) == 0 {
-			lines = append(lines, mutedStyle.Render("  No chats"))
+			body = append(body, mutedStyle.Render("  No chats"))
 		}
 		for _, chat := range group.chats {
 			marker := "  "
 			style := mutedStyle
 			if chat.id == m.activeSessionID {
 				marker, style = "● ", titleStyle
+				activeRow = len(body)
 			}
 			if m.navigationFocused && index == m.navigationIndex {
 				marker, style = "› ", brandStyle
+				selectedRow = len(body)
 			}
-			lines = append(lines, style.Render(marker+compactText(firstNonEmpty(chat.title, "New chat"), maxInt(1, textWidth-2))))
+			body = append(body, style.Render(marker+compactText(firstNonEmpty(chat.title, "New chat"), maxInt(1, textWidth-2))))
 			index++
 		}
-		lines = append(lines, "")
+		body = append(body, "")
 	}
+	visible := maxInt(1, height-len(lines))
+	focusRow := activeRow
+	if selectedRow >= 0 {
+		focusRow = selectedRow
+	}
+	start := 0
+	if focusRow >= visible {
+		start = focusRow - visible + 1
+	}
+	end := minInt(len(body), start+visible)
+	lines = append(lines, body[start:end]...)
 	return activityStyle.Copy().Width(width).MaxWidth(width).Height(height).MaxHeight(height).Render(limitRows(strings.Join(lines, "\n"), height))
 }
 
@@ -2233,7 +2261,7 @@ func (m model) modal(_ string) string {
 	case screenAPIKey:
 		body = brandStyle.Render("API KEY SETUP") + "\n" + titleStyle.Render("Add your API key") + "\n" + mutedStyle.Render("Your key is masked and stored encrypted locally.") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.apiInput.View()) + "\n\n" + mutedStyle.Render("Enter confirm  ·  Esc cancel")
 	case screenProject:
-		body = brandStyle.Render("OPEN PROJECT") + "\n" + titleStyle.Render("Start a chat in another directory") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.projectInput.View()) + "\n\n" + mutedStyle.Render("Enter open  ·  Esc cancel")
+		body = brandStyle.Render("NEW PROJECT") + "\n" + titleStyle.Render("Create or open a project directory") + "\n" + mutedStyle.Render("Enter a folder path. OpenKyrozen creates it if needed and starts a new chat.") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.projectInput.View()) + "\n\n" + mutedStyle.Render("Enter create / open  ·  Esc cancel")
 	case screenApproval:
 		body = amberStyle.Render("!  APPROVAL REQUIRED") + "\n" + titleStyle.Render("Confirm this action") + "\n\n" + softStyle.Render(m.approvalTool) + "\n" + softStyle.Render(m.approvalArgs) + "\n\n" + mutedStyle.Render("This may change local or remote state.") + "\n\n" + greenStyle.Render("Y / Enter  approve") + "    " + redStyle.Render("N / Esc  deny")
 	case screenSelfLearning:

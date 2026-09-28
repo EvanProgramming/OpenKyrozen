@@ -349,6 +349,35 @@ func TestActivityRailCannotPushComposerOffscreen(t *testing.T) {
 	}
 }
 
+func TestProjectChatSidebarExposesCreationAndKeepsSelectedChatVisible(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height, m.screen = 120, 16, screenChat
+	m.navigationFocused = true
+	for project := 0; project < 8; project++ {
+		group := navigationGroup{scopeID: fmt.Sprintf("scope-%d", project), name: fmt.Sprintf("Project %d", project)}
+		for chat := 0; chat < 3; chat++ {
+			group.chats = append(group.chats, navigationChat{id: fmt.Sprintf("chat-%d-%d", project, chat), title: fmt.Sprintf("Chat %d", chat)})
+		}
+		m.navigation = append(m.navigation, group)
+	}
+	m.activeScopeID, m.activeSessionID = "scope-7", "chat-7-2"
+	eventGroups := make([]any, 0, len(m.navigation))
+	for _, group := range m.navigation {
+		chats := make([]any, 0, len(group.chats))
+		for _, chat := range group.chats {
+			chats = append(chats, map[string]any{"session_id": chat.id, "title": chat.title})
+		}
+		eventGroups = append(eventGroups, map[string]any{"scope_id": group.scopeID, "name": group.name, "chats": chats})
+	}
+	m.applyNavigation(backendEvent{"active_scope_id": m.activeScopeID, "active_session_id": m.activeSessionID, "groups": eventGroups})
+	view := m.navigationSidebar(m.navigationWidth(), m.historyHeight())
+	for _, text := range []string{"+ New chat", "+ New project", "Project 7", "Chat 2"} {
+		if !strings.Contains(view, text) {
+			t.Fatalf("vertical project/chat navigation lost %q: %s", text, view)
+		}
+	}
+}
+
 func TestInteractionCardsRestoreModeQuestionAndPlan(t *testing.T) {
 	m := initialModel(".", false)
 	m.width, m.height = 120, 40
