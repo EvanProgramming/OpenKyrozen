@@ -66,6 +66,22 @@ class InteractionTests(unittest.TestCase):
                 main.interaction_workspace_id(global_context), main.memory_bank.workspace_id,
             )
 
+    def test_binding_empty_chat_clears_previous_short_term_memory(self):
+        previous = (main.short_term_memory, main.tasks, main._interaction_controller,
+                    main.memory_bank.session_id)
+        def restore():
+            main.short_term_memory, main.tasks, main._interaction_controller = previous[:3]
+            main.memory_bank.session_id = previous[3]
+        self.addCleanup(restore)
+        main.short_term_memory = [{"role": "user", "content": "previous project"}]
+        empty_history = type("History", (), {"current": lambda self: None})()
+        with patch.object(main, "TaskManager", return_value=object()), \
+                patch.object(main, "InteractionController", return_value=object()), \
+                patch.object(main, "history_manager", return_value=empty_history), \
+                patch.object(main, "_restore_ponytail_level"):
+            main.bind_interaction_scope("chat-empty")
+        self.assertEqual(main.short_term_memory, [])
+
     def test_question_bounds_and_event_reconstruction(self):
         question = self.controller.request_question({"questions": [{
             "id": "scope", "header": "Scope", "prompt": "Which package?",

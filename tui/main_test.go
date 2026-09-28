@@ -314,6 +314,11 @@ func assertChatFits(t *testing.T, width, height int) {
 	m.screen = screenChat
 	m.provider, m.modelName = "deepseek", "deepseek-chat"
 	m.messages = []chatMessage{{role: "assistant", text: "A response that must remain readable at every terminal size."}}
+	m.activeScopeID, m.activeSessionID = "scope-project", "chat-project"
+	m.navigation = []navigationGroup{
+		{scope: "global", scopeID: "global", name: "No Project", chats: []navigationChat{{id: "chat-global", title: "Global chat"}}},
+		{scope: "project", scopeID: "scope-project", name: "Example Project", chats: []navigationChat{{id: "chat-project", title: "Project chat"}}},
+	}
 	m.resize()
 	lines := strings.Split(m.View().Content, "\n")
 	if len(lines) != height {

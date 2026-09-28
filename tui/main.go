@@ -47,6 +47,7 @@ const (
 	screenGraph        screen = "graph"
 	screenGithubAuth   screen = "github_auth"
 	screenSettings     screen = "settings"
+	screenProject      screen = "project"
 	screenUpdating     screen = "updating"
 	screenError        screen = "error"
 )
@@ -66,6 +67,12 @@ type taskItem struct {
 	id          string
 	description string
 	status      string
+}
+
+type navigationChat struct{ id, title, updatedAt string }
+type navigationGroup struct {
+	scope, scopeID, name, path string
+	chats                      []navigationChat
 }
 
 type featureItem struct {
@@ -107,11 +114,18 @@ type model struct {
 	decisionAssistBackend     string
 	decisionAssistConsent     bool
 	graphInput                textinput.Model
+	projectInput              textinput.Model
 	screen                    screen
 	status                    string
 	provider                  string
 	modelName                 string
 	workspace                 string
+	activeSessionID           string
+	activeScopeID             string
+	navigation                []navigationGroup
+	navigationIndex           int
+	navigationOpen            bool
+	navigationFocused         bool
 	messages                  []chatMessage
 	tasks                     []taskItem
 	palette                   []command
@@ -319,6 +333,10 @@ func initialModel(project string, global bool) model {
 	graphInput.Placeholder = "Search nodes"
 	graphInput.CharLimit = 200
 	graphInput.SetStyles(apiStyles)
+	projectInput := textinput.New()
+	projectInput.Placeholder = "Project directory"
+	projectInput.CharLimit = 4096
+	projectInput.SetStyles(apiStyles)
 	transcript := viewport.New()
 	transcript.MouseWheelEnabled = true
 	transcript.MouseWheelDelta = mouseWheelScrollStep
@@ -330,6 +348,7 @@ func initialModel(project string, global bool) model {
 		input:                     input,
 		apiInput:                  apiInput,
 		graphInput:                graphInput,
+		projectInput:              projectInput,
 		screen:                    screenSplash,
 		status:                    "Starting the workspace…",
 		splashStarted:             time.Now(),
@@ -550,6 +569,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.graphSearching {
 				m.graphInput, cmd = m.graphInput.Update(msg)
 			}
+		case screenProject:
+			m.projectInput, cmd = m.projectInput.Update(msg)
 		case screenChat:
 			m.input, cmd = m.input.Update(msg)
 			m.refreshPalette()
@@ -702,6 +723,25 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if m.screen == screenSettings {
 		return m.settingsKey(key), false
 	}
+	if m.screen == screenProject {
+		if key == "esc" {
+			m.projectInput.Blur()
+			m.screen = screenChat
+			return nil, false
+		}
+		if key == "enter" {
+			path := strings.TrimSpace(m.projectInput.Value())
+			if path != "" {
+				m.send("navigate", map[string]any{"action": "project", "path": path})
+			}
+			m.projectInput.Blur()
+			m.screen = screenChat
+			return nil, false
+		}
+		var cmd tea.Cmd
+		m.projectInput, cmd = m.projectInput.Update(msg)
+		return cmd, false
+	}
 	if m.screen == screenAPIKey {
 		if key == "esc" {
 			m.apiInput.Reset()
@@ -737,6 +777,49 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		var cmd tea.Cmd
 		m.apiInput, cmd = m.apiInput.Update(msg)
 		return cmd, false
+	}
+	if m.screen == screenChat && (key == "ctrl+b" || key == "ctrl+\\") {
+		m.navigationOpen = !m.navigationOpen
+		m.navigationFocused = m.navigationOpen
+		if m.navigationFocused {
+			m.input.Blur()
+		} else {
+			m.input.Focus()
+		}
+		return nil, false
+	}
+	if m.screen == screenChat && m.navigationFocused {
+		switch key {
+		case "esc":
+			m.navigationFocused, m.navigationOpen = false, false
+			m.input.Focus()
+		case "up", "k":
+			m.navigationIndex = maxInt(0, m.navigationIndex-1)
+		case "down", "j":
+			m.navigationIndex = minInt(maxInt(0, len(m.navigationTargets())-1), m.navigationIndex+1)
+		case "enter":
+			targets := m.navigationTargets()
+			if len(targets) > 0 {
+				target := targets[m.navigationIndex]
+				m.send("navigate", map[string]any{"action": "switch", "scope_id": target.scopeID, "session_id": target.id})
+			}
+		case "n":
+			m.send("navigate", map[string]any{"action": "new"})
+		case "p":
+			m.screen = screenProject
+			m.projectInput.Reset()
+			return m.projectInput.Focus(), false
+		}
+		return nil, false
+	}
+	if m.screen == screenChat && key == "ctrl+n" && strings.TrimSpace(m.input.Value()) == "" {
+		m.send("navigate", map[string]any{"action": "new"})
+		return nil, false
+	}
+	if m.screen == screenChat && key == "ctrl+o" && strings.TrimSpace(m.input.Value()) == "" {
+		m.screen = screenProject
+		m.projectInput.Reset()
+		return m.projectInput.Focus(), false
 	}
 	if key == "esc" && len(m.palette) > 0 {
 		m.palette = nil
@@ -1126,6 +1209,7 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		m.provider = stringValue(event, "provider")
 		m.modelName = stringValue(event, "model")
 		m.workspace = stringValue(event, "workspace")
+		m.activeSessionID = firstNonEmpty(stringValue(event, "session_id"), m.activeSessionID)
 		m.status = "Ready"
 		m.busy = false
 		m.backendReady = true
@@ -1209,6 +1293,8 @@ func (m *model) handleBackendEvent(event backendEvent) {
 				}
 			}
 		}
+	case "navigation":
+		m.applyNavigation(event)
 	case "interaction":
 		if value, ok := event["interaction"].(map[string]any); ok {
 			m.applyInteraction(value)
@@ -1334,6 +1420,39 @@ func parseTasks(value any) []taskItem {
 	return tasks
 }
 
+func (m *model) applyNavigation(event backendEvent) {
+	m.activeSessionID = stringValue(event, "active_session_id")
+	m.activeScopeID = stringValue(event, "active_scope_id")
+	m.workspace = firstNonEmpty(stringValue(event, "workspace"), m.workspace)
+	m.navigation = nil
+	if groups, ok := event["groups"].([]any); ok {
+		for _, raw := range groups {
+			item, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			group := navigationGroup{scope: stringValue(item, "scope"), scopeID: stringValue(item, "scope_id"), name: stringValue(item, "name"), path: stringValue(item, "path")}
+			if chats, ok := item["chats"].([]any); ok {
+				for _, rawChat := range chats {
+					if chat, ok := rawChat.(map[string]any); ok {
+						group.chats = append(group.chats, navigationChat{id: stringValue(chat, "session_id"), title: stringValue(chat, "title"), updatedAt: stringValue(chat, "updated_at")})
+					}
+				}
+			}
+			m.navigation = append(m.navigation, group)
+		}
+	}
+	m.messages = nil
+	if messages, ok := event["messages"].([]any); ok {
+		for _, raw := range messages {
+			if item, ok := raw.(map[string]any); ok {
+				m.messages = append(m.messages, chatMessage{role: stringValue(item, "role"), text: stringValue(item, "text")})
+			}
+		}
+	}
+	m.syncViewport()
+}
+
 func (m *model) handlePrompt(event backendEvent) {
 	switch stringValue(event, "kind") {
 	case "onboarding":
@@ -1421,6 +1540,14 @@ func (m *model) handlePrompt(event backendEvent) {
 		m.githubHostname = firstNonEmpty(stringValue(event, "hostname"), "github.com")
 		m.screen = screenGithubAuth
 		m.startTransition()
+	case "project":
+		m.screen = screenProject
+		m.projectInput.Reset()
+		m.projectInput.Focus()
+		m.startTransition()
+	case "sessions":
+		m.navigationOpen, m.navigationFocused = true, true
+		m.input.Blur()
 	}
 }
 
@@ -1491,8 +1618,18 @@ func (m model) contentWidth() int {
 	return maxInt(1, m.width-4)
 }
 
+func (m model) navigationWidth() int {
+	if m.width < 100 || m.height < 16 {
+		return 0
+	}
+	return minInt(28, maxInt(20, m.contentWidth()/5))
+}
+
 func (m model) layoutWidths() (int, int) {
 	available := m.contentWidth()
+	if navigationWidth := m.navigationWidth(); navigationWidth > 0 {
+		available = maxInt(1, available-navigationWidth-1)
+	}
 	if m.width < 120 || m.height < 24 {
 		return available, 0
 	}
@@ -1782,6 +1919,11 @@ func (m model) chatView() string {
 	if panelWidth > 0 {
 		main = lipgloss.JoinHorizontal(lipgloss.Top, main, " ", m.activityRail())
 	}
+	if navigationWidth := m.navigationWidth(); navigationWidth > 0 {
+		main = lipgloss.JoinHorizontal(lipgloss.Top, m.navigationSidebar(navigationWidth, historyHeight), " ", main)
+	} else if m.navigationOpen {
+		main = m.navigationSidebar(minInt(34, contentWidth), historyHeight)
+	}
 	blocks := []string{header}
 	blocks = append(blocks, main)
 	if progress := m.progressBlock(contentWidth); progress != "" {
@@ -1855,9 +1997,9 @@ func (m model) chatFooter(width int) string {
 	if width < 4 {
 		return ""
 	}
-	hints := "↵ send · / commands · ^C quit"
+	hints := "↵ send · / commands · ^B chats · ^C quit"
 	if width >= 72 && m.height >= 18 {
-		hints = "Enter send · Shift+Enter newline · / commands · PgUp/PgDn scroll · Ctrl+C quit"
+		hints = "Enter send · / commands · Ctrl+B chats · Ctrl+N new · Ctrl+O project · Ctrl+C quit"
 	}
 	workspace := ""
 	if m.workspace != "" && width >= 52 {
@@ -1991,6 +2133,49 @@ func (m model) activityRail() string {
 
 func (m model) taskPanel() string { return m.activityRail() }
 
+type navigationTarget struct{ scopeID, id string }
+
+func (m model) navigationTargets() []navigationTarget {
+	var targets []navigationTarget
+	for _, group := range m.navigation {
+		for _, chat := range group.chats {
+			targets = append(targets, navigationTarget{scopeID: group.scopeID, id: chat.id})
+		}
+	}
+	return targets
+}
+
+func (m model) navigationSidebar(panelWidth, height int) string {
+	width := maxInt(1, panelWidth-2)
+	textWidth := maxInt(1, width-2)
+	lines := []string{sectionStyle.Render("PROJECTS & CHATS"), mutedStyle.Render("Ctrl+B · N new · P project"), ""}
+	index := 0
+	for _, group := range m.navigation {
+		groupStyle := softStyle
+		if group.scopeID == m.activeScopeID {
+			groupStyle = brandStyle
+		}
+		lines = append(lines, groupStyle.Render(compactText(group.name, textWidth)))
+		if len(group.chats) == 0 {
+			lines = append(lines, mutedStyle.Render("  No chats"))
+		}
+		for _, chat := range group.chats {
+			marker := "  "
+			style := mutedStyle
+			if chat.id == m.activeSessionID {
+				marker, style = "● ", titleStyle
+			}
+			if m.navigationFocused && index == m.navigationIndex {
+				marker, style = "› ", brandStyle
+			}
+			lines = append(lines, style.Render(marker+compactText(firstNonEmpty(chat.title, "New chat"), maxInt(1, textWidth-2))))
+			index++
+		}
+		lines = append(lines, "")
+	}
+	return activityStyle.Copy().Width(width).MaxWidth(width).Height(height).MaxHeight(height).Render(limitRows(strings.Join(lines, "\n"), height))
+}
+
 func (m model) settingsRow(index int, label, value string) string {
 	cursor, labelStyle := mutedStyle.Render("·"), softStyle
 	if index == m.settingsIdx {
@@ -2047,6 +2232,8 @@ func (m model) modal(_ string) string {
 		}
 	case screenAPIKey:
 		body = brandStyle.Render("API KEY SETUP") + "\n" + titleStyle.Render("Add your API key") + "\n" + mutedStyle.Render("Your key is masked and stored encrypted locally.") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.apiInput.View()) + "\n\n" + mutedStyle.Render("Enter confirm  ·  Esc cancel")
+	case screenProject:
+		body = brandStyle.Render("OPEN PROJECT") + "\n" + titleStyle.Render("Start a chat in another directory") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.projectInput.View()) + "\n\n" + mutedStyle.Render("Enter open  ·  Esc cancel")
 	case screenApproval:
 		body = amberStyle.Render("!  APPROVAL REQUIRED") + "\n" + titleStyle.Render("Confirm this action") + "\n\n" + softStyle.Render(m.approvalTool) + "\n" + softStyle.Render(m.approvalArgs) + "\n\n" + mutedStyle.Render("This may change local or remote state.") + "\n\n" + greenStyle.Render("Y / Enter  approve") + "    " + redStyle.Render("N / Esc  deny")
 	case screenSelfLearning:

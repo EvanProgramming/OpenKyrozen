@@ -11,6 +11,7 @@ from unittest.mock import patch
 import tui_backend
 from interaction import InteractionController
 from event_store import EventStore
+from workspace_context import resolve_launch_context
 
 
 class TUIProtocolTests(unittest.TestCase):
@@ -27,6 +28,50 @@ class TUIProtocolTests(unittest.TestCase):
         payload, error = self.backend.validate({"command": "submit", "text": "x" * 12001})
         self.assertIsNone(payload)
         self.assertIn("too long", error)
+
+    def test_navigation_groups_global_project_and_legacy_chats_without_leakage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = EventStore(root / "state.sqlite3")
+            memory = SimpleNamespace(store=store, user_id="local", workspace_id="global")
+            project = root / "project"
+            project.mkdir()
+            context = resolve_launch_context(home=root / "home", project_path=project)
+            store.append_event(
+                "tui.chat_metadata", {"title": "Global chat"}, user_id="local",
+                workspace_id="global", session_id="chat-global",
+            )
+            store.append_event(
+                "tui.project_opened", {"path": str(project), "name": "project",
+                                       "source_scope_id": context.source_scope_id},
+                user_id="local", workspace_id="global",
+            )
+            store.append_event(
+                "tui.chat_metadata", {"title": "Project chat"}, user_id="local",
+                workspace_id=context.source_scope_id, session_id="chat-project",
+            )
+            store.append_event(
+                "tui.chat_metadata", {"title": "Legacy"}, user_id="local",
+                workspace_id=context.source_scope_id, session_id="surface:tui",
+            )
+            with patch.object(tui_backend.agent, "memory_bank", memory):
+                groups = self.backend._navigation_groups()
+            self.assertEqual(groups[0]["name"], "No Project")
+            self.assertEqual([chat["session_id"] for chat in groups[0]["chats"]], ["chat-global"])
+            project_group = next(group for group in groups if group["scope_id"] == context.source_scope_id)
+            self.assertEqual(
+                {chat["session_id"] for chat in project_group["chats"]},
+                {"chat-project", "surface:tui"},
+            )
+
+    def test_switch_rejects_busy_and_unknown_targets(self):
+        self.backend._busy = True
+        self.backend._switch_chat("scope", "chat-missing", "busy")
+        self.backend._busy = False
+        with patch.object(self.backend, "_navigation_groups", return_value=[]):
+            self.backend._switch_chat("scope", "chat-missing", "unknown")
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        self.assertEqual([event["code"] for event in events], ["busy", "unknown_session"])
 
     def test_attach_stages_quoted_files_and_rejects_invalid_batch(self):
         with tempfile.TemporaryDirectory() as directory:

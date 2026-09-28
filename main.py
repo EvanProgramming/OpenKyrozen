@@ -2926,8 +2926,11 @@ def bind_interaction_scope(session_id: str, *, user_id: str | None = None) -> No
         session_id=session_id,
     )
     current = history_manager(session_id).current()
-    if current is not None and current.get("kind") != "recovery":
-        short_term_memory = list(current.get("conversation", []))
+    short_term_memory = (
+        list(current.get("conversation", []))
+        if current is not None and current.get("kind") != "recovery"
+        else []
+    )
     _restore_ponytail_level()
 
 
