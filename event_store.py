@@ -395,6 +395,19 @@ class EventStore:
             ).fetchall()
         return [self._decode_history_row(dict(row)) for row in rows]
 
+    def list_history_sessions(self, *, user_id: str = "local",
+                              workspace_id: str = "default", limit: int = 100) -> list[dict[str, Any]]:
+        """Return conversation heads without introducing a second session store."""
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT h.session_id,h.updated_at,n.user_message,n.conversation "
+                "FROM history_heads h JOIN history_nodes n ON n.id=h.head_id "
+                "WHERE h.user_id=? AND h.workspace_id=? "
+                "ORDER BY h.updated_at DESC LIMIT ?",
+                (user_id, workspace_id, max(1, min(int(limit), 1000))),
+            ).fetchall()
+        return [dict(row, conversation=self._loads(row["conversation"], [])) for row in rows]
+
     @classmethod
     def _decode_history_row(cls, row: dict[str, Any]) -> dict[str, Any]:
         for field, fallback in (("conversation", []), ("interaction", {}),

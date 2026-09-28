@@ -89,6 +89,7 @@ class Backend:
         self._approval_lock = threading.Lock()
         self._staged_attachments: list[dict[str, Any]] = []
         self._onboarding_kind = ""
+        self._active_session_id = ""
 
     def emit(self, event: str, request_id: str | None = None, **payload: Any) -> None:
         message: dict[str, Any] = {
@@ -145,6 +146,162 @@ class Backend:
         with contextlib.redirect_stdout(self._quiet_stdout), contextlib.redirect_stderr(self._quiet_stderr):
             return function(*args, **kwargs)
 
+    @staticmethod
+    def _new_chat_id() -> str:
+        return f"chat-{uuid.uuid4().hex}"
+
+    def _register_chat(self, session_id: str, *, title: str = "New chat") -> None:
+        context = agent.get_launch_context()
+        if context is None:
+            return
+        store = agent.memory_bank.store
+        if not context.is_global:
+            store.append_event(
+                "tui.project_opened",
+                {"path": str(context.active_root), "name": context.active_root.name,
+                 "source_scope_id": context.source_scope_id},
+                user_id=agent.memory_bank.user_id,
+                workspace_id=agent.memory_bank.workspace_id,
+            )
+        store.append_event(
+            "tui.chat_metadata",
+            {"title": title, "scope": context.mode, "path": str(context.active_root)},
+            user_id=agent.memory_bank.user_id,
+            workspace_id=agent.interaction_workspace_id(context),
+            session_id=session_id,
+        )
+
+    def _chat_title(self, workspace_id: str, session: dict[str, Any]) -> str:
+        metadata = agent.memory_bank.store.list_events(
+            "tui.chat_metadata", limit=1, workspace_id=workspace_id,
+            session_id=str(session["session_id"]), user_id=agent.memory_bank.user_id,
+        )
+        if metadata:
+            title = str(metadata[0]["payload"].get("title") or "").strip()
+            if title and title != "New chat":
+                return title
+        first = str(session.get("user_message") or "").strip()
+        if not first:
+            for item in session.get("conversation") or []:
+                if isinstance(item, Mapping) and item.get("role") == "user":
+                    first = str(item.get("content") or "").strip()
+                    if first:
+                        break
+        return re.sub(r"\s+", " ", first)[:72] or "New chat"
+
+    def _scope_chats(self, workspace_id: str) -> list[dict[str, Any]]:
+        store = agent.memory_bank.store
+        by_id = {
+            str(item["session_id"]): item
+            for item in store.list_history_sessions(
+                user_id=agent.memory_bank.user_id, workspace_id=workspace_id, limit=200,
+            )
+        }
+        for item in store.list_sessions(
+                user_id=agent.memory_bank.user_id, workspace_id=workspace_id, limit=200):
+            by_id.setdefault(str(item["session_id"]), item)
+        chats = []
+        for session_id, item in by_id.items():
+            if session_id.startswith("chat-") or session_id == "surface:tui":
+                chats.append({
+                    "session_id": session_id,
+                    "title": self._chat_title(workspace_id, item),
+                    "updated_at": str(item.get("updated_at") or ""),
+                })
+        return sorted(chats, key=lambda item: item["updated_at"], reverse=True)
+
+    def _navigation_groups(self) -> list[dict[str, Any]]:
+        store = agent.memory_bank.store
+        groups = [{
+            "scope": "global", "scope_id": agent.memory_bank.workspace_id,
+            "name": "No Project", "path": "",
+            "chats": self._scope_chats(agent.memory_bank.workspace_id),
+        }]
+        projects: dict[str, dict[str, str]] = {}
+        for event in store.list_events(
+                "tui.project_opened", limit=1000, workspace_id=agent.memory_bank.workspace_id,
+                user_id=agent.memory_bank.user_id):
+            payload = event["payload"]
+            scope_id, path = str(payload.get("source_scope_id") or ""), str(payload.get("path") or "")
+            if scope_id and path and scope_id not in projects:
+                projects[scope_id] = {"path": path, "name": str(payload.get("name") or Path(path).name)}
+        for scope_id, project in projects.items():
+            groups.append({
+                "scope": "project", "scope_id": scope_id, "name": project["name"],
+                "path": project["path"], "chats": self._scope_chats(scope_id),
+            })
+        return groups
+
+    def navigation(self, request_id: str | None = None) -> None:
+        context = agent.get_launch_context()
+        messages = []
+        for item in agent.short_term_memory:
+            if not isinstance(item, Mapping) or item.get("role") not in {"user", "assistant"}:
+                continue
+            text = item.get("content")
+            if isinstance(text, str) and text.strip():
+                messages.append({"role": item["role"], "text": text})
+        self.emit(
+            "navigation", request_id,
+            active_session_id=self._active_session_id,
+            active_scope_id=agent.interaction_workspace_id(context),
+            scope=context.mode if context else "global",
+            workspace=str(agent._get_workspace_root()),
+            groups=self._navigation_groups(), messages=messages,
+        )
+
+    def _bind_chat(self, session_id: str, *, project_path: str | None = None,
+                   global_mode: bool = False, create: bool = False) -> None:
+        context = self._quiet_call(
+            agent.configure_launch_context, project_path=project_path, global_mode=global_mode,
+        )
+        self._quiet_call(agent.bind_interaction_scope, session_id)
+        self._quiet_call(agent._plugin_runtime_for_surface().load_once)
+        self._active_session_id = session_id
+        self._staged_attachments.clear()
+        if create:
+            self._register_chat(session_id)
+        graph = agent._project_graph
+        if graph is not None:
+            graph.refresh_async(callback=lambda _state: self.graph_state())
+        return context
+
+    def _switch_chat(self, scope_id: str, session_id: str, request_id: str) -> None:
+        with self._state_lock:
+            if self._busy:
+                self.emit("error", request_id, code="busy", error="Cannot switch chats while a turn is running.")
+                return
+            target = next((group for group in self._navigation_groups()
+                           if group["scope_id"] == scope_id), None)
+            if target is None or not any(chat["session_id"] == session_id for chat in target["chats"]):
+                self.emit("error", request_id, code="unknown_session", error="Unknown chat for this project.")
+                return
+            try:
+                self._bind_chat(
+                    session_id, project_path=target["path"] or None,
+                    global_mode=target["scope"] == "global",
+                )
+            except (OSError, ValueError) as exc:
+                self.emit("error", request_id, code="session_switch_failed", error=str(exc))
+                return
+        self._emit_bound_state(request_id)
+
+    def _emit_bound_state(self, request_id: str) -> None:
+        context = agent.get_launch_context()
+        self.navigation(request_id)
+        self.emit("tasks", request_id, tasks=[
+            {"id": item["id"], "description": item["description"], "status": item["status"]}
+            for item in agent.tasks.tasks
+        ])
+        self.interaction(request_id)
+        self.graph_state(request_id)
+        self.emit("ready", request_id, configured=agent.llm_provider is not None,
+                  provider=getattr(agent._provider_config, "provider", ""),
+                  model=getattr(agent._provider_config, "model_simple", ""),
+                  workspace=str(context.active_root), mode=context.mode,
+                  session_id=self._active_session_id)
+        self.usage(request_id)
+
     def start(self, payload: dict[str, Any], request_id: str) -> None:
         if self._started:
             self.emit("ready", request_id, configured=agent.llm_provider is not None,
@@ -166,7 +323,9 @@ class Backend:
                 project_path=project if isinstance(project, str) and project.strip() else None,
                 global_mode=global_mode,
             )
-            self._quiet_call(agent.bind_interaction_scope, "surface:tui")
+            self._active_session_id = self._new_chat_id()
+            self._quiet_call(agent.bind_interaction_scope, self._active_session_id)
+            self._register_chat(self._active_session_id)
             config = self._quiet_call(agent.detect_provider)
             self.status("starting", "Connecting provider…", request_id)
             configured = bool(self._quiet_call(
@@ -197,7 +356,9 @@ class Backend:
                 workspace=str(context.active_root),
                 mode="global" if context.is_global else "project",
                 recovered=len(task_results or []),
+                session_id=self._active_session_id,
             )
+            self.navigation(request_id)
             self.usage(request_id)
             if self._onboarding_kind:
                 self.emit(
@@ -483,6 +644,15 @@ class Backend:
                 self.status("waiting", "Provider setup required.", request_id)
                 return
             sanitized, flagged = self._quiet_call(agent._sanitize_input, text)
+            metadata = agent.memory_bank.store.list_events(
+                "tui.chat_metadata", limit=1, workspace_id=agent.interaction_workspace_id(),
+                session_id=self._active_session_id, user_id=agent.memory_bank.user_id,
+            ) if self._active_session_id and hasattr(agent.memory_bank, "store") else []
+            if metadata and metadata[0]["payload"].get("title") == "New chat":
+                self._register_chat(
+                    self._active_session_id,
+                    title=re.sub(r"\s+", " ", text.strip())[:72] or "New chat",
+                )
             if flagged:
                 self.emit("status", request_id, state="warning",
                           message="Prompt injection text was filtered.", busy=True)
@@ -516,6 +686,7 @@ class Backend:
             self.interaction(request_id)
             self.usage(request_id)
             self.status("ready", "Ready", request_id)
+            self.navigation(request_id)
         except agent.ProviderUnavailableError as exc:
             self.emit("error", request_id, code=agent.PROVIDER_UNAVAILABLE_CODE,
                       error=_redact(exc))
@@ -565,6 +736,43 @@ class Backend:
                 self.prompt_api_key(request_id)
         elif command in {"/attach", "attach"}:
             self._attach(arg_text, request_id)
+        elif command in {"/new", "new"}:
+            with self._state_lock:
+                if self._busy:
+                    self.emit("error", request_id, code="busy", error="Cannot create a chat while a turn is running.")
+                    return
+                context = agent.get_launch_context()
+                self._bind_chat(
+                    self._new_chat_id(),
+                    project_path=str(context.active_root) if context and not context.is_global else None,
+                    global_mode=not context or context.is_global, create=True,
+                )
+            self._emit_bound_state(request_id)
+        elif command in {"/project", "project"}:
+            path = arg_text.strip()
+            if not path:
+                self.emit("prompt", request_id, kind="project")
+                return
+            with self._state_lock:
+                if self._busy:
+                    self.emit("error", request_id, code="busy", error="Cannot open a project while a turn is running.")
+                    return
+                try:
+                    self._bind_chat(self._new_chat_id(), project_path=path, create=True)
+                except (OSError, ValueError) as exc:
+                    self.emit("error", request_id, code="project_open_failed", error=str(exc))
+                    return
+            self._emit_bound_state(request_id)
+        elif command in {"/sessions", "sessions"}:
+            self.navigation(request_id)
+            self.emit("prompt", request_id, kind="sessions")
+        elif command in {"/session", "session"}:
+            parts = arg_text.split()
+            if not parts:
+                self.emit("error", request_id, code="invalid_session", error="Usage: /session <id>")
+                return
+            current_scope = agent.interaction_workspace_id()
+            self._switch_chat(current_scope, parts[0], request_id)
         elif command in {"/learn", "learn"}:
             self.status("learning", "Refreshing the private project graph…", request_id)
             self._quiet_call(agent._load_project_files_into_memory, force=True)
@@ -941,6 +1149,16 @@ class Backend:
             self._plan_action(payload, request_id)
         elif command == "graph_request":
             self._graph_request(payload, request_id)
+        elif command == "navigate":
+            action = payload.get("action")
+            if action == "switch" and isinstance(payload.get("scope_id"), str) and isinstance(payload.get("session_id"), str):
+                self._switch_chat(payload["scope_id"], payload["session_id"], request_id)
+            elif action == "new":
+                self._command("new", "", request_id)
+            elif action == "project" and isinstance(payload.get("path"), str):
+                self._command("project", payload["path"], request_id)
+            else:
+                self.emit("error", request_id, code="invalid_navigation", error="Invalid navigation action.")
         elif command == "shutdown":
             self.stop()
 
@@ -962,7 +1180,7 @@ class Backend:
         if not isinstance(payload, dict):
             return None, "JSON object required."
         command = payload.get("command")
-        if command not in {"start", "submit", "command", "approval_response", "question_response", "plan_action", "graph_request", "shutdown"}:
+        if command not in {"start", "submit", "command", "approval_response", "question_response", "plan_action", "graph_request", "navigate", "shutdown"}:
             return None, "Unknown backend command."
         request_id = payload.get("request_id")
         if request_id is not None and (not isinstance(request_id, str) or len(request_id) > MAX_REQUEST_ID_CHARS):

@@ -54,6 +54,18 @@ func TestNativeSkillCommandsAreDiscoverable(t *testing.T) {
 	}
 }
 
+func TestProjectAndChatCommandsAreDiscoverable(t *testing.T) {
+	found := map[string]bool{}
+	for _, item := range commandMatches("/") {
+		found[item.name] = true
+	}
+	for _, name := range []string{"new", "project", "sessions", "session"} {
+		if !found[name] {
+			t.Fatalf("/%s is missing from the command palette", name)
+		}
+	}
+}
+
 func TestAttachCommandIsDiscoverable(t *testing.T) {
 	matches := commandMatches("/attach")
 	if len(matches) != 1 || matches[0].name != "attach" {
