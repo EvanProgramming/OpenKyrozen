@@ -108,7 +108,7 @@ from event_store import stable_hash, utc_now
 from interaction import (
     InteractionController, InteractionError, is_plan_acceptance, mode_capabilities,
     normalize_provider_control, parse_control_block, render_plan, render_question, validate_plan_proposal,
-    validate_question_request,
+    split_inline_command, validate_question_request,
 )
 import fast_mode
 from learning_engine import LearningEngine
@@ -343,6 +343,82 @@ def _update_tasks_panel() -> None:
 def _clear_tasks_panel() -> None:
     """No‑op — panel is inline, cleared naturally by new output."""
     pass
+
+
+def _apply_inline_command(command: str) -> bool:
+    """Apply a command that modifies the following chat request."""
+    parts = command.split()
+    name = parts[0].lower() if parts else ""
+    args = [part.lower() for part in parts[1:]]
+    if name == "/ask":
+        set_interaction_mode("ask")
+        console.print("Interaction mode set to ask.")
+    elif name == "/mode":
+        try:
+            console.print(f"Interaction mode set to {set_interaction_mode(args[0])['preference_mode']}.")
+        except InteractionError as exc:
+            console.print(f"Usage: /mode auto|ask|plan|agent ({exc})")
+    elif name == "/plan":
+        set_interaction_mode("plan")
+        console.print("Interaction mode set to plan.")
+    elif name == "/agent":
+        global _agent_profile_mode
+        _agent_profile_mode = args[0] if args else _agent_profile_mode
+        if args:
+            _restore_user_preferences()
+            console.print(f"Agent profile set to {_agent_profile_mode}.")
+        else:
+            console.print(f"Agent profile: {_agent_profile_mode}")
+    elif name == "/fast":
+        if not args:
+            console.print(f"Fast: {interaction_envelope()['fast_backend']} (Jev sends context to TypeSafe; local Kev-0.8B is less accurate)")
+        else:
+            try:
+                key = None
+                if args[0] == "jev" and not fast_mode.jev_key():
+                    import getpass
+                    key = getpass.getpass("Jev API key: ")
+                if args[0] == "kev":
+                    console.print("Installing and starting local Kev-0.8B; waiting for a live check…")
+                console.print(f"Fast: {set_fast_backend(args[0], api_key=key)['fast_backend']}")
+            except (InteractionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                console.print(f"Fast setup failed: {exc}")
+    elif name in {"/decision-assist", "/assist"}:
+        if not args:
+            state = decision_assist_state()
+            console.print(
+                f"Decision Assist: {state['backend']} · Jev configured: {state['jev_configured']} · "
+                f"Kev ready: {state['kev_ready']} · private Kev consent: {state['kev_private_consent']}"
+            )
+        else:
+            try:
+                backend = args[0]
+                if backend == "revoke":
+                    state = revoke_decision_assist_consent()
+                else:
+                    key = None
+                    if backend == "jev" and not fast_mode.jev_key():
+                        import getpass
+                        key = getpass.getpass("Jev API key (paid TypeSafe calls): ")
+                    consent = len(args) > 1 and args[1] in {"y", "yes", "consent", "allow"}
+                    state = set_decision_assist(backend, private_consent=consent, api_key=key)
+                console.print(
+                    f"Decision Assist: {state['backend']} · Kev private consent: "
+                    f"{state['kev_private_consent']}"
+                )
+            except (InteractionError, RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
+                console.print(f"Decision Assist setup failed: {exc}")
+    elif name == "/ponytail":
+        if not args:
+            console.print(f"Ponytail: {_ponytail_level}")
+        else:
+            try:
+                console.print(f"Ponytail: {set_ponytail_level(args[0])}")
+            except ValueError as exc:
+                console.print(f"Usage: /ponytail off|lite|full|ultra ({exc})")
+    else:
+        return False
+    return True
 
 
 # ---- Theme ----
@@ -7589,6 +7665,11 @@ def main() -> None:
             continue
 
         _is_auto_continue = False
+
+        inline = split_inline_command(user_input)
+        if inline:
+            user_input, command = inline
+            _apply_inline_command(command)
 
         interaction_before = interaction_envelope(user_input)
         # A clarification answer or plan revision continues the same logical

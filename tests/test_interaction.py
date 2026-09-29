@@ -13,6 +13,7 @@ from interaction import (
     mode_capabilities,
     parse_control_block,
     route_mode,
+    split_inline_command,
 )
 from task_engine import TaskManager
 from capability_tokens import issue_capability_token
@@ -37,6 +38,26 @@ class InteractionTests(unittest.TestCase):
         base = frozenset({"read", "write", "shell", "network", "git", "browser", "dynamic"})
         self.assertEqual(mode_capabilities(base, "plan"), frozenset({"read", "network"}))
         self.assertEqual(mode_capabilities(frozenset({"read"}), "agent"), frozenset({"read"}))
+
+    def test_inline_commands_are_trailing_and_conservative(self):
+        self.assertEqual(
+            split_inline_command("Build a todo list for me /mode plan"),
+            ("Build a todo list for me", "/mode plan"),
+        )
+        self.assertEqual(
+            split_inline_command("Review the workspace /plan"),
+            ("Review the workspace", "/plan"),
+        )
+        self.assertIsNone(split_inline_command("Use /mode in the documentation"))
+        self.assertIsNone(split_inline_command("Open https://example.com/a/mode"))
+        self.assertIsNone(split_inline_command("Read /tmp/project"))
+        self.assertIsNone(split_inline_command("Build it /mode invalid"))
+
+    def test_cli_inline_command_dispatches_before_request(self):
+        with patch.object(main, "set_interaction_mode", return_value={"preference_mode": "plan"}) as set_mode, \
+                patch.object(main.console, "print"):
+            self.assertTrue(main._apply_inline_command("/mode plan"))
+        set_mode.assert_called_once_with("plan")
 
     def test_project_interaction_state_is_isolated_from_other_projects(self):
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as first, \

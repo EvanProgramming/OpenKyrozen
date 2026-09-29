@@ -640,6 +640,10 @@ class Backend:
         stream_token = agent._stream_event_callback.set(self._stream_projection(request_id))
         approval_token = agent._approval_callback.set(self._approval)
         try:
+            inline = agent.split_inline_command(text)
+            if inline:
+                text, command = inline
+                self._command(command, {}, request_id)
             if agent.llm_provider is None:
                 self.prompt_api_key(request_id=request_id)
                 self.status("waiting", "Provider setup required.", request_id)

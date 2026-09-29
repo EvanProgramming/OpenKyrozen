@@ -170,6 +170,28 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertIn("User request:\nquestion", prompt)
         self.assertEqual(self.backend._staged_attachments, [])
 
+    def test_inline_command_is_applied_before_chat_and_removed_from_request(self):
+        tasks = SimpleNamespace(tasks=[], clear=lambda: None)
+        memory = SimpleNamespace(add_log=lambda _text: None)
+        with patch.object(tui_backend.agent, "llm_provider", object()), \
+                patch.object(self.backend, "_command") as command, \
+                patch.object(tui_backend.agent, "_sanitize_input", side_effect=lambda text: (text, False)), \
+                patch.object(tui_backend.agent, "interaction_envelope", return_value={
+                    "pending_question": None, "pending_plan": None,
+                }), \
+                patch.object(tui_backend.agent, "is_plan_acceptance", return_value=False), \
+                patch.object(tui_backend.agent, "tasks", tasks), \
+                patch.object(tui_backend.agent, "memory_bank", memory), \
+                patch.object(tui_backend.agent, "_chat_turn", return_value="answer") as chat, \
+                patch.object(tui_backend.agent, "_clean_final_response", return_value="answer"), \
+                patch.object(tui_backend.agent, "_split_reply", return_value=("", "answer")), \
+                patch.object(self.backend, "interaction"), \
+                patch.object(self.backend, "usage"):
+            self.backend._run_submit("Build a todo list /mode plan", "inline-1")
+
+        command.assert_called_once_with("/mode plan", {}, "inline-1")
+        self.assertEqual(chat.call_args.args[0], "Build a todo list")
+
     def test_emit_is_one_json_object_per_line_and_redacts_secrets(self):
         self.backend.emit("response", "r1", text="token=should-not-leak")
         line = self.output.getvalue().strip()

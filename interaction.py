@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import uuid
 from typing import Any
 
@@ -47,6 +48,50 @@ _AUTHORIZATION_RE = re.compile(
     r"(?:是否允许|可以|能否).{0,20}(?:运行|执行|写入|删除|提交|推送|部署)",
     re.IGNORECASE,
 )
+
+_INLINE_COMMAND_MODES = frozenset({"auto", "ask", "plan", "agent"})
+_INLINE_COMMAND_BACKENDS = frozenset({"off", "jev", "kev"})
+_INLINE_COMMAND_PROFILES = frozenset({"auto", "coder", "researcher"})
+_INLINE_COMMAND_PONYTAIL = frozenset({"off", "lite", "full", "ultra"})
+_INLINE_COMMAND_RE = re.compile(r"(?<!\S)/[A-Za-z][A-Za-z0-9_-]*")
+
+
+def split_inline_command(text: str) -> tuple[str, str] | None:
+    """Split a trailing, known chat-control command from ordinary user text.
+
+    Only commands that are safe to apply before the accompanying request are
+    accepted. Operational commands remain line-oriented so a path, URL, or
+    sentence mentioning a command cannot trigger a side effect.
+    """
+    source = str(text or "").strip()
+    result: tuple[str, str] | None = None
+    for match in _INLINE_COMMAND_RE.finditer(source):
+        prefix = source[:match.start()].strip()
+        suffix = source[match.start():].strip()
+        if not prefix:
+            continue
+        try:
+            parts = shlex.split(suffix)
+        except ValueError:
+            continue
+        if not parts:
+            continue
+        command = parts[0].lower()
+        args = parts[1:]
+        valid = (
+            (command in {"/ask", "/plan"} and not args)
+            or (command == "/mode" and len(args) == 1 and args[0].lower() in _INLINE_COMMAND_MODES)
+            or (command == "/agent" and (not args or (len(args) == 1 and args[0].lower() in _INLINE_COMMAND_PROFILES)))
+            or (command == "/fast" and (not args or (len(args) == 1 and args[0].lower() in _INLINE_COMMAND_BACKENDS)))
+            or (command in {"/decision-assist", "/assist"} and (
+                not args or (1 <= len(args) <= 2 and args[0].lower() in {*_INLINE_COMMAND_BACKENDS, "revoke"}
+                             and (len(args) == 1 or args[1].lower() in {"y", "yes", "consent", "allow"}))
+            ))
+            or (command == "/ponytail" and (not args or (len(args) == 1 and args[0].lower() in _INLINE_COMMAND_PONYTAIL)))
+        )
+        if valid:
+            result = (prefix, suffix)
+    return result
 
 
 class InteractionError(ValueError):
