@@ -2727,7 +2727,7 @@ def _system_prompt(tools_list: str, agent_config: dict[str, Any] | None = None) 
         "```\n"
         "Use 1-3 questions and 2-3 choices per question; clients add Other and Skip.\n"
         "In `ask` mode, answer or investigate with read/network tools only.\n"
-        "In `plan` mode, inspect with read/network tools only, then output only a PlanProposal block. Do not execute the plan:\n"
+        "In `plan` mode, first use exactly one read-only inspection Action, then output only a PlanProposal block. Do not execute the plan:\n"
         "PlanProposal:\n```json\n"
         '{"title":"Plan title","summary":"Outcome","assumptions":[],"steps":[{"id":"step-1","title":"Step","description":"Work to perform","acceptance":["Observable result"]}]}\n'
         "```\n"
@@ -2761,7 +2761,8 @@ def _system_prompt(tools_list: str, agent_config: dict[str, Any] | None = None) 
         readonly_mode = (
             "Answer the user after read-only inspection. Use AskUser only when material ambiguity prevents a safe answer."
             if interaction_mode == "ask" else
-            "Inspect read-only state as needed, then return exactly one PlanProposal. The plan is not executed until explicit acceptance."
+            "First output exactly one listed read-only Action, even for a new product or design request. "
+            "After its result, return exactly one PlanProposal. The plan is not executed until explicit acceptance."
         )
         return (
             "You are Kyrozen, an intelligent AI assistant operating in a read-only interaction mode.\n\n"
@@ -2783,8 +2784,8 @@ def _system_prompt(tools_list: str, agent_config: dict[str, Any] | None = None) 
             )
             + "\n## Available read-only tools\n" + readonly_tools + "\n\n"
             "## Read-only tool invocation\n"
-            "When inspection is needed, output exactly one listed Action with a plain string `args` value. "
-            "Never invent an action name. After inspection, answer in Ask mode or emit the PlanProposal in Plan mode.\n\n"
+            "The first Plan-mode response must be exactly one listed read-only Action with a plain string `args` value. "
+            "Never invent an action name or emit a proposal before inspection. After the result, emit the PlanProposal.\n\n"
             + cwd_note
         )
     # Build system prompt via safe concatenation (no f‑string to avoid format‑spec collisions)
@@ -2796,8 +2797,11 @@ def _system_prompt(tools_list: str, agent_config: dict[str, Any] | None = None) 
         "## Available Tools\n"
         + tools_list + "\n\n"
         "## Tool invocation format\n"
-        "Output exactly one Action per response:\n\n"
-        "Thought: <brief reasoning>\n"
+        "Action blocks, Thought lines, and TaskDone markers are private execution protocol. "
+        "Never expose them as the final answer or explain the tool call itself. After the last tool result, "
+        "always return a concise plain-language report of what was done, the important result, and any remaining issue. "
+        "Never finish with only an Action, TaskDone, or other protocol block.\n\n"
+        "When work requires a tool, output exactly one Action per response:\n\n"
         "Action:\n"
         "```json\n"
         "{\"action\": \"tool_name\", \"args\": \"arguments\"}\n"
@@ -5268,6 +5272,53 @@ def _clean_final_response(text: str) -> str:
     cleaned = DeepSeekDSMLFilter().feed(str(text or ""), final=True).strip()
     if not cleaned:
         return ""
+    # Some providers omit the ``Action:`` heading and return only the JSON
+    # payload. It is still protocol, never a user-facing answer.
+    json_source = cleaned
+    fenced = re.fullmatch(r"```(?:json)?\s*([\s\S]*?)\s*```", json_source, re.IGNORECASE)
+    if fenced:
+        json_source = fenced.group(1).strip()
+    try:
+        payload = json.loads(json_source)
+    except json.JSONDecodeError:
+        payload = None
+    if (
+        isinstance(payload, dict)
+        and _is_valid_action(str(payload.get("action", "")))
+        and "args" in payload
+    ) or (
+        isinstance(payload, list)
+        and payload
+        and all(
+            isinstance(item, dict)
+            and _is_valid_action(str(item.get("action", "")))
+            and "args" in item
+            for item in payload
+        )
+    ):
+        return ""
+    decoder = json.JSONDecoder()
+    spans: list[tuple[int, int]] = []
+    for index, char in enumerate(cleaned):
+        if char not in "[{" or (index and cleaned[index - 1] in "[{,"):
+            continue
+        try:
+            candidate, end = decoder.raw_decode(cleaned[index:])
+        except json.JSONDecodeError:
+            continue
+        items = candidate if isinstance(candidate, list) else [candidate]
+        if items and all(
+            isinstance(item, dict)
+            and _is_valid_action(str(item.get("action", "")))
+            and "args" in item
+            for item in items
+        ):
+            spans.append((index, index + end))
+    for start, end in reversed(spans):
+        cleaned = cleaned[:start] + cleaned[end:]
+    cleaned = cleaned.strip()
+    if not cleaned:
+        return ""
     cleaned = _UNSUPPORTED_ACTION_PROTOCOL_RE.sub("", cleaned).strip()
     if not cleaned:
         return ""
@@ -5312,21 +5363,38 @@ def _clean_final_response(text: str) -> str:
     return cleaned.strip()
 
 
+def _stream_buffer_has_tool_prefix(text: str) -> bool:
+    """Hold a split bare JSON tool payload until it can be removed safely."""
+    tail = str(text or "")[max(str(text or "").rfind("{"), str(text or "").rfind("[")):]
+    compact = re.sub(r"\s+", "", tail).lower()
+    return any(marker.startswith(compact) or compact.startswith(marker)
+               for marker in ('{"action', '[{"action'))
+
+
+def _clean_stream_buffer(text: str) -> str:
+    return _clean_final_response(text) if _collect_tool_calls(text) else text
+
+
 def _remove_task_blocks(text: str) -> str:
     """Backward-compatible name for protocol-block removal."""
     return _clean_final_response(text)
 
 
-def _legacy_plan_value(text: str) -> dict[str, Any] | None:
+def _legacy_plan_value(text: str, *, allow_unheaded: bool = False) -> dict[str, Any] | None:
     """Convert a bounded numbered Markdown plan into a proposal value."""
+    source = str(text or "")
     match = re.search(
         r"^[ \t]*(?:Plan|PlanProposal):[ \t]*\n(?P<body>[\s\S]*?)"
         r"(?=^[ \t]*(?:Action|TaskList|TaskDone|DefineTool):|\Z)",
-        str(text or ""), re.IGNORECASE | re.MULTILINE,
+        source, re.IGNORECASE | re.MULTILINE,
     )
-    if not match:
+    if match:
+        body = match.group("body")
+    elif allow_unheaded:
+        body = source
+    else:
         return None
-    lines = match.group("body").splitlines()
+    lines = body.splitlines()
     numbered = [
         item.group(1).strip() for line in lines
         if (item := re.match(r"^[ \t]*\d+[.)][ \t]+(.+?)\s*$", line))
@@ -5343,7 +5411,7 @@ def _legacy_plan_value(text: str) -> dict[str, Any] | None:
             "description": description,
             "acceptance": ["Step completed with observable evidence"],
         })
-    if not 1 <= len(steps) <= 10:
+    if not 1 <= len(steps) <= 10 or (allow_unheaded and len(steps) < 2):
         return None
     return {
         "title": steps[0]["title"],
@@ -5365,7 +5433,9 @@ def _parse_model_response(text: str) -> dict[str, Any]:
         question_value = parse_control_block(raw, "AskUser")
         plan_value = parse_control_block(raw, "PlanProposal")
         if question_value is None and plan_value is None:
-            normalized = normalize_provider_control(raw)
+            normalized = normalize_provider_control(
+                raw, plan_mode=_active_interaction_mode.get() == "plan",
+            )
             if normalized is not None:
                 name, value = normalized
                 question_value = value if name == "AskUser" else None
@@ -5471,17 +5541,16 @@ def _interaction_gate(parsed: dict[str, Any], user_input: str) -> str | None:
 
 
 def _deterministic_tool_summary(tool_records: list[dict[str, Any]]) -> str:
-    """Build a truthful final summary when the model emitted only protocol."""
+    """Build a truthful user-facing summary when the model emitted only protocol."""
     lines: list[str] = []
     for record in tool_records:
-        action = str(record.get("action") or "tool")
-        status = "succeeded" if record.get("success") else "failed"
-        result = str(record.get("result") or "").strip().replace("\n", " ")
+        status = "Completed" if record.get("success") else "Could not complete"
+        result = _clean_final_response(str(record.get("result") or "")).replace("\n", " ")
         if len(result) > 300:
             result = result[:297] + "..."
-        line = f"- {action}: {status}"
+        line = f"- {status}"
         if result:
-            line += f" — {result}"
+            line += f": {result}"
         if record.get("unmatched_reason"):
             line += f" ({record['unmatched_reason']})"
         lines.append(line)
@@ -5501,7 +5570,7 @@ def _deterministic_tool_summary(tool_records: list[dict[str, Any]]) -> str:
             )
     if not lines:
         return "I could not produce a user-facing response."
-    return "I executed the requested actions.\n\n" + "\n".join(lines)
+    return "Here is what I completed:\n\n" + "\n".join(lines)
 
 
 def _safe_fstring(s: str) -> str:
@@ -5622,7 +5691,8 @@ def _classify_complexity(user_input: str) -> str:
 
 
 def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | None = None,
-                    memory_context: dict[str, Any] | None = None) -> str:
+                    memory_context: dict[str, Any] | None = None,
+                    inspection_complete: bool = False) -> str:
     """One user turn: build context, get LLM reply, execute tool calls
     with automatic retries and failure memory."""
 
@@ -5797,7 +5867,8 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         return repaired, candidate
 
     def recover_plan_response(text: str, parsed: dict[str, Any],
-                              context: list[dict[str, str]]) -> tuple[str, dict[str, Any], bool]:
+                              context: list[dict[str, str]], *,
+                              inspection_complete: bool = False) -> tuple[str, dict[str, Any], bool]:
         """Bound Plan-mode recovery to read-only inspection or one valid control."""
         nonlocal turn_prompt_total, turn_completion_total
 
@@ -5806,13 +5877,33 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                     or candidate.get("unsupported_action_protocol")
                     or candidate.get("define_tool_present")):
                 return False
-            if candidate.get("question") is not None or candidate.get("plan_proposal") is not None:
-                return True
+            if candidate.get("question") is not None:
+                return inspection_complete
+            if candidate.get("plan_proposal") is not None:
+                return inspection_complete
             calls = candidate.get("tool_calls") or []
             return bool(calls) and all(
                 tool_capability(_operation_action(call.get("action", ""))) in {"read", "network"}
                 for call in calls
             )
+
+        def normalize_structured_prose(candidate_text: str,
+                                       candidate: dict[str, Any]) -> dict[str, Any]:
+            if (not inspection_complete or candidate.get("protocol_error")
+                    or candidate.get("tool_calls") or candidate.get("question") is not None
+                    or candidate.get("plan_proposal") is not None):
+                return candidate
+            legacy_plan = _legacy_plan_value(candidate_text, allow_unheaded=True)
+            if legacy_plan is None:
+                return candidate
+            try:
+                candidate["plan_proposal"] = validate_plan_proposal(legacy_plan)
+            except InteractionError:
+                return candidate
+            candidate["protocol_error"] = None
+            return candidate
+
+        parsed = normalize_structured_prose(text, parsed)
 
         if interaction_mode != "plan" or valid(parsed):
             return text, parsed, False
@@ -5820,9 +5911,15 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
             context = context + [
                 {"role": "assistant", "content": str(text)},
                 {"role": "user", "content": (
-                    "System: Plan mode is read-only. The previous response was invalid and no changes were made. "
-                    "Continue with exactly one listed read-only Action, ask one material clarification with AskUser, "
-                    "or finish with exactly one valid PlanProposal. Output no task, execution, or tool-definition controls."
+                    "System: Plan mode is read-only and no changes were made. "
+                    + (
+                        "This is the inspection phase: output exactly one listed read-only Action now. "
+                        "Do not output AskUser or PlanProposal yet."
+                        if not inspection_complete else
+                        "Inspection is complete: output exactly one valid PlanProposal now, or AskUser only "
+                        "if a material ambiguity remains."
+                    )
+                    + " Output no task, execution, or tool-definition controls."
                 )},
             ]
             text = _call_llm_with_spinner(context).strip()
@@ -5842,6 +5939,9 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                         parsed = candidate
             if valid(parsed):
                 return text, parsed, False
+            parsed = normalize_structured_prose(text, parsed)
+            if valid(parsed):
+                return text, parsed, False
         parsed["tool_calls"] = []
         return text, parsed, True
 
@@ -5856,7 +5956,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         messages.append({
             "role": "user",
             "content": (
-                "System: You returned nothing. Use one read-only inspection Action, AskUser, or PlanProposal now."
+                "System: You returned nothing. Output exactly one listed read-only inspection Action now."
                 if interaction_mode == "plan" else
                 "System: You returned nothing. Please output your Thought and JSON Action now."
             ),
@@ -5875,6 +5975,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     response_text, response_meta = observe_turn_response(response_text, messages)
     response_text, response_meta, plan_recovery_exhausted = recover_plan_response(
         response_text, response_meta, messages,
+        inspection_complete=inspection_complete,
     )
     if plan_recovery_exhausted:
         return _finish_learning_run(
@@ -6146,8 +6247,9 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
                 "content": (
                     "You are Kyrozen, an intelligent AI assistant. "
                     "You have just obtained the following information by running tools. "
-                    "If more steps are needed to satisfy the user request, output the next Action block. "
-                    "Otherwise, output a PlanProposal block in plan mode or a plain final answer in other modes. "
+                    "Tool calls are internal progress, not the user-facing response. If more steps are needed, output the next Action block. "
+                    "Otherwise, output a concise plain-language report of the work and result; never output only TaskDone or an Action block. "
+                    "Output a PlanProposal block only in plan mode. "
                     f"The effective interaction mode is {interaction_mode}."
                 )
             },
@@ -6229,6 +6331,7 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
         step_reply, step_meta = observe_turn_response(step_reply, summary_messages)
         step_reply, step_meta, plan_recovery_exhausted = recover_plan_response(
             step_reply, step_meta, summary_messages,
+            inspection_complete=bool(tool_records),
         )
         if plan_recovery_exhausted:
             protocol_error_message = (
@@ -6624,6 +6727,7 @@ def _chat_turn(user_input: str, clear_tasks: bool = False, profile: str | None =
             reply = _chat_turn_impl(
                 user_input, clear_tasks=clear_tasks, profile=profile,
                 memory_context=memory_context,
+                inspection_complete=bool(pending_question or pending_plan),
             )
             if backend := _fast_used_backend.get():
                 reply = f"Made a decision with {'Jev' if backend == 'jev' else 'Kev'}.\n\n{reply}"

@@ -1480,10 +1480,11 @@ async def api_chat_stream(request: Request):
             if candidate and (
                 any(prefix.lower().startswith(lowered) for prefix in self.prefixes)
                 or any(lowered.startswith(prefix.lower()) for prefix in self.prefixes)
+                or _agent._stream_buffer_has_tool_prefix(self.buffer)
             ):
                 return
             if self.buffer:
-                self.sink({"event": "content", "chunk": self.buffer})
+                self.sink({"event": "content", "chunk": _agent._clean_stream_buffer(self.buffer)})
                 self.buffer = ""
 
         def __call__(self, event: dict[str, Any]) -> None:
@@ -1502,7 +1503,7 @@ async def api_chat_stream(request: Request):
                 return
             text = self.buffer
             self.buffer = ""
-            if _agent.normalize_provider_control(text):
+            if _agent.normalize_provider_control(text, plan_mode=True):
                 text = ""
             elif _agent._collect_tool_calls(text) or any(
                     text.lstrip().lower().startswith(prefix.lower()) for prefix in self.prefixes

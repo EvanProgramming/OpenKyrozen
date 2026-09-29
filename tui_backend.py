@@ -521,9 +521,10 @@ class Backend:
                 return
             buffer += text
             candidate = buffer.lstrip().lower()
-            if any(prefix.startswith(candidate) or candidate.startswith(prefix) for prefix in prefixes):
+            if (any(prefix.startswith(candidate) or candidate.startswith(prefix) for prefix in prefixes)
+                    or agent._stream_buffer_has_tool_prefix(buffer)):
                 return
-            self.emit("stream_delta", request_id, text=_redact(buffer))
+            self.emit("stream_delta", request_id, text=_redact(agent._clean_stream_buffer(buffer)))
             buffer = ""
 
         def callback(event: dict[str, Any]) -> None:
@@ -534,7 +535,7 @@ class Backend:
             elif kind == "model_complete":
                 emit_text(dsml.feed("", final=True))
                 if buffer:
-                    cleaned = "" if agent.normalize_provider_control(buffer) else agent._clean_final_response(buffer)
+                    cleaned = "" if agent.normalize_provider_control(buffer, plan_mode=True) else agent._clean_final_response(buffer)
                     if cleaned:
                         self.emit("stream_delta", request_id, text=_redact(cleaned))
                     buffer = ""

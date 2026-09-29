@@ -72,6 +72,19 @@ class TaskConsistencyTests(unittest.TestCase):
         self.assertNotIn("Action:", clean)
         self.assertNotIn("TaskDone:", clean)
 
+    def test_bare_json_tool_payload_is_not_user_facing(self):
+        raw = '{"action":"read_file","args":"README.md"}'
+        self.assertEqual(main._clean_final_response(raw), "")
+        self.assertEqual(main._parse_model_response(raw)["tool_calls"][0]["action"], "read_file")
+
+    def test_deterministic_fallback_reports_work_without_tool_names(self):
+        summary = main._deterministic_tool_summary([{
+            "action": "read_file", "success": True, "result": "README contents",
+        }])
+        self.assertIn("Completed", summary)
+        self.assertIn("README contents", summary)
+        self.assertNotIn("read_file", summary)
+
     def test_inline_and_malformed_protocol_is_removed_before_learning_persistence(self):
         raw = (
             'I checked the project. Action: list_dir "." Action: run_cmd "git status" '

@@ -222,6 +222,28 @@ class TUIProtocolTests(unittest.TestCase):
         callback({"event": "model_complete"})
         self.assertEqual(self.output.getvalue(), "")
 
+    def test_unwrapped_plan_json_is_not_streamed_as_chat_text(self):
+        callback = self.backend._stream_projection("turn-unwrapped-plan")
+        callback({"event": "content", "chunk": '{"title":"Todo list","summary":"Build it",'})
+        callback({"event": "content", "chunk": '"steps":[{"description":"Model todos"}]}'})
+        callback({"event": "model_complete"})
+        self.assertEqual(self.output.getvalue(), "")
+
+    def test_bare_json_tool_call_is_not_streamed_as_chat_text(self):
+        callback = self.backend._stream_projection("turn-action")
+        callback({"event": "content", "chunk": '{"action":"read_file","args":"README.md"}'})
+        callback({"event": "model_complete"})
+        self.assertEqual(self.output.getvalue(), "")
+
+    def test_split_inline_json_tool_call_keeps_only_the_prose(self):
+        callback = self.backend._stream_projection("turn-inline-action")
+        callback({"event": "content", "chunk": "I will inspect. "})
+        callback({"event": "content", "chunk": '{"action":"read_file",'})
+        callback({"event": "content", "chunk": '"args":"README.md"}'})
+        callback({"event": "model_complete"})
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        self.assertEqual([event["text"] for event in events], ["I will inspect."])
+
     def test_provider_setup_emits_ready_and_masks_key_flow(self):
         config = tui_backend.agent.ProviderConfig(provider="deepseek")
         with patch.object(tui_backend.agent, "_provider_config", config), \

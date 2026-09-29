@@ -183,7 +183,7 @@ def parse_control_block(text: str, name: str) -> Any | None:
         raise InteractionError(f"{name} contains invalid JSON: {exc.msg}") from exc
 
 
-def normalize_provider_control(text: str) -> tuple[str, dict[str, Any]] | None:
+def normalize_provider_control(text: str, *, plan_mode: bool = False) -> tuple[str, dict[str, Any]] | None:
     """Map a bounded provider JSON shape to one non-executable control."""
     source = str(text or "").strip()
     fenced = re.fullmatch(r"```(?:json)?\s*([\s\S]*?)\s*```", source, re.IGNORECASE)
@@ -200,7 +200,12 @@ def normalize_provider_control(text: str) -> tuple[str, dict[str, Any]] | None:
         "action", "args", "arguments", "command", "commands", "content", "path", "tool", "tool_calls",
     }
     mode = str(value.get("mode") or "").strip().lower()
-    if mode == "plan" or value.get("do_not_execute_until_approved") is True:
+    plan_shape = (
+        plan_mode
+        and isinstance(value.get("steps"), list)
+        and bool({"title", "summary", "plan_name", "overview", "goal"} & set(value))
+    )
+    if mode == "plan" or value.get("do_not_execute_until_approved") is True or plan_shape:
         if executable_keys & {str(key).lower() for key in value}:
             return None
         steps = []

@@ -306,6 +306,7 @@ class InteractionTests(unittest.TestCase):
             main._set_workspace_root(root)
             responses = [
                 'Action: {"action":"write_file","args":"unsafe.txt|bad"}',
+                'Action: {"action":"list_dir","args":"."}',
                 'PlanProposal:\n```json\n{"title":"Safe plan","summary":"Write only after approval.",'
                 '"assumptions":[],"steps":[{"id":"write","title":"Write file",'
                 '"description":"Create the requested file.","acceptance":["File exists"]}]}\n```',
@@ -315,6 +316,7 @@ class InteractionTests(unittest.TestCase):
                         patch.object(main, "_touch_detached_learning_heartbeat"), \
                         patch.object(main, "dispatch_learning_cycle"), \
                         patch.object(main, "_build_messages", return_value=[]), \
+                        patch.object(main, "_build_memory_context", return_value=""), \
                         patch.object(main, "_classify_complexity", return_value="simple"), \
                         patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
                         patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
@@ -348,6 +350,75 @@ class InteractionTests(unittest.TestCase):
         self.assertIn("search_web", prompt)
         for forbidden in ("write_file", "run_cmd", "TaskList", "TaskDone", "DefineTool", "git_commit"):
             self.assertNotIn(forbidden, prompt)
+        self.assertIn("The first Plan-mode response must be exactly one listed read-only Action", prompt)
+
+    def test_plan_requires_inspection_and_normalizes_structured_prose(self):
+        class LearningStub:
+            def feedback_signal(self, _text): return None
+            def route_profile(self, _text, _profile=None): return "coder"
+            def begin_run(self, profile, _task, provider_model=None):
+                return {"run_id": "plan-prose", "profile": profile, "provider_model": provider_model}
+            def artifact_context(self, _run): return "", []
+
+        class RuntimeStub:
+            def turn_start(self, **_kwargs): return None
+            def turn_end(self, **_kwargs): return None
+
+        original = (main.tasks, main._interaction_controller, main.learning_engine,
+                    main._get_workspace_root(), main._execution_capability_token)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = EventStore(root / "state.sqlite3")
+            main.tasks = TaskManager(store, workspace_id="prose", session_id="prose")
+            main._interaction_controller = InteractionController(
+                store, workspace_id="prose", session_id="prose",
+            )
+            main._interaction_controller.set_mode("plan")
+            main.learning_engine = LearningStub()
+            main._set_workspace_root(root)
+            records = []
+            responses = [
+                "1. Create the todo data model.\n2. Add reminders, priority, and status.\n3. Verify the workflow.",
+                'Action: {"action":"list_dir","args":"."}',
+                "1. Define the todo data model.\n2. Add reminder scheduling.\n3. Add priority and status controls.\n4. Test create, update, and completion flows.",
+            ]
+            try:
+                with patch.object(main, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
+                        patch.object(main, "_touch_detached_learning_heartbeat"), \
+                        patch.object(main, "dispatch_learning_cycle"), \
+                        patch.object(main, "_build_messages", return_value=[]), \
+                        patch.object(main, "_build_memory_context", return_value=""), \
+                        patch.object(main, "_classify_complexity", return_value="simple"), \
+                        patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
+                        patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
+                                     result, tool_records, tokens, started: records.extend(tool_records) or result):
+                    reply = main._chat_turn(
+                        "I want you to build a todo list with reminders, priority, and status."
+                    )
+                pending = main._interaction_controller.state()["pending_plan"]
+                self.assertNotIn("bounded recovery", reply)
+                self.assertIsNotNone(pending)
+                self.assertEqual(pending["title"], "Define the todo data model.")
+                self.assertEqual(len(pending["steps"]), 4)
+                self.assertEqual([record["action"] for record in records], ["list_dir"])
+            finally:
+                (main.tasks, main._interaction_controller, main.learning_engine,
+                 previous_root, main._execution_capability_token) = original
+                main._set_workspace_root(previous_root)
+
+    def test_plan_mode_accepts_unwrapped_provider_plan_json(self):
+        mode_token = main._active_interaction_mode.set("plan")
+        try:
+            parsed = main._parse_model_response(
+                '{"title":"Todo list","summary":"Build the requested workflow",'
+                '"steps":[{"title":"Model todos","description":"Store reminder, priority, and status fields",'
+                '"acceptance":["Todo records support the requested fields"]}]}'
+            )
+        finally:
+            main._active_interaction_mode.reset(mode_token)
+        self.assertIsNone(parsed["protocol_error"])
+        self.assertEqual(parsed["plan_proposal"]["title"], "Todo list")
+        self.assertEqual(len(parsed["plan_proposal"]["steps"]), 1)
 
     def test_plan_recovery_exhaustion_is_stable_and_never_executes_mutations(self):
         class LearningStub:
@@ -580,6 +651,7 @@ class InteractionTests(unittest.TestCase):
             responses = [
                 'Plan:\n1. Clarify the target before changing it.\n'
                 'TaskList:\n```json\n[{"id":"premature","description":"Must not execute before acceptance"}]\n```',
+                'Action: {"action":"list_dir","args":"."}',
                 'AskUser:\n```json\n{"questions": [}\n```',
                 '```json\n{"questions":[{"id":"scope","header":"Scope",'
                 '"prompt":"Which target?","choices":["Core","All"]}]}\n```',
