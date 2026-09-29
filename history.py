@@ -254,6 +254,53 @@ class HistoryManager:
         return self.store.list_history_nodes(user_id=self.user_id, workspace_id=self.workspace_id,
                                              session_id=self.session_id, include_recovery=include_recovery)
 
+    def display_nodes(self) -> list[dict[str, Any]]:
+        """Return visible nodes in the same deterministic order used by the UI tree."""
+        nodes = self.list()
+        children: dict[str | None, list[dict[str, Any]]] = {}
+        for node in nodes:
+            children.setdefault(node.get("parent_id"), []).append(node)
+        ordered: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def walk(parent_id: str | None) -> None:
+            for node in children.get(parent_id, []):
+                if node["id"] in seen:
+                    continue
+                seen.add(node["id"])
+                display = dict(node)
+                display["selector"] = len(ordered) + 1
+                ordered.append(display)
+                walk(node["id"])
+
+        walk(None)
+        # Keep malformed or imported nodes selectable without letting them
+        # disappear from the history view.
+        for node in nodes:
+            if node["id"] not in seen:
+                display = dict(node)
+                display["selector"] = len(ordered) + 1
+                ordered.append(display)
+        return ordered
+
+    def resolve_selector(self, selector: str, *, include_recovery: bool = False) -> dict[str, Any]:
+        """Resolve a displayed number, #number, or raw immutable node ID."""
+        value = str(selector or "").strip()
+        if value.startswith("#"):
+            value = value[1:].strip()
+        if value.isdigit():
+            index = int(value)
+            nodes = self.display_nodes()
+            if 1 <= index <= len(nodes):
+                return nodes[index - 1]
+            raise HistoryError(f"history selector {selector!r} is not in /history")
+        node = self.store.history_node(
+            value, user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
+        )
+        if node is None or (node.get("kind") == "recovery" and not include_recovery):
+            raise HistoryError(f"history node {selector!r} was not found; use /history")
+        return node
+
     def current(self) -> dict[str, Any] | None:
         head = self.store.history_head(user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id)
         return self.store.history_node(head, user_id=self.user_id, workspace_id=self.workspace_id,
@@ -308,8 +355,7 @@ class HistoryManager:
         if confirm != "rollback":
             raise HistoryError('rollback requires confirm="rollback"')
         with self._lock:
-            target = self.store.history_node(node_id, user_id=self.user_id, workspace_id=self.workspace_id,
-                                             session_id=self.session_id)
+            target = self.resolve_selector(node_id, include_recovery=True)
             current = self.current()
             if target is None or current is None:
                 raise HistoryError("history node not found")
@@ -362,19 +408,41 @@ class HistoryManager:
             return target, recovery
 
     def tree_text(self) -> str:
-        nodes = self.list()
-        current_id = self.current()["id"] if self.current() else None
+        nodes = self.display_nodes()
+        current = self.current()
+        current_id = current["id"] if current else None
         children: dict[str | None, list[dict[str, Any]]] = {}
         for node in nodes:
             children.setdefault(node.get("parent_id"), []).append(node)
-        lines: list[str] = []
-        def walk(parent: str | None, prefix: str = "") -> None:
-            for node in children.get(parent, []):
+        lines = [
+            f"Conversation: {self.session_id}",
+            "Legend: * current head · + added · ~ changed · - deleted",
+        ]
+
+        def walk(parent: str | None, prefix: str = "", root: bool = False) -> None:
+            siblings = children.get(parent, [])
+            for index, node in enumerate(siblings):
+                last = index == len(siblings) - 1
+                connector = "" if root and index == 0 else ("└── " if last else "├── ")
                 marker = "*" if node["id"] == current_id else " "
                 changes = node.get("file_summary", {}).get("changes", {})
                 delta = f" +{changes.get('added', 0)} ~{changes.get('changed', 0)} -{changes.get('deleted', 0)}"
                 stamp = node.get("created_at", "").replace("T", " ")[:19]
-                lines.append(f"{prefix}{marker} {node['id']} {stamp} {node.get('summary') or 'baseline'}{delta}")
-                walk(node["id"], prefix + "  ")
-        walk(None)
-        return "\n".join(lines) if lines else "No history nodes recorded yet."
+                lines.append(
+                    f"{prefix}{connector}{marker} [{node['selector']}] {stamp} "
+                    f"{node.get('summary') or 'baseline'}{delta}"
+                )
+                child_prefix = prefix if root and index == 0 else prefix + ("    " if last else "│   ")
+                walk(node["id"], child_prefix)
+
+        if nodes:
+            walk(None, root=True)
+            lines.extend([
+                "",
+                "Select a node with /rollback <number> (or /rollback #number).",
+                "Preview: /rollback <number> · Confirm: /rollback <number> confirm · Cancel: /rollback cancel",
+                "Workspace, transcript, interaction state, and tasks restore; durable memory is preserved.",
+            ])
+        else:
+            lines.append("No history nodes recorded yet.")
+        return "\n".join(lines)

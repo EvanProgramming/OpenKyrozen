@@ -953,20 +953,48 @@ class Backend:
             self.emit("response", request_id, text=agent.history_text())
         elif command in {"/rollback", "rollback"}:
             parts = arg_text.strip().split()
-            if len(parts) != 2 or parts[1].lower() != "confirm":
-                self.emit("error", request_id, code="rollback_confirmation_required",
-                          error="Usage: /rollback <history-node-id> confirm")
+            if not parts or parts[0].lower() == "help":
+                text = agent.history_text()
+                if not parts:
+                    text += "\n\nChoose a node with /rollback <number>, then confirm with /rollback <number> confirm."
+                else:
+                    text += "\n\nUse /rollback <number> to preview, /rollback <number> confirm to restore, or /rollback cancel."
+                self.emit("response", request_id, text=text)
+            elif parts[0].lower() == "cancel":
+                self.emit("response", request_id, text="Rollback cancelled.")
+            elif len(parts) > 2 or (len(parts) == 2 and parts[1].lower() != "confirm"):
+                self.emit("error", request_id, code="invalid_rollback_command",
+                          error="Usage: /rollback <number> [confirm] | /rollback cancel")
             else:
+                selector = parts[0]
+                confirmed = len(parts) == 2
                 try:
-                    current = agent.history_manager().current()
+                    manager = agent.history_manager()
+                    current = manager.current()
                     if current is None:
                         raise agent.HistoryError("no history has been recorded for this conversation")
-                    result = self._quiet_call(
-                        agent.restore_history, parts[0], confirm="rollback", expected_head=current["id"],
+                    target = manager.resolve_selector(selector)
+                    changes = target.get("file_summary", {}).get("changes", {})
+                    display_selector = target.get("selector", selector)
+                    preview = (
+                        f"Restore [{display_selector}] {target.get('summary') or 'this point'}: "
+                        f"+{changes.get('added', 0)} added, ~{changes.get('changed', 0)} changed, "
+                        f"-{changes.get('deleted', 0)} deleted. Durable memory is preserved."
                     )
-                    self.emit("response", request_id,
-                              text=f"Restored {parts[0]}. Recovery point: {result['recovery']['id']}")
+                    if not confirmed:
+                        self.emit(
+                            "response", request_id,
+                            text=preview + f"\nType /rollback {selector} confirm to continue, or /rollback cancel.",
+                        )
+                        return
+                    self._quiet_call(
+                        agent.restore_history, target["id"], confirm="rollback", expected_head=current["id"],
+                    )
+                    self.navigation(request_id)
                     self.interaction(request_id)
+                    self.graph_state(request_id)
+                    self.usage(request_id)
+                    self.status("ready", f"Restored [{display_selector}]. Recovery point saved.", request_id)
                 except agent.HistoryError as exc:
                     self.emit("error", request_id, code="rollback_failed", error=str(exc))
         elif command in {"/graph", "graph"}:

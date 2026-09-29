@@ -54,6 +54,7 @@ class ServerBoundaryTests(unittest.TestCase):
                     self.assertEqual(listed.status_code, 200, listed.text)
                     self.assertEqual(listed.json()["current_node_id"], current["id"])
                     self.assertEqual([node["id"] for node in listed.json()["nodes"]], [baseline["id"], current["id"]])
+                    self.assertEqual([node["selector"] for node in listed.json()["nodes"]], [1, 2])
 
                     unconfirmed = client.post(
                         f"/api/v2/sessions/{session_id}/history/{baseline['id']}/rollback",
@@ -711,7 +712,9 @@ print(json.dumps({
         self.assertIn("credentials: 'same-origin'", html)
         self.assertIn("apiFetch('/api/chat/stream'", html)
         self.assertIn('id="history-panel"', html)
-        self.assertIn("Restore here", html)
+        self.assertIn("Restore [${selector}]", html)
+        self.assertIn('id="history-session"', html)
+        self.assertIn("node.selector", html)
         self.assertNotIn("localStorage.setItem('server-token'", html)
 
     def test_profile_validation(self):

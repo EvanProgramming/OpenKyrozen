@@ -7901,29 +7901,49 @@ def main() -> None:
 
         if user_input.lower().startswith("/rollback"):
             parts = user_input.split(maxsplit=1)
-            node_id = parts[1].strip() if len(parts) > 1 else ""
-            if not node_id:
-                console.print("Usage: /rollback <history-node-id>")
+            argument = parts[1].strip() if len(parts) > 1 else ""
+            if argument.lower() == "help":
+                console.print("Use /history to view the numbered conversation tree.")
+                console.print("Then use /rollback <number> to preview, or /rollback <number> confirm.")
                 continue
-            target = history_manager().store.history_node(
-                node_id, user_id=memory_bank.user_id, workspace_id=interaction_workspace_id(),
-                session_id=memory_bank.session_id or f"surface:{_EXECUTION_SURFACE}",
-            )
-            if target is None:
-                console.print("History node not found.")
+            if argument.lower() == "cancel":
+                console.print("Rollback cancelled.")
                 continue
+            if not argument:
+                console.print(Panel(history_text(), title="Choose a rollback point", border_style=_ACCENT))
+                argument = console.input("Select a node number (or cancel): ").strip()
+                if not argument or argument.lower() == "cancel":
+                    console.print("Rollback cancelled.")
+                    continue
+            selector_parts = argument.split()
+            if len(selector_parts) > 2 or (len(selector_parts) == 2 and selector_parts[1].lower() != "confirm"):
+                console.print("Usage: /rollback <number> [confirm] | /rollback cancel")
+                continue
+            selector = selector_parts[0]
+            confirmed = len(selector_parts) == 2
+            manager = history_manager()
+            try:
+                target = manager.resolve_selector(selector)
+            except HistoryError as exc:
+                console.print(str(exc))
+                continue
+            display_selector = target.get("selector", selector)
             changes = target.get("file_summary", {}).get("changes", {})
             console.print(
-                f"Restore {node_id}: +{changes.get('added', 0)} added, "
+                f"Restore [{display_selector}] {target.get('summary') or 'this point'}: "
+                f"+{changes.get('added', 0)} added, "
                 f"~{changes.get('changed', 0)} changed, -{changes.get('deleted', 0)} deleted. "
                 "Durable memory is preserved."
             )
-            if console.input('Type "rollback" to confirm: ').strip().lower() != "rollback":
+            if not confirmed and console.input('Type "rollback" to confirm (or cancel): ').strip().lower() != "rollback":
                 console.print("Rollback cancelled.")
                 continue
             try:
-                result = restore_history(node_id, confirm="rollback", expected_head=history_manager().current()["id"])
-                console.print(f"Restored {node_id}. Recovery point: {result['recovery']['id']}")
+                current = manager.current()
+                if current is None:
+                    raise HistoryError("no history has been recorded for this conversation")
+                result = restore_history(target["id"], confirm="rollback", expected_head=current["id"])
+                console.print(f"Restored [{display_selector}]. Recovery point saved: {result['recovery']['id']}")
             except HistoryError as exc:
                 console.print(f"Rollback failed: {exc}")
             continue

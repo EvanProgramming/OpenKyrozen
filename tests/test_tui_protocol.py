@@ -438,18 +438,34 @@ class TUIProtocolTests(unittest.TestCase):
 
     def test_history_commands_require_explicit_rollback_confirmation(self):
         current = {"id": "hist_current"}
-        with patch.object(tui_backend.agent, "history_text", return_value="* hist_current"), \
-                patch.object(tui_backend.agent, "history_manager", return_value=SimpleNamespace(current=lambda: current)), \
-                patch.object(tui_backend.agent, "restore_history", return_value={"recovery": {"id": "hist_recovery"}}) as restore:
+        manager = SimpleNamespace(
+            current=lambda: current,
+            resolve_selector=lambda selector: {
+                "id": "hist_current", "selector": 1, "summary": "Current turn",
+                "file_summary": {"changes": {"added": 1, "changed": 2, "deleted": 0}},
+            },
+        )
+        with patch.object(tui_backend.agent, "history_text", return_value="Conversation: chat-current\n* [1]"), \
+                patch.object(tui_backend.agent, "history_manager", return_value=manager), \
+                patch.object(tui_backend.agent, "restore_history", return_value={"recovery": {"id": "hist_recovery"}}) as restore, \
+                patch.object(self.backend, "navigation") as navigation, \
+                patch.object(self.backend, "interaction") as interaction, \
+                patch.object(self.backend, "graph_state") as graph_state, \
+                patch.object(self.backend, "usage") as usage, \
+                patch.object(self.backend, "status") as status:
             self.backend._command("history", "", "history-1")
-            self.backend._command("rollback", "hist_current", "rollback-1")
-            self.backend._command("rollback", "hist_current confirm", "rollback-2")
+            self.backend._command("rollback", "1", "rollback-1")
+            self.backend._command("rollback", "1 confirm", "rollback-2")
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
         self.assertEqual(events[0]["event"], "response")
-        self.assertEqual(events[0]["text"], "* hist_current")
-        self.assertEqual(events[1]["code"], "rollback_confirmation_required")
-        self.assertEqual(events[2]["event"], "response")
+        self.assertIn("chat-current", events[0]["text"])
+        self.assertIn("/rollback 1 confirm", events[1]["text"])
         restore.assert_called_once_with("hist_current", confirm="rollback", expected_head="hist_current")
+        navigation.assert_called_once_with("rollback-2")
+        interaction.assert_called_once_with("rollback-2")
+        graph_state.assert_called_once_with("rollback-2")
+        usage.assert_called_once_with("rollback-2")
+        status.assert_called_once_with("ready", "Restored [1]. Recovery point saved.", "rollback-2")
 
     def test_self_learning_prompt_includes_runtime_and_cost_source(self):
         with patch.object(tui_backend.agent, "learning_runtime", return_value={"mode": "local"}), \

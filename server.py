@@ -410,6 +410,7 @@ def _ensure_history_baseline(session: dict[str, Any]):
 def _public_history_node(node: dict[str, Any], current_id: str | None = None) -> dict[str, Any]:
     return {
         "id": node["id"], "parent_id": node.get("parent_id"), "kind": node.get("kind"),
+        "selector": node.get("selector"),
         "summary": node.get("summary", ""), "created_at": node.get("created_at"),
         "file_summary": node.get("file_summary", {}), "current": node["id"] == current_id,
     }
@@ -697,9 +698,11 @@ button:disabled{opacity:.45;cursor:default}
 .error{color:var(--error)}
 #history-panel{width:min(100%,1120px);margin:0 auto;padding:12px clamp(16px,4vw,48px);background:var(--surface);border-bottom:1px solid var(--line)}
 #history-panel[hidden]{display:none}#history-panel h2{font-size:14px;color:var(--brand);margin-bottom:6px}
+#history-help,#history-session{font-size:12px;color:var(--muted);margin:4px 0}
 #history-tree,#history-tree ul{list-style:none;margin:0;padding-left:18px}#history-tree{padding-left:0}
+#history-tree ul{border-left:1px solid var(--line);margin-left:9px}
 .history-node{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:5px 0;font-size:12px;color:var(--muted)}
-.history-node.current{color:var(--success)}.history-node button{padding:5px 9px;font-size:11px}.history-node .node-id{font-family:monospace;color:var(--text)}
+.history-node.current{color:var(--success)}.history-node button{padding:5px 9px;font-size:11px}.history-node .node-selector{font-family:monospace;color:var(--text);font-weight:700}
 @media(max-width:640px){#session-limit{width:100%;margin-left:0}.msg{max-width:100%}#input-area{align-items:stretch}#input-area button{padding:10px 12px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
 </style>
@@ -736,6 +739,8 @@ button:disabled{opacity:.45;cursor:default}
 </div>
 <section id="history-panel" aria-labelledby="history-title" hidden>
   <h2 id="history-title">Conversation history</h2>
+  <div id="history-session" role="status"></div>
+  <p id="history-help">Choose a numbered node to preview its workspace and conversation, then restore it explicitly.</p>
   <div id="history-status" role="status">Loading history…</div>
   <ul id="history-tree" role="tree" aria-label="Conversation history tree"></ul>
 </section>
@@ -966,6 +971,7 @@ function renderHistory(data) {
   historyState = data || {nodes: [], current_node_id: ''};
   const tree = document.getElementById('history-tree');
   const status = document.getElementById('history-status');
+  document.getElementById('history-session').textContent = `Chat/session ID: ${historyState.session_id || sessionId}`;
   tree.replaceChildren();
   const nodes = Array.isArray(historyState.nodes) ? historyState.nodes : [];
   const children = new Map();
@@ -979,7 +985,7 @@ function renderHistory(data) {
       const item = document.createElement('li'); item.setAttribute('role', 'treeitem');
       const row = document.createElement('div');
       row.className = 'history-node' + (node.id === historyState.current_node_id ? ' current' : '');
-      const branch = document.createElement('ul'); branch.setAttribute('role', 'group');
+      const branch = document.createElement('ul'); branch.className = 'history-branch'; branch.setAttribute('role', 'group');
       branch.id = `history-branch-${node.id}`;
       const childNodes = children.get(node.id) || [];
       if (childNodes.length) {
@@ -994,14 +1000,15 @@ function renderHistory(data) {
         };
         row.appendChild(toggle);
       }
-      const marker = node.id === historyState.current_node_id ? ' current' : '';
+      const selector = node.selector == null ? '?' : String(node.selector);
+      const marker = node.id === historyState.current_node_id ? ' · CURRENT HEAD' : '';
       const changes = node.file_summary && node.file_summary.changes || {};
       const label = document.createElement('span');
-      label.innerHTML = `<span class="node-id">${escapeHtml(node.id)}</span> · ${escapeHtml(node.summary || 'baseline')} · ${escapeHtml(String(node.created_at || '').replace('T', ' ').slice(0, 19))} · files +${changes.added || 0} ~${changes.changed || 0} -${changes.deleted || 0}${marker}`;
+      label.innerHTML = `<span class="node-selector">[${escapeHtml(selector)}]</span> · ${escapeHtml(node.summary || 'baseline')} · ${escapeHtml(String(node.created_at || '').replace('T', ' ').slice(0, 19))} · files +${changes.added || 0} ~${changes.changed || 0} -${changes.deleted || 0}${marker}`;
       row.appendChild(label);
-      const restore = document.createElement('button'); restore.type = 'button'; restore.textContent = 'Restore here';
+      const restore = document.createElement('button'); restore.type = 'button'; restore.textContent = node.id === historyState.current_node_id ? 'Current head' : `Restore [${selector}]`;
       restore.disabled = node.id === historyState.current_node_id || isStreaming;
-      restore.setAttribute('aria-label', `Restore history node ${node.id}`);
+      restore.setAttribute('aria-label', node.id === historyState.current_node_id ? `Current history head ${selector}` : `Restore history node ${selector}`);
       restore.onclick = () => rollbackHistory(node);
       row.appendChild(restore); item.appendChild(row);
       addBranch(node.id, branch, depth + 1); if (branch.children.length) item.appendChild(branch);
@@ -1036,7 +1043,7 @@ async function rollbackHistory(node) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || 'Rollback failed');
     await restoreSession(sessionId); await loadHistory();
-    document.getElementById('status').textContent = `Restored ${node.id}. Recovery point: ${data.recovery_node_id}`;
+    document.getElementById('status').textContent = `Restored [${node.selector == null ? '?' : node.selector}]. Recovery point saved: ${data.recovery_node_id}`;
   } catch (error) {
     document.getElementById('status').textContent = 'Rollback failed: ' + error.message;
   }
@@ -1881,7 +1888,7 @@ async def api_v2_session_history(session_id: str):
     with _chat_lock:
         session = _get_or_create_session(session_id, _SERVER_ACTOR_ID)
         manager, current = _ensure_history_baseline(session)
-        nodes = manager.list()
+        nodes = manager.display_nodes()
         return {
             "session_id": session_id, "current_node_id": current["id"],
             "nodes": [_public_history_node(node, current["id"]) for node in nodes],

@@ -76,6 +76,17 @@ func TestAttachCommandIsDiscoverable(t *testing.T) {
 	}
 }
 
+func TestHistoryCommandsExplainNumberedSelectionAndConfirmation(t *testing.T) {
+	rollback := commandMatches("/rollback")[0]
+	if !strings.Contains(rollback.description, "<number>") || !strings.Contains(rollback.description, "confirm") {
+		t.Fatalf("rollback command does not explain selection and confirmation: %q", rollback.description)
+	}
+	history := commandMatches("/history")[0]
+	if !strings.Contains(history.description, "numbered") {
+		t.Fatalf("history command does not explain numbered tree output: %q", history.description)
+	}
+}
+
 func TestReplaceCommandPreservesArguments(t *testing.T) {
 	got := replaceCommand("  /prov --local", commandMatches("/prov")[0])
 	if got != "  /provider --local" {

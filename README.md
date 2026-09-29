@@ -184,8 +184,8 @@ Type `/` as the first non-whitespace character to open the command palette. It f
 | `/provider` | Switch to a different LLM provider (interactive menu) |
 | `/api_key` | Change your API key |
 | `/learn` | Perform a clean refresh of the private Graphify project index |
-| `/history` | Show the current conversation's immutable history tree and file deltas |
-| `/rollback <history-node-id>` | Show the selected node's changes and require `rollback` confirmation before restoring it; memory is preserved |
+| `/history` | Show the current conversation's numbered immutable history tree, session ID, and file deltas |
+| `/rollback` | Show the tree and choose a node number; `/rollback <number>` previews it, and `/rollback <number> confirm` restores it; `/rollback cancel` cancels |
 | `/forget` | Show recent learnings; `/forget keyword` to delete bad learnings |
 | `/update` | Atomically update OpenKyrozen, bundled skills, Graphify, managed GitHub CLI, and Bubble Tea; restart after success |
 | `/mode auto\|ask\|plan\|agent` | Persist the interaction preference for this CLI/TUI or web session |

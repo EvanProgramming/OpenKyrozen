@@ -129,6 +129,30 @@ class HistoryManagerTests(unittest.TestCase):
         with self.assertRaises(HistoryError):
             self.manager.rollback(root["id"], confirm="rollback", expected_head="hist_stale")
 
+    def test_display_selectors_render_a_branch_graph_and_resolve_raw_ids(self):
+        baseline = self.manager.ensure_root(conversation=[], interaction={}, tasks=[])
+        (self.root / "one.txt").write_text("one", encoding="utf-8")
+        first = self.manager.commit_turn(
+            self.manager.begin_turn(conversation=[], interaction={}, tasks=[]),
+            user_message="first", assistant_message="done", conversation=[], interaction={}, tasks=[],
+        )
+        (self.root / "two.txt").write_text("two", encoding="utf-8")
+        second = self.manager.commit_turn(
+            self.manager.begin_turn(conversation=[], interaction={}, tasks=[]),
+            user_message="second", assistant_message="done", conversation=[], interaction={}, tasks=[],
+        )
+
+        displayed = self.manager.display_nodes()
+        self.assertEqual([node["selector"] for node in displayed], [1, 2, 3])
+        self.assertEqual(self.manager.resolve_selector("#1")["id"], baseline["id"])
+        self.assertEqual(self.manager.resolve_selector("2")["id"], first["id"])
+        self.assertEqual(self.manager.resolve_selector(second["id"])["id"], second["id"])
+        tree = self.manager.tree_text()
+        self.assertIn("Conversation: conversation", tree)
+        self.assertIn("* [3]", tree)
+        self.assertIn("└──", tree)
+        self.assertIn("/rollback <number> confirm", tree)
+
     def test_failed_restore_returns_to_recovery_snapshot_and_head(self):
         baseline = self.manager.ensure_root()
         (self.root / "file.txt").write_text("current", encoding="utf-8")
