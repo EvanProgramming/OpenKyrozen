@@ -829,40 +829,58 @@ class Backend:
             agent.set_interaction_mode("ask")
             self.emit("response", request_id, text="Interaction mode set to ask.")
             self.interaction(request_id)
-        elif command in {"/fast", "fast"}:
+        elif command in {"/fast", "fast", "/system-one", "system-one", "/system_one", "system_one"}:
             backend = arg_text.strip().lower()
             if isinstance(args, Mapping):
                 backend = str(args.get("backend") or backend).strip().lower()
             if not backend:
-                current = agent.interaction_envelope()["fast_backend"]
-                self.emit("response", request_id, text=f"Fast: {current}. Use /fast off|jev|kev. Jev sends context to TypeSafe; local Kev-0.8B is less accurate.")
+                current = agent.interaction_envelope().get("system_one_backend", agent.interaction_envelope()["fast_backend"])
+                status = agent.decision_assist_state()
+                backends = (status.get("calibration") or {}).get("backends", {})
+                policies = backends.get(current, {}) if isinstance(backends, dict) else {}
+                calibrated = any(bool(policy.get("validated"))
+                                 for backend_policies in policies.values() if isinstance(backend_policies, dict)
+                                 for policy in backend_policies.values() if isinstance(policy, dict))
+                self.emit("response", request_id, text=(
+                    f"System One: {current}. Jev model: {status.get('jev_model_alias', 'jev-latest')} "
+                    f"({status.get('jev_model_release_date') or 'release unknown'}; {status.get('jev_health', 'unknown')}); calibration: "
+                    f"{'available' if calibrated else 'not calibrated'}. Use /system-one off|jev|kev "
+                    "(legacy /fast alias). Jev sends context to TypeSafe; local Kev-0.8B is less accurate."
+                ))
             elif backend == "jev" and not (agent.fast_mode.jev_key() or (isinstance(args, Mapping) and args.get("api_key"))):
-                self.emit("prompt", request_id, kind="fast_key", message="Enter Jev API key (stored encrypted locally)")
+                self.emit("prompt", request_id, kind="fast_key", message="Enter Jev API key (paid TypeSafe calls; stored encrypted locally)")
             else:
                 try:
                     if backend == "kev":
                         self.status("starting", "Installing local Kev-0.8B and checking the model…", request_id)
                     state = agent.set_fast_backend(backend, api_key=args.get("api_key") if isinstance(args, Mapping) else None)
-                    self.emit("response", request_id, text=f"Fast: {state['fast_backend']}.")
+                    self.emit("response", request_id, text=f"System One: {state['system_one_backend']}.")
                     self.interaction(request_id)
                     self.status("ready", "Ready", request_id)
                 except (agent.InteractionError, RuntimeError, OSError, ValueError) as exc:
-                    self.emit("error", request_id, code="fast_setup_failed", error=str(exc))
+                    self.emit("error", request_id, code="fast_setup_failed", alias_code="system_one_setup_failed", error=str(exc))
         elif command in {"/decision-assist", "decision-assist", "/assist", "assist"}:
             backend = arg_text.strip().lower()
             if isinstance(args, Mapping):
                 backend = str(args.get("backend") or backend).strip().lower()
             if not backend:
                 state = agent.decision_assist_state()
+                assist_policies = (state.get("calibration", {}).get("backends", {}).get(state["backend"], {})
+                                   if isinstance(state.get("calibration"), dict) else {})
+                calibrated = sum(bool(policy.get("validated")) for policy in assist_policies.values()
+                                 if isinstance(policy, dict))
                 self.emit("response", request_id, text=(
                     f"Decision Assist: {state['backend']} (Kev private consent: "
                     f"{'yes' if state['kev_private_consent'] else 'no'}; "
                     f"Jev: {'ready' if state['jev_configured'] else 'not configured'}; "
-                    f"Kev: {'ready' if state['kev_ready'] else 'not ready'}). "
+                    f"Kev: {'ready' if state['kev_ready'] else 'not ready'}; "
+                    f"model: {state.get('jev_model_alias', 'jev-latest')} "
+                    f"({state.get('jev_model_release_date') or 'release unknown'}; {state.get('jev_health', 'unknown')}); "
+                    f"calibrated actions: {calibrated}). "
                     "Use /decision-assist off|jev|kev yes, or revoke."
                 ))
             elif backend == "jev" and not (agent.fast_mode.jev_key() or (isinstance(args, Mapping) and args.get("api_key"))):
-                self.emit("prompt", request_id, kind="decision_assist_key", message="Enter Jev API key (stored encrypted locally)")
+                self.emit("prompt", request_id, kind="decision_assist_key", message="Enter Jev API key (paid TypeSafe calls; stored encrypted locally)")
             else:
                 try:
                     consent = bool(args.get("private_consent", False)) if isinstance(args, Mapping) else False

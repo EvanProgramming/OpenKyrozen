@@ -113,6 +113,10 @@ type model struct {
 	decisionAssistKeyInput    bool
 	decisionAssistBackend     string
 	decisionAssistConsent     bool
+	systemOneModel            string
+	systemOneRelease          string
+	systemOneHealth           string
+	systemOneCalibration      string
 	graphInput                textinput.Model
 	projectInput              textinput.Model
 	screen                    screen
@@ -757,7 +761,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		}
 		if key == "enter" {
 			if m.fastKeyInput {
-				m.send("command", map[string]any{"name": "fast", "args": map[string]any{"backend": "jev", "api_key": m.apiInput.Value()}})
+				m.send("command", map[string]any{"name": "system-one", "args": map[string]any{"backend": "jev", "api_key": m.apiInput.Value()}})
 				m.fastKeyInput = false
 			} else if m.decisionAssistKeyInput {
 				m.send("command", map[string]any{"name": "decision-assist", "args": map[string]any{"backend": "jev", "api_key": m.apiInput.Value()}})
@@ -1159,7 +1163,7 @@ func (m *model) changeSetting(delta int) tea.Cmd {
 		m.send("command", map[string]any{"name": "mode", "args": mode})
 	case 2:
 		backend := cycleSetting(firstNonEmpty(m.fastBackend, "off"), []string{"off", "jev", "kev"}, delta)
-		m.send("command", map[string]any{"name": "fast", "args": map[string]any{"backend": backend}})
+		m.send("command", map[string]any{"name": "system-one", "args": map[string]any{"backend": backend}})
 	case 3:
 		backend := cycleSetting(firstNonEmpty(m.decisionAssistBackend, "off"), []string{"off", "jev", "kev"}, delta)
 		if backend == "kev" && !m.decisionAssistConsent {
@@ -1328,10 +1332,31 @@ func (m *model) reduceBackendLine(line backendLineMsg) {
 
 func (m *model) applyInteraction(value map[string]any) {
 	m.interactionMode = firstNonEmpty(stringValue(value, "preference_mode"), "auto")
-	m.fastBackend = firstNonEmpty(stringValue(value, "fast_backend"), "off")
+	m.fastBackend = firstNonEmpty(stringValue(value, "system_one_backend"), stringValue(value, "fast_backend"), "off")
 	if assist, ok := value["decision_assist"].(map[string]any); ok {
 		m.decisionAssistBackend = firstNonEmpty(stringValue(assist, "backend"), "off")
 		m.decisionAssistConsent = boolValue(assist, "kev_private_consent")
+		m.systemOneModel = firstNonEmpty(stringValue(assist, "jev_model_alias"), "jev-latest")
+		m.systemOneRelease = firstNonEmpty(stringValue(assist, "jev_model_release_date"), "release unknown")
+		m.systemOneHealth = firstNonEmpty(stringValue(assist, "jev_health"), "unknown")
+		currentBackend := firstNonEmpty(stringValue(value, "system_one_backend"), stringValue(value, "fast_backend"), "off")
+		if calibration, ok := assist["calibration"].(map[string]any); ok {
+			validated := false
+			if backends, ok := calibration["backends"].(map[string]any); ok {
+				if policies, ok := backends[currentBackend].(map[string]any); ok {
+					for _, rawPolicy := range policies {
+						if policy, ok := rawPolicy.(map[string]any); ok && boolValue(policy, "validated") {
+							validated = true
+						}
+					}
+				}
+			}
+			if validated {
+				m.systemOneCalibration = "available"
+			} else {
+				m.systemOneCalibration = "not calibrated"
+			}
+		}
 	}
 	m.effectiveMode = firstNonEmpty(stringValue(value, "effective_mode"), m.interactionMode)
 	if raw, ok := value["pending_question"].(map[string]any); ok {
@@ -1481,14 +1506,14 @@ func (m *model) handlePrompt(event backendEvent) {
 		m.decisionAssistKeyInput = false
 		m.screen = screenAPIKey
 		m.apiInput.Reset()
-		m.apiInput.Placeholder = "Enter Jev API key"
+		m.apiInput.Placeholder = "Enter Jev API key for System One (paid TypeSafe calls)"
 		m.apiInput.Focus()
 	case "decision_assist_key":
 		m.fastKeyInput = false
 		m.decisionAssistKeyInput = true
 		m.screen = screenAPIKey
 		m.apiInput.Reset()
-		m.apiInput.Placeholder = "Enter Jev API key"
+		m.apiInput.Placeholder = "Enter Jev API key (paid TypeSafe calls)"
 		m.apiInput.Focus()
 	case "provider":
 		m.onboardingWaiting = false
@@ -2122,7 +2147,8 @@ func (m model) activityRail() string {
 		usage = fmt.Sprintf("%d calls · %s", m.usageAttempts, firstNonEmpty(m.usageScope, "workspace"))
 	}
 	lines = append(lines, "", sectionStyle.Render("SESSION"), softStyle.Render(compactText(workspace, textWidth)), mutedStyle.Render(compactText(usage, textWidth)))
-	lines = append(lines, mutedStyle.Render(compactText("Fast: "+firstNonEmpty(m.fastBackend, "off"), textWidth)))
+	backend := firstNonEmpty(m.fastBackend, "off")
+	lines = append(lines, mutedStyle.Render(compactText("System One: "+backend, textWidth)))
 	lines = append(lines, mutedStyle.Render(compactText("Decision Assist: "+firstNonEmpty(m.decisionAssistBackend, "off"), textWidth)))
 	preferredMode := firstNonEmpty(m.interactionMode, "auto")
 	activeMode := firstNonEmpty(m.effectiveMode, "ask")
@@ -2330,10 +2356,12 @@ func (m model) modal(_ string) string {
 			brandStyle.Render("CONTROLS"),
 			m.settingsRow(0, "Show tool details", toolDetails),
 			m.settingsRow(1, "Interaction mode", strings.ToUpper(firstNonEmpty(m.interactionMode, "auto"))),
-			m.settingsRow(2, "Fast backend", strings.ToUpper(firstNonEmpty(m.fastBackend, "off"))),
+			m.settingsRow(2, "System One backend", strings.ToUpper(firstNonEmpty(m.fastBackend, "off"))),
 			m.settingsRow(3, "Decision Assist", strings.ToUpper(firstNonEmpty(m.decisionAssistBackend, "off"))),
 			m.settingsRow(4, "Kev private context", consent),
-			mutedStyle.Render("Jev needs an API key. Kev needs explicit private-context consent."),
+			mutedStyle.Render("Jev uses paid TypeSafe calls; Kev is local and less accurate. Kev needs private-context consent."),
+			mutedStyle.Render("/fast remains a legacy command alias for System One."),
+			mutedStyle.Render("Jev model " + firstNonEmpty(m.systemOneModel, "jev-latest") + " · release " + firstNonEmpty(m.systemOneRelease, "release unknown") + " · health " + firstNonEmpty(m.systemOneHealth, "unknown") + " · calibration " + firstNonEmpty(m.systemOneCalibration, "not calibrated")),
 			"",
 			brandStyle.Render("SESSION"),
 			softStyle.Render("MODEL  " + compactText(firstNonEmpty(m.provider, "pending")+" · "+firstNonEmpty(m.modelName, "pending"), modalWidth-10)),

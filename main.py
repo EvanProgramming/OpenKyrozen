@@ -369,26 +369,47 @@ def _apply_inline_command(command: str) -> bool:
             console.print(f"Agent profile set to {_agent_profile_mode}.")
         else:
             console.print(f"Agent profile: {_agent_profile_mode}")
-    elif name == "/fast":
+    elif name in {"/fast", "/system-one", "/system_one"}:
         if not args:
-            console.print(f"Fast: {interaction_envelope()['fast_backend']} (Jev sends context to TypeSafe; local Kev-0.8B is less accurate)")
+            state = fast_mode.decision_assist_state()
+            backend_name = interaction_envelope()["system_one_backend"]
+            backends = (state.get("calibration", {}).get("backends", {})
+                        if isinstance(state.get("calibration"), dict) else {})
+            policies = backends.get(backend_name, {}) if isinstance(backends, dict) else {}
+            calibrated = any(bool(policy.get("validated"))
+                             for backend_policies in policies.values() if isinstance(backend_policies, dict)
+                             for policy in backend_policies.values() if isinstance(policy, dict))
+            console.print(
+                f"System One: {backend_name} · "
+                f"Jev model: {state.get('jev_model_alias', 'jev-latest')} "
+                f"({state.get('jev_model_release_date') or 'release unknown'}; {state.get('jev_health', 'unknown')}) · "
+                f"calibration: {'available' if calibrated else 'not calibrated'} · "
+                "Jev sends context to TypeSafe; local Kev-0.8B is less accurate"
+            )
         else:
             try:
                 key = None
                 if args[0] == "jev" and not fast_mode.jev_key():
                     import getpass
-                    key = getpass.getpass("Jev API key: ")
+                    key = getpass.getpass("Jev API key (paid TypeSafe calls): ")
                 if args[0] == "kev":
                     console.print("Installing and starting local Kev-0.8B; waiting for a live check…")
-                console.print(f"Fast: {set_fast_backend(args[0], api_key=key)['fast_backend']}")
+                console.print(f"System One: {set_system_one_backend(args[0], api_key=key)['system_one_backend']}")
             except (InteractionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
-                console.print(f"Fast setup failed: {exc}")
+                console.print(f"System One setup failed: {exc}")
     elif name in {"/decision-assist", "/assist"}:
         if not args:
             state = decision_assist_state()
+            assist_policies = (state.get("calibration", {}).get("backends", {}).get(state["backend"], {})
+                               if isinstance(state.get("calibration"), dict) else {})
+            calibrated = sum(bool(policy.get("validated")) for policy in assist_policies.values()
+                             if isinstance(policy, dict))
             console.print(
                 f"Decision Assist: {state['backend']} · Jev configured: {state['jev_configured']} · "
-                f"Kev ready: {state['kev_ready']} · private Kev consent: {state['kev_private_consent']}"
+                f"Kev ready: {state['kev_ready']} · private Kev consent: {state['kev_private_consent']} · "
+                f"Jev model: {state.get('jev_model_alias', 'jev-latest')} "
+                f"({state.get('jev_model_release_date') or 'release unknown'}; {state.get('jev_health', 'unknown')}) · "
+                f"calibrated actions: {calibrated}"
             )
         else:
             try:
@@ -404,7 +425,7 @@ def _apply_inline_command(command: str) -> bool:
                     state = set_decision_assist(backend, private_consent=consent, api_key=key)
                 console.print(
                     f"Decision Assist: {state['backend']} · Kev private consent: "
-                    f"{state['kev_private_consent']}"
+                    f"{state['kev_private_consent']} · Jev model: {state.get('jev_model_alias', 'jev-latest')}"
                 )
             except (InteractionError, RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
                 console.print(f"Decision Assist setup failed: {exc}")
@@ -3092,18 +3113,23 @@ def set_interaction_mode(mode: str) -> dict[str, Any]:
     return envelope
 
 
-def set_fast_backend(backend: str, *, api_key: str | None = None) -> dict[str, Any]:
+def set_system_one_backend(backend: str, *, api_key: str | None = None) -> dict[str, Any]:
     backend = str(backend or "").strip().lower()
     if backend == "jev":
         if api_key:
             fast_mode.save_jev_key(api_key)
         if not fast_mode.jev_key():
-            raise InteractionError("Jev API key is required; set TYPESAFE_API_KEY or enter one in Fast settings")
+            raise InteractionError("Jev API key is required; set TYPESAFE_API_KEY or enter it in System One settings")
     elif backend == "kev":
         fast_mode.setup_kev()
-    envelope = _interaction_controller.set_fast_backend(backend)
+    envelope = _interaction_controller.set_system_one_backend(backend)
     _emit_stream_event({"event": "interaction", "interaction": envelope})
     return envelope
+
+
+def set_fast_backend(backend: str, *, api_key: str | None = None) -> dict[str, Any]:
+    """Deprecated compatibility alias for System One."""
+    return set_system_one_backend(backend, api_key=api_key)
 
 
 def _record_fast_decision(backend: str, details: dict[str, Any]) -> None:
@@ -3618,7 +3644,7 @@ def _build_memory_context(query: str, n: int = 3, context: dict[str, Any] | None
     """Return bounded, explicitly untrusted memory data for the model."""
     context = context or {}
     profile = learning_engine.route_profile(query, _agent_profile_mode)
-    candidate_limit = max(n, 8)
+    candidate_limit = max(n, 16)
     recalled = memory_bank.recall_records(
         query, n_results=candidate_limit, profile=profile,
         task_signature=learning_engine.task_signature(profile, query),
@@ -3634,8 +3660,15 @@ def _build_memory_context(query: str, n: int = 3, context: dict[str, Any] | None
             "backend": assist.get("backend"), "latency_ms": assist.get("latency_ms"),
             "model_version": assist.get("model_version"), "input_tokens": assist.get("input_tokens"),
             "output_tokens": assist.get("output_tokens"),
-            "fallback_reason": assist.get("fallback_reason"),
+            "model_release_date": assist.get("model_release_date"),
+            "fallback_reason": assist.get("fallback_reason") or (
+                "quality_gate" if assist.get("quality_gate") is False else None),
             "outcome": "reranked" if selected != recalled[:n] else "fallback",
+            "quality_gate": assist.get("quality_gate"), "policy_version": assist.get("policy_version"),
+            "fallback_behavior": assist.get("fallback_behavior"),
+            "confidence_threshold": assist.get("confidence_threshold"),
+            "probability_threshold": assist.get("probability_threshold"),
+            "probability_margin": assist.get("probability_margin"),
         })
     recalled = selected
     lines = [
@@ -3812,8 +3845,9 @@ def _build_messages(user_input: str, learned_context: str = "",
     if project_instructions and _active_interaction_mode.get() == "agent":
         messages.append({"role": "system", "content": project_instructions})
 
-    # Retrieve failure records if relevant
-    failures = _retrieve_failure(user_input)
+    # A missing provider will fail at the call boundary.  Avoid optional
+    # native vector-index work on that degraded path.
+    failures = _retrieve_failure(user_input) if llm_provider is not None else []
     if failures:
         failure_block = "Past failures to avoid:\n" + "\n".join(failures[:2])
         messages.append({"role": "system", "content": failure_block})
@@ -3877,7 +3911,8 @@ def _build_messages(user_input: str, learned_context: str = "",
     if pref_ctx:
         messages.append({"role": "system", "content": pref_ctx})
 
-    mem_ctx = _build_memory_context(user_input, context=memory_context)
+    mem_ctx = (_build_memory_context(user_input, context=memory_context)
+               if llm_provider is not None else "")
     if mem_ctx:
         messages.append({"role": "system", "content": mem_ctx})
 
@@ -4393,8 +4428,16 @@ def _tool_result_for_prompt(receipt: ExecutionReceipt) -> str:
             "backend": details.get("backend"), "latency_ms": details.get("latency_ms"),
             "model_version": details.get("model_version"),
             "input_tokens": details.get("input_tokens"), "output_tokens": details.get("output_tokens"),
-            "fallback_reason": details.get("fallback_reason"),
+            "model_release_date": details.get("model_release_date"),
+            "fallback_reason": details.get("fallback_reason") or (
+                "quality_gate" if details.get("quality_gate") is False else None),
             "quality_gate": details.get("quality_gate"),
+            "policy_version": details.get("policy_version"),
+            "fallback_behavior": details.get("fallback_behavior"),
+            "confidence_threshold": details.get("confidence_threshold"),
+            "probability_threshold": details.get("probability_threshold"),
+            "probability_margin": details.get("probability_margin"),
+            "confidence": details.get("confidence"), "probability": details.get("probability"),
             "outcome": details.get("outcome", "fallback"),
         })
     return reviewed
@@ -5775,7 +5818,8 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
     global _last_user_interaction, DEEPSEEK_MODEL, _execution_capability_token
     global _last_learning_run, _learning_notices
     interaction_mode = _active_interaction_mode.get()
-    fast_backend = _interaction_controller.state().get("fast_backend", "off")
+    fast_backend = _interaction_controller.state().get("system_one_backend",
+                                                         _interaction_controller.state().get("fast_backend", "off"))
     fast_route: dict[str, Any] = {}
     if fast_backend != "off" and not _interaction_controller.state().get("executing_plan"):
         try:
@@ -5785,10 +5829,13 @@ def _chat_turn_impl(user_input: str, clear_tasks: bool = False, profile: str | N
             _record_fast_decision(fast_backend, {
                 "stage": "routing", "choices": chosen,
                 "model_version": fast_route["model_version"],
+                "model_release_date": fast_route.get("model_release_date"),
                 "latency_ms": fast_route["latency_ms"],
                 "input_tokens": fast_route["input_tokens"],
                 "output_tokens": fast_route["output_tokens"],
                 "confidences": fast_route["confidences"],
+                "fallbacks": fast_route.get("fallbacks"),
+                "policies": fast_route.get("policies"),
                 "fallback_reason": "low_confidence" if len(chosen) < 3 else "",
             })
             if chosen:
@@ -7624,7 +7671,7 @@ def main() -> None:
     provider_name = startup_config.provider.title()
     model_name = startup_config.model_simple
     console.print(f"[{_ACCENT}]Kyrozen[/{_ACCENT}] [{_MUTED}]{_DOT} Provider: {provider_name} {_DOT} Model: {model_name}[/{_MUTED}]")
-    console.print(f"[{_MUTED}]Chat:[/{_MUTED}] [{_ACCENT_DIM}] /mode /ask /plan /question /agent /fast /decision-assist /graph /github /skills /ponytail /provider /api_key /learn /update[/{_ACCENT_DIM}]")
+    console.print(f"[{_MUTED}]Chat:[/{_MUTED}] [{_ACCENT_DIM}] /mode /ask /plan /question /agent /system-one /fast /decision-assist /graph /github /skills /ponytail /provider /api_key /learn /update[/{_ACCENT_DIM}]")
 
     # Compact self-learning summary
     enabled_count = sum(1 for v in _SELF_LEARNING_FLAGS.values() if v)
@@ -7638,6 +7685,10 @@ def main() -> None:
     console.print(f"[{_ACCENT_DIM}]{_BOX_H * 50}[/{_ACCENT_DIM}]")
 
     _prompt_and_init_deepseek(config=startup_config)
+    if fast_mode.jev_key():
+        model_info = fast_mode.jev_model_info(force=True)
+        console.print(f"[{_MUTED}]System One Jev: {model_info.get('alias', 'jev-latest')} "
+                      f"({model_info.get('release_date') or 'release unknown'}; {model_info.get('health', 'unknown')})[/{_MUTED}]")
     if llm_provider is None:
         console.print(f"[{_ERROR}]Cannot start without an API key.[/{_ERROR}]")
         sys.exit(1)
@@ -7763,31 +7814,54 @@ def main() -> None:
             continue
 
         lowered = user_input.lower()
-        if lowered == "/fast" or lowered.startswith("/fast "):
+        if (lowered == "/fast" or lowered.startswith("/fast ") or
+                lowered == "/system-one" or lowered.startswith("/system-one ") or
+                lowered == "/system_one" or lowered.startswith("/system_one ")):
             parts = user_input.split(maxsplit=1)
             if len(parts) == 1:
-                console.print(f"Fast: {interaction_envelope()['fast_backend']} (Jev sends context to TypeSafe; local Kev-0.8B is less accurate)")
+                state = fast_mode.decision_assist_state()
+                backend_name = interaction_envelope()["system_one_backend"]
+                backends = (state.get("calibration", {}).get("backends", {})
+                            if isinstance(state.get("calibration"), dict) else {})
+                policies = backends.get(backend_name, {}) if isinstance(backends, dict) else {}
+                calibrated = any(bool(policy.get("validated"))
+                                 for backend_policies in policies.values() if isinstance(backend_policies, dict)
+                                 for policy in backend_policies.values() if isinstance(policy, dict))
+                console.print(
+                    f"System One: {backend_name} · "
+                    f"Jev model: {state.get('jev_model_alias', 'jev-latest')} "
+                    f"({state.get('jev_model_release_date') or 'release unknown'}; {state.get('jev_health', 'unknown')}) · "
+                    f"calibration: {'available' if calibrated else 'not calibrated'} · "
+                    "Jev sends context to TypeSafe; local Kev-0.8B is less accurate"
+                )
             else:
                 try:
                     backend = parts[1].strip().lower()
                     key = None
                     if backend == "jev" and not fast_mode.jev_key():
                         import getpass
-                        key = getpass.getpass("Jev API key: ")
+                        key = getpass.getpass("Jev API key (paid TypeSafe calls): ")
                     if backend == "kev":
                         console.print("Installing and starting local Kev-0.8B; waiting for a live check…")
-                    state = set_fast_backend(backend, api_key=key)
-                    console.print(f"Fast: {state['fast_backend']}")
+                    state = set_system_one_backend(backend, api_key=key)
+                    console.print(f"System One: {state['system_one_backend']}")
                 except (InteractionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
-                    console.print(f"Fast setup failed: {exc}")
+                    console.print(f"System One setup failed: {exc}")
             continue
         if lowered in {"/decision-assist", "/assist"} or lowered.startswith("/decision-assist ") or lowered.startswith("/assist "):
             parts = user_input.split(maxsplit=1)
             if len(parts) == 1:
                 state = decision_assist_state()
+                assist_policies = (state.get("calibration", {}).get("backends", {}).get(state["backend"], {})
+                                   if isinstance(state.get("calibration"), dict) else {})
+                calibrated = sum(bool(policy.get("validated")) for policy in assist_policies.values()
+                                 if isinstance(policy, dict))
                 console.print(
                     f"Decision Assist: {state['backend']} · Jev configured: {state['jev_configured']} · "
-                    f"Kev ready: {state['kev_ready']} · private Kev consent: {state['kev_private_consent']}"
+                    f"Kev ready: {state['kev_ready']} · private Kev consent: {state['kev_private_consent']} · "
+                    f"Jev model: {state.get('jev_model_alias', 'jev-latest')} "
+                    f"({state.get('jev_model_release_date') or 'release unknown'}; {state.get('jev_health', 'unknown')}) · "
+                    f"calibrated actions: {calibrated}"
                 )
                 continue
             try:
@@ -7812,7 +7886,8 @@ def main() -> None:
                 state = set_decision_assist(backend, private_consent=consent, api_key=key)
                 console.print(
                     f"Decision Assist: {state['backend']} · Kev private consent: "
-                    f"{state['kev_private_consent']}"
+                    f"{state['kev_private_consent']} · Jev model: {state.get('jev_model_alias', 'jev-latest')} "
+                    f"({state.get('jev_model_release_date') or 'release unknown'})"
                 )
             except (InteractionError, RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
                 console.print(f"Decision Assist setup failed: {exc}")

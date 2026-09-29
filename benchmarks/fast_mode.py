@@ -1,8 +1,12 @@
-"""Live, paired end-to-end Fast benchmark against one running OpenKyrozen server."""
+"""Live, paired end-to-end System One benchmark against one running server.
+
+The filename and legacy JSON fields remain for compatibility with older runs.
+"""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import statistics
@@ -45,6 +49,7 @@ def summarize(rows: list[dict], backend: str, first_activation_ms: float,
             "decisions": sum(item["decision_count"] for item in group),
             "fallbacks": sum(item["fallback_count"] for item in group),
             "provider_errors": sum(item["provider_error"] for item in rows if item["backend"] == selected),
+            "answer_agreement": _answer_agreement(group),
         }
     baseline, fast = summary["off"]["median_ms"], summary[backend]["median_ms"]
     workloads = {}
@@ -54,7 +59,7 @@ def summarize(rows: list[dict], backend: str, first_activation_ms: float,
         workloads[case_id] = {"pairs": len(off), "off_median_ms": round(statistics.median(off), 2) if off else None,
                               "fast_median_ms": round(statistics.median(on), 2) if on else None,
                               "speedup": round(statistics.median(off) / statistics.median(on), 3) if off and on else None}
-    return {"protocol": "openkyrozen-fast-live-v1", "backend": backend,
+    return {"protocol": "openkyrozen-system-one-live-v1", "backend": backend,
             "correctness_method": "case keyword checks; not a semantic quality evaluation",
             "first_activation_ms": round(first_activation_ms, 2),
             "later_activation_median_ms": round(later_activation_median_ms, 2)
@@ -62,6 +67,18 @@ def summarize(rows: list[dict], backend: str, first_activation_ms: float,
             "speedup": round(baseline / fast, 3) if fast else None,
             "excluded_pairs": [{"case": case, "repeat": repeat} for case, repeat in sorted(excluded)],
             "workloads": workloads, "summary": summary, "rows": rows}
+
+
+def _answer_agreement(rows: list[dict]) -> float | None:
+    """Agreement of hashed answers across repeats, without storing reply text."""
+    groups: dict[str, list[str]] = {}
+    for row in rows:
+        digest = row.get("answer_hash")
+        if digest:
+            groups.setdefault(str(row.get("case")), []).append(str(digest))
+    values = [max(values.count(item) for item in set(values)) / len(values)
+              for values in groups.values() if len(values) > 1]
+    return round(statistics.mean(values), 3) if values else None
 
 
 def run(base_url: str, backend: str, token: str, repeats: int,
@@ -79,7 +96,7 @@ def run(base_url: str, backend: str, token: str, repeats: int,
                 if selected != "off" or mode:
                     control = {"session_id": session_id}
                     if selected != "off":
-                        control["fast_backend"] = selected
+                        control["system_one_backend"] = selected
                     if mode:
                         control["mode"] = mode
                     if selected == "jev" and os.environ.get("TYPESAFE_API_KEY"):
@@ -95,8 +112,11 @@ def run(base_url: str, backend: str, token: str, repeats: int,
                 elapsed_ms = (time.perf_counter() - started) * 1000
                 reply.raise_for_status()
                 text = str(reply.json().get("reply", ""))
-                diagnostics = http.get(base_url + "/api/v2/fast/diagnostics",
+                diagnostics = http.get(base_url + "/api/v2/system-one/diagnostics",
                                        params={"session_id": session_id}, timeout=30)
+                if diagnostics.status_code == 404:
+                    diagnostics = http.get(base_url + "/api/v2/fast/diagnostics",
+                                           params={"session_id": session_id}, timeout=30)
                 diagnostics.raise_for_status()
                 data = diagnostics.json()
                 decisions = data["decisions"]
@@ -107,6 +127,9 @@ def run(base_url: str, backend: str, token: str, repeats: int,
                     "latency_ms": round(elapsed_ms, 2),
                     "provider_error": "[LLM Error]" in text or usage["attempts"] == 0,
                     "correct": all(value.casefold() in text.casefold() for value in expected),
+                    "answer_hash": hashlib.sha256(
+                        " ".join(text.casefold().split()).encode("utf-8")
+                    ).hexdigest()[:16],
                     "decision_ms": round(sum(float(item.get("latency_ms") or 0) for item in decisions), 2),
                     "decision_count": sum(bool(item.get("choices")) for item in decisions),
                     "fallback_count": sum(bool(item.get("fallback_reason")) for item in decisions),

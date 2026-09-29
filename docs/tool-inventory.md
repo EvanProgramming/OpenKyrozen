@@ -104,6 +104,7 @@ Parameterized names are part of the contract; clients may substitute a value for
 | `POST` | `/api/v2/skills/install` |
 | `POST` | `/api/v2/skills/{skill_id}/activate` |
 | `POST` | `/api/v2/skills/{skill_id}/rollback` |
+| `GET` | `/api/v2/system-one/diagnostics` |
 | `GET` | `/api/v2/tasks` |
 | `POST` | `/api/v2/tasks` |
 | `POST` | `/api/v2/tasks/{task_id}/resume` |

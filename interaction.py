@@ -12,7 +12,9 @@ from event_store import EventStore
 
 
 INTERACTION_MODES = frozenset({"auto", "ask", "plan", "agent"})
-FAST_BACKENDS = frozenset({"off", "jev", "kev"})
+SYSTEM_ONE_BACKENDS = frozenset({"off", "jev", "kev"})
+# Compatibility name for plugins and clients written before the rename.
+FAST_BACKENDS = SYSTEM_ONE_BACKENDS
 READ_ONLY_CAPABILITIES = frozenset({"read", "network"})
 PLAN_ACCEPT_PHRASES = frozenset({
     "accept plan", "execute plan",
@@ -82,7 +84,8 @@ def split_inline_command(text: str) -> tuple[str, str] | None:
             (command in {"/ask", "/plan"} and not args)
             or (command == "/mode" and len(args) == 1 and args[0].lower() in _INLINE_COMMAND_MODES)
             or (command == "/agent" and (not args or (len(args) == 1 and args[0].lower() in _INLINE_COMMAND_PROFILES)))
-            or (command == "/fast" and (not args or (len(args) == 1 and args[0].lower() in _INLINE_COMMAND_BACKENDS)))
+            or (command in {"/fast", "/system-one", "/system_one"}
+                and (not args or (len(args) == 1 and args[0].lower() in _INLINE_COMMAND_BACKENDS)))
             or (command in {"/decision-assist", "/assist"} and (
                 not args or (1 <= len(args) <= 2 and args[0].lower() in {*_INLINE_COMMAND_BACKENDS, "revoke"}
                              and (len(args) == 1 or args[1].lower() in {"y", "yes", "consent", "allow"}))
@@ -341,7 +344,7 @@ class InteractionController:
 
     def state(self, user_input: str = "") -> dict[str, Any]:
         preference = "auto"
-        fast_backend = "off"
+        system_one_backend = "off"
         question = None
         plan = None
         executing = None
@@ -351,14 +354,15 @@ class InteractionController:
                 restored = payload.get("interaction") if isinstance(payload, dict) else None
                 if isinstance(restored, dict):
                     preference = restored.get("preference_mode", preference)
-                    fast_backend = restored.get("fast_backend", fast_backend)
+                    system_one_backend = restored.get("system_one_backend",
+                                                      restored.get("fast_backend", system_one_backend))
                     question = restored.get("pending_question")
                     plan = restored.get("pending_plan")
                     executing = restored.get("executing_plan")
             elif event_type == "interaction.mode_changed":
                 preference = payload.get("mode", preference)
-            elif event_type == "interaction.fast_changed":
-                fast_backend = payload.get("backend", "off")
+            elif event_type in {"interaction.fast_changed", "interaction.system_one_changed"}:
+                system_one_backend = payload.get("backend", "off")
             elif event_type in {"interaction.question_requested", "interaction.question_reopened"}:
                 question = payload
             elif event_type == "interaction.question_resolved" and question and payload.get("request_id") == question.get("request_id"):
@@ -381,27 +385,35 @@ class InteractionController:
         )
         if question and question.get("resume_mode") in INTERACTION_MODES - {"auto"}:
             effective = question["resume_mode"]
-        return {
+        state = {
             "preference_mode": preference,
-            "fast_backend": fast_backend if fast_backend in FAST_BACKENDS else "off",
+            "system_one_backend": (system_one_backend if system_one_backend in SYSTEM_ONE_BACKENDS else "off"),
             "effective_mode": effective,
             "pending_question": question,
             "pending_plan": plan,
             "executing_plan": executing,
         }
+        state["fast_backend"] = state["system_one_backend"]
+        return state
 
     def envelope(self, user_input: str = "") -> dict[str, Any]:
         state = self.state(user_input)
-        return {key: state[key] for key in (
-            "preference_mode", "effective_mode", "fast_backend", "pending_question", "pending_plan",
+        envelope = {key: state[key] for key in (
+            "preference_mode", "effective_mode", "system_one_backend", "pending_question", "pending_plan",
         )}
+        envelope["fast_backend"] = envelope["system_one_backend"]
+        return envelope
+
+    def set_system_one_backend(self, backend: str) -> dict[str, Any]:
+        backend = str(backend or "").strip().lower()
+        if backend not in SYSTEM_ONE_BACKENDS:
+            raise InteractionError("System One backend must be off, jev, or kev")
+        self._append("interaction.system_one_changed", {"backend": backend})
+        return self.envelope()
 
     def set_fast_backend(self, backend: str) -> dict[str, Any]:
-        backend = str(backend or "").strip().lower()
-        if backend not in FAST_BACKENDS:
-            raise InteractionError("fast backend must be off, jev, or kev")
-        self._append("interaction.fast_changed", {"backend": backend})
-        return self.envelope()
+        """Deprecated compatibility alias for set_system_one_backend."""
+        return self.set_system_one_backend(backend)
 
     def set_mode(self, mode: str) -> dict[str, Any]:
         mode = str(mode or "").strip().lower()

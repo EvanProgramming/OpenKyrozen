@@ -1,4 +1,9 @@
-# Fast mode benchmark — 2026-09-27
+# Fast mode benchmark — 2026-09-27 (legacy report)
+
+Fast is now named **System One**. This historical report is retained for
+compatibility with earlier raw files and documents the old end-to-end protocol.
+Use [the System One benchmark](system-one-benchmark.md) for the current typed,
+calibrated protocol; `/fast` and `/api/v2/fast/diagnostics` remain aliases.
 
 These are live, paired OpenKyrozen Web turns with local Kev-0.8B. Each case ran three times in a fresh session per mode, with the Fast-off and Fast-on order alternating by repetition. The same provider configuration served both modes within each run. Latency includes the full chat request; decision latency is measured separately. The answer check only searches for case keywords, so it is a smoke check rather than a semantic quality score.
 
@@ -121,4 +126,4 @@ To repeat, start the Web server with a working provider and the desired simple/r
 python benchmarks/fast_mode.py --url http://127.0.0.1:8000 --backend kev --repeats 3
 ```
 
-Jev users can run the same command with `--backend jev` after configuring a TypeSafe API key. Jev was not measured here because no API key was available. OpenKyrozen's baseline route already uses local code, so a fast decision call by itself does not guarantee a faster turn. Kev also provides local decision processing without a paid decision API; the recorded confidence and fallback reason expose uncertainty without retaining request text.
+Jev users can run the same command with `--backend jev` after configuring a TypeSafe API key. This historical report predates the live Jev and expanded calibrated runs; use [the current System One report](system-one-benchmark.md) for those results. OpenKyrozen's baseline route already uses local code, so a decision call by itself does not guarantee a faster turn. Kev also provides local decision processing without a paid decision API; the recorded confidence and fallback reason expose uncertainty without retaining request text.

@@ -431,10 +431,11 @@ def _apply_chat_controls(session: dict[str, Any], body: dict[str, Any], message:
             )
         except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
             raise HTTPException(400, str(exc)) from exc
-    if "fast_backend" in body:
-        backend = str(body["fast_backend"] or "").strip().lower()
+    system_one_key = "system_one_backend" if "system_one_backend" in body else "fast_backend"
+    if system_one_key in body:
+        backend = str(body[system_one_key] or "").strip().lower()
         if backend not in {"off", "jev", "kev"}:
-            raise HTTPException(400, "fast_backend must be off, jev, or kev")
+            raise HTTPException(400, "system_one_backend must be off, jev, or kev")
         try:
             if backend == "jev":
                 key = body.get("jev_api_key")
@@ -446,7 +447,7 @@ def _apply_chat_controls(session: dict[str, Any], body: dict[str, Any], message:
                     raise ValueError("Jev API key is required")
             elif backend == "kev":
                 _agent.fast_mode.setup_kev()
-            controller.set_fast_backend(backend)
+            controller.set_system_one_backend(backend)
         except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
             raise HTTPException(400, str(exc)) from exc
     if "mode" in body:
@@ -506,10 +507,10 @@ def _apply_chat_controls(session: dict[str, Any], body: dict[str, Any], message:
         else:
             raise HTTPException(400, "plan_action.action must be accept, revise, or cancel")
 
-    if not message and ("fast_backend" in body or "decision_assist_backend" in body):
+    if not message and (system_one_key in body or "decision_assist_backend" in body):
         if "decision_assist_backend" in body:
             return "", f"Decision Assist: {_agent.decision_assist_state()['backend']}."
-        return "", f"Fast: {controller.envelope()['fast_backend']}."
+        return "", f"System One: {controller.envelope()['system_one_backend']}."
     if not message and "mode" in body:
         mode = controller.envelope()["preference_mode"]
         return "", f"Interaction mode set to {mode}."
@@ -724,14 +725,14 @@ button:disabled{opacity:.45;cursor:default}
   <button type="button" id="toggle-history" aria-expanded="false" aria-controls="history-panel">History</button>
   <label for="mode-select">Mode</label>
   <select id="mode-select"><option value="auto">Auto</option><option value="ask">Ask</option><option value="plan">Plan</option><option value="agent">Agent</option></select>
-  <label for="fast-select">Fast</label>
+  <label for="fast-select">System One</label>
   <select id="fast-select" aria-describedby="fast-note"><option value="off">Off</option><option value="jev">Jev API</option><option value="kev">Local Kev-0.8B</option></select>
-  <input id="fast-key" type="password" autocomplete="off" placeholder="Jev API key" hidden>
+  <input id="fast-key" type="password" autocomplete="off" placeholder="Jev API key (paid TypeSafe calls)" hidden>
   <button type="button" id="fast-apply" hidden>Enable Jev</button>
-  <span id="fast-note">Jev uses a paid API and sends decision context to TypeSafe. Kev runs locally but is less accurate than Jev.</span>
+  <span id="fast-note">System One makes typed routing decisions. Jev uses paid TypeSafe calls; local Kev-0.8B is less accurate.</span>
   <label for="decision-assist-select">Decision Assist</label>
   <select id="decision-assist-select" aria-describedby="decision-assist-note"><option value="off">Off</option><option value="jev">Jev</option><option value="kev">Kev</option></select>
-  <input id="decision-assist-key" type="password" autocomplete="off" placeholder="Jev API key" hidden>
+  <input id="decision-assist-key" type="password" autocomplete="off" placeholder="Jev API key (paid TypeSafe calls)" hidden>
   <button type="button" id="decision-assist-apply" hidden>Enable Jev checks</button>
   <label><input id="decision-assist-consent" type="checkbox"> allow local Kev to inspect private context</label>
   <span id="decision-assist-note">Checks learning evidence, memory relevance, and suspicious tool instructions. Jev uses paid TypeSafe calls; it never approves tools.</span>
@@ -766,8 +767,9 @@ let recentSessions = [];
 let historyState = {nodes: [], current_node_id: ''};
 let isStreaming = false;
 let authInFlight = false;
-let interactionState = {preference_mode: 'auto', effective_mode: 'ask', fast_backend: 'off', pending_question: null, pending_plan: null};
+let interactionState = {preference_mode: 'auto', effective_mode: 'ask', system_one_backend: 'off', fast_backend: 'off', pending_question: null, pending_plan: null};
 let decisionAssistState = {backend: 'off', kev_private_consent: false};
+let systemOneStatus = {system_one_backend: 'off'};
 
 class AuthRequiredError extends Error {}
 
@@ -818,9 +820,10 @@ function clearChat() {
 function renderInteraction(value) {
   interactionState = value || interactionState;
   document.getElementById('mode-select').value = interactionState.preference_mode || 'auto';
-  document.getElementById('fast-select').value = interactionState.fast_backend || 'off';
+  document.getElementById('fast-select').value = interactionState.system_one_backend || interactionState.fast_backend || 'off';
   document.getElementById('fast-key').hidden = true;
   document.getElementById('fast-apply').hidden = true;
+  renderSystemOneStatus(systemOneStatus);
   const card = document.getElementById('interaction-card');
   card.replaceChildren();
   const question = interactionState.pending_question;
@@ -876,6 +879,21 @@ function renderInteraction(value) {
   }
 }
 
+function renderSystemOneStatus(value) {
+  systemOneStatus = value || systemOneStatus;
+  const backend = systemOneStatus.system_one_backend || systemOneStatus.fast_backend || 'off';
+  const assist = systemOneStatus.decision_assist || decisionAssistState || {};
+  const model = assist.jev_model_alias || 'jev-latest';
+  const release = assist.jev_model_release_date || 'release unknown';
+  const health = assist.jev_health || 'unknown';
+  const policies = assist.calibration && assist.calibration.backends
+    ? (assist.calibration.backends[backend] || {}) : {};
+  const calibrated = Object.values(policies).filter(item => item && item.validated).length;
+  document.getElementById('fast-note').textContent =
+    `System One: ${backend}. Jev uses paid TypeSafe calls; Kev-0.8B is local and less accurate. ` +
+    `Jev model: ${model} (${release}; ${health}); calibrated actions: ${calibrated}.`;
+}
+
 function renderDecisionAssist(value) {
   decisionAssistState = value || decisionAssistState;
   document.getElementById('decision-assist-select').value = decisionAssistState.backend || 'off';
@@ -883,6 +901,14 @@ function renderDecisionAssist(value) {
   const showKey = decisionAssistState.backend === 'jev' && !decisionAssistState.jev_configured;
   document.getElementById('decision-assist-key').hidden = !showKey;
   document.getElementById('decision-assist-apply').hidden = !showKey;
+  const model = decisionAssistState.jev_model_alias || 'jev-latest';
+  const release = decisionAssistState.jev_model_release_date || 'release unknown';
+  const health = decisionAssistState.jev_health || 'unknown';
+  const assistPolicies = decisionAssistState.calibration && decisionAssistState.calibration.backends
+    ? (decisionAssistState.calibration.backends[decisionAssistState.backend || 'off'] || {}) : {};
+  const calibrated = Object.values(assistPolicies).filter(item => item && item.validated).length;
+  document.getElementById('decision-assist-note').textContent =
+    `Evidence, memory, and tool-output checks. Jev uses paid TypeSafe calls; Kev is local and less accurate. Jev model: ${model} (${release}; ${health}); calibrated actions: ${calibrated}.`;
 }
 
 async function submitControl(control, label) {
@@ -895,6 +921,8 @@ async function submitControl(control, label) {
     if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
     if (data.reply) addMessage('assistant', String(data.reply), false);
     if (data.decision_assist) renderDecisionAssist(data.decision_assist);
+    if (data.interaction) renderSystemOneStatus({...systemOneStatus, system_one_backend: data.interaction.system_one_backend,
+      decision_assist: data.decision_assist || decisionAssistState});
     renderInteraction(data.interaction);
     renderContext(data.context);
     document.getElementById('status').textContent = 'Ready';
@@ -1084,7 +1112,7 @@ function startNewSession() {
   sessionId = createSessionId();
   saveActiveSession();
   clearChat();
-  renderInteraction({preference_mode: 'auto', effective_mode: 'ask', fast_backend: 'off', pending_question: null, pending_plan: null});
+  renderInteraction({preference_mode: 'auto', effective_mode: 'ask', system_one_backend: 'off', fast_backend: 'off', pending_question: null, pending_plan: null});
   renderContext(null);
   renderSessionList(recentSessions);
   document.getElementById('status').textContent = 'New conversation ready.';
@@ -1291,15 +1319,15 @@ document.getElementById('fast-select').addEventListener('change', event => {
   document.getElementById('fast-apply').hidden = backend !== 'jev';
   if (backend !== 'jev') {
     if (backend === 'kev') document.getElementById('status').textContent = 'Installing and checking local Kev…';
-    submitControl({fast_backend: backend}, `Fast: ${backend}`);
+    submitControl({system_one_backend: backend}, `System One: ${backend}`);
   }
 });
 document.getElementById('fast-apply').addEventListener('click', () => {
   const key = document.getElementById('fast-key').value.trim();
-  const control = {fast_backend: 'jev'};
+  const control = {system_one_backend: 'jev'};
   if (key) control.jev_api_key = key;
   document.getElementById('fast-key').value = '';
-  submitControl(control, 'Fast: Jev');
+  submitControl(control, 'System One: Jev');
 });
 document.getElementById('decision-assist-select').addEventListener('change', event => {
   const backend = event.target.value;
@@ -1331,7 +1359,10 @@ document.getElementById('authenticate').addEventListener('click', authenticate);
 document.getElementById('server-token').addEventListener('keydown', event => {
   if (event.key === 'Enter') { event.preventDefault(); authenticate(); }
 });
-initialiseSessions().then(loadHistory).then(() => apiFetch('/api/v2/decision-assist')).then(r => r.json()).then(renderDecisionAssist).catch(() => {});
+initialiseSessions().then(loadHistory)
+  .then(() => apiFetch('/api/v2/system-one/diagnostics?session_id=' + encodeURIComponent(sessionId)))
+  .then(r => r.json()).then(value => { renderSystemOneStatus(value); renderDecisionAssist(value.decision_assist); })
+  .catch(() => {});
 </script>
 </body>
 </html>"""
@@ -1388,6 +1419,7 @@ async def chat_page():
     return CHAT_HTML
 
 
+@app.get("/api/v2/system-one/diagnostics", dependencies=[Depends(require_api_access)])
 @app.get("/api/v2/fast/diagnostics", dependencies=[Depends(require_api_access)])
 async def fast_diagnostics(request: Request, session_id: str):
     session = _get_or_create_session(_normalise_session_id(session_id), _actor_for_request(request))
@@ -1403,7 +1435,8 @@ async def fast_diagnostics(request: Request, session_id: str):
         "decision.assist", limit=100, user_id=controller.user_id,
         workspace_id=controller.workspace_id, session_id=controller.session_id,
     )
-    return {"fast_backend": controller.state()["fast_backend"],
+    state = controller.state()
+    return {"system_one_backend": state["system_one_backend"], "fast_backend": state["fast_backend"],
             "decision_assist": _agent.decision_assist_state(),
             "decisions": [event["payload"] for event in events],
             "assist_decisions": [event["payload"] for event in assist_events],
@@ -1425,7 +1458,7 @@ async def api_chat(request: Request):
     _set_memory_context(session, body)
     msg = _validate_message(_sanitize_api_message(str(body.get("message", "")).strip()))
     msg, immediate_reply = (await asyncio.to_thread(_apply_chat_controls, session, body, msg)
-                            if "fast_backend" in body or "decision_assist_backend" in body
+                            if "fast_backend" in body or "system_one_backend" in body or "decision_assist_backend" in body
                             else _apply_chat_controls(session, body, msg))
     if not msg and immediate_reply is None:
         raise HTTPException(400, "Empty message")
@@ -1462,7 +1495,7 @@ async def api_chat_stream(request: Request):
     _set_memory_context(session, body)
     msg = _validate_message(_sanitize_api_message(str(body.get("message", "")).strip()))
     msg, immediate_reply = (await asyncio.to_thread(_apply_chat_controls, session, body, msg)
-                            if "fast_backend" in body or "decision_assist_backend" in body
+                            if "fast_backend" in body or "system_one_backend" in body or "decision_assist_backend" in body
                             else _apply_chat_controls(session, body, msg))
     if not msg and immediate_reply is None:
         raise HTTPException(400, "Empty message")
@@ -2574,6 +2607,10 @@ async def startup():
     if context is not None:
         print(f"[Server] {context.describe()}")
     _agent._prompt_and_init_deepseek(interactive=False)
+    if _agent.fast_mode.jev_key():
+        info = _agent.fast_mode.jev_model_info(force=True)
+        print(f"[Server] System One Jev: {info.get('alias', 'jev-latest')} "
+              f"({info.get('release_date') or 'release unknown'}; {info.get('health', 'unknown')})")
     if _agent.llm_provider is None:
         print("[Server] WARNING: No LLM provider configured. Set API key env vars.")
     else:

@@ -491,6 +491,7 @@ KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
 | `GET/DELETE` | `/api/v2/memory/claims/{claim_id}` | 解释或连同唯一依赖一起遗忘声明 |
 | `GET` | `/api/v2/events` | 查看运行时、会话、任务和学习审计事件 |
 | `GET` | `/api/v2/decision-assist` | 查看 Decision Assist 后端、同意和健康状态 |
+| `GET` | `/api/v2/system-one/diagnostics?session_id=...` | 查看不含提示内容的 System One 决策和 LLM 使用量 |
 | `GET` | `/api/v2/fast/diagnostics?session_id=...` | 查看不含提示内容的 Fast 决策和 LLM 使用量 |
 | `GET/POST` | `/api/v2/schedules` | 持久化 interval/一次性 Gateway 任务 |
 | `POST` | `/api/v2/schedules/{job_id}/disable` | 禁用定时任务 |

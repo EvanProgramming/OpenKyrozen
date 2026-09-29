@@ -194,7 +194,7 @@ func TestSettingsExposeInteractionControlsAndKeepCommandDispatch(t *testing.T) {
 		"decision_assist": map[string]any{"backend": "jev", "kev_private_consent": false},
 	})
 	view := m.View().Content
-	for _, want := range []string{"Show tool details", "Interaction mode", "Fast backend", "Decision Assist", "Kev private context", "PLAN", "KEV", "JEV"} {
+	for _, want := range []string{"Show tool details", "Interaction mode", "System One backend", "Decision Assist", "Kev private context", "PLAN", "KEV", "JEV"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("settings omitted %q: %s", want, view)
 		}
@@ -959,8 +959,8 @@ func TestEffectiveAgentModeIsProminentDuringPlanExecution(t *testing.T) {
 	if !strings.Contains(view, "preference plan") || !strings.Contains(view, "agent") {
 		t.Fatalf("activity rail did not distinguish preference and active mode: %s", view)
 	}
-	if !strings.Contains(view, "Fast: kev") {
-		t.Fatalf("activity rail did not show Fast setting: %s", view)
+	if !strings.Contains(view, "System One: kev") {
+		t.Fatalf("activity rail did not show System One setting: %s", view)
 	}
 }
 

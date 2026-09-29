@@ -1394,8 +1394,8 @@ def _get_encryption_key() -> bytes:
     return hashlib.sha256(seed.encode()).digest()
 
 
-def _get_fernet():
-    """Return a Fernet cipher backed by a random per-install secret."""
+def _get_fernet(*, create: bool = True):
+    """Return the per-install Fernet cipher, optionally without creating it."""
     from cryptography.fernet import Fernet
 
     secret_path = os.path.expanduser("~/.kyrozen_secret")
@@ -1403,6 +1403,8 @@ def _get_fernet():
         with open(secret_path, "rb") as f:
             key = f.read().strip()
     except FileNotFoundError:
+        if not create:
+            return None
         key = Fernet.generate_key()
         try:
             fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -1428,7 +1430,8 @@ def decrypt_api_key(ciphertext: str) -> str:
         return ""
     if ciphertext.startswith("v2:"):
         try:
-            return _get_fernet().decrypt(ciphertext[3:].encode()).decode()
+            fernet = _get_fernet(create=False)
+            return fernet.decrypt(ciphertext[3:].encode()).decode() if fernet else ""
         except Exception:
             return ""
     try:

@@ -21,7 +21,8 @@ var commands = []command{
 	{name: "project", aliases: nil, description: "Create or open a directory as a new project chat"},
 	{name: "sessions", aliases: nil, description: "Show project and chat navigation"},
 	{name: "session", aliases: nil, description: "Switch chat: /session <id>"},
-	{name: "fast", aliases: nil, description: "Switch Fast off, Jev API, or local Kev-0.8B (less accurate)"},
+	{name: "system-one", aliases: nil, description: "Switch System One off, Jev API, or local Kev-0.8B (less accurate)"},
+	{name: "fast", aliases: nil, description: "Legacy alias for /system-one"},
 	{name: "decision-assist", aliases: []string{"assist"}, description: "Enable Jev/Kev checks for learning, memory, and tool output"},
 	{name: "attach", aliases: nil, description: "Stage files; drop paths after /attach"},
 	{name: "graph", aliases: nil, description: "Open, inspect, or refresh the project graph"},
@@ -38,7 +39,7 @@ var commands = []command{
 	{name: "learning", aliases: nil, description: "Inspect learning proposals and evidence"},
 	{name: "memory", aliases: nil, description: "Explain or forget a memory claim"},
 	{name: "forget", aliases: nil, description: "Review recent learnings"},
-	{name: "settings", aliases: nil, description: "Configure display, interaction mode, Fast, and Decision Assist"},
+	{name: "settings", aliases: nil, description: "Configure display, interaction mode, System One, and Decision Assist"},
 	{name: "update", aliases: nil, description: "Update the installed agent"},
 	{name: "quit", aliases: []string{"exit"}, description: "Close OpenKyrozen"},
 }

@@ -1,5 +1,13 @@
 # Decision Assist shadow validation
 
+The current implementation asks candidate-specific evidence and memory
+questions and classifies each instruction-like tool passage separately. The
+older numbers below are retained as an audit of the pre-calibration rollout;
+they do not enable a product gate. Use `benchmarks/system_one.py` for the
+current calibrated comparison. The expanded 2026-09-29 run promotes all five
+Jev actions and Kev routing, memory ranking, and tool review; Kev clarification
+and evidence remain advisory until their holdout gates pass.
+
 Run the labeled, non-mutating checks with either backend:
 
 ```bash

@@ -53,7 +53,11 @@ class MemoryBank:
         self._client = None
         if _CHROMADB_AVAILABLE and os.environ.get("KYROZEN_DISABLE_VECTOR_INDEX", "").lower() not in {"1", "true", "yes"}:
             try:
-                index_path = Path(os.environ.get("KYROZEN_VECTOR_PATH", str(self.db_path.parent / "chroma_index"))).expanduser()
+                # Keep the derived index versioned so an index created by an
+                # older Chroma runtime cannot crash the current process. The
+                # SQLite store remains authoritative and rebuildable.
+                default_index = self.db_path.parent / "chroma_index_v2"
+                index_path = Path(os.environ.get("KYROZEN_VECTOR_PATH", str(default_index))).expanduser()
                 index_path.mkdir(parents=True, exist_ok=True)
                 self._client = chromadb.PersistentClient(path=str(index_path), settings=Settings(anonymized_telemetry=False))
                 self._collection = self._client.get_or_create_collection(

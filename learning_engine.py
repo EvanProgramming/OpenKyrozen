@@ -624,6 +624,7 @@ class LearningEngine:
                                evidence_text: str | None = None) -> bool | None:
         """Return True/False for a confident typed review, None on advisory fallback."""
         try:
+            import fast_mode
             from fast_mode import decision_assist
             events = self.store.list_events(limit=5000, workspace_id=self.memory.workspace_id,
                                             user_id=self.memory.user_id)
@@ -636,10 +637,15 @@ class LearningEngine:
             diagnostics: dict[str, object] = {}
             result = decision_assist(
                 "learning_evidence", {"claim": claim[:1200], "evidence": evidence[:5]},
-                {"verdict": {"type": "choice", "instructions": "Does the evidence support this claim?",
+                {"verdict": {"type": "choice", "instructions": (
+                             "For this candidate claim, classify only the supplied evidence: "
+                                 f"{claim[:500]}. Mark support only when the evidence establishes it; "
+                                 "mark contradict only when the evidence directly conflicts; "
+                                 "a started, unknown, or incomplete status is insufficient. "
+                                 "Example: a worker status=started does not prove completion or failure."),
                              "criteria": {"support": "Evidence supports the claim",
-                                           "contradict": "Evidence contradicts the claim",
-                                           "insufficient": "Evidence is insufficient"}}},
+                                           "contradict": "Evidence explicitly conflicts with or disproves the claim",
+                                           "insufficient": "Evidence is incomplete or neutral, including started, unknown, or missing final status"}}},
                 private=private, diagnostics=diagnostics,
             )
             if not result:
@@ -654,15 +660,32 @@ class LearningEngine:
             probabilities = answer.get("probabilities", {}) if isinstance(answer, dict) else {}
             confidence = float(answer.get("confidence", 0)) if isinstance(answer, dict) else 0
             choice = answer.get("choice") if isinstance(answer, dict) else None
-            accepted = (choice in {"support", "contradict", "insufficient"}
-                        and isinstance(probabilities, dict)
-                        and float(probabilities.get(choice, 0)) >= 0.8 and confidence >= 0.75)
+            backend = str(result.get("backend") or "")
+            accepted_choice = None
+            try:
+                accepted_choice = fast_mode.confident_choice(
+                    "learning_evidence", answer, {"support", "contradict", "insufficient"}, backend,
+                )
+            except (TypeError, ValueError):
+                accepted_choice = None
+            accepted = (bool(result.get("quality_gate", True))
+                        and choice in {"support", "contradict", "insufficient"}
+                        and isinstance(probabilities, dict) and accepted_choice == choice)
             self.store.append_event(
                 "learning.evidence_review", {
-                    "backend": result.get("backend"), "model_version": result.get("model_version"),
+                    "backend": backend, "model_version": result.get("model_version"),
+                    "model_release_date": result.get("model_release_date"),
                     "latency_ms": result.get("latency_ms"), "confidence": confidence,
+                    "probability": probabilities.get(choice) if isinstance(probabilities, dict) else None,
                     "input_tokens": result.get("input_tokens"), "output_tokens": result.get("output_tokens"),
-                    "fallback_reason": result.get("fallback_reason"),
+                    "fallback_reason": result.get("fallback_reason") or (
+                        "quality_gate" if result.get("quality_gate") is False else None),
+                    "policy": result.get("policy"),
+                    "policy_version": result.get("policy_version"),
+                    "fallback_behavior": result.get("fallback_behavior"),
+                    "confidence_threshold": result.get("confidence_threshold"),
+                    "probability_threshold": result.get("probability_threshold"),
+                    "probability_margin": result.get("probability_margin"),
                     "outcome": choice if accepted else "fallback",
                 }, user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
                 session_id=self.memory.session_id,
