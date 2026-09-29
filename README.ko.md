@@ -4,6 +4,10 @@
   <img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT 라이선스">
 </p>
 
+<p align="center">
+  <img src="docs/openkyrozen-banner.svg" alt="OpenKyrozen 터미널 애니메이션 워드마크" width="960">
+</p>
+
 <h1 align="center">OpenKyrozen</h1>
 
 <p align="center"><strong>실행하고, 기억하고, 검증된 결과를 바탕으로 개선하는 로컬 우선 터미널 에이전트입니다.</strong></p>

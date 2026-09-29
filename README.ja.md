@@ -4,6 +4,10 @@
   <img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT ライセンス">
 </p>
 
+<p align="center">
+  <img src="docs/openkyrozen-banner.svg" alt="OpenKyrozen ターミナルのアニメーションロゴ" width="960">
+</p>
+
 <h1 align="center">OpenKyrozen</h1>
 
 <p align="center"><strong>実行し、記憶し、検証済みの結果から改善するローカル優先のターミナルエージェント。</strong></p>

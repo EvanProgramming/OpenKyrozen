@@ -4,6 +4,10 @@
   <img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT license">
 </p>
 
+<p align="center">
+  <img src="docs/openkyrozen-banner.svg" alt="Animated OpenKyrozen terminal wordmark" width="960">
+</p>
+
 <h1 align="center">OpenKyrozen</h1>
 
 <p align="center"><strong>A local-first terminal agent that can act, remember, and improve from verified outcomes.</strong></p>

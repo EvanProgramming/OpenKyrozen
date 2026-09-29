@@ -4,6 +4,10 @@
   <img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT 许可证">
 </p>
 
+<p align="center">
+  <img src="docs/openkyrozen-banner.svg" alt="OpenKyrozen 终端动态字标" width="960">
+</p>
+
 <h1 align="center">OpenKyrozen</h1>
 
 <p align="center"><strong>一个本地优先的终端智能体：可以执行任务、记住重要信息，并根据已验证结果改进。</strong></p>

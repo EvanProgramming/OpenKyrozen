@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
+  <title id="title">OpenKyrozen terminal agent</title>
+  <desc id="desc">OpenKyrozen wordmark in the cyan terminal style used by the TUI, with a subtle animated highlight.</desc>
+  <style>
+    .motion { display: inline; }
+    @media (prefers-reduced-motion: reduce) {
+      .motion { display: none; }
+    }
+  </style>
+
+  <rect width="1200" height="320" rx="18" fill="#060A0D"/>
+  <rect x="1" y="1" width="1198" height="318" rx="17" fill="none" stroke="#192632"/>
+  <path d="M48 58H1152M48 264H1152" stroke="#192632"/>
+
+  <text x="60" y="39" fill="#A9BBC4" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" letter-spacing="2">OPENKYROZEN / TERMINAL AGENT</text>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="52" font-weight="800" letter-spacing="2">
+    <text x="82" y="185" fill="#587180">OPENKYROZEN</text>
+    <text x="78" y="181" fill="#2DE2E6">OPENKYROZEN</text>
+    <text class="motion" x="78" y="181" fill="#F6FBFD" clip-path="url(#sweep)">OPENKYROZEN</text>
+  </g>
+
+  <clipPath id="sweep">
+    <rect x="-180" y="72" width="120" height="145">
+      <animate attributeName="x" from="-180" to="1260" dur="4.8s" repeatCount="indefinite"/>
+    </rect>
+  </clipPath>
+
+  <text x="80" y="294" fill="#A9BBC4" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" letter-spacing="2">ACT · REMEMBER · VERIFY · IMPROVE</text>
+</svg>
