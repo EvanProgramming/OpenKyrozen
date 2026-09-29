@@ -1,749 +1,124 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.12%2B-blue?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/18%20LLM%20Providers-API-green?logo=openai" alt="Multi-Provider">
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
-  <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="License">
-  <img src="https://img.shields.io/badge/CI-passing-brightgreen" alt="CI">
+  <img src="https://img.shields.io/badge/Python-3.12%20%7C%203.13-3776AB?logo=python&logoColor=white" alt="Python 3.12 または 3.13">
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-555555" alt="macOS、Linux、Windows">
+  <img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT ライセンス">
 </p>
 
-<h1 align="center">✨ OpenKyrozen ✨</h1>
-<p align="center"><strong>自己学習型 AI エージェント — 18 の主要 LLM プロバイダーに対応</strong></p>
-<p align="center">ターミナルネイティブな完全自律型 AI エージェント。<em>あらゆる対話から学習</em>し、<br>ファイルシステム操作、Git 管理、バグ修正、そして継続的な自己進化を実現します。</p>
+<h1 align="center">OpenKyrozen</h1>
 
-<p align="center">
-  🌐 <a href="README.md">English</a> ·
-  <a href="README.zh-CN.md">简体中文</a> ·
-  <strong>日本語</strong> ·
-  <a href="README.ko.md">한국어</a>
-</p>
+<p align="center"><strong>実行し、記憶し、検証済みの結果から改善するローカル優先のターミナルエージェント。</strong></p>
 
----
+## インストール
 
-## 📑 目次
+OpenKyrozen は Python **3.12 と 3.13** をサポートします。Python 3.14 は対象外です。
 
-- [OpenKyrozen とは？](#openkyrozen-とは)
-- [🚀 インストール](#-インストール)
-  - [前提条件](#前提条件)
-  - [ワンラインインストーラー](#ワンラインインストーラー)
-  - [開発専用のソースチェックアウト](#開発専用のソースチェックアウト)
-- [📖 使い方ガイド](#-使い方ガイド)
-  - [ターミナルモード](#ターミナルモード)
-  - [チャット内コマンド](#チャット内コマンド)
-  - [Web UI モード](#web-ui-モード)
-- [🏗 アーキテクチャ](#-アーキテクチャ)
-  - [タスク複雑度ルーティング](#タスク複雑度ルーティング)
-  - [モデル自動選択](#モデル自動選択)
-  - [プロバイダー管理](#プロバイダー管理)
-- [🛠 ツールリファレンス](#-ツールリファレンス)
-  - [ファイルとシステム](#ファイルとシステム)
-  - [Web](#web)
-  - [ブラウザー](#ブラウザー5-ツール)
-  - [Git（14 ツール）](#git14-ツール)
-  - [メモリ](#メモリ)
-- [🧠 専用ワークフロー](#-専用ワークフロー)
-  - [バグ修正](#バグ修正6ステッププロトコル)
-  - [Git 操作](#git-操作安全第一)
-  - [複雑なタスク](#複雑なタスク決して途中で止まらない)
-- [🧬 自己学習システム](#-自己学習システム)
-- [🌐 Web UI と REST API](#-web-ui-と-rest-api)
-- [🔌 プラグインシステム](#-プラグインシステム)
-- [🔐 セキュリティ](#-セキュリティ)
-- [⚙️ 設定リファレンス](#️-設定リファレンス)
-- [🔧 開発](#-開発)
-- [📁 プロジェクト構造](#-プロジェクト構造)
-- [🙏 巨人の肩の上に立って](#-巨人の肩の上に立って)
-- [📄 ライセンス](#-ライセンス)
-
----
-
-## OpenKyrozen とは？
-
-OpenKyrozen はターミナルで動作する**自己学習型 AI エージェント**です。一般的なチャットボットとは異なり、以下のことが可能です：
-
-- **39 個のランタイムツール** — ファイル、シェル、Web、Git、ブラウザー、グラフ、GitHub の37個の基本操作と、SQLite メモリ操作2個
-- **継続的な学習** — 20 の機能を有界 dispatcher で実行し、事実の抽出、スキルの発明、戦略の最適化を記録します
-- **主要な LLM プロバイダーに対応** — DeepSeek、OpenAI、Anthropic、Google、Z.AI、Kimi、OpenRouter、Groq、Mistral、xAI、Together、Fireworks、Cohere、Azure OpenAI、Perplexity、Bedrock、Vertex、Ollama
-- **クロスプラットフォーム** — macOS、Linux、Windows（端末機能の自動検出付き）
-- **Web UI を内蔵** — ブラウザベースのチャットインターフェースと REST API による統合
-
-使うたびに賢くなる AI のパートナーだと考えてください。
-
----
-
-## 🚀 インストール
-
-### 前提条件
-
-- インストーラーは **Python 3.12** を標準で用意し、**3.13** も受け付けます。OpenAI SDK の既知のインポート問題のため Python 3.14+ はサポートしません。
-- 対応プロバイダーの API キー：
-
-| プロバイダー | キーの取得 | コスト |
-|-------------|-----------|------|
-| **DeepSeek** | [platform.deepseek.com](https://platform.deepseek.com) | [V4 のピーク/オフピーク・キャッシュ対応料金](https://api-docs.deepseek.com/quick_start/pricing/) |
-| **OpenAI** | [platform.openai.com](https://platform.openai.com) | ~$2.50/100万入力トークン |
-| **Anthropic (Claude)** | [console.anthropic.com](https://console.anthropic.com) | ~$3.00/100万入力トークン |
-| **Google (Gemini)** | [aistudio.google.com](https://aistudio.google.com) | ~$0.15/100万入力トークン |
-| **Ollama** | [ollama.com](https://ollama.com) | 無料（ローカル実行） |
-
-### ワンラインインストーラー
-
-macOS または Linux：
+### macOS または Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.4/install.sh | sh
+kyrozen
 ```
 
-Windows PowerShell：
+### Windows PowerShell
 
 ```powershell
 irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.4/install.ps1 | iex
+kyrozen
 ```
 
-インストーラーは不変の GitHub `v2.0.4` リリース wheel を取得し、OS、アーキテクチャ、Python、ネットワーク、ユーザーパスの書き込み可否を確認します。必要なら `uv` を導入し、分離された `uv` ツール環境に Web 依存関係を用意して、プライベートな `~/.kyrozen` 状態ディレクトリを作成し、`kyrozen --version` と `kyrozen --help` を検証します。API キーを読み取り、表示、アップロードすることはありません。初回の `kyrozen` 起動でプロバイダー設定を案内します。
+インストーラーは対応する Python 環境、ターミナル UI、~/.kyrozen のプライベート状態を準備します。API key を読み取ったり表示したりしません。
 
-### 開発専用のソースチェックアウト
+初回起動時にプロバイダーを選び、キーを入力します。例：
+
+```bash
+export DEEPSEEK_API_KEY=your-key
+kyrozen
+```
+
+### ソースから実行
 
 ```bash
 git clone https://github.com/EvanProgramming/OpenKyrozen.git
 cd OpenKyrozen
-
-# macOS / Linux
 make install
-make test
 make run
-
-# Windows
-setup.bat
-run.bat
 ```
 
-これらのコマンドは明示的にプロジェクトモード（`--project .`）で動作し、リポジトリ開発専用です。
-`make install` は完全な `.[all]` 開発依存関係と Chromium を導入するため、`make test` でブラウザー統合フローも実行します。軽量な非ブラウザーパスには `make install-core` と `make test-core` を使用してください。
+軽量な開発環境には make install-core を使います。Windows のソース環境では setup.bat と run.bat を使います。
 
-### 固定 GitHub リリースからのインストール
+### 検証済み release wheel を直接インストール
 
 ```bash
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl'
-uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
-
-# 対応済みの Python 環境ではこちらも使用できます：
-pip install fastapi uvicorn "$release_url"
+uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl
 ```
 
-v2.0.4 のリリース wheel は GitHub Actions でビルド・検証済みです。詳しくは [v2.0.4 リリース](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.4) を参照してください。インストール後は任意の呼び出し元ディレクトリから `kyrozen` と `kyrozen-web` を実行できます。暗号化されたプロバイダー設定は `~/.kyrozen_config.json` に保存されます。
-
----
-
-## 📖 使い方ガイド
-
-### ターミナルモード
-
-起動するとバナーと `You:` プロンプトが表示されます。自然に入力してください——エージェントは英語、中国語、日本語、韓国語を理解します。
-
-引数なしの `kyrozen` は常に永続的なグローバルワークスペース
-`~/.kyrozen/workspace` を使用し、現在のディレクトリを変更してもプロジェクトは
-切り替わりません。プロジェクトの元ファイルを直接読み書きする場合は
-`kyrozen --project .` または `kyrozen --project /path/to/project` を使用して
-ください。`--global` は既定のグローバルモードを明示するオプションです。
+## クイックスタート
 
 ```text
-You: README を読んで、このプロジェクトの概要を教えて
-You: "Hello World" を表示する hello.py を作成して
-You: Python の最新リリース日を Web 検索して
-You: main.py の200行目付近のバグを修正して
-You: すべての変更を適切なメッセージでコミットして
+あなた：このプロジェクトを読み、アーキテクチャを説明して
+あなた：tests/test_server.py の失敗したテストを修正して
+あなた：最新の Python リリース日を検索して
+あなた：REST endpoint 追加の計画を作って
 ```
 
-Kyrozen は：
-1. リクエストを分類（簡単 / 中程度 / 複雑）
-2. タスクに最適なモデルを選択
-3. 必要に応じて計画を作成
-4. ツールを段階的に実行
-5. ライブタスクパネルで進捗を表示
-6. 完了した作業をサマリー
+よく使うコマンド：
 
-### チャット内コマンド
+```text
+/provider              プロバイダーを切り替える
+/mode ask|plan|agent   読み取り専用、計画、実行モードを選ぶ
+/project               現在のワークスペースを確認する
+/skills                インストール済みスキルを確認する
+/learning status       自己学習の状態を確認する
+/quit                  終了する
+```
 
-| コマンド | 機能 |
-|---------|------|
-| `/quit` または `/exit` | エージェントを終了 |
-| `/provider` | LLM プロバイダーを切り替え（対話型メニュー） |
-| `/api_key` | API キーを変更 |
-| `/learn` | プロジェクトファイルを即座にメモリにスキャン |
-| `/forget` | 最近の学習を表示；`/forget キーワード` で誤った学習を削除 |
-| `/update` | 固定された GitHub `v2.0.4` wheel でインストール済みツールを更新；成功後に Kyrozen を再起動（プロジェクトへ git pull しない） |
-| `/self-learning` | 個別の自己学習機能をオン/オフ |
-
-### Web UI モード
+任意の Web UI は次で起動できます：
 
 ```bash
-kyrozen-web --port 8000
-# http://localhost:8000 を開く
-
-# 現在のプロジェクトを直接操作：
-kyrozen-web --project . --port 8000
-
-# LAN またはコンテナからアクセスする場合：
-KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
-
-# または Docker 経由：
-docker build -t openkyrozen .
-docker run -p 8000:8000 \
-  -e DEEPSEEK_API_KEY=sk-... \
-  -e KYROZEN_SERVER_TOKEN=change-me \
-  -v kyrozen-data:/data \
-  openkyrozen
+kyrozen-web
 ```
 
-Web インターフェースは、リアルタイムストリーミング、コスト追跡、セッション管理を備えたダークテーマのチャット UI を提供します。
+既定の URL は http://localhost:8000 です。特定のプロジェクトを操作する場合は kyrozen --project /path/to/project または kyrozen-web --project /path/to/project を使います。通常の kyrozen は ~/.kyrozen/workspace のグローバルワークスペースを使います。
 
----
+## OpenKyrozen の要点
 
-## 🏗 アーキテクチャ
+- ファイル、Shell、Git、Web 検索、ブラウザーセッション、プロジェクトグラフ、GitHub を同じワークスペースで扱えます。
+- Ask と Plan は読み取り・ネットワーク操作だけを許可します。Agent は受理済みまたは明示的に依頼された作業を実行し、capability と approval の制約に従います。
+- 18 個の主要なモデルプロバイダー、モデルの既定値、フォールバックをサポートします。
+- SQLite がセッション、イベント、タスク、claims、学習状態の正式な保存先です。ChromaDB は再構築可能なオプションのインデックスです。
+- 自己学習は結果の証拠を記録し、検証された改善だけを昇格させます。権限やモデル重みを暗黙に変更しません。
 
-```
-ユーザー入力
-    │
-    ▼
-┌─────────────────┐
-│  タスク分類器   │──► 簡単 / 中程度 / 複雑
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  モデル選択器   │──► deepseek-flash / deepseek-v4-pro / gpt-6-luna / gpt-6-astra / Gemini 3 / GLM / Kimi
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   LLM プロバイダー │──► 18 のバックエンド、自動フォールバックチェーン付き
-└────────┬────────┘
-         │  応答 + ツール呼び出し
-         ▼
-┌─────────────────┐
-│  ツール実行器   │──► 39 個のランタイムツール（ファイル I/O、シェル、Git、Web、メモリ、ブラウザー、グラフ、GitHub）
-└────────┬────────┘
-         │  ツール結果を LLM にフィードバック
-         │  （1ターン最大50回のツール呼び出し）
-         ▼
-┌─────────────────┐
-│     応答出力    │──► ユーザーに回答 + タスクサマリーを表示
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   自己学習システム │──► バックグラウンド：事実の抽出、メモリのスコアリング、知識グラフの構築
-└─────────────────┘
-```
+現在のランタイムには **39 個のツール**があり、そのうち **Git ツールは 14 個**です。ツール、endpoint、MCP schema の正式な一覧は[生成されたランタイム一覧](docs/tool-inventory.md)です。
 
-### タスク複雑度ルーティング
+## ドキュメント
 
-Kyrozen はすべてのリクエストを自動分類し、動作を適応させます：
+| 内容 | ドキュメント |
+| --- | --- |
+| コマンド、モード、ワークスペース | [使用ガイド](docs/usage.md) |
+| ランタイムと安全境界 | [アーキテクチャ](docs/architecture.md) |
+| プロバイダー、環境変数、状態 | [設定](docs/configuration.md) |
+| Web、REST、MCP | [API ガイド](docs/api.md) |
+| 自己進化、メモリ、証拠 | [自己進化ガイド](docs/self-evolution.md) |
+| 他のオープンソースエージェントとの比較 | [比較](docs/comparison.md) |
+| 開発、テスト、リリース | [開発ガイド](docs/development.md) |
 
-| レベル | トリガー例 | エージェントの動作 |
-|-------|-----------|-----------------|
-| **簡単** | "こんにちは"、"Python とは"、"ありがとう" | 直接返答、計画オーバーヘッドゼロ |
-| **中程度** | "ファイルを一覧表示して README を読んで" | 番号付き計画を作成、ツールを順次実行 |
-| **複雑** | "このリポジトリを監査して"、"バグを修正してコミットして"、"Web アプリを構築して" | 完全な計画 → タスクリスト → 進捗追跡 → 途中で止まらない |
+DeepSeek の既定例は "model_simple": "deepseek-flash" と "model_complex": "deepseek-v4-pro" です。
 
-### モデル自動選択
+## セキュリティと開発
 
-エージェントは簡単なタスクと複雑なタスクで異なるモデルを選択します。これらは上書き可能です：
+プロバイダー資格情報は環境変数または暗号化された ~/.kyrozen_config.json に保存してください。Web サーバーを localhost の外へ公開する場合は KYROZEN_SERVER_TOKEN を設定し、capability と approval を確認してください。
 
 ```bash
-export KYROZEN_MODEL_SIMPLE=deepseek-flash
-export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
-```
-
-| プロバイダー | 簡単なタスク（デフォルト） | 複雑なタスク（デフォルト） |
-|-------------|------------------------|--------------------------|
-| DeepSeek | `deepseek-flash` | `deepseek-v4-pro` |
-| OpenAI | `gpt-6-luna` | `gpt-6-astra` |
-| Anthropic | `claude-haiku-4-5` | `claude-fable-5-1` |
-| Google | `gemini-3.5-flash-lite` | `gemini-3.1-pro-preview` |
-| Ollama | `llama3.2` | `llama3.2` |
-| Z.AI / GLM | `glm-5.3-flash` | `glm-5.3` |
-| Moonshot / Kimi | `kimi-k2.6` | `kimi-k3` |
-| その他のプロバイダー | 有効なプロバイダー既定モデル1つ | 有効なプロバイダー既定モデル1つ |
-
-### プロバイダー管理
-
-いつでもプロバイダーを切り替え可能——チャット内で `/provider` を使用するか、環境変数で：
-
-```bash
-export KYROZEN_PROVIDER=anthropic
-export ANTHROPIC_API_KEY=sk-ant-...
-kyrozen
-```
-
-プライマリプロバイダーが失敗した場合、Kyrozen は自動的にフォールバックチェーン（例：DeepSeek → OpenAI → Claude）で切り替えます。レート制限エラー（HTTP 429）はジッター付き指数バックオフをトリガーします。Ollama はキー不要のローカルプロバイダーです。`KYROZEN_PROVIDER=ollama` を設定し、必要なら `KYROZEN_BASE_URL` で OpenAI-compatible endpoint を指定してください。Web の headless 起動は stdin を読みません。リモートプロバイダーのキーがない場合は明確な degraded 状態になり、対話型 CLI だけがキーを尋ねます。
-
----
-
-## 🛠 ツールリファレンス
-
-39 個すべてのランタイムツールは、JSON アクションブロック内でプレーン文字列の `args` フィールドを受け付けます。ツール名、能力ラベル、MCP 入力 schema、実際の HTTP ルートは[生成されたランタイムインベントリ](docs/tool-inventory.md)を正とします：
-
-`git_branch` を含む組み込み Git ツールには `git` 能力が必要で、`dynamic` はユーザー定義ツール専用です。
-
-```json
-{"action": "read_file", "args": "README.md"}
-```
-
-短縮エイリアスも有効です——`bash`、`cmd`、`sh` → `run_cmd`；`status`、`diff`、`log` → `git_status` など。
-
-### ファイルとシステム
-
-| ツール | 説明 | 例 |
-|------|------|------|
-| `read_file` | ファイルの内容を読み取り | `"README.md"` |
-| `write_file` | ファイルを作成または上書き | `"path|content"` |
-| `list_dir` | ディレクトリの内容を一覧表示 | `"."` |
-| `list_tree` | 再帰的なディレクトリツリー | `"src/"` |
-| `find_files` | グロブベースのファイル検索 | `"*.py|."` |
-| `run_cmd` | シェルコマンドを実行 | `"python --version"` |
-| `execute_terminal_command` | `run_cmd` のエイリアス | `"python --version"` |
-
-### Web
-
-| ツール | 説明 | 例 |
-|------|------|------|
-| `search_web` | インターネット検索（Google → DDG → Wikipedia） | `"最新の Python リリース"` |
-| `read_webpage` | URL のテキストコンテンツを取得 | `"https://example.com"` |
-| `analyze_remote_repo` | リモートリポジトリをクローンして要約 | `"https://github.com/org/repo"` |
-
-### ブラウザー（5 ツール）
-
-ブラウザーツールは隔離された profile を使用します。利用前に browser
-extra をインストールしてください。
-
-| ツール | 説明 | 例 |
-|------|------|------|
-| `browser_open` | URL を開く | `"https://example.com"` |
-| `browser_snapshot` | 現在のページテキストを読む | `"session-id"` |
-| `browser_click` | CSS selector をクリック | `"session-id|button.submit"` |
-| `browser_type` | CSS selector に入力 | `"session-id|input[name=q]|query"` |
-| `browser_close` | 隔離ブラウザーセッションを閉じる | `"session-id"` |
-
-### Git（14 ツール）
-
-| ツール | 機能 |
-|------|------|
-| `git_status` | ワーキングツリーの状態を表示 |
-| `git_diff` | アンステージド / ステージド / コミット間の差分 |
-| `git_log` | コミット履歴（`--oneline --decorate`） |
-| `git_branch` | ブランチの一覧表示 / 作成 / 削除 |
-| `git_add` | コミット用にファイルをステージ |
-| `git_commit` | メッセージ付きでコミット |
-| `git_push` / `git_pull` | リモート同期 |
-| `git_checkout` | ブランチの切り替えまたはファイルの復元 |
-| `git_stash` | 作業中の変更をスタッシュ / ポップ / 一覧表示 |
-| `git_reset` | HEAD をリセット（`--soft` は安全、`--hard` は警告） |
-| `git_show` | コミットの詳細を `--stat` で表示 |
-| `git_remote` | リモートの一覧表示 / 追加 / 削除 |
-| `git_clone` | リポジトリをクローン |
-
-### メモリ
-
-| ツール | 説明 |
-|------|------|
-| `search_memory` | 保存された知識の意味検索 |
-| `check_stored_data` | メモリ統計と最近の事実 |
-
----
-
-## 🧠 専用ワークフロー
-
-### バグ修正（6ステッププロトコル）
-
-エラーやトレースバックを貼り付けると、Kyrozen は自動的に起動します：
-
-1. **再現** — 問題のコードを読み取り、失敗したコマンドを再実行
-2. **診断** — トレースバックを解析し、根本原因を特定
-3. **仮説** — 変更を行う前に修正案を明示
-4. **修正** — 最小限のコード変更を適用
-5. **検証** — 失敗したコマンドを再実行；失敗したらステップ2に戻る
-6. **説明** — 何が問題だったか、何を変更したか、その理由を説明
-
-修正後、Kyrozen は結果を追跡します。「ありがとう、動いたよ」と言えば成功を記録。「まだ壊れてる」と言えば失敗を記録し、より深い分析をトリガーします。
-
-### Git 操作（安全第一）
-
-- 常に最初に `git_status` を実行
-- コミット前に `git_diff` を確認
-- 規約に基づいたコミットプレフィックスを使用：`fix:`、`feat:`、`refactor:`、`chore:`
-- 明示的なリクエストなしに強制プッシュしない
-- ブランチ切り替え前に未コミットの変更を自動スタッシュ
-- `git reset --hard` の前に警告
-
-### 複雑なタスク（決して途中で止まらない）
-
-マルチステップの作業（リファクタリング、プロジェクトジェネレーター、コードベース監査）の場合：
-
-- リクエストを検証可能なサブタスクに分解
-- 番号付き計画を作成
-- 各計画ステップに対応する JSON タスクリストを構築
-- `TaskDone` マーカーで進捗を追跡
-- 完了時に自動サマリーを生成
-
----
-
-## 🧬 自己学習システム
-
-これが Kyrozen を特別なものにしています。**20 の自己学習機能**を共通のレジストリで管理し、各機能を独立したフラグ付きの有界単位として実行します。実際に状態が変わったかどうかも SQLite イベントに記録します。
-
-### 仕組み
-
-CLI はワークスペースごとに単一の分離学習 worker を起動します。CLI がアクティブな間は worker が待機し、ターミナル終了後に心拍が 60 秒以上静かになると、30 秒ごとに最大 4 機能をラウンドロビンで実行します。Web/Gateway は永続化された `learning_cycle` ジョブを使い、チャットターンでは入力依存の好み検出と技術検出も実行します。すべての機能は `/self-learning` で個別に切り替えられ、設定は SQLite に保存されます。`GET /api/v2/learning/features` で最新状態を確認できます。入力や証拠がない場合は、変更なしの有界な no-op として記録されます。
-
-| # | 機能 | 学習内容 |
-|---|------|---------|
-| 1 | **会話学習** | チャットから事実、好み、パターンを抽出 |
-| 2 | **プロジェクトファイルスキャン** | すべての `.py` ファイルをコンテキスト用にメモリに読み込み |
-| 3 | **古いエントリのエージング** | 存在しなくなったファイルに関する事実を削除 |
-| 4 | **ツール自動デバッグ** | ツールの失敗を分析し、根本原因を特定 |
-| 5 | **メモリ統合** | 保存された事実の重複排除と要約 |
-| 6 | **ツールレビュー** | 使用頻度の低いツールの削除を提案 |
-| 7 | **ターゲット調査** | 文書化されていない関数を見つけ、その目的を推測 |
-| 8 | **アイドル時リフレクション** | 複雑なタスクの後に何がうまくいったかを振り返り |
-| 9 | **戦略の蒸留** | トークン使用量が多い場合に効率化のヒントを抽出 |
-| 10 | **新技術自動パッチ** | 未知のライブラリが言及されたときに Web 検索 |
-| 11 | **スキル発明** | 過去の成功から再利用可能なスキルテンプレートを作成 |
-| 12 | **コンテキスト圧縮** | コンテキストが30K文字を超えたら古いターンを要約 |
-| 13 | **修正検証** | バグ修正の成功率を経時的に追跡 |
-| 14 | **動的ツール作成** | `DefineTool:` 構文でエージェントが新しいツールを構築 |
-| 15 | **ユーザー好みモデル** | コーディングスタイル、好みの言語、詳細度を検出 |
-| 16 | **自律検査** | 古いパッケージ、コードスメル、gitignore の欠落をチェック |
-| 17 | **メモリ重要度スコアリング** | エントリを0-10で評価；高スコアのエントリが優先 |
-| 18 | **知識グラフ** | 保存された事実からエンティティ→関係マップを構築 |
-| 19 | **スキル合成** | 複数の学習済みスキルをワークフローに連鎖 |
-| 20 | **誤学習ロールバック** | `/forget` コマンドで誤った学習を削除 |
-
-### メモリストレージ
-
-OpenKyrozen v2 の長期メモリは **SQLite を事実上のソース**（`~/.kyrozen/v2/openkyrozen.sqlite3`）として使用し、ChromaDB は再構築可能な派生セマンティックインデックスです。個人の会話、タスク、学習はグローバル状態で共有されます。`FILE:` スナップショットとそのベクトルメタデータはアクティブなルートから計算した安定したスコープを使うため、プロジェクトを切り替えても別プロジェクトのファイルインデックスを削除・想起しません。既定のグローバルワークスペースは `~/.kyrozen/workspace` で、`kyrozen --project PATH` はミラーやコピー・バック層なしに元ファイルを直接操作します。Web/MCP の単一ユーザーデプロイでは、`KYROZEN_SERVER_TOKEN` が一つの安定した actor を表し、リクエストの `speaker` だけで private データの所有者を変更することはできません。
-
-タスクは再起動後も保存され、状態は `pending`、`running`、`succeeded`、`failed`、`blocked`、`cancelled` です（旧 `done` は読取互換）。`TaskDone` は完了リクエストにすぎず、成功したツール結果、テスト、ファイル確認、または明示的な確認による検証済み実行レシートが計画タスクを照合できます。同じチャットターン内で成功済みの状態変更操作を繰り返すことは拒否されます。安全な API タスクは worker が再開し、failed/blocked タスクは `/api/v2/tasks/{task_id}/resume` で明示的に再開します。
-
-プライベート claim は `speaker` を省略すると `KYROZEN_SERVER_ACTOR`（既定値
-`local`）に紐付きます。安定した actor を設定し、create → list → detail → forget
-を同じデプロイで実行できます：
-
-```bash
-export KYROZEN_SERVER_ACTOR=owner-66
-curl -sS -X POST http://127.0.0.1:8000/api/v2/memory/claims \
-  -H 'Content-Type: application/json' \
-  -d '{"key":"favorite editor","value":"vim","claim_type":"private_fact","authority":"owner"}'
-curl -sS http://127.0.0.1:8000/api/v2/memory/claims
-curl -sS http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
-curl -sS -X DELETE http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
-```
-
-別の `speaker` を明示しても attribution filter に過ぎず、private claim の読取や
-削除はできません。
-
----
-
-## 🌐 Web UI と REST API
-
-```bash
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl'
-pip install fastapi uvicorn "$release_url"
-kyrozen-web --port 8000
-# http://localhost:8000 を開く
-
-# プロジェクトを直接操作：
-kyrozen-web --project . --port 8000
-
-# LAN からアクセスする場合：
-KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
-```
-
-### REST API エンドポイント
-
-| メソッド | エンドポイント | 説明 |
-|--------|-------------|------|
-| `GET` | `/` | ダークテーマのチャット Web UI |
-| `POST` | `/api/auth/session` | サーバートークンを短期 HttpOnly ブラウザセッションへ交換 |
-| `DELETE` | `/api/auth/session` | 現在のブラウザセッションを無効化 |
-| `POST` | `/api/chat` | メッセージを送り、メモリ receipt 付き JSON レスポンスを取得 |
-| `POST` | `/api/chat/stream` | SSE ストリーミング；`[DONE]` 後だけ完了 webhook を送信 |
-| `GET` | `/api/memory?q=キーワード` | 保存されたメモリを検索 |
-| `GET` | `/api/v2/memory?q=キーワード&speaker=...&audience=...&channel=...` | provenance と参加者スコープ付きの構造化メモリ |
-| `GET/POST` | `/api/v2/tasks` | 永続タスクの一覧と作成 |
-| `POST` | `/api/v2/tasks/{task_id}/resume` | failed/blocked タスクを明示的に再開 |
-| `GET` | `/api/v2/learning` | 学習提案の状態 |
-| `GET` | `/api/v2/learning/metrics?profile=...` | 完了、訂正、エラー、ツール、token、遅延メトリクス |
-| `GET` | `/api/v2/learning/features` | 20 機能の権威あるレジストリと最新実行状態 |
-| `POST` | `/api/v2/learning/provider` | Local または Remote の学習実行環境を選択 |
-| `GET` | `/api/v2/learning/{proposal_id}/evidence` | proof card、適用性、replay、結果 receipt |
-| `POST` | `/api/v2/learning/{proposal_id}/replay` | candidate/predecessor のペア replay 結果を記録 |
-| `POST` | `/api/v2/learning/{proposal_id}/omission` | artifact 有/無のペア結果を記録 |
-| `POST` | `/api/v2/learning/{proposal_id}/retire` | 非回帰 omission 証拠で artifact を retire |
-| `POST` | `/api/v2/learning/{proposal_id}/restore` | retired artifact を canary として復元 |
-| `GET` | `/api/v2/learning/{proposal_id}/capsule` | redacted で harness 非依存の経験 capsule を出力 |
-| `POST` | `/api/v2/learning/capsules` | capsule を非アクティブ候補として取り込む |
-| `GET` | `/api/v2/learning/constitution` | 不変のユーザー所有 learning policy |
-| `POST` | `/api/v2/learning/{proposal_id}/rollback` | 有効化された学習提案を rollback |
-| `GET/POST` | `/api/v2/memory/claims` | 型、帰属、スコープ付き memory claim の一覧/作成 |
-| `GET/DELETE` | `/api/v2/memory/claims/{claim_id}` | claim の説明、または単独依存を含む削除 |
-| `GET` | `/api/v2/events` | runtime、session、task、learning の監査イベント |
-| `GET` | `/api/v2/decision-assist` | Decision Assist の backend、同意、health 状態 |
-| `GET` | `/api/v2/system-one/diagnostics?session_id=...` | prompt 内容なしの System One 判断と LLM 使用量 |
-| `GET` | `/api/v2/fast/diagnostics?session_id=...` | prompt 内容なしの Fast 判断と LLM 使用量 |
-| `GET/POST` | `/api/v2/schedules` | 永続 interval/one-shot Gateway job |
-| `POST` | `/api/v2/schedules/{job_id}/disable` | スケジュール job を無効化 |
-| `GET` | `/api/v2/skills` | candidate/active skill の一覧 |
-| `POST` | `/api/v2/skills/install` | ローカル `SKILL.md` package を検証してインストール |
-| `POST` | `/api/v2/skills/{skill_id}/activate` | 検証済み skill を有効化 |
-| `POST` | `/api/v2/skills/{skill_id}/rollback` | skill を rollback |
-| `GET` | `/api/v2/sessions` | 永続 session の一覧 |
-| `GET` | `/api/v2/sessions/{session_id}` | session context の復元/読取 |
-| `GET` | `/api/v2/sessions/{session_id}/history` | 会話の履歴ツリーとファイル変更概要 |
-| `POST` | `/api/v2/sessions/{session_id}/history/{node_id}/rollback` | 履歴ノードを復元（`confirm: "rollback"` が必要） |
-| `GET` | `/api/v2/agents` | 専用 sub-agent profile の一覧 |
-| `POST` | `/api/v2/agents/run` | 分離 memory と能力で sub-agent を実行 |
-| `GET` | `/api/cost` | token 使用量とコストサマリー |
-| `POST` | `/api/cost/reset` | durable な workspace/session 集計ウィンドウを明示的に reset（`confirm: "reset-cost"` が必要） |
-| `GET` | `/api/health` | provider 状態 + memory 件数 |
-| `GET` | `/api/voice/speak?text=...` | システム TTS でテキスト読み上げ |
-| `POST` | `/api/voice/transcribe` | 音声テキスト変換（パススルー） |
-| `POST` | `/api/webhooks/register` | Webhook URL を登録 |
-| `GET` | `/api/webhooks` | 登録済み Webhook を一覧表示 |
-| `POST` | `/api/webhooks/test` | テスト Webhook を発火 |
-| `POST` | `/mcp` | モデルコンテキストプロトコル（JSON-RPC 2.0） |
-
-すべての JSON Action はプレーン文字列 `args` を使います。MCP の `tools/list` と
-`server/discover` は許可された各ツールの `inputSchema` を返し、object 引数を同じ文字列契約に明示的に変換します。未知/未許可ツールは JSON-RPC protocol error、実行後のツール失敗は `result.isError: true` です。完全な清書済み一覧は [docs/tool-inventory.md](docs/tool-inventory.md) を参照してください。
-
-トークン保護された Web UI が `401` を受けるとパスワード欄を表示します。入力したトークンは短期の
-`HttpOnly`/`SameSite=Strict` cookie に交換され、URL、HTML、ログ、ブラウザストレージには保存されません。
-
-### Docker デプロイ
-
-```bash
-docker build -t openkyrozen .
-docker run -p 8000:8000 \
-  -e DEEPSEEK_API_KEY=sk-your-key \
-  -e KYROZEN_SERVER_TOKEN=change-me \
-  -e KYROZEN_DB_PATH=/data/openkyrozen.sqlite3 \
-  -v kyrozen-data:/data \
-  openkyrozen
-```
-
-イメージは非 root ユーザー `kyrozen` で実行されます。SQLite の事実上の保存先は `/data/openkyrozen.sqlite3`（イメージが `KYROZEN_DB_PATH` に設定）です。コンテナを置き換える場合も同じ名前付きボリュームを `/data` にマウントしてください。ローカルでは `make docker-smoke` で置き換え後の復元テストを実行できます。
-
----
-
-## 🔌 プラグインシステム
-
-`plugins/` ディレクトリに `register()` 関数を持つ `.py` ファイルを作成します：
-
-```python
-# plugins/my_plugin.py
-class MyPlugin:
-    def on_startup(self, agent=None, **kwargs):
-        print("プラグインがロードされました！")
-
-    def on_turn_start(self, user_input, **kwargs):
-        print(f"ユーザーの発言：{user_input[:50]}")
-
-    def on_tool_execute(self, action, args, result, **kwargs):
-        print(f"ツール {action}({args[:30]}) → {result[:30]}")
-
-def register():
-    return MyPlugin()
-```
-
-利用可能なフック：`on_startup`、`on_turn_start`、`on_turn_end`、`on_tool_execute`。
-
-ランタイムはパッケージ内の `plugins/*.py` とアクティブワークスペースの
-`plugins/*.py` を決定的なファイル名順で読み込み、同名の場合はワークスペース側を
-優先します。既定のターンログは `~/.kyrozen/v2/kyrozen_turns.log` で、
-`KYROZEN_TURN_LOG` で変更できます。
-
-動作例は `plugins/turn_logger.py` を参照してください。
-
----
-
-## 🔐 セキュリティ
-
-| 機能 | 保護内容 |
-|------|---------|
-| **危険コマンドフィルター** | `rm -rf`、`mkfs`、フォークボム、Windows の破壊的コマンドをブロック |
-| **API キー暗号化** | ランダムなインストール秘密による Fernet 暗号化；設定/秘密ファイルは `0600` |
-| **プロンプトインジェクション保護** | 9 種類の一般的なインジェクションパターンを検出してフィルタリング |
-| **サンドボックス実行** | ファイル操作をワークスペース境界内に制限 |
-| **API 認証** | loopback 以外の API/MCP には `KYROZEN_SERVER_TOKEN` が必要 |
-| **能力プロファイル** | Web/MCP は `workspace` が既定；不可逆な `git_reset` と動的ツールは `full` で明示的に許可 |
-| **Git 安全性** | 強制プッシュなし；CLI は高影響操作を確認して記録 |
-| **監査ログ** | すべてのチャット/API イベントを `~/.kyrozen/v2/kyrozen_audit.log` に記録（`KYROZEN_AUDIT_LOG` で変更可） |
-| **Python バージョンガード** | Python 3.14+ での起動を拒否 |
-| **ツール失敗メモリ** | 過去の失敗を記憶し、繰り返しを回避 |
-
----
-
-## ⚙️ 設定リファレンス
-
-### 環境変数
-
-| 変数 | 説明 | デフォルト |
-|------|------|----------|
-| `KYROZEN_PROVIDER` | LLM プロバイダー | `deepseek` |
-| `DEEPSEEK_API_KEY` | DeepSeek API キー | — |
-| `OPENAI_API_KEY` | OpenAI API キー | — |
-| `ANTHROPIC_API_KEY` | Anthropic API キー | — |
-| `GEMINI_API_KEY` | Google Gemini API キー | — |
-| `KYROZEN_API_KEY` | 汎用 API キー（プロバイダー固有キーを上書き） | — |
-| `KYROZEN_MODEL_SIMPLE` | 簡単/中程度タスク用モデル | プロバイダーデフォルト |
-| `KYROZEN_MODEL_COMPLEX` | 複雑タスク用モデル | プロバイダーデフォルト |
-| `KYROZEN_BASE_URL` | カスタム API ベース URL | プロバイダーデフォルト |
-| `KYROZEN_PROVIDER_TIMEOUT_SECONDS` | 1 回のプロバイダー応答の最大待機時間（秒） | `90` |
-| `KYROZEN_WORKSPACE_ROOT` | 高度なテスト/開発用ルート上書き。明示的な CLI オプションが優先 | `~/.kyrozen/workspace` |
-| `KYROZEN_DB_PATH` | SQLite の事実ストアのパス | `~/.kyrozen/v2/openkyrozen.sqlite3` |
-| `KYROZEN_VECTOR_PATH` | 再構築可能な Chroma インデックスのパス | SQLite ディレクトリ内 |
-| `KYROZEN_TURN_LOG` | 明示的なターンログのパス | `~/.kyrozen/v2/kyrozen_turns.log` |
-| `KYROZEN_AUDIT_LOG` | 明示的な監査ログのパス | `~/.kyrozen/v2/kyrozen_audit.log` |
-| `KYROZEN_DB_PATH` | SQLite 事実ストアのパス | `~/.kyrozen/v2/openkyrozen.sqlite3` |
-| `KYROZEN_SERVER_TOKEN` | loopback 外の Web/MCP アクセストークン | 未設定（loopback のみ） |
-| `KYROZEN_SERVER_ACTOR` | 単一ユーザーデプロイの安定した actor ラベル | `local` |
-| `KYROZEN_EXECUTION_SURFACE` | 実行面（`cli` または `web`） | `cli` |
-| `KYROZEN_ALLOW_DYNAMIC_TOOLS` | LLM 生成 Python ツールを許可（`1`/`true`） | CLI: 有効；Web/MCP: 無効 |
-| `KYROZEN_APPROVAL_MODE` | CLI の高影響 Git/動的ツール確認（`dangerous`/`never`） | `dangerous` |
-| `KYROZEN_WEB_CAPABILITIES` | Web 能力（`readonly`、`workspace`、`full`） | `workspace` |
-| `KYROZEN_MCP_CAPABILITIES` | MCP 能力（`readonly`、`workspace`、`full`） | `workspace` |
-| `KYROZEN_AGENT_CONFIG` | 明示的な `agent.yaml` のパス | ワークスペース、次にパッケージ既定値 |
-| `KYROZEN_ROLE` / `KYROZEN_ROLE_PROMPT` | role 名または role prompt の上書き | パッケージ prompt |
-| `KYROZEN_INSTRUCTIONS` / `KYROZEN_EXAMPLES` | 実行指示または JSON examples の上書き | パッケージ prompt |
-| `KYROZEN_AGENT_CAPABILITIES` | 能力の上限（surface/確認/認証を迂回不可） | `full` |
-
-### 設定ファイル（`~/.kyrozen_config.json`）
-
-```json
-{
-  "provider": "deepseek",
-  "api_key": "<暗号化>",
-  "model_simple": "deepseek-flash",
-  "model_complex": "deepseek-v4-pro",
-  "encrypted": true
-}
-```
-
-ファイルは自動管理されます。チャット内で `/provider` または `/api_key` を使用して対話的に更新できます。
-
----
-
-## 🔧 開発
-
-```bash
-# クイック検証
 make check
 make docs-check
-make shell-check
-
-# 構文チェックのみ
+make test
 make lint
-
-# デバッグモード（フォーマットエラートラップ）
-make debug
-
-# 初回 API キー設定
-make init
-
-# Python バージョン変更後に venv を再構築
-make reinstall
-
-# Web サーバーを起動
-make web
-
-# Git ヘルパー
-make git-status
-make git-log
-make commit msg='feat: 説明'
-make push
 ```
 
-### CI/CD
+詳しくは AGENTS.md、[設定とセキュリティ](docs/configuration.md)、[開発ガイド](docs/development.md)を参照してください。
 
-GitHub Actions がプッシュと PR ごとに自動実行：
+## ライセンス
 
-- Python 3.12 および 3.13 での構文チェック
-- 実行時レジストリから生成したツール一覧とドキュメントの整合性検証
-- プロバイダーインポートチェック
-- クリーンな wheel インストールと無関係なディレクトリからの CLI スモークテスト
-- Windows PowerShell インストーラーの構文とヘルプ経路のチェック
-- Docker ビルドとコンテナ置換後の復元スモークテスト
+OpenKyrozen は [MIT License](LICENSE) で公開されています。
 
-公開済みの `v2.0.4` リリースは不変であり、公開インストーラーと `/update` は
-このリリースに固定されています。将来のリリースは意図的な手動作業として、
-固定バージョンを更新し、成果物と両方のインストーラーを検証してから新しい
-タグを公開してください。
-
-### リリース wheel
-
-```bash
-# 不変の GitHub リリース（インストーラーが uv と Python の設定も行います）
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl'
-uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
-pip install fastapi uvicorn "$release_url"
-
-# ローカルチェックアウトのみ（開発）
-pip install .                   # コア + CLI
-pip install '.[web]'            # + Web UI
-pip install '.[all]'            # + クラウドアダプター + Web + Playwright
-```
-
----
-
-## 📁 プロジェクト構造
-
-```
-OpenKyrozen/
-├── main.py              # コアエージェントループ、自己学習、チャットターンロジック
-├── tools.py             # 29 個の基本ツール；main.py が SQLite メモリ操作2個を追加
-├── providers.py         # マルチ LLM 抽象化（18 プロバイダー + フォールバック）
-├── memory.py            # SQLite の事実メモリ + 再構築可能な Chroma インデックス
-├── server.py            # FastAPI Web サーバー + REST API + チャット UI
-├── workspace_context.py # グローバル/プロジェクト起動ルートの解決
-├── pyproject.toml       # pip パッケージ設定
-├── Dockerfile           # Docker イメージ定義
-├── Makefile             # ビルド自動化（macOS/Linux）
-├── setup.bat / run.bat  # Windows バッチスクリプト
-├── install.sh / install.ps1 # クロスプラットフォーム uv ブートストラップ
-├── plugins/             # プラグインディレクトリ（フックベース）
-├── prompts/             # プロンプトテンプレート（役割、指示、例）
-├── docs/tool-inventory.md # 生成されたランタイムツール/ルート一覧
-├── scripts/              # 再現可能なドキュメント/スモークチェック
-└── .github/workflows/   # CI 検証パイプライン
-```
-
----
-
-## 🙏 巨人の肩の上に立って
-
-OpenKyrozen は優れたオープンソースプロジェクトの上に構築されています。すべてのメンテナーと貢献者に感謝します。
-
-| プロジェクト | リポジトリ | 用途 |
-|-------------|----------|------|
-| **Aider** | [paul-gauthier/aider](https://github.com/paul-gauthier/aider) | マルチターンエージェントループ、ツール呼び出しパターン、Git 安全規則に着想 |
-| **CodeWhale** | [deepseek-ai/codewhale](https://github.com/deepseek-ai/codewhale) | エージェントランタイムアーキテクチャ、サブエージェント委任、検証規律 |
-| **Chroma** | [chroma-core/chroma](https://github.com/chroma-core/chroma) | 長期メモリと意味検索を支えるベクトルデータベース |
-| **FastAPI** | [fastapi/fastapi](https://github.com/fastapi/fastapi) | Web サーバー、REST API、リアルタイムストリーミングエンドポイント |
-| **Rich** | [Textualize/rich](https://github.com/Textualize/rich) | ターミナル UI — パネル、プログレスバー、シンタックスハイライト、ライブ表示 |
-| **OpenAI Python** | [openai/openai-python](https://github.com/openai/openai-python) | 互換 API プロバイダー向けの OpenAI 互換トランスポート |
-| **Uvicorn** | [encode/uvicorn](https://github.com/encode/uvicorn) | 本番 Web デプロイ用 ASGI サーバー |
-| **googlesearch-python** | [Nv7-GitHub/googlesearch](https://github.com/Nv7-GitHub/googlesearch) | DuckDuckGo が利用不可時の Web 検索フォールバック |
-
-> *「私がより遠くを見渡せたとしたら、それは巨人の肩の上に立っていたからです。」* — アイザック・ニュートン
-
----
-
-## 📄 ライセンス
-
-MIT ライセンス。詳細は `LICENSE` ファイルを参照してください。
-
----
-
-<p align="center">
-  <sub>学ぶ AI を求める開発者のために ❤️ を込めて</sub>
-</p>
+<p align="center"><sub><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · 日本語 · <a href="README.ko.md">한국어</a></sub></p>

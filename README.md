@@ -1,1212 +1,131 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.12%2B-blue?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/18%20LLM%20Providers-API-green?logo=openai" alt="Multi-Provider">
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
-  <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="License">
-  <img src="https://img.shields.io/badge/CI-passing-brightgreen" alt="CI">
+  <img src="https://img.shields.io/badge/Python-3.12%20%7C%203.13-3776AB?logo=python&logoColor=white" alt="Python 3.12 or 3.13">
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-555555" alt="macOS, Linux, and Windows">
+  <img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT license">
 </p>
 
-<h1 align="center">✨ OpenKyrozen ✨</h1>
-<p align="center"><strong>Self‑learning AI Agent — 18 common LLM providers</strong></p>
-<p align="center">A terminal-native AI agent that <em>learns from verified outcomes</em>,<br>operates your filesystem, manages git, fixes bugs, and improves itself over time.</p>
+<h1 align="center">OpenKyrozen</h1>
 
-<p align="center">
-  🌐 <strong>English</strong> ·
-  <a href="README.zh-CN.md">简体中文</a> ·
-  <a href="README.ja.md">日本語</a> ·
-  <a href="README.ko.md">한국어</a>
-</p>
+<p align="center"><strong>A local-first terminal agent that can act, remember, and improve from verified outcomes.</strong></p>
 
----
+## Install
 
-## 📑 Table of Contents
+OpenKyrozen supports Python **3.12 and 3.13**. Python 3.14 is intentionally outside the supported range.
 
-- [What is OpenKyrozen?](#what-is-openkyrozen)
-- [🚀 Installation](#-installation)
-  - [Prerequisites](#prerequisites)
-  - [One-line installer](#one-line-installer)
-  - [Development-only source checkout](#development-only-source-checkout)
-- [📖 Usage Guide](#-usage-guide)
-  - [Terminal mode](#terminal-mode)
-  - [In-chat commands](#in-chat-commands)
-  - [Web UI mode](#web-ui-mode)
-- [🏗 Architecture](#-architecture)
-  - [Task complexity routing](#task-complexity-routing)
-  - [Model auto-selection](#model-auto-selection)
-  - [Provider management](#provider-management)
-- [🛠 Tools Reference](#-tools-reference)
-  - [File & System](#file--system)
-  - [Web](#web)
-  - [Browser](#browser-5-tools)
-  - [Git](#git-14-tools)
-  - [Memory](#memory)
-- [🧠 Dedicated Workflows](#-dedicated-workflows)
-  - [Bug fixing](#bug-fixing-6-step-protocol)
-  - [Git operations](#git-operations-safety-first)
-  - [Complex tasks](#complex-tasks-never-stops-early)
-- [🧬 Self-Learning System](#-self-learning-system)
-  - [Operational self-evolution and memory guide](docs/self-evolution.md)
-- [🌐 Web UI & REST API](#-web-ui--rest-api)
-- [🔌 Plugin System](#-plugin-system)
-- [🔐 Security](#-security)
-- [⚙️ Configuration Reference](#️-configuration-reference)
-- [🔧 Development](#-development)
-- [📁 Project Structure](#-project-structure)
-- [🙏 Standing on the Shoulders of Giants](#-standing-on-the-shoulders-of-giants)
-- [📄 License](#-license)
-
----
-
-## What is OpenKyrozen?
-
-OpenKyrozen is a **self-learning AI agent** that runs in your terminal. Unlike a typical chatbot, it:
-
-- **Uses 39 runtime tools** — 37 base file/shell/web/git/browser/graph/GitHub actions plus two SQLite memory actions
-- **Learns continuously** — background learning creates evidence-backed proposals and only promotes repeated or validated improvements
-- **Works with common LLM providers** — OpenAI, Anthropic, Google, DeepSeek, Ollama, Z.AI, Kimi, OpenRouter, Groq, Mistral, xAI, Together, Fireworks, Cohere, Azure OpenAI, Perplexity, Bedrock, and Vertex
-- **Runs on any OS** — macOS, Linux, and Windows (with automatic terminal capability detection)
-- **Has a Web UI** — browser-based chat interface with REST API for integration
-
-Think of it as an AI teammate that gets smarter every time you use it.
-
----
-
-## 🚀 Installation
-
-### Prerequisites
-
-- The installer provisions **Python 3.12** by default and accepts Python **3.13**. Python 3.14+ is intentionally unsupported because of a known OpenAI SDK import issue.
-- Go is not required beforehand: the installer reuses a compatible Go toolchain or downloads the pinned official Go 1.27.1 archive with SHA-256 verification to build the terminal UI in `~/.kyrozen/bin`.
-- An API key from any supported provider:
-
-| Provider | Get a key | Cost |
-|----------|-----------|------|
-| **DeepSeek** | [platform.deepseek.com](https://platform.deepseek.com) | [V4 peak/off-peak, cache-aware pricing](https://api-docs.deepseek.com/quick_start/pricing/) |
-| **OpenAI** | [platform.openai.com](https://platform.openai.com) | ~$2.50/M input tokens |
-| **Anthropic (Claude)** | [console.anthropic.com](https://console.anthropic.com) | ~$3.00/M input tokens |
-| **Google (Gemini)** | [aistudio.google.com](https://aistudio.google.com) | ~$0.15/M input tokens |
-| **Ollama** | [ollama.com](https://ollama.com) | Free (runs locally) |
-| **Z.AI / GLM, Moonshot / Kimi** | [Z.AI](https://z.ai) · [Moonshot](https://platform.moonshot.cn) | Provider pricing |
-| **OpenRouter, Groq, Mistral, xAI, Together AI, Fireworks AI, Cohere** | Provider consoles | Provider pricing |
-| **Azure OpenAI, Perplexity, Amazon Bedrock, Google Vertex AI** | Provider/cloud account | Account or region pricing |
-
-### One-line installer
-
-On macOS or Linux:
+### macOS or Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.4/install.sh | sh
+kyrozen
 ```
 
-On Windows PowerShell:
+### Windows PowerShell
 
 ```powershell
 irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.4/install.ps1 | iex
+kyrozen
 ```
 
-The installer fetches the immutable `v2.0.4` GitHub release wheel and checksum-verified TUI source asset, checks the operating system, architecture, Python, network, and writable user paths; installs `uv` when needed; provisions the Web dependencies in an isolated `uv` tool environment; reuses or installs Go 1.27.1 locally; builds the Bubble Tea binary atomically; retries once with `uv --no-cache` if an incomplete local cache is encountered; creates private `~/.kyrozen` state directories; and verifies `kyrozen --version` and `kyrozen --help`. If the TUI asset or build is unavailable, `kyrozen` clearly falls back to the Rich recovery interface. It never reads, prints, or uploads API keys. The first `kyrozen` launch opens a themed Bubble Tea onboarding flow for provider, API-key, and self-learning setup; later updates show a short migration notice and keep existing settings.
+The installer provisions the supported Python environment, the terminal UI, and private state under `~/.kyrozen`. It does not read or print API keys.
 
-To reopen setup later, run `kyrozen onboarding`. This reuses the same themed onboarding flow without deleting your saved provider key, memory, or workspace.
+On first launch, choose a provider and enter its key. DeepSeek is the default example:
 
-### Development-only source checkout
+```bash
+export DEEPSEEK_API_KEY=your-key
+kyrozen
+```
+
+### Run from a source checkout
 
 ```bash
 git clone https://github.com/EvanProgramming/OpenKyrozen.git
 cd OpenKyrozen
-
-# macOS / Linux
 make install
-make test
 make run
-
-# Windows
-setup.bat
-run.bat
 ```
 
-These commands intentionally run in project mode (`--project .`) and are for repository development.
-`make install` installs the full `.[all]` development set and Chromium, so `make test` also runs the browser integration flow. For a lightweight non-browser path, use `make install-core` followed by `make test-core`.
+Use `make install-core` for the smaller development environment. Windows source checkouts use `setup.bat` and `run.bat`.
 
-### Pinned GitHub release installation
+For a direct package install, use the verified release wheel:
 
 ```bash
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl'
-uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
-
-# Or use pip in an existing supported environment:
-pip install fastapi uvicorn "$release_url"
+uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl
 ```
 
-The v2.0.4 release wheel was built and validated by GitHub Actions; see the [v2.0.4 release](https://github.com/EvanProgramming/OpenKyrozen/releases/tag/v2.0.4). After installation, `kyrozen` and `kyrozen-web` work from any caller directory. The encrypted provider configuration is saved to `~/.kyrozen_config.json`.
-
----
-
-## 📖 Usage Guide
-
-### Terminal mode
-
-Once launched, `kyrozen` opens a full-screen Bubble Tea interface with an animated OpenKyrozen banner, high-contrast black background, white text, slate panels, streamed responses, and a responsive task panel. A bounded project graph is always visible: wide terminals show it in the upper-right activity rail and narrow terminals show a compact graph strip. Press `g` or run `/graph open` for the explorer. Type naturally — the agent understands plain English (and Chinese, Japanese, Korean). The direct `python main.py` command remains the Rich recovery/development entry point.
-
-Bare `kyrozen` always uses the persistent global workspace at
-`~/.kyrozen/workspace`; changing directories does not switch projects. Use
-`kyrozen --project .` or `kyrozen --project /path/to/project` when the agent
-should read and change the original project files directly. `--global` is an
-explicit spelling of the default global mode.
+## Quick start
 
 ```text
-You: read the README and tell me what this project does
-You: create a new Python file called hello.py that prints "Hello World"
-You: search the web for the latest Python release date
-You: fix the bug in main.py around line 200
-You: commit all changes with a good message
+You: read this project and explain its architecture
+You: fix the failing test in tests/test_server.py
+You: search the web for the latest Python release
+You: create a plan for adding a REST endpoint
 ```
 
-Kyrozen will:
-1. Route informational requests to Ask and actionable requests to Plan when the mode is `auto`
-2. Ask up to three structured clarification questions only when a material decision is missing
-3. Produce a versioned, reviewable plan without changing the project
-4. Materialize an accepted plan as durable tasks and execute it in Agent mode
-5. Return to the stored mode preference after execution
+Useful commands:
 
-Ask and Plan are enforced as read/network-only modes. They can inspect files,
-read Git history, and research the web, but cannot write files, run commands,
-mutate Git/browser state, or register dynamic tools. Agent mode still obeys the
-configured capability upper bound and existing approval prompts; a clarification
-answer never counts as tool approval.
+```text
+/provider              switch providers
+/mode ask|plan|agent   choose read-only, planning, or execution behavior
+/project               inspect the active workspace context
+/skills                inspect installed skills
+/learning status       inspect self-learning artifacts
+/quit                  exit
+```
 
-### In-chat commands
-
-Type `/` as the first non-whitespace character to open the command palette. It filters as you type; use Up/Down, Enter, Tab, or Esc. A slash inside normal prose, a URL, a path, or code is treated as ordinary text.
-
-| Command | What it does |
-|---------|-------------|
-| `/quit` or `/exit` | Exit the agent |
-| `/provider` | Switch to a different LLM provider (interactive menu) |
-| `/api_key` | Change your API key |
-| `/learn` | Perform a clean refresh of the private Graphify project index |
-| `/history` | Show the current conversation's numbered immutable history tree, session ID, and file deltas |
-| `/rollback` | Show the tree and choose a node number; `/rollback <number>` previews it, and `/rollback <number> confirm` restores it; `/rollback cancel` cancels |
-| `/forget` | Show recent learnings; `/forget keyword` to delete bad learnings |
-| `/update` | Atomically update OpenKyrozen, bundled skills, Graphify, managed GitHub CLI, and Bubble Tea; restart after success |
-| `/mode auto\|ask\|plan\|agent` | Persist the interaction preference for this CLI/TUI or web session |
-| `/system-one off\|jev\|kev` | Toggle optional typed Jev or local Kev-0.8B decisions independently of interaction mode |
-| `/fast off\|jev\|kev` | Deprecated compatibility alias for `/system-one` |
-| `/decision-assist off\|jev\|kev` | Enable typed checks for learning, memory relevance, and untrusted tool output |
-| `/ask` | Shortcut for `/mode ask` |
-| `/plan` | Shortcut for `/mode plan`; `/plan accept\|cancel` resolves a pending plan |
-| `/question` | Reopen the latest question; `/question skip\|cancel` resolves it |
-| `/agent auto\|coder\|researcher` | Choose automatic routing or an isolated learning profile |
-| `/graph status` | Show private index health; `/graph refresh [--full]` rebuilds it and `/graph open` opens the TUI explorer |
-| `/github status` | Check `gh` authentication; `/github login` safely suspends the TUI for browser login |
-| `/skills` | Show built-in, local, and learned skill versions and status |
-| `/ponytail off\|lite\|full\|ultra` | Set the scoped coding-simplicity preference |
-| `/learning status [profile]` | Show candidate, canary, active, retired, and rolled-back artifacts |
-| `/learning metrics [profile]` | Show verified completion, corrections, errors, cost, and latency metrics |
-| `/learning evidence <id>` | Print the proof card, replay, applicability, and outcome receipts |
-| `/learning explain <id>` | Print the complete proposal record |
-| `/learning replay <id>` | Explain the API-only paired replay workflow (does not execute commands) |
-| `/learning rollback <id>` | Roll back a learned artifact or proposal |
-| `/memory why <claim-id>` | Inspect a typed claim and its provenance |
-| `/memory forget <claim-id>` | Forget a claim and deactivate solely dependent learned artifacts |
-| `/self-learning` | Toggle individual self-learning features on/off |
-
-### Web UI mode
+The web interface is optional:
 
 ```bash
 kyrozen-web
-# Open http://localhost:8000
-
-# Operate directly on a project:
-kyrozen-web --project . --port 8000
-
-# For LAN or container access, set a token and bind explicitly:
-KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
-
-# Or via Docker:
-docker build -t openkyrozen .
-docker run -p 8000:8000 \
-  -e DEEPSEEK_API_KEY=sk-... \
-  -e KYROZEN_SERVER_TOKEN=change-me \
-  -v kyrozen-data:/data \
-  openkyrozen
+# open http://localhost:8000
 ```
 
-The web interface uses the same black, white, slate, semantic-status, and restrained-cyan visual system with real-time streaming, accessible focus states, reduced-motion support, cost tracking, and session management. `kyrozen-web` uses the same global/project mode semantics as the terminal command; the Docker image passes `--project /app` so the mounted image checkout remains project-oriented.
+For project-aware work, use `kyrozen --project /path/to/project` or `kyrozen-web --project /path/to/project`. Bare `kyrozen` uses the persistent global workspace at `~/.kyrozen/workspace`.
 
----
+## What OpenKyrozen does
 
-## 🏗 Architecture
+- **Acts in your workspace:** files, shell commands, Git, web search, browser sessions, project graphs, and GitHub inspection.
+- **Keeps boundaries visible:** Ask and Plan are read/network-only; Agent executes accepted or explicitly requested work under capability and approval gates.
+- **Uses the model you choose:** 18 provider integrations with configurable defaults and fallback behavior.
+- **Remembers locally:** SQLite is authoritative for sessions, events, claims, tasks, and learning state; ChromaDB is an optional rebuildable index.
+- **Learns cautiously:** background learning records evidence-backed proposals and promotes only validated improvements. It does not fine-tune model weights or silently grant permissions.
+- **Works in terminal and web modes:** the terminal UI is the primary experience; FastAPI provides a local web UI, REST API, and streaming endpoint.
 
-```
-User Input
-    │
-    ▼
-┌─────────────────┐
-│ Bubble Tea / Web │──► JSONL callbacks or native HTML/CSS SSE
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Task Classifier │──► simple / medium / complex
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Model Selector  │──► deepseek-flash / deepseek-v4-pro / gpt-6-luna / gpt-6-astra / Gemini 3 / GLM / Kimi
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   LLM Provider   │──► 18 backends with automatic fallback chain
-└────────┬────────┘
-         │  Response + tool calls
-         ▼
-┌─────────────────┐
-│  Tool Executor   │──► 39 runtime tools (file I/O, shell, git, web, memory, browser, graph, GitHub)
-└────────┬────────┘
-         │  Tool results fed back to LLM
-         │  (up to 50 tool-call rounds per turn)
-         ▼
-┌─────────────────┐
-│     Response     │──► User sees answer + task summary
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Self-Learning   │──► Background: extract facts, score memories, build knowledge graph
-└─────────────────┘
-```
+The runtime currently exposes **39 tools**, including **14 Git tools**. The generated [tool and endpoint inventory](docs/tool-inventory.md) is the source of truth.
 
-### System One and calibrated decisions
+## Documentation
 
-System One is a separate, off-by-default session setting. Use `/system-one jev`
-with the paid Jev API and `TYPESAFE_API_KEY` (or enter a separately encrypted
-key), or use `/system-one kev` to install the local Kev-0.8B runtime into
-`~/.kyrozen/kev` and wait for a live check. Kev needs Apple Silicon or a
-supported CUDA/ROCm GPU and 8 GB free disk. Kev-0.8B is less accurate than Jev;
-Jev sends screened public decision context to TypeSafe while Kev keeps approved
-private context on the device. `/system-one off` restores ordinary routing.
-`/fast` remains a deprecated compatibility alias.
+| Need | Read |
+| --- | --- |
+| First commands, modes, and workspace selection | [Usage guide](docs/usage.md) |
+| Runtime flow and safety boundaries | [Architecture](docs/architecture.md) |
+| Providers, environment variables, and state | [Configuration](docs/configuration.md) |
+| Web UI, REST, and MCP contracts | [API guide](docs/api.md) |
+| Self-learning, memory, and evidence | [Self-evolution guide](docs/self-evolution.md) |
+| OpenKyrozen vs other open-source agents | [Comparison](docs/comparison.md) |
+| Development, testing, and releases | [Development guide](docs/development.md) |
+| Calibrated decision and benchmark reports | [System One](docs/system-one-benchmark.md) · [Decision Assist](docs/decision-assist-validation.md) |
+| Project intelligence and built-in skills | [Native project intelligence](docs/native-project-intelligence.md) |
+| Current roadmap | [Agentic runtime roadmap](docs/agentic-runtime-roadmap.md) |
 
-System One makes narrow typed routing decisions only. It never writes response
-text, changes capabilities, approves tools, accepts plans, or decides a user
-owned preference. Clarification is automatic only when the request or a saved
-preference already names one option. Low confidence, privacy screens, invalid
-responses, and service failures follow the existing LLM and user path.
+The default DeepSeek model examples are `"model_simple": "deepseek-flash"` and `"model_complex": "deepseek-v4-pro"`; see [configuration.md](docs/configuration.md) for overrides.
 
-Each action has its own confidence, probability, margin, coverage, and quality
-gate. Policies are fitted from labeled OpenKyrozen cases with an 80/20
-calibration/holdout split and stored with model and dataset hashes. At least
-three distinct cases are required; repeated calls measure agreement and latency
-but cannot substitute for new labels. Until a backend/action passes its
-holdout gate, memory reranking and tool quarantine remain advisory. Diagnostics expose backend, resolved Jev alias/release, policy
-version, thresholds, timing, tokens, and fallback reason without prompt text.
-Use `GET /api/v2/system-one/diagnostics?session_id=...` (the old
-`/api/v2/fast/diagnostics` path remains available).
+## Security notes
 
-Decision Assist is independent and also off by default. Use
-`/decision-assist jev` for screened public snippets or `/decision-assist kev`
-for local private-context checks after one-time consent. It reviews candidate
-learning evidence, ranks up to sixteen authorized memories with candidate
-specific questions, and classifies each instruction-like tool passage. It never
-activates a claim, grants permission, or replaces user approval. Jev calls are
-paid and leave the workspace; Kev is local and less accurate. The CLI, TUI, and
-Web show backend health, resolved model, consent, and calibration status.
+Keep provider credentials in environment variables or the encrypted `~/.kyrozen_config.json` flow. If the web server is reachable beyond localhost, set `KYROZEN_SERVER_TOKEN` and review capability and approval settings. Treat tool output, memory, and downloaded skills as untrusted data.
 
-Run the reproducible labeled harness with:
+## Development
 
 ```bash
-python benchmarks/system_one.py --backends baseline,kev --repeats 5
-TYPESAFE_API_KEY=... python benchmarks/system_one.py --backends baseline,jev --repeats 5
+make check       # syntax, tool inventory, and TUI checks
+make docs-check  # generated inventory and documentation consistency
+make test        # unittest suite
+make lint        # compile-based checks
 ```
 
-For full-turn latency and LLM token/cost effects, add `--url` and keep the
-same provider configuration on both sides. The report includes correctness,
-false decisions, coverage, abstentions, Brier score, ECE, reliability bins,
-agreement, memory precision/recall/MRR/NDCG@3, tool precision/recall/
-specificity/F1, decision latency, full-turn p50/p95, calls, tokens, cost,
-fallbacks, and setup time. Results are promoted to documentation only when
-their predeclared quality or efficiency gate passes; regressions stay in raw
-JSON and the detailed audit.
+See AGENTS.md for repository conventions and docs/development.md for the complete contributor workflow.
 
-[System One benchmark protocol and audit](docs/system-one-benchmark.md), including the
-[live Jev comparison and raw JSON](docs/system-one-benchmark.md#current-calibrated-comparison), and
-[TypeSafe's typed-agent guidance](https://docs.typesafe.ai/introduction/coding-agents)
-describe the decision boundary. The [Kev README](https://github.com/jaredpalmer/kev)
-documents the local checkpoint and its published limits.
+## License
 
-The current calibrated comparison also includes paired DeepSeek full-turn
-results. Kev reduced recorded LLM tokens by 11.2% in that small workload, but
-was 18.3% slower and did not improve answer agreement. Jev used 0.7% more
-tokens, was 9.0% slower, and also left agreement unchanged. These are measured
-workload results, not general speed claims; System One is evaluated primarily
-for decision quality and calibrated uncertainty.
+OpenKyrozen is released under the [MIT License](LICENSE).
 
-Use `/decision-assist revoke` to withdraw local Kev consent, or
-`/decision-assist off` to disable the feature; re-enable it only after
-consenting again. Failed, low-confidence, or privacy-screened checks use the
-existing path. The web and TUI expose the same backend and health state;
-`/api/v2/decision-assist` reports status, and diagnostics record only backend,
-model, timing, confidence, token counts, outcome, and fallback reason.
-
-The historical Decision Assist smoke run did not pass its gates. The current
-expanded calibrated report promotes Jev routing, clarification, evidence,
-memory, and tool review; Kev promotes routing, memory, and tool review while
-keeping clarification and evidence advisory. Jev's current memory and tool
-checks reached 1.0 precision/recall on the labeled corpus, while the audit
-retains the raw data and rerun commands in [the Decision Assist report](docs/decision-assist-validation.md).
-
-The interaction preference and the learning profile are separate. `/mode`
-controls whether Kyrozen answers, plans, or acts; `/agent` continues to select
-the `coder`/`researcher` learning profile.
-
-| Mode | Behavior | Tool boundary |
-|------|----------|---------------|
-| **Auto** | Routes informational Q&A to Ask and actionable work to Plan | Inherits the routed mode |
-| **Ask** | Answers directly or performs read-only investigation | `read`, `network` |
-| **Plan** | Inspects, asks bounded questions, and emits a versioned plan for review | `read`, `network` |
-| **Agent** | Executes accepted plans or explicitly requested work | Existing surface/config/approval intersection |
-
-Questions and plan revisions are recorded as scoped SQLite events. A plan is
-accepted only by the UI action, `/plan accept`, or an exact documented phrase
-such as `accept plan`, `execute plan`, `接受计划`, or `执行计划`. Other text while a
-plan is pending is revision feedback. The plan document stays in session state;
-it is never written into the project.
-
-Agent mode still uses the existing simple/medium/complex model selection and
-durable TaskList execution internally.
-
-### Model auto-selection
-
-The agent picks different models for simple vs complex tasks. You can override these:
-
-```bash
-export KYROZEN_MODEL_SIMPLE=deepseek-flash
-export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
-```
-
-| Provider | Simple tasks (default) | Complex tasks (default) |
-|----------|----------------------|------------------------|
-| DeepSeek | `deepseek-flash` | `deepseek-v4-pro` |
-| OpenAI | `gpt-6-luna` | `gpt-6-astra` |
-| Anthropic | `claude-haiku-4-5` | `claude-fable-5-1` |
-| Google | `gemini-3.5-flash-lite` | `gemini-3.1-pro-preview` |
-| Ollama | `llama3.2` | `llama3.2` |
-| Z.AI / GLM | `glm-5.3-flash` | `glm-5.3` |
-| Moonshot / Kimi | `kimi-k2.6` | `kimi-k3` |
-| Other providers | One documented provider default | One documented provider default |
-
-### Model-window context compaction
-
-OpenKyrozen estimates the complete model-visible prompt before every foreground
- model call and reserves 4,096 response tokens. It compacts only when that
-input would exceed the active model's declared context window—not at a fixed
-character count. Current DeepSeek, Gemini 3, Claude 5, GPT-6, GLM, Kimi,
-and the documented compatible-provider defaults have built-in windows. For a custom model, set an explicit
-window with the encrypted provider configuration's `context_window_tokens`
-value or:
-
-```bash
-export KYROZEN_CONTEXT_WINDOW_TOKENS=128000
-```
-
-Unknown models are never proactively compacted. If their provider reports a
-recognized context overflow, OpenKyrozen compacts older conversation/tool
-results with the active chat model and retries the original request once. The
-newest complete turns, fixed instructions, and pending work are retained. If
-the summary call fails, only the oldest compactable entries are trimmed and an
-untrusted omission marker is kept. The web header always shows a token meter;
-expand it for estimated category sizes, reserve, source labels, and the latest
-compaction result. Prompt, memory, and instruction text are never displayed.
-
-### Provider management
-
-Switch providers anytime — in chat with `/provider`, or via environment:
-
-```bash
-export KYROZEN_PROVIDER=anthropic
-export ANTHROPIC_API_KEY=sk-ant-...
-kyrozen
-```
-
-If the primary provider fails, Kyrozen automatically falls back through a chain (e.g., DeepSeek → OpenAI → Claude). Rate-limit errors (HTTP 429) trigger exponential backoff with jitter.
-
-Ollama is keyless: set `KYROZEN_PROVIDER=ollama` and, if needed, point
-`KYROZEN_BASE_URL` at the local OpenAI-compatible endpoint. The Web server
-always initialises in headless mode. If a remote provider has no key, it
-starts in a documented degraded state without reading stdin; configure the
-provider before sending chat requests. The interactive CLI still prompts for
-providers that require credentials.
-
-## 🧬 Self-Learning System
-
-OpenKyrozen has one authoritative registry of 20 independently toggleable
-learning features. Each dispatcher cycle runs a bounded round-robin subset and
-stores `learning.feature_started`, `learning.feature_completed`, or
-`learning.feature_failed` in the scoped SQLite event store. A completion records
-whether it changed durable or in-memory state; `changed: false` is an honest
-no-op when the required evidence or input is absent.
-
-Each workspace starts in `setup_required`: learning asks you to choose **Local**
-or **Remote** rather than quietly spending API money. Use `/self-learning` in
-the CLI/TUI or `POST /api/v2/learning/provider` with `{"mode":"local"}` or
-`{"mode":"remote"}`. The API reports the selected mode, setup state, model,
-and failure detail through `GET /api/v2/learning/features`.
-
-Local is free of API charges. After you explicitly select it, OpenKyrozen checks
-for 12 GB of system RAM (not GPU VRAM) and 8 GB free disk, reuses or installs Ollama, downloads only
-`qwen2.5:7b`, verifies it, and performs a local smoke chat before enabling
-semantic learning. It accepts only `localhost`, `127.0.0.1`, or `::1`, uses no
-remote fallback, and records a durable actionable failure if setup cannot finish.
-Remote reuses the configured chat provider and model; its usage records are
-tagged `surface=learning`. Deterministic learning—outcomes, preferences,
-retrieval, indexing, and scoring—remains model-free. Feature switches and the
-mode persist per workspace across restarts. Dynamic tools remain response-time
-operations protected by explicit capability and approval gates, and rollback
-remains user-directed via `/forget` or an explicit learning rollback command.
-
-### Installed skill guidance
-
-The local skill API installs user-authored `SKILL.md` packages as guidance that
-can participate in matching runtime tasks. A package intended for matching must
-include a `skill.json` with explicit supported profiles and one to twelve
-trigger terms:
-
-```json
-{
-  "name": "local-pytest-guide",
-  "version": "1.0.0",
-  "permissions": [],
-  "profiles": ["coder"],
-  "triggers": ["pytest"]
-}
-```
-
-Install it with `POST /api/v2/skills/install` and
-`{ "path": "...", "activate": true }`. Only an active local skill whose
-profile and trigger match the task is added to the prompt; each use creates a
-scoped `learning.artifact_used` receipt. Skill text is untrusted procedure
-data: it cannot grant capabilities, permissions, or approval, and the normal
-tool and workspace gates still apply. Learned artifacts remain separately
-outcome-verified and follow their canary/promotion lifecycle; plugins remain
-hook extensions rather than permission-bearing skill packages.
-
-OpenKyrozen also seeds three release-versioned built-ins: Graphify `0.9.64`,
-GitHub CLI `2.101.0`, and Ponytail `4.10.0`. Their manifests declare source,
-license, checksum, activation, and capability requirements. They update only
-through `/update`; local skills and executable plugins are left untouched.
-
-| # | Registry feature | Bounded effect |
-|---:|---|---|
-| 1 | Conversation learning | Extract candidate facts from new conversation logs |
-| 2 | Project intelligence | Incrementally refresh a private local Graphify code index |
-| 3 | Legacy code-entry aging | Remove pre-Graphify `FILE:` snapshots only |
-| 4 | Tool auto-debugging | Record findings from repeated tool failures |
-| 5 | Memory consolidation | Deduplicate and summarize non-trivial memories |
-| 6 | Tool review | Record bounded tool-improvement suggestions |
-| 7 | Targeted inquiry | Inspect one undocumented function per cycle |
-| 8 | Idle reflection | Reflect only after the configured idle interval |
-| 9 | Strategy distillation | Distill strategies after sufficient recent usage |
-| 10 | Technology discovery | Queue bounded documentation fetches for new libraries |
-| 11 | Skill invention | Create candidate reusable workflows from repeated work |
-| 12 | Context compression | Foreground model-window pressure compacts older context |
-| 13 | Outcome-verified evolution | Review one eligible trajectory and canary |
-| 14 | Dynamic-tool definition | Observe the inventory; never grant capability automatically |
-| 15 | Preference detection | Persist newly detected user preference signals |
-| 16 | Autonomous inspection | Run one bounded project health inspection |
-| 17 | Memory importance scoring | Score a recent window and persist the scores |
-| 18 | Knowledge-graph extraction | Extract bounded entity relationships from facts |
-| 19 | Skill composition | Record a matching learned workflow without executing it |
-| 20 | Learning rollback | Keep automatic deletion disabled; require explicit user action |
-
----
-
-## 🛠 Tools Reference
-
-All 39 runtime tools accept a plain-string `args` field in a JSON action block.
-The [generated runtime inventory](docs/tool-inventory.md) is authoritative for
-tool names, capability labels, MCP input schemas, and the live HTTP endpoint
-list:
-
-Built-in Git tools, including `git_branch`, require the `git` capability;
-`dynamic` is reserved for user-defined tools.
-
-```json
-{"action": "read_file", "args": "README.md"}
-```
-
-Short aliases work too — `bash`, `cmd`, `sh` → `run_cmd`; `status`, `diff`, `log` → `git_status`, etc.
-
-### File & System
-
-| Tool | Description | Example |
-|------|-------------|---------|
-| `read_file` | Read file contents | `"README.md"` |
-| `write_file` | Create or overwrite a file | `"path\|content"` |
-| `list_dir` | List directory contents | `"."` |
-| `list_tree` | Recursive directory tree | `"src/"` |
-| `find_files` | Glob-based file search | `"*.py\|."` |
-| `run_cmd` | Execute shell command | `"python --version"` |
-| `execute_terminal_command` | Alias for `run_cmd` | `"python --version"` |
-
-File and directory paths are resolved inside the active workspace. Use a
-relative path such as `notes.txt` in file examples; home-directory and Desktop
-paths are rejected by the workspace boundary.
-
-`run_cmd` prepends the `bin` directory of the Python interpreter running
-OpenKyrozen, so bare `python` and `pip` resolve inside the active virtual
-environment even when the parent shell was not activated. Explicit interpreter
-paths such as `/usr/bin/python3` are left unchanged.
-
-### Web
-
-| Tool | Description | Example |
-|------|-------------|---------|
-| `search_web` | Internet search (Google → DDG → Wikipedia) | `"latest Python release"` |
-| `read_webpage` | Fetch URL text content | `"https://example.com"` |
-| `analyze_remote_repo` | Clone and summarize a remote repository | `"https://github.com/org/repo"` |
-
-### Browser (5 tools)
-
-These tools use an isolated browser profile. Install the optional browser
-extra before using them.
-
-| Tool | Description | Example |
-|------|-------------|---------|
-| `browser_open` | Open a URL | `"https://example.com"` |
-| `browser_snapshot` | Read the current page text | `"session-id"` |
-| `browser_click` | Click a CSS selector | `"session-id\|button.submit"` |
-| `browser_type` | Fill a CSS selector | `"session-id\|input[name=q]\|query"` |
-| `browser_close` | Close an isolated browser session | `"session-id"` |
-
-### Git (14 tools)
-
-| Tool | What it does |
-|------|-------------|
-| `git_status` | Show working tree status |
-| `git_diff` | Unstaged / staged / between-commit diffs |
-| `git_log` | Commit history (`--oneline --decorate`) |
-| `git_branch` | List / create / delete branches |
-| `git_add` | Stage files for commit |
-| `git_commit` | Commit with message |
-| `git_push` / `git_pull` | Remote sync |
-| `git_checkout` | Switch branches or restore files |
-| `git_stash` | Stash / pop / list working changes |
-| `git_reset` | Reset HEAD (`--soft` safe, `--hard` warns) |
-| `git_show` | Inspect a commit with `--stat` |
-| `git_remote` | List / add / remove remotes |
-| `git_clone` | Clone a repository |
-
-### Memory
-
-| Tool | Description |
-|------|-------------|
-| `search_memory` | Semantic search over stored knowledge |
-| `check_stored_data` | Memory statistics and recent facts |
-
----
-
-## 🧠 Dedicated Workflows
-
-### Bug fixing (6-step protocol)
-
-When you paste an error or traceback, Kyrozen activates automatically:
-
-1. **Reproduce** — read the offending code, re-run the failing command
-2. **Diagnose** — parse the traceback, identify root cause
-3. **Hypothesise** — state the fix before making any changes
-4. **Fix** — apply the minimal code change
-5. **Verify** — re-run the failing command; loop back to step 2 if it fails
-6. **Explain** — tell you what was wrong, what changed, and why
-
-The runtime persists this workflow per user/workspace/session as
-`reported → reproduced → diagnosed → hypothesized → fixed → verified → explained`.
-Reproduction, mutation, and verification stages each require bounded tool
-receipts; a response that says the bug is fixed without a successful fix and a
-successful verification command is blocked and cannot be presented as a
-success. A failed verification is also recorded as `blocked`. Every turn and
-feedback signal is linked to the workflow's task and attempt IDs in SQLite.
-If you say "thanks, that works" it records positive feedback for that attempt;
-if you say "still broken" it records negative feedback and blocks the attempt
-for a new diagnosed run.
-
-### Git operations (safety-first)
-
-- Always runs `git_status` first
-- Reviews `git_diff` before committing
-- Uses conventional commit prefixes: `fix:`, `feat:`, `refactor:`, `chore:`
-- Never force-pushes without explicit request
-- Stashes uncommitted changes before switching branches
-- Warns before `git reset --hard`
-
-### Complex tasks (never stops early)
-
-For multi-step work (refactors, project generators, codebase audits):
-
-- Breaks down the request into verifiable subtasks
-- Creates a numbered Plan
-- Builds a JSON TaskList mapped to each plan step
-- Tracks progress with `TaskDone` markers
-- Auto-generates a summary when complete
-
----
-
-## 🧬 Profile-scoped self-evolution
-
-OpenKyrozen learns reusable policies and skills only from completed multi-step work, explicit corrections, or verified failures. Learned artifacts are isolated to either the `coder` or `researcher` profile; the `reviewer` can propose one bounded canary during idle review but never learns its own behavior. The background loop waits for at least 60 seconds without user interaction (and each review candidate must be at least 30 seconds old).
-
-### How it works
-
-Every run records its profile, task signature, tool/error receipts, acceptance evidence, latency, and tokens in SQLite. Matching is deterministic and injects at most three artifacts (8,000 characters total), including at most one canary. A canary promotes only after two distinct verified successes and a non-regressing paired shadow replay; one linked correction, or two verified failures among its last five active uses, rolls it back to its predecessor. Learned artifacts cannot add permissions or dynamic tools, and user/bundled/plugin skills are immutable to evolution.
-
-Use `/agent auto|coder|researcher` to control routing. `/learning status [profile]`, `/learning metrics [profile]`, `/learning evidence <id>`, `/learning explain <id>`, `/learning replay <id>`, and `/learning rollback <id>` expose lifecycle state and proof. The terminal replay command is informational; paired frozen results are submitted through the authenticated API, which never executes replay commands. Project indexing remains separate knowledge ingestion. See the [self-evolution and memory operations guide](docs/self-evolution.md) for verified workflows and request examples.
-
-Inferred facts and preferences remain candidates until repeated independent evidence supports them. Explicit owner claims activate immediately. Typed global, profile, project, task, speaker, audience, and channel scopes resolve deterministically; `/memory why <id>` explains a claim and `/memory forget <id>` removes it together with solely dependent learned behavior.
-
-Selection ranks relevant guidance by verified utility per context character and avoids artifact pairs with repeated verified failures. Paired omission trials can retire guidance only when removing it does not reduce verified completion; retirement is reversible and preserves the learned artifact pre-image.
-
-Learned guidance is bound to the provider/model family that produced its evidence unless paired replay validates it across models. Verifier reliability, evidence-adaptive review priority, and a user-owned `KYROZEN_LEARNING_CONSTITUTION` file constrain evolution. Redacted experience capsules are portable JSON evidence, but imports always remain inactive candidates until local validation.
-
-Multi-party claims distinguish attributed beliefs, private facts, and group agreements. Speaker, audience, channel, and visibility checks run before recall; private claims use the configured `KYROZEN_SERVER_ACTOR`, not a client-supplied speaker label. Chat responses include a memory receipt listing the claim IDs and speakers that affected the turn, and `benchmarks/multi_party_memory.jsonl` provides frozen leakage, update, ambiguity, and audience cases.
-
-For a private claim, omit `speaker` and use the same deployment actor for the full
-create → list → detail → forget lifecycle. Set a stable actor label when using a
-custom deployment (the default is `local`):
-
-```bash
-export KYROZEN_SERVER_ACTOR=owner-66
-curl -sS -X POST http://127.0.0.1:8000/api/v2/memory/claims \
-  -H 'Content-Type: application/json' \
-  -d '{"key":"favorite editor","value":"vim","claim_type":"private_fact","authority":"owner"}'
-curl -sS http://127.0.0.1:8000/api/v2/memory/claims
-curl -sS http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
-curl -sS -X DELETE http://127.0.0.1:8000/api/v2/memory/claims/<claim_id>
-```
-
-An explicit different `speaker` is only an attribution filter and cannot read or
-delete the private claim. Use separate deployments and databases for separate
-private users.
-
-### Memory storage
-
-OpenKyrozen v2 uses **SQLite as the source of truth** (`~/.kyrozen/v2/openkyrozen.sqlite3`) and ChromaDB as a rebuildable semantic index for conversational memory. Personal conversations, tasks, and learning are shared in the global state store. Project source is not repeatedly copied into memory: Graphify maintains an incremental, code-only mirror and graph under `~/.kyrozen/v2/graphs/<source-scope>/`. The private mirror never writes `graphify-out` into the project. The default global workspace is `~/.kyrozen/workspace`; `kyrozen --project PATH` operates on the original project while its graph remains private. If ChromaDB is unavailable, SQLite keeps durable keyword retrieval.
-
-Import an existing v1 store without deleting it:
-
-```bash
-python main.py migrate v1 ./chroma_memory
-```
-
-The migration creates a `.v1-backup` copy and writes the v2 database under `~/.kyrozen/v2/` (or `KYROZEN_DB_PATH`).
-
-### v2 durable tasks and learning
-
-Tasks persist across process restarts and use `pending`, `running`, `succeeded`, `failed`, `blocked`, and `cancelled` states. `TaskDone` is only a completion request; a verified execution receipt from a successful tool result, test, file check, or explicit confirmation can reconcile a planned task. A repeated successful state-changing operation is refused within one chat turn. API-created tasks with an explicit safe `action` and string `args` are picked up by the durable worker after server restart; failed or blocked tasks require an explicit resume request.
-
-For model-generated complex work, give each `TaskList` item a stable `id` when the same turn can be retried; that ID is preferred over the description and is scoped to the authenticated user, workspace, and session. A `TaskList` update never clears recovered progress. `done` remains readable for old records but new progress and completion summaries use `succeeded`. `Plan`, `TaskList`, `TaskDone`, `Thought`, and `Action` are control blocks: the chat surface uses them internally and returns the latest natural-language response (or a deterministic tool/evidence summary), never a stale `Action` block.
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/v2/tasks \
-  -H 'Content-Type: application/json' \
-  -d '{"description":"write a marker","action":"write_file","args":"task-marker.txt|completed","acceptance":["marker written"]}'
-# Resume a failed/blocked task:
-curl -X POST http://127.0.0.1:8000/api/v2/tasks/<task-id>/resume
-```
-
-Run the frozen clean-versus-evolved benchmark from a fresh checkout after
-`make install`:
-
-```bash
-make benchmark
-```
-
-`make benchmark` uses the repository's
-`benchmarks/multi_party_memory.jsonl` fixture and the shipped
-`benchmarks/clean_runner.py` and `benchmarks/evolved_runner.py` wrappers. It
-creates a temporary benchmark root, assigns separate `clean.sqlite3` and
-`evolved.sqlite3` databases, and isolates the benchmark driver's database with
-`KYROZEN_DB_PATH`; the temporary root is removed when the command exits. The
-wrappers use a deterministic local memory policy, so no provider, model, or
-API key is required. Set `BENCHMARK_TIMEOUT=120` to change the per-case limit.
-
-For direct use, provide an isolated root explicitly:
-
-```bash
-benchmark_root="$(mktemp -d)"
-KYROZEN_BENCHMARK_ROOT="$benchmark_root" \
-  ./venv/bin/python main.py learning benchmark \
-  --cases benchmarks/multi_party_memory.jsonl \
-  --clean-runner "./venv/bin/python benchmarks/clean_runner.py" \
-  --evolved-runner "./venv/bin/python benchmarks/evolved_runner.py"
-rm -rf "$benchmark_root"
-```
-
-Each JSONL case requires `id`, `profile`, and `task`. Each wrapper reads one
-case from stdin and emits `verified_success`, `corrections`,
-`repeated_errors`, `tool_calls`, `tokens`, `latency`, `provider`, `model`, and
-`evidence_status`, plus bounded evidence counts and scope. The exported
-`openkyrozen-learning-benchmark-v1` JSON includes the protocol, runner
-metadata, provider/model, and evidence policy. Fixture-only evidence is
-reported as `fixture_verified` and therefore cannot support a product
-superiority claim; such a claim requires independently verified paired runs
-with the same provider, model, configuration, and observable product behavior.
-
----
-
-## 🌐 Web UI & REST API
-
-```bash
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl'
-pip install fastapi uvicorn "$release_url"
-kyrozen-web --port 8000
-# Open http://localhost:8000
-
-# For LAN or container access, set a token and bind explicitly:
-KYROZEN_SERVER_TOKEN=change-me kyrozen-web --host 0.0.0.0 --port 8000
-```
-
-### REST API endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/` | Dark-themed chat web UI |
-| `POST` | `/api/auth/session` | Exchange a server token for a short-lived HttpOnly browser session |
-| `DELETE` | `/api/auth/session` | Revoke the current browser session |
-| `POST` | `/api/chat` | Send a message or typed control; returns interaction, memory receipt, and content-free `context` status |
-| `POST` | `/api/chat/stream` | SSE chat with typed `interaction` and `context` completion events |
-| `GET` | `/api/v2/system-one/diagnostics?session_id=...` | Scoped System One decisions, calibration, and LLM usage without prompt content |
-| `GET` | `/api/v2/fast/diagnostics?session_id=...` | Scoped System One decisions (legacy path) and LLM usage without prompt content |
-| `GET` | `/api/v2/decision-assist` | Decision Assist backend, consent, and health state |
-| `GET` | `/api/cost` | Token usage and cost summary |
-| `POST` | `/api/cost/reset` | Explicitly reset a durable workspace/session reporting window (requires `confirm: "reset-cost"`) |
-| `GET` | `/api/health` | Provider status + memory count |
-| `GET` | `/api/memory?q=keyword` | Search stored memories |
-| `GET` | `/api/v2/agents` | List specialised sub-agent profiles |
-| `POST` | `/api/v2/agents/run` | Run a sub-agent with isolated memory and capabilities |
-| `GET` | `/api/v2/events` | Auditable runtime, task, session, and learning events |
-| `GET` | `/api/v2/learning` | Learning proposal status |
-| `POST` | `/api/v2/learning/capsules` | Import a capsule as an inactive candidate |
-| `GET` | `/api/v2/learning/constitution` | Inspect the immutable user-owned learning policy |
-| `GET` | `/api/v2/learning/features` | Authoritative 20-feature registry and latest run status |
-| `POST` | `/api/v2/learning/provider` | Choose Local setup or Remote provider-backed learning |
-| `GET` | `/api/v2/learning/metrics?profile=...` | Profile completion, correction, error, tool, token, and latency metrics |
-| `GET` | `/api/v2/learning/{proposal_id}/capsule` | Export a redacted, harness-neutral experience capsule |
-| `GET` | `/api/v2/learning/{proposal_id}/evidence` | Proof card, applicability, replay, and outcome receipts |
-| `POST` | `/api/v2/learning/{proposal_id}/omission` | Record paired with/without-artifact results |
-| `POST` | `/api/v2/learning/{proposal_id}/replay` | Record paired sandboxed candidate/predecessor replay results |
-| `POST` | `/api/v2/learning/{proposal_id}/restore` | Restore a retired artifact as a canary |
-| `POST` | `/api/v2/learning/{proposal_id}/retire` | Retire an artifact with non-regressing omission evidence |
-| `POST` | `/api/v2/learning/{proposal_id}/rollback` | Roll back an activated proposal |
-| `GET` | `/api/v2/memory?q=keyword&speaker=...&audience=...&channel=...` | Structured memory search with provenance and party scope |
-| `GET` | `/api/v2/memory/claims` | List typed, attributed memory claims; filter with `speaker`, `audience`, and `channel` |
-| `POST` | `/api/v2/memory/claims` | Create a typed, attributed memory claim |
-| `DELETE` | `/api/v2/memory/claims/{claim_id}` | Dependency-completely forget a claim with party filters |
-| `GET` | `/api/v2/memory/claims/{claim_id}` | Explain a claim with party filters |
-| `GET` | `/api/v2/schedules` | List durable interval and one-shot Gateway jobs |
-| `POST` | `/api/v2/schedules` | Create a durable interval or one-shot Gateway job |
-| `POST` | `/api/v2/schedules/{job_id}/disable` | Disable a scheduled job |
-| `GET` | `/api/v2/sessions` | List durable sessions |
-| `GET` | `/api/v2/sessions/{session_id}` | Resume/read a session context and its latest context status |
-| `GET` | `/api/v2/sessions/{session_id}/history` | List the conversation's tree of completed turns and file-change summaries |
-| `POST` | `/api/v2/sessions/{session_id}/history/{node_id}/rollback` | Restore a node's transcript, interaction/task state, and workspace snapshot; send `{"confirm":"rollback","expected_head_id":"..."}` |
-| `GET` | `/api/v2/skills` | List installed candidate/active skills |
-| `POST` | `/api/v2/skills/install` | Install and validate a local `SKILL.md` package |
-| `POST` | `/api/v2/skills/{skill_id}/activate` | Activate a validated skill |
-| `POST` | `/api/v2/skills/{skill_id}/rollback` | Roll back a skill |
-| `GET` | `/api/v2/tasks` | List durable tasks |
-| `POST` | `/api/v2/tasks` | Create a durable task |
-| `POST` | `/api/v2/tasks/{task_id}/resume` | Explicitly resume a failed or blocked durable task |
-| `GET` | `/api/voice/speak?text=...` | Text-to-speech via system TTS |
-| `POST` | `/api/voice/transcribe` | Speech-to-text (passthrough) |
-| `GET` | `/api/webhooks` | List registered webhooks |
-| `POST` | `/api/webhooks/register` | Register a webhook URL |
-| `POST` | `/api/webhooks/test` | Fire a test webhook |
-| `POST` | `/mcp` | Model Context Protocol (JSON-RPC 2.0) |
-
-Browser tools (`browser_open`, `browser_snapshot`, `browser_click`, `browser_type`, and
-`browser_close`) use an isolated profile and are available after
-`pip install playwright https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl && playwright install chromium`. Private and
-loopback destinations are blocked unless `KYROZEN_BROWSER_ALLOW_PRIVATE=1` is set.
-
-Chat requests remain backward compatible with `{"message":"..."}` and may also
-include one typed control per transition:
-
-```json
-{"session_id":"sess_example","mode":"plan"}
-{"session_id":"sess_example","question_response":{"request_id":"question_...","answers":{"scope":"all"}}}
-{"session_id":"sess_example","message":"Cover the API and TUI","plan_action":{"plan_id":"plan_...","version":2,"action":"revise"}}
-```
-
-`question_response` may use `action: "skip"` or `"cancel"`; `plan_action.action`
-is `accept`, `revise`, or `cancel`. The JSON response, SSE stream, Bubble Tea
-JSONL protocol, and session restore response expose the same
-`interaction: {preference_mode, effective_mode, pending_question, pending_plan}`
-envelope. MCP remains non-interactive and unchanged.
-
-Every completed agent turn is recorded as an immutable node in the selected
-conversation's history tree. The web History panel, `/history`, and the TUI
-command palette show the tree and file deltas. Restoring a node keeps its
-descendants as alternate branches, creates a hidden recovery point, restores
-the workspace outside the project under `~/.kyrozen/v2/history/`, and keeps
-durable memory, learning, usage, and audit events. Rollback requires explicit
-confirmation; `expected_head_id` prevents overwriting a newer change.
-
-Successful `POST /api/chat` requests emit one `chat.completed` webhook after
-the reply is produced. `POST /api/chat/stream` emits the same event only after
-the SSE stream has sent `[DONE]`; failed or disconnected streams do not emit
-it. The POST body is `{"event":"chat.completed","data":{...}}`, where
-`data` contains only the bounded `actor`, `session_id`, `profile`,
-`reply_summary`, `reply_length`, and `streamed` fields. Reply summaries are
-limited to 500 characters and redact common API-key/token patterns. Webhook
-delivery errors are audited as `WEBHOOK_FAILURE` and never change the chat
-response.
-
-API and MCP routes allow direct loopback access without a token. Any
-non-loopback deployment must set `KYROZEN_SERVER_TOKEN` and send it as
-`Authorization: Bearer <token>` or `X-Kyrozen-Token`. Web/MCP use the rich
-`workspace` profile by default; choose `full` explicitly for irreversible reset
-and dynamic tools. Authentication, capability tokens, and command safety checks
-still apply.
-
-When the shipped browser UI receives a protected-route `401`, enter the server
-token in its password field. The server exchanges it for a short-lived,
-`HttpOnly`/`SameSite=Strict` browser session cookie; the raw token is kept only
-in the form during that exchange and is never written to URLs, page markup,
-logs, or browser storage. The token must be entered again after the cookie
-expires or the browser session is cleared.
-
-The MCP endpoint supports `initialize`, `notifications/initialized`, `ping`,
-`server/discover`, `tools/list`, `tools/call`, and the legacy `chat/send`
-method. Responses echo the JSON-RPC request `id`. `tools/list` returns an
-`inputSchema` for every exposed tool. Tools retain their internal plain-string
-contracts while MCP object arguments are mapped explicitly; for example:
-
-```bash
-curl -sS http://127.0.0.1:8000/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
-curl -sS http://127.0.0.1:8000/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
-curl -sS http://127.0.0.1:8000/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"README.md"}}}'
-```
-
-Protocol errors use JSON-RPC error objects. Tool failures use a successful
-JSON-RPC response whose result contains `isError: true`; capability-denied
-and unknown tools remain protocol errors. Write, shell, network, destructive,
-and dynamic tools continue to require their configured MCP capabilities.
-
-The Web/MCP server is intentionally a **single-user deployment**. One
-`KYROZEN_SERVER_TOKEN` represents the one owner of that server's private
-memories, tasks, events, schedules, and learning state; request JSON cannot
-choose another private speaker. Loopback and token-authenticated requests use
-the same stable actor. Set `KYROZEN_SERVER_ACTOR` to a stable, non-secret label
-when migrating an existing deployment; otherwise the default actor is `local`.
-Public and group-attributed claims may name other speakers, but private claims
-must belong to the deployment actor. Use separate deployments and databases
-for separate private users.
-
-### Docker deployment
-
-```bash
-docker build -t openkyrozen .
-docker run -p 8000:8000 \
-  -e DEEPSEEK_API_KEY=sk-your-key \
-  -e KYROZEN_SERVER_TOKEN=change-me \
-  -e KYROZEN_DB_PATH=/data/openkyrozen.sqlite3 \
-  -v kyrozen-data:/data \
-  openkyrozen
-```
-
-The image runs as the non-root `kyrozen` user. SQLite is the durable source of
-truth at `/data/openkyrozen.sqlite3` (the image sets `KYROZEN_DB_PATH` to this
-path), so keep the named volume mounted at `/data` when replacing containers.
-To run the same replacement-and-recovery check locally, use `make docker-smoke`.
-
----
-
-## 🔌 Plugin System
-
-Create a `.py` file in `plugins/` with a `register()` function:
-
-```python
-# plugins/my_plugin.py
-class MyPlugin:
-    def on_startup(self, agent=None, **kwargs):
-        print("Plugin loaded!")
-
-    def on_turn_start(self, user_input, **kwargs):
-        print(f"User said: {user_input[:50]}")
-
-    def on_tool_execute(self, action, args, result, **kwargs):
-        print(f"Tool {action}({args[:30]}) → {result[:30]}")
-
-def register():
-    return MyPlugin()
-```
-
-Available hooks: `on_startup`, `on_turn_start`, `on_turn_end`, `on_tool_execute`.
-
-The shared runtime loads packaged `plugins/*.py` plus `plugins/*.py` under the
-active workspace once per execution surface (`cli` and `web`) in deterministic
-filename order. Active-workspace plugins take precedence when names collide.
-Hook failures are isolated, recorded as `plugin.hook_failed` events, and never
-fail the user turn. Hook arguments are keyword arguments and are
-bounded/redacted before a plugin sees them:
-
-| Hook | Required kwargs | Additional context |
-|------|-----------------|--------------------|
-| `on_startup` | — | `agent`, `surface`, `user_id`, `workspace_id` |
-| `on_turn_start` | `user_input` | `surface`, `user_id`, `workspace_id`, `session_id`, `profile` |
-| `on_turn_end` | `reply`, `success` | `error` plus the turn context |
-| `on_tool_execute` | `action`, `args`, `result`, `success` | `error`, `surface`, and scope context |
-
-`on_tool_execute` fires once for every attempted action, including unknown,
-unauthorized, malformed, and approval-denied actions. By default,
-`turn_logger.py` writes to `~/.kyrozen/v2/kyrozen_turns.log`; set
-`KYROZEN_TURN_LOG` to choose another path for a service or test.
-
-See `plugins/turn_logger.py` for a working example.
-
----
-
-## 🔐 Security
-
-| Feature | What it protects |
-|---------|-----------------|
-| **Dangerous command filter** | Blocks `rm -rf`, `mkfs`, fork bombs, Windows destructive commands |
-| **API key encryption** | Fernet encryption with a random per-install secret; config and secret files use `0600` permissions |
-| **Prompt injection protection** | Filters known patterns in CLI, API, and MCP messages |
-| **Workspace boundary** | File and directory tools reject paths outside the active workspace |
-| **API authentication** | Non-loopback API/MCP access requires `KYROZEN_SERVER_TOKEN` |
-| **Capability profiles** | Local CLI keeps the full agent toolset; Web/MCP default to rich `workspace` access, while `full` explicitly enables irreversible Git reset and dynamic tools |
-| **Git safety** | Never force-pushes; CLI confirms high-impact Git actions and records the decision |
-| **Audit logging** | All chat/API events logged to `~/.kyrozen/v2/kyrozen_audit.log` with timestamps (override with `KYROZEN_AUDIT_LOG`) |
-| **Python version guard** | Refuses to start on Python 3.14+ |
-| **Tool failure memory** | Remembers past failures and avoids repeating them |
-
----
-
-## ⚙️ Configuration Reference
-
-### Environment variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `KYROZEN_PROVIDER` | LLM provider | `deepseek` |
-| `DEEPSEEK_API_KEY` | DeepSeek API key | — |
-| `OPENAI_API_KEY` | OpenAI API key | — |
-| `ANTHROPIC_API_KEY` | Anthropic API key | — |
-| `GEMINI_API_KEY` | Google Gemini API key | — |
-| `ZAI_API_KEY` / `MOONSHOT_API_KEY` | Z.AI/GLM or Moonshot/Kimi API key | — |
-| `OPENROUTER_API_KEY` / `GROQ_API_KEY` | OpenRouter or Groq API key | — |
-| `MISTRAL_API_KEY` / `XAI_API_KEY` | Mistral or xAI API key | — |
-| `TOGETHER_API_KEY` / `FIREWORKS_API_KEY` | Together AI or Fireworks AI API key | — |
-| `COHERE_API_KEY` / `PERPLEXITY_API_KEY` | Cohere or Perplexity API key | — |
-| `AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_ENDPOINT` | Azure OpenAI API key/endpoint; Entra identity is also supported | — |
-| `AWS_REGION` / `AWS_DEFAULT_REGION` | Bedrock region; boto3 uses the default AWS credential chain | — |
-| `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` | Vertex project/location; Google ADC is used | — |
-| `OLLAMA_MODEL_SIMPLE` / `OLLAMA_MODEL_COMPLEX` | Optional Ollama model overrides; otherwise `/api/tags` is discovered | — |
-| `KYROZEN_API_KEY` | Universal API key (overrides provider-specific) | — |
-| `KYROZEN_MODEL_SIMPLE` | Model for simple/medium tasks | Provider default |
-| `KYROZEN_MODEL_COMPLEX` | Model for complex tasks | Provider default |
-| `KYROZEN_BASE_URL` | Custom API base URL | Provider default |
-| `KYROZEN_PROVIDER_TIMEOUT_SECONDS` | Maximum wait for one provider response | `90` |
-| `KYROZEN_WORKSPACE_ROOT` | Advanced test/development root override; explicit CLI mode flags take precedence | `~/.kyrozen/workspace` |
-| `KYROZEN_DB_PATH` | SQLite source-of-truth path | `~/.kyrozen/v2/openkyrozen.sqlite3` |
-| `KYROZEN_VECTOR_PATH` | Rebuildable Chroma index path | Under the SQLite directory |
-| `KYROZEN_TURN_LOG` | Explicit turn-log path | `~/.kyrozen/v2/kyrozen_turns.log` |
-| `KYROZEN_AUDIT_LOG` | Explicit audit-log path | `~/.kyrozen/v2/kyrozen_audit.log` |
-| `KYROZEN_EXECUTION_SURFACE` | Execution surface (`cli` or `web`) | `cli` |
-| `KYROZEN_ALLOW_DYNAMIC_TOOLS` | Allow LLM-generated Python tools (`1`/`true`) | CLI: enabled; Web/MCP: disabled |
-| `KYROZEN_APPROVAL_MODE` | CLI confirmation mode for high-impact Git actions and dynamic-tool registration (`dangerous`/`never`) | `dangerous` |
-| `KYROZEN_WEB_CAPABILITIES` | Web chat capabilities: `readonly`, `workspace`, or `full` | `workspace` |
-| `KYROZEN_MCP_CAPABILITIES` | MCP capabilities: `readonly`, `workspace`, or `full` | `workspace` |
-| `KYROZEN_AGENT_CONFIG` | Explicit path to a validated `agent.yaml` configuration | Workspace `agent.yaml`, then packaged default |
-| `KYROZEN_ROLE` | Override the configured role name | `assistant` |
-| `KYROZEN_ROLE_PROMPT` | Override the configured role system prompt | Packaged `prompts/role.md` |
-| `KYROZEN_INSTRUCTIONS` | Override the configured runtime instructions | Packaged `prompts/instructions.md` |
-| `KYROZEN_AGENT_CAPABILITIES` | Comma-separated capability/profile upper bound | `full` |
-| `KYROZEN_EXAMPLES` | JSON list of `{\"user\": ..., \"assistant\": ...}` examples | Packaged `prompts/examples.md` |
-
-Agent mode on the local CLI can use the high-permission toolset, similar to Codex or OpenClaw: it can read and write the active workspace, run shell commands, use the network, and operate Git. Ask and Plan narrow that set to `read` and `network`. Web Agent mode uses the rich `workspace` profile by default but keeps irreversible `git_reset` and LLM-generated Python tools behind the explicit `full`/`KYROZEN_ALLOW_DYNAMIC_TOOLS=1` opt-in. MCP remains non-interactive. On the interactive CLI, dynamic registration also follows `KYROZEN_APPROVAL_MODE`; use `never` only for an explicitly automated deployment. Authentication and the command safety filter still apply.
-
-See the [agentic runtime roadmap](docs/agentic-runtime-roadmap.md) for deliberately deferred runtime work.
-
-### Agent role configuration (`agent.yaml`)
-
-`agent.yaml` is a validated, packaged configuration for the role and prompt
-templates. A workspace-level `agent.yaml` customizes that workspace; use
-`KYROZEN_AGENT_CONFIG=/path/to/agent.yaml` for an explicit file. The effective
-precedence is environment-variable overrides, explicit configuration path,
-workspace configuration, packaged configuration, and finally the built-in
-defaults. The `role`, `instructions`, and `examples` fields are loaded from
-the packaged `prompts/` templates by default and are included in installed
-wheels.
-
-The schema accepts `version`, `provider`, `role`, `instructions`, `examples`,
-and `capabilities`. Capabilities are an upper bound: the active surface's
-capability profile, approval mode, and authentication gates still apply, and
-configuration cannot grant permissions. Invalid YAML, unknown fields,
-duplicate keys, unsupported capabilities, and malformed examples fail with a
-deterministic configuration error. See the root `agent.yaml` for a complete
-example.
-
-### Config file (`~/.kyrozen_config.json`)
-
-```json
-{
-  "provider": "deepseek",
-  "api_key": "<encrypted>",
-  "model_simple": "deepseek-flash",
-  "model_complex": "deepseek-v4-pro",
-  "encrypted": true,
-  "encryption": "fernet"
-}
-```
-
-When automatic fallback is used, `auto`, an empty model, and the primary
-provider's configured simple/complex model names are mapped to the equivalent
-simple/complex model configured for each fallback provider. An explicit model
-name that is not recognised as one of the primary provider's names is passed
-through unchanged; use that only when the fallback endpoint supports the same
-name. The mapping is identical for streaming and non-streaming requests, and
-an all-provider failure retains every provider error with the primary failure
-as its cause.
-
-The file is auto-managed. Use `/provider` or `/api_key` in-chat to update it interactively.
-
----
-
-## 🔧 Development
-
-```bash
-# Quick verification
-make check
-make docs-check
-make shell-check
-
-# Syntax lint only
-make lint
-
-# Debug mode (isolated, non-interactive smoke test; never prompts for a key)
-make debug
-
-# Start the normal interactive CLI explicitly from the debug entry point
-./venv/bin/python main_debug.py --interactive
-
-# First-time API key setup
-make init
-
-# Rebuild venv after Python version change
-make reinstall
-
-# Launch web server
-make web
-
-# Git helpers
-make git-status
-make git-log
-make commit msg='feat: description'
-make push
-```
-
-### CI/CD
-
-GitHub Actions automatically runs on every push and PR:
-
-- Syntax check across Python 3.12 and 3.13
-- Generated tool inventory and documentation consistency validation
-- Provider import check
-- Clean wheel installation and unrelated-directory CLI smoke test
-- Windows PowerShell installer syntax/help check
-- Docker build and replace-container recovery smoke test
-
-The published `v2.0.4` release is immutable and remains the pinned target for
-public installers. `/update` uses its checksum-verified TUI asset when present;
-because that release predates the Bubble Tea client, it securely pins the
-current `main` revision until a release containing the TUI asset is published.
-A future release is a deliberate, manual release operation: update the pinned
-version, build and validate the artifacts, and verify both installers before
-publishing the new tag.
-
-### Release wheel
-
-```bash
-# Immutable GitHub release (use the one-line installer for uv + Python setup)
-release_url='https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl'
-uv tool install --python 3.12 --force --with fastapi --with uvicorn "$release_url"
-pip install fastapi uvicorn "$release_url"  # existing supported environment
-
-# Local checkout only (development)
-pip install .
-pip install '.[web]'
-pip install '.[all]'            # + native cloud adapters + Web + Playwright
-```
-
----
-
-## 📁 Project structure
-
-```
-OpenKyrozen/
-├── main.py              # Authoritative Rich recovery agent loop and chat logic
-├── tui/                 # Bubble Tea v2 terminal client and Go unit tests
-├── tui_launcher.py      # TUI discovery with clear Rich fallback
-├── tui_backend.py       # Bounded JSONL bridge to the Python agent
-├── tools.py             # 29 base tools; main.py adds two memory actions
-├── providers.py         # Multi-LLM abstraction (18 providers + fallback)
-├── memory.py            # SQLite memory with optional rebuildable Chroma index
-├── server.py            # FastAPI web server + REST API + native HTML/CSS chat UI
-├── learning_worker.py   # Detached durable self-learning worker
-├── agent_config.py      # Strict agent.yaml loader and capability bound
-├── agent.yaml           # Validated role/provider/capability configuration
-├── pyproject.toml       # pip package configuration
-├── workspace_context.py  # global/project launch-root resolution
-├── Dockerfile           # Docker image definition
-├── Makefile             # Build automation (macOS/Linux)
-├── setup.bat / run.bat  # Windows batch scripts
-├── install.sh / install.ps1 # Cross-platform uv bootstrap installers
-├── plugins/             # Plugin directory (hook-based)
-├── prompts/             # Prompt templates (role, instructions, examples)
-├── docs/tool-inventory.md # Generated runtime tool and endpoint inventory
-├── scripts/              # Reproducible documentation and smoke checks
-└── .github/workflows/   # CI validation pipeline
-```
-
----
-
-## 🙏 Standing on the Shoulders of Giants
-
-OpenKyrozen is built on top of incredible open-source work. We're grateful to every maintainer and contributor who made these projects possible.
-
-| Project | Repo | What we use it for |
-|---------|------|-------------------|
-| **Aider** | [paul-gauthier/aider](https://github.com/paul-gauthier/aider) | Inspired our multi-turn agent loop, tool-calling patterns, and git-safety conventions |
-| **CodeWhale** | [deepseek-ai/codewhale](https://github.com/deepseek-ai/codewhale) | Agent runtime architecture, sub-agent delegation, and verification discipline |
-| **Chroma** | [chroma-core/chroma](https://github.com/chroma-core/chroma) | Vector database powering our long-term memory and semantic recall |
-| **FastAPI** | [fastapi/fastapi](https://github.com/fastapi/fastapi) | Web server, REST API, and real-time streaming endpoints |
-| **Bubble Tea** | [charmbracelet/bubbletea](https://github.com/charmbracelet/bubbletea) | Full-screen terminal UI state, input, resize, and event updates |
-| **Bubbles** | [charmbracelet/bubbles](https://github.com/charmbracelet/bubbles) | Textareas, masked text input, and scrollable viewports |
-| **Lip Gloss** | [charmbracelet/lipgloss](https://github.com/charmbracelet/lipgloss) | Terminal layout, color, borders, and explicit backgrounds |
-| **Glamour** | [charmbracelet/glamour](https://github.com/charmbracelet/glamour) | Markdown rendering for streamed assistant responses |
-| **Rich** | [Textualize/rich](https://github.com/Textualize/rich) | Recovery/development CLI rendering and Python-side diagnostics |
-| **OpenAI Python** | [openai/openai-python](https://github.com/openai/openai-python) | OpenAI-compatible transport for the compatible providers |
-| **Uvicorn** | [encode/uvicorn](https://github.com/encode/uvicorn) | ASGI server for production web deployments |
-| **googlesearch-python** | [Nv7-GitHub/googlesearch](https://github.com/Nv7-GitHub/googlesearch) | Web search fallback when DuckDuckGo is unavailable |
-
-> *"If I have seen further, it is by standing on the shoulders of giants."* — Isaac Newton
-
----
-
-## 📄 License
-
-MIT License. See `LICENSE` for details.
-
----
-
-<p align="center">
-  <sub>Built with ❤️ for developers who want an AI that learns</sub>
-</p>
+<p align="center"><sub>English · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a></sub></p>
