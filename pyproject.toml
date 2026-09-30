@@ -50,10 +50,10 @@ all = [
 ]
 
 [project.scripts]
-kyrozen = "tui_launcher:main"
-kyrozen-backend = "tui_backend:main"
-kyrozen-web = "server:main_entry"
-kyrozen-bootstrap-gh = "github_cli:main"
+kyrozen = "openkyrozen.interfaces.cli.launcher:main"
+kyrozen-backend = "openkyrozen.interfaces.tui.backend:main"
+kyrozen-web = "openkyrozen.interfaces.web.app:main_entry"
+kyrozen-bootstrap-gh = "openkyrozen.tools.github_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/EvanProgramming/OpenKyrozen"
@@ -61,13 +61,14 @@ Repository = "https://github.com/EvanProgramming/OpenKyrozen"
 Issues = "https://github.com/EvanProgramming/OpenKyrozen/issues"
 
 [tool.setuptools]
-py-modules = ["main", "tui_launcher", "tui_backend", "memory", "providers", "server", "tools", "event_store", "history", "context_compaction", "interaction", "fast_mode", "system_one_policy", "learning_engine", "learning_benchmark", "learning_worker", "migration", "task_engine", "scheduler", "skill_registry", "browser_manager", "instruction_loader", "agent_config", "subagents", "capability_tokens", "tool_registry", "dynamic_tools", "plugin_runtime", "workspace_context", "project_graph", "github_cli"]
+py-modules = ["main", "server", "tui_launcher", "tui_backend", "learning_worker", "github_cli", "main_debug", "migration", "learning_benchmark"]
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["plugins*", "prompts*", "builtin_skills*"]
+include = ["openkyrozen*", "plugins*", "prompts*", "builtin_skills*"]
 
 [tool.setuptools.package-data]
+"openkyrozen.interfaces.web" = ["templates/*.html"]
 plugins = ["*.py"]
 prompts = ["*.md"]
 builtin_skills = ["manifest.json", "NOTICE.md", "*/SKILL.md", "*/skill.json", "*/LICENSE*", "*/NOTICE"]

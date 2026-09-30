@@ -1,12 +1,11 @@
 package main
 
 import (
-	"strings"
-
 	"charm.land/glamour/v2"
 	"charm.land/glamour/v2/ansi"
 	glamourstyles "charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
+	"strings"
 )
 
 const (

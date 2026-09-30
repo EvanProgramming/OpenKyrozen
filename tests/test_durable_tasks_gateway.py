@@ -10,9 +10,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from event_store import EventStore
-from task_engine import TaskManager
-from workspace_context import source_scope_id
+from openkyrozen.persistence.store import EventStore
+from openkyrozen.tasks.engine import TaskManager
+from openkyrozen.workspace.context import source_scope_id
 
 
 class DurableTaskGatewayTests(unittest.TestCase):

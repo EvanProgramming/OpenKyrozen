@@ -7,9 +7,9 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-import server
+from openkyrozen.interfaces.web.service import WebService
 
-
+server = WebService(None)
 class _WebhookReceiver:
     def __init__(self):
         self.bodies = []

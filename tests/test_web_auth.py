@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from event_store import EventStore
+from openkyrozen.persistence.store import EventStore
 
 
 class WebAuthBrowserTests(unittest.TestCase):

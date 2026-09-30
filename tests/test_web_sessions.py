@@ -10,8 +10,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from event_store import EventStore
-from workspace_context import source_scope_id
+from openkyrozen.persistence.store import EventStore
+from openkyrozen.workspace.context import source_scope_id
 
 
 class WebSessionBrowserTests(unittest.TestCase):

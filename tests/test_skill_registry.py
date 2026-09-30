@@ -3,11 +3,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from event_store import EventStore
-from learning_engine import LearningEngine
-from memory import MemoryBank
-import main
-from skill_registry import SkillRegistry
+from openkyrozen.persistence.store import EventStore
+from openkyrozen.learning.engine import LearningEngine
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
+from openkyrozen.app.bootstrap import build_application
+_application = build_application(surface="cli")
+main = _application.runtime
+from openkyrozen.skills.registry import SkillRegistry
 
 
 class SkillRegistryTests(unittest.TestCase):

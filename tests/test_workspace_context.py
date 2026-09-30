@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from workspace_context import resolve_launch_context, source_scope_id
+from openkyrozen.workspace.context import resolve_launch_context, source_scope_id
 
 
 class WorkspaceContextTests(unittest.TestCase):

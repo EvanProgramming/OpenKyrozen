@@ -1,0 +1,1 @@
+"""OpenKyrozen skills module."""

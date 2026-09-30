@@ -7,8 +7,8 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-import github_cli
-from github_cli import GitHubCLI
+import openkyrozen.tools.github_cli as github_cli
+from openkyrozen.tools.github_cli import GitHubCLI
 
 
 class Runner:
@@ -71,7 +71,7 @@ class GitHubCLITests(unittest.TestCase):
             payload = archive.getvalue()
             key = (github_cli._system(), github_cli._machine())
             with patch.dict(github_cli.GH_ARCHIVES, {key: ("gh.zip", hashlib.sha256(payload).hexdigest())}, clear=True), \
-                 patch("github_cli.urllib.request.urlopen", return_value=io.BytesIO(payload)):
+                 patch("openkyrozen.tools.github_cli.urllib.request.urlopen", return_value=io.BytesIO(payload)):
                 client = GitHubCLI(directory, Path(directory) / ".kyrozen" / "v2")
                 result = client.install_managed()
             self.assertTrue(result["success"])
@@ -79,7 +79,7 @@ class GitHubCLITests(unittest.TestCase):
 
             client.managed_binary.unlink()
             with patch.dict(github_cli.GH_ARCHIVES, {key: ("gh.zip", "0" * 64)}, clear=True), \
-                 patch("github_cli.urllib.request.urlopen", return_value=io.BytesIO(payload)):
+                 patch("openkyrozen.tools.github_cli.urllib.request.urlopen", return_value=io.BytesIO(payload)):
                 result = client.install_managed()
             self.assertFalse(result["success"])
             self.assertFalse(client.managed_binary.exists())

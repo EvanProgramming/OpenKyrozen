@@ -5,10 +5,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from event_store import EventStore
-from history import HistoryError, HistoryManager
-from interaction import InteractionController
-from workspace_context import source_scope_id
+from openkyrozen.persistence.store import EventStore
+from openkyrozen.workspace.history import HistoryError, HistoryManager
+from openkyrozen.agent.modes import InteractionController
+from openkyrozen.workspace.context import source_scope_id
 
 
 class HistoryManagerTests(unittest.TestCase):

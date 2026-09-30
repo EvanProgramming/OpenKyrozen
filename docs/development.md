@@ -25,6 +25,9 @@ Useful focused commands:
 python -m unittest discover -s tests -p 'test_*.py' -v
 make benchmark
 make wheel-smoke
+make agent-acceptance
+make tui-test
+make tui-acceptance
 make docker-smoke
 ```
 
@@ -33,19 +36,22 @@ tool-inventory.md is generated from the live tool and FastAPI registries. Run ve
 ## Project layout
 
 ```text
-main.py                 agent loop and CLI behavior
-server.py               FastAPI web server and API
-providers.py            provider registry and fallback behavior
-tools.py                built-in tool implementations
-memory.py               local memory facade
-event_store.py          durable SQLite events
-learning_engine.py      evidence-gated learning lifecycle
-tui/                    Bubble Tea terminal UI
-prompts/                role and instruction templates
-plugins/                hook-based extensions
-builtin_skills/         bundled skill packages
-tests/                  unittest suites
-docs/                   operator, API, benchmark, and comparison docs
+openkyrozen/app/         dependency construction and configuration
+openkyrozen/agent/       runtime, sessions and coordinated turn phases
+openkyrozen/providers/   provider contracts and transport adapters
+openkyrozen/tools/       workspace-bound tool adapters
+openkyrozen/persistence/ SQLite and feature repositories
+openkyrozen/memory/      retrieval, claims and vector adapter
+openkyrozen/tasks/       task models, completion, recovery and workers
+openkyrozen/learning/    feature implementations and artifact lifecycle
+openkyrozen/interfaces/ CLI, JSONL backend, web and MCP adapters
+main.py, server.py       launch-only compatibility scripts
+other root *.py          executable compatibility launchers
+routing/security/workspace/skills/plugins/updates live under openkyrozen/
+tui/                    Bubble Tea model, input, events, layout and views
+prompts/, plugins/      templates and example extensions
+builtin_skills/          bundled skill packages
+tests/, docs/            regression suites and documentation
 ```
 
 ## Documentation rules
@@ -57,3 +63,8 @@ docs/                   operator, API, benchmark, and comparison docs
 - Do not commit venv/, chroma_memory/, build artifacts, generated package metadata, credentials, or private runtime data.
 
 See AGENTS.md for naming, testing, security, and commit conventions.
+
+All internal Python imports use `openkyrozen.*`. Keep the four console command names
+and root executable launches stable. Use `build_application(memory=..., tools=...)`
+or `create_app(application=...)` to inject test dependencies; do not patch process
+globals. See [architecture](architecture.md) for ownership and dependency rules.

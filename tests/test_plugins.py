@@ -4,9 +4,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import main
-import server
-from plugin_runtime import PluginRuntime
+from openkyrozen.app.bootstrap import build_application
+
+_application = build_application(surface="cli")
+
+main = _application.runtime
+from openkyrozen.interfaces.web.service import WebService
+server = WebService(_application)
+from openkyrozen.plugins.runtime import PluginRuntime
 
 
 class PluginLifecycleTests(unittest.TestCase):

@@ -20,7 +20,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 os.environ.setdefault("KYROZEN_DISABLE_VECTOR_INDEX", "1")
 
-from memory import MemoryBank  # noqa: E402
+from openkyrozen.app.bootstrap import build_memory as MemoryBank  # noqa: E402
 
 
 PROVIDER = "deterministic-fixture"

@@ -62,23 +62,21 @@ jobs:
         python -m playwright install --with-deps chromium
         make test PYTHON=python
 
+    - name: Agent workflow acceptance
+      run: make agent-acceptance
+
     - name: Syntax check
       run: |
-        python -c "compile(open('main.py').read(), 'main.py', 'exec'); print('main.py OK')"
-        python -c "compile(open('tools.py').read(), 'tools.py', 'exec'); print('tools.py OK')"
-        python -c "compile(open('memory.py').read(), 'memory.py', 'exec'); print('memory.py OK')"
-        python -c "compile(open('providers.py').read(), 'providers.py', 'exec'); print('providers.py OK')"
-        python -c "compile(open('server.py').read(), 'server.py', 'exec'); print('server.py OK')"
-        python -c "compile(open('workspace_context.py').read(), 'workspace_context.py', 'exec'); print('workspace_context.py OK')"
+        python -m compileall -q openkyrozen main.py server.py tui_backend.py learning_worker.py scripts tests benchmarks
         sh -n install.sh
 
     - name: Tool inventory check
       run: |
-        python -c "from tools import AVAILABLE_TOOLS; assert len(AVAILABLE_TOOLS) >= 24, f'Expected >=24 tools, got {len(AVAILABLE_TOOLS)}'; print(f'{len(AVAILABLE_TOOLS)} tools OK')"
+        python -c "from openkyrozen.tools import ToolAdapters; AVAILABLE_TOOLS = ToolAdapters().AVAILABLE_TOOLS; assert len(AVAILABLE_TOOLS) >= 24, f'Expected >=24 tools, got {len(AVAILABLE_TOOLS)}'; print(f'{len(AVAILABLE_TOOLS)} tools OK')"
 
     - name: Provider import check
       run: |
-        python -c "from providers import *; print('All providers imported OK')"
+        python -c "from openkyrozen.providers import *; print('All providers imported OK')"
 
     - name: Documentation and runtime inventory check
       run: make docs-check
@@ -93,10 +91,19 @@ jobs:
       with:
         python-version: "3.12"
 
+    - name: Set up Go 1.27.1
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.27.1"
+
     - name: Build and run clean wheel installation smoke test
       run: |
         python -m pip install --upgrade pip build
         python scripts/wheel_smoke.py
+        pip install -e '.[all]'
+
+    - name: Rebuilt TUI interaction acceptance
+      run: make tui-acceptance
 
   installer-syntax:
     runs-on: windows-latest

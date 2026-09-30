@@ -9,14 +9,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import server
+from openkyrozen.interfaces.web.service import WebService
+
+server = WebService(None)
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from history import HistoryManager
-from providers import ProviderConfig
-from memory import MemoryBank
-from subagents import SubAgentManager
-from workspace_context import source_scope_id
+from openkyrozen.workspace.history import HistoryManager
+from openkyrozen.providers import ProviderConfig
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
+from openkyrozen.agent.subagents import SubAgentManager
+from openkyrozen.workspace.context import source_scope_id
 
 
 class ServerBoundaryTests(unittest.TestCase):
@@ -47,7 +49,7 @@ class ServerBoundaryTests(unittest.TestCase):
             original_sessions = server._sessions
             server._sessions = {}
             try:
-                with patch.object(server._agent, "memory_bank", memory), \
+                with patch.object(server._agent.current_session, "memory", memory), \
                         patch.object(server._agent, "history_manager", return_value=manager), \
                         patch.object(server, "_server_capabilities", return_value=frozenset({"read", "write"})):
                     listed = client.get(f"/api/v2/sessions/{session_id}/history")
@@ -84,7 +86,7 @@ class ServerBoundaryTests(unittest.TestCase):
             original_sessions = server._sessions
             server._sessions = {}
             try:
-                with patch.object(server._agent, "memory_bank", memory), \
+                with patch.object(server._agent.current_session, "memory", memory), \
                         patch.object(server, "_emit_chat_completed"):
                     mode = client.post("/api/chat", json={
                         "session_id": "interaction-session", "mode": "plan",
@@ -436,7 +438,7 @@ class ServerBoundaryTests(unittest.TestCase):
         try:
             with patch.object(server._agent, "detect_provider", return_value=config):
                 with patch.object(server._agent.console, "input", return_value="sk-interactive"):
-                    with patch.object(server._agent, "save_provider_config_encrypted"):
+                    with patch("openkyrozen.providers.configuration.save_provider_config_encrypted"):
                         with patch.object(server._agent, "get_fallback_provider", return_value=object()):
                             self.assertTrue(server._agent._prompt_and_init_deepseek(interactive=True))
             self.assertEqual(server._agent._provider_config.api_key, "sk-interactive")
@@ -480,7 +482,7 @@ class ServerBoundaryTests(unittest.TestCase):
             self.assertIn("git_reset", server._allowed_server_tools("mcp"))
 
     def test_git_branch_uses_git_capability_across_surfaces(self):
-        from tools import tool_capability
+        from openkyrozen.tools import tool_capability
 
         self.assertEqual(tool_capability("git_branch"), "git")
         with patch.dict(os.environ, {
@@ -542,11 +544,11 @@ class ServerBoundaryTests(unittest.TestCase):
         original_tasks = server._agent.tasks.tasks
         seen = []
 
-        def fake_chat(message, clear_tasks=False, memory_context=None):
+        def fake_chat(message, clear_tasks=False, profile=None, memory_context=None):
             seen.append([item["content"] for item in server._agent.short_term_memory])
             return "reply:" + message
 
-        session = {"messages": [], "updated": 0}
+        session = {"session_id": "test-explicit-session", "messages": [], "updated": 0}
         with patch.object(server._agent, "_chat_turn", side_effect=fake_chat):
             self.assertEqual(server._run_session_chat(session, "hello"), "reply:hello")
             self.assertEqual(server._run_session_chat(session, "again"), "reply:again")
@@ -584,8 +586,8 @@ class ServerBoundaryTests(unittest.TestCase):
 import json
 import os
 from fastapi.testclient import TestClient
-import server
-
+from openkyrozen.interfaces.web.service import WebService
+server = WebService(None)
 client = TestClient(server.app)
 claim_id = os.environ.get("CLAIM_ID")
 created_status = None

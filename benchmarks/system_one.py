@@ -19,10 +19,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import fast_mode
-import system_one_policy
-
-
+import openkyrozen.routing.system_one as fast_mode
+import openkyrozen.routing.policy as system_one_policy
 CASES = (
     ("route_fact", "route_model", {"request": "What is 7 times 8?"},
      {"decision": {"type": "choice", "instructions": "Which model fits this request?",

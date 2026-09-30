@@ -5,11 +5,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import main
-from memory import MemoryBank
-from learning_engine import LearningEngine
-from task_engine import TaskManager
-from interaction import InteractionController
+from openkyrozen.app.bootstrap import build_application
+
+_application = build_application(surface="cli")
+
+main = _application.runtime
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
+from openkyrozen.learning.engine import LearningEngine
+from openkyrozen.tasks.engine import TaskManager
+from openkyrozen.agent.modes import InteractionController
 
 
 class TaskConsistencyTests(unittest.TestCase):
@@ -265,6 +269,7 @@ class TaskConsistencyTests(unittest.TestCase):
             original_root = main._get_workspace_root()
             original_tasks = main.tasks
             original_learning = main.learning_engine
+            main._set_workspace_root(root)
             original_write = main.AVAILABLE_TOOLS["write_file"]
             writes: list[str] = []
 

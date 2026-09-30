@@ -103,7 +103,7 @@ class StartupCacheTests(unittest.TestCase):
 
     def test_web_startup_is_bounded_and_preserves_dependency_bytecode(self):
         script = (
-            "import asyncio; import server; "
+            "import asyncio; from openkyrozen.interfaces.web.service import WebService; server = WebService(); "
             "asyncio.run(server.startup()); "
             "asyncio.run(server.shutdown()); print('web-startup-ready')"
         )
@@ -127,8 +127,8 @@ class StartupCacheTests(unittest.TestCase):
             for variable in _CREDENTIAL_ENV_VARS:
                 env.pop(variable, None)
             commands = [
-                [sys.executable, str(repository / "main.py"), "--help"],
-                [sys.executable, str(repository / "server.py"), "--help"],
+                [sys.executable, "-c", "from openkyrozen.app.bootstrap import build_application; a=build_application(surface='cli'); a.runtime.configure_launch_context(); a.close()"],
+                [sys.executable, "-c", "from openkyrozen.app.bootstrap import build_application; a=build_application(surface='web'); a.runtime.configure_launch_context(); a.close()"],
             ]
             processes = [
                 subprocess.Popen(

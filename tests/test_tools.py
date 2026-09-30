@@ -10,20 +10,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 from pathlib import Path
 
-import tools
-from tools import (
-    AVAILABLE_TOOLS,
-    allowed_tool_names,
-    git_status,
-    git_remote,
-    git_branch,
-    read_file,
-    read_webpage,
-    run_cmd,
-    set_workspace_root,
-    write_file,
-)
-
+from openkyrozen.tools import ToolAdapters
+tools = ToolAdapters()
+AVAILABLE_TOOLS = tools.AVAILABLE_TOOLS
+allowed_tool_names = tools.allowed_tool_names
+git_status = tools.git_status
+git_remote = tools.git_remote
+git_branch = tools.git_branch
+read_file = tools.read_file
+read_webpage = tools.read_webpage
+run_cmd = tools.run_cmd
+set_workspace_root = tools.set_workspace_root
+write_file = tools.write_file
 
 class WorkspaceToolTests(unittest.TestCase):
     def test_file_tools_stay_inside_workspace(self):
@@ -201,7 +199,7 @@ class WorkspaceToolTests(unittest.TestCase):
                 self.assertIn("URL blocked", read_webpage(url))
 
     def test_hostname_resolution_to_private_address_is_blocked(self):
-        with patch("tools.socket.getaddrinfo", return_value=[(
+        with patch("openkyrozen.tools.web.socket.getaddrinfo", return_value=[(
             tools.socket.AF_INET, tools.socket.SOCK_STREAM, tools.socket.IPPROTO_TCP,
             "", ("10.20.30.40", 80),
         )]):

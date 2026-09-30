@@ -31,7 +31,7 @@ func newBridge() *bridge {
 	return &bridge{
 		command: os.Getenv("KYROZEN_BACKEND_COMMAND"),
 		python:  os.Getenv("KYROZEN_BACKEND_PYTHON"),
-		module:  firstNonEmpty(os.Getenv("KYROZEN_BACKEND_MODULE"), "tui_backend"),
+		module:  firstNonEmpty(os.Getenv("KYROZEN_BACKEND_MODULE"), "openkyrozen.interfaces.tui.backend"),
 		events:  make(chan backendLineMsg, 128),
 	}
 }

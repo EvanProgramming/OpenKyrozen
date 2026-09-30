@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import system_one_policy
+import openkyrozen.routing.policy as system_one_policy
 from benchmarks import system_one
 
 

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from providers import (
+from openkyrozen.providers import (
     FallbackProvider,
     LLMProvider,
     PROVIDER_DEFAULT_MODELS,

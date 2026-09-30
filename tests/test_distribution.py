@@ -22,16 +22,16 @@ class DistributionTests(unittest.TestCase):
         project = document["project"]
         self.assertEqual(project["version"], "2.0.4")
         self.assertEqual(project["requires-python"], ">=3.12,<3.14")
-        self.assertEqual(project["scripts"]["kyrozen"], "tui_launcher:main")
-        self.assertEqual(project["scripts"]["kyrozen-backend"], "tui_backend:main")
-        self.assertEqual(project["scripts"]["kyrozen-web"], "server:main_entry")
-        self.assertEqual(project["scripts"]["kyrozen-bootstrap-gh"], "github_cli:main")
+        self.assertEqual(project["scripts"]["kyrozen"], "openkyrozen.interfaces.cli.launcher:main")
+        self.assertEqual(project["scripts"]["kyrozen-backend"], "openkyrozen.interfaces.tui.backend:main")
+        self.assertEqual(project["scripts"]["kyrozen-web"], "openkyrozen.interfaces.web.app:main_entry")
+        self.assertEqual(project["scripts"]["kyrozen-bootstrap-gh"], "openkyrozen.tools.github_cli:main")
         self.assertIn("tui_launcher", document["tool"]["setuptools"]["py-modules"])
         self.assertIn("tui_backend", document["tool"]["setuptools"]["py-modules"])
-        self.assertIn("workspace_context", document["tool"]["setuptools"]["py-modules"])
-        self.assertIn("context_compaction", document["tool"]["setuptools"]["py-modules"])
+        self.assertIn("openkyrozen*", document["tool"]["setuptools"]["packages"]["find"]["include"])
+        self.assertIn("openkyrozen*", document["tool"]["setuptools"]["packages"]["find"]["include"])
         self.assertIn("learning_worker", document["tool"]["setuptools"]["py-modules"])
-        self.assertIn("project_graph", document["tool"]["setuptools"]["py-modules"])
+        self.assertIn("openkyrozen*", document["tool"]["setuptools"]["packages"]["find"]["include"])
         self.assertIn("github_cli", document["tool"]["setuptools"]["py-modules"])
 
     def test_full_development_setup_includes_browser_and_core_test_path(self):
@@ -219,12 +219,14 @@ exit 0
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertIn(marker, result.stdout)
 
-        import server
+        from openkyrozen.interfaces.web.service import WebService
+
+        server = WebService(None)
         self.assertEqual(server.app.version, "2.0.4")
 
     def test_web_parser_accepts_project_and_server_flags(self):
-        import server
-
+        from openkyrozen.interfaces.web.service import WebService
+        server = WebService(None)
         args = server._server_parser().parse_args([
             "--project", ".", "--host", "0.0.0.0", "--port", "8123", "--reload",
         ])
@@ -235,27 +237,28 @@ exit 0
         self.assertTrue(args.reload)
 
     def test_custom_web_launch_does_not_claim_a_fixed_endpoint(self):
-        import server
-
+        from openkyrozen.interfaces.web.service import WebService
+        server = WebService(None)
         self.assertNotIn("http://127.0.0.1:8000", inspect.getsource(server.startup))
         with patch.object(server, "_parse_server_args", return_value=(
                 SimpleNamespace(host="127.0.0.1", port=8876, reload=False), None)), \
-             patch.object(server.uvicorn, "run") as run:
+             patch("openkyrozen.interfaces.web.lifecycle.uvicorn.run") as run:
             server.main_entry()
         run.assert_called_once_with(server.app, host="127.0.0.1", port=8876, reload=False)
 
     def test_update_uses_the_package_manager_instead_of_git_pull(self):
-        import main
-
+        from openkyrozen.app.bootstrap import build_application
+        _application = build_application(surface="cli")
+        main = _application.runtime
         completed = subprocess.CompletedProcess(
             ["uv", "tool", "install"], 0, stdout="upgraded", stderr="",
         )
-        with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
-             patch("main._release_tui_asset_available", return_value=True), \
-             patch("main._resolve_update_revision", return_value=None), \
-             patch("main._update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
-             patch("main.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
-             patch("main.subprocess.run", return_value=completed) as run:
+        with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
+             patch.object(main, "_release_tui_asset_available", return_value=True), \
+             patch.object(main, "_resolve_update_revision", return_value=None), \
+             patch.object(main, "_update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
+             patch("openkyrozen.tools.github_cli.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
+             patch("openkyrozen.updates.service.subprocess.run", return_value=completed) as run:
             result = main._self_update()
         self.assertIn("upgraded", result)
         command = run.call_args.args[0]
@@ -270,20 +273,21 @@ exit 0
         self.assertTrue(command[-1].endswith("/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl"))
 
     def test_update_retries_without_uv_cache_after_install_failure(self):
-        import main
-
+        from openkyrozen.app.bootstrap import build_application
+        _application = build_application(surface="cli")
+        main = _application.runtime
         failed = subprocess.CompletedProcess(
             ["uv", "tool", "install"], 1, stdout="", stderr="missing archive",
         )
         completed = subprocess.CompletedProcess(
             ["uv", "--no-cache", "tool", "install"], 0, stdout="upgraded", stderr="",
         )
-        with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
-             patch("main._release_tui_asset_available", return_value=True), \
-             patch("main._resolve_update_revision", return_value=None), \
-             patch("main._update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
-             patch("main.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
-             patch("main.subprocess.run", side_effect=[failed, completed]) as run:
+        with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
+             patch.object(main, "_release_tui_asset_available", return_value=True), \
+             patch.object(main, "_resolve_update_revision", return_value=None), \
+             patch.object(main, "_update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
+             patch("openkyrozen.tools.github_cli.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
+             patch("openkyrozen.updates.service.subprocess.run", side_effect=[failed, completed]) as run:
             result = main._self_update()
         self.assertIn("upgraded", result)
         self.assertEqual(run.call_count, 2)
@@ -293,8 +297,9 @@ exit 0
         )
 
     def test_update_preserves_stdout_only_failure_diagnostics(self):
-        import main
-
+        from openkyrozen.app.bootstrap import build_application
+        _application = build_application(surface="cli")
+        main = _application.runtime
         failed = subprocess.CompletedProcess(
             ["/usr/local/bin/uv", "tool", "install"], 1,
             stdout="release asset unavailable", stderr="",
@@ -303,53 +308,54 @@ exit 0
             ["/usr/local/bin/uv", "--no-cache", "tool", "install"], 1,
             stdout="retry also failed", stderr="",
         )
-        with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
-             patch("main._release_tui_asset_available", return_value=True), \
-             patch("main._resolve_update_revision", return_value=None), \
-             patch("main.subprocess.run", side_effect=[failed, retry_failed]):
+        with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
+             patch.object(main, "_release_tui_asset_available", return_value=True), \
+             patch.object(main, "_resolve_update_revision", return_value=None), \
+             patch("openkyrozen.updates.service.subprocess.run", side_effect=[failed, retry_failed]):
             result = main._self_update()
         self.assertIn("uv exit 1", result)
         self.assertIn("retry also failed", result)
 
     def test_update_prefers_current_main_revision_over_stale_release_assets(self):
-        import main
-
+        from openkyrozen.app.bootstrap import build_application
+        _application = build_application(surface="cli")
+        main = _application.runtime
         completed = subprocess.CompletedProcess(
             ["uv", "tool", "install"], 0, stdout="installed from source", stderr="",
         )
         revision = "b" * 40
-        with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
-             patch("main._release_tui_asset_available", return_value=True), \
-             patch("main._resolve_update_revision", return_value=revision), \
-             patch("main._update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
-             patch("main.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
-             patch("main.subprocess.run", return_value=completed) as run:
+        with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
+             patch.object(main, "_release_tui_asset_available", return_value=True), \
+             patch.object(main, "_resolve_update_revision", return_value=revision), \
+             patch.object(main, "_update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
+             patch("openkyrozen.tools.github_cli.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
+             patch("openkyrozen.updates.service.subprocess.run", return_value=completed) as run:
             result = main._self_update()
         command = run.call_args.args[0]
         self.assertEqual(command[-1], f"git+{main.UPDATE_REPOSITORY_URL}@{revision}")
         self.assertIn(f"source revision {revision[:12]}", result)
 
     def test_update_bootstraps_main_revision_when_release_predates_tui(self):
-        import main
-
+        from openkyrozen.app.bootstrap import build_application
+        _application = build_application(surface="cli")
+        main = _application.runtime
         completed = subprocess.CompletedProcess(
             ["uv", "tool", "install"], 0, stdout="installed from source", stderr="",
         )
         revision = "a" * 40
-        with patch("main.shutil.which", return_value="/usr/local/bin/uv"), \
-             patch("main._release_tui_asset_available", return_value=False), \
-             patch("main._resolve_update_revision", return_value=revision), \
-             patch("main._update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
-             patch("main.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
-             patch("main.subprocess.run", return_value=completed) as run:
+        with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
+             patch.object(main, "_release_tui_asset_available", return_value=False), \
+             patch.object(main, "_resolve_update_revision", return_value=revision), \
+             patch.object(main, "_update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
+             patch("openkyrozen.tools.github_cli.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
+             patch("openkyrozen.updates.service.subprocess.run", return_value=completed) as run:
             result = main._self_update()
         command = run.call_args.args[0]
         self.assertEqual(command[-1], f"git+{main.UPDATE_REPOSITORY_URL}@{revision}")
         self.assertIn(f"source revision {revision[:12]}", result)
 
     def test_launcher_promotes_pending_tui_before_launch(self):
-        import tui_launcher
-
+        import openkyrozen.interfaces.cli.launcher as tui_launcher
         with tempfile.TemporaryDirectory() as home:
             state_bin = Path(home) / ".kyrozen" / "bin"
             state_bin.mkdir(parents=True)
@@ -357,40 +363,38 @@ exit 0
             target = state_bin / "openkyrozen-tui"
             pending.write_text("new tui", encoding="utf-8")
             pending.chmod(0o700)
-            with patch("tui_launcher.Path.home", return_value=Path(home)), \
-                 patch("tui_launcher.shutil.which", return_value=None):
+            with patch("openkyrozen.interfaces.cli.launcher.Path.home", return_value=Path(home)), \
+                 patch("openkyrozen.interfaces.cli.launcher.shutil.which", return_value=None):
                 self.assertEqual(tui_launcher._tui_binary(), str(target))
             self.assertEqual(target.read_text(encoding="utf-8"), "new tui")
             self.assertFalse(pending.exists())
 
     def test_launcher_restarts_tui_after_successful_update(self):
-        import tui_launcher
-
+        import openkyrozen.interfaces.cli.launcher as tui_launcher
         results = [
             subprocess.CompletedProcess(["old-tui"], tui_launcher.TUI_RESTART_EXIT_CODE),
             subprocess.CompletedProcess(["new-tui"], 0),
         ]
-        with patch("tui_launcher._is_terminal", return_value=True), \
-             patch("tui_launcher._tui_binary", side_effect=["old-tui", "new-tui"]), \
-             patch("tui_launcher._backend_command", return_value=("backend", None)), \
-             patch("tui_launcher.subprocess.run", side_effect=results) as run, \
-             patch("tui_launcher._legacy") as legacy, \
-             patch("tui_launcher.sys.argv", ["kyrozen"]):
+        with patch("openkyrozen.interfaces.cli.launcher._is_terminal", return_value=True), \
+             patch("openkyrozen.interfaces.cli.launcher._tui_binary", side_effect=["old-tui", "new-tui"]), \
+             patch("openkyrozen.interfaces.cli.launcher._backend_command", return_value=("backend", None)), \
+             patch("openkyrozen.interfaces.cli.launcher.subprocess.run", side_effect=results) as run, \
+             patch("openkyrozen.interfaces.cli.launcher._legacy") as legacy, \
+             patch("openkyrozen.interfaces.cli.launcher.sys.argv", ["kyrozen"]):
             tui_launcher.main()
 
         self.assertEqual([call.args[0][0] for call in run.call_args_list], ["old-tui", "new-tui"])
         legacy.assert_not_called()
 
     def test_launcher_passes_onboarding_subcommand_to_bubble_tea(self):
-        import tui_launcher
-
+        import openkyrozen.interfaces.cli.launcher as tui_launcher
         result = subprocess.CompletedProcess(["tui"], 0)
-        with patch("tui_launcher._is_terminal", return_value=True), \
-             patch("tui_launcher._tui_binary", return_value="tui"), \
-             patch("tui_launcher._backend_command", return_value=("backend", None)), \
-             patch("tui_launcher.subprocess.run", return_value=result) as run, \
-             patch("tui_launcher._legacy") as legacy, \
-             patch("tui_launcher.sys.argv", ["kyrozen", "onboarding"]):
+        with patch("openkyrozen.interfaces.cli.launcher._is_terminal", return_value=True), \
+             patch("openkyrozen.interfaces.cli.launcher._tui_binary", return_value="tui"), \
+             patch("openkyrozen.interfaces.cli.launcher._backend_command", return_value=("backend", None)), \
+             patch("openkyrozen.interfaces.cli.launcher.subprocess.run", return_value=result) as run, \
+             patch("openkyrozen.interfaces.cli.launcher._legacy") as legacy, \
+             patch("openkyrozen.interfaces.cli.launcher.sys.argv", ["kyrozen", "onboarding"]):
             tui_launcher.main()
 
         self.assertEqual(run.call_args.args[0], ["tui", "onboarding"])
@@ -398,7 +402,8 @@ exit 0
 
     def test_docker_starts_server_in_explicit_project_mode(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn('"server.py", "--project", "/app"', dockerfile)
+        self.assertIn('"openkyrozen.interfaces.web.app", "--project", "/app"', dockerfile)
+        self.assertIn("pip install --no-cache-dir --no-deps .", dockerfile)
 
 
 if __name__ == "__main__":

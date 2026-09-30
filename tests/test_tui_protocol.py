@@ -8,10 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import tui_backend
-from interaction import InteractionController
-from event_store import EventStore
-from workspace_context import resolve_launch_context
+import openkyrozen.interfaces.tui.backend as tui_backend
+from openkyrozen.agent.modes import InteractionController
+from openkyrozen.persistence.store import EventStore
+from openkyrozen.workspace.context import resolve_launch_context
 
 
 class TUIProtocolTests(unittest.TestCase):
@@ -20,6 +20,15 @@ class TUIProtocolTests(unittest.TestCase):
         self.output = io.StringIO()
         self.backend._output = self.output
         self.addCleanup(self.backend.stop)
+
+    def test_onboarding_provider_prompt_uses_the_complete_registry(self):
+        from openkyrozen.providers.registry import PROVIDER_AUTO_SELECTION, PROVIDER_DEFAULT_MODELS
+        self.backend._onboarding_kind = "new"
+        self.backend.dispatch({"command": "command", "name": "onboarding_continue", "request_id": "setup"})
+        event = json.loads(self.output.getvalue().splitlines()[-1])
+        self.assertEqual(event["kind"], "provider")
+        self.assertEqual({item["name"] for item in event["providers"]}, set(PROVIDER_DEFAULT_MODELS))
+        self.assertEqual({item["name"] for item in event["providers"] if item["auto_selection"]}, set(PROVIDER_AUTO_SELECTION))
 
     def test_validation_rejects_malformed_shape_and_oversized_text(self):
         payload, error = self.backend.validate(["submit"])
@@ -54,7 +63,7 @@ class TUIProtocolTests(unittest.TestCase):
                 "tui.chat_metadata", {"title": "Legacy"}, user_id="local",
                 workspace_id=context.source_scope_id, session_id="surface:tui",
             )
-            with patch.object(tui_backend.agent, "memory_bank", memory):
+            with patch.object(self.backend.agent.current_session, "memory", memory):
                 groups = self.backend._navigation_groups()
             self.assertEqual(groups[0]["name"], "No Project")
             self.assertEqual([chat["session_id"] for chat in groups[0]["chats"]], ["chat-global"])
@@ -94,7 +103,7 @@ class TUIProtocolTests(unittest.TestCase):
             notes.write_text("notes", encoding="utf-8")
             missing = root / "missing.txt"
 
-            with patch.object(tui_backend.agent, "_get_workspace_root", return_value=workspace):
+            with patch.object(self.backend.agent, "_get_workspace_root", return_value=workspace):
                 self.backend._command(f'/attach "{image}" "{notes}"', {}, "attach-1")
                 self.backend._command(f'/attach "{notes}" "{missing}"', {}, "attach-2")
 
@@ -122,7 +131,7 @@ class TUIProtocolTests(unittest.TestCase):
             except OSError:
                 symlink = None
 
-            with patch.object(tui_backend.agent, "_get_workspace_root", return_value=workspace):
+            with patch.object(self.backend.agent, "_get_workspace_root", return_value=workspace):
                 self.backend._command(f"/attach {oversized}", {}, "attach-large")
                 if symlink is not None:
                     self.backend._command(f"/attach {symlink}", {}, "attach-link")
@@ -136,31 +145,31 @@ class TUIProtocolTests(unittest.TestCase):
         self.backend._staged_attachments = [{"path": "attachments/batch/notes.txt", "bytes": 5}]
         tasks = SimpleNamespace(tasks=[], clear=lambda: None)
         memory = SimpleNamespace(add_log=lambda _text: None)
-        with patch.object(tui_backend.agent, "llm_provider", object()), \
-                patch.object(tui_backend.agent, "_sanitize_input", return_value=("question", False)), \
-                patch.object(tui_backend.agent, "interaction_envelope", return_value={
+        with patch.object(self.backend.agent, "llm_provider", object()), \
+                patch.object(self.backend.agent, "_sanitize_input", return_value=("question", False)), \
+                patch.object(self.backend.agent, "interaction_envelope", return_value={
                     "pending_question": None, "pending_plan": None,
                 }), \
-                patch.object(tui_backend.agent, "is_plan_acceptance", return_value=False), \
-                patch.object(tui_backend.agent, "tasks", tasks), \
-                patch.object(tui_backend.agent, "memory_bank", memory), \
-                patch.object(tui_backend.agent, "_chat_turn", side_effect=tui_backend.agent.ProviderUnavailableError("offline")), \
+                patch.object(self.backend.agent, "is_plan_acceptance", return_value=False), \
+                patch.object(self.backend.agent.current_session, "tasks", tasks), \
+                patch.object(self.backend.agent.current_session, "memory", memory), \
+                patch.object(self.backend.agent, "_chat_turn", side_effect=self.backend.agent.ProviderUnavailableError("offline")), \
                 patch.object(self.backend, "interaction"), \
                 patch.object(self.backend, "usage"):
             self.backend._run_submit("question", "turn-failed")
         self.assertEqual(len(self.backend._staged_attachments), 1)
 
-        with patch.object(tui_backend.agent, "llm_provider", object()), \
-                patch.object(tui_backend.agent, "_sanitize_input", return_value=("question", False)), \
-                patch.object(tui_backend.agent, "interaction_envelope", return_value={
+        with patch.object(self.backend.agent, "llm_provider", object()), \
+                patch.object(self.backend.agent, "_sanitize_input", return_value=("question", False)), \
+                patch.object(self.backend.agent, "interaction_envelope", return_value={
                     "pending_question": None, "pending_plan": None,
                 }), \
-                patch.object(tui_backend.agent, "is_plan_acceptance", return_value=False), \
-                patch.object(tui_backend.agent, "tasks", tasks), \
-                patch.object(tui_backend.agent, "memory_bank", memory), \
-                patch.object(tui_backend.agent, "_chat_turn", return_value="answer") as chat, \
-                patch.object(tui_backend.agent, "_clean_final_response", return_value="answer"), \
-                patch.object(tui_backend.agent, "_split_reply", return_value=("", "answer")), \
+                patch.object(self.backend.agent, "is_plan_acceptance", return_value=False), \
+                patch.object(self.backend.agent.current_session, "tasks", tasks), \
+                patch.object(self.backend.agent.current_session, "memory", memory), \
+                patch.object(self.backend.agent, "_chat_turn", return_value="answer") as chat, \
+                patch.object(self.backend.agent, "_clean_final_response", return_value="answer"), \
+                patch.object(self.backend.agent, "_split_reply", return_value=("", "answer")), \
                 patch.object(self.backend, "interaction"), \
                 patch.object(self.backend, "usage"):
             self.backend._run_submit("question", "turn-success")
@@ -173,18 +182,18 @@ class TUIProtocolTests(unittest.TestCase):
     def test_inline_command_is_applied_before_chat_and_removed_from_request(self):
         tasks = SimpleNamespace(tasks=[], clear=lambda: None)
         memory = SimpleNamespace(add_log=lambda _text: None)
-        with patch.object(tui_backend.agent, "llm_provider", object()), \
+        with patch.object(self.backend.agent, "llm_provider", object()), \
                 patch.object(self.backend, "_command") as command, \
-                patch.object(tui_backend.agent, "_sanitize_input", side_effect=lambda text: (text, False)), \
-                patch.object(tui_backend.agent, "interaction_envelope", return_value={
+                patch.object(self.backend.agent, "_sanitize_input", side_effect=lambda text: (text, False)), \
+                patch.object(self.backend.agent, "interaction_envelope", return_value={
                     "pending_question": None, "pending_plan": None,
                 }), \
-                patch.object(tui_backend.agent, "is_plan_acceptance", return_value=False), \
-                patch.object(tui_backend.agent, "tasks", tasks), \
-                patch.object(tui_backend.agent, "memory_bank", memory), \
-                patch.object(tui_backend.agent, "_chat_turn", return_value="answer") as chat, \
-                patch.object(tui_backend.agent, "_clean_final_response", return_value="answer"), \
-                patch.object(tui_backend.agent, "_split_reply", return_value=("", "answer")), \
+                patch.object(self.backend.agent, "is_plan_acceptance", return_value=False), \
+                patch.object(self.backend.agent.current_session, "tasks", tasks), \
+                patch.object(self.backend.agent.current_session, "memory", memory), \
+                patch.object(self.backend.agent, "_chat_turn", return_value="answer") as chat, \
+                patch.object(self.backend.agent, "_clean_final_response", return_value="answer"), \
+                patch.object(self.backend.agent, "_split_reply", return_value=("", "answer")), \
                 patch.object(self.backend, "interaction"), \
                 patch.object(self.backend, "usage"):
             self.backend._run_submit("Build a todo list /mode plan", "inline-1")
@@ -267,11 +276,11 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertEqual([event["text"] for event in events], ["I will inspect."])
 
     def test_provider_setup_emits_ready_and_masks_key_flow(self):
-        config = tui_backend.agent.ProviderConfig(provider="deepseek")
-        with patch.object(tui_backend.agent, "_provider_config", config), \
-                patch.object(tui_backend.agent, "_get_workspace_root", return_value=Path("/tmp/workspace")), \
-                patch.object(tui_backend.agent, "save_provider_config_encrypted"), \
-                patch.object(tui_backend.agent, "_prompt_and_init_deepseek", return_value=False):
+        config = self.backend.agent.ProviderConfig(provider="deepseek")
+        with patch.object(self.backend.agent, "_provider_config", config), \
+                patch.object(self.backend.agent, "_get_workspace_root", return_value=Path("/tmp/workspace")), \
+                patch.object(self.backend.agent, "save_provider_config_encrypted"), \
+                patch.object(self.backend.agent, "_prompt_and_init_deepseek", return_value=False):
             self.backend.set_api_key("sk-test-secret", "key-1")
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
         self.assertEqual(events[0]["event"], "ready")
@@ -289,13 +298,13 @@ class TUIProtocolTests(unittest.TestCase):
             "model_simple": "deepseek-v4-flash",
         })()
         plugin = type("Plugin", (), {"load_once": lambda self: None})()
-        with patch.object(tui_backend.agent, "configure_launch_context", return_value=context), \
-                patch.object(tui_backend.agent, "detect_provider", return_value=config), \
-                patch.object(tui_backend.agent, "_prompt_and_init_deepseek", return_value=True), \
-                patch.object(tui_backend.agent, "_plugin_runtime_for_surface", return_value=plugin), \
-                patch.object(tui_backend.agent, "_run_recovered_tasks", return_value=[]), \
-                patch.object(tui_backend.agent, "_project_graph", None), \
-                patch.object(tui_backend.agent, "_ensure_detached_learning_worker", return_value=True) as ensure_worker:
+        with patch.object(self.backend.agent, "configure_launch_context", return_value=context), \
+                patch.object(self.backend.agent, "detect_provider", return_value=config), \
+                patch.object(self.backend.agent, "_prompt_and_init_deepseek", return_value=True), \
+                patch.object(self.backend.agent, "_plugin_runtime_for_surface", return_value=plugin), \
+                patch.object(self.backend.agent, "_run_recovered_tasks", return_value=[]), \
+                patch.object(self.backend.agent.current_session.workspace, "graph", None), \
+                patch.object(self.backend.agent, "_ensure_detached_learning_worker", return_value=True) as ensure_worker:
             self.backend.start({"command": "start", "global": True}, "start-1")
 
         ensure_worker.assert_called_once_with()
@@ -313,13 +322,13 @@ class TUIProtocolTests(unittest.TestCase):
             "model_simple": "deepseek-v4-flash",
         })()
         plugin = type("Plugin", (), {"load_once": lambda self: None})()
-        with patch.object(tui_backend.agent, "configure_launch_context", return_value=context), \
-                patch.object(tui_backend.agent, "detect_provider", return_value=config), \
-                patch.object(tui_backend.agent, "_prompt_and_init_deepseek", return_value=False), \
-                patch.object(tui_backend.agent, "_plugin_runtime_for_surface", return_value=plugin), \
-                patch.object(tui_backend.agent, "_run_recovered_tasks", return_value=[]), \
-                patch.object(tui_backend.agent, "_project_graph", None), \
-                patch.object(tui_backend.agent, "_ensure_detached_learning_worker", return_value=True):
+        with patch.object(self.backend.agent, "configure_launch_context", return_value=context), \
+                patch.object(self.backend.agent, "detect_provider", return_value=config), \
+                patch.object(self.backend.agent, "_prompt_and_init_deepseek", return_value=False), \
+                patch.object(self.backend.agent, "_plugin_runtime_for_surface", return_value=plugin), \
+                patch.object(self.backend.agent, "_run_recovered_tasks", return_value=[]), \
+                patch.object(self.backend.agent.current_session.workspace, "graph", None), \
+                patch.object(self.backend.agent, "_ensure_detached_learning_worker", return_value=True):
             self.backend.start({"command": "start", "global": True, "onboarding": "new"}, "new-1")
 
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
@@ -330,7 +339,7 @@ class TUIProtocolTests(unittest.TestCase):
 
     def test_onboarding_learning_choice_completes_setup(self):
         self.backend._onboarding_kind = "new"
-        with patch.object(tui_backend.agent, "set_learning_policy", return_value="remote"), \
+        with patch.object(self.backend.agent, "set_learning_policy", return_value="remote"), \
                 patch.object(self.backend, "interaction"), \
                 patch.object(self.backend, "status"):
             self.backend._command("self_learning", {"mode": "remote", "onboarding": True}, "learning-1")
@@ -355,7 +364,7 @@ class TUIProtocolTests(unittest.TestCase):
                 }
 
         memory = SimpleNamespace(user_id="local", workspace_id="workspace", store=Store())
-        with patch.object(tui_backend.agent, "memory_bank", memory):
+        with patch.object(self.backend.agent.current_session, "memory", memory):
             self.backend.usage("usage-1")
         event = json.loads(self.output.getvalue().strip())
         self.assertEqual(event["event"], "usage")
@@ -370,19 +379,19 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertIn("request_id", error)
 
     def test_fast_command_prompts_for_jev_key_and_reports_kev_setup_failure(self):
-        with patch.object(tui_backend.agent.fast_mode, "jev_key", return_value=""):
+        with patch.object(self.backend.agent.fast_mode, "jev_key", return_value=""):
             self.backend._command("/fast jev", {}, "fast-key")
-        with patch.object(tui_backend.agent, "set_fast_backend", side_effect=RuntimeError("unsupported")):
+        with patch.object(self.backend.agent, "set_fast_backend", side_effect=RuntimeError("unsupported")):
             self.backend._command("/fast kev", {}, "fast-kev")
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
         self.assertEqual(events[0]["kind"], "fast_key")
         self.assertEqual(events[-1]["code"], "fast_setup_failed")
 
     def test_decision_assist_command_reports_status_and_requires_explicit_kev_consent(self):
-        with patch.object(tui_backend.agent, "decision_assist_state", return_value={
+        with patch.object(self.backend.agent, "decision_assist_state", return_value={
             "backend": "off", "kev_private_consent": False,
             "jev_configured": False, "kev_ready": False,
-        }), patch.object(tui_backend.agent, "set_decision_assist", side_effect=ValueError("consent required")):
+        }), patch.object(self.backend.agent, "set_decision_assist", side_effect=ValueError("consent required")):
             self.backend._command("/decision-assist", {}, "assist-status")
             self.backend._command("/decision-assist kev", {}, "assist-kev")
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
@@ -390,7 +399,7 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertEqual(events[-1]["code"], "decision_assist_setup_failed")
 
     def test_decision_assist_jev_prompts_for_missing_key(self):
-        with patch.object(tui_backend.agent.fast_mode, "jev_key", return_value=""):
+        with patch.object(self.backend.agent.fast_mode, "jev_key", return_value=""):
             self.backend._command("/decision-assist jev", {}, "assist-key")
         event = json.loads(self.output.getvalue().strip())
         self.assertEqual(event["event"], "prompt")
@@ -399,12 +408,12 @@ class TUIProtocolTests(unittest.TestCase):
 
     def test_interaction_envelope_and_structured_commands_are_correlated(self):
         with tempfile.TemporaryDirectory() as directory:
-            original = tui_backend.agent._interaction_controller
+            original = self.backend.agent._interaction_controller
             controller = InteractionController(
                 EventStore(Path(directory) / "state.sqlite3"),
                 workspace_id="tui", session_id="surface:tui",
             )
-            tui_backend.agent._interaction_controller = controller
+            self.backend.agent._interaction_controller = controller
             try:
                 question = controller.request_question({"questions": [{
                     "id": "scope", "header": "Scope", "prompt": "Which target?",
@@ -424,11 +433,11 @@ class TUIProtocolTests(unittest.TestCase):
                 self.backend.dispatch(payload)
                 self.assertIsNone(controller.state()["pending_question"])
             finally:
-                tui_backend.agent._interaction_controller = original
+                self.backend.agent._interaction_controller = original
 
     def test_successful_update_requests_restart(self):
         with patch.object(
-                tui_backend.agent, "_self_update",
+                self.backend.agent, "_self_update",
                 return_value="Updated OpenKyrozen from source revision abc123:\ndone",
         ):
             self.backend._command("/update", {}, "update-1")
@@ -445,9 +454,9 @@ class TUIProtocolTests(unittest.TestCase):
                 "file_summary": {"changes": {"added": 1, "changed": 2, "deleted": 0}},
             },
         )
-        with patch.object(tui_backend.agent, "history_text", return_value="Conversation: chat-current\n* [1]"), \
-                patch.object(tui_backend.agent, "history_manager", return_value=manager), \
-                patch.object(tui_backend.agent, "restore_history", return_value={"recovery": {"id": "hist_recovery"}}) as restore, \
+        with patch.object(self.backend.agent, "history_text", return_value="Conversation: chat-current\n* [1]"), \
+                patch.object(self.backend.agent, "history_manager", return_value=manager), \
+                patch.object(self.backend.agent, "restore_history", return_value={"recovery": {"id": "hist_recovery"}}) as restore, \
                 patch.object(self.backend, "navigation") as navigation, \
                 patch.object(self.backend, "interaction") as interaction, \
                 patch.object(self.backend, "graph_state") as graph_state, \
@@ -468,8 +477,8 @@ class TUIProtocolTests(unittest.TestCase):
         status.assert_called_once_with("ready", "Restored [1]. Recovery point saved.", "rollback-2")
 
     def test_self_learning_prompt_includes_runtime_and_cost_source(self):
-        with patch.object(tui_backend.agent, "learning_runtime", return_value={"mode": "local"}), \
-                patch.object(tui_backend.agent, "learning_cost_source", return_value="Local CPU/RAM/disk; no API cost"):
+        with patch.object(self.backend.agent, "learning_runtime", return_value={"mode": "local"}), \
+                patch.object(self.backend.agent, "learning_cost_source", return_value="Local CPU/RAM/disk; no API cost"):
             self.backend._command("/self-learning", {}, "learning-1")
         event = json.loads(self.output.getvalue().splitlines()[-1])
         self.assertEqual(event["event"], "prompt")
@@ -491,7 +500,7 @@ class TUIProtocolTests(unittest.TestCase):
             def path(self, left, right):
                 return f"{left} -> {right}"
 
-        with patch.object(tui_backend.agent, "_project_graph", Graph()):
+        with patch.object(self.backend.agent.current_session.workspace, "graph", Graph()):
             self.backend.dispatch({"command": "graph_request", "request_id": "graph-1", "action": "search", "query": "main"})
             self.backend.dispatch({"command": "graph_request", "request_id": "graph-2", "action": "path", "left": "a", "right": "b"})
             self.backend.dispatch({"command": "graph_request", "request_id": "graph-3", "action": "refresh"})
@@ -508,7 +517,7 @@ class TUIProtocolTests(unittest.TestCase):
             "binary": lambda self: "/managed/gh",
             "hostname": lambda self: "ghe.example",
         })()
-        with patch.object(tui_backend.agent, "_github_cli", client):
+        with patch.object(self.backend.agent.current_session.workspace, "github", client):
             self.backend._command("/github login", {}, "gh-1")
         event = json.loads(self.output.getvalue().splitlines()[-1])
         self.assertEqual(event["event"], "prompt")

@@ -4,9 +4,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import main
-from event_store import EventStore
-from interaction import (
+from openkyrozen.app.bootstrap import build_application
+
+from openkyrozen.persistence.store import EventStore
+from openkyrozen.agent.modes import (
     InteractionController,
     InteractionError,
     is_plan_acceptance,
@@ -15,9 +16,9 @@ from interaction import (
     route_mode,
     split_inline_command,
 )
-from task_engine import TaskManager
-from capability_tokens import issue_capability_token
-from workspace_context import resolve_launch_context
+from openkyrozen.tasks.engine import TaskManager
+from openkyrozen.security.capabilities import issue_capability_token
+from openkyrozen.workspace.context import resolve_launch_context
 
 
 class InteractionTests(unittest.TestCase):
@@ -25,6 +26,10 @@ class InteractionTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.store = EventStore(Path(self.directory.name) / "state.sqlite3")
+        from openkyrozen.memory.service import MemoryBank
+        self.application = build_application(surface="cli", memory=MemoryBank(self.store.path, store=self.store))
+        self.agent = self.application.runtime
+        self.addCleanup(self.application.close)
         self.controller = InteractionController(
             self.store, workspace_id="workspace", session_id="session",
         )
@@ -54,9 +59,9 @@ class InteractionTests(unittest.TestCase):
         self.assertIsNone(split_inline_command("Build it /mode invalid"))
 
     def test_cli_inline_command_dispatches_before_request(self):
-        with patch.object(main, "set_interaction_mode", return_value={"preference_mode": "plan"}) as set_mode, \
-                patch.object(main.console, "print"):
-            self.assertTrue(main._apply_inline_command("/mode plan"))
+        with patch.object(self.agent, "set_interaction_mode", return_value={"preference_mode": "plan"}) as set_mode, \
+                patch.object(self.agent.console, "print"):
+            self.assertTrue(self.agent._apply_inline_command("/mode plan"))
         set_mode.assert_called_once_with("plan")
 
     def test_project_interaction_state_is_isolated_from_other_projects(self):
@@ -64,8 +69,8 @@ class InteractionTests(unittest.TestCase):
                 tempfile.TemporaryDirectory() as second:
             first_context = resolve_launch_context(home=home, project_path=first)
             second_context = resolve_launch_context(home=home, project_path=second)
-            first_scope = main.interaction_workspace_id(first_context)
-            second_scope = main.interaction_workspace_id(second_context)
+            first_scope = self.agent.interaction_workspace_id(first_context)
+            second_scope = self.agent.interaction_workspace_id(second_context)
             self.assertNotEqual(first_scope, second_scope)
 
             first_controller = InteractionController(
@@ -84,24 +89,24 @@ class InteractionTests(unittest.TestCase):
 
             global_context = resolve_launch_context(home=home, global_mode=True)
             self.assertEqual(
-                main.interaction_workspace_id(global_context), main.memory_bank.workspace_id,
+                self.agent.interaction_workspace_id(global_context), self.agent.memory_bank.workspace_id,
             )
 
     def test_binding_empty_chat_clears_previous_short_term_memory(self):
-        previous = (main.short_term_memory, main.tasks, main._interaction_controller,
-                    main.memory_bank.session_id)
+        previous = (self.agent.short_term_memory, self.agent.tasks, self.agent._interaction_controller,
+                    self.agent.memory_bank.session_id)
         def restore():
-            main.short_term_memory, main.tasks, main._interaction_controller = previous[:3]
-            main.memory_bank.session_id = previous[3]
+            self.agent.short_term_memory, self.agent.tasks, self.agent._interaction_controller = previous[:3]
+            self.agent.memory_bank.session_id = previous[3]
         self.addCleanup(restore)
-        main.short_term_memory = [{"role": "user", "content": "previous project"}]
+        self.agent.short_term_memory = [{"role": "user", "content": "previous project"}]
         empty_history = type("History", (), {"current": lambda self: None})()
-        with patch.object(main, "TaskManager", return_value=object()), \
-                patch.object(main, "InteractionController", return_value=object()), \
-                patch.object(main, "history_manager", return_value=empty_history), \
-                patch.object(main, "_restore_ponytail_level"):
-            main.bind_interaction_scope("chat-empty")
-        self.assertEqual(main.short_term_memory, [])
+        with patch.object(self.agent, "TaskManager", return_value=object()), \
+                patch.object(self.agent, "InteractionController", return_value=object()), \
+                patch.object(self.agent, "history_manager", return_value=empty_history), \
+                patch.object(self.agent, "_restore_ponytail_level"):
+            self.agent.bind_interaction_scope("chat-empty")
+        self.assertEqual(self.agent.short_term_memory, [])
 
     def test_question_bounds_and_event_reconstruction(self):
         question = self.controller.request_question({"questions": [{
@@ -169,8 +174,8 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(len(manager.tasks), 1)
 
     def test_provider_plan_text_cannot_duplicate_an_accepted_checklist(self):
-        previous_tasks = main.tasks
-        previous_controller = main._interaction_controller
+        previous_tasks = self.agent.tasks
+        previous_controller = self.agent._interaction_controller
         manager = TaskManager(self.store, workspace_id="workspace", session_id="session")
         proposal = self.controller.propose_plan({
             "title": "Eight steps", "summary": "Execute once.", "assumptions": [],
@@ -186,16 +191,16 @@ class InteractionTests(unittest.TestCase):
         self.controller.accept_plan(
             manager, plan_id=proposal["plan_id"], version=proposal["version"],
         )
-        main.tasks = manager
-        main._interaction_controller = self.controller
-        mode_token = main._active_interaction_mode.set("agent")
+        self.agent.tasks = manager
+        self.agent._interaction_controller = self.controller
+        mode_token = self.agent._active_interaction_mode.set("agent")
         try:
             repeated = "Plan:\n" + "\n".join(
                 f"{index}. Perform step {index}." for index in range(1, 9)
             )
-            main._tasks_from_plan(repeated)
-            main._tasks_from_plan(repeated)
-            main._observe_model_response(
+            self.agent._tasks_from_plan(repeated)
+            self.agent._tasks_from_plan(repeated)
+            self.agent._observe_model_response(
                 "TaskList:\n```json\n"
                 + json.dumps([f"Use run_cmd to perform step {index}" for index in range(1, 9)])
                 + "\n```"
@@ -207,9 +212,9 @@ class InteractionTests(unittest.TestCase):
             self.assertEqual(evidence["task_id"], manager.tasks[0]["id"])
             self.assertEqual(manager.tasks[0]["status"], "succeeded")
         finally:
-            main.tasks = previous_tasks
-            main._interaction_controller = previous_controller
-            main._active_interaction_mode.reset(mode_token)
+            self.agent.tasks = previous_tasks
+            self.agent._interaction_controller = previous_controller
+            self.agent._active_interaction_mode.reset(mode_token)
 
     def test_exact_acceptance_phrases_and_control_parser(self):
         self.assertTrue(is_plan_acceptance("Execute plan."))
@@ -232,7 +237,7 @@ class InteractionTests(unittest.TestCase):
             "steps": [{"step": 1, "title": "Create page", "details": "Write index.html.",
                        "acceptance_criteria": ["index.html exists"]}],
         })
-        parsed = main._observe_model_response(shaped)
+        parsed = self.agent._observe_model_response(shaped)
         self.assertEqual(parsed["plan_proposal"]["title"], "Status page")
         self.assertEqual(parsed["plan_proposal"]["steps"][0]["id"], "step-1")
         self.assertEqual(parsed["tool_calls"], [])
@@ -242,7 +247,7 @@ class InteractionTests(unittest.TestCase):
             "steps": [{"title": "Write", "details": "Write README.",
                        "action": "write_file", "path": "README.md", "content": "unsafe"}],
         })
-        sanitized = main._observe_model_response(executable)
+        sanitized = self.agent._observe_model_response(executable)
         self.assertEqual(sanitized["tool_calls"], [])
         self.assertEqual(sanitized["plan_proposal"]["title"], "Safe proposal")
         self.assertEqual(
@@ -255,11 +260,11 @@ class InteractionTests(unittest.TestCase):
         )
 
     def test_plan_mode_converts_plain_plan_and_discards_early_actions(self):
-        mode_token = main._active_interaction_mode.set("plan")
-        previous_controller = main._interaction_controller
-        main._interaction_controller = self.controller
+        mode_token = self.agent._active_interaction_mode.set("plan")
+        previous_controller = self.agent._interaction_controller
+        self.agent._interaction_controller = self.controller
         try:
-            parsed = main._parse_model_response(
+            parsed = self.agent._parse_model_response(
                 "Plan:\n"
                 "1. Create index.html with the requested heading.\n"
                 "2. Serve it locally and verify HTTP 200.\n"
@@ -267,7 +272,7 @@ class InteractionTests(unittest.TestCase):
             )
             self.assertEqual(parsed["tool_calls"], [])
             self.assertIsNone(parsed["protocol_error"])
-            rendered = main._interaction_gate(parsed, "Create a local page")
+            rendered = self.agent._interaction_gate(parsed, "Create a local page")
             self.assertIn("Create index.html", rendered)
             self.assertEqual(len(self.controller.state()["pending_plan"]["steps"]), 2)
             self.assertEqual(
@@ -277,13 +282,13 @@ class InteractionTests(unittest.TestCase):
                 [],
             )
 
-            action_only = main._parse_model_response(
+            action_only = self.agent._parse_model_response(
                 'Action: {"action":"run_cmd","args":"python -m http.server"}'
             )
             self.assertEqual(action_only["tool_calls"], [])
             self.assertIn("rejected an executable action", action_only["protocol_error"])
 
-            markdown = main._parse_model_response(
+            markdown = self.agent._parse_model_response(
                 "PlanProposal:\n\n**Goal:** Build locally.\n\n**Planned changes**\n\n"
                 "1. **Create `index.html`** with no dependencies.\n"
                 "   - Include a visible heading.\n"
@@ -296,8 +301,8 @@ class InteractionTests(unittest.TestCase):
             self.assertEqual(len(markdown["plan_proposal"]["steps"]), 4)
             self.assertEqual(markdown["plan_proposal"]["steps"][0]["id"], "step-1")
         finally:
-            main._interaction_controller = previous_controller
-            main._active_interaction_mode.reset(mode_token)
+            self.agent._interaction_controller = previous_controller
+            self.agent._active_interaction_mode.reset(mode_token)
 
     def test_plan_mode_repairs_rejected_action_into_proposal(self):
         class LearningStub:
@@ -312,19 +317,19 @@ class InteractionTests(unittest.TestCase):
             def turn_end(self, **_kwargs): return None
 
         original = (
-            main.tasks, main._interaction_controller, main.learning_engine,
-            main._get_workspace_root(), main._execution_capability_token,
+            self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
+            self.agent._get_workspace_root(), self.agent._execution_capability_token,
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store = EventStore(root / "state.sqlite3")
-            main.tasks = TaskManager(store, workspace_id="repair", session_id="repair")
-            main._interaction_controller = InteractionController(
+            self.agent.tasks = TaskManager(store, workspace_id="repair", session_id="repair")
+            self.agent._interaction_controller = InteractionController(
                 store, workspace_id="repair", session_id="repair",
             )
-            main._interaction_controller.set_mode("plan")
-            main.learning_engine = LearningStub()
-            main._set_workspace_root(root)
+            self.agent._interaction_controller.set_mode("plan")
+            self.agent.learning_engine = LearningStub()
+            self.agent._set_workspace_root(root)
             responses = [
                 'Action: {"action":"write_file","args":"unsafe.txt|bad"}',
                 'Action: {"action":"list_dir","args":"."}',
@@ -333,39 +338,39 @@ class InteractionTests(unittest.TestCase):
                 '"description":"Create the requested file.","acceptance":["File exists"]}]}\n```',
             ]
             try:
-                with patch.object(main, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
-                        patch.object(main, "_touch_detached_learning_heartbeat"), \
-                        patch.object(main, "dispatch_learning_cycle"), \
-                        patch.object(main, "_build_messages", return_value=[]), \
-                        patch.object(main, "_build_memory_context", return_value=""), \
-                        patch.object(main, "_classify_complexity", return_value="simple"), \
-                        patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
-                        patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
+                with patch.object(self.agent, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
+                        patch.object(self.agent, "_touch_detached_learning_heartbeat"), \
+                        patch.object(self.agent, "dispatch_learning_cycle"), \
+                        patch.object(self.agent, "_build_messages", return_value=[]), \
+                        patch.object(self.agent, "_build_memory_context", return_value=""), \
+                        patch.object(self.agent, "_classify_complexity", return_value="simple"), \
+                        patch.object(self.agent, "_call_llm_with_spinner", side_effect=responses), \
+                        patch.object(self.agent, "_finish_learning_run", side_effect=lambda run, receipts, task,
                                      result, records, tokens, started: result):
-                    reply = main._chat_turn("Create the file")
+                    reply = self.agent._chat_turn("Create the file")
                 self.assertIn("Safe plan (v1)", reply)
                 self.assertFalse((root / "unsafe.txt").exists())
                 self.assertEqual(
-                    main._interaction_controller.state()["pending_plan"]["title"], "Safe plan",
+                    self.agent._interaction_controller.state()["pending_plan"]["title"], "Safe plan",
                 )
             finally:
-                (main.tasks, main._interaction_controller, main.learning_engine,
-                 previous_root, main._execution_capability_token) = original
-                main._set_workspace_root(previous_root)
+                (self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
+                 previous_root, self.agent._execution_capability_token) = original
+                self.agent._set_workspace_root(previous_root)
 
     def test_plan_prompt_advertises_only_read_and_network_tools(self):
-        mode_token = main._active_interaction_mode.set("plan")
-        controls_token = main._interaction_controls_enabled.set(True)
-        previous_token = main._execution_capability_token
-        main._execution_capability_token = issue_capability_token(
+        mode_token = self.agent._active_interaction_mode.set("plan")
+        controls_token = self.agent._interaction_controls_enabled.set(True)
+        previous_token = self.agent._execution_capability_token
+        self.agent._execution_capability_token = issue_capability_token(
             "test:plan-prompt", frozenset({"read", "write", "shell", "network", "git", "dynamic"}),
         )
         try:
-            prompt = main._system_prompt("deliberately ignored")
+            prompt = self.agent._system_prompt("deliberately ignored")
         finally:
-            main._execution_capability_token = previous_token
-            main._interaction_controls_enabled.reset(controls_token)
-            main._active_interaction_mode.reset(mode_token)
+            self.agent._execution_capability_token = previous_token
+            self.agent._interaction_controls_enabled.reset(controls_token)
+            self.agent._active_interaction_mode.reset(mode_token)
         self.assertIn("PlanProposal", prompt)
         self.assertIn("read_file", prompt)
         self.assertIn("search_web", prompt)
@@ -385,18 +390,18 @@ class InteractionTests(unittest.TestCase):
             def turn_start(self, **_kwargs): return None
             def turn_end(self, **_kwargs): return None
 
-        original = (main.tasks, main._interaction_controller, main.learning_engine,
-                    main._get_workspace_root(), main._execution_capability_token)
+        original = (self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
+                    self.agent._get_workspace_root(), self.agent._execution_capability_token)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store = EventStore(root / "state.sqlite3")
-            main.tasks = TaskManager(store, workspace_id="prose", session_id="prose")
-            main._interaction_controller = InteractionController(
+            self.agent.tasks = TaskManager(store, workspace_id="prose", session_id="prose")
+            self.agent._interaction_controller = InteractionController(
                 store, workspace_id="prose", session_id="prose",
             )
-            main._interaction_controller.set_mode("plan")
-            main.learning_engine = LearningStub()
-            main._set_workspace_root(root)
+            self.agent._interaction_controller.set_mode("plan")
+            self.agent.learning_engine = LearningStub()
+            self.agent._set_workspace_root(root)
             records = []
             responses = [
                 "1. Create the todo data model.\n2. Add reminders, priority, and status.\n3. Verify the workflow.",
@@ -404,39 +409,39 @@ class InteractionTests(unittest.TestCase):
                 "1. Define the todo data model.\n2. Add reminder scheduling.\n3. Add priority and status controls.\n4. Test create, update, and completion flows.",
             ]
             try:
-                with patch.object(main, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
-                        patch.object(main, "_touch_detached_learning_heartbeat"), \
-                        patch.object(main, "dispatch_learning_cycle"), \
-                        patch.object(main, "_build_messages", return_value=[]), \
-                        patch.object(main, "_build_memory_context", return_value=""), \
-                        patch.object(main, "_classify_complexity", return_value="simple"), \
-                        patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
-                        patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
+                with patch.object(self.agent, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
+                        patch.object(self.agent, "_touch_detached_learning_heartbeat"), \
+                        patch.object(self.agent, "dispatch_learning_cycle"), \
+                        patch.object(self.agent, "_build_messages", return_value=[]), \
+                        patch.object(self.agent, "_build_memory_context", return_value=""), \
+                        patch.object(self.agent, "_classify_complexity", return_value="simple"), \
+                        patch.object(self.agent, "_call_llm_with_spinner", side_effect=responses), \
+                        patch.object(self.agent, "_finish_learning_run", side_effect=lambda run, receipts, task,
                                      result, tool_records, tokens, started: records.extend(tool_records) or result):
-                    reply = main._chat_turn(
+                    reply = self.agent._chat_turn(
                         "I want you to build a todo list with reminders, priority, and status."
                     )
-                pending = main._interaction_controller.state()["pending_plan"]
+                pending = self.agent._interaction_controller.state()["pending_plan"]
                 self.assertNotIn("bounded recovery", reply)
                 self.assertIsNotNone(pending)
                 self.assertEqual(pending["title"], "Define the todo data model.")
                 self.assertEqual(len(pending["steps"]), 4)
                 self.assertEqual([record["action"] for record in records], ["list_dir"])
             finally:
-                (main.tasks, main._interaction_controller, main.learning_engine,
-                 previous_root, main._execution_capability_token) = original
-                main._set_workspace_root(previous_root)
+                (self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
+                 previous_root, self.agent._execution_capability_token) = original
+                self.agent._set_workspace_root(previous_root)
 
     def test_plan_mode_accepts_unwrapped_provider_plan_json(self):
-        mode_token = main._active_interaction_mode.set("plan")
+        mode_token = self.agent._active_interaction_mode.set("plan")
         try:
-            parsed = main._parse_model_response(
+            parsed = self.agent._parse_model_response(
                 '{"title":"Todo list","summary":"Build the requested workflow",'
                 '"steps":[{"title":"Model todos","description":"Store reminder, priority, and status fields",'
                 '"acceptance":["Todo records support the requested fields"]}]}'
             )
         finally:
-            main._active_interaction_mode.reset(mode_token)
+            self.agent._active_interaction_mode.reset(mode_token)
         self.assertIsNone(parsed["protocol_error"])
         self.assertEqual(parsed["plan_proposal"]["title"], "Todo list")
         self.assertEqual(len(parsed["plan_proposal"]["steps"]), 1)
@@ -453,16 +458,16 @@ class InteractionTests(unittest.TestCase):
             def turn_start(self, **_kwargs): return None
             def turn_end(self, **_kwargs): return None
 
-        original = (main.tasks, main._interaction_controller, main.learning_engine,
-                    main._get_workspace_root(), main._execution_capability_token)
+        original = (self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
+                    self.agent._get_workspace_root(), self.agent._execution_capability_token)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store = EventStore(root / "state.sqlite3")
-            main.tasks = TaskManager(store, workspace_id="exhaust", session_id="exhaust")
-            main._interaction_controller = InteractionController(store, workspace_id="exhaust", session_id="exhaust")
-            main._interaction_controller.set_mode("plan")
-            main.learning_engine = LearningStub()
-            main._set_workspace_root(root)
+            self.agent.tasks = TaskManager(store, workspace_id="exhaust", session_id="exhaust")
+            self.agent._interaction_controller = InteractionController(store, workspace_id="exhaust", session_id="exhaust")
+            self.agent._interaction_controller.set_mode("plan")
+            self.agent.learning_engine = LearningStub()
+            self.agent._set_workspace_root(root)
             responses = [
                 'Action: {"action":"write_file","args":"unsafe.txt|bad"}',
                 'Action: {"action":"run_cmd","args":"touch unsafe.txt"}',
@@ -470,23 +475,23 @@ class InteractionTests(unittest.TestCase):
                 'Action: {"action":"run_cmd","args":"touch unsafe.txt"}',
             ]
             try:
-                with patch.object(main, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
-                        patch.object(main, "_touch_detached_learning_heartbeat"), \
-                        patch.object(main, "dispatch_learning_cycle"), \
-                        patch.object(main, "_build_messages", return_value=[]), \
-                        patch.object(main, "_classify_complexity", return_value="complex"), \
-                        patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
-                        patch.object(main, "_execute_turn_action", side_effect=AssertionError("mutation executed")), \
-                        patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
+                with patch.object(self.agent, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
+                        patch.object(self.agent, "_touch_detached_learning_heartbeat"), \
+                        patch.object(self.agent, "dispatch_learning_cycle"), \
+                        patch.object(self.agent, "_build_messages", return_value=[]), \
+                        patch.object(self.agent, "_classify_complexity", return_value="complex"), \
+                        patch.object(self.agent, "_call_llm_with_spinner", side_effect=responses), \
+                        patch.object(self.agent, "_execute_turn_action", side_effect=AssertionError("mutation executed")), \
+                        patch.object(self.agent, "_finish_learning_run", side_effect=lambda run, receipts, task,
                                      result, records, tokens, started: result):
-                    reply = main._chat_turn("Fix the project")
+                    reply = self.agent._chat_turn("Fix the project")
                 self.assertIn("bounded recovery", reply)
                 self.assertIn("no changes were made", reply)
                 self.assertFalse((root / "unsafe.txt").exists())
             finally:
-                (main.tasks, main._interaction_controller, main.learning_engine,
-                 previous_root, main._execution_capability_token) = original
-                main._set_workspace_root(previous_root)
+                (self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
+                 previous_root, self.agent._execution_capability_token) = original
+                self.agent._set_workspace_root(previous_root)
 
     def test_plan_inspection_spans_rounds_and_repairs_malformed_proposal(self):
         class LearningStub:
@@ -500,17 +505,17 @@ class InteractionTests(unittest.TestCase):
             def turn_start(self, **_kwargs): return None
             def turn_end(self, **_kwargs): return None
 
-        original = (main.tasks, main._interaction_controller, main.learning_engine,
-                    main._get_workspace_root(), main._execution_capability_token)
+        original = (self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
+                    self.agent._get_workspace_root(), self.agent._execution_capability_token)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "note.txt").write_text("evidence", encoding="utf-8")
             store = EventStore(root / "state.sqlite3")
-            main.tasks = TaskManager(store, workspace_id="inspect", session_id="inspect")
-            main._interaction_controller = InteractionController(store, workspace_id="inspect", session_id="inspect")
-            main._interaction_controller.set_mode("plan")
-            main.learning_engine = LearningStub()
-            main._set_workspace_root(root)
+            self.agent.tasks = TaskManager(store, workspace_id="inspect", session_id="inspect")
+            self.agent._interaction_controller = InteractionController(store, workspace_id="inspect", session_id="inspect")
+            self.agent._interaction_controller.set_mode("plan")
+            self.agent.learning_engine = LearningStub()
+            self.agent._set_workspace_root(root)
             records = []
             responses = [
                 'Action: {"action":"read_file","args":"note.txt"}',
@@ -521,26 +526,26 @@ class InteractionTests(unittest.TestCase):
                 '"description":"Apply the approved change.","acceptance":["Change verified"]}]}\n```',
             ]
             try:
-                with patch.object(main, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
-                        patch.object(main, "_touch_detached_learning_heartbeat"), \
-                        patch.object(main, "dispatch_learning_cycle"), \
-                        patch.object(main, "_build_messages", return_value=[]), \
-                        patch.object(main, "_build_memory_context", return_value=""), \
-                        patch.object(main, "_classify_complexity", return_value="complex"), \
-                        patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
-                        patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
+                with patch.object(self.agent, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
+                        patch.object(self.agent, "_touch_detached_learning_heartbeat"), \
+                        patch.object(self.agent, "dispatch_learning_cycle"), \
+                        patch.object(self.agent, "_build_messages", return_value=[]), \
+                        patch.object(self.agent, "_build_memory_context", return_value=""), \
+                        patch.object(self.agent, "_classify_complexity", return_value="complex"), \
+                        patch.object(self.agent, "_call_llm_with_spinner", side_effect=responses), \
+                        patch.object(self.agent, "_finish_learning_run", side_effect=lambda run, receipts, task,
                                      result, tool_records, tokens, started: records.extend(tool_records) or result):
-                    reply = main._chat_turn("Plan the evidence-backed change")
+                    reply = self.agent._chat_turn("Plan the evidence-backed change")
                 self.assertIn("Evidence plan", reply)
                 self.assertEqual([record["action"] for record in records], ["read_file", "list_dir"])
-                self.assertEqual(main._interaction_controller.state()["effective_mode"], "plan")
+                self.assertEqual(self.agent._interaction_controller.state()["effective_mode"], "plan")
             finally:
-                (main.tasks, main._interaction_controller, main.learning_engine,
-                 previous_root, main._execution_capability_token) = original
-                main._set_workspace_root(previous_root)
+                (self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
+                 previous_root, self.agent._execution_capability_token) = original
+                self.agent._set_workspace_root(previous_root)
 
     def test_control_blocks_combined_with_actions_fail_closed(self):
-        parsed = main._observe_model_response(
+        parsed = self.agent._observe_model_response(
             'AskUser:\n```json\n{"questions":[{"id":"scope","header":"Scope",'
             '"prompt":"Which target?","choices":["Core","All"]}]}\n```\n'
             'Action: {"action":"write_file","args":"unsafe.txt|bad"}'
@@ -548,36 +553,36 @@ class InteractionTests(unittest.TestCase):
         self.assertIn("only control block", parsed["protocol_error"])
         self.assertEqual(parsed["tool_calls"][0]["action"], "write_file")
         self.assertIsNotNone(parsed["question"])
-        previous_controller = main._interaction_controller
-        token = main._interaction_controls_enabled.set(False)
-        main._interaction_controller = self.controller
+        previous_controller = self.agent._interaction_controller
+        token = self.agent._interaction_controls_enabled.set(False)
+        self.agent._interaction_controller = self.controller
         try:
-            question_only = main._observe_model_response(
+            question_only = self.agent._observe_model_response(
                 'AskUser:\n```json\n{"questions":[{"id":"scope","header":"Scope",'
                 '"prompt":"Which target?","choices":["Core","All"]}]}\n```'
             )
-            self.assertIn("non-interactive", main._interaction_gate(question_only, "Inspect"))
+            self.assertIn("non-interactive", self.agent._interaction_gate(question_only, "Inspect"))
             self.assertIsNone(self.controller.state()["pending_question"])
         finally:
-            main._interaction_controller = previous_controller
-            main._interaction_controls_enabled.reset(token)
+            self.agent._interaction_controller = previous_controller
+            self.agent._interaction_controls_enabled.reset(token)
 
     def test_read_only_modes_deny_mutating_and_dynamic_tools(self):
-        previous_token = main._execution_capability_token
-        previous_root = main._get_workspace_root()
+        previous_token = self.agent._execution_capability_token
+        previous_root = self.agent._get_workspace_root()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "notes.txt").write_text("safe", encoding="utf-8")
-            main._set_workspace_root(root)
-            main._execution_capability_token = issue_capability_token(
+            self.agent._set_workspace_root(root)
+            self.agent._execution_capability_token = issue_capability_token(
                 "test:plan", mode_capabilities(
                     frozenset({"read", "write", "shell", "network", "git", "browser", "dynamic"}),
                     "plan",
                 ),
             )
-            main.AVAILABLE_TOOLS["temporary_dynamic_tool"] = lambda args: f"ran:{args}"
+            self.agent.AVAILABLE_TOOLS["temporary_dynamic_tool"] = lambda args: f"ran:{args}"
             try:
-                self.assertIn("safe", main._run_tool("read_file", "notes.txt"))
+                self.assertIn("safe", self.agent._run_tool("read_file", "notes.txt"))
                 for action, args in (
                     ("write_file", "blocked.txt|bad"),
                     ("run_cmd", "touch blocked-shell.txt"),
@@ -585,19 +590,19 @@ class InteractionTests(unittest.TestCase):
                     ("browser_click", "button"),
                     ("temporary_dynamic_tool", "value"),
                 ):
-                    result = main._run_tool(action, args)
+                    result = self.agent._run_tool(action, args)
                     self.assertTrue(result.startswith("Error:"), (action, result))
                 self.assertFalse((root / "blocked.txt").exists())
                 self.assertFalse((root / "blocked-shell.txt").exists())
             finally:
-                main.AVAILABLE_TOOLS.pop("temporary_dynamic_tool", None)
-                main._execution_capability_token = previous_token
-                main._set_workspace_root(previous_root)
+                self.agent.AVAILABLE_TOOLS.pop("temporary_dynamic_tool", None)
+                self.agent._execution_capability_token = previous_token
+                self.agent._set_workspace_root(previous_root)
 
     def test_accepted_plan_rejects_unrelated_mutation_before_execution(self):
         previous = (
-            main.tasks, main._interaction_controller, main._execution_capability_token,
-            main._get_workspace_root(),
+            self.agent.tasks, self.agent._interaction_controller, self.agent._execution_capability_token,
+            self.agent._get_workspace_root(),
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -617,15 +622,15 @@ class InteractionTests(unittest.TestCase):
             controller.accept_plan(
                 manager, plan_id=proposal["plan_id"], version=proposal["version"],
             )
-            main.tasks = manager
-            main._interaction_controller = controller
-            main._set_workspace_root(root)
-            main._execution_capability_token = issue_capability_token(
+            self.agent.tasks = manager
+            self.agent._interaction_controller = controller
+            self.agent._set_workspace_root(root)
+            self.agent._execution_capability_token = issue_capability_token(
                 "test:accepted-plan", frozenset({"write"}),
             )
             try:
                 operations: set[str] = set()
-                rejected = main._execute_turn_action(
+                rejected = self.agent._execute_turn_action(
                     "write_file", "README.md|wrong", operation_scope="bound",
                     successful_operations=operations,
                 )
@@ -633,16 +638,16 @@ class InteractionTests(unittest.TestCase):
                 self.assertEqual(rejected.failure, "plan_action_mismatch")
                 self.assertFalse((root / "README.md").exists())
 
-                accepted = main._execute_turn_action(
+                accepted = self.agent._execute_turn_action(
                     "write_file", "index.html|ready", operation_scope="bound",
                     successful_operations=operations,
                 )
                 self.assertTrue(accepted.success, accepted.result)
                 self.assertEqual((root / "index.html").read_text(encoding="utf-8"), "ready")
             finally:
-                (main.tasks, main._interaction_controller, main._execution_capability_token,
+                (self.agent.tasks, self.agent._interaction_controller, self.agent._execution_capability_token,
                  previous_root) = previous
-                main._set_workspace_root(previous_root)
+                self.agent._set_workspace_root(previous_root)
 
     def test_mocked_provider_flow_questions_revision_acceptance_and_agent_receipt(self):
         class LearningStub:
@@ -657,18 +662,18 @@ class InteractionTests(unittest.TestCase):
             def turn_end(self, **_kwargs): return None
 
         original = (
-            main.tasks, main._interaction_controller, main.learning_engine,
-            main._get_workspace_root(), main._execution_capability_token,
+            self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
+            self.agent._get_workspace_root(), self.agent._execution_capability_token,
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store = EventStore(root / "state.sqlite3")
-            main.tasks = TaskManager(store, workspace_id="flow", session_id="flow")
-            main._interaction_controller = InteractionController(
+            self.agent.tasks = TaskManager(store, workspace_id="flow", session_id="flow")
+            self.agent._interaction_controller = InteractionController(
                 store, workspace_id="flow", session_id="flow",
             )
-            main.learning_engine = LearningStub()
-            main._set_workspace_root(root)
+            self.agent.learning_engine = LearningStub()
+            self.agent._set_workspace_root(root)
             responses = [
                 'Plan:\n1. Clarify the target before changing it.\n'
                 'TaskList:\n```json\n[{"id":"premature","description":"Must not execute before acceptance"}]\n```',
@@ -690,49 +695,49 @@ class InteractionTests(unittest.TestCase):
             ]
             try:
                 stream_events = []
-                stream_token = main._stream_event_callback.set(stream_events.append)
-                with patch.object(main, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
-                        patch.object(main, "_touch_detached_learning_heartbeat"), \
-                        patch.object(main, "dispatch_learning_cycle"), \
-                        patch.object(main, "_build_messages", return_value=[]), \
-                        patch.object(main, "_build_memory_context", return_value=""), \
-                        patch.object(main, "_classify_complexity", return_value="simple"), \
-                        patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
-                        patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
+                stream_token = self.agent._stream_event_callback.set(stream_events.append)
+                with patch.object(self.agent, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
+                        patch.object(self.agent, "_touch_detached_learning_heartbeat"), \
+                        patch.object(self.agent, "dispatch_learning_cycle"), \
+                        patch.object(self.agent, "_build_messages", return_value=[]), \
+                        patch.object(self.agent, "_build_memory_context", return_value=""), \
+                        patch.object(self.agent, "_classify_complexity", return_value="simple"), \
+                        patch.object(self.agent, "_call_llm_with_spinner", side_effect=responses), \
+                        patch.object(self.agent, "_finish_learning_run", side_effect=lambda run, receipts, task,
                                      result, records, tokens, started: result):
-                    first = main._chat_turn("Create a marker file")
+                    first = self.agent._chat_turn("Create a marker file")
                     self.assertIn("Which target?", first)
-                    self.assertEqual(main.tasks.tasks, [])
-                    initial_plan = main._chat_turn("Core")
+                    self.assertEqual(self.agent.tasks.tasks, [])
+                    initial_plan = self.agent._chat_turn("Core")
                     self.assertIn("Marker (v1)", initial_plan)
-                    revised_plan = main._chat_turn("Add explicit verification")
+                    revised_plan = self.agent._chat_turn("Add explicit verification")
                     self.assertIn("v2", revised_plan)
-                    suspended = main._chat_turn("accept plan")
+                    suspended = self.agent._chat_turn("accept plan")
                     self.assertIn("Which accepted check", suspended)
-                    self.assertIsNotNone(main._interaction_controller.state()["executing_plan"])
+                    self.assertIsNotNone(self.agent._interaction_controller.state()["executing_plan"])
                     self.assertTrue(any(
                         event.get("event") == "interaction"
                         and event.get("interaction", {}).get("effective_mode") == "agent"
                         for event in stream_events
                     ))
-                    executed = main._chat_turn("Read contents")
+                    executed = self.agent._chat_turn("Read contents")
                 self.assertIn("Marker created", executed)
                 self.assertEqual((root / "marker.txt").read_text(encoding="utf-8"), "ready")
-                self.assertEqual(len(main.tasks.tasks), 1)
-                self.assertEqual(main.tasks.tasks[0]["status"], "succeeded")
+                self.assertEqual(len(self.agent.tasks.tasks), 1)
+                self.assertEqual(self.agent.tasks.tasks[0]["status"], "succeeded")
                 accepted = store.list_events(
                     "interaction.plan_accepted", workspace_id="flow", session_id="flow",
                 )
                 self.assertEqual(len(accepted), 1)
-                state = main._interaction_controller.state()
+                state = self.agent._interaction_controller.state()
                 self.assertEqual(state["preference_mode"], "auto")
                 self.assertEqual(state["effective_mode"], "ask")
             finally:
                 if 'stream_token' in locals():
-                    main._stream_event_callback.reset(stream_token)
-                (main.tasks, main._interaction_controller, main.learning_engine,
-                 previous_root, main._execution_capability_token) = original
-                main._set_workspace_root(previous_root)
+                    self.agent._stream_event_callback.reset(stream_token)
+                (self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
+                 previous_root, self.agent._execution_capability_token) = original
+                self.agent._set_workspace_root(previous_root)
 
 
 if __name__ == "__main__":

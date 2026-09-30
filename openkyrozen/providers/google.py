@@ -1,0 +1,119 @@
+from __future__ import annotations
+import openkyrozen.providers.usage as usage_ledger
+
+import os
+import sys
+import time
+from typing import Any, Iterator
+from openkyrozen.providers.base import LLMProvider
+from openkyrozen.providers.config import ProviderConfig
+from openkyrozen.providers.retry import _retry_with_backoff
+
+
+class GoogleProvider(LLMProvider):
+    """Handles Google Gemini through the current Google Gen AI SDK."""
+
+    def __init__(self, config: ProviderConfig) -> None:
+        super().__init__(config)
+        try:
+            from google import genai
+        except ImportError:
+            sys.exit(
+                "The 'google-genai' package is required for Gemini. "
+                "Install it with: pip install google-genai"
+            )
+        self._client = genai.Client(api_key=config.api_key or os.environ.get("GEMINI_API_KEY", ""))
+
+    @staticmethod
+    def _contents(messages: list[dict[str, str]]) -> tuple[list[dict[str, Any]], str | None]:
+        contents: list[dict[str, Any]] = []
+        system: list[str] = []
+        for message in messages:
+            role = message.get("role", "user")
+            text = str(message.get("content", ""))
+            if role == "system":
+                system.append(text)
+                continue
+            contents.append({
+                "role": "model" if role == "assistant" else "user",
+                "parts": [{"text": text}],
+            })
+        return contents or [{"role": "user", "parts": [{"text": "Continue."}]}], (
+            "\n\n".join(system) if system else None
+        )
+
+    @staticmethod
+    def _usage(response: Any) -> dict[str, int | None] | None:
+        meta = getattr(response, "usage_metadata", None)
+        if meta is None:
+            return None
+        return {
+            "prompt_tokens": getattr(meta, "prompt_token_count", 0) or 0,
+            "completion_tokens": getattr(meta, "candidates_token_count", 0) or 0,
+        }
+
+    def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
+        model = model or self.config.model_simple
+        started = time.monotonic()
+
+        contents, system_instruction = self._contents(messages)
+        request_config: dict[str, Any] = {}
+        if system_instruction:
+            request_config["system_instruction"] = system_instruction
+
+        def _call():
+            return self._client.models.generate_content(
+                model=model, contents=contents, config=request_config or None,
+            )
+
+        response = _retry_with_backoff(_call)
+        text = str(getattr(response, "text", "") or "")
+        usage_dict = self._usage(response)
+        usage_ledger._track_cost(self.config.provider, usage_dict, model=model,
+                    latency_ms=round((time.monotonic() - started) * 1000))
+        return text.strip(), usage_dict
+
+    def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
+        model = model or self.config.model_simple
+        contents, system_instruction = self._contents(messages)
+        request_config: dict[str, Any] = {}
+        if system_instruction:
+            request_config["system_instruction"] = system_instruction
+        started = time.monotonic()
+        final_usage: dict[str, int | None] | None = None
+        completed = False
+        stream = _retry_with_backoff(lambda: self._client.models.generate_content_stream(
+            model=model, contents=contents, config=request_config or None,
+        ))
+        try:
+            for chunk in stream:
+                usage = self._usage(chunk)
+                if usage is not None:
+                    final_usage = usage
+                delta = str(getattr(chunk, "text", "") or "")
+                if delta:
+                    yield delta
+            completed = True
+        finally:
+            if completed:
+                usage_ledger._track_cost(self.config.provider, final_usage, model=model,
+                            latency_ms=round((time.monotonic() - started) * 1000))
+
+
+class VertexProvider(GoogleProvider):
+    """Google Gen AI SDK configured for Vertex AI and ADC."""
+
+    def __init__(self, config: ProviderConfig) -> None:
+        LLMProvider.__init__(self, config)
+        try:
+            from google import genai
+        except ImportError:
+            sys.exit(
+                "The 'google-genai' package is required for Vertex AI. "
+                "Install it with: pip install google-genai"
+            )
+        self._client = genai.Client(
+            vertexai=True,
+            project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
+            location=os.environ.get("GOOGLE_CLOUD_LOCATION", "global"),
+        )

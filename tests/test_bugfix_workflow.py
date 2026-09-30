@@ -4,10 +4,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import main
-from memory import MemoryBank
-from task_engine import TaskManager
-from interaction import InteractionController
+from openkyrozen.app.bootstrap import build_application
+
+_application = build_application(surface="cli")
+
+main = _application.runtime
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
+from openkyrozen.tasks.engine import TaskManager
+from openkyrozen.agent.modes import InteractionController
 
 
 class _StubLearning:

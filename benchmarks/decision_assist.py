@@ -14,9 +14,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import fast_mode
-
-
+import openkyrozen.routing.system_one as fast_mode
 CASES = (
     ("evidence_support", {"claim": "the service is healthy", "evidence": ["health check returned HTTP 200"]},
      {"verdict": {"type": "choice", "instructions": "Classify the evidence for the claim.",

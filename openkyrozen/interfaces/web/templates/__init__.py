@@ -1,0 +1,1 @@
+"""OpenKyrozen templates module."""

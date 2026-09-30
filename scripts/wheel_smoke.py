@@ -6,6 +6,11 @@ from __future__ import annotations
 import glob
 import json
 import os
+import shutil
+import socket
+import time
+import urllib.error
+import urllib.request
 import subprocess
 import sys
 import tempfile
@@ -32,6 +37,52 @@ def _run(command: list[str], *, cwd: Path, env: dict[str, str], input_text: str 
     return result
 
 
+def _install(python: Path, artifact: Path, extras: str, *, cwd: Path, env: dict[str, str]) -> None:
+    uv = shutil.which("uv")
+    command = [uv, "pip", "install", "--python", str(python)] if uv else [str(python), "-m", "pip", "install"]
+    _run(command + [str(artifact) + extras], cwd=cwd, env=env)
+
+
+def _web_smoke(python: Path, *, cwd: Path, env: dict[str, str]) -> None:
+    with socket.socket() as socket_probe:
+        socket_probe.bind(("127.0.0.1", 0))
+        port = socket_probe.getsockname()[1]
+    web_env = env | {"KYROZEN_SERVER_TOKEN": "installed-smoke-token"}
+    url = f"http://127.0.0.1:{port}"
+    with (cwd / "web.log").open("w+") as log:
+        process = subprocess.Popen([str(python), "-m", "openkyrozen.interfaces.web.app",
+                                    "--global", "--host", "127.0.0.1", "--port", str(port)],
+                                   cwd=cwd, env=web_env, stdout=log, stderr=log)
+        try:
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline and process.poll() is None:
+                try:
+                    request = urllib.request.Request(url + "/api/health", headers={"Authorization": "Bearer installed-smoke-token"})
+                    with urllib.request.urlopen(request, timeout=2) as response:
+                        assert json.load(response)["status"] in {"ok", "degraded"}
+                    break
+                except (OSError, urllib.error.URLError):
+                    time.sleep(0.2)
+            else:
+                log.seek(0)
+                raise RuntimeError("Installed web startup failed:\n" + log.read())
+            with urllib.request.urlopen(url, timeout=5) as response:
+                assert b"OpenKyrozen" in response.read()
+            try:
+                urllib.request.urlopen(url + "/api/health", timeout=5)
+            except urllib.error.HTTPError as error:
+                assert error.code in {401, 403}
+            else:
+                raise AssertionError("Installed web API did not enforce authentication")
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="openkyrozen-wheel-smoke-") as directory:
         root = Path(directory)
@@ -45,7 +96,10 @@ def main() -> int:
 
         base_env = os.environ.copy()
         base_env["PYTHONHASHSEED"] = "0"
-        _run([sys.executable, "-m", "build", "--wheel", "--outdir", str(dist)], cwd=ROOT, env=base_env)
+        _run([sys.executable, "-m", "build", "--outdir", str(dist)], cwd=ROOT, env=base_env)
+        sdists = sorted(dist.glob("*.tar.gz"))
+        if len(sdists) != 1:
+            raise RuntimeError(f"expected one sdist, found {sdists}")
         wheels = sorted(Path(path) for path in glob.glob(str(dist / "*.whl")))
         if len(wheels) != 1:
             raise RuntimeError(f"expected one wheel, found {wheels}")
@@ -54,10 +108,7 @@ def main() -> int:
         bin_dir = venv / ("Scripts" if os.name == "nt" else "bin")
         python = bin_dir / ("python.exe" if os.name == "nt" else "python")
         kyrozen = bin_dir / ("kyrozen.exe" if os.name == "nt" else "kyrozen")
-        _run(
-            [str(python), "-m", "pip", "install", "fastapi", "uvicorn", str(wheels[0])],
-            cwd=ROOT, env=base_env,
-        )
+        _install(python, wheels[0], "[all]", cwd=ROOT, env=base_env)
 
         env = base_env.copy()
         env.update({
@@ -70,7 +121,7 @@ def main() -> int:
             str(python), "-c",
             "import importlib.metadata, json; print(json.dumps({e.name: e.value for e in importlib.metadata.entry_points(group='console_scripts') if e.name in {'kyrozen', 'kyrozen-backend'}}))",
         ], cwd=caller, env=env).stdout)
-        if entry_points.get("kyrozen") != "tui_launcher:main" or entry_points.get("kyrozen-backend") != "tui_backend:main":
+        if entry_points.get("kyrozen") != "openkyrozen.interfaces.cli.launcher:main" or entry_points.get("kyrozen-backend") != "openkyrozen.interfaces.tui.backend:main":
             raise RuntimeError(f"installed entry points did not target the TUI bridge: {entry_points}")
         version = _run([str(kyrozen), "--version"], cwd=caller, env=env)
         if "OpenKyrozen" not in version.stdout:
@@ -84,15 +135,30 @@ def main() -> int:
         if "Global mode:" not in launched.stdout or expected_root not in compact_output:
             raise RuntimeError(f"installed CLI did not bind the global root:\n{launched.stdout}{launched.stderr}")
 
+        # Every shipped command and detached-worker module must resolve outside the source tree.
+        for command in ("kyrozen-backend", "kyrozen-web", "kyrozen-bootstrap-gh"):
+            executable = bin_dir / (command + ".exe" if os.name == "nt" else command)
+            _run([str(executable), "--help"], cwd=caller, env=env)
+        backend = _run([str(bin_dir / ("kyrozen-backend.exe" if os.name == "nt" else "kyrozen-backend"))],
+                       cwd=caller, env=env, input_text='{"command":"start","request_id":"installed-start"}\n{"command":"shutdown"}\n')
+        events = [json.loads(line) for line in backend.stdout.splitlines()]
+        if not any(event.get("event") == "ready" for event in events):
+            raise RuntimeError(f"installed JSONL backend did not become ready: {events}")
+        _run([str(python), "-c", "import openkyrozen.learning.worker; import server; assert server.app.state.service._application is None"], cwd=caller, env=env)
+        _run([str(python), "-m", "openkyrozen.learning.worker"], cwd=caller, env=env)
+        _web_smoke(python, cwd=caller, env=env)
+
         probe_code = """
 import tempfile
 from pathlib import Path
-import main
-import server
-
+from openkyrozen.app.bootstrap import build_application
+_application = build_application(surface="cli")
+main = _application.runtime
+from openkyrozen.interfaces.web.service import WebService
+server = WebService(_application)
 assert any(r.path == "/api/auth/session" and "POST" in (r.methods or set()) for r in server.app.routes)
-from event_store import EventStore
-from task_engine import TaskManager
+from openkyrozen.persistence.store import EventStore
+from openkyrozen.tasks.engine import TaskManager
 
 with tempfile.TemporaryDirectory() as directory:
     store = EventStore(Path(directory) / "state.sqlite3")
@@ -121,7 +187,16 @@ print("installed artifact auth/task behavior passed")
         if "Agent workflow acceptance passed." not in acceptance.stdout:
             raise RuntimeError(f"installed agent workflow acceptance failed:\n{acceptance.stdout}{acceptance.stderr}")
 
-    print("Wheel installation smoke passed: kyrozen ran from an unrelated directory.")
+        sdist_venv = root / "sdist-venv"
+        _run([sys.executable, "-m", "venv", str(sdist_venv)], cwd=caller, env=base_env)
+        sdist_bin = sdist_venv / ("Scripts" if os.name == "nt" else "bin")
+        sdist_python = sdist_bin / ("python.exe" if os.name == "nt" else "python")
+        _install(sdist_python, sdists[0], "[web]", cwd=caller, env=base_env)
+        _run([str(sdist_bin / ("kyrozen.exe" if os.name == "nt" else "kyrozen")), "--help"], cwd=caller, env=env)
+        _run([str(sdist_python), "-c", probe_code], cwd=caller, env=env)
+        _web_smoke(sdist_python, cwd=caller, env=env)
+
+    print("Wheel and sdist installation smoke passed: all commands, resources and runtime contracts ran outside the checkout.")
     return 0
 
 

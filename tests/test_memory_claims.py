@@ -3,9 +3,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from learning_engine import LearningEngine
-from memory import MemoryBank
-from skill_registry import SkillRegistry
+from openkyrozen.learning.engine import LearningEngine
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
+from openkyrozen.skills.registry import SkillRegistry
 
 
 class MemoryClaimTests(unittest.TestCase):
@@ -47,7 +47,7 @@ class MemoryClaimTests(unittest.TestCase):
     def test_decision_assist_contradiction_keeps_inferred_claim_candidate(self):
         first = self.engine.remember_claim(key="editor", value="vim", evidence_id="one")
         self.assertEqual(first["status"], "candidate")
-        with patch.object(self.engine, "_review_claim_evidence", return_value=False):
+        with patch("openkyrozen.memory.claims.ClaimService._review_claim_evidence", return_value=False):
             second = self.engine.remember_claim(key="editor", value="vim", evidence_id="two")
         self.assertEqual(second["status"], "candidate")
         self.assertTrue(second["needs_clarification"])

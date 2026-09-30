@@ -14,11 +14,15 @@ from unittest.mock import patch
 if os.environ.get("KYROZEN_ACCEPTANCE_INSTALLED") != "1":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import main
-from capability_tokens import issue_capability_token
-from event_store import EventStore
-from interaction import InteractionController
-from task_engine import TaskManager
+from openkyrozen.app.bootstrap import build_application
+
+_application = build_application(surface="cli")
+
+main = _application.runtime
+from openkyrozen.security.capabilities import issue_capability_token
+from openkyrozen.persistence.store import EventStore
+from openkyrozen.agent.modes import InteractionController
+from openkyrozen.tasks.engine import TaskManager
 
 
 class _LearningStub:
@@ -95,6 +99,7 @@ if __name__ == "__main__":
         ],
     }
     responses = [
+        'Action: {"action": "list_dir", "args": "."}',
         json.dumps(plan),
         "Action: " + json.dumps({"action": "write_file", "args": f"index.html|{page}"}),
         "TaskDone: 0\nAction: " + json.dumps(
@@ -148,7 +153,7 @@ if __name__ == "__main__":
                 "execution.receipt", workspace_id="acceptance", session_id="release",
             )
             assert [event["payload"]["action"] for event in reversed(receipts)] == [
-                "write_file", "write_file", "run_cmd",
+                "list_dir", "write_file", "write_file", "run_cmd",
             ]
             state = main._interaction_controller.state()
             assert state["executing_plan"] is None

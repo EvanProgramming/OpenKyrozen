@@ -6,8 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import learning_worker
-from event_store import EventStore
+import openkyrozen.learning.worker as learning_worker
+from openkyrozen.persistence.store import EventStore
 
 
 class LearningWorkerTests(unittest.TestCase):
@@ -44,7 +44,7 @@ class LearningWorkerTests(unittest.TestCase):
                 self.assertTrue(heartbeat.exists())
 
             args, kwargs = popen.call_args
-            self.assertEqual(args[0], [sys.executable, "-m", "learning_worker"])
+            self.assertEqual(args[0], [sys.executable, "-m", "openkyrozen.learning.worker"])
             self.assertEqual(kwargs["env"]["KYROZEN_WORKSPACE_ROOT"], str(Path(project).resolve()))
             self.assertEqual(kwargs["env"]["KYROZEN_LAUNCH_MODE"], "project")
             self.assertEqual(kwargs["env"]["KYROZEN_EXECUTION_SURFACE"], "worker")
@@ -82,7 +82,7 @@ class LearningWorkerTests(unittest.TestCase):
             with patch.object(learning_worker, "worker_paths", return_value=(lock, heartbeat)), \
                  patch.object(learning_worker, "_claim_worker_lock", return_value=True), \
                  patch.object(learning_worker, "Event", return_value=OneCycleEvent()), \
-                 patch.dict(sys.modules, {"main": fake_agent}):
+                 patch("openkyrozen.app.bootstrap.build_application", return_value=SimpleNamespace(runtime=fake_agent, close=lambda: None)):
                 self.assertEqual(learning_worker.worker_main(), 0)
 
             self.assertEqual(fake_agent.dispatches, [{
@@ -104,7 +104,7 @@ class LearningWorkerTests(unittest.TestCase):
             )
             with patch.object(learning_worker, "worker_paths", return_value=(lock, heartbeat)), \
                  patch.object(learning_worker, "_claim_worker_lock", return_value=True), \
-                 patch.dict(sys.modules, {"main": fake_agent}):
+                 patch("openkyrozen.app.bootstrap.build_application", return_value=SimpleNamespace(runtime=fake_agent, close=lambda: None)):
                 self.assertEqual(learning_worker.worker_main(), 0)
             self.assertEqual(events[0][0], "learning.worker_skipped")
 

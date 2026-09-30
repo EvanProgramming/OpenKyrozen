@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from learning_benchmark import compare, main, summarize
+from openkyrozen.learning.benchmark import compare, main, summarize
 
 
 class LearningBenchmarkTests(unittest.TestCase):

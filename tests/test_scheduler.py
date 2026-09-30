@@ -3,8 +3,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from event_store import EventStore
-from scheduler import JobScheduler
+from openkyrozen.persistence.store import EventStore
+from openkyrozen.tasks.scheduler import JobScheduler
 
 
 class SchedulerTests(unittest.TestCase):

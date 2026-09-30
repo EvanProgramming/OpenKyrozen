@@ -7,13 +7,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from browser_manager import BrowserManager, validate_browser_url
-import server
-
-
+from openkyrozen.tools.browser_manager import BrowserManager, validate_browser_url
+from openkyrozen.interfaces.web.service import WebService
+server = WebService(None)
 class BrowserManagerTests(unittest.TestCase):
     def test_browser_url_boundary(self):
-        with patch("browser_manager.socket.gethostbyname", return_value="93.184.216.34"):
+        with patch("openkyrozen.tools.browser_manager.socket.gethostbyname", return_value="93.184.216.34"):
             self.assertTrue(validate_browser_url("https://example.com")[0])
         self.assertFalse(validate_browser_url("file:///tmp/a")[0])
         with patch.dict("os.environ", {"KYROZEN_BROWSER_ALLOW_PRIVATE": ""}):
@@ -29,7 +28,7 @@ class BrowserManagerTests(unittest.TestCase):
                     raise ImportError("simulated missing playwright")
                 return real_import(name, *args, **kwargs)
 
-            with patch("browser_manager.socket.gethostbyname", return_value="93.184.216.34"), \
+            with patch("openkyrozen.tools.browser_manager.socket.gethostbyname", return_value="93.184.216.34"), \
                     patch("builtins.__import__", side_effect=import_without_playwright):
                 result = manager.open("https://example.com")
             self.assertIn("playwright", result.lower())

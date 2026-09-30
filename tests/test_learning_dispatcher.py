@@ -9,10 +9,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 
-import main
-import server
-from memory import MemoryBank
-from task_engine import TaskManager
+from openkyrozen.app.bootstrap import build_application
+
+_application = build_application(surface="cli")
+
+main = _application.runtime
+from openkyrozen.interfaces.web.service import WebService
+server = WebService(_application)
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
+from openkyrozen.tasks.engine import TaskManager
 
 
 class LearningDispatcherTests(unittest.TestCase):
@@ -180,7 +185,7 @@ class LearningDispatcherTests(unittest.TestCase):
             })
             completed = subprocess.run(
                 [sys.executable, "-c", (
-                    "import main; "
+                    "from openkyrozen.app.bootstrap import build_application; main=build_application(surface='cli').runtime; main.configure_launch_context(); "
                     "print(main._build_preference_context()); "
                     "print('\\n'.join(item['content'] for item in main._build_messages('implement feature')))"
                 )],
@@ -202,7 +207,7 @@ class LearningDispatcherTests(unittest.TestCase):
             })
             observe = subprocess.run(
                 [sys.executable, "-c", (
-                    "import main; "
+                    "from openkyrozen.app.bootstrap import build_application; main=build_application(surface='cli').runtime; main.configure_launch_context(); "
                     f"main.configure_launch_context(project_path={str(root)!r}); "
                     "[main.dispatch_learning_cycle(surface='cli', trigger='turn', max_features=1, "
                     "user_input='Please use concise Python and snake_case names.', "
@@ -216,7 +221,7 @@ class LearningDispatcherTests(unittest.TestCase):
 
             fresh = subprocess.run(
                 [sys.executable, "-c", (
-                    "import main; "
+                    "from openkyrozen.app.bootstrap import build_application; main=build_application(surface='cli').runtime; main.configure_launch_context(); "
                     f"main.configure_launch_context(project_path={str(root)!r}); "
                     "print(main._build_preference_context())"
                 )],
@@ -330,7 +335,7 @@ class LearningDispatcherTests(unittest.TestCase):
             with patch.object(main, "_local_learning_resources_ok", return_value=(True, "")), \
                  patch.object(main, "_ollama_command", return_value="ollama"), \
                  patch.object(main, "_ollama_ready", return_value=True), \
-                 patch.object(main.subprocess, "run", return_value=failed_pull):
+                 patch("openkyrozen.updates.learning_setup.subprocess.run", return_value=failed_pull):
                 main._bootstrap_local_learning()
             self.assertEqual(main.learning_runtime()["status"], "failed")
             self.assertIn("download failed", main.learning_runtime()["detail"])
@@ -345,7 +350,7 @@ class LearningDispatcherTests(unittest.TestCase):
             with patch.object(main, "_local_learning_resources_ok", return_value=(True, "")), \
                  patch.object(main, "_ollama_command", return_value="ollama"), \
                  patch.object(main, "_ollama_ready", return_value=True), \
-                 patch.object(main.subprocess, "run", return_value=completed), \
+                 patch("openkyrozen.updates.learning_setup.subprocess.run", return_value=completed), \
                  patch.object(main, "get_provider", return_value=local):
                 main._bootstrap_local_learning()
             self.assertEqual(main.learning_runtime()["status"], "ready")
@@ -356,7 +361,7 @@ class LearningDispatcherTests(unittest.TestCase):
         main._last_user_interaction = 0
         try:
             with patch.object(main, "learning_runtime", return_value={"status": "ready"}), \
-                 patch.object(main.time, "sleep", side_effect=[None, KeyboardInterrupt]), \
+                 patch("openkyrozen.learning.dispatcher.time.sleep", side_effect=[None, KeyboardInterrupt]), \
                  patch.object(main, "dispatch_learning_cycle", return_value=[]) as dispatch:
                 with self.assertRaises(KeyboardInterrupt):
                     main._background_learning_loop()

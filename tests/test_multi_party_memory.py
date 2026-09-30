@@ -4,12 +4,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from learning_engine import LearningEngine
-from memory import MemoryBank
+from openkyrozen.learning.engine import LearningEngine
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
 from fastapi.testclient import TestClient
-import server
-
-
+from openkyrozen.interfaces.web.service import WebService
+server = WebService(None)
 class MultiPartyMemoryTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

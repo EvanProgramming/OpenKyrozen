@@ -5,9 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import providers
-
-
+import openkyrozen.providers as providers
 class ProviderRegistryTests(unittest.TestCase):
     def test_registry_contains_all_supported_transports(self):
         expected = {
@@ -54,7 +52,7 @@ class ProviderRegistryTests(unittest.TestCase):
             choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
             usage=SimpleNamespace(prompt_tokens=3, completion_tokens=2, reasoning_tokens=1),
         )
-        with patch("openai.OpenAI") as client_factory, patch("providers._track_cost"):
+        with patch("openai.OpenAI") as client_factory, patch("openkyrozen.providers.usage._track_cost"):
             client = client_factory.return_value
             client.chat.completions.create.return_value = response
             provider = providers.OpenAICompatProvider(
@@ -83,7 +81,7 @@ class ProviderRegistryTests(unittest.TestCase):
             SimpleNamespace(type="response.output_text.delta", delta="to"),
             SimpleNamespace(type="response.output_text.delta", delta="ken"),
         ]
-        with patch("openai.OpenAI") as client_factory, patch("providers._track_cost"):
+        with patch("openai.OpenAI") as client_factory, patch("openkyrozen.providers.usage._track_cost"):
             client = client_factory.return_value
             client.responses.create.side_effect = [response, iter(events)]
             provider = providers.OpenAIResponsesProvider(
@@ -110,7 +108,7 @@ class ProviderRegistryTests(unittest.TestCase):
         }
         fake_boto3.client.return_value = fake_client
         with patch.dict(sys.modules, {"boto3": fake_boto3}), patch.dict(
-                os.environ, {"AWS_REGION": "us-east-1"}, clear=False), patch("providers._track_cost"):
+                os.environ, {"AWS_REGION": "us-east-1"}, clear=False), patch("openkyrozen.providers.usage._track_cost"):
             provider = providers.BedrockProvider(
                 providers.ProviderConfig(provider="bedrock", model_simple="anthropic.claude-sonnet-5"),
             )

@@ -9,13 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from event_store import EventStore
+from openkyrozen.persistence.store import EventStore
 from fastapi.testclient import TestClient
-from memory import MemoryBank
-from providers import OpenAICompatProvider, ProviderConfig, _track_cost, get_cost_summary, usage_scope
-import server
-
-
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
+from openkyrozen.providers import OpenAICompatProvider, ProviderConfig, _track_cost, get_cost_summary, usage_scope
+from openkyrozen.interfaces.web.service import WebService
+server = WebService(None)
 class UsageLedgerTests(unittest.TestCase):
     @staticmethod
     def _record(store: EventStore, *, workspace: str = "project", session: str | None = "session") -> None:
@@ -29,7 +28,7 @@ class UsageLedgerTests(unittest.TestCase):
     def test_server_cost_api_reconstructs_usage_after_process_restart(self):
         repository = Path(__file__).parents[1]
         script = (
-            "import json; from fastapi.testclient import TestClient; import server; "
+            "import json; from fastapi.testclient import TestClient; from openkyrozen.interfaces.web.service import WebService; server = WebService(); "
             "print(json.dumps(TestClient(server.app).get('/api/cost').json()))"
         )
         with tempfile.TemporaryDirectory(prefix="openkyrozen-usage-restart-") as directory:

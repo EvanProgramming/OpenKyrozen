@@ -2,9 +2,11 @@ import time
 import unittest
 from unittest.mock import patch
 
-from capability_tokens import CapabilityToken, issue_capability_token
-import main
-from tool_registry import ToolRegistry
+from openkyrozen.security.capabilities import CapabilityToken, issue_capability_token
+from openkyrozen.app.bootstrap import build_application
+_application = build_application(surface="cli")
+main = _application.runtime
+from openkyrozen.tools.manifest import ToolRegistry
 
 
 class CapabilityTests(unittest.TestCase):
@@ -26,7 +28,7 @@ class CapabilityTests(unittest.TestCase):
             subject="surface:tui", capabilities=frozenset({"read"}),
             issued_at=0, expires_at=0, token_id="expired",
         )
-        with (patch.object(main, "_execution_capability_token", expired),
+        with (patch.object(main.execution_context, "capability_token", expired),
               patch.object(main, "effective_capabilities", return_value=frozenset({"read", "write"})),
               patch.object(main, "load_agent_config", return_value=object()),
               patch.object(main, "_confirm_tool_action", return_value=True)):

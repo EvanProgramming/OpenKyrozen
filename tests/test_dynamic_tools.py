@@ -4,13 +4,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from dynamic_tools import validate_tool_source
-from capability_tokens import issue_capability_token
-import main
-import server
-from memory import MemoryBank
-from task_engine import TaskManager
-from interaction import InteractionController
+from openkyrozen.security.dynamic_tools import validate_tool_source
+from openkyrozen.security.capabilities import issue_capability_token
+from openkyrozen.app.bootstrap import build_application
+_application = build_application(surface="cli")
+main = _application.runtime
+from openkyrozen.interfaces.web.service import WebService
+server = WebService(_application)
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
+from openkyrozen.tasks.engine import TaskManager
+from openkyrozen.agent.modes import InteractionController
 from fastapi.testclient import TestClient
 
 
@@ -53,7 +56,7 @@ class DynamicToolTests(unittest.TestCase):
             main.tasks = TaskManager(main.memory_bank.store, workspace_id="dynamic", session_id="test")
             try:
                 with patch.object(main, "ALLOW_DYNAMIC_TOOLS", True), \
-                     patch.object(main, "_execution_capability_token", issue_capability_token(
+                     patch.object(main.execution_context, "capability_token", issue_capability_token(
                          "test", {"read", "write", "shell", "network", "git", "browser", "dynamic"})), \
                      patch.object(main, "_confirm_tool_action", return_value=True):
                     parsed = main._observe_model_response(source)
@@ -109,7 +112,7 @@ class DynamicToolTests(unittest.TestCase):
             main._set_workspace_root(root)
             try:
                 with patch.object(main, "ALLOW_DYNAMIC_TOOLS", True), \
-                     patch.object(main, "_execution_capability_token", issue_capability_token(
+                     patch.object(main.execution_context, "capability_token", issue_capability_token(
                          "test", {"read", "write", "shell", "network", "git", "browser", "dynamic"})), \
                      patch.object(main, "_confirm_tool_action", return_value=True), \
                      patch.object(main, "_classify_complexity", return_value="simple"), \
@@ -160,7 +163,7 @@ class DynamicToolTests(unittest.TestCase):
             root = Path(directory)
             main.memory_bank = MemoryBank(root / "state.sqlite3")
             main.tasks = TaskManager(main.memory_bank.store, workspace_id="dynamic", session_id="web")
-            main._set_workspace_root(root)
+            main.configure_launch_context(project_path=root)
             main._EXECUTION_SURFACE = "web"
             main._surface_capabilities = "full"
             session_id = "dynamic-web-test"
@@ -172,7 +175,7 @@ class DynamicToolTests(unittest.TestCase):
                     "KYROZEN_WEB_CAPABILITIES": "full",
                     "KYROZEN_MCP_CAPABILITIES": "full",
                 }), patch.object(main, "ALLOW_DYNAMIC_TOOLS", True), \
-                     patch.object(main, "_execution_capability_token", issue_capability_token(
+                     patch.object(main.execution_context, "capability_token", issue_capability_token(
                          "test", {"read", "write", "shell", "network", "git", "browser", "dynamic"})), \
                      patch.object(main, "_confirm_tool_action", return_value=True), \
                      patch.object(main, "_classify_complexity", return_value="simple"), \
@@ -186,7 +189,7 @@ class DynamicToolTests(unittest.TestCase):
                      patch.object(main, "_update_tasks_panel"), \
                      patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
                                   result, records, tokens, started: result), \
-                     patch.object(main, "learning_engine", StubLearning()):
+                     patch.object(main.current_session, "learning", StubLearning()):
                     web_reply = server._run_session_chat(session, "use a helper")
                     self.assertEqual(web_reply, "Web chat used the dynamic tool.")
                     self.assertIn("count_chars", main.AVAILABLE_TOOLS)
@@ -218,10 +221,10 @@ class DynamicToolTests(unittest.TestCase):
         original_tools = dict(main.AVAILABLE_TOOLS)
         original_tools_list = main.TOOLS_LIST
         with tempfile.TemporaryDirectory() as directory:
-            main.memory_bank = __import__("memory").MemoryBank(Path(directory) / "state.sqlite3")
+            main.memory_bank = __import__("openkyrozen.app.bootstrap", fromlist=["build_memory"]).build_memory(Path(directory) / "state.sqlite3")
             try:
                 with patch.object(main, "ALLOW_DYNAMIC_TOOLS", True), \
-                     patch.object(main, "_execution_capability_token", issue_capability_token(
+                     patch.object(main.execution_context, "capability_token", issue_capability_token(
                          "test", {"read", "write", "shell", "network", "git", "browser", "dynamic"})), \
                      patch.object(main, "_confirm_tool_action", side_effect=AssertionError("approval bypassed")):
                     self.assertFalse(main._register_tool(

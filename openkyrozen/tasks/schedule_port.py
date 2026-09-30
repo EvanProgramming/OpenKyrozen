@@ -1,0 +1,13 @@
+"""Repository operations consumed by ScheduleStore."""
+from __future__ import annotations
+from typing import Protocol, Any
+
+class ScheduleStore(Protocol):
+    def append_event(self, event_type: str, payload: Any, *, user_id: str='local', workspace_id: str='default', session_id: str | None=None, task_id: str | None=None):
+        ...
+    def claim_due_schedules(self, *, now: str, workspace_id: str='default', limit: int=20, user_id: str | None=None):
+        ...
+    def list_schedules(self, *, workspace_id: str='default', enabled: bool | None=None, limit: int=500, user_id: str | None=None):
+        ...
+    def upsert_schedule(self, job_id: str, name: str, *, next_run_at: str, interval_seconds: float | None=None, run_at: str | None=None, payload: dict[str, Any] | None=None, enabled: bool=True, workspace_id: str='default', user_id: str='local'):
+        ...

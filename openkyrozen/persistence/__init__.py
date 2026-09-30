@@ -1,0 +1,1 @@
+"""OpenKyrozen persistence module."""

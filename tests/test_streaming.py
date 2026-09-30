@@ -7,10 +7,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import main
-import server
-from memory import MemoryBank
-from providers import ProviderConfig
+from openkyrozen.app.bootstrap import build_application
+
+_application = build_application(surface="cli")
+
+main = _application.runtime
+from openkyrozen.interfaces.web.service import WebService
+server = WebService(_application)
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
+from openkyrozen.providers import ProviderConfig
 
 
 class _Request:
@@ -161,9 +166,9 @@ class StreamingEndpointTests(unittest.TestCase):
             original_sessions = server._sessions
             server._sessions = {}
             try:
-                with (patch.object(server._agent, "memory_bank", memory),
+                with (patch.object(server._agent.current_session, "memory", memory),
                       patch.object(server._agent, "llm_provider", provider),
-                      patch.object(server._agent, "DEEPSEEK_MODEL", "deepseek-v4-flash"),
+                      patch.object(server._agent.execution_context, "model", "deepseek-v4-flash"),
                       patch.object(server._agent, "_chat_turn", side_effect=lambda message, **_: (
                           main._call_llm_with_spinner([{"role": "user", "content": message}])
                       ))):
@@ -209,9 +214,9 @@ class StreamingEndpointTests(unittest.TestCase):
             original_sessions = server._sessions
             server._sessions = {}
             try:
-                with (patch.object(server._agent, "memory_bank", memory),
+                with (patch.object(server._agent.current_session, "memory", memory),
                       patch.object(server._agent, "llm_provider", provider),
-                      patch.object(server._agent, "DEEPSEEK_MODEL", "deepseek-v4-flash"),
+                      patch.object(server._agent.execution_context, "model", "deepseek-v4-flash"),
                       patch.object(server._agent, "_chat_turn", side_effect=lambda message, **_: (
                           main._call_llm_with_spinner([{"role": "user", "content": message}])
                       ))):
@@ -265,9 +270,9 @@ class StreamingEndpointTests(unittest.TestCase):
             original_sessions = server._sessions
             server._sessions = {}
             try:
-                with (patch.object(server._agent, "memory_bank", memory),
+                with (patch.object(server._agent.current_session, "memory", memory),
                       patch.object(server._agent, "llm_provider", provider),
-                      patch.object(server._agent, "DEEPSEEK_MODEL", "deepseek-v4-flash"),
+                      patch.object(server._agent.execution_context, "model", "deepseek-v4-flash"),
                       patch.object(server._agent, "_chat_turn", side_effect=lambda message, **_: (
                           main._call_llm_with_spinner([{"role": "user", "content": message}])
                       ))):
@@ -314,9 +319,9 @@ class StreamingEndpointTests(unittest.TestCase):
             original_sessions = server._sessions
             server._sessions = {}
             try:
-                with (patch.object(server._agent, "memory_bank", memory),
+                with (patch.object(server._agent.current_session, "memory", memory),
                       patch.object(server._agent, "llm_provider", provider),
-                      patch.object(server._agent, "DEEPSEEK_MODEL", "deepseek-v4-flash"),
+                      patch.object(server._agent.execution_context, "model", "deepseek-v4-flash"),
                       patch.object(server._agent, "_chat_turn", side_effect=lambda message, **_: (
                           main._call_llm_with_spinner([{"role": "user", "content": message}])
                       ))):
@@ -363,9 +368,9 @@ class StreamingEndpointTests(unittest.TestCase):
             original_sessions = server._sessions
             server._sessions = {}
             try:
-                with (patch.object(server._agent, "memory_bank", memory),
+                with (patch.object(server._agent.current_session, "memory", memory),
                       patch.object(server._agent, "llm_provider", provider),
-                      patch.object(server._agent, "DEEPSEEK_MODEL", "deepseek-v4-flash"),
+                      patch.object(server._agent.execution_context, "model", "deepseek-v4-flash"),
                       patch.object(server._agent, "_chat_turn", side_effect=lambda message, **_: (
                           main._call_llm_with_spinner([{"role": "user", "content": message}])
                       ))):
@@ -419,9 +424,9 @@ class StreamingEndpointTests(unittest.TestCase):
             original_sessions = server._sessions
             server._sessions = {}
             try:
-                with (patch.object(server._agent, "memory_bank", memory),
+                with (patch.object(server._agent.current_session, "memory", memory),
                       patch.object(server._agent, "llm_provider", provider),
-                      patch.object(server._agent, "DEEPSEEK_MODEL", "deepseek-v4-flash"),
+                      patch.object(server._agent.execution_context, "model", "deepseek-v4-flash"),
                       patch.object(server._agent, "_chat_turn", side_effect=lambda message, **_: (
                           main._call_llm_with_spinner([{"role": "user", "content": message}])
                       ))):

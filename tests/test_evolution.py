@@ -3,9 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from learning_engine import LearningEngine
-from memory import MemoryBank
-from skill_registry import SkillRegistry
+from openkyrozen.learning.engine import LearningEngine
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
+from openkyrozen.skills.registry import SkillRegistry
 
 
 BODY = """# Pytest recovery

@@ -1,12 +1,11 @@
 package main
 
 import (
+	"charm.land/lipgloss/v2"
 	"fmt"
 	"hash/fnv"
 	"sort"
 	"strings"
-
-	"charm.land/lipgloss/v2"
 )
 
 type graphNode struct {

@@ -6,14 +6,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import main
-import server
-from context_compaction import (
+from openkyrozen.app.bootstrap import build_application
+
+_application = build_application(surface="cli")
+
+main = _application.runtime
+from openkyrozen.interfaces.web.service import WebService
+server = WebService(_application)
+from openkyrozen.agent.compaction import (
     ContextState, DIGEST_PREFIX, OMISSION_PREFIX, compact_for_pressure,
     retain_context_digests,
 )
-from memory import MemoryBank
-from providers import ProviderConfig, detect_provider
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
+from openkyrozen.providers import ProviderConfig, detect_provider
 
 
 class _Request:
@@ -228,7 +233,7 @@ class ContextApiTests(unittest.TestCase):
                 chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
             return response, "".join(chunks)
 
-        with patch.object(server._agent, "memory_bank", self.memory), \
+        with patch.object(server._agent.current_session, "memory", self.memory), \
                 patch.object(server._agent, "history_manager", return_value=self._history_stub()), \
                 patch.object(server, "_run_session_chat", side_effect=run), \
                 patch.object(server, "_emit_chat_completed"):

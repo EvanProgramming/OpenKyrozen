@@ -6,10 +6,10 @@ from __future__ import annotations
 import re
 import shlex
 import sys
-import unittest
+import ast
 from pathlib import Path
 
-from generate_tool_inventory import ROOT, render_inventory, runtime_routes
+from generate_tool_inventory import ROOT, render_inventory, runtime_routes, _load_runtime
 
 
 README_FILES = sorted(ROOT.glob("README*.md"))
@@ -106,10 +106,11 @@ def _check_commands(path: Path, text: str, routes: set[str], targets: set[str]) 
 
 
 def _discovered_test_count() -> int:
-    suite = unittest.TestLoader().discover(
-        str(ROOT / "tests"), pattern="test_*.py"
+    return sum(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_")
+        for path in (ROOT / "tests").glob("test_*.py")
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
     )
-    return suite.countTestCases()
 
 
 def _check_provider_defaults(path: Path, text: str, defaults: dict[str, tuple[str, str]]) -> list[str]:
@@ -160,17 +161,17 @@ def _check_verification_record() -> list[str]:
 
 def main() -> int:
     expected_inventory = render_inventory()
-    import main as agent_main
-    from providers import PROVIDER_DEFAULT_MODELS
+    tools, server, _ = _load_runtime()
+    from openkyrozen.providers import PROVIDER_DEFAULT_MODELS
 
-    runtime_tool_count = len(agent_main.AVAILABLE_TOOLS)
-    git_tool_count = sum(name.startswith("git_") for name in agent_main.AVAILABLE_TOOLS)
+    runtime_tool_count = len(tools)
+    git_tool_count = sum(name.startswith("git_") for name in tools)
     inventory_path = ROOT / "docs" / "tool-inventory.md"
     errors: list[str] = []
     if not inventory_path.exists() or inventory_path.read_text(encoding="utf-8") != expected_inventory:
         errors.append("docs/tool-inventory.md is stale; run scripts/generate_tool_inventory.py --write")
 
-    routes = runtime_routes(__import__("server"))
+    routes = runtime_routes(server)
     route_paths = {path for _, path in routes}
     targets = _make_targets()
     errors.extend(_check_verification_record())

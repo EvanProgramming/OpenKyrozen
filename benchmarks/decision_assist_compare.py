@@ -22,9 +22,9 @@ os.environ.setdefault("KYROZEN_DISABLE_VECTOR_INDEX", "1")
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import fast_mode
-from learning_engine import LearningEngine
-from memory import MemoryBank
+import openkyrozen.routing.system_one as fast_mode
+from openkyrozen.learning.engine import LearningEngine
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
 
 
 EVIDENCE_CASES = (
@@ -109,7 +109,7 @@ def _evidence_case(backend: str, expected: str, claim: str, evidence_text: str) 
         memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="benchmark", session_id="evidence")
         engine = LearningEngine(memory)
         started = time.perf_counter()
-        with patch.object(fast_mode, "decision_assist_state", return_value=_state(backend)):
+        with patch("openkyrozen.routing.settings.decision_assist_state", return_value=_state(backend)):
             result = engine._review_claim_evidence(claim, [], private=True, evidence_text=evidence_text)
         elapsed = (time.perf_counter() - started) * 1000
         events = memory.store.list_events("learning.evidence_review", workspace_id="benchmark", limit=1)
@@ -143,7 +143,7 @@ def _memory_case(backend: str, case_id: str, query: str, memories: tuple, expect
         for memory_id, content in memories
     ]
     started = time.perf_counter()
-    with patch.object(fast_mode, "decision_assist_state", return_value=_state(backend)):
+    with patch("openkyrozen.routing.settings.decision_assist_state", return_value=_state(backend)):
         selected, diagnostics = fast_mode.rank_memory_candidates(query, candidates, private=True, limit=3)
     elapsed = (time.perf_counter() - started) * 1000
     selected_ids = [row["id"] for row in selected]
@@ -175,7 +175,7 @@ def _memory_case(backend: str, case_id: str, query: str, memories: tuple, expect
 
 def _tool_case(backend: str, case_id: str, action: str, output: str, expected_detected: bool) -> dict[str, object]:
     started = time.perf_counter()
-    with patch.object(fast_mode, "decision_assist_state", return_value=_state(backend)):
+    with patch("openkyrozen.routing.settings.decision_assist_state", return_value=_state(backend)):
         reviewed, diagnostics = fast_mode.review_tool_output(action, output, private=True)
     elapsed = (time.perf_counter() - started) * 1000
     diagnostics = diagnostics or {}

@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenKyrozen Chat</title>
+<style>
+:root{color-scheme:dark;--ink:#050608;--surface:#11161b;--surface-hi:#1a2229;--line:#33414b;--text:#f4f7f9;--muted:#93a0aa;--brand:#00f0ff;--success:#61d095;--warning:#e8ae5b;--error:#f2788f}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{min-height:100%;background:var(--ink)}
+body{font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--ink);color:var(--text);min-height:100dvh;display:flex;flex-direction:column;line-height:1.45}
+header{background:var(--surface);padding:16px clamp(16px,4vw,48px);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+header h1{font-size:clamp(18px,2vw,24px);letter-spacing:.04em;color:var(--brand)}
+header span{font-size:12px;color:var(--muted)}
+#session-controls,#auth-controls{background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;padding:10px clamp(16px,4vw,48px);flex-wrap:wrap}
+#session-controls label,#session-limit,#auth-controls label,#auth-status{font-size:12px;color:var(--muted)}
+#session-select,#mode-select,#server-token{min-width:150px;max-width:100%;background:var(--ink);border:1px solid var(--line);border-radius:7px;color:var(--text);padding:8px}
+#server-token{min-width:220px}
+#session-limit{margin-left:auto}
+#auth-controls[hidden]{display:none}
+#chat{flex:1;overflow-y:auto;width:min(100%,1120px);margin:0 auto;padding:clamp(20px,5vw,52px) clamp(16px,4vw,48px);scroll-behavior:smooth}
+#chat:empty::before{content:'Start a conversation or type / for commands.';display:block;color:var(--muted);text-align:center;padding:12vh 0}
+#interaction-card{width:min(100%,1024px);margin:14px auto 0;padding:14px 17px;background:var(--surface-hi);border:1px solid var(--brand);border-radius:10px}
+#interaction-card[hidden]{display:none}#interaction-card h2{font-size:15px;color:var(--brand);margin-bottom:8px}#interaction-card fieldset{border:0;margin:12px 0}#interaction-card legend{font-weight:700;margin-bottom:6px}#interaction-card label{display:block;margin:6px 0;color:var(--text)}#interaction-card input[type=text]{width:100%;background:var(--ink);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:8px;margin-top:5px}#interaction-card ol{padding-left:22px;margin:8px 0}#interaction-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.msg{margin-bottom:22px;max-width:min(88%,860px)}
+.msg.user{margin-left:auto}
+.msg .role{font-size:11px;letter-spacing:.08em;color:var(--muted);margin-bottom:6px}
+.msg .content{background:var(--surface);border:1px solid var(--line);padding:14px 17px;border-radius:10px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.msg.user .content{background:var(--surface-hi);border-color:#5b6b76;color:var(--text)}
+.msg.thinking .content{background:#17191c;border-color:#6d5836;color:var(--warning);font-style:italic}
+#input-area{background:var(--surface);padding:16px clamp(16px,4vw,48px) 12px;border-top:1px solid var(--line);display:flex;gap:12px;width:100%}
+#user-input{flex:1;background:var(--ink);border:1px solid var(--line);border-radius:9px;padding:12px;color:var(--text);font-size:15px;resize:none;min-height:48px;max-height:160px}
+button{background:var(--text);color:var(--ink);border:1px solid var(--text);border-radius:8px;padding:10px 16px;font-weight:700;cursor:pointer;transition:background .15s,color .15s,opacity .15s}
+button:hover{background:var(--brand);border-color:var(--brand)}
+button:disabled{opacity:.45;cursor:default}
+:is(button,input,select,textarea):focus-visible{outline:3px solid var(--brand);outline-offset:2px}
+#status{font-size:12px;color:var(--muted);text-align:center;padding:6px 16px 12px;background:var(--surface)}
+.cost{font-size:11px;color:var(--success)}
+.context{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:7px;padding:5px 8px}.context summary{cursor:pointer;color:var(--text);white-space:nowrap}.context dl{display:grid;grid-template-columns:auto auto;gap:3px 9px;margin:8px 0 1px}.context dt{color:var(--muted)}.context dd{margin:0;color:var(--text)}
+.error{color:var(--error)}
+#history-panel{width:min(100%,1120px);margin:0 auto;padding:12px clamp(16px,4vw,48px);background:var(--surface);border-bottom:1px solid var(--line)}
+#history-panel[hidden]{display:none}#history-panel h2{font-size:14px;color:var(--brand);margin-bottom:6px}
+#history-help,#history-session{font-size:12px;color:var(--muted);margin:4px 0}
+#history-tree,#history-tree ul{list-style:none;margin:0;padding-left:18px}#history-tree{padding-left:0}
+#history-tree ul{border-left:1px solid var(--line);margin-left:9px}
+.history-node{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:5px 0;font-size:12px;color:var(--muted)}
+.history-node.current{color:var(--success)}.history-node button{padding:5px 9px;font-size:11px}.history-node .node-selector{font-family:monospace;color:var(--text);font-weight:700}
+@media(max-width:640px){#session-limit{width:100%;margin-left:0}.msg{max-width:100%}#input-area{align-items:stretch}#input-area button{padding:10px 12px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <h1>OpenKyrozen</h1>
+  <span>Self-learning AI Agent</span>
+  <span class="cost" id="cost-display"></span>
+  <details class="context" id="context-details">
+    <summary id="context-display">Context: unavailable</summary>
+    <dl id="context-breakdown"></dl>
+  </details>
+</header>
+<div id="session-controls">
+  <label for="session-select">Saved conversation</label>
+  <select id="session-select" aria-describedby="session-limit"></select>
+  <button type="button" id="new-session">New conversation</button>
+  <button type="button" id="toggle-history" aria-expanded="false" aria-controls="history-panel">History</button>
+  <label for="mode-select">Mode</label>
+  <select id="mode-select"><option value="auto">Auto</option><option value="ask">Ask</option><option value="plan">Plan</option><option value="agent">Agent</option></select>
+  <label for="fast-select">System One</label>
+  <select id="fast-select" aria-describedby="fast-note"><option value="off">Off</option><option value="jev">Jev API</option><option value="kev">Local Kev-0.8B</option></select>
+  <input id="fast-key" type="password" autocomplete="off" placeholder="Jev API key (paid TypeSafe calls)" hidden>
+  <button type="button" id="fast-apply" hidden>Enable Jev</button>
+  <span id="fast-note">System One makes typed routing decisions. Jev uses paid TypeSafe calls; local Kev-0.8B is less accurate.</span>
+  <label for="decision-assist-select">Decision Assist</label>
+  <select id="decision-assist-select" aria-describedby="decision-assist-note"><option value="off">Off</option><option value="jev">Jev</option><option value="kev">Kev</option></select>
+  <input id="decision-assist-key" type="password" autocomplete="off" placeholder="Jev API key (paid TypeSafe calls)" hidden>
+  <button type="button" id="decision-assist-apply" hidden>Enable Jev checks</button>
+  <label><input id="decision-assist-consent" type="checkbox"> allow local Kev to inspect private context</label>
+  <span id="decision-assist-note">Checks learning evidence, memory relevance, and suspicious tool instructions. Jev uses paid TypeSafe calls; it never approves tools.</span>
+  <span id="session-limit" role="status"></span>
+</div>
+<section id="history-panel" aria-labelledby="history-title" hidden>
+  <h2 id="history-title">Conversation history</h2>
+  <div id="history-session" role="status"></div>
+  <p id="history-help">Choose a numbered node to preview its workspace and conversation, then restore it explicitly.</p>
+  <div id="history-status" role="status">Loading history…</div>
+  <ul id="history-tree" role="tree" aria-label="Conversation history tree"></ul>
+</section>
+<div id="auth-controls" hidden>
+  <label for="server-token">Server token</label>
+  <input id="server-token" type="password" autocomplete="current-password" spellcheck="false"
+         aria-describedby="auth-status" placeholder="Enter the server token">
+  <button type="button" id="authenticate">Authenticate</button>
+  <span id="auth-status" role="alert"></span>
+</div>
+<div id="chat" aria-live="polite" aria-label="Conversation"></div>
+<section id="interaction-card" aria-live="polite" hidden></section>
+<div id="input-area">
+  <textarea id="user-input" placeholder="Type your message..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}"></textarea>
+  <button onclick="sendMessage()" id="send-btn">Send</button>
+</div>
+<div id="status">Ready</div>
+<script>
+const SESSION_STORAGE_KEY = 'openkyrozen.active-session';
+const SESSION_LIST_LIMIT = 100;
+let sessionId = readActiveSession() || createSessionId();
+let recentSessions = [];
+let historyState = {nodes: [], current_node_id: ''};
+let isStreaming = false;
+let authInFlight = false;
+let interactionState = {preference_mode: 'auto', effective_mode: 'ask', system_one_backend: 'off', fast_backend: 'off', pending_question: null, pending_plan: null};
+let decisionAssistState = {backend: 'off', kev_private_consent: false};
+let systemOneStatus = {system_one_backend: 'off'};
+
+class AuthRequiredError extends Error {}
+
+function showAuthPrompt(message) {
+  const controls = document.getElementById('auth-controls');
+  const status = document.getElementById('auth-status');
+  controls.hidden = false;
+  status.textContent = message || 'Authentication required. Enter the server token.';
+  status.classList.add('error');
+}
+
+function hideAuthPrompt() {
+  const controls = document.getElementById('auth-controls');
+  const status = document.getElementById('auth-status');
+  controls.hidden = true;
+  status.textContent = '';
+  status.classList.remove('error');
+}
+
+async function apiFetch(input, init = {}) {
+  const response = await fetch(input, {...init, credentials: 'same-origin'});
+  if (response.status === 401) {
+    showAuthPrompt('Authentication required. Enter the server token.');
+    throw new AuthRequiredError('Authentication required');
+  }
+  return response;
+}
+
+function createSessionId() {
+  const random = window.crypto && window.crypto.randomUUID
+    ? window.crypto.randomUUID().replace(/-/g, '')
+    : Math.random().toString(36).slice(2, 10);
+  return 'sess_' + random;
+}
+
+function readActiveSession() {
+  try { return localStorage.getItem(SESSION_STORAGE_KEY) || ''; } catch (_) { return ''; }
+}
+
+function saveActiveSession() {
+  try { localStorage.setItem(SESSION_STORAGE_KEY, sessionId); } catch (_) { /* storage is optional */ }
+}
+
+function clearChat() {
+  document.getElementById('chat').replaceChildren();
+}
+
+function renderInteraction(value) {
+  interactionState = value || interactionState;
+  document.getElementById('mode-select').value = interactionState.preference_mode || 'auto';
+  document.getElementById('fast-select').value = interactionState.system_one_backend || interactionState.fast_backend || 'off';
+  document.getElementById('fast-key').hidden = true;
+  document.getElementById('fast-apply').hidden = true;
+  renderSystemOneStatus(systemOneStatus);
+  const card = document.getElementById('interaction-card');
+  card.replaceChildren();
+  const question = interactionState.pending_question;
+  const plan = interactionState.pending_plan;
+  if (!question && !plan) { card.hidden = true; return; }
+  card.hidden = false;
+  const title = document.createElement('h2');
+  title.textContent = question ? 'Clarification needed' : `${plan.title} · v${plan.version}`;
+  card.appendChild(title);
+  if (question) {
+    for (const item of question.questions || []) {
+      const fieldset = document.createElement('fieldset');
+      const legend = document.createElement('legend');
+      legend.textContent = `${item.header}: ${item.prompt}`;
+      fieldset.appendChild(legend);
+      for (const choice of item.choices || []) {
+        const label = document.createElement('label');
+        const radio = document.createElement('input');
+        radio.type = 'radio'; radio.name = `question-${item.id}`; radio.value = choice.id;
+        label.append(radio, ` ${choice.label}${choice.description ? ' — ' + choice.description : ''}`);
+        fieldset.appendChild(label);
+      }
+      const other = document.createElement('input');
+      other.type = 'text'; other.placeholder = 'Other (optional)'; other.dataset.questionId = item.id;
+      fieldset.appendChild(other); card.appendChild(fieldset);
+    }
+    const actions = document.createElement('div'); actions.id = 'interaction-actions';
+    const submit = document.createElement('button'); submit.textContent = 'Submit answers';
+    submit.onclick = () => {
+      const answers = {};
+      for (const item of question.questions || []) {
+        const selected = card.querySelector(`input[name="question-${CSS.escape(item.id)}"]:checked`);
+        const other = card.querySelector(`input[data-question-id="${CSS.escape(item.id)}"]`);
+        answers[item.id] = other && other.value.trim() ? other.value.trim() : selected ? selected.value : null;
+      }
+      submitControl({question_response: {request_id: question.request_id, answers}}, 'Answered clarification');
+    };
+    const skip = document.createElement('button'); skip.textContent = 'Skip';
+    skip.onclick = () => submitControl({question_response: {request_id: question.request_id, answers: {}, action: 'skip'}}, 'Skipped clarification');
+    const cancel = document.createElement('button'); cancel.textContent = 'Cancel';
+    cancel.onclick = () => submitControl({question_response: {request_id: question.request_id, answers: {}, action: 'cancel'}}, 'Cancelled clarification');
+    actions.append(submit, skip, cancel); card.appendChild(actions);
+  } else {
+    const summary = document.createElement('p'); summary.textContent = plan.summary; card.appendChild(summary);
+    const list = document.createElement('ol');
+    for (const step of plan.steps || []) { const item = document.createElement('li'); item.textContent = `${step.title} — ${step.description} (Acceptance: ${(step.acceptance || []).join('; ')})`; list.appendChild(item); }
+    card.appendChild(list);
+    const actions = document.createElement('div'); actions.id = 'interaction-actions';
+    const accept = document.createElement('button'); accept.textContent = 'Accept'; accept.onclick = () => submitControl({plan_action: {plan_id: plan.plan_id, version: plan.version, action: 'accept'}}, 'Accepted plan');
+    const revise = document.createElement('button'); revise.textContent = 'Revise'; revise.onclick = () => { const input = document.getElementById('user-input'); input.placeholder = 'Describe the plan revision…'; input.focus(); };
+    const cancel = document.createElement('button'); cancel.textContent = 'Cancel'; cancel.onclick = () => submitControl({plan_action: {plan_id: plan.plan_id, version: plan.version, action: 'cancel'}}, 'Cancelled plan');
+    actions.append(accept, revise, cancel); card.appendChild(actions);
+  }
+}
+
+function renderSystemOneStatus(value) {
+  systemOneStatus = value || systemOneStatus;
+  const backend = systemOneStatus.system_one_backend || systemOneStatus.fast_backend || 'off';
+  const assist = systemOneStatus.decision_assist || decisionAssistState || {};
+  const model = assist.jev_model_alias || 'jev-latest';
+  const release = assist.jev_model_release_date || 'release unknown';
+  const health = assist.jev_health || 'unknown';
+  const policies = assist.calibration && assist.calibration.backends
+    ? (assist.calibration.backends[backend] || {}) : {};
+  const calibrated = Object.values(policies).filter(item => item && item.validated).length;
+  document.getElementById('fast-note').textContent =
+    `System One: ${backend}. Jev uses paid TypeSafe calls; Kev-0.8B is local and less accurate. ` +
+    `Jev model: ${model} (${release}; ${health}); calibrated actions: ${calibrated}.`;
+}
+
+function renderDecisionAssist(value) {
+  decisionAssistState = value || decisionAssistState;
+  document.getElementById('decision-assist-select').value = decisionAssistState.backend || 'off';
+  document.getElementById('decision-assist-consent').checked = Boolean(decisionAssistState.kev_private_consent);
+  const showKey = decisionAssistState.backend === 'jev' && !decisionAssistState.jev_configured;
+  document.getElementById('decision-assist-key').hidden = !showKey;
+  document.getElementById('decision-assist-apply').hidden = !showKey;
+  const model = decisionAssistState.jev_model_alias || 'jev-latest';
+  const release = decisionAssistState.jev_model_release_date || 'release unknown';
+  const health = decisionAssistState.jev_health || 'unknown';
+  const assistPolicies = decisionAssistState.calibration && decisionAssistState.calibration.backends
+    ? (decisionAssistState.calibration.backends[decisionAssistState.backend || 'off'] || {}) : {};
+  const calibrated = Object.values(assistPolicies).filter(item => item && item.validated).length;
+  document.getElementById('decision-assist-note').textContent =
+    `Evidence, memory, and tool-output checks. Jev uses paid TypeSafe calls; Kev is local and less accurate. Jev model: ${model} (${release}; ${health}); calibrated actions: ${calibrated}.`;
+}
+
+async function submitControl(control, label) {
+  if (isStreaming) return;
+  isStreaming = true; document.getElementById('send-btn').disabled = true;
+  addMessage('user', label, false); document.getElementById('status').textContent = 'Working…';
+  try {
+    const response = await apiFetch('/api/chat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({...control, session_id: sessionId})});
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
+    if (data.reply) addMessage('assistant', String(data.reply), false);
+    if (data.decision_assist) renderDecisionAssist(data.decision_assist);
+    if (data.interaction) renderSystemOneStatus({...systemOneStatus, system_one_backend: data.interaction.system_one_backend,
+      decision_assist: data.decision_assist || decisionAssistState});
+    renderInteraction(data.interaction);
+    renderContext(data.context);
+    document.getElementById('status').textContent = 'Ready';
+  } catch (error) { addMessage('assistant', 'Error: ' + error.message, false); renderInteraction(interactionState); document.getElementById('status').textContent = 'Error'; }
+  isStreaming = false; document.getElementById('send-btn').disabled = false; refreshSessionList().catch(() => {});
+}
+
+function renderSessionList(sessions) {
+  recentSessions = Array.isArray(sessions) ? sessions : [];
+  const select = document.getElementById('session-select');
+  select.replaceChildren();
+  const known = recentSessions.some(item => item.session_id === sessionId);
+  if (!known) {
+    const current = new Option('Current conversation', sessionId);
+    select.add(current);
+  }
+  for (const item of recentSessions) {
+    const option = new Option(item.session_id, item.session_id);
+    select.add(option);
+  }
+  select.value = sessionId;
+  document.getElementById('session-limit').textContent = recentSessions.length >= SESSION_LIST_LIMIT
+    ? 'Showing the newest 100 saved sessions. Older durable sessions remain saved.'
+    : `Showing ${recentSessions.length} saved sessions. Older durable history is never deleted here.`;
+}
+
+function contextTokenLabel(value) {
+  const tokens = Number(value);
+  if (!Number.isFinite(tokens)) return 'unknown';
+  return tokens >= 1000 ? `${(tokens / 1000).toFixed(tokens >= 100000 ? 0 : 1).replace(/\.0$/, '')}K` : String(tokens);
+}
+
+function renderContext(context) {
+  const display = document.getElementById('context-display');
+  const breakdown = document.getElementById('context-breakdown');
+  if (!context || !Number.isFinite(Number(context.input_tokens))) {
+    display.textContent = 'Context: unavailable';
+    breakdown.replaceChildren();
+    return;
+  }
+  const input = contextTokenLabel(context.input_tokens);
+  const window = Number(context.window_tokens);
+  display.textContent = Number.isFinite(window) && window > 0
+    ? `Context: ${input} / ${contextTokenLabel(window)} tokens`
+    : `Context: ${input} tokens (window unknown)`;
+  const rows = [
+    ['Input', `${input} tokens (${context.input_source || 'estimated'})`],
+    ['Reserve', `${contextTokenLabel(context.reserve_tokens)} tokens`],
+    ['Remaining', context.remaining_tokens == null ? 'unknown' : `${contextTokenLabel(context.remaining_tokens)} tokens`],
+    ['Model / source', `${context.model || 'unknown'} (${context.window_source || 'unknown'})`],
+  ];
+  const labels = {
+    fixed_instructions: 'Fixed instructions', memory: 'Memory', conversation: 'Conversation',
+    tool_results: 'Tool results', pending_request: 'Pending request',
+  };
+  for (const [key, label] of Object.entries(labels)) {
+    const value = context.breakdown && context.breakdown[key];
+    if (Number(value) > 0) rows.push([label, `${contextTokenLabel(value)} tokens (estimated)`]);
+  }
+  const compaction = context.compaction || {};
+  if (compaction.status && compaction.status !== 'not_needed') {
+    const omitted = compaction.omitted_entries ? `; ${compaction.omitted_entries} older entries` : '';
+    rows.push(['Latest compaction', `${String(compaction.status).replaceAll('_', ' ')}${omitted}`]);
+  }
+  breakdown.replaceChildren();
+  for (const [label, value] of rows) {
+    const term = document.createElement('dt'); term.textContent = label;
+    const definition = document.createElement('dd'); definition.textContent = value;
+    breakdown.append(term, definition);
+  }
+}
+
+function renderHistory(data) {
+  historyState = data || {nodes: [], current_node_id: ''};
+  const tree = document.getElementById('history-tree');
+  const status = document.getElementById('history-status');
+  document.getElementById('history-session').textContent = `Chat/session ID: ${historyState.session_id || sessionId}`;
+  tree.replaceChildren();
+  const nodes = Array.isArray(historyState.nodes) ? historyState.nodes : [];
+  const children = new Map();
+  for (const node of nodes) {
+    const key = node.parent_id || '';
+    if (!children.has(key)) children.set(key, []);
+    children.get(key).push(node);
+  }
+  function addBranch(parentId, list, depth) {
+    for (const node of children.get(parentId) || []) {
+      const item = document.createElement('li'); item.setAttribute('role', 'treeitem');
+      const row = document.createElement('div');
+      row.className = 'history-node' + (node.id === historyState.current_node_id ? ' current' : '');
+      const branch = document.createElement('ul'); branch.className = 'history-branch'; branch.setAttribute('role', 'group');
+      branch.id = `history-branch-${node.id}`;
+      const childNodes = children.get(node.id) || [];
+      if (childNodes.length) {
+        const toggle = document.createElement('button'); toggle.type = 'button';
+        toggle.textContent = 'Collapse'; toggle.setAttribute('aria-expanded', 'true');
+        toggle.setAttribute('aria-controls', branch.id);
+        toggle.onclick = () => {
+          const expanded = toggle.getAttribute('aria-expanded') === 'true';
+          toggle.setAttribute('aria-expanded', String(!expanded));
+          toggle.textContent = expanded ? 'Expand' : 'Collapse';
+          branch.hidden = expanded;
+        };
+        row.appendChild(toggle);
+      }
+      const selector = node.selector == null ? '?' : String(node.selector);
+      const marker = node.id === historyState.current_node_id ? ' · CURRENT HEAD' : '';
+      const changes = node.file_summary && node.file_summary.changes || {};
+      const label = document.createElement('span');
+      label.innerHTML = `<span class="node-selector">[${escapeHtml(selector)}]</span> · ${escapeHtml(node.summary || 'baseline')} · ${escapeHtml(String(node.created_at || '').replace('T', ' ').slice(0, 19))} · files +${changes.added || 0} ~${changes.changed || 0} -${changes.deleted || 0}${marker}`;
+      row.appendChild(label);
+      const restore = document.createElement('button'); restore.type = 'button'; restore.textContent = node.id === historyState.current_node_id ? 'Current head' : `Restore [${selector}]`;
+      restore.disabled = node.id === historyState.current_node_id || isStreaming;
+      restore.setAttribute('aria-label', node.id === historyState.current_node_id ? `Current history head ${selector}` : `Restore history node ${selector}`);
+      restore.onclick = () => rollbackHistory(node);
+      row.appendChild(restore); item.appendChild(row);
+      addBranch(node.id, branch, depth + 1); if (branch.children.length) item.appendChild(branch);
+      list.appendChild(item);
+    }
+  }
+  addBranch('', tree, 0);
+  status.textContent = nodes.length ? `${nodes.length} recorded node${nodes.length === 1 ? '' : 's'}. Memory is preserved during rollback.` : 'No history nodes recorded yet.';
+}
+
+async function loadHistory() {
+  try {
+    const response = await apiFetch(`/api/v2/sessions/${encodeURIComponent(sessionId)}/history`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || 'Could not load history');
+    renderHistory(data);
+  } catch (error) {
+    if (error instanceof AuthRequiredError) return;
+    document.getElementById('history-status').textContent = 'Could not load history.';
+  }
+}
+
+async function rollbackHistory(node) {
+  const changes = node.file_summary && node.file_summary.changes || {};
+  const message = `Restore “${node.summary || 'this point'}”?\n\nWorkspace changes: +${changes.added || 0} added, ~${changes.changed || 0} changed, -${changes.deleted || 0} deleted.\n\nA recovery point will be kept. Durable memory and learning are preserved.`;
+  if (isStreaming || !window.confirm(message)) return;
+  try {
+    const response = await apiFetch(`/api/v2/sessions/${encodeURIComponent(sessionId)}/history/${encodeURIComponent(node.id)}/rollback`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({confirm: 'rollback', expected_head_id: historyState.current_node_id})
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || 'Rollback failed');
+    await restoreSession(sessionId); await loadHistory();
+    document.getElementById('status').textContent = `Restored [${node.selector == null ? '?' : node.selector}]. Recovery point saved: ${data.recovery_node_id}`;
+  } catch (error) {
+    document.getElementById('status').textContent = 'Rollback failed: ' + error.message;
+  }
+}
+
+async function refreshSessionList() {
+  const response = await apiFetch(`/api/v2/sessions?limit=${SESSION_LIST_LIMIT}`);
+  if (!response.ok) throw new Error('Could not load saved conversations');
+  const data = await response.json();
+  renderSessionList(data.sessions);
+}
+
+async function restoreSession(nextSessionId) {
+  sessionId = nextSessionId;
+  saveActiveSession();
+  try {
+    const response = await apiFetch(`/api/v2/sessions/${encodeURIComponent(sessionId)}`);
+    if (!response.ok) throw new Error('Could not load this conversation');
+    const data = await response.json();
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    clearChat();
+    messages.forEach(message => addMessage(message.role, String(message.content), false));
+    renderInteraction(data.interaction);
+    renderContext(data.context);
+    renderSessionList(recentSessions);
+    document.getElementById('status').textContent = messages.length
+      ? `Restored ${messages.length} saved message${messages.length === 1 ? '' : 's'}.`
+      : 'No saved messages in this conversation.';
+  } catch (error) {
+    if (error instanceof AuthRequiredError) throw error;
+    clearChat();
+    document.getElementById('status').textContent = 'Could not load this conversation.';
+  }
+}
+
+function startNewSession() {
+  if (isStreaming) return;
+  sessionId = createSessionId();
+  saveActiveSession();
+  clearChat();
+  renderInteraction({preference_mode: 'auto', effective_mode: 'ask', system_one_backend: 'off', fast_backend: 'off', pending_question: null, pending_plan: null});
+  renderContext(null);
+  renderSessionList(recentSessions);
+  document.getElementById('status').textContent = 'New conversation ready.';
+  document.getElementById('user-input').focus();
+  loadHistory().catch(() => {});
+}
+
+async function loadCost() {
+  try {
+    const response = await apiFetch('/api/cost');
+    if (!response.ok) return;
+    const data = await response.json();
+    if (data.summary) document.getElementById('cost-display').textContent = 'Cost: ' + data.summary;
+  } catch (error) {
+    if (!(error instanceof AuthRequiredError)) {
+      document.getElementById('cost-display').textContent = '';
+    }
+  }
+}
+
+async function initialiseSessions() {
+  try {
+    await refreshSessionList();
+    await restoreSession(sessionId);
+    await loadCost();
+  } catch (error) {
+    if (error instanceof AuthRequiredError) return;
+    renderSessionList([]);
+    document.getElementById('status').textContent = 'Could not load saved conversations.';
+  }
+}
+
+async function authenticate() {
+  if (authInFlight) return;
+  const input = document.getElementById('server-token');
+  const button = document.getElementById('authenticate');
+  const status = document.getElementById('auth-status');
+  const token = input.value.trim();
+  if (!token) {
+    showAuthPrompt('Enter the server token to continue.');
+    input.focus();
+    return;
+  }
+  authInFlight = true;
+  button.disabled = true;
+  status.classList.remove('error');
+  status.textContent = 'Authenticating…';
+  try {
+    const response = await fetch('/api/auth/session', {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token})
+    });
+    input.value = '';
+    if (!response.ok) {
+      showAuthPrompt(response.status === 401
+        ? 'Invalid server token. Check it and try again.'
+        : 'Authentication service unavailable. Try again.');
+      return;
+    }
+    hideAuthPrompt();
+    await initialiseSessions();
+  } catch (_) {
+    input.value = '';
+    showAuthPrompt('Authentication service unavailable. Try again.');
+  } finally {
+    authInFlight = false;
+    button.disabled = false;
+  }
+}
+
+function addMessage(role, content, isThinking) {
+  const chat = document.getElementById('chat');
+  const div = document.createElement('div');
+  div.className = 'msg ' + role + (isThinking ? ' thinking' : '');
+  div.innerHTML = `<div class="role">${role === 'assistant' ? 'Kyrozen' : role === 'user' ? 'You' : role}</div><div class="content">${escapeHtml(content)}</div>`;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+
+function escapeHtml(text) {
+  return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function sendMessage() {
+  const input = document.getElementById('user-input');
+  const btn = document.getElementById('send-btn');
+  const msg = input.value.trim();
+  if (!msg || isStreaming) return;
+  input.value = '';
+  isStreaming = true;
+  btn.disabled = true;
+  document.getElementById('status').textContent = 'Thinking...';
+  addMessage('user', msg, false);
+
+  const assistantDiv = addMessage('assistant', '', false);
+  const contentDiv = assistantDiv.querySelector('.content');
+
+  try {
+    const resp = await apiFetch('/api/chat/stream', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: msg, session_id: sessionId})
+    });
+    if (!resp.ok || !resp.body) throw new Error('HTTP ' + resp.status);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let full = '';
+    let sseBuffer = '';
+    const streamState = {done: false, error: false, parseError: false};
+
+    function handleSseEvent(eventText) {
+      const data = eventText.split(/\r?\n/)
+        .filter(line => line.startsWith('data:'))
+        .map(line => line.startsWith('data: ') ? line.slice(6) : line.slice(5))
+        .join('\n');
+      if (!data) return;
+      if (data === '[DONE]') {
+        streamState.done = true;
+        return;
+      }
+      try {
+        const parsed = JSON.parse(data);
+        if (Object.prototype.hasOwnProperty.call(parsed, 'chunk')) {
+          full += String(parsed.chunk);
+          contentDiv.textContent = full;
+        }
+        if (parsed.event === 'fast_decision') {
+          const name = parsed.backend === 'jev' ? 'Jev' : 'Kev';
+          addMessage('assistant', `Made a decision with ${name}.`, false);
+        }
+        if (Object.prototype.hasOwnProperty.call(parsed, 'cost')) {
+          document.getElementById('cost-display').textContent = String(parsed.cost);
+        }
+        if (Object.prototype.hasOwnProperty.call(parsed, 'error')) {
+          streamState.error = true;
+          contentDiv.textContent = 'Error: ' + String(parsed.error);
+          contentDiv.classList.add('error');
+        }
+        if (Object.prototype.hasOwnProperty.call(parsed, 'interaction')) renderInteraction(parsed.interaction);
+        if (Object.prototype.hasOwnProperty.call(parsed, 'context')) renderContext(parsed.context);
+      } catch (e) {
+        streamState.parseError = true;
+        contentDiv.textContent = 'Stream parse error: ' + e.message;
+        contentDiv.classList.add('error');
+      }
+    }
+
+    function consumeSseText(text) {
+      sseBuffer += text;
+      while (true) {
+        const boundary = sseBuffer.match(/\r?\n\r?\n/);
+        if (!boundary) break;
+        const eventText = sseBuffer.slice(0, boundary.index);
+        sseBuffer = sseBuffer.slice(boundary.index + boundary[0].length);
+        handleSseEvent(eventText);
+      }
+    }
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      consumeSseText(decoder.decode(value, {stream: true}));
+      document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
+    }
+    consumeSseText(decoder.decode());
+    if (sseBuffer.trim()) handleSseEvent(sseBuffer);
+    if (streamState.parseError) {
+      document.getElementById('status').textContent = 'Error';
+    } else if (streamState.done) {
+      document.getElementById('status').textContent = 'Ready';
+    } else if (streamState.error) {
+      document.getElementById('status').textContent = 'Error';
+    } else {
+      document.getElementById('status').textContent = 'Incomplete stream';
+    }
+  } catch(e) {
+    contentDiv.textContent = e instanceof AuthRequiredError
+      ? 'Authentication required. Enter the server token above.'
+      : 'Connection error: ' + e.message;
+    contentDiv.classList.add('error');
+    document.getElementById('status').textContent = e instanceof AuthRequiredError ? 'Authentication required' : 'Error';
+  }
+  isStreaming = false;
+  btn.disabled = false;
+  input.focus();
+  refreshSessionList().catch(() => {});
+}
+
+document.getElementById('session-select').addEventListener('change', event => {
+  if (!isStreaming) { restoreSession(event.target.value).then(loadHistory).catch(() => {}); }
+});
+document.getElementById('new-session').addEventListener('click', startNewSession);
+document.getElementById('toggle-history').addEventListener('click', event => {
+  const panel = document.getElementById('history-panel');
+  panel.hidden = !panel.hidden; event.target.setAttribute('aria-expanded', String(!panel.hidden));
+  if (!panel.hidden) loadHistory().catch(() => {});
+});
+document.getElementById('mode-select').addEventListener('change', event => submitControl({mode: event.target.value}, `Mode: ${event.target.value}`));
+document.getElementById('fast-select').addEventListener('change', event => {
+  const backend = event.target.value;
+  document.getElementById('fast-key').hidden = backend !== 'jev';
+  document.getElementById('fast-apply').hidden = backend !== 'jev';
+  if (backend !== 'jev') {
+    if (backend === 'kev') document.getElementById('status').textContent = 'Installing and checking local Kev…';
+    submitControl({system_one_backend: backend}, `System One: ${backend}`);
+  }
+});
+document.getElementById('fast-apply').addEventListener('click', () => {
+  const key = document.getElementById('fast-key').value.trim();
+  const control = {system_one_backend: 'jev'};
+  if (key) control.jev_api_key = key;
+  document.getElementById('fast-key').value = '';
+  submitControl(control, 'System One: Jev');
+});
+document.getElementById('decision-assist-select').addEventListener('change', event => {
+  const backend = event.target.value;
+  const consent = document.getElementById('decision-assist-consent').checked;
+  if (backend === 'kev' && !consent) {
+    document.getElementById('status').textContent = 'Check the private-context consent box to enable Kev.';
+    event.target.value = decisionAssistState.backend || 'off';
+    return;
+  }
+  if (backend === 'jev' && !decisionAssistState.jev_configured) {
+    document.getElementById('decision-assist-key').hidden = false;
+    document.getElementById('decision-assist-apply').hidden = false;
+    return;
+  }
+  submitControl({decision_assist_backend: backend, decision_assist_private_consent: consent}, `Decision Assist: ${backend}`);
+});
+document.getElementById('decision-assist-apply').addEventListener('click', () => {
+  const key = document.getElementById('decision-assist-key').value.trim();
+  if (!key) return;
+  document.getElementById('decision-assist-key').value = '';
+  submitControl({decision_assist_backend: 'jev', jev_api_key: key}, 'Decision Assist: Jev');
+});
+document.getElementById('decision-assist-consent').addEventListener('change', event => {
+  const backend = document.getElementById('decision-assist-select').value;
+  const selected = !event.target.checked && backend === 'kev' ? 'off' : backend;
+  submitControl({decision_assist_backend: selected, decision_assist_private_consent: event.target.checked}, 'Decision Assist consent updated');
+});
+document.getElementById('authenticate').addEventListener('click', authenticate);
+document.getElementById('server-token').addEventListener('keydown', event => {
+  if (event.key === 'Enter') { event.preventDefault(); authenticate(); }
+});
+initialiseSessions().then(loadHistory)
+  .then(() => apiFetch('/api/v2/system-one/diagnostics?session_id=' + encodeURIComponent(sessionId)))
+  .then(r => r.json()).then(value => { renderSystemOneStatus(value); renderDecisionAssist(value.decision_assist); })
+  .catch(() => {});
+</script>
+</body>
+</html>

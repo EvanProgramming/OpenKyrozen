@@ -7,9 +7,13 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-import main
-from agent_config import AgentConfigError, effective_capabilities, load_agent_config
-from memory import MemoryBank
+from openkyrozen.app.bootstrap import build_application
+
+_application = build_application(surface="cli")
+
+main = _application.runtime
+from openkyrozen.app.config import AgentConfigError, effective_capabilities, load_agent_config
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
 
 
 def _config_text(role_name: str, capabilities: str = "full") -> str:
@@ -113,7 +117,7 @@ class AgentConfigTests(unittest.TestCase):
             workspace.mkdir()
             (workspace / "agent.yaml").write_text(_config_text("installed-reviewer", "read"), encoding="utf-8")
             build = subprocess.run(
-                [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "--wheel-dir", str(wheel_dir)],
+                [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "--no-build-isolation", "--wheel-dir", str(wheel_dir)],
                 cwd=Path(__file__).parents[1], capture_output=True, text=True, timeout=120,
             )
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
@@ -121,7 +125,7 @@ class AgentConfigTests(unittest.TestCase):
             self.assertEqual(len(wheels), 1)
             with zipfile.ZipFile(wheels[0]) as archive:
                 names = set(archive.namelist())
-            self.assertIn("agent_config.py", names)
+            self.assertIn("openkyrozen/app/config.py", names)
             self.assertIn("prompts/role.md", names)
             self.assertTrue(any(name.endswith("agent.yaml") for name in names))
 
@@ -134,7 +138,7 @@ class AgentConfigTests(unittest.TestCase):
             env["PYTHONPATH"] = str(target)
             probe = subprocess.run(
                 [sys.executable, "-c", (
-                    "from agent_config import load_agent_config; "
+                    "from openkyrozen.app.config import load_agent_config; "
                     f"c=load_agent_config({str(workspace)!r}); "
                     "print(c['role']['name']); print(c['examples'][0]['assistant'])"
                 )],

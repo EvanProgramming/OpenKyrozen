@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from instruction_loader import format_instructions, load_instructions
+from openkyrozen.skills.instructions import format_instructions, load_instructions
 
 
 class InstructionLoaderTests(unittest.TestCase):

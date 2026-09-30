@@ -6,7 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from project_graph import ProjectGraph
+from openkyrozen.workspace.graph import ProjectGraph
 
 
 class FakeGraphify:

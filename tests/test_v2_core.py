@@ -2,9 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from learning_engine import LearningEngine
-from memory import MemoryBank
-from task_engine import TaskManager, TaskWorker
+from openkyrozen.learning.engine import LearningEngine
+from openkyrozen.app.bootstrap import build_memory as MemoryBank
+from openkyrozen.tasks.engine import TaskManager, TaskWorker
 
 
 class V2CoreTests(unittest.TestCase):

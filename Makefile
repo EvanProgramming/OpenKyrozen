@@ -1,4 +1,4 @@
-.PHONY: install install-core run clean lint test test-core tui-test check docs-check shell-check benchmark agent-acceptance wheel-smoke docker-smoke git-status git-diff git-log web
+.PHONY: install install-core run clean lint test test-core tui-test check docs-check shell-check benchmark agent-acceptance tui-acceptance wheel-smoke docker-smoke git-status git-diff git-log web
 
 # Tests parse the benchmark target's stdout as JSON; do not inject GNU make's
 # recursive directory banners into that machine-readable output.
@@ -35,22 +35,22 @@ install: install-core
 
 run:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' with $(PYTHON) installed."; exit 1; }
-	$(VENV_PYTHON) -m tui_launcher --project .
+	$(VENV_PYTHON) -m openkyrozen.interfaces.cli.launcher --project .
 
 tui-test:
 	@if command -v go >/dev/null 2>&1; then (cd tui && go test ./...); else echo "Go toolchain not found; TUI tests skipped (install Go 1.27.1 or run install.sh)."; fi
 
 web:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON)."; exit 1; }
-	$(VENV_PYTHON) -m pip install fastapi uvicorn -q && $(VENV_PYTHON) server.py --project .
+	$(VENV_PYTHON) -m pip install fastapi uvicorn -q && $(VENV_PYTHON) -m openkyrozen.interfaces.web.app --project .
 
 debug:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' first."; exit 1; }
-	$(VENV_PYTHON) main_debug.py
+	$(VENV_PYTHON) -m openkyrozen.interfaces.cli.diagnostics
 
 init:
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: venv requires $(PYTHON). Run 'make install' first."; exit 1; }
-	$(VENV_PYTHON) main.py --project . --init
+	$(VENV_PYTHON) -m openkyrozen.interfaces.cli.main --project . --init
 
 # Upgrade the venv to use a different Python version (e.g. after macOS upgrade)
 reinstall:
@@ -64,7 +64,7 @@ clean:
 
 # Syntax check
 lint:
-	$(VENV_PYTHON) -m compileall -q main.py tui_launcher.py tui_backend.py main_debug.py server.py providers.py context_compaction.py tools.py memory.py event_store.py history.py interaction.py fast_mode.py system_one_policy.py benchmarks/system_one.py task_engine.py learning_engine.py learning_benchmark.py learning_worker.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py workspace_context.py project_graph.py github_cli.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py scripts/agent_workflow_acceptance.py scripts/wheel_smoke.py
+	$(VENV_PYTHON) -m compileall -q openkyrozen main.py server.py tui_launcher.py tui_backend.py main_debug.py learning_worker.py github_cli.py learning_benchmark.py migration.py scripts tests benchmarks
 	@echo "Python syntax OK."
 	@echo "All files pass syntax check."
 
@@ -81,7 +81,7 @@ benchmark:
 	@benchmark_root=$$(mktemp -d "$${TMPDIR:-/tmp}/openkyrozen-benchmark.XXXXXX"); \
 	trap 'rm -rf "$$benchmark_root"' EXIT INT TERM; \
 	KYROZEN_BENCHMARK_ROOT="$$benchmark_root" KYROZEN_DB_PATH="$$benchmark_root/driver.sqlite3" KYROZEN_DISABLE_VECTOR_INDEX=1 \
-	$(VENV_PYTHON) main.py learning benchmark \
+	$(VENV_PYTHON) -m openkyrozen.interfaces.cli.main learning benchmark \
 		--cases benchmarks/multi_party_memory.jsonl \
 		--clean-runner "$(VENV_PYTHON) benchmarks/clean_runner.py" \
 		--evolved-runner "$(VENV_PYTHON) benchmarks/evolved_runner.py" \
@@ -94,12 +94,21 @@ wheel-smoke:
 agent-acceptance:
 	$(VENV_PYTHON) scripts/agent_workflow_acceptance.py
 
+tui-acceptance:
+	@command -v go >/dev/null 2>&1 || { echo "Error: Go is required for TUI acceptance."; exit 1; }
+	@binary=$$(mktemp "$${TMPDIR:-/tmp}/openkyrozen-tui.XXXXXX"); \
+	trap 'rm -f "$$binary"' EXIT INT TERM; \
+	(cd tui && go build -o "$$binary" .) && \
+	$(VENV_PYTHON) scripts/tui_workflow_acceptance.py "$$binary"
+
 docs-check:
+	@$(VENV_PYTHON) scripts/check_architecture.py
 	$(VENV_PYTHON) scripts/generate_tool_inventory.py --check
 	$(VENV_PYTHON) scripts/check_docs.py
 	$(VENV_PYTHON) scripts/check_zsh_extras.py
 
 shell-check:
+	@$(VENV_PYTHON) scripts/check_architecture.py
 	$(VENV_PYTHON) scripts/check_zsh_extras.py
 
 docker-smoke:
@@ -109,11 +118,12 @@ docker-smoke:
 
 # Quick verification
 check:
+	@$(VENV_PYTHON) scripts/check_architecture.py
 	@echo "Checking Python syntax..."
-	@$(VENV_PYTHON) -m py_compile main.py tui_launcher.py tui_backend.py main_debug.py server.py providers.py context_compaction.py tools.py memory.py event_store.py history.py interaction.py fast_mode.py system_one_policy.py benchmarks/system_one.py task_engine.py learning_engine.py learning_benchmark.py learning_worker.py migration.py scheduler.py skill_registry.py browser_manager.py instruction_loader.py agent_config.py subagents.py capability_tokens.py tool_registry.py dynamic_tools.py plugin_runtime.py workspace_context.py project_graph.py github_cli.py scripts/generate_tool_inventory.py scripts/check_docs.py scripts/check_zsh_extras.py scripts/agent_workflow_acceptance.py scripts/wheel_smoke.py
+	@$(VENV_PYTHON) -m compileall -q openkyrozen main.py server.py tui_launcher.py tui_backend.py main_debug.py learning_worker.py github_cli.py learning_benchmark.py migration.py scripts tests benchmarks
 	@echo "  Python modules: OK"
 	@echo "Checking git tools..."
-	@$(VENV_PYTHON) -c "from tools import AVAILABLE_TOOLS; git = [k for k in AVAILABLE_TOOLS if k.startswith('git_')]; print(f'  {len(git)} git tools, {len(AVAILABLE_TOOLS)} total tools')"
+	@$(VENV_PYTHON) -c "from openkyrozen.tools import ToolAdapters; AVAILABLE_TOOLS = ToolAdapters().AVAILABLE_TOOLS; git = [k for k in AVAILABLE_TOOLS if k.startswith('git_')]; print(f'  {len(git)} git tools, {len(AVAILABLE_TOOLS)} total tools')"
 	@$(VENV_PYTHON) scripts/check_zsh_extras.py
 	@$(MAKE) tui-test
 	@echo "All checks passed."
