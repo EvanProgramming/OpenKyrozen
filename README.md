@@ -56,6 +56,23 @@ For a direct package install, use the verified release wheel:
 uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl
 ```
 
+## Agent comparison
+
+OpenKyrozen is built as a broad local workflow: coding, research, workspace tools, web/API access, durable state, and evidence-backed self-improvement in one runtime.
+
+| Capability | OpenKyrozen | OpenCode | OpenClaw | Codewhale |
+| --- | :---: | :---: | :---: | :---: |
+| Terminal coding and verification | ✅ | ✅ | 🟡 | ✅ |
+| Read-only planning mode | ✅ | ✅ | 🟡 | ✅ |
+| Local web or API surface | ✅ | 🟡 | ✅ | ✅ |
+| Messaging and device channels | ❌ | ❌ | ✅ | ❌ |
+| Hosted and local model choices | ✅ | ✅ | ✅ | ✅ |
+| Multi-agent workflows | ✅ | ✅ | ✅ | ✅ |
+| Claims, events, and learning ledger | ✅ | ❌ | ❌ | ❌ |
+| Evidence-gated self-evolution | ✅ | ❌ | ❌ | ❌ |
+
+Legend: `✅` documented core capability · `🟡` documented but narrower or optional · `❌` not a documented core capability. See the [detailed comparison](docs/comparison.md) for scope and sources.
+
 ## Quick start
 
 ```text
