@@ -1,9 +1,39 @@
-# Self-evolution and memory operations
+# Self-learning, memory, and evidence
 
-This is the operator guide for the merged self-evolution and multi-party memory
-features. It records behavior that is callable today, not a promise about
-future learning. The verification record below is explicitly a historical
-snapshot, not a claim about the repository's current `HEAD`.
+Self-learning is one of OpenKyrozen's two defining features. It is a guarded
+feedback loop around real work: the agent records what happened, proposes a
+small reusable improvement, tests that improvement against evidence, and keeps
+it only when the result is repeatably better or non-regressing.
+
+This is not autonomous source-code rewriting or model fine-tuning. Learning
+artifacts are bounded policies or skills. They cannot add capabilities, create
+dynamic tools, grant permissions, add provider credentials, or upload private
+memory. Every activation, promotion, retirement, and rollback is recorded in
+the local SQLite event ledger.
+
+## The learning loop
+
+1. **Observe:** completed multi-step work, explicit corrections, and verified
+   failures produce outcome evidence. Routine one-step work, provider
+   failures, secret-bearing runs, and indexing are excluded.
+2. **Propose:** the background worker may create one bounded `policy` or
+   `skill` canary for a run, or abstain.
+3. **Validate:** static checks enforce the manifest, permissions, size limits,
+   secret redaction, and workspace containment. A canary must then show two
+   distinct verified successes and pass a paired candidate-versus-predecessor
+   replay without regression.
+4. **Promote or roll back:** a passing canary becomes active; a correction or
+   repeated verified failures restore its predecessor. The previous artifact
+   remains recoverable.
+
+Start with `/self-learning`, inspect proposals with `/learning status`, and
+open a proof card with `/learning evidence <proposal-id>`. Use
+`/learning rollback <proposal-id>` when an operator needs to restore the
+predecessor immediately.
+
+The rest of this guide documents the callable surface and its evidence. The
+verification record below is explicitly a historical snapshot, not a claim
+about the repository's current `HEAD`.
 
 Historical verification snapshot: `51be33361422e55e1f2f00c33a0e0f8c56132a91`
 (the post-#54 `main` revision, captured before this #55 documentation-only

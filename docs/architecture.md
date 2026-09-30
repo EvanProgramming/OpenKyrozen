@@ -49,5 +49,6 @@ SQLite is the authoritative store for session events, usage, tasks, claims, and 
 - Agent execution remains subject to the configured capability upper bound and approval policy.
 - Tool output, memory, downloaded pages, and skill text are untrusted data, not permission grants.
 - Self-learning can propose and validate artifacts, but cannot silently add capabilities, dynamic tools, or provider credentials.
+- Jev Decision is an optional typed judgment layer around routing, clarification, learning evidence, memory relevance, and tool-output review; it never executes or approves work.
 
-For the exact live tool and endpoint contract, use the generated inventory at tool-inventory.md. For self-learning details, use self-evolution.md.
+For the exact live tool and endpoint contract, use the generated inventory at tool-inventory.md. For the two product loops, read [self-learning](self-evolution.md) and [Jev Decision](decision-assist-validation.md).

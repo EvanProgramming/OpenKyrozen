@@ -91,6 +91,7 @@ kyrozen-web
 - 18개 주요 모델 provider, 모델 기본값, fallback을 지원합니다.
 - SQLite가 session, event, task, claim, learning state의 권위 있는 저장소입니다. ChromaDB는 다시 만들 수 있는 선택적 index입니다.
 - self-learning은 결과 증거를 기록하고 검증된 개선만 승격합니다. 권한이나 모델 가중치를 몰래 변경하지 않습니다.
+- Jev Decision은 선택 가능한 판단 계층입니다. 요청 라우팅, 확인 질문, 학습 증거, 메모리 관련성, 의심스러운 도구 출력을 검사하며 도구를 실행하거나 승인하지 않고 필요하면 기권합니다.
 
 현재 런타임은 **도구 39개**를 제공하며, 그중 **Git 도구는 14개**입니다. 도구, endpoint, MCP schema의 기준은 [생성된 런타임 인벤토리](docs/tool-inventory.md)입니다.
 
@@ -102,7 +103,8 @@ kyrozen-web
 | 런타임 흐름과 안전 경계 | [아키텍처](docs/architecture.md) |
 | provider, 환경 변수, 상태 | [설정](docs/configuration.md) |
 | Web, REST, MCP | [API 가이드](docs/api.md) |
-| self-learning, memory, evidence | [Self-evolution 가이드](docs/self-evolution.md) |
+| self-learning, memory, evidence | [Self-learning 가이드](docs/self-evolution.md) |
+| Jev Decision 및 교정 증거 | [Jev Decision](docs/decision-assist-validation.md) · [System One](docs/system-one-benchmark.md) |
 | 다른 오픈소스 에이전트와 비교 | [비교](docs/comparison.md) |
 | 개발, 테스트, 릴리스 | [개발 가이드](docs/development.md) |
 

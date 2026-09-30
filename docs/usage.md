@@ -40,6 +40,8 @@ Set the preference with /mode auto, /mode ask, /mode plan, or /mode agent. Plan 
 | /learning status\|metrics\|evidence <id> | Inspect learning state |
 | /memory why <claim-id> | Inspect claim provenance |
 | /self-learning | Configure learning features |
+| /decision-assist jev\|kev\|off | Enable or disable Jev/Kev decision checks |
+| /system-one jev\|kev\|off | Configure typed routing decisions |
 | /update | Update the installed runtime and bundled tools |
 | /quit | Exit |
 

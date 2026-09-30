@@ -1,4 +1,38 @@
-# Decision Assist shadow validation
+# Jev Decision and Decision Assist
+
+Jev Decision is OpenKyrozen's optional judgment layer. It is not the main
+chat model and it does not execute tools or approve work. Instead, it answers
+small typed questions around five bounded jobs: request routing,
+clarification, learning-evidence review, memory relevance, and suspicious
+tool-output review.
+
+The layer can accept a decision, abstain when confidence or privacy screening
+is insufficient, or fall back to the existing OpenKyrozen path. Only policies
+that pass their action-specific calibration gates are applied automatically;
+otherwise the result stays advisory. Jev receives screened context through
+paid TypeSafe calls, while local Kev is an optional lower-accuracy alternative
+that requires explicit consent before it inspects private workspace context.
+
+## Enable Jev Decision
+
+From the terminal:
+
+```text
+/decision-assist jev
+```
+
+OpenKyrozen prompts for the Jev API key when one is not already configured and
+stores it through the encrypted configuration flow. To inspect or change the
+current state, use `/decision-assist`. To disable it, use
+`/decision-assist off`.
+
+For local Kev, use `/decision-assist kev yes`; the `yes` is the explicit
+private-context consent. Revoke that consent with `/decision-assist revoke`.
+
+This page records the validation evidence for Jev and Kev. The commands below
+are non-mutating benchmarks: they record typed outcomes, confidence, latency,
+and errors, but do not activate claims, reorder memories, quarantine tool text,
+or execute a tool.
 
 The current implementation asks candidate-specific evidence and memory
 questions and classifies each instruction-like tool passage separately. The

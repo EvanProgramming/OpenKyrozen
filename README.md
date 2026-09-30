@@ -73,6 +73,37 @@ OpenKyrozen is built as a broad local workflow: coding, research, workspace tool
 
 Legend: `✅` documented core capability · `🟡` documented but narrower or optional · `❌` not a documented core capability. See the [detailed comparison](docs/comparison.md) for scope and sources.
 
+## The two ideas behind OpenKyrozen
+
+### 1. Self-learning — the main differentiator
+
+OpenKyrozen can learn from its own completed work without silently rewriting
+itself. It records outcomes, corrections, tool receipts, and acceptance
+evidence; proposes a bounded policy or skill; validates that proposal; and
+only promotes it after repeated verified success and a non-regressing paired
+replay. Failed or regressing artifacts roll back to their predecessor.
+
+Self-learning cannot grant capabilities, create dynamic tools, add provider
+credentials, fine-tune model weights, or upload private memory. Try
+`/self-learning`, then inspect the result with `/learning status`,
+`/learning metrics`, and `/learning evidence <id>`. Read the [self-learning
+guide](docs/self-evolution.md) for the full lifecycle.
+
+### 2. Jev Decision — the judgment layer
+
+Jev is the hosted decision backend for OpenKyrozen's optional Decision Assist
+layer. It makes typed, bounded judgments for request routing, clarification,
+learning evidence, memory relevance, and suspicious tool-output instructions.
+It can accept, abstain, or fall back; it never executes tools, approves work,
+or replaces the main model. Only action policies that pass their calibration
+gates are applied automatically.
+
+Enable it in the terminal with `/decision-assist jev` and a TypeSafe API key.
+The key is stored through the encrypted configuration flow. The local Kev
+alternative is `/decision-assist kev yes`; private workspace context requires
+that explicit consent. See the [Jev Decision guide](docs/decision-assist-validation.md)
+and [System One evidence](docs/system-one-benchmark.md).
+
 ## Quick start
 
 ```text
@@ -121,10 +152,10 @@ The runtime currently exposes **39 tools**, including **14 Git tools**. The gene
 | Runtime flow and safety boundaries | [Architecture](docs/architecture.md) |
 | Providers, environment variables, and state | [Configuration](docs/configuration.md) |
 | Web UI, REST, and MCP contracts | [API guide](docs/api.md) |
-| Self-learning, memory, and evidence | [Self-evolution guide](docs/self-evolution.md) |
+| Self-learning, memory, and evidence | [Self-learning guide](docs/self-evolution.md) |
 | OpenKyrozen vs other open-source agents | [Comparison](docs/comparison.md) |
 | Development, testing, and releases | [Development guide](docs/development.md) |
-| Calibrated decision and benchmark reports | [System One](docs/system-one-benchmark.md) · [Decision Assist](docs/decision-assist-validation.md) |
+| Jev Decision, calibration, and benchmark reports | [Jev Decision](docs/decision-assist-validation.md) · [System One](docs/system-one-benchmark.md) |
 | Project intelligence and built-in skills | [Native project intelligence](docs/native-project-intelligence.md) |
 | Current roadmap | [Agentic runtime roadmap](docs/agentic-runtime-roadmap.md) |
 
