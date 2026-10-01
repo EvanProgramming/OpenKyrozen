@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 from openkyrozen.tasks.engine import canonical_status, is_complete, is_terminal
-from openkyrozen.security.tool_policy import tool_capability
+from openkyrozen.app.config import load_agent_config
 
 def _execute_action_rounds(self, turn):
     from openkyrozen.agent.delegation import GUIDANCE
@@ -77,7 +77,7 @@ def _execute_action_rounds(self, turn):
             error_hint += (
                 "If you used a self-created tool, try using a built-in tool instead. "
                 "Use one of the following actions: "
-                + ", ".join(sorted(self.AVAILABLE_TOOLS.keys())) + ".\n"
+                + ", ".join(sorted(self._permitted_tool_names())) + ".\n"
             )
 
         # Search throttle: prevent infinite search loops WITHOUT stopping the task
@@ -125,7 +125,7 @@ def _execute_action_rounds(self, turn):
                 "content": (
                     GUIDANCE + "\nCurrent agents:\n" + self._delegation_summary() + "\nHere are the tools you can use. "
                     "Make sure to pick an action name exactly as listed:\n"
-                    + self._build_tools_list(self._execution_capability_token.capabilities)
+                    + self._agent_prompt_tools_list(load_agent_config(self._get_workspace_root()))
                 )
             },
             {"role": "user", "content": turn.user_input},
@@ -171,7 +171,7 @@ def _execute_action_rounds(self, turn):
                 {"role": "system", "content": self._workspace_info()},
                 {"role": "system", "content": (
                     GUIDANCE + "\nCurrent agents:\n" + self._delegation_summary() + "\nAvailable read-only tools:\n"
-                    + self._build_tools_list(self._execution_capability_token.capabilities)
+                    + self._agent_prompt_tools_list(load_agent_config(self._get_workspace_root()))
                 )},
                 {"role": "user", "content": turn.user_input},
                 {"role": "assistant", "content": current_reply},
@@ -181,6 +181,23 @@ def _execute_action_rounds(self, turn):
                     f"{completion_instruction}. No changes have been authorized."
                 )},
             ]
+        if self._prompt_profile() == "compact":
+            config = load_agent_config(self._get_workspace_root())
+            summary_messages = [
+                {"role": "system", "content": self._system_prompt(self._agent_prompt_tools_list(config), config)},
+                {"role": "system", "content": self._workspace_info()},
+                {"role": "user", "content": turn.user_input},
+                {"role": "assistant", "content": current_reply},
+                {"role": "user", "content": (
+                    (self._build_task_progress_hint() if turn.interaction_mode == "agent" else "")
+                    + f"Tool results:\n{turn.tool_results_text}\n"
+                    + error_hint + search_throttle
+                    + "Continue with one Action if necessary; otherwise return the result using the current mode's protocol."
+                )},
+            ]
+            memory = self._build_memory_context(turn.user_input, context=turn.memory_context)
+            if memory:
+                summary_messages.insert(2, {"role": "system", "content": memory})
         if distribution_reply is not None:
             step_reply, distribution_reply = distribution_reply, None
         else:
@@ -259,10 +276,7 @@ def _execute_action_rounds(self, turn):
             msg = (
                 f"System: Action '{unknown_action}' is not recognized.\n"
                 "You **must** use one of the following action names exactly:\n"
-                + ", ".join(sorted(
-                    name for name in self.AVAILABLE_TOOLS
-                    if tool_capability(name) in self._execution_capability_token.capabilities
-                )) + "\n"
+                + ", ".join(sorted(self._permitted_tool_names())) + "\n"
                 "Do not invent new names. Output an Action block now."
             )
             # re-prompt the LLM

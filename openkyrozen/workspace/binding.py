@@ -47,6 +47,7 @@ def _set_workspace_root(self, path: str) -> None:
             adapters.set_workspace_root(root)
             adapters.AVAILABLE_TOOLS["check_stored_data"] = self._check_stored_data
             adapters.AVAILABLE_TOOLS["search_memory"] = self._search_memory
+            adapters.AVAILABLE_TOOLS["discover_tools"] = self._discover_tools
             workspace = WorkspaceState(root, adapters)
             self._workspaces[root] = workspace
         if any(session is self.current_session for session in self._sessions.values()):

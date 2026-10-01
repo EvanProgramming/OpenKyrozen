@@ -150,6 +150,8 @@ For project-aware work, use `kyrozen --project /path/to/project` or `kyrozen-web
 
 The runtime currently exposes **45 tools**, including **14 Git tools**. The generated [tool and endpoint inventory](docs/tool-inventory.md) is the source of truth.
 
+An optional [compact prompt and tool discovery profile](docs/prompt-discovery.md) reduces prompt overhead. Its first live DeepSeek/CodeWhale pilot was inconclusive; the default remains `classic`.
+
 ## Documentation
 
 | Need | Read |

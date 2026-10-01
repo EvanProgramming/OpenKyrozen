@@ -9,6 +9,7 @@ _TOOL_CAPABILITIES: dict[str, str] = {
     "search_memory": "read",
     "read_file": "read",
     "calculate": "read",
+    "discover_tools": "read",
     "list_dir": "read",
     "list_tree": "read",
     "find_files": "read",

@@ -32,6 +32,10 @@ The other projects have clear strengths, but those strengths point to different 
 
 That makes OpenKyrozen the better default when the goal is one local agent for coding, research, workspace operations, inspectable memory, and evidence-backed improvement—not only a coding shell or a messaging gateway.
 
+## Live prompt and tool-discovery pilot
+
+A bounded [DeepSeek V4 Flash comparison with installed CodeWhale](prompt-discovery.md#live-pilot-2026-10-01) reached its 100-request cap before completing matched repeats. It does not support a quality or token-savings advantage; compact mode remains optional.
+
 ## Sources and boundaries
 
 The comparison uses current public documentation rather than star counts or marketing claims:
