@@ -21,9 +21,23 @@ def _sanitize_input(self, text: str) -> tuple[str, bool]:
     return text, False
 
 
+def _is_bug_review(self, text: str) -> bool:
+    """Distinguish requested findings/fixes from authorization to repair code."""
+    low = text.strip().lower()
+    review = re.search(r"\b(?:review|audit|inspect|identify|find)\b|审查|审计|检查|分析", low)
+    repair = re.search(r"\b(?:fix|repair|resolve|patch|correct)\b|修复|修改", low)
+    no_edits = re.search(
+        r"\b(?:do not|don't|without|no)\s+(?:edit(?:s|ing)?|change(?:s|ing)?|modify|fix|write)\b\s*"
+        r"(?:(?:anything|(?:any\s+)?(?:code|source|files?))\b|$|[.!])"
+        r"|不要修改(?:代码|文件|任何)|不修改(?:代码|文件)|只审查|仅检查", low)
+    return bool(review and (not repair or no_edits))
+
+
 def _is_bug_report(self, text: str) -> bool:
     """Detect if user input is reporting a bug, error, or unexpected behaviour."""
     low = text.strip().lower()
+    if self._is_bug_review(text):
+        return False
     bug_indicators = [
         "bug", "error", "traceback", "exception", "crash", "broken",
         "doesn't work", "not working", "fails", "failing", "didn't work",

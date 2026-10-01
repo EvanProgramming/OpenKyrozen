@@ -21,6 +21,22 @@ class TUIProtocolTests(unittest.TestCase):
         self.backend._output = self.output
         self.addCleanup(self.backend.stop)
 
+    def test_agent_snapshots_and_large_inspection_stream_in_scoped_chunks(self):
+        agents = [{"run_id": str(index), "name": "Evan" + str(index), "version": 1} for index in range(25)]
+        detail = {**agents[0], "messages": [{"content": "é" * 1000} for _ in range(100)],
+                  "metrics": {"prompt_tokens": 15, "cost_picos": 100}, "api_key": "sk-private"}
+        self.backend.emit("agents", "inspect", agents=agents, detail=detail,
+                          session_id="chat-a", source_scope_id="project-a")
+        lines = self.output.getvalue().splitlines()
+        self.assertTrue(all(len(line.encode()) < tui_backend.MAX_LINE_BYTES for line in lines))
+        events = [json.loads(line) for line in lines]
+        self.assertEqual(sum(event["event"] == "subagent" for event in events), 25)
+        self.assertTrue(all(event["session_id"] == "chat-a" for event in events))
+        reconstructed = json.loads("".join(event["text"] for event in events if event["event"] == "agent_detail"))
+        self.assertEqual(len(reconstructed["messages"]), 100)
+        self.assertEqual(reconstructed["metrics"]["prompt_tokens"], 15)
+        self.assertEqual(reconstructed["api_key"], "<redacted>")
+
     def test_onboarding_provider_prompt_uses_the_complete_registry(self):
         from openkyrozen.providers.registry import PROVIDER_AUTO_SELECTION, PROVIDER_DEFAULT_MODELS
         self.backend._onboarding_kind = "new"

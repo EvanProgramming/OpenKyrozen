@@ -189,6 +189,21 @@ func (m model) activityRail() string {
 		"",
 		sectionStyle.Render(fmt.Sprintf("TASKS  %d", len(m.tasks))),
 	}
+	if len(m.agents) > 0 {
+		agents := m.activityAgents()
+		agentLines := []string{sectionStyle.Render(fmt.Sprintf("AGENTS  %d · /agents", len(agents)))}
+		for index, agent := range agents {
+			if index >= maxInt(1, minInt(3, height/8)) {
+				agentLines = append(agentLines, mutedStyle.Render(fmt.Sprintf("+%d more", len(agents)-index)))
+				break
+			}
+			brief, _ := agent["assignment"].(map[string]any)
+			description := compactText(stringValue(agent, "name")+" · "+stringValue(agent, "profile")+" · "+stringValue(agent, "status"), maxInt(1, textWidth-6))
+			avatar := agentIcon(agent)
+			agentLines = append(agentLines, lipgloss.JoinHorizontal(lipgloss.Top, avatar, " ", description+"\n"+compactText(stringValue(brief, "objective"), maxInt(1, textWidth-6))+"\n"+compactText(stringValue(agent, "provider_model"), maxInt(1, textWidth-6))))
+		}
+		lines = append(agentLines, append([]string{""}, lines...)...)
+	}
 	if len(m.tasks) == 0 {
 		lines = append(lines, mutedStyle.Render("No active tasks"))
 	}

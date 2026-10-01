@@ -73,6 +73,12 @@ OpenKyrozen is built as a broad local workflow: coding, research, workspace tool
 
 Legend: `✅` documented core capability · `🟡` documented but narrower or optional · `❌` not a documented core capability. See the [detailed comparison](docs/comparison.md) for scope and sources.
 
+The main agent automatically delegates suitable work; simple requests can stay direct.
+Sub-agents use parallel assignments, independent contexts and mandatory evidence review.
+Inspect them with `/agents` (or `Ctrl+E` during a running TUI turn). See
+[sub-agent behavior and acceptance evidence](docs/subagents.md) for provider routing,
+permissions, unresolved results and tested limits.
+
 ## The two ideas behind OpenKyrozen
 
 ### 1. Self-learning — the main differentiator
@@ -142,7 +148,7 @@ For project-aware work, use `kyrozen --project /path/to/project` or `kyrozen-web
 - **Learns cautiously:** background learning records evidence-backed proposals and promotes only validated improvements. It does not fine-tune model weights or silently grant permissions.
 - **Works in terminal and web modes:** the terminal UI is the primary experience; FastAPI provides a local web UI, REST API, and streaming endpoint.
 
-The runtime currently exposes **39 tools**, including **14 Git tools**. The generated [tool and endpoint inventory](docs/tool-inventory.md) is the source of truth.
+The runtime currently exposes **45 tools**, including **14 Git tools**. The generated [tool and endpoint inventory](docs/tool-inventory.md) is the source of truth.
 
 ## Documentation
 

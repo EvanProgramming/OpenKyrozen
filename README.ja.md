@@ -93,7 +93,7 @@ kyrozen-web
 - 自己学習は結果の証拠を記録し、検証された改善だけを昇格させます。権限やモデル重みを暗黙に変更しません。
 - Jev Decision は任意の判断レイヤーです。リクエストのルーティング、確認、学習の証拠、メモリの関連性、疑わしいツール出力を確認します。実行や承認は行わず、必要なら棄権します。
 
-現在のランタイムには **39 個のツール**があり、そのうち **Git ツールは 14 個**です。ツール、endpoint、MCP schema の正式な一覧は[生成されたランタイム一覧](docs/tool-inventory.md)です。
+現在のランタイムには **45 個のツール**があり、そのうち **Git ツールは 14 個**です。ツール、endpoint、MCP schema の正式な一覧は[生成されたランタイム一覧](docs/tool-inventory.md)です。
 
 ## ドキュメント
 
@@ -103,6 +103,7 @@ kyrozen-web
 | ランタイムと安全境界 | [アーキテクチャ](docs/architecture.md) |
 | プロバイダー、環境変数、状態 | [設定](docs/configuration.md) |
 | Web、REST、MCP | [API ガイド](docs/api.md) |
+| 自動サブエージェント、独立コンテキスト、相互検証 | [サブエージェントガイド](docs/subagents.md) |
 | 自己学習、メモリ、証拠 | [自己学習ガイド](docs/self-evolution.md) |
 | Jev Decision と校正された証拠 | [Jev Decision](docs/decision-assist-validation.md) · [System One](docs/system-one-benchmark.md) |
 | 他のオープンソースエージェントとの比較 | [比較](docs/comparison.md) |

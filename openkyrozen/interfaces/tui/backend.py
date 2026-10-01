@@ -40,6 +40,17 @@ class Backend:
 
 
     def emit(self, event: str, request_id: str | None = None, **payload: Any) -> None:
+        if event == "agents":
+            agents, detail = payload.pop("agents", []), payload.pop("detail", None)
+            self.emit("agents_reset", request_id, **payload)
+            for agent in agents:
+                self.emit("subagent", request_id, agent=agent, **payload)
+            if detail:
+                text = json.dumps(_safe_json(detail), ensure_ascii=False, indent=2)
+                for offset in range(0, len(text), 8000):
+                    self.emit("agent_detail", request_id, run_id=detail["run_id"],
+                              reset=offset == 0, text=text[offset:offset+8000], **payload)
+            return
         message: dict[str, Any] = {
             "v": PROTOCOL_VERSION,
             "event": event,
@@ -145,6 +156,9 @@ class Backend:
         if self._stopping.is_set():
             return
         self._stopping.set()
+        coordinator = getattr(runtime.subagent_manager, "coordinator", None)
+        if coordinator:
+            coordinator.close()
         with self._approval_lock:
             for waiter, decision in self._pending_approvals.values():
                 decision["approved"] = False

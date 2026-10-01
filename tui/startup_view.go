@@ -46,6 +46,8 @@ func (m model) View() tea.View {
 		content = m.splash()
 	} else if m.screen == screenGraph {
 		content = m.graphExplorer()
+	} else if m.screen == screenAgents {
+		content = m.agentExplorer()
 	} else if m.screen == screenUpdating {
 		content = m.updatingView()
 	} else {

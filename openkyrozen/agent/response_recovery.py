@@ -8,6 +8,26 @@ from openkyrozen.security.tool_policy import tool_capability
 
 def _observe_turn_response(self, turn, text: str, context: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
     """Parse once, with one side-effect-free repair for malformed interaction JSON."""
+    from openkyrozen.agent.delegation import TOOLS
+    # Delegation owns its durable lifecycle. Repair conflicting sequential plans
+    # before the observer can create task rows or execute their first Action.
+    for attempt in range(3):
+        preview = self._parse_model_response(text)
+        delegation_steps = re.search(r"\b(?:spawn_agents|wait_subagents|send_subagent|spawn|delegate|delegation)\b",
+                                     re.split(r"TaskList\s*:", text, maxsplit=1, flags=re.IGNORECASE)[-1], re.IGNORECASE)
+        if not (preview["has_tasklist"] and (delegation_steps or any(call.get("action") in TOOLS for call in preview["tool_calls"]))):
+            break
+        if attempt == 2:
+            preview.update(tool_calls=[], protocol_error="Delegation was combined with a sequential task list after two repairs; no action was executed.",
+                           define_tool_present=False, define_tool_registered=False)
+            return text, preview
+        context = context + [{"role": "assistant", "content": text}, {"role": "user", "content":
+            "Delegated assignments and reviews already have a durable lifecycle. No action was executed. "
+            "Emit the delegation Action only, retaining its assignments and JSON-string args if supplied; otherwise create complete assignment briefs from the original task. "
+            "Do not include Plan, TaskList or TaskDone. If separate direct parent work is needed, plan those concrete tool actions in a later response."}]
+        text = self._call_llm_with_spinner(context).strip()
+        turn.turn_prompt_total += self._last_prompt_tokens
+        turn.turn_completion_total += self._last_completion_tokens
     fast_mode = self.fast_mode
     parsed = self._observe_model_response(text)
     if (not turn.auto_clarified and turn.fast_backend != "off" and not self._interaction_controller.state().get("executing_plan")
@@ -113,7 +133,7 @@ def _recover_plan_response(self, turn, text: str, parsed: dict[str, Any],
 
     def normalize_structured_prose(candidate_text: str,
                                    candidate: dict[str, Any]) -> dict[str, Any]:
-        if (not inspection_complete or candidate.get("protocol_error")
+        if (turn.interaction_mode != "plan" or not inspection_complete or candidate.get("protocol_error")
                 or candidate.get("tool_calls") or candidate.get("question") is not None
                 or candidate.get("plan_proposal") is not None):
             return candidate

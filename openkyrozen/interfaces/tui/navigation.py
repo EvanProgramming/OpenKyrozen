@@ -179,3 +179,5 @@ def _emit_bound_state(self, request_id: str) -> None:
               workspace=str(context.active_root), mode=context.mode,
               session_id=self._active_session_id)
     self.usage(request_id)
+    self.emit("agents", request_id, agents=runtime.delegation().snapshot(),
+              session_id=runtime.current_session.session_id, source_scope_id=runtime.memory_bank.file_scope_id)

@@ -93,7 +93,7 @@ kyrozen-web
 - 自学习记录结果证据，只提升经过验证的改进，不会偷偷增加权限或修改模型权重。
 - Jev Decision 是可选的判断层：检查请求路由、澄清、学习证据、记忆相关性和可疑工具输出；它可以弃权，不会执行或批准工具。
 
-当前运行时提供 **39 个工具**，其中包括 **14 个 Git 工具**。完整的工具、endpoint 和 MCP schema 以[生成的运行时清单](docs/tool-inventory.md)为准。
+当前运行时提供 **45 个工具**，其中包括 **14 个 Git 工具**。完整的工具、endpoint 和 MCP schema 以[生成的运行时清单](docs/tool-inventory.md)为准。
 
 ## 文档
 
@@ -103,6 +103,7 @@ kyrozen-web
 | 运行时流程和安全边界 | [架构](docs/architecture.md) |
 | 服务商、环境变量和状态目录 | [配置](docs/configuration.md) |
 | Web、REST 和 MCP | [API 指南](docs/api.md) |
+| 自动子智能体、独立上下文与交叉验证 | [子智能体指南](docs/subagents.md) |
 | 自学习、记忆和证据 | [自学习指南](docs/self-evolution.md) |
 | Jev Decision 与校准证据 | [Jev Decision](docs/decision-assist-validation.md) · [System One](docs/system-one-benchmark.md) |
 | 与其他开源智能体比较 | [比较](docs/comparison.md) |

@@ -159,11 +159,14 @@ class DynamicToolTests(unittest.TestCase):
         original_root = main._get_workspace_root()
         original_execution_surface = main._EXECUTION_SURFACE
         original_surface_capabilities = main._surface_capabilities
-        with tempfile.TemporaryDirectory() as directory:
+        original_graph, original_github, original_launch = main._project_graph, main._github_cli, main._launch_context
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as state_directory:
             root = Path(directory)
             main.memory_bank = MemoryBank(root / "state.sqlite3")
             main.tasks = TaskManager(main.memory_bank.store, workspace_id="dynamic", session_id="web")
-            main.configure_launch_context(project_path=root)
+            from openkyrozen.workspace.context import resolve_launch_context
+            main._set_launch_context(resolve_launch_context(project_path=root, home=state_directory))
+            main._project_graph.refresh_async = lambda **_: False
             main._EXECUTION_SURFACE = "web"
             main._surface_capabilities = "full"
             session_id = "dynamic-web-test"
@@ -211,6 +214,7 @@ class DynamicToolTests(unittest.TestCase):
                 main.tasks = original_tasks
                 main._EXECUTION_SURFACE = original_execution_surface
                 main._surface_capabilities = original_surface_capabilities
+                main._project_graph, main._github_cli, main._launch_context = original_graph, original_github, original_launch
                 main._set_workspace_root(original_root)
                 main.AVAILABLE_TOOLS.clear()
                 main.AVAILABLE_TOOLS.update(original_tools)

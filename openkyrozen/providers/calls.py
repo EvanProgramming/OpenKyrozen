@@ -11,10 +11,11 @@ from openkyrozen.agent.types import ContextOverflowError, ProviderUnavailableErr
 
 
 def _provider_timeout_seconds(self) -> float:
+    default = 180.0 if self.execution_context.child_run_id else 90.0
     try:
-        return max(1.0, min(float(os.environ.get("KYROZEN_PROVIDER_TIMEOUT_SECONDS", "90")), 600.0))
+        return max(1.0, min(float(os.environ.get("KYROZEN_PROVIDER_TIMEOUT_SECONDS", str(default))), 600.0))
     except ValueError:
-        return 90.0
+        return default
 
 
 def _bounded_provider_call(self, callback: Any) -> Any:
@@ -40,7 +41,8 @@ def _bounded_provider_call(self, callback: Any) -> Any:
 
 def _get_llm_response(self, messages: list[dict[str, str]], model: str | None = None, stream: bool = False,
                       on_chunk: Any = None, on_stream_end: Any = None) -> str:
-    if self.llm_provider is None:
+    provider = self.execution_context.provider or self.llm_provider
+    if provider is None:
         raise ProviderUnavailableError(self.PROVIDER_UNAVAILABLE_MESSAGE)
     provider_reported_usage = False
     try:
@@ -48,13 +50,13 @@ def _get_llm_response(self, messages: list[dict[str, str]], model: str | None = 
                 store=self.memory_bank.store, user_id=self.memory_bank.user_id,
                 workspace_id=self.memory_bank.workspace_id, session_id=self.memory_bank.session_id,
                 run_id=self._active_usage_run_id.get(), surface=self._EXECUTION_SURFACE):
-            if stream and hasattr(self.llm_provider, 'chat_stream'):
+            if stream and hasattr(provider, 'chat_stream'):
                 before = self.memory_bank.store.usage_totals(
                     user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
                     session_id=self.memory_bank.session_id, run_id=self._active_usage_run_id.get(),
                 )
                 collected: list[str] = []
-                for chunk in self.llm_provider.chat_stream(messages, model or self.DEEPSEEK_MODEL):
+                for chunk in provider.chat_stream(messages, model or self.DEEPSEEK_MODEL):
                     if str(chunk).startswith("[Ollama Error]") and self._is_context_overflow_error(RuntimeError(str(chunk))):
                         raise RuntimeError(str(chunk))
                     collected.append(chunk)
@@ -70,13 +72,14 @@ def _get_llm_response(self, messages: list[dict[str, str]], model: str | None = 
                 )
                 self._last_prompt_tokens = max(0, int(after["prompt_tokens"]) - int(before["prompt_tokens"]))
                 self._last_completion_tokens = max(0, int(after["completion_tokens"]) - int(before["completion_tokens"]))
-                self._total_prompt_tokens += self._last_prompt_tokens
-                self._total_completion_tokens += self._last_completion_tokens
+                if not self.execution_context.child_run_id:
+                    self._total_prompt_tokens += self._last_prompt_tokens
+                    self._total_completion_tokens += self._last_completion_tokens
                 if on_stream_end:
                     on_stream_end()
             else:
                 text, usage_dict = self._bounded_provider_call(
-                    lambda: self.llm_provider.chat(messages, model or self.DEEPSEEK_MODEL)
+                    lambda: provider.chat(messages, model or self.DEEPSEEK_MODEL)
                 )
                 if (isinstance(text, str) and text.startswith("[Ollama Error]")
                         and self._is_context_overflow_error(RuntimeError(text))):
@@ -84,8 +87,9 @@ def _get_llm_response(self, messages: list[dict[str, str]], model: str | None = 
                 if usage_dict:
                     self._last_prompt_tokens = usage_dict.get("prompt_tokens", 0)
                     self._last_completion_tokens = usage_dict.get("completion_tokens", 0)
-                    self._total_prompt_tokens += self._last_prompt_tokens
-                    self._total_completion_tokens += self._last_completion_tokens
+                    if not self.execution_context.child_run_id:
+                        self._total_prompt_tokens += self._last_prompt_tokens
+                        self._total_completion_tokens += self._last_completion_tokens
                     provider_reported_usage = not bool(usage_dict.get("_estimated"))
                 else:
                     self._last_prompt_tokens = 0

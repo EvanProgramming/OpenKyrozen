@@ -42,7 +42,7 @@ class OpenAICompatProvider(LLMProvider):
         usage_dict = None
         if usage is not None:
             usage_dict = _openai_usage_dict(usage)
-        usage_ledger._track_cost(self.config.provider, usage_dict, model=model,
+        usage_ledger._track_cost(self.config.provider, usage_dict, model=getattr(response, "model", None) or model,
                     latency_ms=round((time.monotonic() - started) * 1000))
         return text.strip(), usage_dict
 
@@ -123,7 +123,7 @@ class OpenAIResponsesProvider(LLMProvider):
             lambda: self._client.responses.create(model=model, input=messages),
         )
         usage = self._usage(response)
-        usage_ledger._track_cost(self.config.provider, usage, model=model,
+        usage_ledger._track_cost(self.config.provider, usage, model=getattr(response, "model", None) or model,
                     latency_ms=round((time.monotonic() - started) * 1000))
         return str(getattr(response, "output_text", "") or "").strip(), usage
 

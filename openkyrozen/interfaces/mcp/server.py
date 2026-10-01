@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import asyncio
 from typing import Any
 from openkyrozen.tools import tool_capability
 from openkyrozen.security.capabilities import issue_capability_token
@@ -227,16 +228,20 @@ async def mcp_endpoint(self, request: Request):
             service._agent._notify_tool_execute(tool_name, tool_args, f"Error: invalid params: {e}")
             return service._mcp_error(request_id, -32602, f"Invalid params: {e}")
         try:
-            with service._chat_lock:
+            def execute():
                 runtime = service._agent
-                session = runtime.open_session("surface:mcp", user_id=service._SERVER_ACTOR_ID)
-                receipt = runtime.execute(session, tool_name, string_args, capabilities=service._server_capabilities("mcp"), operation_scope=f"mcp:{request_id}")
+                session_id = service._normalise_session_id(params.get("session_id") or "surface:mcp")
+                session = runtime.open_session(session_id, user_id=service._SERVER_ACTOR_ID)
+                return runtime.execute(session, tool_name, string_args, capabilities=service._server_capabilities("mcp"), operation_scope=f"mcp:{request_id}")
+            receipt = await asyncio.to_thread(execute)
             result_text = receipt.result
+            is_error = not receipt.success
         except Exception as e:
             result_text = f"Error: {e}"
+            is_error = True
         return service._mcp_response(request_id, result={
             "content": [{"type": "text", "text": result_text}],
-            "isError": service._agent._is_tool_error(result_text),
+            "isError": is_error,
         })
     if method == "chat/send":
         try:

@@ -94,6 +94,7 @@ def _default_config() -> dict[str, Any]:
         # Full is only the role's upper bound.  The runtime still intersects
         # this set with the surface capability token and approval policy.
         "capabilities": ["full"],
+        "subagents": {"concurrency": 4, "roles": {}},
     }
 
 
@@ -134,7 +135,7 @@ def _text(value: Any, location: str, *, required: bool = False, limit: int = _MA
 
 def _validate_layer(raw: Any, *, source: str, partial: bool) -> dict[str, Any]:
     data = _require_mapping(raw, source)
-    _reject_unknown(data, {"version", "provider", "role", "instructions", "examples", "capabilities"}, source)
+    _reject_unknown(data, {"version", "provider", "role", "instructions", "examples", "capabilities", "subagents"}, source)
     result: dict[str, Any] = {}
 
     if "version" in data:
@@ -208,6 +209,29 @@ def _validate_layer(raw: Any, *, source: str, partial: bool) -> dict[str, Any]:
             validated_capabilities.append(item)
         result["capabilities"] = list(dict.fromkeys(validated_capabilities))
 
+    if "subagents" in data:
+        agents = _require_mapping(data["subagents"], f"{source}.subagents")
+        _reject_unknown(agents, {"concurrency", "roles"}, f"{source}.subagents")
+        validated = {}
+        if "concurrency" in agents:
+            count = agents["concurrency"]
+            if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 64:
+                raise AgentConfigError("subagents.concurrency must be an integer from 1 to 64 (not a total-agent limit)")
+            validated["concurrency"] = count
+        if "roles" in agents:
+            roles = _require_mapping(agents["roles"], "subagents.roles")
+            validated["roles"] = {}
+            for name, settings in roles.items():
+                if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{2,48}", name):
+                    raise AgentConfigError("Invalid sub-agent role name")
+                settings = _require_mapping(settings, "subagents.roles." + name)
+                _reject_unknown(settings, {"provider", "model"}, "subagents.roles." + name)
+                values = {key: _text(value, "subagents.roles." + name + "." + key, required=True, limit=200)
+                          for key, value in settings.items()}
+                if "provider" in values and values["provider"] not in SUPPORTED_PROVIDERS:
+                    raise AgentConfigError("Unknown sub-agent provider")
+                validated["roles"][name] = values
+        result["subagents"] = validated
     return result
 
 

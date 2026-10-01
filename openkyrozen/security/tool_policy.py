@@ -3,9 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 _TOOL_CAPABILITIES: dict[str, str] = {
+    "spawn_agents": "read", "send_subagent": "read", "list_subagents": "read",
+    "wait_subagents": "read", "cancel_subagent": "read",
     "check_stored_data": "read",
     "search_memory": "read",
     "read_file": "read",
+    "calculate": "read",
     "list_dir": "read",
     "list_tree": "read",
     "find_files": "read",

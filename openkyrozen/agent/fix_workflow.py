@@ -17,15 +17,17 @@ def _fix_feedback_signal(self, text: str) -> str | None:
     return "success" if positive else "failure"
 
 
-def _fix_safe_text(self, value: Any, limit: int = 500) -> str:
+def _fix_safe_text(self, value: Any, limit: int = 500, *, preserve_lines: bool = False) -> str:
     """Bound and redact fix-workflow diagnostics before persisting them."""
     text = str(value or "")
+    text = re.sub(r'(?i)("(?:api[_-]?key|password|secret|token|authorization)"\s*:\s*")[^"]*', r'\1<redacted>', text)
+    text = re.sub(r"(?i)(Bearer\s+)\S+", r"\1<redacted>", text)
     text = re.sub(
         r"(?i)((?:api[_-]?key|password|secret|token)\s*[:=])\s*\S+",
         r"\1<redacted>", text,
     )
     text = re.sub(r"\bsk-[A-Za-z0-9_-]+", "<redacted>", text)
-    return text.replace("\n", " ")[:limit]
+    return (text if preserve_lines else text.replace("\n", " "))[:limit]
 
 
 def _fix_scope_kwargs(self) -> dict[str, Any]:
@@ -97,6 +99,8 @@ def _start_fix_workflow(self, user_input: str) -> dict[str, Any]:
 
 def _prepare_fix_workflow(self, user_input: str) -> dict[str, Any] | None:
     """Start a new bug attempt or recover the active scoped attempt."""
+    if self._is_bug_review(user_input):
+        return None
     latest = self._latest_fix_workflow()
     signal = self._fix_feedback_signal(user_input)
     if latest and str(latest.get("stage")) not in self._FIX_TERMINAL_STAGES:
@@ -246,6 +250,8 @@ def _advance_fix_workflow(self, state: dict[str, Any] | None, user_input: str, p
 
 def _track_fix_outcome(self, user_input: str, agent_reply: str) -> None:
     """Persist every fix turn and attach explicit feedback to its attempt."""
+    if self._is_bug_review(user_input):
+        return
     state = self._latest_fix_workflow()
     signal = self._fix_feedback_signal(user_input)
     turn_payload = {

@@ -178,52 +178,50 @@ class ServerBoundaryTests(unittest.TestCase):
             self.assertNotIn("ValueError", response.text)
 
     def test_subagent_api_executes_allowed_file_action_and_rejects_disallowed_action(self):
+        from test_delegation import brief, result, reviewed
+        from openkyrozen.providers.config import ProviderConfig
         client = TestClient(server.app)
+        runtime = server._agent
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            manager = SubAgentManager(
-                MemoryBank(root / "state.sqlite3", user_id="local",
-                           workspace_id=server._agent.memory_bank.workspace_id),
-                runner=server._agent._run_subagent_llm,
-            )
-            original_manager = server._agent.subagent_manager
-            original_root = server._agent._get_workspace_root()
-            server._agent.subagent_manager = manager
-            server._agent._set_workspace_root(root)
+            original_root = runtime._get_workspace_root()
+            runtime._set_workspace_root(root)
             responses = [
                 'Action: {"action":"write_file","args":"allowed.txt|created"}',
-                "Allowed file operation completed.",
+                json.dumps(result("Created allowed.txt")),
+                'Action: {"action":"read_file","args":"allowed.txt"}',
+                json.dumps(reviewed()),
                 'Action: {"action":"write_file","args":"denied.txt|must not write"}',
-                "The write was rejected by the reviewer profile.",
+                json.dumps(result("Write denied", status="blocked")),
             ]
             try:
-                with patch.object(server._agent, "_get_llm_response", side_effect=responses):
+                with (patch.object(runtime, "_get_llm_response", side_effect=responses),
+                      patch.object(runtime, "get_provider", return_value=object()),
+                      patch.object(runtime, "_provider_config", ProviderConfig(provider="deepseek", api_key="fixture-key"))):
                     allowed = client.post("/api/v2/agents/run", json={
-                        "profile": "coder", "task": "Create allowed.txt",
+                        "profile": "coder", "task": "Create allowed.txt", "session_id": "delegation-api-test",
+                        "assignment": brief(0, scope=["allowed.txt"]),
                     })
                     denied = client.post("/api/v2/agents/run", json={
-                        "profile": "reviewer", "task": "Create denied.txt",
+                        "profile": "reviewer", "task": "Create denied.txt", "session_id": "delegation-api-test",
+                        "assignment": brief(1, scope=["denied.txt"]),
                     })
+                    self.assertEqual(allowed.status_code, 200, allowed.text)
+                    self.assertEqual(allowed.json()["status"], "succeeded")
+                    self.assertTrue((root / "allowed.txt").is_file())
+                    self.assertTrue(allowed.json()["tool_receipts"][0]["success"])
+                    self.assertEqual(denied.status_code, 200, denied.text)
+                    self.assertFalse((root / "denied.txt").exists())
+                    self.assertEqual(denied.json()["status"], "blocked")
+                    self.assertFalse(denied.json()["tool_receipts"][0]["authorized"])
+                    runs = client.get("/api/v2/agents/runs", params={"session_id": "delegation-api-test"})
+                    self.assertEqual(len(runs.json()["agents"]), 2)
+                    url = "/api/v2/agents/runs/" + allowed.json()["run_id"]
+                    self.assertEqual(client.get(url, params={"session_id": "other-chat"}).status_code, 404)
+                    self.assertEqual(client.get(url, params={"session_id": "delegation-api-test"}).status_code, 200)
+                    self.assertEqual(client.post(url + "/cancel", params={"session_id": "delegation-api-test"}).status_code, 200)
             finally:
-                server._agent.subagent_manager = original_manager
-                server._agent._set_workspace_root(original_root)
-            self.assertEqual(allowed.status_code, 200, allowed.text)
-            self.assertTrue((root / "allowed.txt").is_file())
-            self.assertTrue(allowed.json()["tool_receipts"][0]["success"])
-            self.assertEqual(denied.status_code, 200, denied.text)
-            self.assertFalse((root / "denied.txt").exists())
-            self.assertFalse(denied.json()["tool_receipts"][0]["success"])
-            self.assertFalse(denied.json()["tool_receipts"][0]["authorized"])
-            completed = next(event for event in manager.memory.store.list_events(
-                "subagent.completed", workspace_id=server._agent.memory_bank.workspace_id,
-                session_id=allowed.json()["run_id"], limit=10,
-            ))
-            self.assertEqual(completed["payload"]["metrics"], allowed.json()["metrics"])
-            events = manager.memory.store.list_events(
-                workspace_id=server._agent.memory_bank.workspace_id,
-                session_id=denied.json()["run_id"], limit=20,
-            )
-            self.assertTrue(any(event["event_type"] == "subagent.tool_failed" for event in events))
+                runtime._set_workspace_root(original_root)
 
     def test_mcp_jsonrpc_initialize_discover_list_and_call_sequence(self):
         client = TestClient(server.app)

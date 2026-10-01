@@ -13,6 +13,55 @@ func stringValue(event map[string]any, key string) string {
 
 func (m *model) handleBackendEvent(event backendEvent) {
 	switch stringValue(event, "event") {
+	case "agents_reset", "agent_detail":
+		if session := stringValue(event, "session_id"); session != "" && m.activeSessionID != "" && session != m.activeSessionID {
+			return
+		}
+		if scope := stringValue(event, "source_scope_id"); scope != "" && m.activeScopeID != "" && scope != m.activeScopeID {
+			return
+		}
+		if stringValue(event, "event") == "agents_reset" {
+			m.agents = nil
+		} else {
+			for _, agent := range m.agents {
+				if stringValue(agent, "run_id") == stringValue(event, "run_id") {
+					if reset, _ := event["reset"].(bool); reset {
+						agent["detail_text"] = ""
+					}
+					agent["detail_text"] = stringValue(agent, "detail_text") + stringValue(event, "text")
+				}
+			}
+		}
+	case "agents":
+		if scope := stringValue(event, "source_scope_id"); scope != "" && m.activeScopeID != "" && scope != m.activeScopeID {
+			return
+		}
+		if session := stringValue(event, "session_id"); session != "" && m.activeSessionID != "" && session != m.activeSessionID {
+			return
+		}
+		m.agents = nil
+		if agents, ok := event["agents"].([]any); ok {
+			for _, value := range agents {
+				if agent, ok := value.(map[string]any); ok {
+					m.agents = append(m.agents, agent)
+				}
+			}
+		}
+		if detail, ok := event["detail"].(map[string]any); ok {
+			m.updateAgent(detail)
+		}
+		m.agentSelected = minInt(m.agentSelected, maxInt(0, len(m.agents)-1))
+	case "subagent":
+		if scope := stringValue(event, "source_scope_id"); scope != "" && m.activeScopeID != "" && scope != m.activeScopeID {
+			return
+		}
+		if session := stringValue(event, "session_id"); session != "" && m.activeSessionID != "" && session != m.activeSessionID {
+			return
+		}
+		if agent, ok := event["agent"].(map[string]any); ok {
+			m.updateAgent(agent)
+			m.agentSelected = minInt(m.agentSelected, maxInt(0, len(m.agents)-1))
+		}
 	case "status":
 		state := stringValue(event, "state")
 		m.status = firstNonEmpty(stringValue(event, "message"), state)
@@ -31,6 +80,10 @@ func (m *model) handleBackendEvent(event backendEvent) {
 			m.busy = state == "thinking"
 		}
 	case "ready":
+		if session := stringValue(event, "session_id"); session != "" && session != m.activeSessionID {
+			m.agents = nil
+			m.agentSelected, m.agentScroll = 0, 0
+		}
 		m.provider = stringValue(event, "provider")
 		m.modelName = stringValue(event, "model")
 		m.workspace = stringValue(event, "workspace")
@@ -267,6 +320,10 @@ func parseTasks(value any) []taskItem {
 }
 
 func (m *model) applyNavigation(event backendEvent) {
+	if stringValue(event, "active_session_id") != m.activeSessionID || stringValue(event, "active_scope_id") != m.activeScopeID {
+		m.agents = nil
+		m.agentSelected, m.agentScroll = 0, 0
+	}
 	m.activeSessionID = stringValue(event, "active_session_id")
 	m.activeScopeID = stringValue(event, "active_scope_id")
 	m.workspace = firstNonEmpty(stringValue(event, "workspace"), m.workspace)
@@ -388,6 +445,9 @@ func (m *model) handlePrompt(event backendEvent) {
 	case "graph":
 		m.screen = screenGraph
 		m.startTransition()
+	case "agents":
+		m.screen = screenAgents
+		m.agentScroll = 0
 	case "github_auth":
 		m.githubBinary = stringValue(event, "binary")
 		m.githubHostname = firstNonEmpty(stringValue(event, "hostname"), "github.com")

@@ -118,6 +118,8 @@ def initialise(self):
 
     self._UNSUPPORTED_ACTION_PROTOCOL_RE = re.compile(
         r"(?is)<\s*ssai_action\b[^>]*>(?:[\s\S]*?</\s*ssai_action\s*>|[\s\S]*\Z)"
+        r"|<\s*details\b[^>]*>\s*<\s*summary\b[^>]*>\s*Action\s*:[\s\S]*?(?:</\s*details\s*>|\Z)"
+        r"|<\s*(tool_calls|function_calls|invoke)\b[^>]*>[\s\S]*?(?:</\s*\1\s*>|\Z)"
     )
 
     self._UNSUPPORTED_ACTION_PROTOCOL_MESSAGE = (
@@ -274,7 +276,7 @@ def initialise(self):
     ]
 
     self._BUILTIN_TOOL_NAMES = {
-        "write_file","read_file","run_cmd","search_web","find_files","list_dir",
+        "write_file","read_file","calculate","run_cmd","search_web","find_files","list_dir",
         "git_clone","git_status","execute_terminal_command","analyze_remote_repo",
         "list_tree","read_webpage","check_stored_data","search_memory",
         "git_diff","git_log","git_branch","git_add","git_commit",

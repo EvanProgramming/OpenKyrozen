@@ -35,6 +35,7 @@ class SubAgentManager:
         self.runner = runner
         self.learning_engine = learning_engine
         self.provider_model = provider_model
+        self.coordinator = None
         self.profiles: dict[str, AgentProfile] = {}
         self.register(AgentProfile("researcher", "Research the task, cite evidence, and separate facts from assumptions.", "readonly"))
         self.register(AgentProfile("coder", "Inspect and modify code only when requested; verify every change.", "workspace"))

@@ -22,6 +22,9 @@ def _load_runtime() -> tuple[dict[str, Any], Any, Any]:
     from openkyrozen.interfaces.web.service import WebService
     tools = ToolAdapters().AVAILABLE_TOOLS
     tools.update(check_stored_data=_check_stored_data, search_memory=_search_memory)
+    from openkyrozen.agent import delegation_runtime
+    from openkyrozen.agent.delegation import TOOLS
+    tools.update({name: getattr(delegation_runtime, name) for name in TOOLS})
     return tools, WebService(), tool_capability
 
 

@@ -186,6 +186,10 @@ print("installed artifact auth/task behavior passed")
         )
         if "Agent workflow acceptance passed." not in acceptance.stdout:
             raise RuntimeError(f"installed agent workflow acceptance failed:\n{acceptance.stdout}{acceptance.stderr}")
+        subagents = _run([str(python), str(ROOT / "scripts" / "subagent_workflow_acceptance.py")],
+                         cwd=caller, env=acceptance_env)
+        if "Sub-agent workflow acceptance passed." not in subagents.stdout:
+            raise RuntimeError("Installed sub-agent acceptance failed")
 
         sdist_venv = root / "sdist-venv"
         _run([sys.executable, "-m", "venv", str(sdist_venv)], cwd=caller, env=base_env)

@@ -59,6 +59,9 @@ def build_application(*, surface="cli", memory=None, tools=None, user_id="local"
             if callable(function) and getattr(function, "__module__", "") == module.__name__:
                 setattr(runtime, name, MethodType(function, runtime))
     initialise(runtime)
+    import threading
+    runtime._delegation_lock = threading.RLock()
+    runtime._workspace_access = {}
     runtime.subagent_manager = SubAgentManager(
         runtime.memory_bank, runner=runtime._run_subagent_llm,
         learning_engine=runtime.learning_engine, provider_model=runtime._subagent_provider_model,

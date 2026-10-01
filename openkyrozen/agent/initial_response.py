@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import time
+import re
 from openkyrozen.app.config import load_agent_config
 from openkyrozen.security.tool_policy import tool_capability
 
 def _initial_turn_response(self, turn):
+    from openkyrozen.agent.delegation import TOOLS
     MAX_RETRIES = 3
     turn.auto_clarified = False
     messages = self._build_messages(turn.user_input, turn.learned_context, turn.memory_context)
@@ -94,7 +96,11 @@ def _initial_turn_response(self, turn):
 
     # ---- Plan enforcement: MEDIUM and COMPLEX only ----
     _llm_has_plan = response_meta["has_plan"]
-    if turn.interaction_mode == "agent" and turn.complexity in ("medium", "complex"):
+    delegated = any(call.get("action") in TOOLS for call in turn.tool_calls) or bool(
+        response_meta["has_plan"] and re.search(
+            r"\b(?:spawn_agents|send_subagent|wait_subagents)\b|\b(?:spawn|delegate)\b[^\n]*\b(?:agents?|specialists?|assignments?|workers?)\b",
+            turn.response_text, re.IGNORECASE))
+    if turn.interaction_mode == "agent" and turn.complexity in ("medium", "complex") and not delegated:
         plan_attempts = 0
         while not _llm_has_plan and turn.tool_calls and plan_attempts < 2:
             plan_attempts += 1
@@ -124,7 +130,7 @@ def _initial_turn_response(self, turn):
 
     # ---- TaskList enforcement: COMPLEX only ----
     _llm_has_tasklist = response_meta["has_tasklist"]
-    if turn.interaction_mode == "agent" and turn.complexity == "complex" and turn.tool_calls:
+    if turn.interaction_mode == "agent" and turn.complexity == "complex" and turn.tool_calls and not delegated:
         if not _llm_has_tasklist and _llm_has_plan:
             self._tasks_from_plan(turn.response_text)
             if self.tasks.tasks:

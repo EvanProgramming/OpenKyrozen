@@ -34,6 +34,10 @@ class ExecutionContext:
     capability_token: Any = None
     last_prompt_tokens: int = 0
     last_completion_tokens: int = 0
+    provider: Any = None
+    provider_config: Any = None
+    child_run_id: str | None = None
+    coordinator: Any = None
 
 
 def scoped_turn(function):

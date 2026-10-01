@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from collections import ChainMap
 from contextlib import contextmanager
 from contextvars import ContextVar
 from .models import AgentSession, WorkspaceState
@@ -162,6 +163,12 @@ class AgentRuntime:
         _run_subagent_llm,
         _subagent_provider_model,
     )
+    from openkyrozen.agent.delegation_runtime import (
+        _plan_delegation,
+        delegation, _invoke_delegated, spawn_agents, send_subagent, list_subagents,
+        wait_subagents, cancel_subagent, _delegation_summary,
+        _delegation_tool_access,
+    )
 
     # memory.retrieval
     from openkyrozen.memory.retrieval import (
@@ -225,7 +232,7 @@ class AgentRuntime:
     from openkyrozen.security.untrusted_input import (
         _detect_prompt_injection,
         _sanitize_input,
-        _is_bug_report,
+        _is_bug_report, _is_bug_review,
         _is_question,
     )
 
@@ -274,9 +281,10 @@ class AgentRuntime:
     def open_session(self, session_id, *, user_id=None):
         owner = user_id or self.memory_bank.user_id
         key = (owner, self.interaction_workspace_id(), session_id, self.current_session.workspace.root)
-        if key not in self._sessions or self._sessions[key].memory.store is not self.memory_bank.store:
-            self._sessions[key] = self._create_session(session_id, owner, self.current_session.workspace, key[1])
-        return self._sessions[key]
+        with self._delegation_lock:
+            if key not in self._sessions or self._sessions[key].memory.store is not self.memory_bank.store:
+                self._sessions[key] = self._create_session(session_id, owner, self.current_session.workspace, key[1])
+            return self._sessions[key]
 
     def _create_session(self, session_id, owner, workspace, interaction_scope):
         memory = self.memory_bank.scoped(user_id=owner, session_id=session_id, file_scope_id=self.source_scope_id(workspace.root))
@@ -296,6 +304,7 @@ class AgentRuntime:
             session.learning.store = memory.store
             session.learning.registry = session.skills
         session.subagents = copy.copy(self.subagent_manager)
+        session.subagents.coordinator = None
         session.subagents.memory = memory
         session.subagents.learning_engine = session.learning
         if hasattr(session.subagents, "profiles"):
@@ -322,7 +331,9 @@ class AgentRuntime:
 
     @property
     def AVAILABLE_TOOLS(self):
-        return self.current_session.workspace.adapters.AVAILABLE_TOOLS
+        from .delegation import TOOLS
+        orchestration = {} if self.execution_context.child_run_id else {name: getattr(self, name) for name in TOOLS}
+        return ChainMap(self.current_session.workspace.adapters.AVAILABLE_TOOLS, orchestration)
 
     @AVAILABLE_TOOLS.setter
     def AVAILABLE_TOOLS(self, value):

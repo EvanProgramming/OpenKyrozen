@@ -104,6 +104,9 @@ class WebService:
         self.app.post('/api/v2/skills/{skill_id}/rollback', dependencies=[Depends(self.require_api_access)])(self.api_v2_rollback_skill)
         self.app.get('/api/v2/agents', dependencies=[Depends(self.require_api_access)])(self.api_v2_agents)
         self.app.post('/api/v2/agents/run', dependencies=[Depends(self.require_api_access)])(self.api_v2_run_agent)
+        self.app.get('/api/v2/agents/runs', dependencies=[Depends(self.require_api_access)])(self.api_v2_agent_runs)
+        self.app.get('/api/v2/agents/runs/{run_id}', dependencies=[Depends(self.require_api_access)])(self.api_v2_agent_detail)
+        self.app.post('/api/v2/agents/runs/{run_id}/cancel', dependencies=[Depends(self.require_api_access)])(self.api_v2_agent_cancel)
         self.app.get('/api/cost', dependencies=[Depends(self.require_api_access)])(self.api_cost)
         self.app.post('/api/cost/reset', dependencies=[Depends(self.require_api_access)])(self.api_cost_reset)
         self.app.get('/api/health', dependencies=[Depends(self.require_api_access)])(self.api_health)
@@ -150,7 +153,7 @@ class WebService:
 
     from openkyrozen.interfaces.web.memory import (api_memory, api_v2_memory, api_v2_memory_claims, api_v2_create_memory_claim, api_v2_memory_claim, api_v2_memory_forget_claim)
 
-    from openkyrozen.interfaces.web.learning import (api_v2_learning, api_v2_learning_metrics, api_v2_learning_features, api_v2_learning_provider, api_v2_learning_evidence, api_v2_learning_replay, api_v2_learning_omission, api_v2_learning_retire, api_v2_learning_restore, api_v2_learning_export_capsule, api_v2_learning_import_capsule, api_v2_learning_constitution, api_v2_learning_rollback, api_v2_skills, api_v2_install_skill, api_v2_activate_skill, api_v2_rollback_skill, api_v2_agents, api_v2_run_agent)
+    from openkyrozen.interfaces.web.learning import (api_v2_learning, api_v2_learning_metrics, api_v2_learning_features, api_v2_learning_provider, api_v2_learning_evidence, api_v2_learning_replay, api_v2_learning_omission, api_v2_learning_retire, api_v2_learning_restore, api_v2_learning_export_capsule, api_v2_learning_import_capsule, api_v2_learning_constitution, api_v2_learning_rollback, api_v2_skills, api_v2_install_skill, api_v2_activate_skill, api_v2_rollback_skill, api_v2_agents, api_v2_run_agent, api_v2_agent_runs, api_v2_agent_detail, api_v2_agent_cancel)
 
     from openkyrozen.interfaces.web.history import (api_v2_events, api_v2_session_history, api_v2_session_history_rollback, api_v2_sessions, api_v2_session)
 

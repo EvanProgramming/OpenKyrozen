@@ -11,6 +11,8 @@ def _prepare_turn(self, turn):
     """One user turn: build context, get LLM reply, execute tool calls
     with automatic retries and failure memory."""
     fast_mode = self.fast_mode
+    coordinator = self.subagent_manager.coordinator
+    turn.agent_versions = {run["run_id"]: run["version"] for run in coordinator.list()} if coordinator else {}
 
     turn.interaction_mode = self._active_interaction_mode.get()
     turn.fast_backend = self._interaction_controller.state().get("system_one_backend",

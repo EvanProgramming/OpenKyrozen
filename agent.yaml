@@ -33,3 +33,8 @@ examples:
 # policy always apply, so configuration cannot grant a new permission.
 capabilities:
   - full
+
+# Parallel execution slots, not a total-agent limit. Extra assignments queue.
+subagents:
+  concurrency: 4
+  roles: {}

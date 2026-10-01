@@ -61,7 +61,8 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                             success: bool, result: Any, operation_scope: str,
                             failure: str | None = None, raw_result: Any = None) -> ExecutionReceipt:
     canonical = self._operation_action(action)
-    result_text = self._fix_safe_text(result, 2000)
+    from openkyrozen.agent.delegation import TOOLS
+    result_text = self._fix_safe_text(result, max(2000, len(str(result))) if canonical in TOOLS else 200000 if canonical in {"read_file", "read_webpage", "git_diff", "git_show", "graph_query"} else 2000, preserve_lines=True)
     command = raw_result if isinstance(raw_result, CommandResult) else None
     if command is not None:
         failure = command.failure
@@ -167,9 +168,11 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
     tool_result: Any = None
     failure: str | None = None
     try:
-        tool_result = self.run_command(args) if action in {"run_cmd", "execute_terminal_command"} else fn(args)
+        with self._delegation_tool_access(action, args):
+            tool_result = self.run_command(args) if action in {"run_cmd", "execute_terminal_command"} else fn(args)
         result = str(tool_result)
-        success = tool_result.success if isinstance(tool_result, CommandResult) else not self._is_tool_error(result)
+        from openkyrozen.agent.delegation import TOOLS
+        success = tool_result.success if isinstance(tool_result, CommandResult) else (action in TOOLS or not self._is_tool_error(result))
     except KeyboardInterrupt:
         result = "Tool execution interrupted by user (Ctrl+C)."
         success = False
@@ -232,7 +235,8 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
 
 def _record_turn_receipt(self, receipt: ExecutionReceipt) -> dict[str, Any]:
     """Persist a receipt and reconcile the current planned task from verified evidence."""
-    evidence = self.tasks.record_evidence(
+    from openkyrozen.agent.delegation import TOOLS
+    evidence = {} if receipt.action in TOOLS else self.tasks.record_evidence(
         action=receipt.action, args=receipt.args, result=receipt.result,
         success=receipt.success, acceptance=receipt.acceptance, receipt_id=receipt.receipt_id,
     )

@@ -58,6 +58,35 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if m.screen == screenGraph {
 		return m.graphKey(msg), false
 	}
+	if m.screen == screenAgents {
+		switch key {
+		case "esc", "q":
+			m.screen = screenChat
+		case "up", "k":
+			m.agentScroll = maxInt(0, m.agentScroll-1)
+		case "down", "j":
+			m.agentScroll++
+		case "pgup":
+			m.agentScroll = maxInt(0, m.agentScroll-maxInt(1, m.height-5))
+		case "pgdown":
+			m.agentScroll += maxInt(1, m.height-5)
+		case "left", "h":
+			m.agentSelected = maxInt(0, m.agentSelected-1)
+			m.agentScroll = 0
+		case "right", "l":
+			m.agentSelected = minInt(maxInt(0, len(m.agents)-1), m.agentSelected+1)
+			m.agentScroll = 0
+		case "enter", "r":
+			if len(m.agents) > 0 {
+				m.send("command", map[string]any{"name": "agents", "args": map[string]any{"run_id": m.agents[m.agentSelected]["run_id"]}})
+			}
+		case "c":
+			if len(m.agents) > 0 {
+				m.send("command", map[string]any{"name": "agents", "args": map[string]any{"cancel": m.agents[m.agentSelected]["run_id"]}})
+			}
+		}
+		return nil, false
+	}
 	if m.screen == screenMode {
 		modes := []string{"auto", "ask", "plan", "agent"}
 		if key == "esc" {
@@ -182,6 +211,10 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		} else {
 			m.input.Focus()
 		}
+		return nil, false
+	}
+	if m.screen == screenChat && key == "ctrl+e" {
+		m.send("command", map[string]any{"name": "agents"})
 		return nil, false
 	}
 	if m.screen == screenChat && m.navigationFocused {
@@ -386,7 +419,7 @@ func (m *model) questionKey(key string) tea.Cmd {
 
 func (m *model) submit() tea.Cmd {
 	text := strings.TrimSpace(m.input.Value())
-	if text == "" || m.busy {
+	if text == "" || (m.busy && !strings.EqualFold(text, "/agents")) {
 		return nil
 	}
 	if strings.HasPrefix(strings.TrimLeftFunc(m.input.Value(), unicode.IsSpace), "/") {

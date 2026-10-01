@@ -12,15 +12,18 @@ is intentionally deferred rather than hidden behind speculative abstractions:
    prove the native schema preserves the current fail-closed control protocol.
 3. **OS-level sandboxing** — add platform-specific process/filesystem isolation
    beneath capability tokens; capability labels are policy, not an OS sandbox.
-4. **Asynchronous subagent orchestration** — add only with scoped budgets,
-   independent receipts, cancellation, and deterministic parent reconciliation.
-5. **Long-run checkpoints and context compaction** — add resumable checkpoints
+4. **Long-run checkpoints and context compaction** — add resumable checkpoints
    that retain plan/question versions, evidence, and outstanding approvals.
-6. **Additional delivery channels** — reuse the interaction envelope only where
+5. **Additional delivery channels** — reuse the interaction envelope only where
    a channel can render questions/plans and correlate responses safely.
 
 MCP remains intentionally non-interactive. Tool approvals remain distinct from
 clarification questions on every future surface.
+
+Chat-owned [sub-agent orchestration](subagents.md) now supplies parallel jobs,
+independent sessions, cancellation between tools, structured results, automatic
+read-only peer review and parent receipt reconciliation. Interrupted jobs are
+reported on restart; mutations are never replayed automatically.
 
 ## Release acceptance
 

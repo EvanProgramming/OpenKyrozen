@@ -66,7 +66,7 @@ class AnthropicProvider(LLMProvider):
                 "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
                 "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
             }
-        usage_ledger._track_cost(self.config.provider, usage_dict, model=model,
+        usage_ledger._track_cost(self.config.provider, usage_dict, model=getattr(response, "model", None) or model,
                     latency_ms=round((time.monotonic() - started) * 1000))
         return text.strip(), usage_dict
 

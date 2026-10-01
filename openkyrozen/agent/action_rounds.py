@@ -6,6 +6,7 @@ from openkyrozen.tasks.engine import canonical_status, is_complete, is_terminal
 from openkyrozen.security.tool_policy import tool_capability
 
 def _execute_action_rounds(self, turn):
+    from openkyrozen.agent.delegation import GUIDANCE
     results: list[str] = []
     turn.tool_records: list[dict[str, Any]] = []
     successful_operations: set[str] = set()
@@ -36,6 +37,16 @@ def _execute_action_rounds(self, turn):
     consecutive_search_failures = 0  # track failed search_web calls to prevent loops
     total_search_calls = sum(record["action"] == "search_web" for record in turn.tool_records)
     unsupported_action_retries = 0
+    distribution_reply = None
+    coordinator = self.subagent_manager.coordinator
+    delegated_this_turn = coordinator and any(run["version"] != turn.agent_versions.get(run["run_id"])
+        for run in coordinator.list())
+    if (turn.interaction_mode == "agent" and turn.complexity != "simple"
+            and not delegated_this_turn
+            and not self._interaction_controller.state().get("executing_plan")
+            and any(record["success"] and record["action"] in {"list_dir", "list_tree", "read_file", "find_files"}
+                    for record in turn.tool_records)):
+        distribution_reply = self._plan_delegation(turn)
     # check for missing arguments errors
     _args_missing_errors = [
         "requires a command",
@@ -98,6 +109,8 @@ def _execute_action_rounds(self, turn):
                     "You have just obtained the following information by running tools. "
                     "Tool calls are internal progress, not the user-facing response. If more steps are needed, output the next Action block. "
                     "Otherwise, output a concise plain-language report of the work and result; never output only TaskDone or an Action block. "
+                    'Invoke tools only as Action: {"action":"tool_name","args":"plain string"}. '
+                    "Do not use XML/HTML tool wrappers or finish with a progress announcement. "
                     "Output a PlanProposal block only in plan mode. "
                     f"The effective interaction mode is {turn.interaction_mode}."
                 )
@@ -110,7 +123,7 @@ def _execute_action_rounds(self, turn):
             {
                 "role": "system",
                 "content": (
-                    "Here are the tools you can use. "
+                    GUIDANCE + "\nCurrent agents:\n" + self._delegation_summary() + "\nHere are the tools you can use. "
                     "Make sure to pick an action name exactly as listed:\n"
                     + self._build_tools_list(self._execution_capability_token.capabilities)
                 )
@@ -131,10 +144,14 @@ def _execute_action_rounds(self, turn):
                     self._build_task_progress_hint() +
                     f"The tools returned:\n{turn.tool_results_text}\n\n"
                     + error_hint + search_throttle +
+                    "Choose the next work distribution from the discovered targets. For a review covering independent subsystems, "
+                    "the next Action should be spawn_agents with focused assignment briefs, before inspecting each subsystem serially. "
+                    "Keep a single lookup or tightly coupled operation direct. The user need not ask for delegation. "
+                    'Output one canonical Action: {"action":"tool_name","args":"plain string"}, '
+                    "or the completed answer; a progress announcement does not complete the request.\n"
                     "Please continue if there are remaining steps, or respond with the final answer.\n"
-                    "If you have completed a task, you **must** output `TaskDone: <index>` "
-                    "(replace index with the zero-based index) **before** the next Action block. "
-                    "Do not omit the `TaskDone:` line.\n"
+                    + ("After evidence for a listed parent task, output `TaskDone: <index>` before the next Action.\n"
+                       if self.tasks.tasks else "") +
                     "Use AskUser only when material ambiguity requires clarification."
                 )
             }
@@ -148,11 +165,12 @@ def _execute_action_rounds(self, turn):
             summary_messages = [
                 {"role": "system", "content": (
                     f"You are Kyrozen in read-only {turn.interaction_mode.title()} mode. Use only the listed inspection tools. "
+                    'Invoke tools as Action: {"action":"tool_name","args":"plain string"}. '
                     f"Continue inspecting when evidence is still needed; otherwise {completion_instruction}."
                 )},
                 {"role": "system", "content": self._workspace_info()},
                 {"role": "system", "content": (
-                    "Available read-only tools:\n"
+                    GUIDANCE + "\nCurrent agents:\n" + self._delegation_summary() + "\nAvailable read-only tools:\n"
                     + self._build_tools_list(self._execution_capability_token.capabilities)
                 )},
                 {"role": "user", "content": turn.user_input},
@@ -163,9 +181,12 @@ def _execute_action_rounds(self, turn):
                     f"{completion_instruction}. No changes have been authorized."
                 )},
             ]
-        step_reply = self._call_llm_with_spinner(summary_messages).strip()
-        turn.turn_prompt_total += self._last_prompt_tokens
-        turn.turn_completion_total += self._last_completion_tokens
+        if distribution_reply is not None:
+            step_reply, distribution_reply = distribution_reply, None
+        else:
+            step_reply = self._call_llm_with_spinner(summary_messages).strip()
+            turn.turn_prompt_total += self._last_prompt_tokens
+            turn.turn_completion_total += self._last_completion_tokens
         if not step_reply:
             break
         if step_reply.startswith("[LLM Error]"):

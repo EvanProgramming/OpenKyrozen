@@ -1,0 +1,152 @@
+{
+  "date": "2026-10-01",
+  "scope": "Implementation validation; isolated installed wheel and source distribution acceptance; no package release",
+  "PASS": {
+    "python": {
+      "tests": 371,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "includes": [
+        "browser",
+        "API",
+        "MCP",
+        "native OpenAI Responses and Anthropic Messages controlled transports",
+        "concurrency and context isolation",
+        "incorrect claim and broken artifact corrections",
+        "Ask/Plan permissions",
+        "cancellation and restart",
+        "25-agent exploration"
+      ],
+      "versions": [
+        "3.12: 371 tests, zero failures/errors/skips",
+        "3.13: 371 tests, zero failures/errors/skips"
+      ]
+    },
+    "go": "Full TUI test suite passed",
+    "tui": "Actual pseudo-terminal acceptance: live events, inspection, scrolling, cancellation, chat isolation, approval gates, 60x20/160x45/80x24 resizing",
+    "packaging": "Wheel and source distribution installed and exercised outside checkout, including automatic delegation and source fidelity",
+    "checks": [
+      "architecture",
+      "Python syntax",
+      "documentation inventory: 45 tools and 56 endpoints",
+      "4 README consistency",
+      "shell extras",
+      "existing agent workflow acceptance"
+    ],
+    "live_delegation": {
+      "request_mode": "Explicitly requested parallel specialists and cross-examination; this does not prove automatic detection.",
+      "status": "PASS",
+      "mode": "live",
+      "provider": "deepseek",
+      "agents": [
+        {
+          "name": "Jerry",
+          "status": "succeeded",
+          "provider_model": "deepseek:deepseek-v4-pro",
+          "reviews": 1,
+          "summary": "Read alpha.py (3 lines). Extracted one documented invariant from a comment: total(values) sums all values, including negative values. The implementation is a single `return sum(values)`, which uses Python's built-in sum and therefore adds every element of the iterable, including negative numeric values. Verdict for the sole invariant: PASS.",
+          "review_summary": "Independently read alpha.py. The file contains exactly three lines: a comment documenting one invariant ('# Sum all values, including negative values.'), a function definition, and 'return sum(values)'. The submitted result correctly extracted that single invariant and correctly marked it PASS based on Python's built-in sum semantics. All acceptance criteria are met: actual source was read, exact lines are quoted with line numbers, and a per-invariant verdict is provided.",
+          "usage": {
+            "provider_model": "deepseek:deepseek-v4-pro",
+            "provider_models": [
+              "deepseek:deepseek-v4-pro"
+            ],
+            "attempts": 3,
+            "prompt_tokens": 1882,
+            "completion_tokens": 2046,
+            "reasoning_tokens": 1516,
+            "cost_picos": 9279776000,
+            "tokens": 3928,
+            "latency_ms": 22217.736,
+            "usage_status": "authoritative"
+          }
+        },
+        {
+          "name": "Addison",
+          "status": "succeeded",
+          "provider_model": "deepseek:deepseek-v4-pro",
+          "reviews": 1,
+          "summary": "beta.py contains exactly one documented invariant in a comment: 'Count unique values, preserving case distinctions.' The implementation is def count(values): return len(set(values)). This satisfies the invariant because set(values) deduplicates the input and Python's set equality/hashing for strings is case-sensitive, so 'A' and 'a' remain distinct. No additional invariants were documented in a docstring or comments.",
+          "review_summary": "The submitted audit accurately reflects beta.py. Independent read_file confirmed the file contains exactly three lines: a comment on line 1 stating 'Count unique values, preserving case distinctions.', a function definition on line 2, and 'return len(set(values))' on line 3. The submitted per-invariant verdict of pass is correct for the documented invariant because set(values) deduplicates by equality, and Python string equality/hashing is case-sensitive, so 'A' and 'a' remain distinct. No additional documented invariants are present in beta.py.",
+          "usage": {
+            "provider_model": "deepseek:deepseek-v4-pro",
+            "provider_models": [
+              "deepseek:deepseek-v4-pro"
+            ],
+            "attempts": 3,
+            "prompt_tokens": 1884,
+            "completion_tokens": 1763,
+            "reasoning_tokens": 1121,
+            "cost_picos": 8161736000,
+            "tokens": 3647,
+            "latency_ms": 19245.166,
+            "usage_status": "authoritative"
+          }
+        }
+      ],
+      "source_fidelity": "PASS",
+      "final_report_present": true
+    },
+    "live_automatic_delegation": {
+      "status": "PASS",
+      "evidence": "subagent-autonomy-acceptance.json",
+      "clean_review_agents": 3,
+      "clean_simple_agents": 0,
+      "summary": "Unchanged ordinary requests: three focused investigations and automatic independent reviews; direct simple answer returns 2 with zero agents. Native wrong claim/missing artifact rejected, corrected and rechecked in fault experiment.",
+      "assessment_note": "The original negative-control assertion incorrectly flagged genuine mixed Decimal/float TypeErrors. Corrected assertion reassesses unchanged native reports; no provider outputs or runtime checks were modified."
+    }
+  },
+  "FAIL": [],
+  "BLOCKED": {
+    "mixed_provider_live": "Only saved DeepSeek credentials available; no configured second provider. Native OpenAI and Anthropic adapters passed controlled fixtures; those are not mixed-provider live acceptance."
+  },
+  "repairs_verified": [
+    "Delegated lifecycles no longer become duplicate sequential parent tasks; conflicting task-list output is repaired before side effects.",
+    "Execution receipts and independent contexts preserve source line breaks and indentation through redaction.",
+    "Corrected reports retain earlier runtime receipts; unresolved reviews retain actionable findings.",
+    "Explicit main-model distribution decision triggers delegation from ordinary requests without agent hints.",
+    "Read-only reviews remain findings reports and do not enter Plan or repair workflows.",
+    "Final synthesis failures retain accepted evidence; unresolved work is explicit.",
+    "Review omissions request missing artifact reads without consuming author corrections.",
+    "Bounded read-only arithmetic checks prevent the observed false Decimal sum claim; live and deterministic negative controls distinguish actual mixed-type errors."
+  ],
+  "observed_failure_history": [
+    {
+      "failure": "No automatic agents on ordinary multi-area review requests",
+      "repair": "Explicit main-model distribution decision after discovery"
+    },
+    {
+      "failure": "Delegated reasoning requests exceeded the 90-second provider deadline",
+      "repair": "Delegated contexts use a bounded 180-second deadline; foreground bounded calls remain 90 seconds"
+    },
+    {
+      "failure": "Agent-mode bullet reports were converted into unaccepted Plan proposals",
+      "repair": "Structured-prose plan normalization is Plan-only"
+    },
+    {
+      "failure": "Final synthesis/control failures discarded accepted findings",
+      "repair": "Runtime retains evidence-backed findings if synthesis fails or returns protocol controls"
+    },
+    {
+      "failure": "Read-only bug review was interpreted as a bug-fix attempt",
+      "repair": "Shared intent detection excludes no-edit reviews and does not attach them to prior fix workflows"
+    },
+    {
+      "failure": "Reviewer omitted a declared artifact and unnecessarily consumed author corrections",
+      "repair": "Bounded missing-inspection reminders in the fresh reviewer context; artifact gate retained"
+    },
+    {
+      "failure": "Native author/reviewer pairs agreed on false Decimal semantics",
+      "repair": "Negative-control oracle catches agreement; bounded read-only arithmetic tool provides observable checks"
+    },
+    {
+      "failure": "Python 3.13 browser tests lacked its Playwright Chromium executable",
+      "repair": "Installed the required headless browser and re-running the suite"
+    },
+    {
+      "failure": "New Decimal negative-control assertion also flagged real mixed Decimal/float errors",
+      "repair": "Corrected the assertion to distinguish error-bearing clauses and literal float examples; reassessed unchanged native results and retained original harness-exit information"
+    }
+  ]
+}

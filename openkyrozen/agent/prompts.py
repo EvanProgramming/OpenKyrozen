@@ -44,6 +44,8 @@ def _agent_prompt_tools_list(self, agent_config: dict[str, Any]) -> str:
 
 
 def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = None) -> str:
+    from openkyrozen.agent.delegation import GUIDANCE
+    tools_list += "\n\n## Automatic sub-agent delegation\n" + GUIDANCE
     agent_config = agent_config or load_agent_config(self._get_workspace_root())
     role = agent_config["role"]
     configured_sections = (
@@ -117,7 +119,7 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
             mode_capabilities(active.capabilities, interaction_mode) if active else
             mode_capabilities(effective_capabilities(agent_config), interaction_mode)
         )
-        readonly_tools = self._build_tools_list(readonly_capabilities)
+        readonly_tools = self._build_tools_list(readonly_capabilities) + "\n" + GUIDANCE
         readonly_mode = (
             "Answer the user after read-only inspection. Use AskUser only when material ambiguity prevents a safe answer."
             if interaction_mode == "ask" else
@@ -152,6 +154,7 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
     return (
         "You are Kyrozen, an intelligent, self-learning AI assistant with file access, "
         "shell commands, and web search. Use tools when needed; converse naturally otherwise.\n\n"
+        + "## Delegation decision\n" + GUIDANCE + "\n\n"
         + configured_sections + "\n\n"
         + interaction_instructions + "\n"
         "## Available Tools\n"
@@ -175,13 +178,17 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
         "Correct: `{\"action\": \"read_file\", \"args\": \"main.py\"}`. "
         "Wrong: `{{\"action\": \"read_file\", \"args\": \"main.py\"}}`.\n\n"
         "## Task complexity routing\n"
-        "Classify every user request and follow the corresponding protocol:\n\n"
+        "Delegation guidance takes precedence over the sequential protocols below. "
+        "A delegated audit uses spawn_agents, wait_subagents and synthesis, with no parent TaskList. "
+        "For direct main-agent work, classify the request and follow the corresponding protocol:\n\n"
         "**SIMPLE** (greeting, factual Q&A, single tool call): "
         "Reply directly. No Plan or TaskList needed. Example: \"hi\" → just greet back.\n\n"
         "**MEDIUM** (2‑3 related tool calls): "
         "Output a short **Plan** block (numbered list), then execute Actions one by one. "
         "No TaskList required. Example: \"list files and read README\" → Plan→list_dir→read_file→summarise.\n\n"
         "**COMPLEX** (4+ tools, multi‑step analysis, code generation): "
+        "For independent specialist work, use spawn_agents and its verified run lifecycle; do not create duplicate TaskList items for delegated work. "
+        "For direct main-agent work, "
         "Output **Plan** → **TaskList** (JSON array) → Actions with **TaskDone: N** as a completion request after evidence. "
         "Complete ALL tasks. Never stop early. Example: \"audit this repo\" → full workflow.\n\n"
         "## Planning format (medium/complex tasks only)\n"
@@ -229,6 +236,8 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
         "- When implementing a feature, prefix with \"feat: \".\n\n"
         "## Complex task decomposition\n"
         "For complex multi‑step tasks (COMPLEX level):\n"
+        "Delegate independent work with spawn_agents first when its targets are known. Workers manage their own steps and reviews. "
+        "The following TaskList protocol covers direct parent work only.\n"
         "1. **UNDERSTAND**: Read the full request. Identify all subtasks and dependencies.\n"
         "2. **PLAN**: Output a numbered Plan with 3‑10 concrete steps. Each step must be verifiable.\n"
         "3. **TASKLIST**: Create a JSON TaskList where each task maps to one Plan step.\n"
@@ -288,7 +297,7 @@ def _build_messages(self, user_input: str, learned_context: str = "",
         messages.append({"role": "system", "content": bug_guidance})
 
     fix_state = self._latest_fix_workflow()
-    if (self._active_interaction_mode.get() == "agent" and fix_state
+    if (self._active_interaction_mode.get() == "agent" and fix_state and not self._is_bug_review(user_input)
             and str(fix_state.get("stage")) not in self._FIX_TERMINAL_STAGES):
         current_stage = str(fix_state.get("stage", "reported"))
         stage_index = self._FIX_WORKFLOW_STAGES.index(current_stage) if current_stage in self._FIX_WORKFLOW_STAGES else 0

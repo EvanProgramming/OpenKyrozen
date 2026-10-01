@@ -7,7 +7,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 
 ## Runtime tools
 
-- Built-in runtime tools: **39**
+- Built-in runtime tools: **45**
 - Names with the `git_` prefix: **14**
 - The CLI Action contract is a plain string in the `args` field.
 - Web and MCP exposure is filtered by the configured capability profile.
@@ -20,6 +20,8 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `browser_open` | `browser` | Open a URL in an isolated headless browser profile. Args: URL. | `url`: string; required: `url` |
 | `browser_snapshot` | `browser` | Read the current page text. Args: browser session ID. | `session_id`: string; required: `session_id` |
 | `browser_type` | `browser` | Fill a selector. Args format: session_id\|CSS selector\|text. | `session_id`: string, `selector`: string, `text`: string; required: `session_id`, `selector`, `text` |
+| `calculate` | `read` | Check a bounded arithmetic expression, e.g. sum([Decimal('1.00'), Decimal('2.00')]); no workspace code runs. | `args`: string |
+| `cancel_subagent` | `read` | Cancel a scoped sub-agent and prevent subsequent tool execution; args JSON contains run_id. | `args`: string |
 | `check_stored_data` | `read` | Return a categorized summary of stored memories. | `args`: string |
 | `execute_terminal_command` | `shell` | Execute a terminal command. This is an alias for run_cmd. | `command`: string; required: `command` |
 | `find_files` | `read` | Find files matching a pattern. Args format: "pattern" or "pattern\|directory". | `pattern`: string, `directory`: string; required: `pattern` |
@@ -46,12 +48,16 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `graph_refresh` | `read` | Refresh the private local code graph. Pass --full for a clean rebuild. | `args`: string |
 | `graph_status` | `read` | Return the private Graphify index state and a bounded mini graph. | `args`: string |
 | `list_dir` | `read` | List contents of a directory. Args format: "path" (default "."). | `path`: string |
+| `list_subagents` | `read` | List agents or inspect one run_id from this chat/project; args is JSON. | `args`: string |
 | `list_tree` | `read` | Recursively list the directory tree of the given path. Args format: "path" (default "."). | `path`: string |
 | `read_file` | `read` | Read content from a file. Args format: "path". | `path`: string; required: `path` |
 | `read_webpage` | `network` | Fetch the content of a web page and return its plain‑text body. | `url`: string; required: `url` |
 | `run_cmd` | `shell` | Execute a shell command. Args: the full command string. | `command`: string; required: `command` |
 | `search_memory` | `read` | Search stored memories for facts relevant to the query. Args: "query" | `args`: string |
 | `search_web` | `network` | Search the internet for real-time information. | `query`: string; required: `query` |
+| `send_subagent` | `read` | Reuse a finished sub-agent; args JSON contains run_id and a complete assignment. | `args`: string |
+| `spawn_agents` | `read` | Automatically start parallel specialist assignments; args is a JSON assignment batch. | `args`: string |
+| `wait_subagents` | `read` | Wait up to 60 seconds for delegated work and its mandatory reviews; args is JSON. | `args`: string |
 | `write_file` | `write` | Write content to a file. Args format: "path\|content". | `path`: string, `content`: string; required: `path`, `content` |
 
 ## HTTP and MCP endpoints
@@ -72,6 +78,9 @@ Parameterized names are part of the contract; clients may substitute a value for
 | `GET` | `/api/memory` |
 | `GET` | `/api/v2/agents` |
 | `POST` | `/api/v2/agents/run` |
+| `GET` | `/api/v2/agents/runs` |
+| `GET` | `/api/v2/agents/runs/{run_id}` |
+| `POST` | `/api/v2/agents/runs/{run_id}/cancel` |
 | `GET` | `/api/v2/decision-assist` |
 | `GET` | `/api/v2/events` |
 | `GET` | `/api/v2/fast/diagnostics` |

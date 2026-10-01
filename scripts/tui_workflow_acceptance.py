@@ -30,9 +30,21 @@ def backend_fixture():
 
     class Provider(LLMProvider):
         def chat(self, messages, model=None):
+            from scripts.subagent_workflow_acceptance import Fixture, assignment
+            if messages[0]['content'].startswith('You are the specialised'):
+                if len(messages) == 2 and 'wait-for-cancellation' in messages[1]['content']:
+                    time.sleep(8)
+                return Fixture().chat(messages, model)
             latest = next(item['content'] for item in reversed(messages) if item['role'] == 'user')
-            if 'The tools returned:' in latest:
+            if messages[0]['content'].startswith('Synthesize'):
+                text = 'Both delegated investigations have independent verification.'
+            elif 'The tools returned:' in latest:
                 text = 'Approval workflow finished.'
+            elif 'delegate audit' in latest or 'cancel audit' in latest:
+                assignments = [assignment('tracked.txt'), assignment('second.txt')]
+                if 'cancel audit' in latest:
+                    assignments = [{**assignment('tracked.txt'), 'objective': 'wait-for-cancellation'}]
+                text = 'Action: ' + json.dumps({'action': 'spawn_agents', 'args': json.dumps({'assignments': assignments})})
             elif 'approval request' in latest:
                 text = 'Action: {"action":"git_reset","args":"--hard HEAD"}'
             else:
@@ -44,6 +56,7 @@ def backend_fixture():
     config = ProviderConfig(provider='deepseek', api_key='fixture-only')
     runtime.detect_provider = lambda: config
     runtime.get_fallback_provider = lambda _config: Provider(_config)
+    runtime.get_provider = lambda _config: Provider(_config)
     runtime._classify_complexity = lambda _text: 'simple'
     runtime._ensure_detached_learning_worker = lambda: True
     runtime._touch_detached_learning_heartbeat = lambda: None
@@ -93,6 +106,7 @@ def acceptance(binary: Path):
         home.mkdir()
         tracked = project / 'tracked.txt'
         tracked.write_text('committed\n')
+        (project / 'second.txt').write_text('independent subsystem\n')
         for args in (['init', '-q'], ['add', 'tracked.txt'],
                      ['-c', 'user.name=Acceptance', '-c', 'user.email=fixture@example.invalid',
                       '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture']):
@@ -196,6 +210,27 @@ def acceptance(binary: Path):
                 send(b'y' if decision else b'n')
                 wait(lambda rows: response_count(rows) > count, 'approval result')
                 assert tracked.read_text() == ('committed\n' if decision else 'uncommitted\n')
+            submit('delegate audit')
+            wait(lambda rows: sum(r.get('event') == 'subagent' and r.get('agent', {}).get('status') == 'succeeded' for r in rows) >= 2,
+                 'live delegated worker and review updates')
+            send(b'\x05')  # Ctrl+E opens Agents, including while a turn is busy.
+            wait(prompt('agents'), 'agent inspection')
+            send(b'\r')
+            wait(lambda rows: any(r.get('event') == 'agent_detail' for r in rows), 'structured results and receipts')
+            send(b'\x1b[6~')
+            drain(0.3)
+            send(b'q')
+            drain(0.5)
+            count = response_count(events())
+            send(b'cancel audit\r')
+            wait(lambda rows: any(r.get('event') == 'subagent' and r.get('agent', {}).get('status') == 'running'
+                                 and r.get('agent', {}).get('assignment', {}).get('objective') == 'wait-for-cancellation' for r in rows), 'cancellable running agent')
+            send(b'\x05')
+            wait(lambda rows: rows[-1].get('event') == 'prompt' and rows[-1].get('kind') == 'agents', 'busy-turn agent inspector')
+            send(b'\x1b[C\x1b[Cc')  # Select the third worker and cancel it.
+            wait(lambda rows: any(r.get('event') == 'subagent' and r.get('agent', {}).get('status') == 'cancelled' for r in rows), 'agent cancellation')
+            send(b'q')
+            wait(lambda rows: response_count(rows) > count, 'cancelled work retained in final report')
             for width, height in ((60, 20), (160, 45), (80, 24)):
                 previous = len(terminal)
                 fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', height, width, 0, 0))
@@ -207,7 +242,8 @@ def acceptance(binary: Path):
             send(b'\x03')
             process.wait(timeout=10)
             assert process.returncode == 0
-            print('TUI acceptance passed: onboarding, chat, session switching, denied/approved Git reset, and 3 terminal sizes.')
+            assert 'AGENTS' in plain and 'REVIEWER' in plain
+            print('TUI acceptance passed: onboarding, chat isolation, approvals, sub-agent updates/inspection/scrolling/cancellation, and 3 terminal sizes.')
         finally:
             if process.poll() is None:
                 process.kill()

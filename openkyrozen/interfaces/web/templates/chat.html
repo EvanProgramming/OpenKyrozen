@@ -586,6 +586,10 @@ async function sendMessage() {
           const name = parsed.backend === 'jev' ? 'Jev' : 'Kev';
           addMessage('assistant', `Made a decision with ${name}.`, false);
         }
+        if (parsed.event === 'subagent' && parsed.agent) {
+          const agent = parsed.agent;
+          addMessage('assistant', `${agent.name} · ${agent.profile} · ${agent.status}: ${agent.assignment.objective}`, false);
+        }
         if (Object.prototype.hasOwnProperty.call(parsed, 'cost')) {
           document.getElementById('cost-display').textContent = String(parsed.cost);
         }

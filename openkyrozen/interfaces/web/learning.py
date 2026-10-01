@@ -180,11 +180,65 @@ async def api_v2_run_agent(self, request: Request):
             or not isinstance(body.get("task"), str) or not body["task"].strip()):
         raise HTTPException(400, "profile and task are required")
     try:
-        result = await asyncio.to_thread(
-            service._agent.subagent_manager.run,
-            body["profile"], body["task"],
-            workspace_id=service._agent.memory_bank.workspace_id,
-        )
-        return result
+        session_id = service._normalise_session_id(body.get("session_id") or "surface:agents")
+        def execute():
+            runtime = service._agent
+            session = runtime.open_session(session_id, user_id=service._SERVER_ACTOR_ID)
+            with runtime.use_session(session):
+                assignment = body.get("assignment")
+                if assignment is None:
+                    assignment = json.loads(runtime._get_llm_response([
+                        {"role": "system", "content": "Turn the task into a sub-agent assignment. Return only JSON with objective, context, reason "
+                         "(strings), scope (exact workspace-relative files), dependencies (empty array), acceptance and deliverables (nonempty string arrays). "
+                         "Use only the requested task scope. This is planning, do not execute any Action."},
+                        {"role": "user", "content": body["task"]}]))
+                if not isinstance(assignment, dict):
+                    raise ValueError("assignment must be an object")
+                assignment = {**assignment, "profile": body["profile"]}
+                for key in ("provider", "model"):
+                    if key in body:
+                        assignment[key] = body[key]
+                coordinator = runtime.delegation()
+                receipt = runtime.execute(session, "spawn_agents", json.dumps({"assignments": [assignment]}),
+                    capabilities=service._server_capabilities("web"), operation_scope="api:agents/run")
+                if not receipt.success:
+                    raise ValueError(receipt.result)
+                run = json.loads(receipt.result)["agents"][0]
+                while run["status"] not in {"succeeded", "unverified", "failed", "blocked", "cancelled", "interrupted"}:
+                    run = coordinator.wait([run["run_id"]], 30)[0]
+                result = run.get("result", {})
+                return {**run, "result": run.get("report", {}).get("summary", run.get("error", "")),
+                    "tool_receipts": result.get("tool_records", []), "tools": sorted(runtime.AVAILABLE_TOOLS),
+                    "memory_scope": "session", "evidence": result.get("evidence", []), "metrics": result.get("metrics", {})}
+        return await asyncio.to_thread(execute)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    except self._agent.ProviderUnavailableError as exc:
+        raise HTTPException(503, str(exc))
+
+
+async def api_v2_agent_runs(self, request: Request, session_id: str = "surface:agents"):
+    runtime = self._agent
+    session = runtime.open_session(self._normalise_session_id(session_id), user_id=self._SERVER_ACTOR_ID)
+    with runtime.use_session(session):
+        return {"agents": runtime.delegation().list(), "session_id": session_id}
+
+
+async def api_v2_agent_detail(self, request: Request, run_id: str, session_id: str = "surface:agents"):
+    runtime = self._agent
+    session = runtime.open_session(self._normalise_session_id(session_id), user_id=self._SERVER_ACTOR_ID)
+    with runtime.use_session(session):
+        try:
+            return runtime.delegation().detail(run_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc))
+
+
+async def api_v2_agent_cancel(self, request: Request, run_id: str, session_id: str = "surface:agents"):
+    runtime = self._agent
+    session = runtime.open_session(self._normalise_session_id(session_id), user_id=self._SERVER_ACTOR_ID)
+    with runtime.use_session(session):
+        try:
+            return runtime.delegation().cancel(run_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc))

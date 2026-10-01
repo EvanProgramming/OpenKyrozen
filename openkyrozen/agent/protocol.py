@@ -146,6 +146,8 @@ def _collect_unwrapped_tool_calls(self, text: str) -> tuple[list[dict], bool]:
 
 def _collect_tool_calls(self, text: str) -> list[dict]:
     """Extract tool-call dicts from LLM response. Deduplicated by (action, args)."""
+    if self._has_unsupported_action_protocol(text):
+        return []
     calls: list[dict] = []
     seen: set[tuple[str, str]] = set()
 

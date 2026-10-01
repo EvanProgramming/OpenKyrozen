@@ -11,6 +11,23 @@ from openkyrozen.workspace.history import HistoryError
 from openkyrozen.providers import PROVIDER_ENV_VARS, save_provider_config_encrypted
 
 def _handle_cli_command(self, user_input, interaction_before):
+    if user_input.lower().startswith("/agents"):
+        parts = user_input.split(maxsplit=2)
+        coordinator = self.delegation()
+        if len(parts) == 3 and parts[1] == "cancel":
+            value = coordinator.cancel(parts[2])
+        else:
+            if len(parts) == 1:
+                from rich.markup import escape
+                runs = coordinator.snapshot()
+                for run in runs:
+                    self.console.print(escape(f"{run['name']} · {run['profile']} · {run['status']} · {run['provider_model']}: {run['assignment']['objective']} ({run['run_id']})"))
+                if not runs:
+                    self.console.print("No sub-agents in this chat.")
+                return None
+            value = coordinator.detail(parts[1])
+        self.console.print(json.dumps(value, ensure_ascii=False, indent=2))
+        return None
     if user_input.lower() in ("/quit", "/exit"):
         self._clear_tasks_panel()
         self.console.print(f"[{self._ERROR}]Goodbye.[/{self._ERROR}]")

@@ -29,7 +29,7 @@ MAX_ATTACHMENTS = 10
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 
 
-_SENSITIVE_KEY_RE = re.compile(r"(?i)(api[_-]?key|secret|password|token)")
+_SENSITIVE_KEY_RE = re.compile(r"(?i)(api[_-]?key|secret|password|(?:access|refresh|auth|bearer|api|session|csrf)[_-]?token|^token$)")
 
 
 _OUTPUT_LOCK = threading.Lock()

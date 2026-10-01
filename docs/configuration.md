@@ -34,6 +34,30 @@ The model-visible context window can be set explicitly when a custom model is no
 export KYROZEN_CONTEXT_WINDOW_TOKENS=128000
 ```
 
+## Sub-agent providers and concurrency
+
+`agent.yaml` accepts `subagents.concurrency` (default 4, integer 1–64) and
+`subagents.roles.<profile>.provider/model`. Additional assignments queue; there
+is no total-agent limit. Assignment overrides take precedence over role defaults,
+then the main provider/model. A reviewer uses the `reviewer` role default.
+
+```yaml
+subagents:
+  concurrency: 4
+  roles:
+    researcher:
+      provider: openai
+      model: your-openai-model
+    reviewer:
+      provider: anthropic
+      model: your-claude-model
+```
+
+Configure `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` securely in the launching
+environment. Alternate providers never receive the main provider's generic
+`KYROZEN_API_KEY`, endpoint or model settings. Missing credentials block the run;
+there is no implicit cross-provider fallback. See [sub-agents](subagents.md).
+
 ## Web server
 
 ```bash

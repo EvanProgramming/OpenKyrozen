@@ -34,6 +34,7 @@ const (
 	screenQuestion     screen = "question"
 	screenPlan         screen = "plan"
 	screenGraph        screen = "graph"
+	screenAgents       screen = "agents"
 	screenGithubAuth   screen = "github_auth"
 	screenSettings     screen = "settings"
 	screenProject      screen = "project"
@@ -126,6 +127,9 @@ type model struct {
 	navigationFocused         bool
 	messages                  []chatMessage
 	tasks                     []taskItem
+	agents                    []map[string]any
+	agentSelected             int
+	agentScroll               int
 	palette                   []command
 	paletteIndex              int
 	providerList              []string

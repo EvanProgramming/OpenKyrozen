@@ -1,4 +1,4 @@
-.PHONY: install install-core run clean lint test test-core tui-test check docs-check shell-check benchmark agent-acceptance tui-acceptance wheel-smoke docker-smoke git-status git-diff git-log web
+.PHONY: install install-core run clean lint test test-core tui-test check docs-check shell-check benchmark agent-acceptance subagent-acceptance tui-acceptance wheel-smoke docker-smoke git-status git-diff git-log web
 
 # Tests parse the benchmark target's stdout as JSON; do not inject GNU make's
 # recursive directory banners into that machine-readable output.
@@ -93,6 +93,9 @@ wheel-smoke:
 
 agent-acceptance:
 	$(VENV_PYTHON) scripts/agent_workflow_acceptance.py
+
+subagent-acceptance:
+	$(VENV_PYTHON) scripts/subagent_workflow_acceptance.py
 
 tui-acceptance:
 	@command -v go >/dev/null 2>&1 || { echo "Error: Go is required for TUI acceptance."; exit 1; }

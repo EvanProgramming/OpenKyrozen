@@ -323,7 +323,9 @@ class FastModeTests(unittest.TestCase):
 
     def test_kev_setup_reuses_ready_server_and_restarts_stopped_runtime(self):
         smoke = {"answers": {"smoke": {"choice": "ready"}}}
-        with patch("openkyrozen.routing.kev._supported_local_device", return_value=True), \
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("openkyrozen.routing.kev._kev_root", return_value=Path(directory)), \
+                patch("openkyrozen.routing.kev._supported_local_device", return_value=True), \
                 patch.object(routing_kev.shutil, "disk_usage", return_value=SimpleNamespace(free=10 * 1024**3)), \
                 patch("openkyrozen.routing.kev._kev_ready", return_value=True), \
                 patch("openkyrozen.routing.transport._request", return_value=smoke), \

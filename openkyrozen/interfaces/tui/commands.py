@@ -115,6 +115,18 @@ def _command(self, name: str, args: Any, request_id: str) -> None:
             for task in runtime.tasks.tasks
         ])
         self.emit("response", request_id, text=runtime.tasks.format())
+    elif command in {"/agents", "agents"}:
+        coordinator = runtime.delegation()
+        try:
+            if isinstance(args, Mapping) and args.get("cancel"):
+                coordinator.cancel(str(args["cancel"]))
+            detail = coordinator.detail(str(args["run_id"])) if isinstance(args, Mapping) and args.get("run_id") else None
+            self.emit("agents", request_id, agents=coordinator.snapshot(), detail=detail,
+                      session_id=runtime.current_session.session_id, source_scope_id=runtime.memory_bank.file_scope_id)
+            if not isinstance(args, Mapping) or not (args.get("run_id") or args.get("cancel")):
+                self.emit("prompt", request_id, kind="agents")
+        except ValueError as exc:
+            self.emit("error", request_id, code="agent_not_found", error=str(exc))
     elif command in {"/agent", "agent"}:
         profile = arg_text.strip().lower()
         if profile in {"auto", "coder", "researcher"}:
