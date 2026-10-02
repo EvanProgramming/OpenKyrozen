@@ -76,9 +76,16 @@ def start(self, payload: dict[str, Any], request_id: str) -> None:
             self.prompt_api_key(request_id=request_id)
         self.interaction(request_id)
         self.status("ready", "Ready", request_id)
+        threading.Thread(target=self._check_for_update, daemon=True).start()
     except Exception as exc:
         self.emit("error", request_id, code="startup_failed",
                   error=f"{type(exc).__name__}: {_redact(exc)}")
+
+
+def _check_for_update(self) -> None:
+    latest = self.agent._available_update()
+    if latest and not self._stopping.is_set():
+        self.emit("update_available", version=latest)
 
 
 def prompt_api_key(self, request_id: str | None = None) -> None:

@@ -278,7 +278,18 @@ func (m model) chatHeader() string {
 		gap := maxInt(2, innerWidth-lipgloss.Width(left)-lipgloss.Width(right))
 		row += strings.Repeat(" ", gap) + right
 	}
-	return contextStyle.Copy().Width(innerWidth).MaxWidth(innerWidth).Render(row)
+	header := contextStyle.Copy().Width(innerWidth).MaxWidth(innerWidth).Render(row)
+	if m.availableVersion != "" {
+		notice := "↑ OpenKyrozen " + m.availableVersion + " available · Run /update"
+		if width < 64 {
+			notice = "Update available\nRun /update"
+		}
+		if width < 20 {
+			notice = "Update available\n/update"
+		}
+		header += "\n" + amberStyle.Copy().Width(width).MaxWidth(width).Render(notice)
+	}
+	return header
 }
 
 func (m model) chatFooter(width int) string {

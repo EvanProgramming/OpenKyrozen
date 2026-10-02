@@ -212,7 +212,7 @@ class Backend:
 
     from .navigation import (_new_chat_id, _register_chat, _chat_title, _scope_chats, _navigation_groups, navigation, _bind_chat, _switch_chat, _emit_bound_state)
 
-    from .onboarding import (start, prompt_api_key, prompt_provider, _prompt_onboarding_learning, _complete_onboarding, _continue_onboarding, configure_provider)
+    from .onboarding import (start, _check_for_update, prompt_api_key, prompt_provider, _prompt_onboarding_learning, _complete_onboarding, _continue_onboarding, configure_provider)
 
     from .turns import (set_api_key, _approval, approval_response, _stream_projection, submit, _attach, _attachment_prompt, _run_submit, _features)
 

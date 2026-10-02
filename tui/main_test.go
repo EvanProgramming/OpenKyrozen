@@ -1093,3 +1093,32 @@ func TestBusyChatIgnoresModeAndPermissionClicks(t *testing.T) {
 		t.Fatalf("busy chat sent a mode or permission change: %s", sent.String())
 	}
 }
+
+func TestStartupUpdateNoticeFitsAndPreservesChat(t *testing.T) {
+	for _, size := range [][2]int{{120, 36}, {80, 24}, {40, 16}, {26, 12}} {
+		m := initialModel("", true)
+		m.width, m.height, m.screen = size[0], size[1], screenChat
+		m.resize()
+		m.handleBackendEvent(backendEvent{"event": "update_available", "version": "2.0.5"})
+		m.syncViewport()
+		view := m.View().Content
+		if !strings.Contains(view, "/update") || !strings.Contains(view, "available") {
+			t.Fatalf("update notice missing at %v: %s", size, view)
+		}
+		if len(m.messages) != 0 || m.screen != screenChat || m.busy {
+			t.Fatal("notice interrupted chat")
+		}
+		if lipgloss.Height(view) > m.height {
+			t.Fatalf("notice overflowed height at %v", size)
+		}
+		for _, line := range strings.Split(view, "\n") {
+			if lipgloss.Width(line) > m.width {
+				t.Fatalf("notice overflowed width at %v: %s", size, line)
+			}
+		}
+	}
+	matches := commandMatches("/update")
+	if len(matches) != 1 || matches[0].name != "update" {
+		t.Fatalf("update command missing from palette: %v", matches)
+	}
+}

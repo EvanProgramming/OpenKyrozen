@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
+import json
 import platform
 import shutil
 import tarfile
@@ -12,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -28,11 +31,11 @@ def _release_tui_asset_available(self) -> bool:
     return self._update_url_available(self.TUI_SOURCE_URL) and self._update_url_available(self.TUI_CHECKSUM_URL)
 
 
-def _resolve_update_revision(self) -> str | None:
+def _resolve_update_revision(self, ref: str = "refs/heads/main", timeout: int = 30) -> str | None:
     try:
         result = subprocess.run(
-            ["git", "ls-remote", self.UPDATE_REPOSITORY_URL, "refs/heads/main"],
-            capture_output=True, text=True, timeout=30, check=False,
+            ["git", "ls-remote", self.UPDATE_REPOSITORY_URL, ref],
+            capture_output=True, text=True, timeout=timeout, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -42,6 +45,52 @@ def _resolve_update_revision(self) -> str | None:
         fields = line.split()
         if fields and re.fullmatch(r"[0-9a-f]{40}", fields[0]):
             return fields[0]
+    return None
+
+
+def _available_update(self) -> str | None:
+    """Check the same immutable main source used by /update, without installing."""
+    try:
+        revision = self._resolve_update_revision(timeout=5)
+        if not revision:
+            return None
+        request = urllib.request.Request(
+            f"https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/{revision}/pyproject.toml",
+            headers={"User-Agent": "OpenKyrozen updater"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            latest = tomllib.loads(response.read(128 * 1024).decode("utf-8"))["project"]["version"]
+        current = self.__version__
+        if not all(re.fullmatch(r"\d+\.\d+\.\d+", value) for value in (latest, current)):
+            return None
+        latest_parts, current_parts = (tuple(map(int, value.split("."))) for value in (latest, current))
+        if latest_parts > current_parts:
+            return latest
+        if latest_parts < current_parts:
+            return None
+        source_root = Path(__file__).resolve().parents[2]
+        if (source_root / ".git").exists():
+            # A checkout can already contain main plus unpublished local commits.
+            contained = subprocess.run(
+                ["git", "-C", str(source_root), "merge-base", "--is-ancestor", revision, "HEAD"],
+                capture_output=True, timeout=5, check=False,
+            )
+            if contained.returncode == 0:
+                return None
+            installed = subprocess.run(
+                ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=5, check=False,
+            ).stdout.strip()
+        else:
+            direct_url = importlib.metadata.distribution("openkyrozen").read_text("direct_url.json")
+            installed = json.loads(direct_url or "{}").get("vcs_info", {}).get("commit_id")
+            if not installed:
+                installed = self._resolve_update_revision(f"refs/tags/v{current}^{{}}", timeout=5)
+                installed = installed or self._resolve_update_revision(f"refs/tags/v{current}", timeout=5)
+        if installed and installed != revision:
+            return f"{latest} · {revision[:7]}"
+    except (OSError, ValueError, KeyError, TypeError, importlib.metadata.PackageNotFoundError, subprocess.TimeoutExpired):
+        pass
     return None
 
 

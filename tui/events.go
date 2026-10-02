@@ -13,6 +13,8 @@ func stringValue(event map[string]any, key string) string {
 
 func (m *model) handleBackendEvent(event backendEvent) {
 	switch stringValue(event, "event") {
+	case "update_available":
+		m.availableVersion = stringValue(event, "version")
 	case "agents_reset", "agent_detail":
 		if session := stringValue(event, "session_id"); session != "" && m.activeSessionID != "" && session != m.activeSessionID {
 			return

@@ -61,6 +61,8 @@ def backend_fixture():
     runtime._ensure_detached_learning_worker = lambda: True
     runtime._touch_detached_learning_heartbeat = lambda: None
     runtime.dispatch_learning_cycle = lambda **kwargs: []
+    runtime._available_update = lambda: '2.0.5'
+    runtime._self_update = lambda: 'Updated OpenKyrozen from source revision fixture: done'
     backend = Backend(application)
     original_emit = backend.emit
     log = Path(os.environ['KYROZEN_TUI_ACCEPTANCE_EVENTS'])
@@ -187,6 +189,7 @@ def acceptance(binary: Path):
             wait(prompt('self_learning'), 'learning selection')
             send(b'r')
             wait(lambda rows: any(r.get('event') == 'onboarding_complete' for r in rows), 'setup completed')
+            wait(lambda rows: any(r.get('event') == 'update_available' for r in rows), 'startup update notice')
             submit('first conversation')
             first_session = next(r['session_id'] for r in events() if r.get('event') == 'ready' and r.get('session_id'))
             ready_count = sum(r.get('event') == 'ready' for r in events())
@@ -249,11 +252,13 @@ def acceptance(binary: Path):
             plain = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', terminal).decode(errors='replace')
             assert 'APPROVAL REQUIRED' in plain and 'Choose a provider' in plain
             assert 'first conversation' in plain and 'second conversation' in plain
-            send(b'\x03')
+            assert '2.0.5 available' in plain and 'Run /update' in plain
+            send(b'/update\r')
+            wait(lambda rows: any(r.get('event') == 'restart' for r in rows), 'update command requests restart')
             process.wait(timeout=10)
-            assert process.returncode == 0
+            assert process.returncode == 75
             assert 'AGENTS' in plain and 'REVIEWER' in plain
-            print('TUI acceptance passed: onboarding, chat isolation, approvals, sub-agent updates/inspection/scrolling/cancellation, and 3 terminal sizes.')
+            print('TUI acceptance passed: startup update notice and command, onboarding, chat isolation, approvals, sub-agent updates/inspection/scrolling/cancellation, and 3 terminal sizes.')
         finally:
             if process.poll() is None:
                 process.kill()

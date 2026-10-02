@@ -190,6 +190,7 @@ type model struct {
 	showToolDetails           bool
 	settingsIdx               int
 	updateInProgress          bool
+	availableVersion          string
 	onboardingKind            string
 	onboardingPreviousVersion string
 	onboardingWaiting         bool

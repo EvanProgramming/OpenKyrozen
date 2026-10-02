@@ -17,6 +17,9 @@ from openkyrozen.workspace.context import resolve_launch_context
 class TUIProtocolTests(unittest.TestCase):
     def setUp(self):
         self.backend = tui_backend.Backend()
+        update_check = patch.object(self.backend.agent, "_available_update", return_value=None)
+        update_check.start()
+        self.addCleanup(update_check.stop)
         self.output = io.StringIO()
         self.backend._output = self.output
         self.addCleanup(self.backend.stop)
@@ -364,10 +367,13 @@ class TUIProtocolTests(unittest.TestCase):
                 patch.object(self.backend.agent, "_run_recovered_tasks", return_value=[]), \
                 patch.object(self.backend.agent.current_session.workspace, "graph", None), \
                 patch.object(self.backend.agent, "_ensure_detached_learning_worker", return_value=True) as ensure_worker, \
-                patch.object(self.backend, "_register_chat") as register_chat:
+                patch.object(self.backend, "_register_chat") as register_chat, \
+                patch("openkyrozen.interfaces.tui.onboarding.threading.Thread") as update_thread:
             self.backend.start({"command": "start", "global": True}, "start-1")
 
         ensure_worker.assert_called_once_with()
+        update_thread.assert_called_once_with(target=self.backend._check_for_update, daemon=True)
+        update_thread.return_value.start.assert_called_once_with()
         self.assertIsNone(register_chat.call_args.kwargs["title"])
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
         self.assertEqual(events[-1]["event"], "status")
@@ -505,6 +511,17 @@ class TUIProtocolTests(unittest.TestCase):
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
         self.assertEqual(events[-1]["event"], "restart")
         self.assertEqual(events[-1]["request_id"], "update-1")
+
+    def test_update_notice_and_command(self):
+        with patch.object(self.backend.agent, "_available_update", return_value="2.0.5"):
+            self.backend._check_for_update()
+        notice = json.loads(self.output.getvalue().splitlines()[-1])
+        self.assertEqual(notice["event"], "update_available")
+        self.assertEqual(notice["version"], "2.0.5")
+        with patch.object(self.backend.agent, "_self_update", return_value="Updated OpenKyrozen from source revision abc123") as update:
+            self.backend._command("/update", {}, "update-command")
+        update.assert_called_once_with()
+        self.assertEqual(json.loads(self.output.getvalue().splitlines()[-1])["event"], "restart")
 
     def test_history_commands_require_explicit_rollback_confirmation(self):
         current = {"id": "hist_current"}
