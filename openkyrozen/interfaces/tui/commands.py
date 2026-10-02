@@ -219,6 +219,8 @@ def _command(self, name: str, args: Any, request_id: str) -> None:
         mode = arg_text.strip().lower()
         if isinstance(args, Mapping):
             mode = str(args.get("mode") or mode).strip().lower()
+        if mode == "jev":
+            mode = "full_jev"
         if not mode:
             state = runtime.interaction_envelope()
             self.emit("response", request_id, text=f"Permissions: {state['permission_mode']}.")

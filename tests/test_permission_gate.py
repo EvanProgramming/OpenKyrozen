@@ -21,6 +21,32 @@ class PermissionGateTests(unittest.TestCase):
         self.assertTrue(requires_ask_approval("read_file", "~/.ssh/id_ed25519"))
         self.assertTrue(requires_ask_approval("browser_click", "submit"))
 
+    def test_shell_classifier_rejects_dangerous_flags_on_allowlisted_commands(self):
+        for command in (
+            "find . -delete",
+            "find . -exec rm {} ;",
+            "rg --pre=cat needle .",
+            "git diff --output=tmp.patch",
+            "go test ./... -exec=sh",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    risk_category("run_cmd", command),
+                    "opaque_or_high_impact_command",
+                )
+
+    def test_shell_classifier_checks_the_complete_command(self):
+        long_private_read = "cat " + (" " * 4100) + "; cat ~/.ssh/id_ed25519"
+        self.assertEqual(
+            risk_category("run_cmd", long_private_read),
+            "private_data_access",
+        )
+        long_executable_option = "rg needle " + (" " * 4100) + "--pre=cat"
+        self.assertEqual(
+            risk_category("run_cmd", long_executable_option),
+            "opaque_or_high_impact_command",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

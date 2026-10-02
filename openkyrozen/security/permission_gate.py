@@ -19,14 +19,30 @@ _SAFE_COMMANDS = frozenset({
     "python -m unittest", "pytest", "go test", "go vet", "make check", "make test",
     "make lint", "npm test", "npm run test", "cargo test", "cargo check",
 })
+_READ_FLAGS = {
+    "ls": {"-a", "-A", "-l", "-la", "-al", "-lh", "-lah", "-alh", "-1"},
+    "git status": {"-s", "--short", "-b", "--branch", "--porcelain", "--porcelain=v1", "--untracked-files=normal"},
+    "git diff": {"--stat", "--name-only", "--name-status", "--check", "--cached", "--staged"},
+    "git log": {"--oneline", "--decorate", "--no-decorate", "--graph"},
+    "git show": {"--stat", "--name-only", "--name-status", "--no-patch", "--format=short", "--format=oneline"},
+}
+_PATH_ESCAPE = re.compile(r"(?:^|/)\.\.(?:/|$)")
 _SHELL_META = re.compile(r"(?:\$\(|`|>|<|\{|\}|\*|\?|\[|\]|\\\\|\n)")
 _COMPOUND = re.compile(r"(?:&&|\|\||[;|])")
 
 
 def _arguments(value: object) -> str:
     if isinstance(value, dict):
-        return " ".join(str(item) for item in value.values())[:4000]
-    return str(value or "")[:4000]
+        return " ".join(str(item) for item in value.values())
+    return str(value or "")
+
+
+def _safe_operands(words: list[str]) -> bool:
+    return all(
+        not _PATH_ESCAPE.search(word)
+        and (word.startswith("-") or not word.startswith(("~", "/")))
+        for word in words
+    )
 
 
 def _safe_shell_command(args: str) -> bool:
@@ -44,9 +60,7 @@ def _safe_shell_command(args: str) -> bool:
             continue
         if words[0] in {"sh", "bash", "zsh", "fish", "eval", "sudo", "doas"}:
             return False
-        if " ".join(words[:2]) == "git status" or " ".join(words[:2]) in {
-            "git diff", "git log", "git show",
-        }:
+        if " ".join(words[:2]) in {"git status", "git diff", "git log", "git show"}:
             command = " ".join(words[:2])
         elif words[:3] == ["git", "branch", "--show-current"]:
             command = "git branch --show-current"
@@ -60,8 +74,28 @@ def _safe_shell_command(args: str) -> bool:
             command = words[0]
         if command not in _SAFE_COMMANDS:
             return False
-        if _PRIVATE.search(" ".join(words[1:])):
+        operands = words[2:] if command.startswith("git ") else words[1:]
+        if _PRIVATE.search(" ".join(words[1:])) or not _safe_operands(operands):
             return False
+        if command == "find" and len(words) > 2:
+            return False
+        if command in _READ_FLAGS:
+            if any(word.startswith("-") and word not in _READ_FLAGS[command] for word in operands):
+                return False
+        elif command.startswith("git "):
+            if any(word.startswith("-") for word in operands):
+                return False
+        elif command in {"pwd", "git branch --show-current"} and len(words) > (1 if command == "pwd" else 3):
+            return False
+        elif command in {"make check", "make test", "make lint", "npm test", "npm run test", "cargo test", "cargo check"}:
+            if len(words) != len(command.split()):
+                return False
+        elif command in {"python -m unittest", "pytest", "go test", "go vet"}:
+            if any(word.startswith("-") for word in operands):
+                return False
+        elif command in {"ls", "rg", "grep", "cat", "head", "tail", "wc", "file", "find"}:
+            if any(word.startswith("-") for word in operands):
+                return False
     return True
 
 

@@ -1048,6 +1048,20 @@ func TestMouseSelectsModeAndPermissionWithoutClearingComposer(t *testing.T) {
 	}
 }
 
+func TestPermissionHitTargetsMatchRenderedLabels(t *testing.T) {
+	for _, test := range []struct {
+		width int
+		x     int
+	}{{120, 50}, {60, 38}} {
+		m := initialModel("", true)
+		m.width, m.height, m.screen = test.width, 30, screenChat
+		m.resize()
+		if index := m.permissionTabAt(test.x, m.modeControlsStartY()+1); index != 2 {
+			t.Fatalf("width %d: right edge of full-without-Jev tab selected %d, want 2", test.width, index)
+		}
+	}
+}
+
 func TestPermissionSelectorSendsSelectedMode(t *testing.T) {
 	m := initialModel("", true)
 	m.screen, m.permissionIdx = screenPermissions, 2

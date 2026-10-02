@@ -70,16 +70,13 @@ func (m model) modeControls(width int) string {
 		mode += mutedStyle.Render("  → " + strings.ToUpper(m.effectiveMode))
 	}
 	permission := "PERMISSIONS  "
-	choices := []struct{ id, label string }{{"ask", "ASK"}, {"full_jev", "FULL + JEV"}, {"full", "FULL NO JEV"}}
+	labels, compactPermissions := permissionModeControlLabels(width)
+	choices := []struct{ id, label string }{{"ask", labels[0]}, {"full_jev", labels[1]}, {"full", labels[2]}}
 	permissionPrefix := "PERMISSIONS  "
-	if compactControls {
+	if compactPermissions && compactControls {
 		permissionPrefix = "P"
-		choices[0].label, choices[1].label, choices[2].label = "A", "J", "O"
 	} else if width < 44 {
 		permissionPrefix = "ACCESS "
-		choices[0].label, choices[1].label, choices[2].label = "A", "J", "O"
-	} else if width < 76 {
-		choices[1].label, choices[2].label = "JEV", "NO JEV"
 	}
 	permission = permissionPrefix
 	for index, choice := range choices {
@@ -108,6 +105,20 @@ func (m model) modeControls(width int) string {
 		return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(mode + separator + permission)
 	}
 	return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(mode + "\n" + permission)
+}
+
+func permissionModeControlLabels(width int) ([]string, bool) {
+	labels := []string{"ASK", "FULL + JEV", "FULL NO JEV"}
+	if width < 32 {
+		return []string{"A", "J", "O"}, true
+	}
+	if width < 44 {
+		return []string{"A", "J", "O"}, false
+	}
+	if width < 76 {
+		return []string{"ASK", "JEV", "NO JEV"}, false
+	}
+	return labels, false
 }
 
 func (m model) modeControlsModeWidth(width int) int {
@@ -191,14 +202,11 @@ func (m model) permissionTabAt(x, y int) int {
 	if compactHeight {
 		start += m.modeControlsModeWidth(m.contentWidth()) + 3
 	}
-	labels := []string{"ASK", "FULL + JEV", "FULL OPEN"}
-	compactControls := m.contentWidth() < 32
+	labels, compactControls := permissionModeControlLabels(m.contentWidth())
 	if compactControls {
-		start, labels = len("P"), []string{"A", "J", "O"}
+		start = len("P")
 	} else if m.contentWidth() < 44 {
-		start, labels = len("ACCESS "), []string{"A", "J", "O"}
-	} else if m.contentWidth() < 76 {
-		labels[1], labels[2] = "JEV", "OPEN"
+		start = len("ACCESS ")
 	}
 	for index, label := range labels {
 		padding := 4
