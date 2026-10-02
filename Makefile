@@ -21,7 +21,7 @@ install-core:
 	@echo "Creating virtual environment with $(PYTHON)..."
 	@command -v $(PYTHON) >/dev/null 2>&1 || { echo "Error: $(PYTHON) not found. Install Python 3.12 first."; exit 1; }
 	$(PYTHON) -m venv venv
-	./venv/bin/python -m pip install --upgrade pip setuptools wheel && ./venv/bin/python -m pip install -e '.[web,claude]'
+	./venv/bin/python -m pip install --upgrade pip && ./venv/bin/python -m pip install -e '.[web,claude]'
 	@echo ""
 	@echo "OpenKyrozen core development environment installed."
 
