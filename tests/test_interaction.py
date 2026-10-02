@@ -105,6 +105,69 @@ class InteractionTests(unittest.TestCase):
                 self.agent.interaction_workspace_id(global_context), self.agent.memory_bank.workspace_id,
             )
 
+    def test_permission_setting_persists_per_project_and_gates_writes(self):
+        from openkyrozen.workspace.context import resolve_launch_context
+
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            with patch.object(self.agent, "_EXECUTION_SURFACE", "tui"), patch.object(self.agent, "_emit_stream_event"):
+                self.agent._set_launch_context(resolve_launch_context(project_path=first, home=home))
+                self.agent.bind_interaction_scope("first-chat")
+                self.assertEqual(self.agent.permission_mode(), "ask")
+                self.agent.set_permission_mode("full")
+                self.assertEqual(self.agent.interaction_envelope()["permission_mode"], "full")
+
+                prompts = []
+                self.assertTrue(self.agent._authorize_tool_action(
+                    "write_file", "src/app.py|change", approve=lambda action, args: prompts.append(action) or True,
+                ))
+                self.assertEqual(prompts, [])
+
+                self.agent._set_launch_context(resolve_launch_context(project_path=second, home=home))
+                self.agent.bind_interaction_scope("second-chat")
+                self.assertEqual(self.agent.permission_mode(), "ask")
+                prompts.clear()
+                self.assertTrue(self.agent._authorize_tool_action(
+                    "write_file", "src/app.py|change", approve=lambda action, args: prompts.append(action) or True,
+                ))
+                self.assertEqual(prompts, ["write_file"])
+
+    def test_jev_permission_check_requires_high_confidence_and_sanitizes_payload(self):
+        from openkyrozen.routing import transport
+
+        response = {"answers": {"permission": {"type": "choice", "choice": "allow",
+                    "confidence": 0.999, "probabilities": {"allow": 0.999, "deny": 0.001}}}}
+        with patch.object(self.agent, "_emit_stream_event"), patch.object(
+            self.agent, "_record_permission_decision"
+        ), patch.object(transport, "_request", return_value=response) as request:
+            self.assertTrue(self.agent._jev_permission_check("run_cmd", "external_or_irreversible_change"))
+            state = request.call_args.args[2]
+            self.assertEqual(state, {"action": "run_cmd", "risk_category": "external_or_irreversible_change", "surface": "local TUI"})
+            self.assertNotIn("origin main", str(state))
+            response["answers"]["permission"]["confidence"] = 0.994
+            self.assertFalse(self.agent._jev_permission_check("run_cmd", "external_or_irreversible_change"))
+            response["answers"]["permission"]["confidence"] = 0.999
+            self.assertFalse(self.agent._jev_permission_check("read_file", "private_data_access"))
+            response["answers"]["permission"]["probabilities"]["allow"] = "0.999"
+            response["answers"]["permission"]["probabilities"]["deny"] = "0.001"
+            self.assertFalse(self.agent._jev_permission_check("run_cmd", "external_or_irreversible_change"))
+
+    def test_ask_mode_ignores_global_auto_approval_override(self):
+        with patch.object(self.agent, "_EXECUTION_SURFACE", "tui"), patch.object(
+            self.agent, "permission_mode", return_value="ask",
+        ), patch.object(self.agent, "_emit_stream_event"), patch.dict(
+            "os.environ", {"KYROZEN_APPROVAL_MODE": "never"},
+        ):
+            self.assertFalse(self.agent._authorize_tool_action(
+                "write_file", "src/app.py|change", approve=lambda _action, _args: False,
+            ))
+
+    def test_protected_full_skips_jev_for_ordinary_workspace_edits(self):
+        with patch.object(self.agent, "_EXECUTION_SURFACE", "tui"), patch.object(
+            self.agent, "permission_mode", return_value="full_jev",
+        ), patch.object(self.agent, "_jev_permission_check") as check:
+            self.assertTrue(self.agent._authorize_tool_action("write_file", "src/app.py|change"))
+            check.assert_not_called()
+
     def test_binding_empty_chat_clears_previous_short_term_memory(self):
         previous = (self.agent.short_term_memory, self.agent.tasks, self.agent._interaction_controller,
                     self.agent.memory_bank.session_id)

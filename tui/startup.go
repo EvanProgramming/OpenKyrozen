@@ -73,6 +73,7 @@ func initialModel(project string, global bool) model {
 		onboardingKind:            onboardingKind,
 		onboardingPreviousVersion: onboardingPreviousVersion,
 		interactionMode:           "auto",
+		permissionMode:            "ask",
 		fastBackend:               "off",
 		settingsIdx:               0,
 		effectiveMode:             "ask",

@@ -70,7 +70,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.followTail = m.view.AtBottom()
 		}
 	case tea.MouseClickMsg:
-		if m.screen == screenGraph && msg.Button == tea.MouseLeft {
+		if m.screen == screenChat && !m.busy && msg.Button == tea.MouseLeft {
+			if index := m.modeTabAt(msg.X, msg.Y); index >= 0 {
+				m.send("command", map[string]any{"name": "mode", "args": []string{"auto", "ask", "plan", "agent"}[index]})
+			} else if index := m.permissionTabAt(msg.X, msg.Y); index >= 0 {
+				m.send("command", map[string]any{"name": "permissions", "args": []string{"ask", "full_jev", "full"}[index]})
+			}
+		} else if m.screen == screenGraph && msg.Button == tea.MouseLeft {
 			nodes := m.visibleGraphNodes()
 			miniHeight := minInt(14, maxInt(8, maxInt(1, m.height-2)/3))
 			firstNodeRow := miniHeight + 5

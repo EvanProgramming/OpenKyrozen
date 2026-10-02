@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 from openkyrozen.tasks.engine import TaskManager
-from openkyrozen.agent.modes import InteractionController, InteractionError
+from openkyrozen.agent.modes import InteractionController, InteractionError, PERMISSION_MODES
 from openkyrozen.workspace.context import LaunchContext, source_scope_id
 
 
@@ -48,7 +48,40 @@ def _ponytail_context(self, profile: str) -> str:
 
 
 def interaction_envelope(self, user_input: str = "") -> dict[str, Any]:
-    return self._interaction_controller.envelope(user_input)
+    value = self._interaction_controller.envelope(user_input)
+    value["permission_mode"] = self.permission_mode()
+    value["permission_jev_configured"] = bool(self.fast_mode.jev_key())
+    return value
+
+
+def permission_mode(self) -> str:
+    """Read project permission preference; non-TUI surfaces retain their policy."""
+    if self._EXECUTION_SURFACE != "tui":
+        return "full"
+    workspace_id = self.interaction_workspace_id()
+    events = self.memory_bank.store.list_events(
+        "permission.mode_changed", limit=1, workspace_id=workspace_id,
+        user_id=self.memory_bank.user_id,
+    )
+    mode = str(events[0]["payload"].get("mode", "ask")) if events else "ask"
+    return mode if mode in PERMISSION_MODES else "ask"
+
+
+def set_permission_mode(self, mode: str, *, jev_api_key: str | None = None) -> dict[str, Any]:
+    mode = str(mode or "").strip().lower()
+    if mode not in PERMISSION_MODES:
+        raise InteractionError("permissions must be ask, full_jev, or full")
+    if mode == "full_jev":
+        if jev_api_key:
+            self.fast_mode.save_jev_key(jev_api_key)
+        if not self.fast_mode.jev_key():
+            raise InteractionError("Jev API key is required for protected full access")
+    self.memory_bank.store.append_event(
+        "permission.mode_changed", {"mode": mode}, user_id=self.memory_bank.user_id,
+        workspace_id=self.interaction_workspace_id(),
+    )
+    self._emit_stream_event({"event": "interaction", "interaction": self.interaction_envelope()})
+    return self.interaction_envelope()
 
 
 def interaction_workspace_id(self, context: LaunchContext | None = None) -> str:

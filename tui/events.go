@@ -79,6 +79,9 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		if state == "thinking" || state == "starting" {
 			m.busy = state == "thinking"
 		}
+		if state == "ready" {
+			m.permissionStatus = ""
+		}
 	case "ready":
 		if session := stringValue(event, "session_id"); session != "" && session != m.activeSessionID {
 			m.agents = nil
@@ -177,6 +180,8 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		if value, ok := event["interaction"].(map[string]any); ok {
 			m.applyInteraction(value)
 		}
+	case "permission_check":
+		m.permissionStatus = stringValue(event, "state")
 	case "graph_state":
 		m.graph = parseGraph(event["graph"])
 		m.graphSelected = minInt(m.graphSelected, maxInt(0, len(m.graph.miniNodes)-1))
@@ -210,6 +215,7 @@ func (m *model) applyInteraction(value map[string]any) {
 	if assist, ok := value["decision_assist"].(map[string]any); ok {
 		m.decisionAssistBackend = firstNonEmpty(stringValue(assist, "backend"), "off")
 		m.decisionAssistConsent = boolValue(assist, "kev_private_consent")
+		m.jeVConfigured = boolValue(assist, "jev_configured")
 		m.systemOneModel = firstNonEmpty(stringValue(assist, "jev_model_alias"), "jev-latest")
 		m.systemOneRelease = firstNonEmpty(stringValue(assist, "jev_model_release_date"), "release unknown")
 		m.systemOneHealth = firstNonEmpty(stringValue(assist, "jev_health"), "unknown")
@@ -232,6 +238,8 @@ func (m *model) applyInteraction(value map[string]any) {
 			}
 		}
 	}
+	m.permissionMode = firstNonEmpty(stringValue(value, "permission_mode"), "ask")
+	m.jeVConfigured = boolValue(value, "permission_jev_configured")
 	m.effectiveMode = firstNonEmpty(stringValue(value, "effective_mode"), m.interactionMode)
 	if raw, ok := value["pending_question"].(map[string]any); ok {
 		request := &questionRequest{requestID: stringValue(raw, "request_id")}
@@ -373,6 +381,7 @@ func (m *model) handlePrompt(event backendEvent) {
 		m.startTransition()
 	case "api_key":
 		m.fastKeyInput = false
+		m.permissionKeyInput = false
 		m.onboardingWaiting = false
 		m.screen = screenAPIKey
 		m.startTransition()
@@ -382,6 +391,7 @@ func (m *model) handlePrompt(event backendEvent) {
 	case "fast_key":
 		m.fastKeyInput = true
 		m.decisionAssistKeyInput = false
+		m.permissionKeyInput = false
 		m.screen = screenAPIKey
 		m.apiInput.Reset()
 		m.apiInput.Placeholder = "Enter Jev API key for System One (paid TypeSafe calls)"
@@ -389,9 +399,18 @@ func (m *model) handlePrompt(event backendEvent) {
 	case "decision_assist_key":
 		m.fastKeyInput = false
 		m.decisionAssistKeyInput = true
+		m.permissionKeyInput = false
 		m.screen = screenAPIKey
 		m.apiInput.Reset()
 		m.apiInput.Placeholder = "Enter Jev API key (paid TypeSafe calls)"
+		m.apiInput.Focus()
+	case "permission_jev_key":
+		m.fastKeyInput = false
+		m.decisionAssistKeyInput = false
+		m.permissionKeyInput = true
+		m.screen = screenAPIKey
+		m.apiInput.Reset()
+		m.apiInput.Placeholder = firstNonEmpty(stringValue(event, "message"), "Enter Jev API key for protected full access")
 		m.apiInput.Focus()
 	case "provider":
 		m.onboardingWaiting = false

@@ -104,6 +104,9 @@ def _stream_projection(self, request_id: str):
             self.emit("tasks", request_id, tasks=event.get("tasks", []))
         elif kind == "interaction":
             self.emit("interaction", request_id, interaction=event.get("interaction", {}))
+        elif kind == "permission_check":
+            self.emit("permission_check", request_id, state=event.get("state", ""),
+                      category=event.get("category", ""))
         elif kind == "subagent":
             self.emit("subagent", request_id, agent=event.get("agent", {}),
                       session_id=event.get("session_id"), source_scope_id=event.get("source_scope_id"))

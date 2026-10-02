@@ -53,6 +53,9 @@ class AgentRuntime:
         _approval_log_path,
         _record_tool_approval,
         _confirm_tool_action,
+        _jev_permission_check,
+        _record_permission_decision,
+        _authorize_tool_action,
     )
 
     # agent.context
@@ -133,6 +136,8 @@ class AgentRuntime:
         _ponytail_context,
         interaction_envelope,
         interaction_workspace_id,
+        permission_mode,
+        set_permission_mode,
         bind_interaction_scope,
         set_interaction_mode,
         set_system_one_backend,
