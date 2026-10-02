@@ -117,7 +117,7 @@ class AgentConfigTests(unittest.TestCase):
             workspace.mkdir()
             (workspace / "agent.yaml").write_text(_config_text("installed-reviewer", "read"), encoding="utf-8")
             build = subprocess.run(
-                [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "--no-build-isolation", "--wheel-dir", str(wheel_dir)],
+                [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "--wheel-dir", str(wheel_dir)],
                 cwd=Path(__file__).parents[1], capture_output=True, text=True, timeout=120,
             )
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)

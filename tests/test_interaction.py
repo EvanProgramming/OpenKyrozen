@@ -44,6 +44,19 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(mode_capabilities(base, "plan"), frozenset({"read", "network"}))
         self.assertEqual(mode_capabilities(frozenset({"read"}), "agent"), frozenset({"read"}))
 
+    def test_ponytail_is_inactive_for_informational_ask_turns(self):
+        token = self.agent._active_interaction_mode.set("ask")
+        try:
+            self.assertEqual(self.agent._ponytail_context("coder"), "")
+        finally:
+            self.agent._active_interaction_mode.reset(token)
+
+        token = self.agent._active_interaction_mode.set("plan")
+        try:
+            self.assertIn('ponytail level="full"', self.agent._ponytail_context("coder"))
+        finally:
+            self.agent._active_interaction_mode.reset(token)
+
     def test_inline_commands_are_trailing_and_conservative(self):
         self.assertEqual(
             split_inline_command("Build a todo list for me /mode plan"),

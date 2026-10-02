@@ -37,7 +37,7 @@ def set_ponytail_level(self, level: str) -> str:
 
 
 def _ponytail_context(self, profile: str) -> str:
-    if profile != "coder" or self._ponytail_level == "off":
+    if self._active_interaction_mode.get() == "ask" or profile != "coder" or self._ponytail_level == "off":
         return ""
     variants = {
         "lite": "Build the requested behavior, and mention a materially simpler alternative when one exists.",
