@@ -41,7 +41,8 @@ class DistributionTests(unittest.TestCase):
 
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("install: install-core", makefile)
-        self.assertIn("pip install -e '.[web]'", makefile)
+        self.assertIn("pip install --upgrade pip setuptools wheel", makefile)
+        self.assertIn("pip install -e '.[web,claude]'", makefile)
         self.assertIn("pip install -e '.[all]'", makefile)
         self.assertIn("python -m playwright install chromium", makefile)
         self.assertIn("learning_worker.py", makefile)
