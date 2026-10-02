@@ -99,7 +99,7 @@ func (m model) chatChromeHeight() int {
 	if len(m.palette) > 0 {
 		nonViewport = append(nonViewport, m.paletteView(width))
 	}
-	nonViewport = append(nonViewport, m.composer(width), m.chatFooter(width))
+	nonViewport = append(nonViewport, m.modeControls(width), m.composer(width), m.chatFooter(width))
 	return lipgloss.Height(strings.Join(nonViewport, "\n"))
 }
 

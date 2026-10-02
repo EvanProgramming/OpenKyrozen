@@ -215,6 +215,26 @@ def _command(self, name: str, args: Any, request_id: str) -> None:
                 self.interaction(request_id)
             except (runtime.InteractionError, RuntimeError, OSError, ValueError) as exc:
                 self.emit("error", request_id, code="decision_assist_setup_failed", error=str(exc))
+    elif command in {"/permissions", "permissions"}:
+        mode = arg_text.strip().lower()
+        if isinstance(args, Mapping):
+            mode = str(args.get("mode") or mode).strip().lower()
+        if not mode:
+            state = runtime.interaction_envelope()
+            self.emit("response", request_id, text=f"Permissions: {state['permission_mode']}.")
+        elif self._busy:
+            self.emit("error", request_id, code="busy", error="Cannot change permissions while a turn is running.")
+        elif mode in {"full_jev", "jev"} and not (runtime.fast_mode.jev_key() or (isinstance(args, Mapping) and args.get("api_key"))):
+            self.emit("prompt", request_id, kind="permission_jev_key", message="Enter Jev API key for protected full access (stored encrypted locally).")
+        else:
+            try:
+                state = runtime.set_permission_mode(
+                    mode, jev_api_key=args.get("api_key") if isinstance(args, Mapping) else None,
+                )
+                self.emit("response", request_id, text=f"Permissions set to {state['permission_mode']}.")
+                self.interaction(request_id)
+            except (runtime.InteractionError, RuntimeError, OSError, ValueError) as exc:
+                self.emit("error", request_id, code="invalid_permissions", error=str(exc))
     elif command in {"/mode", "mode"}:
         mode = arg_text.strip().lower()
         if not mode:
@@ -358,8 +378,11 @@ def _command(self, name: str, args: Any, request_id: str) -> None:
                     return
             self.emit("prompt", request_id, kind="github_auth", binary=client.binary(), hostname=client.hostname())
         elif action == "run" and len(parts) > 1:
-            if self._approval("github_cli", parts[1]):
-                self.emit("response", request_id, text=self._quiet_call(client.run, parts[1]))
+            receipt = self._quiet_call(
+                runtime.execute, runtime.current_session, "github_cli", parts[1],
+                operation_scope="tui-command", approve=self._approval,
+            )
+            self.emit("response", request_id, text=receipt.result)
         else:
             self.emit("error", request_id, code="invalid_github_command", error="Usage: /github status | /github login | /github run <gh arguments>")
     elif command in {"/skills", "skills"}:

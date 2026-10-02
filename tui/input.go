@@ -105,6 +105,23 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		}
 		return nil, false
 	}
+	if m.screen == screenPermissions {
+		choices := []string{"ask", "full_jev", "full"}
+		switch key {
+		case "esc":
+			m.screen = screenChat
+			m.input.Focus()
+		case "up", "k":
+			m.permissionIdx = (m.permissionIdx - 1 + len(choices)) % len(choices)
+		case "down", "j":
+			m.permissionIdx = (m.permissionIdx + 1) % len(choices)
+		case "enter":
+			m.send("command", map[string]any{"name": "permissions", "args": choices[m.permissionIdx]})
+			m.screen = screenChat
+			m.input.Focus()
+		}
+		return nil, false
+	}
 	if m.screen == screenQuestion {
 		return m.questionKey(key), false
 	}
@@ -172,6 +189,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 			m.apiInput.Reset()
 			m.fastKeyInput = false
 			m.decisionAssistKeyInput = false
+			m.permissionKeyInput = false
 			if m.onboardingKind != "" {
 				m.screen = screenOnboarding
 				m.onboardingWaiting = false
@@ -187,6 +205,9 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 			} else if m.decisionAssistKeyInput {
 				m.send("command", map[string]any{"name": "decision-assist", "args": map[string]any{"backend": "jev", "api_key": m.apiInput.Value()}})
 				m.decisionAssistKeyInput = false
+			} else if m.permissionKeyInput {
+				m.send("command", map[string]any{"name": "permissions", "args": map[string]any{"mode": "full_jev", "api_key": m.apiInput.Value()}})
+				m.permissionKeyInput = false
 			} else {
 				m.send("command", map[string]any{"name": "api_key", "args": map[string]any{"api_key": m.apiInput.Value()}})
 			}
@@ -202,6 +223,27 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		var cmd tea.Cmd
 		m.apiInput, cmd = m.apiInput.Update(msg)
 		return cmd, false
+	}
+	if m.screen == screenChat && !m.busy && (key == "ctrl+t" || key == "ctrl+shift+t") {
+		modes := []string{"auto", "ask", "plan", "agent"}
+		delta := 1
+		if key == "ctrl+shift+t" {
+			delta = -1
+		}
+		mode := cycleSetting(firstNonEmpty(m.interactionMode, "auto"), modes, delta)
+		m.send("command", map[string]any{"name": "mode", "args": mode})
+		return nil, false
+	}
+	if m.screen == screenChat && !m.busy && key == "ctrl+p" {
+		m.permissionIdx = 0
+		for i, mode := range []string{"ask", "full_jev", "full"} {
+			if mode == m.permissionMode {
+				m.permissionIdx = i
+			}
+		}
+		m.input.Blur()
+		m.screen = screenPermissions
+		return nil, false
 	}
 	if m.screen == screenChat && (key == "ctrl+b" || key == "ctrl+\\") {
 		m.navigationOpen = !m.navigationOpen

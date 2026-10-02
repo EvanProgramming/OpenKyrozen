@@ -157,6 +157,23 @@ func (m model) modal(_ string) string {
 			lines = append(lines, row.Render(cursor+" "+style.Render(mode)))
 		}
 		body = strings.Join(lines, "\n")
+	case screenPermissions:
+		choices := []struct{ mode, title, detail string }{
+			{"ask", "Ask before changes", "Confirm writes, shell, Git, browser, dynamic tools, and sensitive reads."},
+			{"full_jev", "Full access with Jev detection", "Jev checks sensitive and high impact actions; uncertain checks ask you."},
+			{"full", "Full access without Jev protection", "Run within configured capability and workspace limits."},
+		}
+		lines := []string{brandStyle.Render("PERMISSIONS"), titleStyle.Render("Choose the action approval level"), mutedStyle.Render("↑↓ select  Enter confirm  Esc cancel"), ""}
+		for index, choice := range choices {
+			cursor, style := mutedStyle.Render("·"), softStyle
+			row := lipgloss.NewStyle().Padding(0, 1)
+			if index == m.permissionIdx {
+				cursor, style = amberStyle.Render("›"), titleStyle
+				row = row.Background(lipgloss.Color(surfaceHi))
+			}
+			lines = append(lines, row.Render(cursor+" "+style.Render(choice.title)), mutedStyle.Render("    "+choice.detail))
+		}
+		body = strings.Join(lines, "\n")
 	case screenQuestion:
 		lines := []string{brandStyle.Render("CLARIFICATION"), titleStyle.Render("Kyrozen needs a decision")}
 		if m.pendingQuestion != nil && len(m.pendingQuestion.questions) > 0 {

@@ -31,9 +31,190 @@ func (m model) chatView() string {
 	if len(m.palette) > 0 {
 		blocks = append(blocks, m.paletteView(contentWidth))
 	}
+	blocks = append(blocks, m.modeControls(contentWidth))
 	blocks = append(blocks, m.composer(contentWidth))
 	blocks = append(blocks, m.chatFooter(contentWidth))
 	return strings.Join(blocks, "\n")
+}
+
+func (m model) modeControls(width int) string {
+	modes := []string{"auto", "ask", "plan", "agent"}
+	labels := []string{"AUTO", "ASK", "PLAN", "AGENT"}
+	modePrefix := "MODE  "
+	compactControls := width < 32
+	if compactControls {
+		modePrefix = "M"
+		labels = []string{"A", "Q", "P", "G"}
+	} else if width < 44 {
+		modePrefix = "MODE "
+		labels = []string{"A", "Q", "P", "G"}
+	} else if width < 64 {
+		labels[0] = "A"
+	}
+	mode := modePrefix
+	for index, name := range modes {
+		label := " " + labels[index] + " "
+		if compactControls {
+			label = labels[index]
+		}
+		if name == m.interactionMode {
+			mode += titleStyle.Render("[" + label + "]")
+		} else {
+			mode += mutedStyle.Render("[" + label + "]")
+		}
+		if index < len(modes)-1 && !compactControls {
+			mode += " "
+		}
+	}
+	if m.interactionMode == "auto" && m.effectiveMode != "" && m.effectiveMode != "auto" {
+		mode += mutedStyle.Render("  → " + strings.ToUpper(m.effectiveMode))
+	}
+	permission := "PERMISSIONS  "
+	choices := []struct{ id, label string }{{"ask", "ASK"}, {"full_jev", "FULL + JEV"}, {"full", "FULL NO JEV"}}
+	permissionPrefix := "PERMISSIONS  "
+	if compactControls {
+		permissionPrefix = "P"
+		choices[0].label, choices[1].label, choices[2].label = "A", "J", "O"
+	} else if width < 44 {
+		permissionPrefix = "ACCESS "
+		choices[0].label, choices[1].label, choices[2].label = "A", "J", "O"
+	} else if width < 76 {
+		choices[1].label, choices[2].label = "JEV", "NO JEV"
+	}
+	permission = permissionPrefix
+	for index, choice := range choices {
+		label := " " + choice.label + " "
+		if compactControls {
+			label = choice.label
+		}
+		if choice.id == m.permissionMode {
+			permission += amberStyle.Render("[" + label + "]")
+		} else {
+			permission += mutedStyle.Render("[" + label + "]")
+		}
+		if index < len(choices)-1 && !compactControls {
+			permission += " "
+		}
+	}
+	if m.permissionStatus == "checking" {
+		permission += amberStyle.Render("  Jev checking…")
+	} else if m.permissionStatus == "approval_required" {
+		permission += amberStyle.Render("  approval required")
+	} else if m.permissionMode == "full_jev" && !m.jeVConfigured {
+		permission += mutedStyle.Render("  Jev unavailable")
+	}
+	separator := mutedStyle.Render(" │ ")
+	if m.height > 0 && m.height < 18 && width >= 100 {
+		return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(mode + separator + permission)
+	}
+	return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(mode + "\n" + permission)
+}
+
+func (m model) modeControlsModeWidth(width int) int {
+	labels := []string{"AUTO", "ASK", "PLAN", "AGENT"}
+	prefix := "MODE  "
+	if width < 32 {
+		prefix, labels = "M", []string{"A", "Q", "P", "G"}
+	} else if width < 44 {
+		prefix, labels = "MODE ", []string{"A", "Q", "P", "G"}
+	} else if width < 64 {
+		labels[0] = "A"
+	}
+	result := len(prefix)
+	for index, label := range labels {
+		result += len(label) + 4
+		if width < 32 {
+			result -= 2
+		}
+		if index < len(labels)-1 && width >= 32 {
+			result++
+		}
+	}
+	if m.interactionMode == "auto" && m.effectiveMode != "" && m.effectiveMode != "auto" {
+		result += 4 + len(strings.ToUpper(m.effectiveMode))
+	}
+	return result
+}
+
+func (m model) modeControlsStartY() int {
+	rows := lipgloss.Height(m.chatHeader()) + m.historyHeight()
+	if progress := m.progressBlock(m.contentWidth()); progress != "" {
+		rows += lipgloss.Height(progress)
+	}
+	if len(m.palette) > 0 {
+		rows += lipgloss.Height(m.paletteView(m.contentWidth()))
+	}
+	return rows
+}
+
+func (m model) modeTabAt(x, y int) int {
+	if y != m.modeControlsStartY() {
+		return -1
+	}
+	start := len("MODE  ")
+	labels := []string{"AUTO", "ASK", "PLAN", "AGENT"}
+	compactControls := m.contentWidth() < 32
+	if compactControls {
+		start, labels = len("M"), []string{"A", "Q", "P", "G"}
+	} else if m.contentWidth() < 44 {
+		start, labels = len("MODE "), []string{"A", "Q", "P", "G"}
+	} else if m.contentWidth() < 64 {
+		labels[0] = "A"
+	}
+	for index, label := range labels {
+		padding := 4
+		if compactControls {
+			padding = 2
+		}
+		end := start + len(label) + padding
+		if x >= start && x < end {
+			return index
+		}
+		start = end
+		if !compactControls {
+			start++
+		}
+	}
+	return -1
+}
+
+func (m model) permissionTabAt(x, y int) int {
+	row := m.modeControlsStartY() + 1
+	compactHeight := m.height > 0 && m.height < 18 && m.contentWidth() >= 100
+	if compactHeight {
+		row = m.modeControlsStartY()
+	}
+	if y != row {
+		return -1
+	}
+	start := len("PERMISSIONS  ")
+	if compactHeight {
+		start += m.modeControlsModeWidth(m.contentWidth()) + 3
+	}
+	labels := []string{"ASK", "FULL + JEV", "FULL OPEN"}
+	compactControls := m.contentWidth() < 32
+	if compactControls {
+		start, labels = len("P"), []string{"A", "J", "O"}
+	} else if m.contentWidth() < 44 {
+		start, labels = len("ACCESS "), []string{"A", "J", "O"}
+	} else if m.contentWidth() < 76 {
+		labels[1], labels[2] = "JEV", "OPEN"
+	}
+	for index, label := range labels {
+		padding := 4
+		if compactControls {
+			padding = 2
+		}
+		end := start + len(label) + padding
+		if x >= start && x < end {
+			return index
+		}
+		start = end
+		if !compactControls {
+			start++
+		}
+	}
+	return -1
 }
 
 func (m model) chatHeader() string {

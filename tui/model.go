@@ -31,6 +31,7 @@ const (
 	screenApproval     screen = "approval"
 	screenSelfLearning screen = "self_learning"
 	screenMode         screen = "mode"
+	screenPermissions  screen = "permissions"
 	screenQuestion     screen = "question"
 	screenPlan         screen = "plan"
 	screenGraph        screen = "graph"
@@ -106,8 +107,10 @@ type model struct {
 	apiInput                  textinput.Model
 	fastKeyInput              bool
 	decisionAssistKeyInput    bool
+	permissionKeyInput        bool
 	decisionAssistBackend     string
 	decisionAssistConsent     bool
+	jeVConfigured             bool
 	systemOneModel            string
 	systemOneRelease          string
 	systemOneHealth           string
@@ -151,6 +154,9 @@ type model struct {
 	fastBackend               string
 	effectiveMode             string
 	modeIdx                   int
+	permissionMode            string
+	permissionStatus          string
+	permissionIdx             int
 	pendingQuestion           *questionRequest
 	questionIdx               int
 	choiceIdx                 int

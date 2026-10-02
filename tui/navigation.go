@@ -24,7 +24,9 @@ func (m model) navigationSidebar(panelWidth, height int) string {
 		brandStyle.Render("N  + New chat"),
 		brandStyle.Render("P  + New project"),
 		mutedStyle.Render("Ctrl+B focus / close"),
-		"",
+	}
+	if height > 9 {
+		lines = append(lines, "")
 	}
 	body := []string{}
 	selectedRow, activeRow := -1, -1

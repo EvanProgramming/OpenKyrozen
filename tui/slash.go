@@ -17,6 +17,7 @@ var commands = []command{
 	{name: "plan", aliases: nil, description: "Use Plan mode or accept/cancel a plan"},
 	{name: "question", aliases: nil, description: "Reopen, skip, or cancel clarification"},
 	{name: "agent", aliases: nil, description: "Switch auto, coder, or researcher mode"},
+	{name: "permissions", aliases: []string{"permission"}, description: "Choose Ask, protected full access, or full access"},
 	{name: "agents", description: "Inspect parallel agents, results, and independent reviews"},
 	{name: "new", aliases: nil, description: "Start a new chat in the current project"},
 	{name: "project", aliases: nil, description: "Create or open a directory as a new project chat"},
