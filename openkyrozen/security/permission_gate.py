@@ -28,7 +28,7 @@ _READ_FLAGS = {
 }
 _PATH_ESCAPE = re.compile(r"(?:^|/)\.\.(?:/|$)")
 _SHELL_META = re.compile(r"(?:\$\(|`|>|<|\{|\}|\*|\?|\[|\]|\\\\|\n)")
-_COMPOUND = re.compile(r"(?:&&|\|\||[;|])")
+_COMPOUND = re.compile(r"(?:&&|\|\||[;&|])")
 
 
 def _arguments(value: object) -> str:

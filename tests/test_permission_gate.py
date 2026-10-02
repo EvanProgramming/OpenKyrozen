@@ -28,6 +28,7 @@ class PermissionGateTests(unittest.TestCase):
             "rg --pre=cat needle .",
             "git diff --output=tmp.patch",
             "go test ./... -exec=sh",
+            "cat README.md & rm important.txt",
         ):
             with self.subTest(command=command):
                 self.assertEqual(
