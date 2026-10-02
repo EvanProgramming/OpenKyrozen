@@ -93,7 +93,7 @@ kyrozen-web
 - 自学习记录结果证据，只提升经过验证的改进，不会偷偷增加权限或修改模型权重。
 - Jev Decision 是可选的判断层：检查请求路由、澄清、学习证据、记忆相关性和可疑工具输出；它可以弃权，不会执行或批准工具。
 
-当前运行时提供 **45 个工具**，其中包括 **14 个 Git 工具**。完整的工具、endpoint 和 MCP schema 以[生成的运行时清单](docs/tool-inventory.md)为准。
+当前运行时提供 **46 个工具**，其中包括 **14 个 Git 工具**。完整的工具、endpoint 和 MCP schema 以[生成的运行时清单](docs/tool-inventory.md)为准。
 
 ## 文档
 

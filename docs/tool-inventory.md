@@ -7,7 +7,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 
 ## Runtime tools
 
-- Built-in runtime tools: **45**
+- Built-in runtime tools: **46**
 - Names with the `git_` prefix: **14**
 - The CLI Action contract is a plain string in the `args` field.
 - Web and MCP exposure is filtered by the configured capability profile.
@@ -23,6 +23,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `calculate` | `read` | Check a bounded arithmetic expression, e.g. sum([Decimal('1.00'), Decimal('2.00')]); no workspace code runs. | `args`: string |
 | `cancel_subagent` | `read` | Cancel a scoped sub-agent and prevent subsequent tool execution; args JSON contains run_id. | `args`: string |
 | `check_stored_data` | `read` | Return a categorized summary of stored memories. | `args`: string |
+| `discover_tools` | `read` | Discover permitted tools; args is empty for the catalog or comma-separated exact tool names for full descriptions. | `args`: string |
 | `execute_terminal_command` | `shell` | Execute a terminal command. This is an alias for run_cmd. | `command`: string; required: `command` |
 | `find_files` | `read` | Find files matching a pattern. Args format: "pattern" or "pattern\|directory". | `pattern`: string, `directory`: string; required: `pattern` |
 | `git_add` | `git` | Stage files for commit. Args format: "file1 file2" or "." (stage all). | `args`: string |

@@ -123,6 +123,9 @@ class AgentRuntime:
     # agent.prompts
     from openkyrozen.agent.prompts import (
         _compose_skills,
+        _prompt_profile,
+        _permitted_tool_names,
+        _discover_tools,
         _build_tools_list,
         _agent_prompt_tools_list,
         _system_prompt,

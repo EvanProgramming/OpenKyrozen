@@ -32,6 +32,7 @@ class TurnContext:
 class ExecutionContext:
     model: str = "deepseek-flash"
     capability_token: Any = None
+    discovered_tools: frozenset[str] = frozenset()
     last_prompt_tokens: int = 0
     last_completion_tokens: int = 0
     provider: Any = None
@@ -47,6 +48,7 @@ def scoped_turn(function):
     @wraps(function)
     def run(runtime, *args, **kwargs):
         token = runtime._turn_context.set(copy.copy(runtime.execution_context))
+        runtime.execution_context.discovered_tools = frozenset()
         try:
             return function(runtime, *args, **kwargs)
         finally:

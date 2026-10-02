@@ -172,6 +172,23 @@ with tempfile.TemporaryDirectory() as directory:
         assert "All tasks complete" not in main._tasks_panel_content()
     finally:
         main.tasks = previous
+# Check the new profile through the installed runtime, not the checkout.
+import os
+from openkyrozen.app.config import load_agent_config
+from openkyrozen.security.capabilities import issue_capability_token
+os.environ["KYROZEN_PROMPT_PROFILE"] = "compact"
+main._active_interaction_mode.set("agent")
+main._execution_capability_token = issue_capability_token("installed-smoke", frozenset({"read"}))
+config = load_agent_config(main._get_workspace_root())
+before = main._agent_prompt_tools_list(config)
+assert "git_log" in before and "- git_log:" not in before
+assert "write_file" not in before
+result, success = main._run_tool("discover_tools", "git_log", return_success=True)
+assert success and "- git_log:" in result
+assert "- git_log:" in main._agent_prompt_tools_list(config)
+assert main._discover_tools("git_push").startswith("Error:")
+print("installed compact prompt/discovery passed")
+_application.close()
 print("installed artifact auth/task behavior passed")
 """
         probe = _run([str(python), "-c", probe_code], cwd=caller, env=env)

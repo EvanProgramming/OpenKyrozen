@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 import re
 from openkyrozen.app.config import load_agent_config
-from openkyrozen.security.tool_policy import tool_capability
 
 def _initial_turn_response(self, turn):
     from openkyrozen.agent.delegation import TOOLS
@@ -71,10 +70,7 @@ def _initial_turn_response(self, turn):
         self._notify_tool_execute(
             unknown_action, "", f"Error: unknown tool '{unknown_action}'",
         )
-        allowed_actions = sorted(
-            name for name in self.AVAILABLE_TOOLS
-            if tool_capability(name) in self._execution_capability_token.capabilities
-        )
+        allowed_actions = sorted(self._permitted_tool_names())
         msg = (
             f"System: Action '{unknown_action}' is not recognized. "
             "You must use one of the following actions: "

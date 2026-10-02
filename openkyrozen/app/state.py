@@ -433,6 +433,7 @@ def initialise(self):
     self.AVAILABLE_TOOLS["check_stored_data"] = self._check_stored_data
 
     self.AVAILABLE_TOOLS["search_memory"] = self._search_memory
+    self.AVAILABLE_TOOLS["discover_tools"] = self._discover_tools
 
     self.TOOLS_LIST = self._build_tools_list()
 

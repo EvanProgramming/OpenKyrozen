@@ -101,6 +101,37 @@ class TUIProtocolTests(unittest.TestCase):
                 {"chat-project", "surface:tui"},
             )
 
+    def test_empty_chat_is_not_persisted_until_the_first_user_message(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = EventStore(root / "state.sqlite3")
+            memory = SimpleNamespace(store=store, user_id="local", workspace_id="global")
+            project = root / "project"
+            project.mkdir()
+            context = resolve_launch_context(home=root / "home", project_path=project)
+            with patch.object(self.backend.agent.current_session, "memory", memory), \
+                    patch.object(self.backend.agent, "get_launch_context", return_value=context), \
+                    patch.object(self.backend.agent, "interaction_workspace_id",
+                                 return_value=context.source_scope_id):
+                self.backend._register_chat("chat-empty", title=None)
+                self.assertEqual(self.backend._scope_chats(context.source_scope_id), [])
+                self.assertEqual(
+                    store.list_events(
+                        "tui.chat_metadata", workspace_id=context.source_scope_id,
+                        session_id="chat-empty", user_id="local",
+                    ),
+                    [],
+                )
+                self.assertEqual(len(store.list_events(
+                    "tui.project_opened", workspace_id="global", user_id="local",
+                )), 1)
+
+                self.backend._register_chat("chat-empty", title="First message")
+                self.assertEqual(
+                    [chat["session_id"] for chat in self.backend._scope_chats(context.source_scope_id)],
+                    ["chat-empty"],
+                )
+
     def test_switch_rejects_busy_and_unknown_targets(self):
         self.backend._busy = True
         self.backend._switch_chat("scope", "chat-missing", "busy")
@@ -332,10 +363,12 @@ class TUIProtocolTests(unittest.TestCase):
                 patch.object(self.backend.agent, "_plugin_runtime_for_surface", return_value=plugin), \
                 patch.object(self.backend.agent, "_run_recovered_tasks", return_value=[]), \
                 patch.object(self.backend.agent.current_session.workspace, "graph", None), \
-                patch.object(self.backend.agent, "_ensure_detached_learning_worker", return_value=True) as ensure_worker:
+                patch.object(self.backend.agent, "_ensure_detached_learning_worker", return_value=True) as ensure_worker, \
+                patch.object(self.backend, "_register_chat") as register_chat:
             self.backend.start({"command": "start", "global": True}, "start-1")
 
         ensure_worker.assert_called_once_with()
+        self.assertIsNone(register_chat.call_args.kwargs["title"])
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
         self.assertEqual(events[-1]["event"], "status")
         self.assertEqual(events[-1]["state"], "ready")

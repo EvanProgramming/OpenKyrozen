@@ -1,0 +1,4302 @@
+{
+  "protocol": "openkyrozen-prompt-live-v1",
+  "model": "deepseek-v4-flash",
+  "settings": {
+    "model": "deepseek-v4-flash",
+    "thinking": {
+      "type": "disabled"
+    },
+    "temperature": 0,
+    "top_p": 1,
+    "max_tokens": 4096,
+    "stream": false
+  },
+  "limits": {
+    "requests": 100,
+    "tokens": 1000000
+  },
+  "budget_tokens_charged": 222375,
+  "codewhale_version": "codewhale 0.9.12 (dcd4c200f72f)",
+  "fixture_prompts": {
+    "investigate": "Inspect catalog.py and README.md. Answer which function sorts the product names, and the exact sorting rule. Do not change files. Keep the final answer short.",
+    "fix": "Fix mean([]) in stats.py to return 0. Preserve behavior for nonempty lists. Inspect the code, reproduce the failure, apply the minimal fix and run python3 -m unittest test_stats -v. Report the result.",
+    "implement": "Implement unique_sorted(values) in catalog.py: return distinct strings sorted case-insensitively, with case-sensitive lexical order breaking ties. Preserve all other functions. Run python3 -m unittest test_catalog -v and report the result.",
+    "history": "Inspect the Git commit history using the dedicated Git history tools, not shell commands. Identify the commit subject that changed LIMIT from 10 to 20, its short commit hash and the old/new values. Do not change files. Keep the final answer short."
+  },
+  "rows": [
+    {
+      "arm": "baseline",
+      "case": "investigate",
+      "repeat": 0,
+      "passed": true,
+      "acceptance_passed": true,
+      "exit_code": 0,
+      "error": null,
+      "answer_hash": "6cf9404788e672e1206ae535ac8ff8e216b1ae057a7f48e61702984095166450",
+      "tool_calls": null,
+      "task_statuses": [],
+      "requests": 5,
+      "elapsed_ms": 8352.81,
+      "tool_metrics_status": "unavailable: CLI chat overrides the initial event callback; driver corrected after this pilot",
+      "task_lifecycle_complete": true
+    },
+    {
+      "arm": "compact",
+      "case": "investigate",
+      "repeat": 0,
+      "passed": true,
+      "acceptance_passed": true,
+      "exit_code": 0,
+      "error": null,
+      "answer_hash": "3b29938916b20ecf9a16bfac74d6c468276c44bd71e4947bdf16316fc907acc6",
+      "tool_calls": null,
+      "task_statuses": [],
+      "requests": 5,
+      "elapsed_ms": 6389.96,
+      "tool_metrics_status": "unavailable: CLI chat overrides the initial event callback; driver corrected after this pilot",
+      "task_lifecycle_complete": true
+    },
+    {
+      "arm": "codewhale",
+      "case": "investigate",
+      "repeat": 0,
+      "passed": true,
+      "acceptance_passed": true,
+      "exit_code": 0,
+      "error": null,
+      "answer_hash": "f41689e9823d7052654abbe600113343b58ae9e16c69fd640b1adae4a1a42507",
+      "tool_calls": 2,
+      "task_statuses": null,
+      "requests": 2,
+      "elapsed_ms": 3028.46,
+      "answer_metrics_status": "corrected from observed content event",
+      "task_lifecycle_complete": true
+    },
+    {
+      "arm": "compact",
+      "case": "fix",
+      "repeat": 0,
+      "passed": false,
+      "acceptance_passed": true,
+      "exit_code": 0,
+      "error": null,
+      "answer_hash": "fe14967bf334614f82fc40f7fc5d8226aa40906d0e8a17b54360be2c0dc2856b",
+      "tool_calls": null,
+      "task_statuses": [
+        "succeeded",
+        "pending",
+        "pending",
+        "pending"
+      ],
+      "requests": 11,
+      "elapsed_ms": 15330.29,
+      "tool_metrics_status": "unavailable: CLI chat overrides the initial event callback; driver corrected after this pilot",
+      "task_lifecycle_complete": false
+    },
+    {
+      "arm": "codewhale",
+      "case": "fix",
+      "repeat": 0,
+      "passed": true,
+      "acceptance_passed": true,
+      "exit_code": 0,
+      "error": null,
+      "answer_hash": null,
+      "tool_calls": 5,
+      "task_statuses": null,
+      "requests": 5,
+      "elapsed_ms": 7210.65,
+      "answer_metrics_status": "unavailable: initial parser did not support content events",
+      "task_lifecycle_complete": true
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "passed": false,
+      "acceptance_passed": false,
+      "exit_code": 0,
+      "error": null,
+      "answer_hash": "0791197fe2d32b1d43de64e270f822721991b12c2071b12e34142153336aa5ef",
+      "tool_calls": null,
+      "task_statuses": [
+        "succeeded",
+        "succeeded",
+        "blocked",
+        "blocked",
+        "blocked"
+      ],
+      "requests": 26,
+      "elapsed_ms": 33116.26,
+      "tool_metrics_status": "unavailable: CLI chat overrides the initial event callback; driver corrected after this pilot",
+      "task_lifecycle_complete": false
+    },
+    {
+      "arm": "codewhale",
+      "case": "implement",
+      "repeat": 0,
+      "passed": true,
+      "acceptance_passed": true,
+      "exit_code": 0,
+      "error": null,
+      "answer_hash": null,
+      "tool_calls": 5,
+      "task_statuses": null,
+      "requests": 4,
+      "elapsed_ms": 7939.62,
+      "answer_metrics_status": "unavailable: initial parser did not support content events",
+      "task_lifecycle_complete": true
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "passed": false,
+      "acceptance_passed": false,
+      "exit_code": 0,
+      "error": null,
+      "answer_hash": "305bcf27cdf5dca5c0684c39a451e2203b8b9e07154af95b39dd3c58240f60eb",
+      "tool_calls": null,
+      "task_statuses": [
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked"
+      ],
+      "requests": 26,
+      "elapsed_ms": 31947.29,
+      "tool_metrics_status": "unavailable: CLI chat overrides the initial event callback; driver corrected after this pilot",
+      "task_lifecycle_complete": false
+    },
+    {
+      "arm": "compact",
+      "case": "implement",
+      "repeat": 0,
+      "passed": false,
+      "acceptance_passed": true,
+      "exit_code": 0,
+      "error": null,
+      "answer_hash": "595a938ccdee6ad12439dde38ed1d1d9443bdf41aac36ea97f53282d832e2748",
+      "tool_calls": null,
+      "task_statuses": [
+        "succeeded",
+        "pending",
+        "pending"
+      ],
+      "requests": 7,
+      "elapsed_ms": 9873.14,
+      "tool_metrics_status": "unavailable: CLI chat overrides the initial event callback; driver corrected after this pilot",
+      "task_lifecycle_complete": false
+    },
+    {
+      "arm": "baseline",
+      "case": "history",
+      "repeat": 0,
+      "passed": false,
+      "acceptance_passed": false,
+      "exit_code": 0,
+      "error": null,
+      "answer_hash": "7b173aef1874aec458b44d36cab505be8f9c81aaeea5367a0f610b909740afc7",
+      "tool_calls": null,
+      "task_statuses": [],
+      "requests": 5,
+      "elapsed_ms": 6295.06,
+      "tool_metrics_status": "unavailable: CLI chat overrides the initial event callback; driver corrected after this pilot",
+      "task_lifecycle_complete": true
+    },
+    {
+      "arm": "compact",
+      "case": "history",
+      "repeat": 0,
+      "passed": false,
+      "acceptance_passed": false,
+      "exit_code": 0,
+      "error": null,
+      "answer_hash": "18723e79fa6c91ff79bc8b0cfb51e4f847e6faf597abb37c8dada7325c842218",
+      "tool_calls": null,
+      "task_statuses": [],
+      "requests": 4,
+      "elapsed_ms": 6191.92,
+      "tool_metrics_status": "unavailable: CLI chat overrides the initial event callback; driver corrected after this pilot",
+      "task_lifecycle_complete": true
+    }
+  ],
+  "calls": [
+    {
+      "arm": "baseline",
+      "case": "investigate",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "5fd9ff2641db07312a218ea6134f8f80e48a09273be6299ba0ed9d8cfc56e018",
+      "reserved_tokens": 19923,
+      "usage": {
+        "prompt_tokens": 3408,
+        "completion_tokens": 41,
+        "total_tokens": 3449,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 3408
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 826.71
+    },
+    {
+      "arm": "baseline",
+      "case": "investigate",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "829f6a1de55121e7b267598b63d24af28104d7af58283f72c80761b0ffe99c70",
+      "reserved_tokens": 20080,
+      "usage": {
+        "prompt_tokens": 3441,
+        "completion_tokens": 93,
+        "total_tokens": 3534,
+        "prompt_tokens_details": {
+          "cached_tokens": 3200
+        },
+        "prompt_cache_hit_tokens": 3200,
+        "prompt_cache_miss_tokens": 241
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1263.29
+    },
+    {
+      "arm": "baseline",
+      "case": "investigate",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "1a4ed1042b02e0c920b78b8db0f01420f569618bcecdf78652c555f4ccbd17f7",
+      "reserved_tokens": 12402,
+      "usage": {
+        "prompt_tokens": 1632,
+        "completion_tokens": 42,
+        "total_tokens": 1674,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 1632
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1085.79
+    },
+    {
+      "arm": "baseline",
+      "case": "investigate",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "df68c51ff143fb03f0f9899de0511b66c3f468c062cd499c8e01324c6f2dc4fd",
+      "reserved_tokens": 12324,
+      "usage": {
+        "prompt_tokens": 1624,
+        "completion_tokens": 68,
+        "total_tokens": 1692,
+        "prompt_tokens_details": {
+          "cached_tokens": 1152
+        },
+        "prompt_cache_hit_tokens": 1152,
+        "prompt_cache_miss_tokens": 472
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1186.8
+    },
+    {
+      "arm": "baseline",
+      "case": "investigate",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "fbd7d4a6b9a7d411ac3191a06f307200f8d480db6bfb0869a499c901f8f1381d",
+      "reserved_tokens": 5983,
+      "usage": {
+        "prompt_tokens": 166,
+        "completion_tokens": 132,
+        "total_tokens": 298,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 166
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1407.21
+    },
+    {
+      "arm": "compact",
+      "case": "investigate",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "c77d69f2ba96702fd5e2146f6437d1ed97a5dbe275e8efe20559d7c2d60bb74b",
+      "reserved_tokens": 12260,
+      "usage": {
+        "prompt_tokens": 1533,
+        "completion_tokens": 41,
+        "total_tokens": 1574,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 1533
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1008.67
+    },
+    {
+      "arm": "compact",
+      "case": "investigate",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "92810e33d416fb355c0d5df09aa3e62602aa40c5c800393e7b56ecb290453a74",
+      "reserved_tokens": 12417,
+      "usage": {
+        "prompt_tokens": 1566,
+        "completion_tokens": 78,
+        "total_tokens": 1644,
+        "prompt_tokens_details": {
+          "cached_tokens": 1408
+        },
+        "prompt_cache_hit_tokens": 1408,
+        "prompt_cache_miss_tokens": 158
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1053.35
+    },
+    {
+      "arm": "compact",
+      "case": "investigate",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "0dd5f6573c5851d623ff6ef30236e008fe45982d4035a6fbf103325c3fb920fe",
+      "reserved_tokens": 12589,
+      "usage": {
+        "prompt_tokens": 1613,
+        "completion_tokens": 17,
+        "total_tokens": 1630,
+        "prompt_tokens_details": {
+          "cached_tokens": 1408
+        },
+        "prompt_cache_hit_tokens": 1408,
+        "prompt_cache_miss_tokens": 205
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 615.08
+    },
+    {
+      "arm": "compact",
+      "case": "investigate",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "86ae1db468890d53e38d3a6410e9647251a5d367a6ddc3005438547cd8cd2158",
+      "reserved_tokens": 12369,
+      "usage": {
+        "prompt_tokens": 1567,
+        "completion_tokens": 56,
+        "total_tokens": 1623,
+        "prompt_tokens_details": {
+          "cached_tokens": 1408
+        },
+        "prompt_cache_hit_tokens": 1408,
+        "prompt_cache_miss_tokens": 159
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 847.49
+    },
+    {
+      "arm": "compact",
+      "case": "investigate",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "a24c89bc34088af9f8716e0840502f7a7f54aa0943fdb3b6c8c0f719208a1b25",
+      "reserved_tokens": 5888,
+      "usage": {
+        "prompt_tokens": 141,
+        "completion_tokens": 71,
+        "total_tokens": 212,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 141
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 729.53
+    },
+    {
+      "arm": "codewhale",
+      "case": "investigate",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": 65536,
+        "stream": true
+      },
+      "request_hash": "d632a30ea2d3b9215c5a012fd7620a6a839ab1fbb4b7702402e130e72d0dc793",
+      "reserved_tokens": 22101,
+      "usage": {
+        "prompt_tokens": 4052,
+        "completion_tokens": 66,
+        "total_tokens": 4118,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 4052
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 2,
+      "latency_ms": 1204.43
+    },
+    {
+      "arm": "codewhale",
+      "case": "investigate",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": 65536,
+        "stream": true
+      },
+      "request_hash": "cb4b41ccb158e0716629c41098cbdc8e44215ff22caac96f097de219b6dc27e1",
+      "reserved_tokens": 22908,
+      "usage": {
+        "prompt_tokens": 4196,
+        "completion_tokens": 37,
+        "total_tokens": 4233,
+        "prompt_tokens_details": {
+          "cached_tokens": 3968
+        },
+        "prompt_cache_hit_tokens": 3968,
+        "prompt_cache_miss_tokens": 228
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 814.75
+    },
+    {
+      "arm": "compact",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "dc1d87a687be969a2c8a038c05d82712d61e116734d8269321de14114fffaf82",
+      "reserved_tokens": 12278,
+      "usage": {
+        "prompt_tokens": 1545,
+        "completion_tokens": 28,
+        "total_tokens": 1573,
+        "prompt_tokens_details": {
+          "cached_tokens": 1024
+        },
+        "prompt_cache_hit_tokens": 1024,
+        "prompt_cache_miss_tokens": 521
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 695.75
+    },
+    {
+      "arm": "compact",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "469afe6a60bb448558557d4bd4c8bfda29248d6fd57d4374252d10400b872cf4",
+      "reserved_tokens": 12436,
+      "usage": {
+        "prompt_tokens": 1578,
+        "completion_tokens": 129,
+        "total_tokens": 1707,
+        "prompt_tokens_details": {
+          "cached_tokens": 1408
+        },
+        "prompt_cache_hit_tokens": 1408,
+        "prompt_cache_miss_tokens": 170
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1247.3
+    },
+    {
+      "arm": "compact",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "3a94352fac5b44bca8da224631e58e81edb76206879a544782268ccef2b863ab",
+      "reserved_tokens": 13334,
+      "usage": {
+        "prompt_tokens": 1820,
+        "completion_tokens": 25,
+        "total_tokens": 1845,
+        "prompt_tokens_details": {
+          "cached_tokens": 1280
+        },
+        "prompt_cache_hit_tokens": 1280,
+        "prompt_cache_miss_tokens": 540
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 755.32
+    },
+    {
+      "arm": "compact",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "c5f59e04ee5b44cd78eb27450d55307471abbb5a57d7240d97ff27e684d618b3",
+      "reserved_tokens": 14539,
+      "usage": {
+        "prompt_tokens": 2133,
+        "completion_tokens": 45,
+        "total_tokens": 2178,
+        "prompt_tokens_details": {
+          "cached_tokens": 1280
+        },
+        "prompt_cache_hit_tokens": 1280,
+        "prompt_cache_miss_tokens": 853
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 790.61
+    },
+    {
+      "arm": "compact",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "d3e00e2331cc57cda3f6077423fbe3da5a90f4e79fba5e52ababa19271934aa3",
+      "reserved_tokens": 14180,
+      "usage": {
+        "prompt_tokens": 2054,
+        "completion_tokens": 46,
+        "total_tokens": 2100,
+        "prompt_tokens_details": {
+          "cached_tokens": 1792
+        },
+        "prompt_cache_hit_tokens": 1792,
+        "prompt_cache_miss_tokens": 262
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1032.11
+    },
+    {
+      "arm": "compact",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "ca1eaaba5ef0c8f65d0d294df69e5a6e9bde03d75bef512b2ebe38aace833442",
+      "reserved_tokens": 14253,
+      "usage": {
+        "prompt_tokens": 2077,
+        "completion_tokens": 37,
+        "total_tokens": 2114,
+        "prompt_tokens_details": {
+          "cached_tokens": 1792
+        },
+        "prompt_cache_hit_tokens": 1792,
+        "prompt_cache_miss_tokens": 285
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1228.58
+    },
+    {
+      "arm": "compact",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "45d4a7ff0aee722961244f0e2ec358604149bf29d65c6114b4938d2026eb00c0",
+      "reserved_tokens": 14548,
+      "usage": {
+        "prompt_tokens": 2153,
+        "completion_tokens": 145,
+        "total_tokens": 2298,
+        "prompt_tokens_details": {
+          "cached_tokens": 1920
+        },
+        "prompt_cache_hit_tokens": 1920,
+        "prompt_cache_miss_tokens": 233
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1324.77
+    },
+    {
+      "arm": "compact",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "a5a50fa83dd9938fccb9c7a9a7531343f00109ab1f8182e032e3b2b124dfee23",
+      "reserved_tokens": 14867,
+      "usage": {
+        "prompt_tokens": 2221,
+        "completion_tokens": 17,
+        "total_tokens": 2238,
+        "prompt_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "prompt_cache_hit_tokens": 2048,
+        "prompt_cache_miss_tokens": 173
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 959.38
+    },
+    {
+      "arm": "compact",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "bae8fcebc0b7e44389ff3e27cba1f93c9a7a2eccf833d1be756a5e65c07e4132",
+      "reserved_tokens": 14678,
+      "usage": {
+        "prompt_tokens": 2187,
+        "completion_tokens": 155,
+        "total_tokens": 2342,
+        "prompt_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "prompt_cache_hit_tokens": 2048,
+        "prompt_cache_miss_tokens": 139
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1566.32
+    },
+    {
+      "arm": "compact",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "53a5e6d40064b21caa856ab081eec377979f1dd9f6c37585ff99d412395d00ed",
+      "reserved_tokens": 14997,
+      "usage": {
+        "prompt_tokens": 2255,
+        "completion_tokens": 47,
+        "total_tokens": 2302,
+        "prompt_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "prompt_cache_hit_tokens": 2048,
+        "prompt_cache_miss_tokens": 207
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1311.35
+    },
+    {
+      "arm": "compact",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "a93f1a2e2802c8e88d38dd7b8197f5821fc807608148511958075e914a710cac",
+      "reserved_tokens": 14798,
+      "usage": {
+        "prompt_tokens": 2232,
+        "completion_tokens": 179,
+        "total_tokens": 2411,
+        "prompt_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "prompt_cache_hit_tokens": 2048,
+        "prompt_cache_miss_tokens": 184
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1374.09
+    },
+    {
+      "arm": "codewhale",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": 65536,
+        "stream": true
+      },
+      "request_hash": "dd441e7a443e794afb2c838e501167fb56d732873a10d6f37fdb1b5694d934ad",
+      "reserved_tokens": 22113,
+      "usage": {
+        "prompt_tokens": 4059,
+        "completion_tokens": 66,
+        "total_tokens": 4125,
+        "prompt_tokens_details": {
+          "cached_tokens": 3712
+        },
+        "prompt_cache_hit_tokens": 3712,
+        "prompt_cache_miss_tokens": 347
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 2,
+      "latency_ms": 1606.63
+    },
+    {
+      "arm": "codewhale",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": 65536,
+        "stream": true
+      },
+      "request_hash": "4c14875ff52e06da53564f56d0c8dbcc30e20941b753bd33c5bc0f94c77bc362",
+      "reserved_tokens": 22899,
+      "usage": {
+        "prompt_tokens": 4204,
+        "completion_tokens": 104,
+        "total_tokens": 4308,
+        "prompt_tokens_details": {
+          "cached_tokens": 3968
+        },
+        "prompt_cache_hit_tokens": 3968,
+        "prompt_cache_miss_tokens": 236
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 1,
+      "latency_ms": 1198.82
+    },
+    {
+      "arm": "codewhale",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": 65536,
+        "stream": true
+      },
+      "request_hash": "9959aa5ba73231ba7fbdece0639eaa6f63735ade880a67b4ba37de25fddab27e",
+      "reserved_tokens": 24381,
+      "usage": {
+        "prompt_tokens": 4568,
+        "completion_tokens": 106,
+        "total_tokens": 4674,
+        "prompt_tokens_details": {
+          "cached_tokens": 4224
+        },
+        "prompt_cache_hit_tokens": 4224,
+        "prompt_cache_miss_tokens": 344
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 1,
+      "latency_ms": 989.3
+    },
+    {
+      "arm": "codewhale",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": 65536,
+        "stream": true
+      },
+      "request_hash": "6a3ecdf932d130a11f03d92f55b904571aae824ffa0e1ef95e3676669a710dba",
+      "reserved_tokens": 24943,
+      "usage": {
+        "prompt_tokens": 4697,
+        "completion_tokens": 104,
+        "total_tokens": 4801,
+        "prompt_tokens_details": {
+          "cached_tokens": 4480
+        },
+        "prompt_cache_hit_tokens": 4480,
+        "prompt_cache_miss_tokens": 217
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 1,
+      "latency_ms": 1232.95
+    },
+    {
+      "arm": "codewhale",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": 65536,
+        "stream": true
+      },
+      "request_hash": "65cb832f570134330ef141b211220767ea131234ea57487e341fddecb6762979",
+      "reserved_tokens": 25628,
+      "usage": {
+        "prompt_tokens": 4855,
+        "completion_tokens": 75,
+        "total_tokens": 4930,
+        "prompt_tokens_details": {
+          "cached_tokens": 4608
+        },
+        "prompt_cache_hit_tokens": 4608,
+        "prompt_cache_miss_tokens": 247
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1156.58
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "75ba76a02f101059f640fc75af597771bc515ee441ef9e82bf6dd180ac4ba973",
+      "reserved_tokens": 19941,
+      "usage": {
+        "prompt_tokens": 3420,
+        "completion_tokens": 30,
+        "total_tokens": 3450,
+        "prompt_tokens_details": {
+          "cached_tokens": 2944
+        },
+        "prompt_cache_hit_tokens": 2944,
+        "prompt_cache_miss_tokens": 476
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1135.79
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "e57927040a4436beff079b9164167075cf65c2c3cefc818f1d247939dc6be035",
+      "reserved_tokens": 20099,
+      "usage": {
+        "prompt_tokens": 3453,
+        "completion_tokens": 119,
+        "total_tokens": 3572,
+        "prompt_tokens_details": {
+          "cached_tokens": 3200
+        },
+        "prompt_cache_hit_tokens": 3200,
+        "prompt_cache_miss_tokens": 253
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1159.52
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "4c72b06af37b03cae4af8b0b695bdab5e062f9b5a55059c5f4816839e5457c50",
+      "reserved_tokens": 13272,
+      "usage": {
+        "prompt_tokens": 1862,
+        "completion_tokens": 26,
+        "total_tokens": 1888,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 1862
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 838.28
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "8570ee4ad24229c5b228de947dd0e9c5756cb340a9481ac64574ab6c0282172b",
+      "reserved_tokens": 12894,
+      "usage": {
+        "prompt_tokens": 1771,
+        "completion_tokens": 23,
+        "total_tokens": 1794,
+        "prompt_tokens_details": {
+          "cached_tokens": 1152
+        },
+        "prompt_cache_hit_tokens": 1152,
+        "prompt_cache_miss_tokens": 619
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 930.27
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "f81dc074f248a93860f21c073be98b522fd63caca3f0ad12224abf4e47b88a12",
+      "reserved_tokens": 13154,
+      "usage": {
+        "prompt_tokens": 1824,
+        "completion_tokens": 23,
+        "total_tokens": 1847,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 160
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 749.63
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "93a1e141b012406fc988a8dc30e16a95e3b4e6f464a7acd0ebd50e22ea45baf2",
+      "reserved_tokens": 12927,
+      "usage": {
+        "prompt_tokens": 1780,
+        "completion_tokens": 23,
+        "total_tokens": 1803,
+        "prompt_tokens_details": {
+          "cached_tokens": 1152
+        },
+        "prompt_cache_hit_tokens": 1152,
+        "prompt_cache_miss_tokens": 628
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1042.9
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "895f97536d2b8a7f4136a2b0a8c97fbb0fae55406b1343881007380a556b81b6",
+      "reserved_tokens": 13187,
+      "usage": {
+        "prompt_tokens": 1833,
+        "completion_tokens": 46,
+        "total_tokens": 1879,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 169
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 834.31
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "8570ee4ad24229c5b228de947dd0e9c5756cb340a9481ac64574ab6c0282172b",
+      "reserved_tokens": 12894,
+      "usage": {
+        "prompt_tokens": 1771,
+        "completion_tokens": 23,
+        "total_tokens": 1794,
+        "prompt_tokens_details": {
+          "cached_tokens": 1536
+        },
+        "prompt_cache_hit_tokens": 1536,
+        "prompt_cache_miss_tokens": 235
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1102.01
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "f81dc074f248a93860f21c073be98b522fd63caca3f0ad12224abf4e47b88a12",
+      "reserved_tokens": 13154,
+      "usage": {
+        "prompt_tokens": 1824,
+        "completion_tokens": 50,
+        "total_tokens": 1874,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 160
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 843.14
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "8570ee4ad24229c5b228de947dd0e9c5756cb340a9481ac64574ab6c0282172b",
+      "reserved_tokens": 12894,
+      "usage": {
+        "prompt_tokens": 1771,
+        "completion_tokens": 23,
+        "total_tokens": 1794,
+        "prompt_tokens_details": {
+          "cached_tokens": 1536
+        },
+        "prompt_cache_hit_tokens": 1536,
+        "prompt_cache_miss_tokens": 235
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 820.24
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "f81dc074f248a93860f21c073be98b522fd63caca3f0ad12224abf4e47b88a12",
+      "reserved_tokens": 13154,
+      "usage": {
+        "prompt_tokens": 1824,
+        "completion_tokens": 50,
+        "total_tokens": 1874,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 160
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1447.15
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "8570ee4ad24229c5b228de947dd0e9c5756cb340a9481ac64574ab6c0282172b",
+      "reserved_tokens": 12894,
+      "usage": {
+        "prompt_tokens": 1771,
+        "completion_tokens": 23,
+        "total_tokens": 1794,
+        "prompt_tokens_details": {
+          "cached_tokens": 1536
+        },
+        "prompt_cache_hit_tokens": 1536,
+        "prompt_cache_miss_tokens": 235
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1157.74
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "f81dc074f248a93860f21c073be98b522fd63caca3f0ad12224abf4e47b88a12",
+      "reserved_tokens": 13154,
+      "usage": {
+        "prompt_tokens": 1824,
+        "completion_tokens": 50,
+        "total_tokens": 1874,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 160
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1140.0
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "8570ee4ad24229c5b228de947dd0e9c5756cb340a9481ac64574ab6c0282172b",
+      "reserved_tokens": 12894,
+      "usage": {
+        "prompt_tokens": 1771,
+        "completion_tokens": 23,
+        "total_tokens": 1794,
+        "prompt_tokens_details": {
+          "cached_tokens": 1536
+        },
+        "prompt_cache_hit_tokens": 1536,
+        "prompt_cache_miss_tokens": 235
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1168.61
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "f81dc074f248a93860f21c073be98b522fd63caca3f0ad12224abf4e47b88a12",
+      "reserved_tokens": 13154,
+      "usage": {
+        "prompt_tokens": 1824,
+        "completion_tokens": 50,
+        "total_tokens": 1874,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 160
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1070.25
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "8570ee4ad24229c5b228de947dd0e9c5756cb340a9481ac64574ab6c0282172b",
+      "reserved_tokens": 12894,
+      "usage": {
+        "prompt_tokens": 1771,
+        "completion_tokens": 23,
+        "total_tokens": 1794,
+        "prompt_tokens_details": {
+          "cached_tokens": 1536
+        },
+        "prompt_cache_hit_tokens": 1536,
+        "prompt_cache_miss_tokens": 235
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 969.16
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "f81dc074f248a93860f21c073be98b522fd63caca3f0ad12224abf4e47b88a12",
+      "reserved_tokens": 13154,
+      "usage": {
+        "prompt_tokens": 1824,
+        "completion_tokens": 50,
+        "total_tokens": 1874,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 160
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1056.9
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "8570ee4ad24229c5b228de947dd0e9c5756cb340a9481ac64574ab6c0282172b",
+      "reserved_tokens": 12894,
+      "usage": {
+        "prompt_tokens": 1771,
+        "completion_tokens": 23,
+        "total_tokens": 1794,
+        "prompt_tokens_details": {
+          "cached_tokens": 1536
+        },
+        "prompt_cache_hit_tokens": 1536,
+        "prompt_cache_miss_tokens": 235
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1044.81
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "f81dc074f248a93860f21c073be98b522fd63caca3f0ad12224abf4e47b88a12",
+      "reserved_tokens": 13154,
+      "usage": {
+        "prompt_tokens": 1824,
+        "completion_tokens": 50,
+        "total_tokens": 1874,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 160
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 2509.57
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "8570ee4ad24229c5b228de947dd0e9c5756cb340a9481ac64574ab6c0282172b",
+      "reserved_tokens": 12894,
+      "usage": {
+        "prompt_tokens": 1771,
+        "completion_tokens": 23,
+        "total_tokens": 1794,
+        "prompt_tokens_details": {
+          "cached_tokens": 1536
+        },
+        "prompt_cache_hit_tokens": 1536,
+        "prompt_cache_miss_tokens": 235
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 957.95
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "f81dc074f248a93860f21c073be98b522fd63caca3f0ad12224abf4e47b88a12",
+      "reserved_tokens": 13154,
+      "usage": {
+        "prompt_tokens": 1824,
+        "completion_tokens": 25,
+        "total_tokens": 1849,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 160
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 617.91
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "0c4fc9cbb8cb308e3228cae05e3c4538173d0fd422a0d3a34a4257d0585344c9",
+      "reserved_tokens": 12951,
+      "usage": {
+        "prompt_tokens": 1786,
+        "completion_tokens": 26,
+        "total_tokens": 1812,
+        "prompt_tokens_details": {
+          "cached_tokens": 1152
+        },
+        "prompt_cache_hit_tokens": 1152,
+        "prompt_cache_miss_tokens": 634
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1076.01
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "3427eed4a30cd9aed6775bbc74e60685adbf27fa9e040d784b6258f476734e87",
+      "reserved_tokens": 13211,
+      "usage": {
+        "prompt_tokens": 1839,
+        "completion_tokens": 46,
+        "total_tokens": 1885,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 175
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 832.86
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "8570ee4ad24229c5b228de947dd0e9c5756cb340a9481ac64574ab6c0282172b",
+      "reserved_tokens": 12894,
+      "usage": {
+        "prompt_tokens": 1771,
+        "completion_tokens": 23,
+        "total_tokens": 1794,
+        "prompt_tokens_details": {
+          "cached_tokens": 1536
+        },
+        "prompt_cache_hit_tokens": 1536,
+        "prompt_cache_miss_tokens": 235
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1539.23
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "f81dc074f248a93860f21c073be98b522fd63caca3f0ad12224abf4e47b88a12",
+      "reserved_tokens": 13154,
+      "usage": {
+        "prompt_tokens": 1824,
+        "completion_tokens": 50,
+        "total_tokens": 1874,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 160
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 794.77
+    },
+    {
+      "arm": "baseline",
+      "case": "fix",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "8570ee4ad24229c5b228de947dd0e9c5756cb340a9481ac64574ab6c0282172b",
+      "reserved_tokens": 12894,
+      "usage": {
+        "prompt_tokens": 1771,
+        "completion_tokens": 23,
+        "total_tokens": 1794,
+        "prompt_tokens_details": {
+          "cached_tokens": 1536
+        },
+        "prompt_cache_hit_tokens": 1536,
+        "prompt_cache_miss_tokens": 235
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1249.86
+    },
+    {
+      "arm": "codewhale",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": 65536,
+        "stream": true
+      },
+      "request_hash": "bb014b605069a159ee877f475fe95017deaf21bd397a398743b1c12880c264f7",
+      "reserved_tokens": 22160,
+      "usage": {
+        "prompt_tokens": 4059,
+        "completion_tokens": 103,
+        "total_tokens": 4162,
+        "prompt_tokens_details": {
+          "cached_tokens": 3712
+        },
+        "prompt_cache_hit_tokens": 3712,
+        "prompt_cache_miss_tokens": 347
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 3,
+      "latency_ms": 2061.21
+    },
+    {
+      "arm": "codewhale",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": 65536,
+        "stream": true
+      },
+      "request_hash": "9e62c27c82aaf9e8223e7484d5653f771d0013e4b4f8de5231c4b35f779858b0",
+      "reserved_tokens": 23578,
+      "usage": {
+        "prompt_tokens": 4339,
+        "completion_tokens": 106,
+        "total_tokens": 4445,
+        "prompt_tokens_details": {
+          "cached_tokens": 4096
+        },
+        "prompt_cache_hit_tokens": 4096,
+        "prompt_cache_miss_tokens": 243
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 1,
+      "latency_ms": 1190.74
+    },
+    {
+      "arm": "codewhale",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": 65536,
+        "stream": true
+      },
+      "request_hash": "3b3345e444ad3646927d70e25cd49cc0ad9df84cd3fc985c4707284359f0b0cf",
+      "reserved_tokens": 24154,
+      "usage": {
+        "prompt_tokens": 4468,
+        "completion_tokens": 49,
+        "total_tokens": 4517,
+        "prompt_tokens_details": {
+          "cached_tokens": 4224
+        },
+        "prompt_cache_hit_tokens": 4224,
+        "prompt_cache_miss_tokens": 244
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 1,
+      "latency_ms": 1432.41
+    },
+    {
+      "arm": "codewhale",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": 65536,
+        "stream": true
+      },
+      "request_hash": "2559c1306a4e3f67261b0ca204f8b06baa9ec7f9925a3ba34e4c5b52455658cd",
+      "reserved_tokens": 24782,
+      "usage": {
+        "prompt_tokens": 4592,
+        "completion_tokens": 76,
+        "total_tokens": 4668,
+        "prompt_tokens_details": {
+          "cached_tokens": 4352
+        },
+        "prompt_cache_hit_tokens": 4352,
+        "prompt_cache_miss_tokens": 240
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 2106.32
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "c10603b33b197775db2d1cbcd8bff63094236c72a23d7c720f82298d4268d498",
+      "reserved_tokens": 19760,
+      "usage": {
+        "prompt_tokens": 3376,
+        "completion_tokens": 26,
+        "total_tokens": 3402,
+        "prompt_tokens_details": {
+          "cached_tokens": 2944
+        },
+        "prompt_cache_hit_tokens": 2944,
+        "prompt_cache_miss_tokens": 432
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1346.1
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "37078e91fc1860979e44b68dc8047858ef96e4fe9f71a8592ebeb638bba90724",
+      "reserved_tokens": 19918,
+      "usage": {
+        "prompt_tokens": 3409,
+        "completion_tokens": 232,
+        "total_tokens": 3641,
+        "prompt_tokens_details": {
+          "cached_tokens": 3200
+        },
+        "prompt_cache_hit_tokens": 3200,
+        "prompt_cache_miss_tokens": 209
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1768.76
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "29ce1ec0cf77e51e0f79ae2517fd8ac6ed7590f867a940af025a77f229f9e46d",
+      "reserved_tokens": 13899,
+      "usage": {
+        "prompt_tokens": 1967,
+        "completion_tokens": 27,
+        "total_tokens": 1994,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 1967
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 874.98
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "e81153b4510e650352a5e2db7866e03a084467e00a470ad7e7f8527867a7aa8b",
+      "reserved_tokens": 13104,
+      "usage": {
+        "prompt_tokens": 1788,
+        "completion_tokens": 23,
+        "total_tokens": 1811,
+        "prompt_tokens_details": {
+          "cached_tokens": 1152
+        },
+        "prompt_cache_hit_tokens": 1152,
+        "prompt_cache_miss_tokens": 636
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1869.0
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "12d9b4998874530a3712a7f5a89ed6f97fa4800c187398c8802ccd17f9a68a20",
+      "reserved_tokens": 13374,
+      "usage": {
+        "prompt_tokens": 1840,
+        "completion_tokens": 17,
+        "total_tokens": 1857,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 176
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1140.25
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "233e4da6afa78e9d23c5105f9931b69dee1f0df420eaaa0e27fd3c511300e0d8",
+      "reserved_tokens": 13119,
+      "usage": {
+        "prompt_tokens": 1792,
+        "completion_tokens": 23,
+        "total_tokens": 1815,
+        "prompt_tokens_details": {
+          "cached_tokens": 1152
+        },
+        "prompt_cache_hit_tokens": 1152,
+        "prompt_cache_miss_tokens": 640
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1183.3
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "45e5b32c13fb16c957d918a87d328a4393af6390450f933acf88f87aa3b70f0d",
+      "reserved_tokens": 13389,
+      "usage": {
+        "prompt_tokens": 1844,
+        "completion_tokens": 17,
+        "total_tokens": 1861,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 180
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 991.06
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "233e4da6afa78e9d23c5105f9931b69dee1f0df420eaaa0e27fd3c511300e0d8",
+      "reserved_tokens": 13119,
+      "usage": {
+        "prompt_tokens": 1792,
+        "completion_tokens": 23,
+        "total_tokens": 1815,
+        "prompt_tokens_details": {
+          "cached_tokens": 1536
+        },
+        "prompt_cache_hit_tokens": 1536,
+        "prompt_cache_miss_tokens": 256
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 571.03
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "45e5b32c13fb16c957d918a87d328a4393af6390450f933acf88f87aa3b70f0d",
+      "reserved_tokens": 13389,
+      "usage": {
+        "prompt_tokens": 1844,
+        "completion_tokens": 17,
+        "total_tokens": 1861,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 180
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1276.78
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "233e4da6afa78e9d23c5105f9931b69dee1f0df420eaaa0e27fd3c511300e0d8",
+      "reserved_tokens": 13119,
+      "usage": {
+        "prompt_tokens": 1792,
+        "completion_tokens": 30,
+        "total_tokens": 1822,
+        "prompt_tokens_details": {
+          "cached_tokens": 1536
+        },
+        "prompt_cache_hit_tokens": 1536,
+        "prompt_cache_miss_tokens": 256
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 845.48
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "45e5b32c13fb16c957d918a87d328a4393af6390450f933acf88f87aa3b70f0d",
+      "reserved_tokens": 13389,
+      "usage": {
+        "prompt_tokens": 1844,
+        "completion_tokens": 24,
+        "total_tokens": 1868,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 180
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 890.37
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "65444dc43e5f18894a7a08f1e646f8e0e278612fcbcabba914aed03c71509fca",
+      "reserved_tokens": 13140,
+      "usage": {
+        "prompt_tokens": 1798,
+        "completion_tokens": 30,
+        "total_tokens": 1828,
+        "prompt_tokens_details": {
+          "cached_tokens": 1152
+        },
+        "prompt_cache_hit_tokens": 1152,
+        "prompt_cache_miss_tokens": 646
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1134.47
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "c3fa0fef2b88f2868bede52c811a75ed67c5653f1aa3ee8a94b7945127be5d24",
+      "reserved_tokens": 13410,
+      "usage": {
+        "prompt_tokens": 1850,
+        "completion_tokens": 24,
+        "total_tokens": 1874,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 186
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 999.68
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "65444dc43e5f18894a7a08f1e646f8e0e278612fcbcabba914aed03c71509fca",
+      "reserved_tokens": 13140,
+      "usage": {
+        "prompt_tokens": 1798,
+        "completion_tokens": 30,
+        "total_tokens": 1828,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 134
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 785.94
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "c3fa0fef2b88f2868bede52c811a75ed67c5653f1aa3ee8a94b7945127be5d24",
+      "reserved_tokens": 13410,
+      "usage": {
+        "prompt_tokens": 1850,
+        "completion_tokens": 24,
+        "total_tokens": 1874,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 186
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 667.55
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "65444dc43e5f18894a7a08f1e646f8e0e278612fcbcabba914aed03c71509fca",
+      "reserved_tokens": 13140,
+      "usage": {
+        "prompt_tokens": 1798,
+        "completion_tokens": 30,
+        "total_tokens": 1828,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 134
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 613.84
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "c3fa0fef2b88f2868bede52c811a75ed67c5653f1aa3ee8a94b7945127be5d24",
+      "reserved_tokens": 13410,
+      "usage": {
+        "prompt_tokens": 1850,
+        "completion_tokens": 24,
+        "total_tokens": 1874,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 186
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 700.79
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "65444dc43e5f18894a7a08f1e646f8e0e278612fcbcabba914aed03c71509fca",
+      "reserved_tokens": 13140,
+      "usage": {
+        "prompt_tokens": 1798,
+        "completion_tokens": 30,
+        "total_tokens": 1828,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 134
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1005.0
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "c3fa0fef2b88f2868bede52c811a75ed67c5653f1aa3ee8a94b7945127be5d24",
+      "reserved_tokens": 13410,
+      "usage": {
+        "prompt_tokens": 1850,
+        "completion_tokens": 24,
+        "total_tokens": 1874,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 186
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 983.07
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "65444dc43e5f18894a7a08f1e646f8e0e278612fcbcabba914aed03c71509fca",
+      "reserved_tokens": 13140,
+      "usage": {
+        "prompt_tokens": 1798,
+        "completion_tokens": 30,
+        "total_tokens": 1828,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 134
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1961.33
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "c3fa0fef2b88f2868bede52c811a75ed67c5653f1aa3ee8a94b7945127be5d24",
+      "reserved_tokens": 13410,
+      "usage": {
+        "prompt_tokens": 1850,
+        "completion_tokens": 24,
+        "total_tokens": 1874,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 186
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 701.95
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "65444dc43e5f18894a7a08f1e646f8e0e278612fcbcabba914aed03c71509fca",
+      "reserved_tokens": 13140,
+      "usage": {
+        "prompt_tokens": 1798,
+        "completion_tokens": 30,
+        "total_tokens": 1828,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 134
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1163.83
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "c3fa0fef2b88f2868bede52c811a75ed67c5653f1aa3ee8a94b7945127be5d24",
+      "reserved_tokens": 13410,
+      "usage": {
+        "prompt_tokens": 1850,
+        "completion_tokens": 24,
+        "total_tokens": 1874,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 186
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 957.29
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "65444dc43e5f18894a7a08f1e646f8e0e278612fcbcabba914aed03c71509fca",
+      "reserved_tokens": 13140,
+      "usage": {
+        "prompt_tokens": 1798,
+        "completion_tokens": 30,
+        "total_tokens": 1828,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 134
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1134.46
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "c3fa0fef2b88f2868bede52c811a75ed67c5653f1aa3ee8a94b7945127be5d24",
+      "reserved_tokens": 13410,
+      "usage": {
+        "prompt_tokens": 1850,
+        "completion_tokens": 24,
+        "total_tokens": 1874,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 186
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1082.73
+    },
+    {
+      "arm": "baseline",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "65444dc43e5f18894a7a08f1e646f8e0e278612fcbcabba914aed03c71509fca",
+      "reserved_tokens": 13140,
+      "usage": {
+        "prompt_tokens": 1798,
+        "completion_tokens": 30,
+        "total_tokens": 1828,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 134
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 803.95
+    },
+    {
+      "arm": "compact",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "92cb01707cacaccfab24e31509fe0b04f616aa4b1494c297cfd0c477841d309f",
+      "reserved_tokens": 12097,
+      "usage": {
+        "prompt_tokens": 1501,
+        "completion_tokens": 28,
+        "total_tokens": 1529,
+        "prompt_tokens_details": {
+          "cached_tokens": 1024
+        },
+        "prompt_cache_hit_tokens": 1024,
+        "prompt_cache_miss_tokens": 477
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 867.18
+    },
+    {
+      "arm": "compact",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "9a121060ea64f6b850deb462135f5e7d90e619195efbe023bc0a309e3f848894",
+      "reserved_tokens": 12255,
+      "usage": {
+        "prompt_tokens": 1534,
+        "completion_tokens": 128,
+        "total_tokens": 1662,
+        "prompt_tokens_details": {
+          "cached_tokens": 1280
+        },
+        "prompt_cache_hit_tokens": 1280,
+        "prompt_cache_miss_tokens": 254
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1256.21
+    },
+    {
+      "arm": "compact",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "64790da56da104e8b7fa36db3dbfe4075f63d91aceffc6908dae2bab3fedf09f",
+      "reserved_tokens": 13433,
+      "usage": {
+        "prompt_tokens": 1816,
+        "completion_tokens": 19,
+        "total_tokens": 1835,
+        "prompt_tokens_details": {
+          "cached_tokens": 1408
+        },
+        "prompt_cache_hit_tokens": 1408,
+        "prompt_cache_miss_tokens": 408
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1169.01
+    },
+    {
+      "arm": "compact",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "a7aef169ae239bae254e78105869517e39c02cf1c9b1d8858f52c6f2fddb83f9",
+      "reserved_tokens": 13292,
+      "usage": {
+        "prompt_tokens": 1794,
+        "completion_tokens": 82,
+        "total_tokens": 1876,
+        "prompt_tokens_details": {
+          "cached_tokens": 1408
+        },
+        "prompt_cache_hit_tokens": 1408,
+        "prompt_cache_miss_tokens": 386
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 689.34
+    },
+    {
+      "arm": "compact",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "be7ea788e39117ff00949f4243bc847d802cfef5051d9b6bc0c33181fb05172e",
+      "reserved_tokens": 13703,
+      "usage": {
+        "prompt_tokens": 1920,
+        "completion_tokens": 26,
+        "total_tokens": 1946,
+        "prompt_tokens_details": {
+          "cached_tokens": 1536
+        },
+        "prompt_cache_hit_tokens": 1536,
+        "prompt_cache_miss_tokens": 384
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1082.98
+    },
+    {
+      "arm": "compact",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "d39b51e5ef56f1bbc0fadf9c0b9bbf96e2931ea237004b663bd9ecad263229f1",
+      "reserved_tokens": 13778,
+      "usage": {
+        "prompt_tokens": 1944,
+        "completion_tokens": 38,
+        "total_tokens": 1982,
+        "prompt_tokens_details": {
+          "cached_tokens": 1792
+        },
+        "prompt_cache_hit_tokens": 1792,
+        "prompt_cache_miss_tokens": 152
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 959.85
+    },
+    {
+      "arm": "compact",
+      "case": "implement",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "e1b601d1f5d9a3b11cd8763b38009f525e0169f727d9c97e7eb51d5988478575",
+      "reserved_tokens": 14141,
+      "usage": {
+        "prompt_tokens": 2041,
+        "completion_tokens": 143,
+        "total_tokens": 2184,
+        "prompt_tokens_details": {
+          "cached_tokens": 1792
+        },
+        "prompt_cache_hit_tokens": 1792,
+        "prompt_cache_miss_tokens": 249
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1376.63
+    },
+    {
+      "arm": "baseline",
+      "case": "history",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "21d2b0c064fbdccd9964b2b975eac3aa97259b06b59f7894cee51c5d5f722c5d",
+      "reserved_tokens": 20642,
+      "usage": {
+        "prompt_tokens": 3564,
+        "completion_tokens": 33,
+        "total_tokens": 3597,
+        "prompt_tokens_details": {
+          "cached_tokens": 2944
+        },
+        "prompt_cache_hit_tokens": 2944,
+        "prompt_cache_miss_tokens": 620
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 985.28
+    },
+    {
+      "arm": "baseline",
+      "case": "history",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "c7cd4d4f60f4970b1ed0eaff4f73d558b2abff18e70a276866e6e927f8de0d75",
+      "reserved_tokens": 20799,
+      "usage": {
+        "prompt_tokens": 3597,
+        "completion_tokens": 64,
+        "total_tokens": 3661,
+        "prompt_tokens_details": {
+          "cached_tokens": 3456
+        },
+        "prompt_cache_hit_tokens": 3456,
+        "prompt_cache_miss_tokens": 141
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 984.94
+    },
+    {
+      "arm": "baseline",
+      "case": "history",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "56a09690059985870b6d67d99dbdd6a9655915fb0a82cf22cc96f13011e906eb",
+      "reserved_tokens": 12418,
+      "usage": {
+        "prompt_tokens": 1645,
+        "completion_tokens": 22,
+        "total_tokens": 1667,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 1645
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 876.0
+    },
+    {
+      "arm": "baseline",
+      "case": "history",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "d35b809c8143acd910d6323080d41cb3740bd8824196b5b8d8c2af53827edc84",
+      "reserved_tokens": 12428,
+      "usage": {
+        "prompt_tokens": 1675,
+        "completion_tokens": 35,
+        "total_tokens": 1710,
+        "prompt_tokens_details": {
+          "cached_tokens": 1152
+        },
+        "prompt_cache_hit_tokens": 1152,
+        "prompt_cache_miss_tokens": 523
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 741.62
+    },
+    {
+      "arm": "baseline",
+      "case": "history",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "5b3d37eafdfbe1636c07b443e638df997e93437cf63cd68d28062e49ef23eba4",
+      "reserved_tokens": 5913,
+      "usage": {
+        "prompt_tokens": 181,
+        "completion_tokens": 63,
+        "total_tokens": 244,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 181
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 891.26
+    },
+    {
+      "arm": "compact",
+      "case": "history",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "5220e81856b86228656021a8fdb32839017808d991422bc7229c1f390b914e46",
+      "reserved_tokens": 12337,
+      "usage": {
+        "prompt_tokens": 1546,
+        "completion_tokens": 28,
+        "total_tokens": 1574,
+        "prompt_tokens_details": {
+          "cached_tokens": 1024
+        },
+        "prompt_cache_hit_tokens": 1024,
+        "prompt_cache_miss_tokens": 522
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1058.11
+    },
+    {
+      "arm": "compact",
+      "case": "history",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "6b7d0043701ab3f88d2775fff03a3aada94c5f9465ecebfcda3ebebf1c6775a6",
+      "reserved_tokens": 12494,
+      "usage": {
+        "prompt_tokens": 1579,
+        "completion_tokens": 99,
+        "total_tokens": 1678,
+        "prompt_tokens_details": {
+          "cached_tokens": 1408
+        },
+        "prompt_cache_hit_tokens": 1408,
+        "prompt_cache_miss_tokens": 171
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1232.05
+    },
+    {
+      "arm": "compact",
+      "case": "history",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "48103f0553562db607d49849ed814c807efde4892a7d8d052354575c4b58b216",
+      "reserved_tokens": 12602,
+      "usage": {
+        "prompt_tokens": 1621,
+        "completion_tokens": 19,
+        "total_tokens": 1640,
+        "prompt_tokens_details": {
+          "cached_tokens": 1280
+        },
+        "prompt_cache_hit_tokens": 1280,
+        "prompt_cache_miss_tokens": 341
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 719.17
+    },
+    {
+      "arm": "compact",
+      "case": "history",
+      "repeat": 0,
+      "request_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": {
+          "type": "disabled"
+        },
+        "temperature": 0,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": false
+      },
+      "original_settings": {
+        "model": "deepseek-v4-flash",
+        "thinking": null,
+        "temperature": null,
+        "top_p": null,
+        "max_tokens": null,
+        "stream": null
+      },
+      "request_hash": "cb40546ca4a9bf50bdbdc4d33d74682a846d179dcfb3c6a60299239ee57ee5f8",
+      "reserved_tokens": 12458,
+      "usage": {
+        "prompt_tokens": 1616,
+        "completion_tokens": 23,
+        "total_tokens": 1639,
+        "prompt_tokens_details": {
+          "cached_tokens": 1280
+        },
+        "prompt_cache_hit_tokens": 1280,
+        "prompt_cache_miss_tokens": 336
+      },
+      "status": "ok",
+      "http_status": 200,
+      "effective_model": "deepseek-flash",
+      "tool_calls": 0,
+      "latency_ms": 1097.53
+    }
+  ],
+  "summary": {
+    "baseline": {
+      "runs": 4,
+      "passed": 1,
+      "requests": 62,
+      "total_tokens": 124058,
+      "input_tokens": 121654,
+      "output_tokens": 2404,
+      "usage_complete": true,
+      "median_ms": 20150.05
+    },
+    "compact": {
+      "runs": 4,
+      "passed": 1,
+      "requests": 27,
+      "total_tokens": 49336,
+      "input_tokens": 47587,
+      "output_tokens": 1749,
+      "usage_complete": true,
+      "median_ms": 8131.55
+    },
+    "codewhale": {
+      "runs": 3,
+      "passed": 3,
+      "requests": 11,
+      "total_tokens": 48981,
+      "input_tokens": 48089,
+      "output_tokens": 892,
+      "usage_complete": true,
+      "median_ms": 7210.65
+    }
+  },
+  "comparisons": {
+    "baseline": {
+      "complete": false,
+      "same_passing_outcomes": false,
+      "token_savings_fraction": null,
+      "pilot_claim_supported": false
+    },
+    "codewhale": {
+      "complete": false,
+      "same_passing_outcomes": false,
+      "token_savings_fraction": null,
+      "pilot_claim_supported": false
+    }
+  },
+  "general_superiority_supported": false,
+  "run_date": "2026-10-01",
+  "baseline_commit": "353677747bef090db4be3245560e2aac5bb04ff3",
+  "repeats_requested": 2,
+  "budget_exhausted": true,
+  "status": "INCONCLUSIVE",
+  "grading_corrections": [
+    {
+      "arm": "codewhale",
+      "case": "investigate",
+      "repeat": 0,
+      "reason": "Installed 0.9.12 emits the final answer in a content event, which the initial adapter did not parse. This exact content event was inspected during the live run. Regraded without another API call.",
+      "observed_content_event": {
+        "type": "content",
+        "content": "`sorted_products` in `catalog.py`. Rule: sort by `(name.casefold(), name)` \u2014 case-insensitive first, then original spelling as tiebreaker."
+      },
+      "original_passed": false
+    }
+  ],
+  "limitations": [
+    "100 requests exhausted before the requested two repeats completed.",
+    "Baseline and compact each ran four cases once; CodeWhale ran three cases once. Aggregate arm totals cover different workloads and must not be compared as savings.",
+    "Compact passed both independent code acceptance checks but left pending durable task records. These runs fail overall completion acceptance.",
+    "Initial OpenKyrozen tool counts and two CodeWhale answer hashes were unavailable; marked null. The corrected adapters are regression-tested but have not been rerun live because the request cap is exhausted.",
+    "The completed pilot measures the feature before a later permission-filter cleanup in unknown-action recovery; normal prompt and discovery behavior is unchanged."
+  ],
+  "quality_checks": "Original fixture tests executed externally; unrelated Python files checked against starting hashes. Investigation and history graded against explicit answer fields and unchanged files.",
+  "transport": "Local relay normalizes API settings, makes non-streaming upstream calls and returns an SSE envelope for streaming clients; latency excludes true token streaming behavior.",
+  "upstream_requests": 100
+}
