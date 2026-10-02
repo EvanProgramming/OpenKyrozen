@@ -54,6 +54,18 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertIsNone(payload)
         self.assertIn("too long", error)
 
+    def test_permissions_jev_alias_is_normalized_before_persistence(self):
+        with patch.object(self.backend.agent.fast_mode, "jev_key", return_value="configured"), \
+                patch.object(self.backend.agent, "set_permission_mode", return_value={
+                    "permission_mode": "full_jev",
+                }) as set_mode, \
+                patch.object(self.backend, "interaction"):
+            self.backend._command("permissions", {"mode": "jev"}, "permission-jev")
+
+        set_mode.assert_called_once_with("full_jev", jev_api_key=None)
+        event = json.loads(self.output.getvalue().splitlines()[-1])
+        self.assertEqual(event["text"], "Permissions set to full_jev.")
+
     def test_navigation_groups_global_project_and_legacy_chats_without_leakage(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

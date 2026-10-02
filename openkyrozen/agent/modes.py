@@ -13,6 +13,7 @@ from .ports import InteractionStore
 
 INTERACTION_MODES = frozenset({"auto", "ask", "plan", "agent"})
 SYSTEM_ONE_BACKENDS = frozenset({"off", "jev", "kev"})
+PERMISSION_MODES = frozenset({"ask", "full_jev", "full"})
 # Compatibility name for plugins and clients written before the rename.
 FAST_BACKENDS = SYSTEM_ONE_BACKENDS
 READ_ONLY_CAPABILITIES = frozenset({"read", "network"})

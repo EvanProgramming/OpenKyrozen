@@ -200,6 +200,16 @@ def acceptance(binary: Path):
                                  r['input'].get('session_id') == first_session for r in rows), 'chat switching')
             send(b'\x02')
             submit('/mode agent')
+            submit('/permissions full')
+            if not any(r.get('event') == 'interaction' and
+                       r.get('interaction', {}).get('permission_mode') == 'full' for r in events()):
+                raise AssertionError('full permission mode was not confirmed by backend state')
+            tracked.write_text('uncommitted\n')
+            prompt_count = sum(r.get('event') == 'prompt' and r.get('kind') == 'approval' for r in events())
+            submit('approval request')
+            assert sum(r.get('event') == 'prompt' and r.get('kind') == 'approval' for r in events()) == prompt_count
+            assert tracked.read_text() == 'committed\n'
+            submit('/permissions ask')
             for decision in (False, True):
                 tracked.write_text('uncommitted\n')
                 prompt_count = sum(r.get('event') == 'prompt' and r.get('kind') == 'approval' for r in events())

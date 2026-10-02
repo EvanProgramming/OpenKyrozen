@@ -71,8 +71,11 @@ def _prepare_turn(self, turn):
     ponytail_context = self._ponytail_context(resolved_profile)
     if ponytail_context:
         turn.learned_context = (turn.learned_context + "\n" + ponytail_context).strip()
+    default_surface_capabilities = "full" if self._EXECUTION_SURFACE == "cli" else "workspace"
+    if self._EXECUTION_SURFACE == "tui" and self.permission_mode() in {"full_jev", "full"}:
+        default_surface_capabilities = "full"
     base_capabilities = resolve_capabilities(
-        self._surface_capabilities or ("full" if self._EXECUTION_SURFACE == "cli" else "workspace"),
+        self._surface_capabilities or default_surface_capabilities,
         default="workspace",
     )
     self._execution_capability_token = issue_capability_token(

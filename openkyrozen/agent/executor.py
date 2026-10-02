@@ -157,7 +157,12 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         result = f"Error: tool '{action}' requires capability '{required_capability}'"
         self._notify_tool_execute(action, args, result)
         return finish(result, failure="capability_denied")
-    if not self._confirm_tool_action(action, str(args)):
+    authorized = (
+        self._authorize_tool_action(action, args)
+        if self._EXECUTION_SURFACE == "tui"
+        else self._confirm_tool_action(action, str(args))
+    )
+    if not authorized:
         result = (
             f"Error: {action} requires confirmation. "
             "Approve it interactively or set KYROZEN_APPROVAL_MODE=never for an explicitly automated CLI."

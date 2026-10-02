@@ -678,7 +678,7 @@ func TestFocusedCockpitMessageHierarchyAndEmptyState(t *testing.T) {
 func TestEmptyBannerIsHiddenOutsideChat(t *testing.T) {
 	for _, current := range []screen{
 		screenSplash, screenOnboarding, screenProvider, screenAPIKey, screenApproval,
-		screenSelfLearning, screenMode, screenQuestion, screenPlan, screenGraph,
+		screenSelfLearning, screenMode, screenPermissions, screenQuestion, screenPlan, screenGraph,
 		screenGithubAuth, screenSettings, screenUpdating, screenError,
 	} {
 		m := initialModel("", true)
@@ -984,5 +984,112 @@ func TestProviderKeyIsMaskedAndApprovalArgsAreRedacted(t *testing.T) {
 	m.approvalArgs = safeApprovalArgs("token=super-secret-key path=workspace")
 	if strings.Contains(m.approvalArgs, "super-secret-key") || !strings.Contains(m.approvalArgs, "<redacted>") {
 		t.Fatalf("approval arguments were not redacted: %q", m.approvalArgs)
+	}
+}
+
+func TestModeAndPermissionControlsPreserveComposerAndStayVisibleWhenNarrow(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height, m.screen = 60, 16, screenChat
+	m.input.SetValue("keep this draft")
+	m.resize()
+	view := m.View().Content
+	for _, want := range []string{"MODE", "PERMISSIONS", "[ ASK ]", "[ JEV ]", "[ NO JEV ]"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("compact controls omitted %q: %s", want, view)
+		}
+	}
+	if rows := len(strings.Split(view, "\n")); rows > m.height {
+		t.Fatalf("compact controls overflowed terminal height: %d > %d", rows, m.height)
+	}
+	if m.modeTabAt(8, m.modeControlsStartY()) != 0 || m.permissionTabAt(14, m.modeControlsStartY()+1) != 0 {
+		t.Fatal("mode or permission click target did not resolve")
+	}
+	var sent bytes.Buffer
+	m.bridge.stdin = bufio.NewWriter(&sent)
+	if _, quit := m.handleKey(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl}); quit {
+		t.Fatal("Ctrl+T unexpectedly quit")
+	}
+	if m.input.Value() != "keep this draft" {
+		t.Fatalf("mode change discarded the composer draft: %q", m.input.Value())
+	}
+	var command map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(sent.Bytes()), &command); err != nil {
+		t.Fatalf("mode change did not send valid JSON: %v", err)
+	}
+	if command["name"] != "mode" || command["args"] != "ask" {
+		t.Fatalf("Ctrl+T selected an unexpected mode: %#v", command)
+	}
+}
+
+func TestMouseSelectsModeAndPermissionWithoutClearingComposer(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height, m.screen = 120, 30, screenChat
+	m.input.SetValue("keep this draft")
+	m.resize()
+	var sent bytes.Buffer
+	m.bridge.stdin = bufio.NewWriter(&sent)
+	for _, point := range [][2]int{{24, m.modeControlsStartY()}, {36, m.modeControlsStartY() + 1}} {
+		updated, _ := m.Update(tea.MouseClickMsg{X: point[0], Y: point[1], Button: tea.MouseLeft})
+		m = updated.(model)
+	}
+	lines := strings.Split(strings.TrimSpace(sent.String()), "\n")
+	if len(lines) != 2 || m.input.Value() != "keep this draft" {
+		t.Fatalf("mouse controls did not preserve the composer and send both changes: %q", sent.String())
+	}
+	var mode, permission map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &permission); err != nil {
+		t.Fatal(err)
+	}
+	if mode["name"] != "mode" || mode["args"] != "plan" || permission["name"] != "permissions" || permission["args"] != "full" {
+		t.Fatalf("mouse selections sent incorrect commands: %#v %#v", mode, permission)
+	}
+}
+
+func TestPermissionHitTargetsMatchRenderedLabels(t *testing.T) {
+	for _, test := range []struct {
+		width int
+		x     int
+	}{{120, 50}, {60, 38}} {
+		m := initialModel("", true)
+		m.width, m.height, m.screen = test.width, 30, screenChat
+		m.resize()
+		if index := m.permissionTabAt(test.x, m.modeControlsStartY()+1); index != 2 {
+			t.Fatalf("width %d: right edge of full-without-Jev tab selected %d, want 2", test.width, index)
+		}
+	}
+}
+
+func TestPermissionSelectorSendsSelectedMode(t *testing.T) {
+	m := initialModel("", true)
+	m.screen, m.permissionIdx = screenPermissions, 2
+	var sent bytes.Buffer
+	m.bridge.stdin = bufio.NewWriter(&sent)
+	if _, quit := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter}); quit {
+		t.Fatal("permission selection unexpectedly quit")
+	}
+	var command map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(sent.Bytes()), &command); err != nil {
+		t.Fatalf("permission selection did not send valid JSON: %v", err)
+	}
+	if command["name"] != "permissions" || command["args"] != "full" {
+		t.Fatalf("permission selection sent an unexpected command: %#v", command)
+	}
+}
+
+func TestBusyChatIgnoresModeAndPermissionClicks(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height, m.screen, m.busy = 120, 30, screenChat, true
+	m.resize()
+	var sent bytes.Buffer
+	m.bridge.stdin = bufio.NewWriter(&sent)
+	for _, point := range [][2]int{{8, m.modeControlsStartY()}, {16, m.modeControlsStartY() + 1}} {
+		updated, _ := m.Update(tea.MouseClickMsg{X: point[0], Y: point[1], Button: tea.MouseLeft})
+		m = updated.(model)
+	}
+	if sent.Len() != 0 {
+		t.Fatalf("busy chat sent a mode or permission change: %s", sent.String())
 	}
 }
