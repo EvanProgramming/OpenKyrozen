@@ -14,7 +14,7 @@ def _new_chat_id() -> str:
     return f"chat-{uuid.uuid4().hex}"
 
 
-def _register_chat(self, session_id: str, *, title: str = "New chat") -> None:
+def _register_chat(self, session_id: str, *, title: str | None = "New chat") -> None:
     runtime = self.agent
     context = runtime.get_launch_context()
     if context is None:
@@ -28,6 +28,8 @@ def _register_chat(self, session_id: str, *, title: str = "New chat") -> None:
             user_id=runtime.memory_bank.user_id,
             workspace_id=runtime.memory_bank.workspace_id,
         )
+    if title is None:
+        return
     store.append_event(
         "tui.chat_metadata",
         {"title": title, "scope": context.mode, "path": str(context.active_root)},
@@ -135,7 +137,7 @@ def _bind_chat(self, session_id: str, *, project_path: str | None = None,
     self._active_session_id = session_id
     self._staged_attachments.clear()
     if create:
-        self._register_chat(session_id)
+        self._register_chat(session_id, title=None)
     graph = runtime._project_graph
     if graph is not None:
         graph.refresh_async(callback=lambda _state: self.graph_state())

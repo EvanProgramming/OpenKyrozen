@@ -224,7 +224,8 @@ def _run_submit(self, text: str, request_id: str) -> None:
             "tui.chat_metadata", limit=1, workspace_id=runtime.interaction_workspace_id(),
             session_id=self._active_session_id, user_id=runtime.memory_bank.user_id,
         ) if self._active_session_id and hasattr(runtime.memory_bank, "store") else []
-        if metadata and metadata[0]["payload"].get("title") == "New chat":
+        if (self._active_session_id and hasattr(runtime.memory_bank, "store")
+                and (not metadata or metadata[0]["payload"].get("title") == "New chat")):
             self._register_chat(
                 self._active_session_id,
                 title=re.sub(r"\s+", " ", text.strip())[:72] or "New chat",

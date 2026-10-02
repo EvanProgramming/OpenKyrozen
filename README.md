@@ -148,7 +148,7 @@ For project-aware work, use `kyrozen --project /path/to/project` or `kyrozen-web
 - **Learns cautiously:** background learning records evidence-backed proposals and promotes only validated improvements. It does not fine-tune model weights or silently grant permissions.
 - **Works in terminal and web modes:** the terminal UI is the primary experience; FastAPI provides a local web UI, REST API, and streaming endpoint.
 
-The runtime currently exposes **45 tools**, including **14 Git tools**. The generated [tool and endpoint inventory](docs/tool-inventory.md) is the source of truth.
+The runtime currently exposes **46 tools**, including **14 Git tools**. The generated [tool and endpoint inventory](docs/tool-inventory.md) is the source of truth.
 
 An optional [compact prompt and tool discovery profile](docs/prompt-discovery.md) reduces prompt overhead. Its first live DeepSeek/CodeWhale pilot was inconclusive; the default remains `classic`.
 

@@ -31,7 +31,7 @@ def start(self, payload: dict[str, Any], request_id: str) -> None:
         )
         self._active_session_id = self._new_chat_id()
         self._quiet_call(runtime.bind_interaction_scope, self._active_session_id)
-        self._register_chat(self._active_session_id)
+        self._register_chat(self._active_session_id, title=None)
         config = self._quiet_call(runtime.detect_provider)
         self.status("starting", "Connecting provider…", request_id)
         configured = bool(self._quiet_call(
