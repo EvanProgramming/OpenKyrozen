@@ -16,7 +16,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/'scripts')]
 
 
-def acceptance(limit):
+def acceptance(limit, focused=False):
     saved=json.loads((Path.home()/'.kyrozen_config.json').read_text())
     encrypted=saved.get('api_key','')
     if encrypted.startswith('v2:'):
@@ -33,6 +33,9 @@ def acceptance(limit):
     from openkyrozen.tools import ToolAdapters
     from openkyrozen.skills.registry import SkillRegistry
     lock=threading.Lock()
+    request_started=threading.Event()
+    request_release=threading.Event()
+    cancellation_armed=threading.Event()
     requests=body_bytes=0
     providers=[]
     def guard(request):
@@ -42,6 +45,10 @@ def acceptance(limit):
             if requests>=limit or size>100000 or body_bytes+size>1000000:
                 raise RuntimeError('Live audit request budget exhausted')
             requests+=1;body_bytes+=size
+        if cancellation_armed.is_set():
+            request_started.set()
+            if not request_release.wait(40):
+                raise RuntimeError('Cancellation transport barrier timed out')
     def factory(config):
         config.model_complex=config.model_simple
         provider=get_provider(config)
@@ -63,34 +70,35 @@ def acceptance(limit):
     report={'provider':config.provider,'model':config.model_simple,'request_limit':limit,'checks':{}}
     try:
         provider=factory(config)
-        answer,_=provider.chat([{'role':'user','content':'Reply with exactly AUDIT_OK.'}])
-        assert 'AUDIT_OK' in answer
-        report['checks']['chat']='PASS'
-        text=''.join(provider.chat_stream([{'role':'user','content':'Reply with exactly STREAM_OK.'}]))
-        assert 'STREAM_OK' in text
-        report['checks']['streaming']='PASS'
-        with tempfile.TemporaryDirectory(prefix='openkyrozen-live-learning-') as directory:
-            root=Path(directory)
-            memory=build_memory(root/'state.sqlite3',user_id='audit',workspace_id='synthetic',session_id='learning')
-            app=build_application(memory=memory,tools=ToolAdapters(root))
-            runtime=app.runtime
-            runtime._provider_config=config
-            runtime.llm_provider=provider
-            runtime._learning_model_response=lambda messages,**_:provider.chat(messages,model=config.model_simple)[0]
-            runtime.learning_engine.registry=SkillRegistry(memory.store,workspace_id='synthetic',root=root/'skills')
-            fact='User: Remember that Orion uses orion.toml for configuration.\nAssistant: Understood.'
-            feature=None
-            for _ in range(4):
-                memory.add_log(fact)
-                runtime.dispatch_learning_cycle(surface='audit',trigger='turn',max_features=1,
-                    feature_names=('auto_learn_conversations',))
-                context=runtime._build_memory_context('Orion configuration orion.toml')
-                feature=next(item for item in runtime.learning_feature_status() if item['name']=='auto_learn_conversations')
-                if feature['last_product_id'] and feature['last_used_at'] and 'orion.toml' in context:
-                    break
-            assert feature['last_product_id'] and feature['last_used_at'],'No live learned product/use receipt'
-            app.close()
-            report['checks']['learning_product_reuse']='PASS'
+        if not focused:
+            answer,_=provider.chat([{'role':'user','content':'Reply with exactly AUDIT_OK.'}])
+            assert 'AUDIT_OK' in answer
+            report['checks']['chat']='PASS'
+            text=''.join(provider.chat_stream([{'role':'user','content':'Reply with exactly STREAM_OK.'}]))
+            assert 'STREAM_OK' in text
+            report['checks']['streaming']='PASS'
+            with tempfile.TemporaryDirectory(prefix='openkyrozen-live-learning-') as directory:
+                root=Path(directory)
+                memory=build_memory(root/'state.sqlite3',user_id='audit',workspace_id='synthetic',session_id='learning')
+                app=build_application(memory=memory,tools=ToolAdapters(root))
+                runtime=app.runtime
+                runtime._provider_config=config
+                runtime.llm_provider=provider
+                runtime._learning_model_response=lambda messages,**_:provider.chat(messages,model=config.model_simple)[0]
+                runtime.learning_engine.registry=SkillRegistry(memory.store,workspace_id='synthetic',root=root/'skills')
+                fact='User: Remember that Orion uses orion.toml for configuration.\nAssistant: Understood.'
+                feature=None
+                for _ in range(4):
+                    memory.add_log(fact)
+                    runtime.dispatch_learning_cycle(surface='audit',trigger='turn',max_features=1,
+                        feature_names=('auto_learn_conversations',))
+                    context=runtime._build_memory_context('Orion configuration orion.toml')
+                    feature=next(item for item in runtime.learning_feature_status() if item['name']=='auto_learn_conversations')
+                    if feature['last_product_id'] and feature['last_used_at'] and 'orion.toml' in context:
+                        break
+                assert feature['last_product_id'] and feature['last_used_at'],'No live learned product/use receipt'
+                app.close()
+                report['checks']['learning_product_reuse']='PASS'
         import subagent_workflow_acceptance as workflow
         with patch('openkyrozen.security.credentials.decrypt_api_key',return_value=key), \
              patch.object(workflow,'get_provider',factory), \
@@ -108,13 +116,20 @@ def acceptance(limit):
             runtime._execution_capability_token=issue_capability_token('audit',frozenset({'read'}))
             runtime._surface_capabilities='read'
             runtime.set_interaction_mode('agent')
+            cancellation_armed.set()
             run=runtime.delegation().spawn([workflow.assignment('marker.txt')])[0]
-            runtime.delegation().cancel(run['run_id'])
+            try:
+                assert request_started.wait(40), 'No in-flight provider request was observed'
+                runtime.delegation().cancel(run['run_id'])
+            finally:
+                cancellation_armed.clear()
+                request_release.set()
             runtime.delegation().wait([run['run_id']],45)
             assert runtime.delegation().detail(run['run_id'])['status']=='cancelled'
             assert (root/'marker.txt').read_text()=='unchanged'
             app.close()
-            report['checks']['cancellation']='PASS'
+            report['checks']['in_flight_transport_cancellation']='PASS'
+            report['checks']['write_suppression']='Covered by deterministic permitted-write regression; live assignment is read-only'
         report['status']='PASS'
     except Exception as exc:
         report['status']='FAIL'
@@ -130,16 +145,18 @@ def acceptance(limit):
     finally:
         for provider in providers:
             provider._client.close()
-    report.update(requests=requests,input_bytes=body_bytes)
+    from audit_identity import audit_identity
+    report.update(requests=requests,input_bytes=body_bytes,identity=audit_identity())
     return report
 
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--request-limit',type=int,default=50)
+    parser.add_argument('--focused',action='store_true',help='Run only delegation and in-flight cancellation')
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
-    report=acceptance(min(args.request_limit,50))
+    report=acceptance(min(args.request_limit,50),focused=args.focused)
     args.output.write_text(json.dumps(report,indent=2))
     print(json.dumps(report))
     raise SystemExit(0 if report['status']=='PASS' else 1)

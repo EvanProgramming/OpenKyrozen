@@ -2,6 +2,7 @@
 """Perform real package-managed upgrades in an isolated HOME and uv installation."""
 from __future__ import annotations
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -37,7 +38,7 @@ if isinstance(result,str):
  assert result.startswith('Updated OpenKyrozen from '),result
  print(json.dumps({'status':'legacy-success','message':result}))
 else:
- assert result.status=='success' and result.restart_ready,str(result)
+ assert (result.status=='success' and result.restart_ready) or (os.name=='nt' and result.status=='partial' and result.components.get('python')=='verified-staged'),str(result)
  print(json.dumps({'status':result.status,'components':result.components,'revision':result.revision}))
 '''
 SEED = '''from openkyrozen.persistence.store import EventStore
@@ -76,16 +77,34 @@ def acceptance(revision, baseline):
         settings=home/'.kyrozen_config.json'; settings.write_text(json.dumps({'provider':'ollama','api_key':'',
             'model_simple':'synthetic-model','model_complex':'synthetic-model','base_url':'http://127.0.0.1:9/v1'}))
         expected_settings=settings.read_bytes()
-        with sqlite3.connect(root/'state.sqlite3') as connection:
+        with closing(sqlite3.connect(root/'state.sqlite3')) as connection:
             records={table:connection.execute(f'SELECT * FROM {table}').fetchall() for table in ('events','tasks','memories')}
         started=time.monotonic()
-        first=json.loads(run([str(python),'-c',UPDATE],caller,env).splitlines()[-1])
-        after=json.loads(run([str(python),'-c',PROBE],caller,env).splitlines()[-1])
+        transition='prior-installed-updater'
+        if os.name=='nt':
+            # Historical Windows updaters cannot remove their running uv Python.
+            # Exercise their documented external installer recovery explicitly.
+            run([uv,'tool','install','--python','3.12','--force','--with','fastapi','--with','uvicorn',
+                 f'git+{REPOSITORY}@{revision}'],caller,env)
+            transition='external-installer-recovery-required-by-historical-windows-updater'
+        def update_and_wait(active_python):
+            result=json.loads(run([str(active_python),'-c',UPDATE],caller,env).splitlines()[-1])
+            if os.name=='nt':
+                manifest=home/'.kyrozen/update-state.json'
+                deadline=time.monotonic()+150
+                while time.monotonic()<deadline:
+                    state=json.loads(manifest.read_text())
+                    if state['status']=='success':
+                        return result,Path(state['python'])
+                    assert state['status']!='failed',state
+                    time.sleep(.25)
+                raise AssertionError('Windows staged activation did not complete')
+            return result,active_python
+        first,python=update_and_wait(python)
+        after=json.loads(run([str(python),'-I','-c',PROBE],caller,env).splitlines()[-1])
         assert after['source'].get('vcs_info',{}).get('commit_id')==revision,after
-        # A second real update proves repeatability and repairs revision metadata
-        # when a pre-audit updater built the first replacement TUI.
-        second=json.loads(run([str(python),'-c',UPDATE],caller,env).splitlines()[-1])
-        assert second['status']=='success',second
+        second,python=update_and_wait(python)
+        assert second['status']=='success' or (os.name=='nt' and second['status']=='partial'),second
         name='openkyrozen-tui.exe' if os.name=='nt' else 'openkyrozen-tui'
         binary=home/'.kyrozen/bin'/name
         if os.name=='nt':
@@ -97,12 +116,13 @@ def acceptance(revision, baseline):
         run([str(executable),'--help'],caller,env)
         assert workspace_file.read_text()=='user workspace sentinel'
         assert settings.read_bytes()==expected_settings
-        with sqlite3.connect(root/'state.sqlite3') as connection:
+        with closing(sqlite3.connect(root/'state.sqlite3')) as connection:
             for table, rows in records.items():
                 current=connection.execute(f'SELECT * FROM {table}').fetchall()
                 assert all(row in current for row in rows), f'{table} records changed during update'
             assert connection.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
-        return {'status':'PASS','baseline':baseline,'before':before,'after':after,'first_update':first,
+        from audit_identity import audit_identity
+        return {'status':'PASS','identity':audit_identity(),'transition':transition,'baseline':baseline,'before':before,'after':after,'first_update':first,
                 'repeat_update':second,'tui_revision':revision,'seconds':round(time.monotonic()-started,2),
                 'state_preserved':['settings','chats','tasks','memories','workspace'],
                 'tui_sha256':hashlib.sha256(binary.read_bytes()).hexdigest()}

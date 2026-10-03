@@ -217,14 +217,23 @@ class MemoryBank:
         """Return recalled data with provenance and trust metadata."""
         # Score a wider candidate window before applying the caller's limit.
         documents = self.recall(query, n_results=max(n_results, 12), include_scoped=True)
-        if not documents:
-            return []
         rows = self.store.list_memories(status="active", limit=10000, workspace_id=self.workspace_id,
                                         session_id=self.session_id, user_id=self.user_id)
         by_content: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             by_content.setdefault(row["content"], []).append(row)
         records = [row for doc in documents for row in by_content.get(doc, [])]
+        terms = set(re.findall(r"[\w\u3400-\u9fff]+", str(query or "").lower()))
+        # The semantic index is derived: it may omit a new product or rank its
+        # source observations first. Keep directly matching durable guidance
+        # eligible even when it is outside the vector candidate window.
+        matching_products = {
+            row["id"] for row in rows
+            if terms and row.get("metadata", {}).get("learning_feature")
+            and row["kind"] != "source" and not row["content"].startswith("FILE:")
+            and terms <= set(re.findall(r"[\w\u3400-\u9fff]+", row["content"].lower()))
+        }
+        records.extend(row for row in rows if row["id"] in matching_products)
         visible = self.filter_records(records, profile=profile, task_signature=task_signature,
                                       speaker=speaker, audience=audience, channel=channel,
                                       authorized_speakers=authorized_speakers)
@@ -234,11 +243,13 @@ class MemoryBank:
         scores = {item["memory_id"]: item["score"] for item in
                   (scoring[0]["payload"].get("scores", []) if scoring else [])}
         if scores:
-            terms = set(re.findall(r"[\w\u3400-\u9fff]+", query.lower()))
             visible.sort(key=lambda row: (
                 len(terms & set(re.findall(r"[\w\u3400-\u9fff]+", row["content"].lower()))),
                 scores.get(row["id"], 0),
             ), reverse=True)
+        # Prefer applicable products over the observations they distilled;
+        # preserve semantic/importance ordering within each group.
+        visible.sort(key=lambda row: row["id"] in matching_products, reverse=True)
         selected = visible[:n_results]
         if selected:
             self.store.append_event("memory.recalled", {

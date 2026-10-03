@@ -4,6 +4,11 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import io
+import hashlib
+from importlib import metadata
+import platform
+import shutil
+import subprocess
 import json
 import os
 from pathlib import Path
@@ -19,20 +24,38 @@ sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
 from test_durable_tasks_gateway import DurableTaskGatewayTests
 
 
-def run(seconds: float) -> dict:
+def candidate_identity() -> dict:
+    tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).split(b"\0")
+    tracked = sorted(set(tracked) | {b"tests/test_gateway_startup_logging.py", b"scripts/production_soak.py"})
+    digest = hashlib.sha256()
+    for name in tracked:
+        path = ROOT / os.fsdecode(name)
+        if name and path.is_file():
+            digest.update(name + b"\0" + path.read_bytes())
+    return {"git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+            "candidate_source_sha256": digest.hexdigest(), "python": sys.version,
+            "python_executable": sys.executable, "platform": platform.platform(),
+            "dependencies": {name: metadata.version(name) for name in
+                             ("psutil", "fastapi", "uvicorn", "pydantic", "chromadb")}}
+
+
+def run(seconds: float, log_dir: Path) -> dict:
     gateway = DurableTaskGatewayTests()
     started = time.monotonic()
     cycles = restarts = 0
     measurements = []
     process = None
+    log_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='openkyrozen-production-soak-') as directory:
         root = Path(directory)
         workspace = root / 'workspace'
         (workspace / 'home').mkdir(parents=True)
         db = root / 'state.sqlite3'
         os.environ['KYROZEN_DB_PATH'] = str(root / 'test-driver.sqlite3')
+        os.environ['KYROZEN_BROWSER_PROFILES'] = str(root / 'browser-profiles')
         try:
-            process, url = gateway._start_server(workspace, db, root / 'skills')
+            process, url = gateway._start_server(workspace, db, root / 'skills',
+                                                 log_path=log_dir / f'gateway-{restarts:03d}.log')
             baseline_children = {p.pid for p in psutil.Process().children(recursive=True)}
             initial_rss = psutil.Process(process.pid).memory_info().rss
             generation_rss = initial_rss
@@ -80,7 +103,8 @@ def run(seconds: float) -> dict:
                     tracked = current.children(recursive=True)
                     gateway._stop_server(process)
                     assert all(not child.is_running() for child in tracked), 'orphan gateway child'
-                    process, url = gateway._start_server(workspace, db, root / 'skills')
+                    process, url = gateway._start_server(workspace, db, root / 'skills',
+                                                         log_path=log_dir / f'gateway-{restarts + 1:03d}.log')
                     generation_rss = psutil.Process(process.pid).memory_info().rss
                     restarts += 1
                     for session in ('soak-a', 'soak-b'):
@@ -93,6 +117,14 @@ def run(seconds: float) -> dict:
             process = None
             children = psutil.Process().children(recursive=True)
             assert not [p.pid for p in children if p.pid not in baseline_children], 'orphan audit child'
+        except Exception as exc:
+            # Retain disposable state and progress so a timeout is diagnosable.
+            evidence = log_dir / 'failed-state'
+            shutil.copytree(root, evidence)
+            exc.soak_report = {'elapsed_seconds': round(time.monotonic()-started, 2),
+                               'cycles': cycles, 'tasks': cycles * 2, 'restarts': restarts,
+                               'samples': measurements, 'failed_state': str(evidence)}
+            raise
         finally:
             if process is not None:
                 gateway._stop_server(process)
@@ -105,10 +137,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--seconds', type=float, default=1800)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--log-dir', type=Path)
     args = parser.parse_args()
+    identity = candidate_identity()
+    log_dir = args.log_dir or args.output.with_suffix(".logs")
     try:
-        report = run(args.seconds)
+        report = run(args.seconds, log_dir)
     except Exception as exc:
-        args.output.write_text(json.dumps({'status': 'FAIL', 'error': str(exc)}))
+        args.output.write_text(json.dumps({'status': 'FAIL', 'error': str(exc),
+                                          'candidate': identity, 'log_dir': str(log_dir),
+                                          **getattr(exc, 'soak_report', {})}, indent=2))
         raise
+    report.update(candidate=identity, log_dir=str(log_dir))
     args.output.write_text(json.dumps(report, indent=2))

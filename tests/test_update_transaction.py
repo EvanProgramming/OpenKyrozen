@@ -21,7 +21,7 @@ class UpdateTransactionTests(unittest.TestCase):
         self.staged = self.home / 'new-tui'
         self.staged.write_bytes(b'new binary')
 
-    def run_update(self, *, stage_error=None, install_error=None, verified=True, optional_error=False, activation_error=None):
+    def run_update(self, *, stage_error=None, install_error=None, verified=True, optional_error=False, activation_error=None, optional_callback=None):
         def stage(*args):
             self.events.append('stage')
             if stage_error:
@@ -49,7 +49,7 @@ class UpdateTransactionTests(unittest.TestCase):
              patch.object(self.runtime, '_verify_update_package', verify, create=True), \
              patch.object(self.runtime, '_activate_update_tui', activate, create=True), \
              patch('openkyrozen.updates.service.subprocess.run', side_effect=run), \
-             patch('openkyrozen.tools.github_cli.GitHubCLI.install_managed', side_effect=OSError('optional setup failed') if optional_error else None, return_value={'message': 'ready'}):
+             patch('openkyrozen.tools.github_cli.GitHubCLI.install_managed', side_effect=optional_callback or (OSError('optional setup failed') if optional_error else None), return_value={'message': 'ready'}):
             return self.runtime._self_update()
 
     def test_tui_failure_does_not_replace_python_or_request_restart(self):
@@ -161,3 +161,44 @@ class UpdateTransactionTests(unittest.TestCase):
         for package in ('anthropic', 'google-genai', 'perplexityai', 'boto3', 'azure-identity', 'playwright'):
             self.assertIn(package, command)
         self.assertTrue(result.restart_ready)
+
+    def test_optional_setup_remains_inside_update_serialization(self):
+        observed=[]
+        def setup():
+            try:
+                with self.runtime._update_lock():
+                    observed.append('unlocked')
+            except (BlockingIOError, OSError):
+                observed.append('locked')
+            return {'success':True,'message':'ready'}
+        result=self.run_update(optional_callback=setup)
+        self.assertEqual(observed,['locked'])
+        self.assertTrue(result.restart_ready)
+
+    def test_package_probe_uses_isolated_imports(self):
+        commands=[]
+        import json
+        def run(command,**kwargs):
+            commands.append(command)
+            data={'version':'2.0.4','source':{'vcs_info':{'commit_id':self.revision}},
+                  'paths':[str(self.home/'openkyrozen/lib/site-packages/openkyrozen/__init__.py')]}
+            return subprocess.CompletedProcess(command,0,str(self.home) if command[1:]==['tool','dir'] else json.dumps(data),'')
+        with patch('openkyrozen.updates.service.subprocess.run',side_effect=run):
+            self.assertTrue(self.runtime._verify_update_package('/bin/uv',self.revision))
+        self.assertIn('-I',commands[-1])
+
+    def test_checkout_imports_cannot_verify_installed_metadata(self):
+        import json
+        data={'version':'2.0.4','source':{'vcs_info':{'commit_id':self.revision}},
+              'paths':['/unrelated/checkout/openkyrozen/__init__.py']}
+        results=[subprocess.CompletedProcess([],0,str(self.home),''),
+                 subprocess.CompletedProcess([],0,json.dumps(data),'')]
+        with patch('openkyrozen.updates.service.subprocess.run',side_effect=results):
+            self.assertFalse(self.runtime._verify_update_package('/bin/uv',self.revision))
+
+    def test_interruption_leaves_durable_restart_block(self):
+        import json
+        self.run_update(install_error=KeyboardInterrupt())
+        state=json.loads((self.home/'.kyrozen/update-state.json').read_text())
+        self.assertEqual(state['status'],'installing')
+        self.assertEqual(state['revision'],self.revision)

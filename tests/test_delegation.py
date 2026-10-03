@@ -517,6 +517,18 @@ class DelegationTests(unittest.TestCase):
         self.assertIn("no action was executed", rejected["protocol_error"])
         self.assertEqual(self.runtime.tasks.tasks, [])
 
+    def test_plan_without_tasklist_is_repaired_before_delegation(self):
+        from openkyrozen.agent.turn import TurnContext
+        action = "Action: " + json.dumps({"action":"spawn_agents","args":json.dumps({"assignments":[brief()]})})
+        conflict = "Plan:\n1. Locate the exact files.\n2. Spawn specialists in parallel.\n3. Wait for reviews.\n4. Synthesize findings.\n" + 'Action: {"action":"read_file","args":"marker.txt"}'
+        turn = TurnContext("Audit",fast_backend="off")
+        with patch.object(self.runtime,"_call_llm_with_spinner",return_value=action):
+            text,parsed = self.runtime._observe_turn_response(turn,conflict,[])
+        self.assertNotIn("Plan:",text)
+        self.assertFalse(parsed["has_plan"])
+        self.assertEqual(parsed["tool_calls"][0]["action"],"spawn_agents")
+        self.assertEqual(self.runtime.tasks.tasks,[])
+
     def test_malformed_report_has_two_repairs_and_provider_errors_are_not_success(self):
         class InvalidProvider:
             def chat(inner, messages, model):

@@ -203,6 +203,71 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertEqual(states["invent_skills"]["product_status"], "used")
             self.assertEqual(states["skill_composition"]["product_status"], "used")
 
+    def test_matching_learning_products_survive_vector_rank_and_missing_index_entries(self):
+        for omit_products in (False, True):
+            with self.subTest(omit_products=omit_products), tempfile.TemporaryDirectory() as directory:
+                self._isolated_runtime(Path(directory))
+                observations = [main.memory_bank.add_log(f"User: Verify Orion parser observation {number}")
+                                for number in range(20)]
+                skill = main.memory_bank.add_log("SKILL: Orion verification - Verify Orion parser tests",
+                    metadata={"learning_feature": "invent_skills"})
+                strategy = main.memory_bank.add_log("STRATEGY: For Verify Orion parser, run focused tests",
+                    metadata={"learning_feature": "skill_composition"})
+                rows = main.memory_bank.store.list_memories(status="active", limit=100,
+                    user_id="learning-user", workspace_id="learning-project", session_id="learning-session")
+                by_id = {row["id"]: row for row in rows}
+                ranked_ids = observations + ([] if omit_products else [skill, strategy])
+                collection = Mock()
+                collection.count.return_value = len(rows)
+                collection.query.return_value = {"ids": [ranked_ids],
+                    "documents": [[by_id[identifier]["content"] for identifier in ranked_ids]]}
+                main.memory_bank._collection = collection
+                with patch("openkyrozen.routing.decision_assist.decision_assist", return_value=None):
+                    context = main._build_memory_context("Verify Orion parser", n=3)
+                self.assertIn("SKILL: Orion verification", context)
+                self.assertIn("STRATEGY: For Verify Orion parser", context)
+                self.assertEqual(context.count("- kind="), 3)
+                receipts = main.memory_bank.store.list_events("learning.product_used", limit=1,
+                    user_id="learning-user", workspace_id="learning-project")
+                self.assertEqual({item["memory_id"] for item in receipts[0]["payload"]["products"]},
+                                 {skill, strategy})
+
+    def test_learning_product_fallback_respects_relevance_and_visibility(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._isolated_runtime(Path(directory))
+            observation = main.memory_bank.add_log("User: Verify Orion parser observation")
+            for text, metadata in (
+                ("SKILL: private Verify Orion parser", {"visibility": "private", "speaker": "alice"}),
+                ("SKILL: other profile Verify Orion parser", {"scope": {"type": "profile", "value": "researcher"}}),
+                ("SKILL: group Verify Orion parser", {"visibility": "group", "audiences": ["secret-team"]}),
+                ("SKILL: unrelated Saturn database", {}),
+                ("SKILL: partial Orion database", {}),
+                ("SKILL: forbidden Verify Orion parser", {"tool_name": "forbidden_tool"}),
+            ):
+                feature = "dynamic_tool_definition" if "tool_name" in metadata else "invent_skills"
+                main.memory_bank.add_log(text, metadata={"learning_feature": feature, **metadata})
+            foreign = main.memory_bank.scoped(workspace_id="foreign-project")
+            foreign.add_log("SKILL: foreign Verify Orion parser", metadata={"learning_feature": "invent_skills"})
+            other_session = main.memory_bank.scoped(session_id="foreign-session")
+            other_session.add_log("SKILL: other session Verify Orion parser",
+                                  metadata={"learning_feature": "invent_skills"})
+            other_user = main.memory_bank.scoped(user_id="foreign-user")
+            other_user.add_log("SKILL: other user Verify Orion parser",
+                               metadata={"learning_feature": "invent_skills"})
+            main.memory_bank.add_log("SKILL: inactive Verify Orion parser", status="archived",
+                                     metadata={"learning_feature": "invent_skills"})
+            collection = Mock()
+            collection.count.return_value = 8
+            collection.query.return_value = {"ids": [[observation]],
+                "documents": [["User: Verify Orion parser observation"]]}
+            main.memory_bank._collection = collection
+            with patch("openkyrozen.routing.decision_assist.decision_assist", return_value=None), \
+                    patch.object(main, "_permitted_tool_names", return_value=set()), \
+                    patch.object(main.learning_engine, "route_profile", return_value="coder"):
+                context = main._build_memory_context("Verify Orion parser", n=8)
+            self.assertIn("User: Verify Orion parser observation", context)
+            self.assertNotIn("SKILL:", context)
+
     def test_context_digest_survives_restart_only_in_its_session(self):
         from openkyrozen.agent.compaction import DIGEST_PREFIX
         with tempfile.TemporaryDirectory() as directory:

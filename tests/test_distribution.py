@@ -384,6 +384,21 @@ exit 0
             self.assertEqual(target.read_text(encoding="utf-8"), "new tui")
             self.assertFalse(pending.exists())
 
+    def test_incomplete_update_prevents_pending_tui_activation(self):
+        import json
+        from openkyrozen.interfaces.cli import launcher
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);state=root/".kyrozen";binary=state/"bin/openkyrozen-tui"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("old");binary.chmod(0o700)
+            pending=binary.with_name(binary.name+".next");pending.write_text("new")
+            (state/"update-state.json").write_text(json.dumps({"status":"installing","revision":"a"*40}))
+            with patch.object(launcher.Path,"home",return_value=root):
+                with self.assertRaises(RuntimeError):
+                    launcher._tui_binary()
+            self.assertEqual(binary.read_text(),"old")
+            self.assertTrue(pending.exists())
+
     def test_launcher_restarts_tui_after_successful_update(self):
         import openkyrozen.interfaces.cli.launcher as tui_launcher
         results = [
