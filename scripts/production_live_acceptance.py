@@ -38,6 +38,7 @@ def acceptance(limit, focused=False):
     cancellation_armed=threading.Event()
     requests=body_bytes=0
     providers=[]
+    response_metadata=[]
     def guard(request):
         nonlocal requests,body_bytes
         size=len(request.content)
@@ -50,7 +51,6 @@ def acceptance(limit, focused=False):
             if not request_release.wait(40):
                 raise RuntimeError('Cancellation transport barrier timed out')
     def factory(config):
-        config.model_complex=config.model_simple
         provider=get_provider(config)
         if not hasattr(provider,'_client') or not hasattr(provider._client,'chat'):
             raise RuntimeError('BLOCKED: budgeted live harness requires an OpenAI-compatible configured provider')
@@ -60,14 +60,32 @@ def acceptance(limit, focused=False):
         original=client.chat.completions.create
         def create(**kwargs):
             kwargs.update(max_tokens=2048,timeout=40)
-            return original(**kwargs)
+            try:
+                result=original(**kwargs)
+            except Exception as exc:
+                with lock:
+                    response_metadata.append({'result':'error','error_type':type(exc).__name__})
+                raise
+            choices=getattr(result,'choices',None) or []
+            choice=choices[0] if choices else None
+            message=getattr(choice,'message',None)
+            content=getattr(message,'content','') or ''
+            usage=getattr(result,'usage',None)
+            with lock:
+                response_metadata.append({'result':type(result).__name__,
+                    'model':getattr(result,'model',None),'finish_reason':getattr(choice,'finish_reason',None),'content_chars':len(content),
+                    'has_plan':'Plan:' in content,'has_tasklist':'TaskList:' in content,
+                    'has_action':'Action:' in content,
+                    'prompt_tokens':getattr(usage,'prompt_tokens',None),
+                    'completion_tokens':getattr(usage,'completion_tokens',None)})
+            return result
         client.chat.completions.create=create
         providers.append(provider)
         return provider
     config=ProviderConfig(provider=saved['provider'],api_key=key,
-        model_simple=saved.get('model_simple',''),model_complex=saved.get('model_simple',''),
+        model_simple=saved.get('model_simple',''),model_complex=saved.get('model_complex',saved.get('model_simple','')),
         base_url=saved.get('base_url',''))
-    report={'provider':config.provider,'model':config.model_simple,'request_limit':limit,'checks':{}}
+    report={'provider':config.provider,'model':config.model_simple,'model_complex':config.model_complex,'output_token_limit':2048,'request_limit':limit,'checks':{}}
     try:
         provider=factory(config)
         if not focused:
@@ -142,11 +160,13 @@ def acceptance(limit, focused=False):
         except (ValueError,TypeError):
             pass
         report['error']=detail[:3000]
+        if 'Live audit request budget exhausted' in detail:
+            report['status']='BLOCKED'
     finally:
         for provider in providers:
             provider._client.close()
     from audit_identity import audit_identity
-    report.update(requests=requests,input_bytes=body_bytes,identity=audit_identity())
+    report.update(requests=requests,input_bytes=body_bytes,response_metadata=response_metadata,identity=audit_identity())
     return report
 
 
