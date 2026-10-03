@@ -74,6 +74,9 @@ def activate_windows_package(bin_dir: Path, canonical_bin: Path, staged_tui: Pat
                                    text=True, timeout=60, check=False)
             if probe.returncode:
                 raise RuntimeError('The activated recovery CLI failed its startup probe.')
+            # A previous installer may have left a legacy .next binary. It must
+            # not overwrite the verified direct activation on the next launch.
+            tui_target.with_name(tui_target.name + '.next').unlink(missing_ok=True)
         except BaseException:
             # Rollback errors propagate; callers must report uncertain activation.
             for target, backup in reversed(applied):

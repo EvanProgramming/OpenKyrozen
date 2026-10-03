@@ -100,7 +100,13 @@ def acceptance(revision, baseline):
                     time.sleep(.25)
                 raise AssertionError('Windows staged activation did not complete')
             return result,active_python
+        if os.name=='nt':
+            stale=home/'.kyrozen/bin/openkyrozen-tui.exe.next'
+            stale.parent.mkdir(parents=True,exist_ok=True)
+            stale.write_bytes(b'obsolete pending update fixture')
         first,python=update_and_wait(python)
+        if os.name=='nt':
+            assert not stale.exists(),'Stale pending TUI survived verified activation'
         after=json.loads(run([str(python),'-I','-c',PROBE],caller,env).splitlines()[-1])
         assert after['source'].get('vcs_info',{}).get('commit_id')==revision,after
         second,python=update_and_wait(python)

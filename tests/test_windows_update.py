@@ -49,3 +49,15 @@ class WindowsUpdateTests(unittest.TestCase):
                     activate_windows_package(source, target, tui, destination)
             self.assertEqual((target / 'kyrozen.exe').read_bytes(), b'old')
             self.assertEqual(destination.read_bytes(), b'old tui')
+
+    def test_activation_discards_stale_pending_tui_after_verifying_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'source';source.mkdir()
+            (source/'kyrozen.exe').write_bytes(b'new entrypoint')
+            staged=root/'staged.exe';staged.write_bytes(b'new tui')
+            target=root/'tui.exe';pending=target.with_name(target.name+'.next')
+            pending.write_bytes(b'stale pending update')
+            with patch('openkyrozen.updates.windows.subprocess.run',return_value=subprocess.CompletedProcess([],0,'','')):
+                activate_windows_package(source,root/'bin',staged,target)
+            self.assertFalse(pending.exists())
+            self.assertEqual(target.read_bytes(),b'new tui')
