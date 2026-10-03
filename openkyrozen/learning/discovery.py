@@ -5,12 +5,13 @@ from openkyrozen.persistence.models import stable_hash
 
 def _review_tools(self) -> None:
     """Analyse tool usage patterns and suggest merges or improvements."""
-    if len(self._tool_stats) < 3:
+    tool_stats = self._learning_tool_stats()
+    if len(tool_stats) < 3:
         return  # not enough data
 
     # Build a summary of tool usage
     summary_lines = []
-    for name, stats in sorted(self._tool_stats.items(),
+    for name, stats in sorted(tool_stats.items(),
                               key=lambda x: x[1].get("calls", 0), reverse=True)[:10]:
         calls = stats.get("calls", 0)
         successes = stats.get("successes", 0)
@@ -40,7 +41,7 @@ def _review_tools(self) -> None:
             for line in answer.split("\n"):
                 line = line.strip()
                 if line.startswith("TOOL_REVIEW:"):
-                    self.memory_bank.add_log(f"TOOL_REVIEW: {line}")
+                    self._store_learning_product("review_tools", line)
     except Exception:
         pass
 
@@ -51,14 +52,8 @@ def _invent_skills(self) -> None:
     recent = self.memory_bank.get_recent(40)
     if not recent:
         return
-    # Exclude system‑internal logs (FILE, FACT, SKILL, LEARNED)
-    logs = [
-        r for r in recent
-        if not r.startswith("FILE:")
-        and not r.startswith("FACT:")
-        and not r.startswith("LEARNED:")
-        and not r.startswith("SKILL:")
-    ]
+    # Only conversation evidence may invent a conversation-derived workflow.
+    logs = [r for r in recent if r.startswith("User:")]
     if len(logs) < 5:
         return
 
@@ -93,11 +88,12 @@ def _invent_skills(self) -> None:
         steps_clean = [line.strip() for line in lines if line.strip() and line.strip()[:1].isdigit()]
         steps_str = "\n".join(steps_clean)
         stored = f"SKILL: {skill_name} | {description}\nSteps:\n{steps_str}"
-        self.learning_engine.submit("skill", stored, evidence_id=stable_hash("\n".join(logs[-5:])),
-                               confidence=0.4, metadata={"source": "skill_invention"})
-        self.learning_engine.submit("fact", f"Learned a reusable skill called '{skill_name}' ({description})",
-                               evidence_id=stable_hash(stored), confidence=0.4,
-                               metadata={"source": "skill_invention"})
+        if steps_clean and skill_name != "unknown":
+            self.learning_engine.submit(
+                "strategy", stored, evidence_id=stable_hash("\n".join(logs[:5])),
+                metadata={"learning_feature": "invent_skills"},
+                evidence_text="\n".join(logs[:5])[:4000],
+            )
     except Exception as exc:
         self.memory_bank.store.append_event(
             "learning.skill_invention_failed", {"error": str(exc)[:1000]},
@@ -175,7 +171,6 @@ def _auto_patch_new_technology(self, user_input: str) -> None:
 
     # Spawn background fetches for new discoveries
     for lib in detected:
-        self._known_libraries.add(lib)
         with self._technology_lock:
             if len(self._technology_in_flight) >= 8 or lib in self._technology_in_flight:
                 continue
@@ -188,8 +183,9 @@ def _fetch_library_info(self, lib_name: str) -> None:
     search_web = self.AVAILABLE_TOOLS["search_web"]
     try:
         result = search_web(f"{lib_name} documentation overview")
-        if result and "Search" not in result:
-            self.memory_bank.add_log(f"LIBRARY_INFO: {lib_name}\n{result[:2000]}")
+        if result.startswith("- Title:"):
+            self._store_learning_product("auto_patch_technology", f"LIBRARY_INFO: {lib_name}\n{result[:2000]}")
+            self._known_libraries.add(lib_name)
     except Exception as exc:
         self.memory_bank.store.append_event(
             "learning.library_fetch_failed", {"library": lib_name, "error": str(exc)[:500]},

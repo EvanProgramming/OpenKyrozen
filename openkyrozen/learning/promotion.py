@@ -28,7 +28,7 @@ def record_outcome(self, run: dict[str, str], receipts: list[dict[str, Any]], *,
                 "run_id": run["run_id"], "regression_event_id": preflight_id,
             }, user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
                session_id=self.memory.session_id)
-    if correction:
+    if correction and verified:
         dependencies = []
         for receipt in receipts:
             proposal = self._proposal_for_skill(str(receipt.get("skill_id", "")))

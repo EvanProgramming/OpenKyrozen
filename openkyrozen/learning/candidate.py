@@ -73,6 +73,10 @@ def propose_artifact(self, run_id: str, artifact: dict[str, Any]) -> dict[str, A
                                                            "skill_id": installed["id"], "profile": profile},
                             user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
                             session_id=self.memory.session_id)
+    self.store.append_event("learning.product_created", {
+        "feature": "outcome_verified_evolution", "product_id": proposal_id,
+    }, user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
+       session_id=self.memory.session_id)
     return {"status": "canary", "proposal_id": proposal_id, "skill_id": installed["id"]}
 
 
@@ -117,7 +121,8 @@ def submit(self, kind: str, content: str, *, evidence_id: str | None = None,
     proposal_id = self.store.create_proposal(kind, content, confidence=confidence,
                                              evidence=[evidence_id or digest], workspace_id=self.memory.workspace_id,
                                              user_id=self.memory.user_id)
-    self.store.append_event("learning.proposal_created", {"proposal_id": proposal_id, "kind": kind},
+    self.store.append_event("learning.proposal_created", {"proposal_id": proposal_id, "kind": kind,
+                            "feature": (metadata or {}).get("learning_feature")},
                             user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
                             session_id=self.memory.session_id)
     return {"status": "candidate", "proposal_id": proposal_id, "evidence_count": 1}

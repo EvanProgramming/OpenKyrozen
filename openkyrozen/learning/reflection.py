@@ -30,7 +30,7 @@ def _maybe_trigger_reflection_after_complex_task(self, num_tool_calls: int) -> N
         messages = [{"role": "system", "content": reflect_prompt}]
         answer = (self._learning_model_response(messages, feature="post_task_reflection") or "").strip()
         if answer and answer not in ("—", ""):
-            self.memory_bank.add_log(f"REFLECTION:\n{answer}")
+            self._store_learning_product("post_task_reflection", f"REFLECTION:\n{answer}")
     except Exception:
         pass
 
@@ -63,7 +63,7 @@ def _maybe_trigger_reflection(self) -> None:
         messages = [{"role": "system", "content": reflect_prompt}]
         answer = (self._learning_model_response(messages, feature="idle_reflection") or "").strip()
         if answer and answer not in ("—", ""):
-            self.memory_bank.add_log(f"REFLECTION:\n{answer}")
+            self._store_learning_product("idle_reflection", f"REFLECTION:\n{answer}")
     except Exception:
         pass
 
@@ -101,7 +101,7 @@ def _maybe_strategy_distillation(self) -> None:
             for line in answer.split("\n"):
                 line = line.strip()
                 if line.startswith("STRATEGY:"):
-                    self.memory_bank.add_log(f"STRATEGY: {line}")
+                    self._store_learning_product("strategy_distillation", line)
     except Exception:
         pass
 
@@ -131,7 +131,7 @@ def _targeted_inquiry(self) -> None:
             indent = match.group(3)
             first_line = match.group(4).strip()
 
-            inquiry_key = f"{py_file}:{func_name}:{stable_hash(content[match.start():match.end()]) if 'stable_hash' in vars(self) else hash(content[match.start():match.end()])}"
+            inquiry_key = f"{py_file}:{func_name}:{stable_hash(content[match.start():match.end()])}"
             if inquiry_key in self._inquired_functions:
                 continue
             self._inquired_functions.add(inquiry_key)
@@ -168,7 +168,7 @@ def _targeted_inquiry(self) -> None:
                 if answer.startswith("PURPOSE: "):
                     purpose = answer[len("PURPOSE: "):].strip()
                     if purpose.lower() != "unclear":
-                        self.memory_bank.add_log(
+                        self._store_learning_product("targeted_inquiry",
                             f"CODE_DOC: Function '{func_name}' in {py_file.name} "
                             f"({func_params}) — {purpose}"
                         )

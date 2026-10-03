@@ -93,9 +93,9 @@ def _prepare_turn(self, turn):
     # preference detection records scoped signals, while technology discovery
     # only queues the existing background documentation fetch.
     self.dispatch_learning_cycle(
-        surface=self._EXECUTION_SURFACE, trigger="turn", max_features=2,
+        surface=self._EXECUTION_SURFACE, trigger="turn", max_features=3,
         user_input=turn.user_input,
-        feature_names=("detect_user_preferences", "auto_patch_technology"),
+        feature_names=("detect_user_preferences", "auto_patch_technology", "skill_composition"),
     )
 
     # Auto-select the best model for this turn based on task complexity

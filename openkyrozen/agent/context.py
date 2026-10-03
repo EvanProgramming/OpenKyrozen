@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from openkyrozen.agent.compaction import ContextState, compact_for_pressure, message_fingerprint, retain_context_digests
+from openkyrozen.agent.compaction import ContextState, compact_for_pressure, is_context_digest, message_fingerprint, retain_context_digests
 from openkyrozen.agent.types import ContextTooLargeError
 
 
@@ -21,6 +21,34 @@ def _store_context_status(self, state: ContextState) -> None:
         return
     with self._context_status_lock:
         self._context_status_by_scope[self._context_scope()] = dict(state.status)
+
+
+def _save_learning_context_digest(self, digest: dict[str, Any] | None) -> None:
+    if (not digest or not is_context_digest(digest) or not self.memory_bank.session_id
+            or not self._SELF_LEARNING_FLAGS.get("context_compression", True)):
+        return
+    event_id = self._record_learning_event("learning.context_digest", {"digest": digest})
+    if event_id:
+        self._record_learning_event("learning.product_created", {
+            "feature": "context_compression", "product_id": event_id,
+        })
+
+
+def _restore_learning_context_digest(self) -> dict[str, Any] | None:
+    if not self.memory_bank.session_id or not self._SELF_LEARNING_FLAGS.get("context_compression", True):
+        return None
+    events = self.memory_bank.store.list_events("learning.context_digest", limit=1,
+        workspace_id=self.memory_bank.workspace_id, user_id=self.memory_bank.user_id,
+        session_id=self.memory_bank.session_id)
+    if not events:
+        return None
+    digest = events[0]["payload"].get("digest")
+    if not isinstance(digest, dict) or not is_context_digest(digest):
+        return None
+    self._record_learning_event("learning.product_used", {
+        "products": [{"feature": "context_compression", "product_id": events[0]["id"]}],
+    })
+    return digest
 
 
 def _load_reported_context_tokens(self, state: ContextState) -> None:
@@ -77,11 +105,11 @@ def _prepare_context_for_call(self, messages: list[dict], model: str | None = No
     )
     messages[:] = result.messages
     if result.history_digest is not None:
-        pass
         retained_ids = {id(item) for item in messages}
         retained_history = [item for item in self.short_term_memory if id(item) in retained_ids]
         self.short_term_memory = retain_context_digests([result.history_digest] + retained_history, self.SHORT_TERM_CAP * 2)
         state.history_message_ids = {id(item) for item in self.short_term_memory}
+        self._save_learning_context_digest(result.history_digest)
     self._store_context_status(state)
     if result.impossible:
         raise ContextTooLargeError(
@@ -103,10 +131,10 @@ def _recover_context_after_overflow(self, messages: list[dict], model: str | Non
     )
     messages[:] = result.messages
     if result.history_digest is not None:
-        pass
         retained_ids = {id(item) for item in messages}
         retained_history = [item for item in self.short_term_memory if id(item) in retained_ids]
         self.short_term_memory = retain_context_digests([result.history_digest] + retained_history, self.SHORT_TERM_CAP * 2)
         state.history_message_ids = {id(item) for item in self.short_term_memory}
+        self._save_learning_context_digest(result.history_digest)
     self._store_context_status(state)
     return result.compacted and not result.impossible

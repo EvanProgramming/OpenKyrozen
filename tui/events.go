@@ -439,7 +439,7 @@ func (m *model) handlePrompt(event backendEvent) {
 		if features, ok := event["features"].([]any); ok {
 			for _, raw := range features {
 				if item, ok := raw.(map[string]any); ok {
-					m.features = append(m.features, featureItem{name: stringValue(item, "name"), enabled: boolValue(item, "enabled"), description: stringValue(item, "description")})
+					m.features = append(m.features, featureItem{name: stringValue(item, "name"), enabled: boolValue(item, "enabled"), description: stringValue(item, "description"), status: stringValue(item, "status"), productStatus: stringValue(item, "product_status")})
 				}
 			}
 		}

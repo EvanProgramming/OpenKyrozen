@@ -62,6 +62,17 @@ class MultiPartyMemoryTests(unittest.TestCase):
         events = self.memory.store.list_events(workspace_id="project", session_id="session")
         self.assertNotIn("diagnosis-7x", str([item["payload"] for item in events]))
 
+    def test_duplicate_learning_cannot_widen_private_visibility(self):
+        text = "FACT: private project lantern marker"
+        private_id = self.memory.add_log(text, kind="fact",
+            metadata={"visibility": "private", "speaker": "alice"})
+        self.assertEqual(private_id, self.memory.add_log(text, kind="fact",
+            metadata={"visibility": "public", "learning_feature": "consolidate_memories"}))
+        self.assertEqual(self.memory.recall_records("lantern marker", n_results=5,
+            speaker="bob", authorized_speakers={"bob"}), [])
+        self.assertEqual([row["id"] for row in self.memory.recall_records("lantern marker", n_results=5,
+            speaker="alice", authorized_speakers={"alice"})], [private_id])
+
     def test_group_agreement_is_audience_and_channel_scoped(self):
         self.engine.remember_claim(
             key="deploy window", value="Friday", authority="owner", claim_type="group_agreement",

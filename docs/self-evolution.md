@@ -39,7 +39,7 @@ Historical verification snapshot: `51be33361422e55e1f2f00c33a0e0f8c56132a91`
 (the post-#54 `main` revision, captured before this #55 documentation-only
 update). Snapshot date: 2026-09-04.
 
-Current repository test count at this snapshot: **392 unittest cases**.
+Current repository test count at this snapshot: **425 unittest cases**.
 
 ## Verified surface
 
@@ -268,7 +268,7 @@ diagnostic only and is not treated as a release claim.
 
 ## Verification snapshot commands
 
-Current repository test count at this snapshot: **392 unittest cases**.
+Current repository test count at this snapshot: **425 unittest cases**.
 
 The post-#54 snapshot ran the repository's current checks and smoke coverage:
 
@@ -305,7 +305,7 @@ git diff --check
 ```
 
 The historical post-#54 verification passed the 130 discovered tests; the current
-repository contains 391 discovered tests. The historical run also covered the API
+repository contains 409 discovered tests. The historical run also covered the API
 health/scoping smoke, the CLI command-loop smoke, and the five-case
 clean/evolved benchmark described above. `make check` reports the live 45-tool
 runtime inventory, including 14 `git_` tools. A new artifact is not immediate:

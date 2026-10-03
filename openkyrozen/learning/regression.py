@@ -52,7 +52,7 @@ def _auto_debug_tool(self) -> None:
     """Analyse tool failures and error patterns, then log debugging insights."""
     # Collect failing tools from performance stats
     failing_tools = []
-    for tool_name, stats in self._tool_stats.items():
+    for tool_name, stats in self._learning_tool_stats().items():
         if stats.get("calls", 0) > 2:
             success_rate = stats.get("successes", 0) / max(stats["calls"], 1)
             if success_rate < 0.5:
@@ -94,6 +94,6 @@ def _auto_debug_tool(self) -> None:
             for line in answer.split("\n"):
                 line = line.strip()
                 if line.startswith("DEBUG_FINDING:") or line.startswith("FIX:"):
-                    self.memory_bank.add_log(f"DEBUG: {line}")
+                    self._store_learning_product("auto_debug_tool", f"DEBUG: {line}", kind="failure")
     except Exception:
         pass

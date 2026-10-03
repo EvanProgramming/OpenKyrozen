@@ -437,7 +437,6 @@ def initialise(self):
 
     self.TOOLS_LIST = self._build_tools_list()
 
-    self._logs_count_at_last_learn = 0
 
     self.short_term_memory: list[dict[str, str]] = [
         {"role": "user", "content": "Hello, are you ready to help me?"},

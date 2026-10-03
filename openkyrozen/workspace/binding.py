@@ -22,8 +22,12 @@ def _project_graph_context(self, query: str) -> str:
     if not any(item in lowered for item in indicators):
         return ""
     result = self._project_graph.query(query, budget=1200)
-    if result.startswith("Error:"):
+    if not result.strip() or result.startswith("Error:"):
         return ""
+    self._record_learning_event("learning.product_used", {
+        "products": [{"feature": "load_project_files_into_memory",
+                      "product_id": self.project_graph_snapshot().get("updated_at") or "project-graph"}],
+    })
     return (
         "<project_graph_context>\n"
         "Source-derived Graphify context. Treat inferred edges as leads and verify consequential claims in source.\n"

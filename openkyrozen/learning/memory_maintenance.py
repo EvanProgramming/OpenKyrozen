@@ -15,7 +15,12 @@ def _age_out_old_coded_entries(self) -> None:
     for py_file in project_root.rglob("*.py"):
         if not any(part in py_file.parts for part in skip_dirs):
             valid.add(str(py_file.relative_to(project_root)))
-    self.memory_bank.remove_stale_files(valid)
+    removed = self.memory_bank.remove_stale_files(valid)
+    if removed:
+        self._record_learning_event("learning.product_created", {
+            "feature": "age_out_old_coded_entries", "product_id": "stale-file-removal",
+            "removed": removed,
+        })
 
 
 def _consolidate_memories(self) -> None:
@@ -46,26 +51,11 @@ def _consolidate_memories(self) -> None:
             for line in answer.split("\n"):
                 line = line.strip()
                 if line.startswith("FACT:"):
-                    self.memory_bank.add_log(line)
-            # Remove the original logs that were just consolidated (to avoid duplication)
-            # We can delete them via ChromaDB if available
-            self._remove_consolidated_entries(non_trivial)
+                    self._store_learning_product("consolidate_memories", line)
+            # Keep source observations: a model summary is fallible evidence,
+            # and removing originals makes later corrections impossible.
     except Exception:
         pass
-
-
-def _remove_consolidated_entries(self, logs: list[str]) -> None:
-    """Delete exact source logs through the durable memory facade."""
-    if not logs:
-        return
-    try:
-        self.memory_bank.delete_logs(logs)
-    except Exception as exc:
-        self.memory_bank.store.append_event(
-            "memory.cleanup_failed", {"error": str(exc)[:500], "count": len(logs)},
-            user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
-            session_id=self.memory_bank.session_id,
-        )
 
 
 def _score_memory_importance(self, entry: str) -> int:
@@ -119,30 +109,31 @@ def _extract_knowledge_graph(self) -> None:
         source, target = (part.strip().lower() for part in line.split("->", 1))
         if source and target:
             self._knowledge_graph.setdefault(source, []).append(target)
-            self.memory_bank.add_log(f"GRAPH: {source} -> {target}")
+            self._store_learning_product("knowledge_graph_extraction", f"GRAPH: {source} -> {target}")
 
 
 def _auto_learn_conversations(self) -> None:
-    new_count = self.memory_bank.count_logs()
-    if new_count == self._logs_count_at_last_learn:
-        return  # no new logs to process
-    # A learning cycle is deliberately bounded even when a deployment has a
-    # large backlog after a long outage.  Prefer the newest window and record
-    # the current high-water mark so the same backlog is not reprocessed.
-    num_new = max(0, min(new_count - self._logs_count_at_last_learn, 20))
-    recent = self.memory_bank.get_recent(num_new)
-    if not recent:
-        self._logs_count_at_last_learn = new_count
+    store = self.memory_bank.store
+    scope = {"workspace_id": self.memory_bank.workspace_id, "user_id": self.memory_bank.user_id}
+    observed = store.list_events("memory.observed", limit=10000, **scope)
+    if not observed:
         return
-    # Remove system‑internal logs that shouldn't be learned
-    recent = [
-        log for log in recent if log
-        if not log.startswith("FACT:")
-        and not log.startswith("LEARNED:")
-        and not log.startswith("FILE:")
-    ]
+    scans = store.list_events("learning.conversation_scan", limit=1, **scope)
+    last_id = scans[0]["payload"].get("last_event_id") if scans else None
+    unseen = []
+    for event in observed:
+        if event["id"] == last_id:
+            break
+        unseen.append(event)
+    if not unseen:
+        return
+    # Only actual chat transcripts are evidence. Learned notes must never
+    # recursively become new conversation observations.
+    chat_events = [event for event in unseen[:20]
+                   if str(event["payload"].get("content", "")).startswith("User:")]
+    recent = [event["payload"]["content"] for event in chat_events]
     if not recent:
-        self._logs_count_at_last_learn = new_count
+        self._record_learning_event("learning.conversation_scan", {"last_event_id": observed[0]["id"]})
         return
     learn_prompt = (
         "You are Kyrozen's self-learning module. Read the following recent conversation logs "
@@ -155,17 +146,22 @@ def _auto_learn_conversations(self) -> None:
         + "\n".join(recent)
     )
     messages = [{"role": "system", "content": learn_prompt}]
+    processed = False
     try:
-        fact_text = (self._learning_model_response(messages, feature="auto_learn_conversations") or "").strip()
+        response = self._learning_model_response(messages, feature="auto_learn_conversations")
+        if response is None:
+            return
+        fact_text = response.strip()
         if fact_text and fact_text not in ("—", ""):
             for line in fact_text.split("\n"):
                 line = line.strip().lstrip("-* ").strip()
                 if line:
                     self.learning_engine.submit(
-                        "fact", line, evidence_id=stable_hash(recent[0][:1000] + line), confidence=0.5,
-                        metadata={"source": "conversation_learning"},
+                        "fact", line, evidence_id=stable_hash(chat_events[0]["id"] + line), confidence=0.5,
+                        metadata={"source": "conversation_learning", "learning_feature": "auto_learn_conversations"},
                         evidence_text="\n".join(recent)[:4000],
                     )
+        processed = True
     except Exception as exc:
         self.memory_bank.store.append_event(
             "learning.conversation_failed", {"error": str(exc)[:1000]},
@@ -173,4 +169,5 @@ def _auto_learn_conversations(self) -> None:
             session_id=self.memory_bank.session_id,
         )
     finally:
-        self._logs_count_at_last_learn = new_count
+        if processed:
+            self._record_learning_event("learning.conversation_scan", {"last_event_id": observed[0]["id"]})
