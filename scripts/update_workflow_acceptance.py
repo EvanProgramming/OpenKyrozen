@@ -23,9 +23,13 @@ def run(command, cwd, env, timeout=900):
     return result.stdout.strip()
 
 
-PROBE = '''import importlib.metadata as m,json
+PROBE = """import importlib.metadata as m,importlib.util,json,platform,sys
 d=m.distribution('openkyrozen')
-print(json.dumps({'version':d.version,'source':json.loads(d.read_text('direct_url.json') or '{}')}))'''
+spec=importlib.util.find_spec('openkyrozen')
+print(json.dumps({'version':d.version,'source':json.loads(d.read_text('direct_url.json') or '{}'),
+'interpreter':sys.executable,'prefix':sys.prefix,'platform':platform.platform(),
+'module_source':spec.origin if spec else None,
+'dependencies':{item.metadata['Name']:item.version for item in m.distributions()}}))"""
 UPDATE = '''import json,os
 try:
  from openkyrozen.app.bootstrap import build_application
@@ -68,6 +72,7 @@ def acceptance(revision, baseline):
         env.update({'HOME':str(home),'USERPROFILE':str(home), 'UV_TOOL_DIR':str(root/'tools'),
             'UV_TOOL_BIN_DIR':str(root/'bin'), 'UV_CACHE_DIR':str(root/'cache'),
             'KYROZEN_DB_PATH':str(root/'state.sqlite3'), 'KYROZEN_SKILLS_DIR':str(root/'skills'),
+            'PLAYWRIGHT_BROWSERS_PATH':str(root/'browsers'),
             'AUDIT_REVISION':revision,'KYROZEN_PROVIDER':'ollama','KYROZEN_BASE_URL':'http://127.0.0.1:9/v1'})
         run([uv,'tool','install','--python','3.12','--force','--with','fastapi','--with','uvicorn',baseline],caller,env)
         python = root/'tools/openkyrozen'/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
@@ -111,6 +116,8 @@ def acceptance(revision, baseline):
         assert after['source'].get('vcs_info',{}).get('commit_id')==revision,after
         second,python=update_and_wait(python)
         assert second['status']=='success' or (os.name=='nt' and second['status']=='partial'),second
+        after=json.loads(run([str(python),'-I','-c',PROBE],caller,env).splitlines()[-1])
+        assert after['source'].get('vcs_info',{}).get('commit_id')==revision,after
         name='openkyrozen-tui.exe' if os.name=='nt' else 'openkyrozen-tui'
         binary=home/'.kyrozen/bin'/name
         if os.name=='nt':

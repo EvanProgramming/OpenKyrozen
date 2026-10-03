@@ -257,6 +257,7 @@ exit 0
              patch.object(main, "_release_tui_asset_available", return_value=True), \
              patch.object(main, "_resolve_update_revision", return_value=None), \
              patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
+             patch.object(main, "_prepare_update_browser", return_value=None), \
              patch.object(main, "_verify_update_package", return_value=True), \
              patch.object(main, "_activate_update_tui", return_value="TUI activated"), \
              patch.object(main, "_update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
@@ -289,6 +290,7 @@ exit 0
              patch.object(main, "_release_tui_asset_available", return_value=True), \
              patch.object(main, "_resolve_update_revision", return_value=None), \
              patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
+             patch.object(main, "_prepare_update_browser", return_value=None), \
              patch.object(main, "_verify_update_package", return_value=True), \
              patch.object(main, "_activate_update_tui", return_value="TUI activated"), \
              patch.object(main, "_update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
@@ -318,6 +320,7 @@ exit 0
              patch.object(main, "_release_tui_asset_available", return_value=True), \
              patch.object(main, "_resolve_update_revision", return_value=None), \
              patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
+             patch.object(main, "_prepare_update_browser", return_value=None), \
              patch.object(main, "_verify_update_package", return_value=True), \
              patch.object(main, "_activate_update_tui", return_value="TUI activated"), \
              patch("openkyrozen.updates.service.subprocess.run", side_effect=[failed, retry_failed]):
@@ -337,6 +340,7 @@ exit 0
              patch.object(main, "_release_tui_asset_available", return_value=True), \
              patch.object(main, "_resolve_update_revision", return_value=revision), \
              patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
+             patch.object(main, "_prepare_update_browser", return_value=None), \
              patch.object(main, "_verify_update_package", return_value=True), \
              patch.object(main, "_activate_update_tui", return_value="TUI activated"), \
              patch.object(main, "_update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
@@ -359,6 +363,7 @@ exit 0
              patch.object(main, "_release_tui_asset_available", return_value=False), \
              patch.object(main, "_resolve_update_revision", return_value=revision), \
              patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
+             patch.object(main, "_prepare_update_browser", return_value=None), \
              patch.object(main, "_verify_update_package", return_value=True), \
              patch.object(main, "_activate_update_tui", return_value="TUI activated"), \
              patch.object(main, "_update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \

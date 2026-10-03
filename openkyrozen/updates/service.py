@@ -293,9 +293,35 @@ def _update_tui_binary(self, source_url: str, checksum_url: str | None) -> tuple
         return False, self._fix_safe_text(exc, 400)
 
 
+def _prepare_update_browser(self, uv_path: str, *, root: Path | None = None) -> None:
+    """Prepare Chromium for the replacement SDK and verify a real browser launch."""
+    if root is None:
+        directory = subprocess.run([uv_path, "tool", "dir"], capture_output=True,
+                                   text=True, timeout=30, check=False)
+        if directory.returncode or not directory.stdout.strip():
+            raise RuntimeError("Cannot locate the updated browser environment")
+        root = Path(directory.stdout.strip()) / "openkyrozen"
+    python = str(root / ("Scripts/python.exe" if self._IS_WINDOWS else "bin/python"))
+    probe = ("from playwright.sync_api import sync_playwright\n"
+             "with sync_playwright() as p:\n"
+             " browser=p.chromium.launch(headless=True)\n"
+             " page=browser.new_page();page.set_content('<title>update probe</title>')\n"
+             " assert page.title()=='update probe'\n"
+             " browser.close()\n")
+    for command, timeout in (([python, "-I", "-m", "playwright", "install", "chromium"], 300),
+                             ([python, "-I", "-c", probe], 60)):
+        result = subprocess.run(command, cwd=root, capture_output=True, text=True,
+                                timeout=timeout, check=False)
+        if result.returncode:
+            diagnostic = self._fix_safe_text(result.stderr or result.stdout, 600)
+            raise RuntimeError("Chromium preparation failed: " + diagnostic +
+                " Install browser system dependencies with the updated Python's "
+                "`-m playwright install-deps chromium`, then retry /update.")
+
+
 def _self_update(self) -> UpdateResult:
     """Prepare matching components, verify the installed package, then activate."""
-    components = {"python": "unchanged", "tui": "unchanged", "github_cli": "skipped"}
+    components = {"python": "unchanged", "tui": "unchanged", "browser": "unchanged", "github_cli": "skipped"}
     revision = None
     def outcome(status, message, restart=False):
         return UpdateResult(status, message, revision, dict(components), restart)
@@ -345,6 +371,10 @@ def _self_update(self) -> UpdateResult:
             if not verified:
                 return outcome("partial", "Python installation could not be verified; TUI was not activated. " + recovery)
             components["python"] = "verified"
+            stage = "browser"
+            components["browser"] = "failed"
+            self._prepare_update_browser(uv_path, root=windows_stage.root if windows_stage else None)
+            components["browser"] = "verified"
             stage = "activate"
             if windows_stage:
                 from .windows import schedule_windows_activation

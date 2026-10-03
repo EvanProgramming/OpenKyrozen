@@ -21,7 +21,7 @@ class UpdateTransactionTests(unittest.TestCase):
         self.staged = self.home / 'new-tui'
         self.staged.write_bytes(b'new binary')
 
-    def run_update(self, *, stage_error=None, install_error=None, verified=True, optional_error=False, activation_error=None, optional_callback=None):
+    def run_update(self, *, stage_error=None, install_error=None, verified=True, optional_error=False, activation_error=None, optional_callback=None, browser_error=None):
         def stage(*args):
             self.events.append('stage')
             if stage_error:
@@ -36,6 +36,10 @@ class UpdateTransactionTests(unittest.TestCase):
         def verify(*args):
             self.events.append('verify')
             return verified
+        def browser(*args, **kwargs):
+            self.events.append('browser')
+            if browser_error:
+                raise browser_error
         def activate(*args):
             self.events.append('activate')
             if activation_error:
@@ -48,6 +52,7 @@ class UpdateTransactionTests(unittest.TestCase):
              patch.object(self.runtime, '_stage_update_tui', stage, create=True), \
              patch.object(self.runtime, '_verify_update_package', verify, create=True), \
              patch.object(self.runtime, '_activate_update_tui', activate, create=True), \
+             patch.object(self.runtime, '_prepare_update_browser', browser, create=True), \
              patch('openkyrozen.updates.service.subprocess.run', side_effect=run), \
              patch('openkyrozen.tools.github_cli.GitHubCLI.install_managed', side_effect=optional_callback or (OSError('optional setup failed') if optional_error else None), return_value={'message': 'ready'}):
             return self.runtime._self_update()
@@ -64,7 +69,7 @@ class UpdateTransactionTests(unittest.TestCase):
         self.assertEqual(result.status, 'success')
         self.assertTrue(result.restart_ready)
         self.assertEqual(result.revision, self.revision)
-        self.assertEqual(self.events, ['stage', 'install', 'verify', 'activate'])
+        self.assertEqual(self.events, ['stage', 'install', 'verify', 'browser', 'activate'])
 
     def test_install_timeout_reports_uncertainty_and_keeps_tui(self):
         result = self.run_update(install_error=subprocess.TimeoutExpired('uv', 300))
@@ -220,3 +225,24 @@ class UpdateTransactionTests(unittest.TestCase):
         data=json.loads(result.stdout.strip().splitlines()[-1])
         self.assertEqual(len(data['paths']),4)
         self.assertTrue(all(Path(path).is_relative_to(self.home) for path in data['paths']))
+
+    def test_browser_preparation_failure_blocks_activation_and_restart(self):
+        result = self.run_update(browser_error=RuntimeError('Chromium download failed'))
+        self.assertEqual(result.status, 'partial')
+        self.assertFalse(result.restart_ready)
+        self.assertEqual(result.components['python'], 'verified')
+        self.assertEqual(result.components['browser'], 'failed')
+        self.assertNotIn('activate', self.events)
+        self.assertIn('Chromium download failed', str(result))
+
+    def test_browser_uses_the_new_installed_interpreter(self):
+        commands = []
+        def run(command, **kwargs):
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, '', '')
+        with patch('openkyrozen.updates.service.subprocess.run', side_effect=run):
+            self.runtime._prepare_update_browser('/bin/uv', root=self.home)
+        python = str(self.home / ('Scripts/python.exe' if self.runtime._IS_WINDOWS else 'bin/python'))
+        self.assertEqual(commands[0], [python, '-I', '-m', 'playwright', 'install', 'chromium'])
+        self.assertEqual(commands[1][:3], [python, '-I', '-c'])
+        self.assertIn('launch(', commands[1][3])
