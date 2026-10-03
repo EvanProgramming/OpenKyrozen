@@ -293,10 +293,10 @@ def _command(self, name: str, args: Any, request_id: str) -> None:
     elif command in {"/update", "update"}:
         self.status("updating", "Updating OpenKyrozen…", request_id)
         result = self._quiet_call(runtime._self_update)
-        if result.startswith("Updated OpenKyrozen from "):
-            self.emit("restart", request_id, text=result)
+        if result.status == "success" and result.restart_ready:
+            self.emit("restart", request_id, text=str(result))
         else:
-            self.emit("response", request_id, text=result)
+            self.emit("response", request_id, text=str(result))
             self.status("ready", "Ready", request_id)
     elif command in {"/history", "history"}:
         self.emit("response", request_id, text=runtime.history_text())

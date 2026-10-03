@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+var revision = "unknown"
+
 func main() {
 	const restartExitCode = 75
 
@@ -18,8 +20,13 @@ func main() {
 	}
 	project := flag.String("project", "", "active project path")
 	global := flag.Bool("global", false, "use the global workspace")
+	showRevision := flag.Bool("revision", false, "show source revision")
 	showVersion := flag.Bool("version", false, "show version")
 	_ = flag.CommandLine.Parse(arguments)
+	if *showRevision {
+		fmt.Println(revision)
+		return
+	}
 	if *showVersion {
 		fmt.Printf("OpenKyrozen %s\n", version)
 		return

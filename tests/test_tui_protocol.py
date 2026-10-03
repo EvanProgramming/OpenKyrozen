@@ -1,3 +1,4 @@
+from openkyrozen.updates.models import UpdateResult
 import io
 import json
 import tempfile
@@ -505,12 +506,20 @@ class TUIProtocolTests(unittest.TestCase):
     def test_successful_update_requests_restart(self):
         with patch.object(
                 self.backend.agent, "_self_update",
-                return_value="Updated OpenKyrozen from source revision abc123:\ndone",
+                return_value=UpdateResult("success", "Verified update", restart_ready=True),
         ):
             self.backend._command("/update", {}, "update-1")
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
         self.assertEqual(events[-1]["event"], "restart")
         self.assertEqual(events[-1]["request_id"], "update-1")
+
+    def test_partial_update_never_requests_restart(self):
+        with patch.object(self.backend.agent, "_self_update",
+                          return_value=UpdateResult("partial", "Package uncertain", restart_ready=False)):
+            self.backend._command("/update", {}, "partial-update")
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        self.assertFalse(any(event["event"] == "restart" for event in events))
+        self.assertEqual(events[-1]["event"], "status")
 
     def test_update_notice_and_command(self):
         with patch.object(self.backend.agent, "_available_update", return_value="2.0.5"):
@@ -518,7 +527,7 @@ class TUIProtocolTests(unittest.TestCase):
         notice = json.loads(self.output.getvalue().splitlines()[-1])
         self.assertEqual(notice["event"], "update_available")
         self.assertEqual(notice["version"], "2.0.5")
-        with patch.object(self.backend.agent, "_self_update", return_value="Updated OpenKyrozen from source revision abc123") as update:
+        with patch.object(self.backend.agent, "_self_update", return_value=UpdateResult("success", "Verified update", restart_ready=True)) as update:
             self.backend._command("/update", {}, "update-command")
         update.assert_called_once_with()
         self.assertEqual(json.loads(self.output.getvalue().splitlines()[-1])["event"], "restart")
