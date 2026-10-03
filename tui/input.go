@@ -224,10 +224,12 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.apiInput, cmd = m.apiInput.Update(msg)
 		return cmd, false
 	}
-	if m.screen == screenChat && !m.busy && (key == "ctrl+t" || key == "ctrl+shift+t") {
+	modeShortcut := key == "ctrl+t" || key == "ctrl+shift+t"
+	tabShortcut := len(m.palette) == 0 && (key == "tab" || key == "shift+tab")
+	if m.screen == screenChat && !m.busy && (modeShortcut || tabShortcut) {
 		modes := []string{"auto", "ask", "plan", "agent"}
 		delta := 1
-		if key == "ctrl+shift+t" {
+		if key == "ctrl+shift+t" || key == "shift+tab" {
 			delta = -1
 		}
 		mode := cycleSetting(firstNonEmpty(m.interactionMode, "auto"), modes, delta)

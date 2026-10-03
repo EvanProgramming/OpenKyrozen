@@ -296,9 +296,12 @@ func (m model) chatFooter(width int) string {
 	if width < 4 {
 		return ""
 	}
-	hints := "↵ send · / commands · ^B chats · ^C quit"
+	hints := "↵ send · / commands · ^C quit"
+	if width >= 44 {
+		hints = "Tab mode · Ctrl+P permissions · ↵ send · / commands · ^C quit"
+	}
 	if width >= 72 && m.height >= 18 {
-		hints = "Enter send · / commands · Ctrl+B chats · Ctrl+N new · Ctrl+O project · Ctrl+C quit"
+		hints = "Tab mode · Ctrl+P permissions · Enter send · / commands · Ctrl+B chats · Ctrl+N new · Ctrl+O project · Ctrl+C quit"
 	}
 	workspace := ""
 	if m.workspace != "" && width >= 52 {

@@ -1021,6 +1021,48 @@ func TestModeAndPermissionControlsPreserveComposerAndStayVisibleWhenNarrow(t *te
 	}
 }
 
+func TestTabCyclesInteractionModeWithoutClearingComposer(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		key  tea.KeyPressMsg
+		want string
+	}{
+		{"forward", tea.KeyPressMsg{Code: tea.KeyTab}, "ask"},
+		{"backward", tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}, "agent"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := initialModel("", true)
+			m.screen = screenChat
+			m.input.SetValue("keep this draft")
+			var sent bytes.Buffer
+			m.bridge.stdin = bufio.NewWriter(&sent)
+			if _, quit := m.handleKey(test.key); quit {
+				t.Fatal("Tab unexpectedly quit")
+			}
+			if m.input.Value() != "keep this draft" {
+				t.Fatalf("Tab discarded the composer draft: %q", m.input.Value())
+			}
+			var command map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(sent.Bytes()), &command); err != nil {
+				t.Fatalf("Tab did not send valid JSON: %v", err)
+			}
+			if command["name"] != "mode" || command["args"] != test.want {
+				t.Fatalf("Tab selected an unexpected mode: %#v", command)
+			}
+		})
+	}
+}
+
+func TestChatFooterExplainsModeAndPermissionShortcuts(t *testing.T) {
+	m := initialModel("", true)
+	footer := m.chatFooter(120)
+	for _, want := range []string{"Tab mode", "Ctrl+P permissions"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("chat footer omitted %q: %s", want, footer)
+		}
+	}
+}
+
 func TestMouseSelectsModeAndPermissionWithoutClearingComposer(t *testing.T) {
 	m := initialModel("", true)
 	m.width, m.height, m.screen = 120, 30, screenChat
