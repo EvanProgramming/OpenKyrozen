@@ -18,7 +18,12 @@ ACTIVE_CLI_GRACE_SECONDS = 60.0
 
 
 def _state_root() -> Path:
-    path = Path.home() / ".kyrozen" / "v2"
+    configured = os.environ.get("KYROZEN_DB_PATH", "").strip()
+    if configured:
+        requested = Path(configured).expanduser().resolve()
+        path = requested.parent if requested.suffix == ".sqlite3" else requested
+    else:
+        path = Path.home() / ".kyrozen" / "v2"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

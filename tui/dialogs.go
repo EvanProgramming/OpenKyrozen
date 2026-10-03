@@ -110,7 +110,8 @@ func (m model) modal(_ string) string {
 			if item.enabled {
 				check = "●"
 			}
-			lines = append(lines, rowStyle.Render(cursor+" "+style.Render(check+" "+item.name)), mutedStyle.Render("    "+item.description))
+			state := firstNonEmpty(item.status, "never") + " · " + firstNonEmpty(item.productStatus, "none")
+			lines = append(lines, rowStyle.Render(cursor+" "+style.Render(check+" "+item.name)), mutedStyle.Render("    "+item.description+" · "+state))
 		}
 		body = strings.Join(lines, "\n")
 	case screenSettings:

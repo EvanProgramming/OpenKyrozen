@@ -562,6 +562,8 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertEqual(event["event"], "prompt")
         self.assertEqual(event["runtime"]["mode"], "local")
         self.assertEqual(event["cost_source"], "Local CPU/RAM/disk; no API cost")
+        self.assertEqual(len(event["features"]), 20)
+        self.assertIn(event["features"][0]["product_status"], {"none", "candidate", "available", "used"})
 
     def test_graph_requests_are_correlated_bounded_and_support_refresh(self):
         class Graph:

@@ -28,6 +28,11 @@ class MemoryRepository:
                 merged_sources = list(dict.fromkeys(old_sources + (source_event_ids or [])))
                 old_meta = self.database._loads(row["metadata"], {})
                 merged_meta = {**old_meta, **(metadata or {})}
+                # A duplicate observation must never widen an earlier claim's audience.
+                if {"public": 0, "group": 1, "private": 2}.get(old_meta.get("visibility", "public"), 0) > \
+                        {"public": 0, "group": 1, "private": 2}.get(merged_meta.get("visibility", "public"), 0):
+                    merged_meta.update({key: old_meta[key] for key in
+                        ("visibility", "speaker", "channel", "audiences", "scope") if key in old_meta})
                 db.execute(
                     "UPDATE memories SET status=?,confidence=?,source_event_ids=?,metadata=?,updated_at=? WHERE id=?",
                     (status, max(0.0, min(1.0, confidence)), self.database._json(merged_sources), self.database._json(merged_meta), now, memory_id),

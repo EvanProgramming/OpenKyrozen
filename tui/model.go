@@ -68,9 +68,11 @@ type navigationGroup struct {
 }
 
 type featureItem struct {
-	name        string
-	enabled     bool
-	description string
+	name          string
+	enabled       bool
+	description   string
+	status        string
+	productStatus string
 }
 
 type interactionChoice struct{ id, label, description string }

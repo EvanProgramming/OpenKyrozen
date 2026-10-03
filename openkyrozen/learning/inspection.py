@@ -17,7 +17,14 @@ def _load_project_files_into_memory(self, *, force: bool = False) -> dict[str, A
     if force:
         return self._project_graph.refresh(full=True)
     previous = self._project_graph.snapshot()
-    started = self._project_graph.refresh_async()
+    def completed(state: dict[str, Any]) -> None:
+        if state.get("status") == "ready" and state.get("nodes", 0):
+            self._record_learning_event("learning.product_created", {
+                "feature": "load_project_files_into_memory",
+                "product_id": state.get("updated_at") or "project-graph",
+            })
+
+    started = self._project_graph.refresh_async(callback=completed)
     return {**previous, "status": "indexing" if started else previous.get("status", "missing")}
 
 
@@ -112,8 +119,8 @@ def _autonomous_inspection(self) -> None:
 
     # Store findings in memory for the agent to act on next time user asks
     report = "INSPECTION: Autonomous codebase health check\n" + "\n".join(f"- {f}" for f in findings)
-    self.memory_bank.add_log(report)
+    self._store_learning_product("autonomous_inspection", report)
 
     # If there are security-critical findings, also log as a FACT for immediate visibility
     if bare_excepts > 5:
-        self.memory_bank.add_log(f"FACT: Codebase has {bare_excepts} bare except clauses — potential bug masking")
+        self._store_learning_product("autonomous_inspection", f"FACT: Codebase has {bare_excepts} bare except clauses — potential bug masking")

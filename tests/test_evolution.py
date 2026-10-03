@@ -165,6 +165,12 @@ class EvolutionTests(unittest.TestCase):
         events = self.memory.store.list_events("learning.regression_case_created", workspace_id="project")
         self.assertEqual(events[0]["payload"]["task_signature"], run["task_signature"])
 
+    def test_unverified_correction_does_not_arm_regression_preflight(self):
+        run = self.engine.begin_run("coder", "run pytest tests")
+        self.engine.record_outcome(run, [], verified=False, success=False, correction=True)
+        self.assertEqual(self.memory.store.list_events(
+            "learning.regression_case_created", workspace_id="project"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -90,6 +90,11 @@ class MemoryBank:
             **self._scope_kwargs(),
         )
         self._index_memory(memory_id, text, kind=kind, status=status)
+        feature = (metadata or {}).get("learning_feature")
+        if feature and status == "active":
+            self.store.append_event("learning.product_created", {
+                "feature": feature, "memory_id": memory_id,
+            }, **self._scope_kwargs())
         self._trim_logs()
         return memory_id
 
@@ -210,28 +215,41 @@ class MemoryBank:
                        audience: str | None = None, channel: str | None = None,
                        authorized_speakers: set[str] | None = None) -> list[dict[str, Any]]:
         """Return recalled data with provenance and trust metadata."""
-        documents = self.recall(query, n_results=n_results, include_scoped=True)
+        # Score a wider candidate window before applying the caller's limit.
+        documents = self.recall(query, n_results=max(n_results, 12), include_scoped=True)
         if not documents:
             return []
         rows = self.store.list_memories(status="active", limit=10000, workspace_id=self.workspace_id,
                                         session_id=self.session_id, user_id=self.user_id)
-        by_content: dict[str, dict[str, Any]] = {}
+        by_content: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
-            by_content.setdefault(row["content"], row)
-        records = [by_content[doc] for doc in documents if doc in by_content]
+            by_content.setdefault(row["content"], []).append(row)
+        records = [row for doc in documents for row in by_content.get(doc, [])]
         visible = self.filter_records(records, profile=profile, task_signature=task_signature,
                                       speaker=speaker, audience=audience, channel=channel,
                                       authorized_speakers=authorized_speakers)
-        if visible:
+        visible = list({row["id"]: row for row in visible}.values())
+        scoring = self.store.list_events("learning.memory_scored", limit=1,
+                                         workspace_id=self.workspace_id, user_id=self.user_id)
+        scores = {item["memory_id"]: item["score"] for item in
+                  (scoring[0]["payload"].get("scores", []) if scoring else [])}
+        if scores:
+            terms = set(re.findall(r"[\w\u3400-\u9fff]+", query.lower()))
+            visible.sort(key=lambda row: (
+                len(terms & set(re.findall(r"[\w\u3400-\u9fff]+", row["content"].lower()))),
+                scores.get(row["id"], 0),
+            ), reverse=True)
+        selected = visible[:n_results]
+        if selected:
             self.store.append_event("memory.recalled", {
-                "query_hash": stable_hash(query), "memory_ids": [row["id"] for row in visible],
+                "query_hash": stable_hash(query), "memory_ids": [row["id"] for row in selected],
                 "attributions": [{"memory_id": row["id"],
                                   "speaker": row.get("metadata", {}).get("speaker"),
                                   "claim_type": row.get("metadata", {}).get("claim_type", "general")}
-                                 for row in visible],
+                                 for row in selected],
                 "speaker": speaker, "audience": audience, "channel": channel,
             }, user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id)
-        return visible
+        return selected
 
     def filter_records(self, records: list[dict[str, Any]], *, profile: str | None = None,
                        task_signature: str | None = None, speaker: str | None = None,

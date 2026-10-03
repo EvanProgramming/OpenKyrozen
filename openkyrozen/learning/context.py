@@ -47,8 +47,21 @@ def artifact_context(self, run: dict[str, str]) -> tuple[str, list[dict[str, Any
     for receipt in receipts:
         self.store.append_event("learning.artifact_used", {**run, **receipt}, user_id=self.memory.user_id,
                                 workspace_id=self.memory.workspace_id, session_id=self.memory.session_id)
+    learned = [item for item in receipts if item.get("source") == "learned"]
+    if learned:
+        self.store.append_event("learning.product_used", {
+            "products": [{"feature": "outcome_verified_evolution", "product_id": item["skill_id"]}
+                         for item in learned],
+        }, user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
+           session_id=self.memory.session_id)
     preflights = self.negative_preflight(run["profile"], run["task"])
     run["preflight_ids"] = [item["event_id"] for item in preflights]
+    if preflights:
+        self.store.append_event("learning.product_used", {
+            "products": [{"feature": "learning_rollback", "product_id": item["event_id"]}
+                         for item in preflights],
+        }, user_id=self.memory.user_id, workspace_id=self.memory.workspace_id,
+           session_id=self.memory.session_id)
     if not artifacts and not preflights:
         return "", receipts
     lines = ["<learned_guidance>",
