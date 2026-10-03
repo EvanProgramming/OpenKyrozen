@@ -202,3 +202,21 @@ class UpdateTransactionTests(unittest.TestCase):
         state=json.loads((self.home/'.kyrozen/update-state.json').read_text())
         self.assertEqual(state['status'],'installing')
         self.assertEqual(state['revision'],self.revision)
+
+    def test_release_probe_accepts_legacy_installed_entrypoints(self):
+        import json
+        import sys
+        from openkyrozen.updates.models import INSTALL_PROBE
+        for name in ('main','server','tui_backend','tui_launcher'):
+            (self.home/(name+'.py')).write_text('# installed legacy entrypoint\n')
+        metadata=self.home/'openkyrozen-2.0.4.dist-info'
+        metadata.mkdir()
+        (metadata/'METADATA').write_text('Name: openkyrozen\nVersion: 2.0.4\n')
+        (metadata/'direct_url.json').write_text(json.dumps({'url':self.runtime.RELEASE_WHEEL_URL}))
+        setup="import sys,builtins;sys.path.insert(0,"+repr(str(self.home))+");original=builtins.__import__\n"
+        setup+="def legacy_import(name,*args,**kwargs):\n if name=='openkyrozen':raise ModuleNotFoundError(name='openkyrozen')\n return original(name,*args,**kwargs)\nbuiltins.__import__=legacy_import\n"
+        result=subprocess.run([sys.executable,'-I','-c',setup+INSTALL_PROBE],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        data=json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(len(data['paths']),4)
+        self.assertTrue(all(Path(path).is_relative_to(self.home) for path in data['paths']))

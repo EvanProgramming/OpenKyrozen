@@ -86,9 +86,9 @@ def _verified_tui_binary() -> str | None:
 
 
 def _backend_command() -> tuple[str | None, str | None]:
-    command = shutil.which("kyrozen-backend")
-    if command:
-        return command, None
+    command = Path(sys.executable).parent / ("kyrozen-backend.exe" if os.name == "nt" else "kyrozen-backend")
+    if command.is_file():
+        return str(command), None
     return None, sys.executable
 
 
@@ -121,6 +121,8 @@ def main() -> None:
 
     backend, python = _backend_command()
     env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env["PYTHONSAFEPATH"] = "1"
     env["KYROZEN_EXECUTION_SURFACE"] = "tui"
     env.setdefault("KYROZEN_TUI_CAPABILITIES", "full")
     if backend:

@@ -436,5 +436,19 @@ exit 0
         self.assertIn("pip install --no-cache-dir --no-deps .", dockerfile)
 
 
+
+    def test_backend_launch_uses_the_same_python_installation(self):
+        from openkyrozen.interfaces.cli import launcher
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            python=root/'python'
+            backend=root/('kyrozen-backend.exe' if os.name=='nt' else 'kyrozen-backend')
+            backend.write_bytes(b'entrypoint')
+            with patch.object(launcher.sys,'executable',str(python)), patch.object(launcher.shutil,'which',return_value='/unrelated/kyrozen-backend'):
+                command,fallback=launcher._backend_command()
+            self.assertEqual(command,str(backend))
+            self.assertIsNone(fallback)
+
+
 if __name__ == "__main__":
     unittest.main()
