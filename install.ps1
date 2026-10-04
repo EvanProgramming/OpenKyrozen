@@ -19,11 +19,11 @@ function Warn([string]$Message) {
 }
 
 if ($ShowHelp) {
-    Write-Output "OpenKyrozen installer: installs the pinned v2.0.4 GitHub release, uv, Python 3.12/3.13, and the Bubble Tea terminal UI."
+    Write-Output "OpenKyrozen installer: installs the pinned v2.0.5 GitHub release, uv, Python 3.12/3.13, and the Bubble Tea terminal UI."
     exit 0
 }
 
-$releaseVersion = "2.0.4"
+$releaseVersion = "2.0.5"
 $releaseTag = "v$releaseVersion"
 $goVersion = "1.27.1"
 $releaseBaseUrl = "https://github.com/EvanProgramming/OpenKyrozen/releases/download/$releaseTag"
@@ -192,7 +192,7 @@ function Build-Tui {
         tar -xzf $archive -C $source
         Push-Location $source
         try {
-            & $goBin build -trimpath -ldflags "-s -w -X main.version=$releaseVersion" -o $output .
+            & $goBin build -trimpath -ldflags "-s -w -X main.version=$releaseVersion -X main.revision=$releaseTag" -o $output .
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path $output)) { return $false }
         } finally {
             Pop-Location

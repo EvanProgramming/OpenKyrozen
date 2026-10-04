@@ -19,14 +19,14 @@ OpenKyrozen supports Python **3.12 and 3.13**. Python 3.14 is intentionally outs
 ### macOS or Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.4/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.5/install.sh | sh
 kyrozen
 ```
 
 ### Windows PowerShell
 
 ```powershell
-irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.4/install.ps1 | iex
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.5/install.ps1 | iex
 kyrozen
 ```
 
@@ -53,7 +53,7 @@ Use `make install-core` for the smaller development environment. Windows source 
 For a direct package install, use the verified release wheel:
 
 ```bash
-uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.4/openkyrozen-2.0.4-py3-none-any.whl
+uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.5/openkyrozen-2.0.5-py3-none-any.whl
 ```
 
 ## Agent comparison

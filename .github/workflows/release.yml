@@ -87,8 +87,38 @@ jobs:
           New-Item -ItemType Directory -Force -Path $auditHome | Out-Null
           $env:HOME = $auditHome
           $env:USERPROFILE = $auditHome
-          & "$PWD/install.ps1"
+          Invoke-Expression (Invoke-RestMethod "https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/$env:RELEASE_TAG/install.ps1")
           $bin = Join-Path $auditHome ".local\bin"
           & (Join-Path $bin "kyrozen.exe") --version
           & (Join-Path $bin "kyrozen.exe") --help *> $null
           & (Join-Path $bin "kyrozen-web.exe") --help *> $null
+          $revision = & (Join-Path $auditHome ".kyrozen\bin\openkyrozen-tui.exe") --revision
+          if ($revision -ne $env:RELEASE_TAG) { throw "Installed TUI revision does not match release" }
+
+  posix-installer:
+    needs: build-release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.1"
+      - name: Run the public one-line installer in an isolated home
+        shell: bash
+        run: |
+          export HOME="$RUNNER_TEMP/openkyrozen-release-home"
+          export UV_TOOL_DIR="$HOME/.local/share/uv/tools"
+          export UV_TOOL_BIN_DIR="$HOME/.local/bin"
+          export UV_CACHE_DIR="$RUNNER_TEMP/openkyrozen-release-cache"
+          mkdir -p "$HOME"
+          curl -fsSL "https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/$RELEASE_TAG/install.sh" | sh
+          "$HOME/.local/bin/kyrozen" --version
+          "$HOME/.local/bin/kyrozen" --help >/dev/null
+          "$HOME/.local/bin/kyrozen-web" --help >/dev/null
+          test "$("$HOME/.kyrozen/bin/openkyrozen-tui" --revision)" = "$RELEASE_TAG"

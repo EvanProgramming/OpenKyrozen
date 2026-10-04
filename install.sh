@@ -2,7 +2,7 @@
 
 set -eu
 
-release_version='2.0.4'
+release_version='2.0.5'
 release_tag="v$release_version"
 go_version='1.27.1'
 release_base_url="https://github.com/EvanProgramming/OpenKyrozen/releases/download/$release_tag"
@@ -188,7 +188,7 @@ build_tui() {
         rm -rf "$tui_tmp"
         return 1
     fi
-    if ! (cd "$tui_tmp/source" && "$go_bin" build -trimpath -ldflags "-s -w -X main.version=$release_version" -o "$build_output"); then
+    if ! (cd "$tui_tmp/source" && "$go_bin" build -trimpath -ldflags "-s -w -X main.version=$release_version -X main.revision=$release_tag" -o "$build_output"); then
         rm -rf "$tui_tmp"
         return 1
     fi

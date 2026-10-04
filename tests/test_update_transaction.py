@@ -142,7 +142,7 @@ class UpdateTransactionTests(unittest.TestCase):
         original_run = subprocess.run
         def run(command, **kwargs):
             if command[1] == 'build':
-                output.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then echo "OpenKyrozen 2.0.4"; else exit 2; fi\n')
+                output.write_text(f'#!/bin/sh\nif [ "$1" = "--version" ]; then echo "OpenKyrozen {self.runtime.RELEASE_VERSION}"; else exit 2; fi\n')
                 output.chmod(0o700)
                 return subprocess.CompletedProcess(command, 0, '', '')
             return original_run(command, **kwargs)
