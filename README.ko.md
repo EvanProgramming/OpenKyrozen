@@ -19,14 +19,14 @@ OpenKyrozen은 Python **3.12와 3.13**을 지원합니다. Python 3.14는 지원
 ### macOS 또는 Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.5/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/install.sh | sh
 kyrozen
 ```
 
 ### Windows PowerShell
 
 ```powershell
-irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.5/install.ps1 | iex
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/install.ps1 | iex
 kyrozen
 ```
 
@@ -53,7 +53,7 @@ make run
 ### 검증된 release wheel 직접 설치
 
 ```bash
-uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.5/openkyrozen-2.0.5-py3-none-any.whl
+uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.6/openkyrozen-2.0.6-py3-none-any.whl
 ```
 
 ## 빠른 시작

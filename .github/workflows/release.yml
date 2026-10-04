@@ -87,7 +87,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $auditHome | Out-Null
           $env:HOME = $auditHome
           $env:USERPROFILE = $auditHome
-          Invoke-Expression (Invoke-RestMethod "https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/$env:RELEASE_TAG/install.ps1")
+          Invoke-RestMethod "https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/$env:RELEASE_TAG/install.ps1" | Invoke-Expression
           $bin = Join-Path $auditHome ".local\bin"
           & (Join-Path $bin "kyrozen.exe") --version
           & (Join-Path $bin "kyrozen.exe") --help *> $null

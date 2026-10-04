@@ -19,11 +19,11 @@ function Warn([string]$Message) {
 }
 
 if ($ShowHelp) {
-    Write-Output "OpenKyrozen installer: installs the pinned v2.0.5 GitHub release, uv, Python 3.12/3.13, and the Bubble Tea terminal UI."
+    Write-Output "OpenKyrozen installer: installs the pinned v2.0.6 GitHub release, uv, Python 3.12/3.13, and the Bubble Tea terminal UI."
     exit 0
 }
 
-$releaseVersion = "2.0.5"
+$releaseVersion = "2.0.6"
 $releaseTag = "v$releaseVersion"
 $goVersion = "1.27.1"
 $releaseBaseUrl = "https://github.com/EvanProgramming/OpenKyrozen/releases/download/$releaseTag"
@@ -43,7 +43,15 @@ if ($interactive) {
 }
 Write-Output ""
 
-$architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+$architecture = $env:PROCESSOR_ARCHITEW6432
+if (-not $architecture) { $architecture = $env:PROCESSOR_ARCHITECTURE }
+if ($architecture -match "^(AMD64|X64)$") {
+    $architecture = "X64"
+} elseif ($architecture -match "^ARM64$") {
+    $architecture = "Arm64"
+} else {
+    Fail "Could not determine a supported Windows architecture from PROCESSOR_ARCHITECTURE: $architecture"
+}
 if ($architecture -notin @("X64", "Arm64")) {
     Fail "Unsupported Windows architecture: $architecture"
 }
