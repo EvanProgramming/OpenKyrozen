@@ -113,7 +113,7 @@ def _detect_user_preferences(self, user_input: str) -> None:
         # from ever promoting a preference across a process restart.
         self.learning_engine.submit(
             "preference", f"PREF: {pref_str}", evidence_id=f"turn-{uuid.uuid4().hex}",
-            confidence=0.5, metadata={"source": "preference_detection"},
+            confidence=0.5, metadata={"source": "preference_detection", "learning_feature": "detect_user_preferences"},
         )
 
 

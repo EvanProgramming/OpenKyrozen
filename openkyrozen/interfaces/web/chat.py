@@ -295,6 +295,16 @@ def _run_session_chat(self, session: dict[str, Any], message: str) -> str:
             session["last_memory_receipt"] = recalls[0]["payload"] if recalls and recalls[0]["id"] != previous_recall_id else None
             for role, content in (("user", message), ("assistant", reply)):
                 runtime.memory_bank.store.append_event("session.message", {"role": role, "content": content}, user_id=self._SERVER_ACTOR_ID, workspace_id=runtime.memory_bank.workspace_id, session_id=bound.session_id)
+            # Single-user web sessions feed the same evidence stream as CLI/TUI.
+            # Attributed or audience-scoped sessions stay out of global learning.
+            if (session.get("speaker") == self._SERVER_ACTOR_ID
+                    and session.get("audience") == self._SERVER_ACTOR_ID
+                    and session.get("channel") == "chat"
+                    and session.get("authorized_speakers") == [self._SERVER_ACTOR_ID]):
+                from openkyrozen.memory.models import _SECRET_RE
+                transcript = f"User: {message}\nAssistant: {reply}"
+                if not _SECRET_RE.search(transcript):
+                    runtime.memory_bank.add_log(transcript, metadata={"source": "web_conversation"})
             if session["context"]:
                 runtime.memory_bank.store.append_event("context.status", session["context"], user_id=self._SERVER_ACTOR_ID, workspace_id=runtime.memory_bank.workspace_id, session_id=bound.session_id)
             return reply

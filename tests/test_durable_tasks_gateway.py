@@ -34,7 +34,7 @@ class DurableTaskGatewayTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def _start_server(self, workspace: Path, db_path: Path, skills_path: Path) -> tuple[subprocess.Popen, str]:
+    def _start_server(self, workspace: Path, db_path: Path, skills_path: Path, *, log_path: Path | None = None, startup_timeout: float = 20) -> tuple[subprocess.Popen, str]:
         repository = Path(__file__).parents[1]
         port = self._free_port()
         env = os.environ.copy()
@@ -49,21 +49,25 @@ class DurableTaskGatewayTests(unittest.TestCase):
         })
         for variable in ("KYROZEN_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
             env.pop(variable, None)
-        process = subprocess.Popen(
-            [sys.executable, str(repository / "server.py"), "--project", str(workspace),
-             "--host", "127.0.0.1", "--port", str(port)],
-            cwd=workspace,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        log_path = log_path or workspace / "gateway.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # A file cannot fill like an undrained PIPE and survives failed startup.
+        with log_path.open("w", encoding="utf-8") as output:
+            process = subprocess.Popen(
+                [sys.executable, "-c", "import faulthandler,runpy,sys,os; faulthandler.dump_traceback_later(15); sys.argv=sys.argv[1:]; sys.path.insert(0,os.path.dirname(sys.argv[0])); runpy.run_path(sys.argv[0],run_name='__main__')", str(repository / "server.py"), "--project", str(workspace),
+                 "--host", "127.0.0.1", "--port", str(port)],
+                cwd=workspace,
+                env=env,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
         base_url = f"http://127.0.0.1:{port}"
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + startup_timeout
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                output = process.stdout.read() if process.stdout else ""
-                self.fail(f"Gateway exited before becoming ready: {output}")
+                self.fail(f"Gateway exited before becoming ready; log={log_path}: "
+                          f"{log_path.read_text(encoding='utf-8')[-16000:]}")
             try:
                 health = self._request(base_url, "/api/health")
                 if health.get("status") in {"ok", "degraded"}:
@@ -72,7 +76,8 @@ class DurableTaskGatewayTests(unittest.TestCase):
                 time.sleep(0.1)
         process.terminate()
         process.wait(timeout=5)
-        self.fail("Gateway did not become ready")
+        self.fail(f"Gateway did not become ready; log={log_path}: "
+                  f"{log_path.read_text(encoding='utf-8')[-16000:]}")
 
     @staticmethod
     def _stop_server(process: subprocess.Popen) -> None:

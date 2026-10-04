@@ -88,8 +88,8 @@ def acceptance(*, live=False):
                 with contextlib.redirect_stdout(io.StringIO()):
                     reply = runtime.chat(runtime.current_session,
                         "Audit the two independent implementations alpha.py and beta.py against their documented invariants. "
-                        "Use separate parallel specialist investigations and cross-examine both submitted results with actual source reads before synthesis. "
-                        "Decide how to divide the investigation using the delegation guidance. Do not change files or run commands.",
+                        "Use exactly two parallel specialist investigations, one per file. Let their automatic independent reviewers cross-examine both results with actual source reads before synthesis. "
+                        "Decide the assignment briefs using the delegation guidance. Perform final synthesis yourself; do not create extra synthesis or follow-up assignments. Do not change files or run commands.",
                         on_event=events.append)
                 coordinator = runtime.subagent_manager.coordinator
                 assert coordinator is not None, "FAIL: main agent did not delegate: " + runtime._fix_safe_text(reply, 1000)

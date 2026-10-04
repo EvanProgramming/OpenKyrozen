@@ -5,7 +5,7 @@ import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterator
 from openkyrozen.persistence.store import EventStore
@@ -67,24 +67,47 @@ def _legacy_pricing_snapshot(provider: str) -> tuple[dict[str, Any], int, int]:
 def _deepseek_v4_pricing_snapshot(model: str, occurred_at: datetime) -> tuple[dict[str, Any] | None, bool]:
     """Freeze the official DeepSeek V4 rate card selected at a UTC timestamp."""
     canonical_model = _DEEPSEEK_V4_ALIASES.get(model.strip().lower(), model.strip().lower())
-    rates = _DEEPSEEK_V4_MODELS.get(canonical_model)
+    instant = occurred_at.astimezone(timezone.utc)
+    effective_at = _DEEPSEEK_V4_EFFECTIVE_AT
+    version = "deepseek-v4-pricing-2026-08-16"
+    # Flash price transition: https://api-docs.deepseek.com/news/news260910/
+    # Pro remains on its August rate card per the current pricing/changelog.
+    flash_effective_at = datetime(2026, 9, 10, 4, tzinfo=timezone.utc)
+    if instant >= flash_effective_at and canonical_model in {
+        "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
+    }:
+        canonical_model = "deepseek-flash"
+        rates = ("0.006", "0.30", "1.20")
+        effective_at = flash_effective_at
+        version = "deepseek-flash-pricing-2026-09-10"
+    else:
+        rates = _DEEPSEEK_V4_MODELS.get(canonical_model)
     if rates is None:
         return None, False
-    instant = occurred_at.astimezone(timezone.utc)
-    peak = instant.weekday() < 5 and (1 <= instant.hour < 4 or 6 <= instant.hour < 10)
+    # State Council 2026 calendar, in China Standard Time:
+    # https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm
+    holidays_2026 = ((1, 1, 3), (2, 15, 23), (4, 4, 6), (5, 1, 5),
+                     (6, 19, 21), (9, 25, 27), (10, 1, 7))
+    local_date = instant.astimezone(timezone(timedelta(hours=8))).date()
+    holiday = local_date.year == 2026 and any(
+        local_date.month == month and start <= local_date.day <= end
+        for month, start, end in holidays_2026
+    )
+    peak_hours = instant.weekday() < 5 and (1 <= instant.hour < 4 or 6 <= instant.hour < 10)
+    peak = peak_hours and not holiday
     multiplier = 1 if peak else 0.5
     hit, miss, output = (
         int(Decimal(rate) * Decimal(str(multiplier)) * _PICOS_PER_DOLLAR)
         for rate in rates
     )
-    current_schedule = instant >= _DEEPSEEK_V4_EFFECTIVE_AT
+    current_schedule = instant >= effective_at and (not peak_hours or local_date.year == 2026)
     return {
-        "version": "deepseek-v4-pricing-2026-08-16",
+        "version": version,
         "source": "https://api-docs.deepseek.com/quick_start/pricing/",
         "currency": "USD",
         "model": canonical_model,
         "priced_at": instant.isoformat(),
-        "effective_at": _DEEPSEEK_V4_EFFECTIVE_AT.isoformat(),
+        "effective_at": effective_at.isoformat(),
         "billing_window": "peak" if peak else "off_peak",
         "cache_hit_picos_per_million": hit,
         "cache_miss_picos_per_million": miss,

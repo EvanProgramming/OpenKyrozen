@@ -15,7 +15,7 @@ def _observe_turn_response(self, turn, text: str, context: list[dict[str, str]])
         preview = self._parse_model_response(text)
         delegation_steps = re.search(r"\b(?:spawn_agents|wait_subagents|send_subagent|spawn|delegate|delegation)\b",
                                      re.split(r"TaskList\s*:", text, maxsplit=1, flags=re.IGNORECASE)[-1], re.IGNORECASE)
-        if not (preview["has_tasklist"] and (delegation_steps or any(call.get("action") in TOOLS for call in preview["tool_calls"]))):
+        if not ((preview["has_tasklist"] or preview["has_plan"]) and (delegation_steps or any(call.get("action") in TOOLS for call in preview["tool_calls"]))):
             break
         if attempt == 2:
             preview.update(tool_calls=[], protocol_error="Delegation was combined with a sequential task list after two repairs; no action was executed.",

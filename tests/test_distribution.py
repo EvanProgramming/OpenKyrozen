@@ -256,10 +256,14 @@ exit 0
         with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(main, "_release_tui_asset_available", return_value=True), \
              patch.object(main, "_resolve_update_revision", return_value=None), \
+             patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
+             patch.object(main, "_prepare_update_browser", return_value=None), \
+             patch.object(main, "_verify_update_package", return_value=True), \
+             patch.object(main, "_activate_update_tui", return_value="TUI activated"), \
              patch.object(main, "_update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
              patch("openkyrozen.tools.github_cli.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
              patch("openkyrozen.updates.service.subprocess.run", return_value=completed) as run:
-            result = main._self_update()
+            result = str(main._self_update())
         self.assertIn("upgraded", result)
         command = run.call_args.args[0]
         expected_python = (
@@ -285,10 +289,14 @@ exit 0
         with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(main, "_release_tui_asset_available", return_value=True), \
              patch.object(main, "_resolve_update_revision", return_value=None), \
+             patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
+             patch.object(main, "_prepare_update_browser", return_value=None), \
+             patch.object(main, "_verify_update_package", return_value=True), \
+             patch.object(main, "_activate_update_tui", return_value="TUI activated"), \
              patch.object(main, "_update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
              patch("openkyrozen.tools.github_cli.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
              patch("openkyrozen.updates.service.subprocess.run", side_effect=[failed, completed]) as run:
-            result = main._self_update()
+            result = str(main._self_update())
         self.assertIn("upgraded", result)
         self.assertEqual(run.call_count, 2)
         self.assertEqual(
@@ -311,8 +319,12 @@ exit 0
         with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(main, "_release_tui_asset_available", return_value=True), \
              patch.object(main, "_resolve_update_revision", return_value=None), \
+             patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
+             patch.object(main, "_prepare_update_browser", return_value=None), \
+             patch.object(main, "_verify_update_package", return_value=True), \
+             patch.object(main, "_activate_update_tui", return_value="TUI activated"), \
              patch("openkyrozen.updates.service.subprocess.run", side_effect=[failed, retry_failed]):
-            result = main._self_update()
+            result = str(main._self_update())
         self.assertIn("uv exit 1", result)
         self.assertIn("retry also failed", result)
 
@@ -327,10 +339,14 @@ exit 0
         with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(main, "_release_tui_asset_available", return_value=True), \
              patch.object(main, "_resolve_update_revision", return_value=revision), \
+             patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
+             patch.object(main, "_prepare_update_browser", return_value=None), \
+             patch.object(main, "_verify_update_package", return_value=True), \
+             patch.object(main, "_activate_update_tui", return_value="TUI activated"), \
              patch.object(main, "_update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
              patch("openkyrozen.tools.github_cli.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
              patch("openkyrozen.updates.service.subprocess.run", return_value=completed) as run:
-            result = main._self_update()
+            result = str(main._self_update())
         command = run.call_args.args[0]
         self.assertEqual(command[-1], f"git+{main.UPDATE_REPOSITORY_URL}@{revision}")
         self.assertIn(f"source revision {revision[:12]}", result)
@@ -346,10 +362,14 @@ exit 0
         with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(main, "_release_tui_asset_available", return_value=False), \
              patch.object(main, "_resolve_update_revision", return_value=revision), \
+             patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
+             patch.object(main, "_prepare_update_browser", return_value=None), \
+             patch.object(main, "_verify_update_package", return_value=True), \
+             patch.object(main, "_activate_update_tui", return_value="TUI activated"), \
              patch.object(main, "_update_tui_binary", return_value=(True, "Bubble Tea UI installed atomically.")), \
              patch("openkyrozen.tools.github_cli.GitHubCLI.install_managed", return_value={"success": True, "message": "GitHub CLI installed."}), \
              patch("openkyrozen.updates.service.subprocess.run", return_value=completed) as run:
-            result = main._self_update()
+            result = str(main._self_update())
         command = run.call_args.args[0]
         self.assertEqual(command[-1], f"git+{main.UPDATE_REPOSITORY_URL}@{revision}")
         self.assertIn(f"source revision {revision[:12]}", result)
@@ -368,6 +388,21 @@ exit 0
                 self.assertEqual(tui_launcher._tui_binary(), str(target))
             self.assertEqual(target.read_text(encoding="utf-8"), "new tui")
             self.assertFalse(pending.exists())
+
+    def test_incomplete_update_prevents_pending_tui_activation(self):
+        import json
+        from openkyrozen.interfaces.cli import launcher
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);state=root/".kyrozen";binary=state/"bin/openkyrozen-tui"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("old");binary.chmod(0o700)
+            pending=binary.with_name(binary.name+".next");pending.write_text("new")
+            (state/"update-state.json").write_text(json.dumps({"status":"installing","revision":"a"*40}))
+            with patch.object(launcher.Path,"home",return_value=root):
+                with self.assertRaises(RuntimeError):
+                    launcher._tui_binary()
+            self.assertEqual(binary.read_text(),"old")
+            self.assertTrue(pending.exists())
 
     def test_launcher_restarts_tui_after_successful_update(self):
         import openkyrozen.interfaces.cli.launcher as tui_launcher
@@ -404,6 +439,20 @@ exit 0
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn('"openkyrozen.interfaces.web.app", "--project", "/app"', dockerfile)
         self.assertIn("pip install --no-cache-dir --no-deps .", dockerfile)
+
+
+
+    def test_backend_launch_uses_the_same_python_installation(self):
+        from openkyrozen.interfaces.cli import launcher
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            python=root/'python'
+            backend=root/('kyrozen-backend.exe' if os.name=='nt' else 'kyrozen-backend')
+            backend.write_bytes(b'entrypoint')
+            with patch.object(launcher.sys,'executable',str(python)), patch.object(launcher.shutil,'which',return_value='/unrelated/kyrozen-backend'):
+                command,fallback=launcher._backend_command()
+            self.assertEqual(command,str(backend))
+            self.assertIsNone(fallback)
 
 
 if __name__ == "__main__":

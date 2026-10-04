@@ -6,6 +6,7 @@ import time
 import datetime
 from typing import Any
 from openkyrozen.persistence.models import stable_hash
+from openkyrozen.memory.models import _SECRET_RE
 
 
 def _learning_timestamp(self) -> str:
@@ -64,6 +65,16 @@ def _learning_result(self, *, changed: bool = False, detail: str = "") -> dict[s
     return {"changed": bool(changed), "detail": self._learning_safe_text(detail)}
 
 
+def _store_learning_product(self, feature: str, text: str, *, kind: str | None = None) -> str:
+    """Store bounded, untrusted guidance with a receipt for later recall."""
+    if _SECRET_RE.search(text):
+        raise ValueError("learning product contains a secret")
+    return self.memory_bank.add_log(
+        text[:4000], kind=kind,
+        metadata={"learning_feature": feature, "visibility": "public"},
+    )
+
+
 def _run_learning_context_compression(self, _context: dict[str, Any]) -> dict[str, Any]:
     """Compatibility record: foreground calls own model-window compaction."""
     return self._learning_result(
@@ -75,9 +86,8 @@ def _run_learning_context_compression(self, _context: dict[str, Any]) -> dict[st
 def _run_learning_technology(self, context: dict[str, Any]) -> dict[str, Any]:
     if self.learning_policy() != "remote":
         return self._learning_result(detail="requires Remote learning mode to fetch technology documentation")
-    before = set(self._known_libraries)
     self._auto_patch_new_technology(str(context.get("user_input") or ""))
-    return self._learning_result(changed=before != self._known_libraries, detail="technology scan queued")
+    return self._learning_result(detail="technology scan queued when a new library is mentioned")
 
 
 def _run_learning_dynamic_tools(self, _context: dict[str, Any]) -> dict[str, Any]:
@@ -86,10 +96,20 @@ def _run_learning_dynamic_tools(self, _context: dict[str, Any]) -> dict[str, Any
         return self._learning_result(
             detail="dynamic tools remain disabled; capability and approval gates are required",
         )
-    return self._learning_result(
-        detail=(f"{len(dynamic_names)} dynamic tool(s) available; registration remains response-time "
-                "DefineTool plus capability and approval gates"),
-    )
+    for name in dynamic_names:
+        stats = self._learning_tool_stats().get(name, {})
+        calls, successes = int(stats.get("calls", 0)), int(stats.get("successes", 0))
+        if calls < 2 or successes < 2 or successes / calls < 0.8:
+            continue
+        result = self.learning_engine.submit(
+            "strategy", f"TOOL_GUIDE: {name} succeeded in repeated observed calls; "
+                        "use only when currently available and permitted.",
+            evidence_id=stable_hash(f"{name}:{calls}:{successes}"),
+            metadata={"learning_feature": "dynamic_tool_definition", "tool_name": name},
+        )
+        return self._learning_result(changed=result["status"] == "active",
+            detail=f"observed tool-use note {result['status']}")
+    return self._learning_result(detail=f"no eligible use among {len(dynamic_names)} dynamic tools")
 
 
 def _run_learning_preferences(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -118,8 +138,12 @@ def _run_learning_memory_scoring(self, _context: dict[str, Any]) -> dict[str, An
         return self._learning_result(detail="no active memories to score")
     scores = [{"memory_id": row["id"], "score": self._score_memory_importance(row["content"])} for row in rows]
     scores.sort(key=lambda item: item["score"], reverse=True)
+    previous = self.memory_bank.store.list_events("learning.memory_scored", limit=1,
+        workspace_id=self.memory_bank.workspace_id, user_id=self.memory_bank.user_id)
+    if previous and previous[0]["payload"].get("scores") == scores:
+        return self._learning_result(detail="memory scores unchanged")
     self._record_learning_event("learning.memory_scored", {
-        "count": len(scores), "top": scores[:5], "scored_at": self._learning_timestamp(),
+        "count": len(scores), "scores": scores, "scored_at": self._learning_timestamp(),
     })
     return self._learning_result(changed=True, detail=f"scored {len(scores)} active memories")
 
@@ -134,7 +158,6 @@ def _run_learning_graph(self, _context: dict[str, Any]) -> dict[str, Any]:
 def _run_learning_project_graph(self, _context: dict[str, Any]) -> dict[str, Any]:
     state = self._load_project_files_into_memory()
     return self._learning_result(
-        changed=state.get("status") == "indexing",
         detail=f"project graph {state.get('status', 'missing')}: {state.get('nodes', 0)} nodes",
     )
 
@@ -146,17 +169,28 @@ def _run_learning_skill_composition(self, context: dict[str, Any]) -> dict[str, 
     workflow = self._compose_skills(user_input)
     if not workflow:
         return self._learning_result(detail="no matching learned skill workflow")
-    self._record_learning_event("learning.skill_composed", {
-        "task_hash": stable_hash(user_input), "workflow": self._learning_safe_text(workflow, 1000),
-    })
-    return self._learning_result(changed=True, detail="recorded a bounded composed workflow")
+    result = self.learning_engine.submit(
+        "strategy", f"STRATEGY: For {user_input[:120]}: {workflow[:2500]}",
+        evidence_id=str(self._active_usage_run_id.get() or stable_hash(user_input)),
+        metadata={"learning_feature": "skill_composition"},
+    )
+    return self._learning_result(changed=result["status"] == "active",
+        detail=f"composed workflow {result['status']}")
 
 
 def _run_learning_rollback(self, _context: dict[str, Any]) -> dict[str, Any]:
-    # Rollback is intentionally a user-directed `/forget` or learning
-    # rollback operation.  A scheduler must never delete learned state on its
-    # own, but this registry entry makes the safety behavior observable.
-    return self._learning_result(detail="automatic deletion is disabled; use /forget or explicit rollback")
+    cases = self.memory_bank.store.list_events("learning.regression_case_created", limit=10000,
+        workspace_id=self.memory_bank.workspace_id, user_id=self.memory_bank.user_id)
+    armed = {item["payload"].get("product_id") for item in self.memory_bank.store.list_events(
+        "learning.product_created", limit=10000, workspace_id=self.memory_bank.workspace_id,
+        user_id=self.memory_bank.user_id) if item["payload"].get("feature") == "learning_rollback"}
+    for case in cases:
+        if case["id"] not in armed:
+            self._record_learning_event("learning.product_created", {
+                "feature": "learning_rollback", "product_id": case["id"],
+            })
+            return self._learning_result(changed=True, detail="verified correction armed as a regression preflight")
+    return self._learning_result(detail="no new verified correction")
 
 
 def dispatch_learning_cycle(self, *, surface: str | None = None, trigger: str = "scheduled",
@@ -262,9 +296,20 @@ def learning_feature_status(self) -> list[dict[str, Any]]:
         user_id=self.memory_bank.user_id,
     )
     latest: dict[str, dict[str, Any]] = {}
+    products: dict[str, str] = {}
+    uses: dict[str, str] = {}
+    candidates: set[str] = set()
     for event in events:  # list_events is newest-first
         payload = event.get("payload") or {}
         feature = payload.get("feature")
+        if event.get("event_type") == "learning.product_created" and feature:
+            products.setdefault(feature, str(payload.get("memory_id") or payload.get("product_id") or ""))
+        if event.get("event_type") == "learning.proposal_created" and feature:
+            candidates.add(feature)
+        if event.get("event_type") == "learning.product_used":
+            for item in payload.get("products", []):
+                if item.get("feature"):
+                    uses.setdefault(item["feature"], event["created_at"])
         if feature not in self._LEARNING_FEATURE_REGISTRY or feature in latest:
             continue
         if event.get("event_type") == "learning.feature_started":
@@ -285,16 +330,23 @@ def learning_feature_status(self) -> list[dict[str, Any]]:
                 "last_run_at": payload.get("last_run_at") or event.get("created_at"),
                 "detail": self._learning_safe_text(payload.get("detail", "")),
             }
+    provider_class = "none" if runtime.get("status") != "ready" else (
+        "ollama" if runtime.get("mode") == "local" else "remote"
+    )
     return [
         {
             "name": name,
             "description": self._learning_safe_text(self._LEARNING_FEATURE_REGISTRY[name].get("description", ""), 240),
             "enabled": bool(self._SELF_LEARNING_FLAGS.get(name, True)),
             "policy": runtime["mode"],
-            "provider_class": self._learning_provider_class(),
-            "runtime_status": runtime["status"],
-            "model": runtime["model"],
-            "skip_reason": runtime["detail"] if runtime["status"] != "ready" and name in self._REMOTE_LEARNING_FEATURES else "",
+            "provider_class": provider_class,
+            "runtime_status": runtime.get("status", "unknown"),
+            "model": runtime.get("model"),
+            "skip_reason": runtime.get("detail", "") if runtime.get("status") != "ready" and name in self._REMOTE_LEARNING_FEATURES else "",
+            "last_product_id": products.get(name, ""),
+            "last_used_at": uses.get(name),
+            "product_status": ("used" if name in uses else "available" if products.get(name)
+                               else "candidate" if name in candidates else "none"),
             **latest.get(name, {"status": "never", "changed": False, "last_run_at": None, "detail": ""}),
         }
         for name in self._LEARNING_FEATURE_ORDER if name in self._LEARNING_FEATURE_REGISTRY

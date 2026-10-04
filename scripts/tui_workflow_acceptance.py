@@ -62,7 +62,8 @@ def backend_fixture():
     runtime._touch_detached_learning_heartbeat = lambda: None
     runtime.dispatch_learning_cycle = lambda **kwargs: []
     runtime._available_update = lambda: '2.0.5'
-    runtime._self_update = lambda: 'Updated OpenKyrozen from source revision fixture: done'
+    from openkyrozen.updates.models import UpdateResult
+    runtime._self_update = lambda: UpdateResult('success', 'Updated OpenKyrozen from source revision fixture: done', restart_ready=True)
     backend = Backend(application)
     original_emit = backend.emit
     log = Path(os.environ['KYROZEN_TUI_ACCEPTANCE_EVENTS'])

@@ -555,6 +555,27 @@ class ServerBoundaryTests(unittest.TestCase):
         self.assertIs(server._agent.short_term_memory, original_messages)
         self.assertIs(server._agent.tasks.tasks, original_tasks)
 
+    def test_single_user_web_chat_feeds_learning_without_attributed_chat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            memory = MemoryBank(Path(directory) / "state.sqlite3", user_id=server._SERVER_ACTOR_ID,
+                workspace_id=server._agent.memory_bank.workspace_id)
+            with patch.object(server._agent.current_session, "memory", memory), \
+                    patch.object(server._agent, "_chat_turn", return_value="noted"):
+                server._run_session_chat({"session_id": "solo-audit", "messages": [], "updated": 0},
+                    "Orion uses orion.toml")
+                server._run_session_chat({"session_id": "team-audit", "messages": [], "updated": 0,
+                    "speaker": "alice", "audience": "team", "channel": "project"},
+                    "Orion uses orion.toml")
+            solo = memory.store.list_events("memory.observed", limit=10,
+                user_id=server._SERVER_ACTOR_ID, workspace_id=memory.workspace_id,
+                session_id="solo-audit")
+            team = memory.store.list_events("memory.observed", limit=10,
+                user_id=server._SERVER_ACTOR_ID, workspace_id=memory.workspace_id,
+                session_id="team-audit")
+            self.assertEqual(len(solo), 1)
+            self.assertIn("User: Orion uses orion.toml", solo[0]["payload"]["content"])
+            self.assertEqual(team, [])
+
     def test_memory_context_does_not_trust_a_claimed_speaker(self):
         session = {"user_id": "spoofed-client-value"}
         server._set_memory_context(session, {"speaker": "alice", "audience": "team", "channel": "project"})

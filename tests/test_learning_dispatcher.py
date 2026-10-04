@@ -18,11 +18,14 @@ from openkyrozen.interfaces.web.service import WebService
 server = WebService(_application)
 from openkyrozen.app.bootstrap import build_memory as MemoryBank
 from openkyrozen.tasks.engine import TaskManager
+from openkyrozen.skills.registry import SkillRegistry
 
 
 class LearningDispatcherTests(unittest.TestCase):
     def setUp(self):
         self.original_memory = main.memory_bank
+        self.original_engine = main.learning_engine
+        self.original_messages = list(main.short_term_memory)
         self.original_tasks = main.tasks
         self.original_root = main._get_workspace_root()
         self.original_flags = main._SELF_LEARNING_FLAGS
@@ -40,6 +43,8 @@ class LearningDispatcherTests(unittest.TestCase):
 
     def tearDown(self):
         main.memory_bank = self.original_memory
+        main.learning_engine = self.original_engine
+        main.short_term_memory = self.original_messages
         main.tasks = self.original_tasks
         main._set_workspace_root(self.original_root)
         main._SELF_LEARNING_FLAGS = self.original_flags
@@ -65,6 +70,8 @@ class LearningDispatcherTests(unittest.TestCase):
             session_id="learning-session",
         )
         main.memory_bank = memory
+        main.learning_engine = main.LearningEngine(memory, registry=SkillRegistry(
+            memory.store, workspace_id="learning-project", root=root / "skills"))
         main.tasks = TaskManager(
             memory.store, user_id="learning-user", workspace_id="learning-project",
             session_id="learning-session",
@@ -79,6 +86,305 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertTrue(callable(main._LEARNING_FEATURE_REGISTRY[name]["executor"]))
             self.assertIn(name, main._SELF_LEARNING_FLAGS)
 
+    def test_conversation_learning_retries_failed_model_and_uses_promoted_fact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._isolated_runtime(Path(directory))
+            chat = "User: Remember that Orion uses orion.toml for configuration.\nAssistant: Understood."
+            main.memory_bank.add_log(chat)
+            with patch.object(main, "_learning_model_response", side_effect=[None, "- Orion uses orion.toml for configuration.", "- Orion uses orion.toml for configuration."]):
+                def run():
+                    return main.dispatch_learning_cycle(surface="test", trigger="turn", max_features=1,
+                        feature_names=("auto_learn_conversations",))
+
+                self.assertFalse(run()[0]["changed"])
+                self.assertFalse(main.memory_bank.store.list_events("learning.conversation_scan", limit=1,
+                    user_id="learning-user", workspace_id="learning-project"))
+                run()  # a candidate changes state but is not a usable product yet
+                self.assertEqual(main.learning_engine.status(1)[0]["status"], "candidate")
+                self.assertFalse(next(item for item in main.learning_feature_status()
+                    if item["name"] == "auto_learn_conversations")["last_product_id"])
+                main.memory_bank.add_log(chat)
+                self.assertTrue(run()[0]["changed"])
+
+            context = main._build_memory_context("Orion configuration orion.toml")
+            self.assertIn("kind=fact", context)
+            self.assertIn("Orion uses orion.toml", context)
+            feature = next(item for item in main.learning_feature_status()
+                if item["name"] == "auto_learn_conversations")
+            self.assertTrue(feature["last_product_id"])
+            self.assertTrue(feature["last_used_at"])
+            from fastapi.testclient import TestClient
+            response = TestClient(server.app).get("/api/v2/learning/features")
+            self.assertEqual(response.status_code, 200, response.text)
+            web_feature = next(item for item in response.json()["features"]
+                if item["name"] == "auto_learn_conversations")
+            self.assertEqual(web_feature["product_status"], "used")
+
+    def test_importance_scores_change_the_selected_memory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._isolated_runtime(Path(directory))
+            main.memory_bank.add_log("FACT: lantern configuration alpha")
+            main.memory_bank.add_log("note: lantern configuration beta")
+            before = main._build_memory_context("lantern configuration", n=1)
+            self.assertIn("beta", before)
+            main.dispatch_learning_cycle(surface="test", trigger="turn", max_features=1,
+                feature_names=("memory_importance_scoring",))
+            after = main._build_memory_context("lantern configuration", n=1)
+            self.assertIn("alpha", after)
+            self.assertNotIn("beta", after)
+
+    def test_dynamic_tool_learning_never_grants_capability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._isolated_runtime(Path(directory))
+            stats = {"audit_probe": {"calls": 2, "successes": 2}}
+            with patch.dict(main.AVAILABLE_TOOLS, {"audit_probe": lambda _args: "ok"}), \
+                    patch.object(main, "_tool_stats", stats), \
+                    patch.object(main, "ALLOW_DYNAMIC_TOOLS", True), \
+                    patch.object(main.learning_engine, "_review_claim_evidence", return_value=None):
+                def run():
+                    return main.dispatch_learning_cycle(surface="test", trigger="turn", max_features=1,
+                        feature_names=("dynamic_tool_definition",))
+
+                run()
+                self.assertEqual(main.learning_engine.status(1)[0]["status"], "candidate")
+                stats["audit_probe"] = {"calls": 3, "successes": 3}
+                run()
+                self.assertEqual(main.learning_engine.status(1)[0]["status"], "active")
+                self.assertIn("TOOL_GUIDE", main._build_memory_context("audit_probe"))
+                with patch.object(main, "_permitted_tool_names", return_value=set()):
+                    self.assertNotIn("TOOL_GUIDE", main._build_memory_context("audit_probe"))
+            self.assertNotIn("TOOL_GUIDE", main._build_memory_context("audit_probe"))
+
+    def test_verified_correction_preflight_is_reused_on_matching_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._isolated_runtime(Path(directory))
+            run = main.learning_engine.begin_run("coder", "fix parser")
+            main.learning_engine.record_outcome(run, [], verified=True, success=False, correction=True)
+            result = main.dispatch_learning_cycle(surface="test", trigger="turn", max_features=1,
+                feature_names=("learning_rollback",))
+            self.assertTrue(result[0]["changed"])
+            later = main.learning_engine.begin_run("coder", "fix parser")
+            context, _ = main.learning_engine.artifact_context(later)
+            self.assertIn("Corrected failure preflight", context)
+            self.assertEqual(main.learning_engine.negative_preflight("researcher", "fix parser"), [])
+            state = next(item for item in main.learning_feature_status() if item["name"] == "learning_rollback")
+            self.assertEqual(state["product_status"], "used")
+
+    def test_invented_skill_and_composition_need_distinct_observations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._isolated_runtime(Path(directory))
+            for number in range(5):
+                main.memory_bank.add_log(f"User: Verify Orion parser case {number}.\nAssistant: Check its tests.")
+            answer = "Skill Name: Orion verification\nDescription: Verify the parser\nSteps:\n1. Run parser tests\n2. Check output"
+            with patch.object(main, "_learning_model_response", return_value=answer), \
+                    patch.object(main.learning_engine, "_review_claim_evidence", return_value=None):
+                def dispatch(feature):
+                    return main.dispatch_learning_cycle(surface="test", trigger="turn", max_features=1,
+                        user_input="Verify Orion parser", feature_names=(feature,))
+
+                dispatch("invent_skills")
+                self.assertEqual(main.learning_engine.status(1)[0]["status"], "candidate")
+                self.assertFalse(next(item for item in main.learning_feature_status()
+                    if item["name"] == "invent_skills")["last_product_id"])
+                main.memory_bank.add_log("User: Verify Orion parser in the release build.\nAssistant: Check its tests.")
+                dispatch("invent_skills")
+                self.assertEqual(main.learning_engine.status(1)[0]["status"], "active")
+
+            with patch.object(main, "_learning_model_response", return_value="1. Orion verification: Run parser tests"), \
+                    patch.object(main.learning_engine, "_review_claim_evidence", return_value=None):
+                for run_id in ("compose-run-one", "compose-run-two"):
+                    token = main._active_usage_run_id.set(run_id)
+                    try:
+                        dispatch("skill_composition")
+                    finally:
+                        main._active_usage_run_id.reset(token)
+            self.assertIn("STRATEGY: For Verify Orion parser", main._build_memory_context("Verify Orion parser"))
+            states = {item["name"]: item for item in main.learning_feature_status()}
+            self.assertEqual(states["invent_skills"]["product_status"], "used")
+            self.assertEqual(states["skill_composition"]["product_status"], "used")
+
+    def test_matching_learning_products_survive_vector_rank_and_missing_index_entries(self):
+        for omit_products in (False, True):
+            with self.subTest(omit_products=omit_products), tempfile.TemporaryDirectory() as directory:
+                self._isolated_runtime(Path(directory))
+                observations = [main.memory_bank.add_log(f"User: Verify Orion parser observation {number}")
+                                for number in range(20)]
+                skill = main.memory_bank.add_log("SKILL: Orion verification - Verify Orion parser tests",
+                    metadata={"learning_feature": "invent_skills"})
+                strategy = main.memory_bank.add_log("STRATEGY: For Verify Orion parser, run focused tests",
+                    metadata={"learning_feature": "skill_composition"})
+                rows = main.memory_bank.store.list_memories(status="active", limit=100,
+                    user_id="learning-user", workspace_id="learning-project", session_id="learning-session")
+                by_id = {row["id"]: row for row in rows}
+                ranked_ids = observations + ([] if omit_products else [skill, strategy])
+                collection = Mock()
+                collection.count.return_value = len(rows)
+                collection.query.return_value = {"ids": [ranked_ids],
+                    "documents": [[by_id[identifier]["content"] for identifier in ranked_ids]]}
+                main.memory_bank._collection = collection
+                with patch("openkyrozen.routing.decision_assist.decision_assist", return_value=None):
+                    context = main._build_memory_context("Verify Orion parser", n=3)
+                self.assertIn("SKILL: Orion verification", context)
+                self.assertIn("STRATEGY: For Verify Orion parser", context)
+                self.assertEqual(context.count("- kind="), 3)
+                receipts = main.memory_bank.store.list_events("learning.product_used", limit=1,
+                    user_id="learning-user", workspace_id="learning-project")
+                self.assertEqual({item["memory_id"] for item in receipts[0]["payload"]["products"]},
+                                 {skill, strategy})
+
+    def test_learning_product_fallback_respects_relevance_and_visibility(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._isolated_runtime(Path(directory))
+            observation = main.memory_bank.add_log("User: Verify Orion parser observation")
+            for text, metadata in (
+                ("SKILL: private Verify Orion parser", {"visibility": "private", "speaker": "alice"}),
+                ("SKILL: other profile Verify Orion parser", {"scope": {"type": "profile", "value": "researcher"}}),
+                ("SKILL: group Verify Orion parser", {"visibility": "group", "audiences": ["secret-team"]}),
+                ("SKILL: unrelated Saturn database", {}),
+                ("SKILL: partial Orion database", {}),
+                ("SKILL: forbidden Verify Orion parser", {"tool_name": "forbidden_tool"}),
+            ):
+                feature = "dynamic_tool_definition" if "tool_name" in metadata else "invent_skills"
+                main.memory_bank.add_log(text, metadata={"learning_feature": feature, **metadata})
+            foreign = main.memory_bank.scoped(workspace_id="foreign-project")
+            foreign.add_log("SKILL: foreign Verify Orion parser", metadata={"learning_feature": "invent_skills"})
+            other_session = main.memory_bank.scoped(session_id="foreign-session")
+            other_session.add_log("SKILL: other session Verify Orion parser",
+                                  metadata={"learning_feature": "invent_skills"})
+            other_user = main.memory_bank.scoped(user_id="foreign-user")
+            other_user.add_log("SKILL: other user Verify Orion parser",
+                               metadata={"learning_feature": "invent_skills"})
+            main.memory_bank.add_log("SKILL: inactive Verify Orion parser", status="archived",
+                                     metadata={"learning_feature": "invent_skills"})
+            collection = Mock()
+            collection.count.return_value = 8
+            collection.query.return_value = {"ids": [[observation]],
+                "documents": [["User: Verify Orion parser observation"]]}
+            main.memory_bank._collection = collection
+            with patch("openkyrozen.routing.decision_assist.decision_assist", return_value=None), \
+                    patch.object(main, "_permitted_tool_names", return_value=set()), \
+                    patch.object(main.learning_engine, "route_profile", return_value="coder"):
+                context = main._build_memory_context("Verify Orion parser", n=8)
+            self.assertIn("User: Verify Orion parser observation", context)
+            self.assertNotIn("SKILL:", context)
+
+    def test_context_digest_survives_restart_only_in_its_session(self):
+        from openkyrozen.agent.compaction import DIGEST_PREFIX
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._isolated_runtime(root)
+            digest = {"role": "user", "content": DIGEST_PREFIX + " Orion parser decision"}
+            main._save_learning_context_digest(digest)
+            main.short_term_memory = []
+            self._isolated_runtime(root)
+            messages = main._build_messages("Continue the parser work")
+            self.assertIn(digest, messages)
+            other_session = MemoryBank(root / "state.sqlite3", user_id="learning-user",
+                workspace_id="learning-project", session_id="other-session")
+            main.memory_bank = other_session
+            main.short_term_memory = []
+            self.assertNotIn(digest, main._build_messages("Continue the parser work"))
+
+    def test_cli_self_learning_toggle_persists_and_blocks_dispatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._isolated_runtime(Path(directory))
+            main._SELF_LEARNING_FLAGS = {name: True for name in main._LEARNING_FEATURE_ORDER}
+            with patch.object(main.console, "input", side_effect=["1", "done"]), \
+                    patch.object(main.console, "print"):
+                main._show_self_learning_menu()
+            self.assertFalse(main._SELF_LEARNING_FLAGS["auto_learn_conversations"])
+            main._SELF_LEARNING_FLAGS["auto_learn_conversations"] = True
+            main._restore_self_learning_flags()
+            self.assertFalse(main._SELF_LEARNING_FLAGS["auto_learn_conversations"])
+            self.assertEqual(main.dispatch_learning_cycle(surface="cli", trigger="turn", max_features=1,
+                feature_names=("auto_learn_conversations",)), [])
+
+    def test_guidance_features_create_products_used_on_matching_tasks(self):
+        scenarios = (
+            ("auto_debug_tool", "DEBUG_FINDING: parse_tool needs valid parser input", "parse_tool", "DEBUG:"),
+            ("consolidate_memories", "FACT: Orion parser uses orion.toml", "Orion parser", "orion.toml"),
+            ("review_tools", "TOOL_REVIEW: parse_tool can cache parser schemas", "parse_tool", "TOOL_REVIEW:"),
+            ("idle_reflection", "1. For Orion parser, check tests first", "Orion parser", "REFLECTION:"),
+            ("strategy_distillation", "STRATEGY: For Orion parser, run focused tests first", "Orion parser", "STRATEGY:"),
+            ("knowledge_graph_extraction", "orion -> parser", "orion parser", "GRAPH:"),
+            ("targeted_inquiry", "PURPOSE: parse_orion converts parser input", "parse_orion", "CODE_DOC:"),
+        )
+        for feature, answer, query, marker in scenarios:
+            with self.subTest(feature=feature), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self._isolated_runtime(root)
+                for number in range(5):
+                    main.memory_bank.add_log(f"User: Orion parser observation {number}.\nAssistant: Noted.")
+                for number in range(3):
+                    main.memory_bank.add_log(f"FACT: Orion parser component {number}")
+                (root / "orion.py").write_text("def parse_orion(value):\n    return value + 1\n", encoding="utf-8")
+                with patch.object(main, "_learning_model_response", return_value=answer), \
+                        patch.object(main, "_tool_stats", {
+                            "parse_tool": {"calls": 3, "successes": 0},
+                            "read_file": {"calls": 3, "successes": 3},
+                            "list_dir": {"calls": 3, "successes": 3}}), \
+                        patch.object(main.current_session, "turn_cost_log", [{"tokens": 2000, "time": 1}] * 3), \
+                        patch.object(main, "_last_task_end", 0), \
+                        patch.object(main, "_last_user_interaction", 0), \
+                        patch.object(main, "_last_inquiry_time", 0):
+                    result = main.dispatch_learning_cycle(surface="test", trigger="idle", max_features=1,
+                        feature_names=(feature,))
+                self.assertEqual(result[0]["status"], "completed")
+                context = main._build_memory_context(query, n=8)
+                self.assertIn(marker, context)
+                state = next(item for item in main.learning_feature_status() if item["name"] == feature)
+                self.assertEqual(state["product_status"], "used")
+
+    def test_autonomous_inspection_and_technology_research_reach_recall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._isolated_runtime(root)
+            (root / "audit.py").write_text("# TODO: validate Orion parser\n", encoding="utf-8")
+            with patch.object(main, "_last_inspection_time", 0), \
+                    patch.object(main, "_last_user_interaction", 0), \
+                    patch.object(main, "_inspection_interval", 0), \
+                    patch.object(main, "_outdated_packages", return_value=[]):
+                main.dispatch_learning_cycle(surface="test", trigger="idle", max_features=1,
+                    feature_names=("autonomous_inspection",))
+            self.assertIn("TODO", main._build_memory_context("Orion parser TODO", n=8))
+
+            main._set_learning_runtime("remote", "ready")
+            with patch.dict(main.AVAILABLE_TOOLS, {"search_web": lambda _query: "- Title: Orionlib documentation\n  Usage: parser API"}), \
+                    patch.object(main._technology_executor, "submit", side_effect=lambda fn, lib: fn(lib)):
+                main.dispatch_learning_cycle(surface="test", trigger="turn", max_features=1,
+                    user_input="use orionlib for parser work", feature_names=("auto_patch_technology",))
+            self.assertIn("LIBRARY_INFO: orionlib", main._build_memory_context("orionlib parser", n=8))
+            states = {item["name"]: item for item in main.learning_feature_status()}
+            self.assertEqual(states["autonomous_inspection"]["product_status"], "used")
+            self.assertEqual(states["auto_patch_technology"]["product_status"], "used")
+
+    def test_stale_code_cleanup_changes_the_file_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._isolated_runtime(Path(directory))
+            main.memory_bank.add_file("deleted.py", "VALUE = 1")
+            with patch.object(main, "_last_code_scan_time", 0):
+                result = main.dispatch_learning_cycle(surface="test", trigger="idle", max_features=1,
+                    feature_names=("age_out_old_coded_entries",))
+            self.assertTrue(result[0]["changed"])
+            with main.memory_bank.store.connection() as db:
+                remaining = db.execute("SELECT count(*) FROM files WHERE rel_path='deleted.py'").fetchone()[0]
+            self.assertEqual(remaining, 0)
+
+    def test_tool_observations_survive_worker_restart_without_arguments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._isolated_runtime(root)
+            for _ in range(3):
+                main._track_tool_performance("parse_tool", "Error: failed", 0.1)
+            self._isolated_runtime(root)
+            with patch.object(main, "_tool_stats", {}):
+                stats = main._learning_tool_stats()
+            self.assertEqual(stats["parse_tool"]["calls"], 3)
+            self.assertEqual(stats["parse_tool"]["successes"], 0)
+            events = main.memory_bank.store.list_events("learning.tool_performance", limit=3,
+                workspace_id="learning-project", user_id="learning-user")
+            self.assertTrue(all(set(item["payload"]) == {"tool", "success", "elapsed"} for item in events))
+
     def test_project_scan_and_memory_scoring_have_real_scoped_effects(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -89,7 +395,9 @@ class LearningDispatcherTests(unittest.TestCase):
                 "status": "missing", "nodes": 0, "edges": 0, "communities": 0,
                 "mini": {"nodes": [], "edges": []},
             }
-            main._project_graph.refresh_async.return_value = True
+            main._project_graph.refresh_async.side_effect = lambda *, callback: (
+                callback({"status": "ready", "nodes": 2, "updated_at": "ready-graph"}), True,
+            )[1]
             main._last_project_scan_time = 0
 
             scan = main.dispatch_learning_cycle(
@@ -97,14 +405,21 @@ class LearningDispatcherTests(unittest.TestCase):
                 feature_names=("load_project_files_into_memory",),
             )
             self.assertEqual(scan[0]["status"], "completed")
-            self.assertTrue(scan[0]["changed"])
+            self.assertFalse(scan[0]["changed"])  # queued work is not a completed product
             with main.memory_bank.store.connection() as db:
                 file_row = db.execute(
                     "SELECT content FROM files WHERE rel_path=? AND user_id=? AND workspace_id=?",
                     ("effect.py", "learning-user", main.memory_bank.file_scope_id),
                 ).fetchone()
             self.assertIsNone(file_row)
-            main._project_graph.refresh_async.assert_called_once_with()
+            main._project_graph.refresh_async.assert_called_once()
+            self.assertEqual(next(item for item in main.learning_feature_status()
+                if item["name"] == "load_project_files_into_memory")["last_product_id"], "ready-graph")
+            main._project_graph.snapshot.return_value = {
+                "status": "ready", "nodes": 2, "updated_at": "ready-graph",
+            }
+            main._project_graph.query.return_value = "effect.py defines VALUE"
+            self.assertIn("effect.py defines VALUE", main._project_graph_context("inspect project code"))
 
             main.memory_bank.add_log("FACT: a real memory must be scored")
             scored = main.dispatch_learning_cycle(

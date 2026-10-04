@@ -11,6 +11,13 @@ from openkyrozen.persistence.store import EventStore
 
 
 class LearningWorkerTests(unittest.TestCase):
+    def test_custom_database_keeps_worker_files_in_isolated_state(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"KYROZEN_DB_PATH": str(Path(directory) / "state.sqlite3")}):
+            lock, heartbeat = learning_worker.worker_paths(directory)
+            self.assertEqual(lock.parent, Path(directory).resolve())
+            self.assertEqual(heartbeat.parent, Path(directory).resolve())
+
     def test_feature_flags_persist_across_store_restarts(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"

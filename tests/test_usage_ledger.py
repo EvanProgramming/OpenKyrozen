@@ -67,7 +67,8 @@ class UsageLedgerTests(unittest.TestCase):
                         "prompt_tokens": 1, "prompt_cache_hit_tokens": 0,
                         "prompt_cache_miss_tokens": 1, "completion_tokens": 2,
                     },
-                                model="deepseek-chat", latency_ms=index)
+                                model="deepseek-chat", latency_ms=index,
+                                occurred_at=datetime(2026, 9, 7, 2, tzinfo=timezone.utc))
 
             threads = [threading.Thread(target=record, args=(index,)) for index in range(32)]
             for thread in threads:
@@ -203,6 +204,48 @@ class UsageLedgerTests(unittest.TestCase):
             self.assertEqual(attempt["cache_hit_tokens"], 3)
             self.assertEqual(attempt["cache_miss_tokens"], 7)
             self.assertEqual(attempt["reasoning_tokens"], 2)
+
+    def test_current_flash_aliases_and_historical_rate_boundary(self):
+        from openkyrozen.providers.usage import _deepseek_v4_pricing_snapshot
+        for model in ("deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-chat", "deepseek-reasoner"):
+            with self.subTest(model=model):
+                card, known = _deepseek_v4_pricing_snapshot(model, datetime(2026, 9, 11, 2, tzinfo=timezone.utc))
+                self.assertIsNotNone(card)
+                self.assertTrue(known)
+                self.assertEqual(card["model"], "deepseek-flash")
+                self.assertEqual(card["cache_hit_picos_per_million"], 6_000_000_000)
+                self.assertEqual(card["cache_miss_picos_per_million"], 300_000_000_000)
+                self.assertEqual(card["output_picos_per_million"], 1_200_000_000_000)
+        before, _ = _deepseek_v4_pricing_snapshot("deepseek-v4-flash", datetime(2026, 9, 10, 3, 59, tzinfo=timezone.utc))
+        after, _ = _deepseek_v4_pricing_snapshot("deepseek-v4-flash", datetime(2026, 9, 10, 4, tzinfo=timezone.utc))
+        self.assertEqual(before["output_picos_per_million"], 1_320_000_000_000)
+        self.assertEqual(after["output_picos_per_million"], 600_000_000_000)
+        self.assertEqual(after["version"], "deepseek-flash-pricing-2026-09-10")
+        pro, _ = _deepseek_v4_pricing_snapshot("deepseek-v4-pro", datetime(2026, 9, 11, 2, tzinfo=timezone.utc))
+        self.assertEqual(pro["output_picos_per_million"], 3_960_000_000_000)
+
+    def test_holiday_discount_and_unknown_future_calendar_are_truthful(self):
+        from openkyrozen.providers.usage import _deepseek_v4_pricing_snapshot
+        for day in (1, 5, 7):
+            card, known = _deepseek_v4_pricing_snapshot("deepseek-v4-pro", datetime(2026, 10, day, 2, tzinfo=timezone.utc))
+            self.assertEqual(card["billing_window"], "off_peak")
+            self.assertEqual(card["output_picos_per_million"], 1_980_000_000_000)
+            self.assertTrue(known)
+        card, known = _deepseek_v4_pricing_snapshot("deepseek-v4-pro", datetime(2027, 1, 4, 2, tzinfo=timezone.utc))
+        self.assertFalse(known)
+        self.assertEqual(card["pricing_status"], "estimated_current_schedule")
+
+    def test_stream_uses_returned_model_for_billing(self):
+        from unittest.mock import patch
+        chunks = [SimpleNamespace(model="deepseek-flash", choices=[], usage=SimpleNamespace(
+            prompt_tokens=1, completion_tokens=2, prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=1,
+        ))]
+        provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+        provider.config = ProviderConfig(provider="deepseek")
+        provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: iter(chunks))))
+        with patch("openkyrozen.providers.usage._track_cost") as track:
+            list(provider.chat_stream([], "deepseek-v4-pro"))
+        self.assertEqual(track.call_args.kwargs["model"], "deepseek-flash")
 
     def test_completed_stream_records_final_usage_once(self):
         final_usage = SimpleNamespace(

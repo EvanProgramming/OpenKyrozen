@@ -123,3 +123,43 @@ jobs:
 
     - name: Build and replace-container persistence smoke test
       run: make docker-smoke
+
+  update-install:
+    name: Installed update (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.27.1"
+    - name: Install uv
+      run: python -m pip install uv
+    - name: Install Linux browser system dependencies
+      if: runner.os == 'Linux'
+      run: |
+        python -m pip install playwright
+        python -m playwright install-deps chromium
+    - name: Upgrade a real prior installation and verify matching components
+      env:
+        AUDIT_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: >-
+        python scripts/update_workflow_acceptance.py
+        --revision ${{ env.AUDIT_REVISION }}
+        --baseline git+https://github.com/EvanProgramming/OpenKyrozen.git@94a1d99eab337719308cbf998b0515f454c1acc6
+        --output update-acceptance.json
+    - name: Upload update acceptance evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: update-acceptance-${{ matrix.os }}
+        path: update-acceptance.json

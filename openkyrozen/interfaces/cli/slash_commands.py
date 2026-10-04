@@ -55,7 +55,7 @@ def _handle_cli_command(self, user_input, interaction_before):
     if user_input.lower() == "/update":
         self.console.print(f"[{self._ACCENT}]Updating the installed OpenKyrozen package...[/{self._ACCENT}]")
         update_result = self._self_update()
-        self.console.print(Panel(update_result, title="Update", border_style=self._ACCENT))
+        self.console.print(Panel(str(update_result), title="Update", border_style=self._ACCENT))
         return None
 
     if user_input.lower() == "/self-learning":

@@ -280,9 +280,4 @@ def _run_submit(self, text: str, request_id: str) -> None:
 
 
 def _features(self) -> list[dict[str, Any]]:
-    runtime = self.agent
-    return [
-        {"name": name, "enabled": bool(runtime._SELF_LEARNING_FLAGS.get(name, True)),
-         "description": runtime._LEARNING_FEATURE_REGISTRY[name]["description"]}
-        for name in runtime._LEARNING_FEATURE_ORDER
-    ]
+    return self.agent.learning_feature_status()

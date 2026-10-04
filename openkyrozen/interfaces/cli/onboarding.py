@@ -19,10 +19,12 @@ def _show_self_learning_menu(self) -> None:
         runtime = self.learning_runtime()
         self.console.print(f"[{self._MUTED}]Learning: {runtime['mode']} / {runtime['status']} / {runtime['model'] or 'no model'} — {runtime['detail']}[/{self._MUTED}]")
         self.console.print(f"[{self._MUTED}]Enter a number, 'mode local' (free Qwen2.5 setup), 'mode remote', or 'done'.[/{self._MUTED}]\n")
+        feature_status = {item["name"]: item for item in self.learning_feature_status()}
         for i, (key, desc) in enumerate(flag_names):
             enabled = self._SELF_LEARNING_FLAGS[key]
             icon = f"[{self._SUCCESS}]●[/{self._SUCCESS}]" if enabled else f"[{self._MUTED}]○[/{self._MUTED}]"
-            self.console.print(f"  [{self._MUTED}]{i+1}.[/{self._MUTED}] {icon} {desc}")
+            state = feature_status[key]
+            self.console.print(f"  [{self._MUTED}]{i+1}.[/{self._MUTED}] {icon} {desc} [{self._MUTED}]({state['status']} · {state['product_status']})[/{self._MUTED}]")
         self.console.print()
         choice = self.console.input("[bold cyan]Toggle (number), mode, or 'done': [/bold cyan]").strip().lower()
         if choice == "done":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import importlib.metadata
 import json
@@ -16,6 +17,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from .models import UpdateResult
 
 
 def _update_url_available(self, url: str) -> bool:
@@ -198,100 +200,209 @@ def _prepare_tui_source(self, temporary: Path, source_url: str, checksum_url: st
     return candidates[0]
 
 
-def _update_tui_binary(self, source_url: str, checksum_url: str | None) -> tuple[bool, str]:
-    state_dir = Path.home() / ".kyrozen"
-    target_name = "openkyrozen-tui.exe" if self._IS_WINDOWS else "openkyrozen-tui"
-    target = state_dir / "bin" / target_name
-    try:
-        state_dir.mkdir(parents=True, exist_ok=True)
-        go_bin = self._ensure_update_go(state_dir)
-        if not go_bin:
-            return False, "A compatible Go toolchain was unavailable; the existing TUI binary was kept."
-        with tempfile.TemporaryDirectory(prefix=".tui-update-", dir=state_dir) as temporary:
-            temporary_path = Path(temporary)
-            source_dir = self._prepare_tui_source(temporary_path, source_url, checksum_url)
-            output = temporary_path / f"{target_name}.new"
-            result = subprocess.run(
-                [go_bin, "build", "-trimpath", "-ldflags", f"-s -w -X main.version={self.RELEASE_VERSION}", "-o", str(output), "."],
-                cwd=source_dir, capture_output=True, text=True, timeout=300, check=False,
-            )
-            if result.returncode or not output.is_file():
-                detail = self._fix_safe_text(result.stderr or result.stdout or "no build diagnostics", 400)
-                return False, f"Bubble Tea build failed; the existing TUI binary was kept: {detail}"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if self._IS_WINDOWS and target.exists():
-                os.replace(output, target.with_name(target.name + ".next"))
-                return True, "Bubble Tea UI staged; quit and relaunch kyrozen to activate it."
-            os.replace(output, target)
-            try:
-                target.chmod(0o700)
-            except OSError:
-                pass
-    except (OSError, ValueError, tarfile.TarError, urllib.error.URLError):
-        return False, "Bubble Tea source download or verification failed; the existing TUI binary was kept."
-    return True, "Bubble Tea UI installed atomically."
+@contextmanager
+def _update_lock(self):
+    from .locking import update_lock
+    with update_lock(Path.home() / ".kyrozen"):
+        yield
 
 
-def _self_update(self) -> str:
-    """Upgrade the package and matching TUI without touching the active project."""
-    uv_path = shutil.which("uv")
-    if uv_path is None:
-        return (
-            "OpenKyrozen is package-managed. Install or update it with the official "
-            f"{self.RELEASE_TAG} installer (uv is required)."
-        )
-    requested_python = (
-        f"{sys.version_info.major}.{sys.version_info.minor}"
-        if sys.version_info[:2] in {(3, 12), (3, 13)} else "3.12"
+def _record_update_state(self, status: str, revision: str | None):
+    state = Path.home() / ".kyrozen" / "update-state.json"
+    temporary = state.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"status": status, "revision": revision,
+        "version": self.RELEASE_VERSION, "source_url": self.RELEASE_WHEEL_URL,
+        "tui_revision": revision or self.RELEASE_TAG}), encoding="utf-8")
+    os.replace(temporary, state)
+
+
+def _stage_update_tui(self, temporary: Path, source_url: str, checksum_url: str | None,
+                      revision: str | None) -> Path:
+    go_bin = self._ensure_update_go(Path.home() / ".kyrozen")
+    if not go_bin:
+        raise RuntimeError("A compatible Go toolchain is unavailable; rerun the official installer.")
+    source_dir = self._prepare_tui_source(temporary, source_url, checksum_url)
+    identity = revision or self.RELEASE_TAG
+    name = "openkyrozen-tui.exe" if self._IS_WINDOWS else "openkyrozen-tui"
+    output = temporary / name
+    result = subprocess.run(
+        [go_bin, "build", "-trimpath", "-ldflags", f"-s -w -X main.revision={identity}",
+         "-o", str(output), "."], cwd=source_dir, capture_output=True, text=True,
+        timeout=300, check=False,
     )
-    # Prefer the immutable current main commit so /update delivers fixes that
-    # landed after the last tagged release. Fall back to the verified release
-    # asset when the repository revision cannot be resolved.
-    revision = self._resolve_update_revision()
-    release_tui = revision is None and self._release_tui_asset_available()
-    if revision is None and not release_tui:
-        return "No verified update source was available; the existing installation was kept."
-    package_spec = self.RELEASE_WHEEL_URL
-    source_url, checksum_url = self.TUI_SOURCE_URL, self.TUI_CHECKSUM_URL
+    if result.returncode or not output.is_file():
+        raise RuntimeError("TUI build failed: " + self._fix_safe_text(result.stderr or result.stdout, 400))
+    probe = subprocess.run([str(output), "--revision"], capture_output=True, text=True,
+                           timeout=15, check=False)
+    if probe.returncode or probe.stdout.strip() != identity:
+        # Older verified release assets have no revision flag. Their checksum
+        # and exact release-version probe establish the fallback identity.
+        if revision is None and checksum_url:
+            legacy = subprocess.run([str(output), "--version"], capture_output=True,
+                                    text=True, timeout=15, check=False)
+            if legacy.returncode == 0 and legacy.stdout.strip() == f"OpenKyrozen {self.RELEASE_VERSION}":
+                return output
+        raise RuntimeError("The prepared TUI failed revision verification.")
+    return output
+
+
+def _activate_update_tui(self, staged: Path, revision: str | None) -> str:
+    state_bin = Path.home() / ".kyrozen" / "bin"
+    state_bin.mkdir(parents=True, exist_ok=True)
+    target = state_bin / ("openkyrozen-tui.exe" if self._IS_WINDOWS else "openkyrozen-tui")
+    destination = target.with_name(target.name + ".next") if self._IS_WINDOWS else target
+    staged.chmod(0o700)
+    os.replace(staged, destination)
+    return "TUI staged for activation on relaunch." if self._IS_WINDOWS else "TUI installed atomically."
+
+
+def _verify_update_package(self, uv_path: str, revision: str | None, *, root: Path | None = None) -> bool:
+    if root is None:
+        directory = subprocess.run([uv_path, "tool", "dir"], capture_output=True, text=True,
+                                   timeout=30, check=False)
+        if directory.returncode:
+            return False
+        root = Path(directory.stdout.strip()) / "openkyrozen"
+    python = root / ("Scripts/python.exe" if self._IS_WINDOWS else "bin/python")
+    # Probe a fresh interpreter outside the source checkout, including the
+    # entrypoint imports that must work before the running process is restarted.
+    from .models import INSTALL_PROBE
+    result = subprocess.run([str(python), "-I", "-c", INSTALL_PROBE], cwd=root, capture_output=True,
+                            text=True, timeout=60, check=False)
+    if result.returncode:
+        return False
+    data = json.loads(result.stdout.strip().splitlines()[-1])
+    paths = data.get("paths", [])
+    if not paths or not all(Path(path).resolve().is_relative_to(root.resolve()) for path in paths):
+        return False
     if revision:
-        package_spec = f"git+{self.UPDATE_REPOSITORY_URL}@{revision}"
-        source_url, checksum_url = f"https://github.com/EvanProgramming/OpenKyrozen/archive/{revision}.tar.gz", None
-    command = [
-        uv_path, "tool", "install", "--python", requested_python, "--force",
-        "--with", "fastapi", "--with", "uvicorn", package_spec,
-    ]
+        return data["source"].get("vcs_info", {}).get("commit_id") == revision
+    return (data["version"] == self.RELEASE_VERSION and
+            data["source"].get("url") == self.RELEASE_WHEEL_URL)
+
+
+def _update_tui_binary(self, source_url: str, checksum_url: str | None) -> tuple[bool, str]:
+    """Compatibility helper for installation callers; transactions stage separately."""
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
-        if result.returncode != 0:
-            result = subprocess.run(
-                [uv_path, "--no-cache", *command[1:]],
-                capture_output=True, text=True, timeout=300, check=False,
-            )
-        diagnostics = self._fix_safe_text(
-            "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip()), 1200,
-        )
-        if result.returncode != 0:
-            return f"Update failed (uv exit {result.returncode}):\n{diagnostics or 'uv returned no diagnostics.'}"
-        tui_ok, tui_message = self._update_tui_binary(source_url, checksum_url)
-        gh_result = (self._github_cli or self.GitHubCLI(self._get_workspace_root(), self._state_root())).install_managed()
-        gh_message = str(gh_result.get("message", "GitHub CLI setup skipped."))
-        if revision:
-            origin = f"source revision {revision[:12]}"
-        else:
-            origin = f"GitHub release {self.RELEASE_TAG}"
-        return (
-            f"Updated OpenKyrozen from {origin}:\n"
-            f"{diagnostics or 'uv completed successfully.'}\n"
-            f"{tui_message}\n"
-            f"{gh_message}\n"
-            "Restart kyrozen to use the updated process."
-        )
-    except subprocess.TimeoutExpired:
-        return "Update timed out; the existing installation was kept."
-    except FileNotFoundError:
-        return "Error: uv or the update toolchain is not installed; the existing installation was kept."
-    except Exception as exc:
-        return f"Error during update: {self._fix_safe_text(exc, 400)}"
+        state_dir = Path.home() / ".kyrozen"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".tui-update-", dir=state_dir) as directory:
+            staged = self._stage_update_tui(Path(directory), source_url, checksum_url, None)
+            return True, self._activate_update_tui(staged, None)
+    except (OSError, ValueError, RuntimeError, tarfile.TarError, subprocess.TimeoutExpired) as exc:
+        return False, self._fix_safe_text(exc, 400)
+
+
+def _prepare_update_browser(self, uv_path: str, *, root: Path | None = None) -> None:
+    """Prepare Chromium for the replacement SDK and verify a real browser launch."""
+    if root is None:
+        directory = subprocess.run([uv_path, "tool", "dir"], capture_output=True,
+                                   text=True, timeout=30, check=False)
+        if directory.returncode or not directory.stdout.strip():
+            raise RuntimeError("Cannot locate the updated browser environment")
+        root = Path(directory.stdout.strip()) / "openkyrozen"
+    python = str(root / ("Scripts/python.exe" if self._IS_WINDOWS else "bin/python"))
+    probe = ("from playwright.sync_api import sync_playwright\n"
+             "with sync_playwright() as p:\n"
+             " browser=p.chromium.launch(headless=True)\n"
+             " page=browser.new_page();page.set_content('<title>update probe</title>')\n"
+             " assert page.title()=='update probe'\n"
+             " browser.close()\n")
+    for command, timeout in (([python, "-I", "-m", "playwright", "install", "chromium"], 300),
+                             ([python, "-I", "-c", probe], 60)):
+        result = subprocess.run(command, cwd=root, capture_output=True, text=True,
+                                timeout=timeout, check=False)
+        if result.returncode:
+            diagnostic = self._fix_safe_text(result.stderr or result.stdout, 600)
+            raise RuntimeError("Chromium preparation failed: " + diagnostic +
+                " Install browser system dependencies with the updated Python's "
+                "`-m playwright install-deps chromium`, then retry /update.")
+
+
+def _self_update(self) -> UpdateResult:
+    """Prepare matching components, verify the installed package, then activate."""
+    components = {"python": "unchanged", "tui": "unchanged", "browser": "unchanged", "github_cli": "skipped"}
+    revision = None
+    def outcome(status, message, restart=False):
+        return UpdateResult(status, message, revision, dict(components), restart)
+    uv_path = shutil.which("uv")
+    if not uv_path:
+        return outcome("failed", "uv is required. Rerun the official OpenKyrozen installer.")
+    requested_python = (f"{sys.version_info.major}.{sys.version_info.minor}"
+                        if sys.version_info[:2] in {(3, 12), (3, 13)} else "3.12")
+    revision = self._resolve_update_revision()
+    if not revision and not self._release_tui_asset_available():
+        return outcome("failed", "No verified update source was available; the existing installation was kept.")
+    package_spec = f"git+{self.UPDATE_REPOSITORY_URL}@{revision}" if revision else self.RELEASE_WHEEL_URL
+    source_url = f"https://github.com/EvanProgramming/OpenKyrozen/archive/{revision}.tar.gz" if revision else self.TUI_SOURCE_URL
+    checksum_url = None if revision else self.TUI_CHECKSUM_URL
+    command = [uv_path, "tool", "install", "--python", requested_python, "--force",
+               "--with", "fastapi", "--with", "uvicorn", "--with", "anthropic",
+               "--with", "google-genai", "--with", "perplexityai", "--with", "boto3",
+               "--with", "azure-identity", "--with", "playwright", package_spec]
+    recovery = "Rerun /update when connectivity is restored, or rerun the official installer. Check the recovery CLI with kyrozen --help; use the installer if it cannot start."
+    stage = "prepare"
+    try:
+        state_dir = Path.home() / ".kyrozen"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        with self._update_lock(), tempfile.TemporaryDirectory(prefix=".tui-update-", dir=state_dir) as directory:
+            staged = self._stage_update_tui(Path(directory), source_url, checksum_url, revision)
+            components["tui"] = "prepared"
+            stage = "install"
+            self._record_update_state("installing", revision)
+            components["python"] = "unknown"
+            windows_stage = None
+            if self._IS_WINDOWS:
+                from .windows import install_windows_package
+                windows_stage = install_windows_package(uv_path, command, state_dir)
+                result = windows_stage.process_result
+            else:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
+                if result.returncode:
+                    result = subprocess.run([uv_path, "--no-cache", *command[1:]], capture_output=True,
+                                            text=True, timeout=300, check=False)
+            diagnostics = self._fix_safe_text("\n".join(part.strip() for part in
+                (result.stdout, result.stderr) if part and part.strip()), 1200)
+            if result.returncode:
+                return outcome("partial", f"Update failed (uv exit {result.returncode}):\n{diagnostics}\nPython installation state is uncertain; TUI was not activated. {recovery}")
+            stage = "verify"
+            verified = (self._verify_update_package(uv_path, revision, root=windows_stage.root)
+                        if windows_stage else self._verify_update_package(uv_path, revision))
+            if not verified:
+                return outcome("partial", "Python installation could not be verified; TUI was not activated. " + recovery)
+            components["python"] = "verified"
+            stage = "browser"
+            components["browser"] = "failed"
+            self._prepare_update_browser(uv_path, root=windows_stage.root if windows_stage else None)
+            components["browser"] = "verified"
+            stage = "activate"
+            if windows_stage:
+                from .windows import schedule_windows_activation
+                directory = subprocess.run([uv_path, "tool", "dir", "--bin"], capture_output=True,
+                                           text=True, timeout=30, check=False)
+                if directory.returncode or not directory.stdout.strip():
+                    raise RuntimeError("Cannot locate the managed recovery CLI directory")
+                schedule_windows_activation(windows_stage, Path(directory.stdout.strip()), staged,
+                    state_dir / "bin" / "openkyrozen-tui.exe", state_dir / "update-state.json")
+                components.update(python="verified-staged", tui="verified-staged")
+                return outcome("partial", "Matching Python and TUI updates are verified and staged. Exit all OpenKyrozen windows to activate them, then relaunch kyrozen. The existing installation remains available for recovery; activation status is recorded in ~/.kyrozen/update-state.json.")
+            tui_message = self._activate_update_tui(staged, revision)
+            components["tui"] = "staged" if self._IS_WINDOWS else "verified"
+            try:
+                gh = (self._github_cli or self.GitHubCLI(self._get_workspace_root(), self._state_root())).install_managed()
+                components["github_cli"] = "ready" if gh.get("success", True) else "failed"
+                gh_message = str(gh.get("message", "GitHub CLI setup skipped."))
+            except Exception as exc:
+                components["github_cli"] = "failed"
+                gh_message = "Optional GitHub CLI setup failed: " + self._fix_safe_text(exc, 400)
+            self._record_update_state("success", revision)
+            origin = f"source revision {revision[:12]}" if revision else f"GitHub release {self.RELEASE_TAG}"
+            return outcome("success", f"Updated OpenKyrozen from {origin}:\n{diagnostics}\n{tui_message}\n{gh_message}\nRestart kyrozen to use the verified update.", True)
+    except (Exception, KeyboardInterrupt) as exc:
+        status = "failed" if stage == "prepare" else "partial"
+        detail = "Another update is running" if isinstance(exc, BlockingIOError) else "Update interrupted" if isinstance(exc, KeyboardInterrupt) else self._fix_safe_text(exc, 400)
+        state = "The existing installation was kept." if stage == "prepare" else "Python may have changed; the running process has not been restarted."
+        return outcome(status, f"Update {stage} failed: {detail}. {state} {recovery}")
 
 
 def _outdated_packages(self) -> list[str]:

@@ -7,7 +7,7 @@ from openkyrozen.skills.instructions import format_instructions
 from openkyrozen.app.config import effective_capabilities, load_agent_config
 from openkyrozen.workspace.context import LaunchContext
 from openkyrozen.security.tool_policy import tool_capability
-from openkyrozen.agent.compaction import retain_context_digests
+from openkyrozen.agent.compaction import is_context_digest, retain_context_digests
 
 
 def _compose_skills(self, task_description: str) -> str | None:
@@ -412,7 +412,12 @@ def _build_messages(self, user_input: str, learned_context: str = "",
     if learned_context and self._active_interaction_mode.get() == "agent":
         messages.append({"role": "system", "content": learned_context})
 
-    for msg in retain_context_digests(self.short_term_memory, self.SHORT_TERM_CAP * 2):
+    history = retain_context_digests(self.short_term_memory, self.SHORT_TERM_CAP * 2)
+    if not any(is_context_digest(msg) for msg in history):
+        digest = self._restore_learning_context_digest()
+        if digest:
+            history.insert(0, digest)
+    for msg in history:
         messages.append(msg)
 
     messages.append({"role": "user", "content": user_input})
