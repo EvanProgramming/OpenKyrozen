@@ -92,13 +92,15 @@ def _initial_turn_response(self, turn):
 
     # ---- Plan enforcement: MEDIUM and COMPLEX only ----
     _llm_has_plan = response_meta["has_plan"]
-    delegated = any(call.get("action") in TOOLS for call in turn.tool_calls) or bool(
-        response_meta["has_plan"] and re.search(
-            r"\b(?:spawn_agents|send_subagent|wait_subagents)\b|\b(?:spawn|delegate)\b[^\n]*\b(?:agents?|specialists?|assignments?|workers?)\b",
-            turn.response_text, re.IGNORECASE))
+    def has_delegation():
+        return any(call.get("action") in TOOLS for call in turn.tool_calls) or bool(
+            response_meta["has_plan"] and re.search(
+                r"\b(?:spawn_agents|send_subagent|wait_subagents)\b|\b(?:spawn|delegate)\b[^\n]*\b(?:agents?|specialists?|assignments?|workers?)\b",
+                turn.response_text, re.IGNORECASE))
+    delegated = has_delegation()
     if turn.interaction_mode == "agent" and turn.complexity in ("medium", "complex") and not delegated:
         plan_attempts = 0
-        while not _llm_has_plan and turn.tool_calls and plan_attempts < 2:
+        while not _llm_has_plan and turn.tool_calls and not delegated and plan_attempts < 2:
             plan_attempts += 1
             plan_hint = (
                 "System: This is a {0} task. Output a Plan block first:\n"
@@ -111,6 +113,7 @@ def _initial_turn_response(self, turn):
             turn.response_text, response_meta = self._observe_turn_response(turn, turn.response_text, messages)
             turn.tool_calls = response_meta["tool_calls"]
             _llm_has_plan = response_meta["has_plan"]
+            delegated = has_delegation()
             interaction_reply = self._interaction_gate(response_meta, turn.user_input)
             if interaction_reply is not None:
                 return self._finish_learning_run(

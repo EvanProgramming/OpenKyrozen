@@ -70,6 +70,23 @@ class ProjectGraphTests(unittest.TestCase):
             self.assertEqual(graph.sync()["deleted"], 1)
             self.assertFalse((graph.mirror_root / "helper.py").exists())
 
+    def test_nested_private_caches_never_become_source_files(self):
+        for git_repo in (False, True):
+            for state_name in ("runtime", "home/.kyrozen/v2"):
+                with self.subTest(git_repo=git_repo,state_name=state_name), tempfile.TemporaryDirectory() as directory:
+                    root=Path(directory)/"project";root.mkdir()
+                    if git_repo:
+                        subprocess.run(["git","init","-q",str(root)],check=True)
+                    (root/"app.py").write_text("value = 1\n")
+                    graph=ProjectGraph(root,root/state_name,"scope",runner=FakeGraphify())
+                    graph.mirror_root.mkdir(parents=True)
+                    (graph.mirror_root/"stale.py").write_text("derived = True\n")
+                    sibling=graph.cache_root.parent/"other";sibling.mkdir()
+                    (sibling/"private.json").write_text('{"derived":true}')
+                    for _ in range(3):
+                        self.assertEqual(graph.sync()["files"],1,"Private derived caches must not recursively index themselves")
+                        self.assertEqual(set(json.loads(graph.sync_path.read_text())["files"]),{"app.py"})
+
     def test_failed_update_restores_graph_and_remaps_private_paths(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "project"

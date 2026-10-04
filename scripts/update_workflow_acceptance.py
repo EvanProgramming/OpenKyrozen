@@ -36,7 +36,8 @@ try:
  runtime=build_application(surface='cli').runtime
 except ModuleNotFoundError:
  import main as runtime
-runtime._resolve_update_revision=lambda *args,**kwargs: os.environ['AUDIT_REVISION']
+if os.environ.get('AUDIT_PUBLISHED_MAIN')!='1':
+ runtime._resolve_update_revision=lambda *args,**kwargs: os.environ['AUDIT_REVISION']
 result=runtime._self_update()
 if isinstance(result,str):
  assert result.startswith('Updated OpenKyrozen from '),result
@@ -57,7 +58,7 @@ store.upsert_memory('synthetic persistent memory',kind='fact',workspace_id='audi
 '''
 
 
-def acceptance(revision, baseline):
+def acceptance(revision, baseline, published_main=False):
     uv = shutil.which('uv')
     if not uv:
         raise RuntimeError('BLOCKED: uv unavailable')
@@ -73,7 +74,7 @@ def acceptance(revision, baseline):
             'UV_TOOL_BIN_DIR':str(root/'bin'), 'UV_CACHE_DIR':str(root/'cache'),
             'KYROZEN_DB_PATH':str(root/'state.sqlite3'), 'KYROZEN_SKILLS_DIR':str(root/'skills'),
             'PLAYWRIGHT_BROWSERS_PATH':str(root/'browsers'),
-            'AUDIT_REVISION':revision,'KYROZEN_PROVIDER':'ollama','KYROZEN_BASE_URL':'http://127.0.0.1:9/v1'})
+            'AUDIT_REVISION':revision,'AUDIT_PUBLISHED_MAIN':'1' if published_main else '0','KYROZEN_PROVIDER':'ollama','KYROZEN_BASE_URL':'http://127.0.0.1:9/v1'})
         run([uv,'tool','install','--python','3.12','--force','--with','fastapi','--with','uvicorn',baseline],caller,env)
         python = root/'tools/openkyrozen'/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
         before = json.loads(run([str(python),'-c',PROBE],caller,env).splitlines()[-1])
@@ -135,7 +136,7 @@ def acceptance(revision, baseline):
                 assert all(row in current for row in rows), f'{table} records changed during update'
             assert connection.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
         from audit_identity import audit_identity
-        return {'status':'PASS','identity':audit_identity(),'transition':transition,'baseline':baseline,'before':before,'after':after,'first_update':first,
+        return {'status':'PASS','update_source':'published-main' if published_main else 'pinned-candidate','identity':audit_identity(),'transition':transition,'baseline':baseline,'before':before,'after':after,'first_update':first,
                 'repeat_update':second,'tui_revision':revision,'seconds':round(time.monotonic()-started,2),
                 'state_preserved':['settings','chats','tasks','memories','workspace'],
                 'tui_sha256':hashlib.sha256(binary.read_bytes()).hexdigest()}
@@ -145,10 +146,11 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--revision',required=True)
     parser.add_argument('--baseline',required=True)
+    parser.add_argument('--published-main',action='store_true',help='Use the real main resolver for both updates')
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
     try:
-        report=acceptance(args.revision,args.baseline)
+        report=acceptance(args.revision,args.baseline,published_main=args.published_main)
     except Exception as exc:
         args.output.write_text(json.dumps({'status':'FAIL','error':str(exc)},indent=2))
         raise

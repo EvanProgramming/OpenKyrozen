@@ -517,6 +517,21 @@ class DelegationTests(unittest.TestCase):
         self.assertIn("no action was executed", rejected["protocol_error"])
         self.assertEqual(self.runtime.tasks.tasks, [])
 
+    def test_planning_retry_switches_to_delegation_without_parent_tasks(self):
+        from openkyrozen.agent.turn import TurnContext
+        inspect = 'Action: {"action":"read_file","args":"marker.txt"}'
+        spawn = "Action: " + json.dumps({"action":"spawn_agents",
+            "args":json.dumps({"assignments":[brief()]})})
+        turn = TurnContext("Audit two independent components", complexity="complex",
+            interaction_mode="agent", fast_backend="off")
+        self.runtime.set_interaction_mode("agent")
+        with patch.object(self.runtime,"_build_messages",return_value=[]), \
+             patch.object(self.runtime,"_call_llm_with_spinner",side_effect=[inspect,spawn,spawn]) as call:
+            self.runtime._initial_turn_response(turn)
+        self.assertEqual(self.runtime.tasks.tasks, [], "Delegation must own its durable lifecycle")
+        self.assertEqual(turn.tool_calls[0]["action"],"spawn_agents")
+        self.assertEqual(call.call_count,2,"Do not demand another sequential plan after delegation")
+
     def test_plan_without_tasklist_is_repaired_before_delegation(self):
         from openkyrozen.agent.turn import TurnContext
         action = "Action: " + json.dumps({"action":"spawn_agents","args":json.dumps({"assignments":[brief()]})})

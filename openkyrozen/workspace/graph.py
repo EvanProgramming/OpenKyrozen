@@ -17,7 +17,7 @@ MAX_FILES = 50_000
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_QUERY_CHARS = 12_000
 SKIP_DIRS = {
-    ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "vendor",
+    ".git", ".hg", ".svn", ".kyrozen", ".venv", "venv", "node_modules", "vendor",
     "dist", "build", "target", "__pycache__", "chroma_memory", "graphify-out",
 }
 CODE_SUFFIXES = {
@@ -101,7 +101,9 @@ class ProjectGraph:
     def _walk_files(self) -> list[Path]:
         files: list[Path] = []
         for root, dirs, names in os.walk(self.source_root, followlinks=False):
-            dirs[:] = sorted(name for name in dirs if name not in SKIP_DIRS and not (Path(root) / name).is_symlink())
+            dirs[:] = sorted(name for name in dirs if name not in SKIP_DIRS
+                and not (Path(root) / name).is_symlink()
+                and not (Path(root) / name).resolve().is_relative_to(self.cache_root.parent))
             base = Path(root)
             for name in sorted(names):
                 path = base / name
@@ -125,7 +127,8 @@ class ProjectGraph:
                 continue
             source = self.source_root / relative
             try:
-                if source.is_symlink() or not source.is_file() or source.stat().st_size > MAX_FILE_BYTES:
+                if (source.is_symlink() or source.resolve().is_relative_to(self.cache_root.parent)
+                        or not source.is_file() or source.stat().st_size > MAX_FILE_BYTES):
                     continue
             except OSError:
                 continue

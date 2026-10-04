@@ -34,6 +34,8 @@ class WebSessionBrowserTests(unittest.TestCase):
             "HOME": str(workspace / "home"),
             "KYROZEN_DB_PATH": str(db_path),
             "KYROZEN_DISABLE_VECTOR_INDEX": "1",
+            # This UI fixture must not leave a detached worker writing after cleanup.
+            "KYROZEN_LEARNING_WORKER": "1",
             "KYROZEN_PROVIDER": "ollama",
             "KYROZEN_BASE_URL": "http://127.0.0.1:11434/v1",
         })
