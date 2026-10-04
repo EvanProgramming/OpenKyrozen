@@ -44,6 +44,12 @@ def run(seconds: float, log_dir: Path) -> dict:
     started = time.monotonic()
     cycles = restarts = 0
     measurements = []
+    startup_seconds = []
+    def start_gateway(workspace, db, skills, log_path):
+        begin = time.monotonic()
+        result = gateway._start_server(workspace, db, skills, log_path=log_path, startup_timeout=60)
+        startup_seconds.append(round(time.monotonic() - begin, 3))
+        return result
     process = None
     log_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='openkyrozen-production-soak-') as directory:
@@ -54,7 +60,7 @@ def run(seconds: float, log_dir: Path) -> dict:
         os.environ['KYROZEN_DB_PATH'] = str(root / 'test-driver.sqlite3')
         os.environ['KYROZEN_BROWSER_PROFILES'] = str(root / 'browser-profiles')
         try:
-            process, url = gateway._start_server(workspace, db, root / 'skills',
+            process, url = start_gateway(workspace, db, root / 'skills',
                                                  log_path=log_dir / f'gateway-{restarts:03d}.log')
             baseline_children = {p.pid for p in psutil.Process().children(recursive=True)}
             initial_rss = psutil.Process(process.pid).memory_info().rss
@@ -103,7 +109,7 @@ def run(seconds: float, log_dir: Path) -> dict:
                     tracked = current.children(recursive=True)
                     gateway._stop_server(process)
                     assert all(not child.is_running() for child in tracked), 'orphan gateway child'
-                    process, url = gateway._start_server(workspace, db, root / 'skills',
+                    process, url = start_gateway(workspace, db, root / 'skills',
                                                          log_path=log_dir / f'gateway-{restarts + 1:03d}.log')
                     generation_rss = psutil.Process(process.pid).memory_info().rss
                     restarts += 1
@@ -123,14 +129,15 @@ def run(seconds: float, log_dir: Path) -> dict:
             shutil.copytree(root, evidence)
             exc.soak_report = {'elapsed_seconds': round(time.monotonic()-started, 2),
                                'cycles': cycles, 'tasks': cycles * 2, 'restarts': restarts,
-                               'samples': measurements, 'failed_state': str(evidence)}
+                               'samples': measurements, 'startup_seconds': startup_seconds, 'startup_timeout_seconds': 60, 'failed_state': str(evidence)}
             raise
         finally:
             if process is not None:
                 gateway._stop_server(process)
     return {'status': 'PASS', 'elapsed_seconds': round(time.monotonic()-started, 2), 'cycles': cycles,
             'tasks': cycles * 2, 'restarts': restarts, 'initial_rss_bytes': initial_rss,
-            'peak_rss_bytes': max(m['rss_bytes'] for m in measurements), 'samples': measurements}
+            'peak_rss_bytes': max(m['rss_bytes'] for m in measurements), 'samples': measurements,
+            'startup_seconds': startup_seconds, 'startup_timeout_seconds': 60}
 
 
 if __name__ == '__main__':

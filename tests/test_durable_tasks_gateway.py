@@ -34,7 +34,7 @@ class DurableTaskGatewayTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def _start_server(self, workspace: Path, db_path: Path, skills_path: Path, *, log_path: Path | None = None) -> tuple[subprocess.Popen, str]:
+    def _start_server(self, workspace: Path, db_path: Path, skills_path: Path, *, log_path: Path | None = None, startup_timeout: float = 20) -> tuple[subprocess.Popen, str]:
         repository = Path(__file__).parents[1]
         port = self._free_port()
         env = os.environ.copy()
@@ -63,7 +63,7 @@ class DurableTaskGatewayTests(unittest.TestCase):
                 text=True,
             )
         base_url = f"http://127.0.0.1:{port}"
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + startup_timeout
         while time.monotonic() < deadline:
             if process.poll() is not None:
                 self.fail(f"Gateway exited before becoming ready; log={log_path}: "

@@ -11,6 +11,20 @@ import test_durable_tasks_gateway as gateway_tests
 
 
 class GatewayStartupLoggingTests(unittest.TestCase):
+    def test_configured_startup_budget_allows_slow_imports(self):
+        from unittest.mock import Mock
+        process = Mock()
+        process.poll.return_value = None
+        helper = gateway_tests.DurableTaskGatewayTests()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch('test_durable_tasks_gateway.subprocess.Popen', return_value=process), \
+                 patch('test_durable_tasks_gateway.time.monotonic', side_effect=[0, 21]), \
+                 patch.object(helper, '_request', return_value={'status':'ok'}):
+                actual, _ = helper._start_server(root, root/'state.db', root/'skills', startup_timeout=60)
+            self.assertIs(actual, process)
+            process.terminate.assert_not_called()
+
     def test_large_startup_output_does_not_block_readiness(self):
         original_popen = subprocess.Popen
         code = '''
