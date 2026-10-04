@@ -1,5 +1,7 @@
 # Final production audit — 4 October 2026
 
+This is the historical HOLD snapshot. The [shipping follow-up](production-shipping-audit-2026-10-04.md) supersedes its unresolved gates with new evidence.
+
 **Recommendation: HOLD.** The repaired candidate passes the available source, package, native platform, browser, and 30-minute workflow checks. Live delegated review did not finish within the authorized provider budget, and live in-flight cancellation was not reached. These critical acceptance checks remain unverified. Main publication and the subsequent published-main `/update` check are therefore withheld. No release was tagged or published.
 
 ## Candidate and evidence identity
