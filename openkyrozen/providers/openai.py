@@ -49,6 +49,7 @@ class OpenAICompatProvider(LLMProvider):
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple
         collected: list[str] = []
+        billed_model = model
         started = time.monotonic()
         final_usage: dict[str, int | None] | None = None
         completed = False
@@ -65,6 +66,7 @@ class OpenAICompatProvider(LLMProvider):
         stream = _retry_with_backoff(_call)
         try:
             for chunk in stream:
+                billed_model = getattr(chunk, "model", None) or billed_model
                 usage = _openai_usage_dict(getattr(chunk, "usage", None))
                 if usage is not None:
                     final_usage = usage
@@ -82,7 +84,7 @@ class OpenAICompatProvider(LLMProvider):
                         "_estimated": 1,
                     }
                 usage_ledger._track_cost(
-                    self.config.provider, final_usage, model=model,
+                    self.config.provider, final_usage, model=billed_model,
                     latency_ms=round((time.monotonic() - started) * 1000),
                 )
 
