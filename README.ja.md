@@ -97,19 +97,26 @@ kyrozen-web
 
 ## ドキュメント
 
+詳しいインストール、コマンド、プロバイダー、安全、保存データ、API のガイドは[ドキュメント索引](docs/index.md)から参照できます。
+
 | 内容 | ドキュメント |
 | --- | --- |
+| インストール、更新、復旧 | [インストールガイド](docs/installation.md) |
 | コマンド、モード、ワークスペース | [使用ガイド](docs/usage.md) |
 | ランタイムと安全境界 | [アーキテクチャ](docs/architecture.md) |
 | プロバイダー、環境変数、状態 | [設定](docs/configuration.md) |
+| コマンド、権限、ローカルデータ | [コマンド一覧](docs/commands.md) · [セキュリティ](docs/security.md) · [ストレージ](docs/memory-and-storage.md) |
+| タスク、履歴、拡張機能 | [タスク](docs/tasks-and-automation.md) · [履歴とロールバック](docs/history-and-rollback.md) · [拡張機能](docs/extensions.md) |
+| 使用量、費用、トラブル対応 | [使用量](docs/usage-and-cost.md) · [トラブルシューティング](docs/troubleshooting.md) |
 | Web、REST、MCP | [API ガイド](docs/api.md) |
 | 自動サブエージェント、独立コンテキスト、相互検証 | [サブエージェントガイド](docs/subagents.md) |
 | 自己学習、メモリ、証拠 | [自己学習ガイド](docs/self-evolution.md) |
 | Jev Decision と校正された証拠 | [Jev Decision](docs/decision-assist-validation.md) · [System One](docs/system-one-benchmark.md) |
 | 他のオープンソースエージェントとの比較 | [比較](docs/comparison.md) |
 | 開発、テスト、リリース | [開発ガイド](docs/development.md) |
+| コントリビュート | [貢献ガイド](CONTRIBUTING.md) |
 
-DeepSeek の既定例は "model_simple": "deepseek-flash" と "model_complex": "deepseek-v4-pro" です。
+各プロバイダーの既定モデルは[プロバイダーガイド](docs/providers.md)を参照してください。検証やベンチマークの記録は[レポート一覧](docs/reports.md)にあります。
 
 ## セキュリティと開発
 

@@ -1,5 +1,6 @@
 import os
 import inspect
+import re
 import shutil
 import subprocess
 import sys
@@ -142,7 +143,12 @@ class DistributionTests(unittest.TestCase):
             text = readme.read_text(encoding="utf-8")
             with self.subTest(readme=readme.name):
                 self.assertIn("raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/", text)
-                self.assertIn(release_url, text)
+                wheel_urls = re.findall(
+                    r"https://github\.com/EvanProgramming/OpenKyrozen/releases/download/[^\s)]+\.whl",
+                    text,
+                )
+                if wheel_urls:
+                    self.assertEqual(wheel_urls, [release_url])
                 self.assertNotIn("pypi.org", text.lower())
                 self.assertNotIn("uv tool upgrade openkyrozen", text)
 

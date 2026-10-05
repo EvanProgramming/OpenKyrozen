@@ -97,19 +97,26 @@ kyrozen-web
 
 ## 문서
 
+자세한 설치, 명령, provider, 보안, 저장 데이터 및 API 문서는 [문서 색인](docs/index.md)에 있습니다.
+
 | 내용 | 문서 |
 | --- | --- |
+| 설치, 업데이트, 복구 | [설치 안내](docs/installation.md) |
 | 명령, 모드, workspace | [사용 가이드](docs/usage.md) |
 | 런타임 흐름과 안전 경계 | [아키텍처](docs/architecture.md) |
 | provider, 환경 변수, 상태 | [설정](docs/configuration.md) |
+| 명령, 권한, 로컬 데이터 | [명령 참고](docs/commands.md) · [보안](docs/security.md) · [저장소](docs/memory-and-storage.md) |
+| 작업, 기록, 확장 | [작업](docs/tasks-and-automation.md) · [기록 및 롤백](docs/history-and-rollback.md) · [확장](docs/extensions.md) |
+| 사용량, 비용, 문제 해결 | [사용량](docs/usage-and-cost.md) · [문제 해결](docs/troubleshooting.md) |
 | Web, REST, MCP | [API 가이드](docs/api.md) |
 | 자동 하위 에이전트, 독립 컨텍스트, 상호 검증 | [하위 에이전트 가이드](docs/subagents.md) |
 | self-learning, memory, evidence | [Self-learning 가이드](docs/self-evolution.md) |
 | Jev Decision 및 교정 증거 | [Jev Decision](docs/decision-assist-validation.md) · [System One](docs/system-one-benchmark.md) |
 | 다른 오픈소스 에이전트와 비교 | [비교](docs/comparison.md) |
 | 개발, 테스트, 릴리스 | [개발 가이드](docs/development.md) |
+| 기여 | [기여 가이드](CONTRIBUTING.md) |
 
-DeepSeek 기본 예시는 "model_simple": "deepseek-flash" 및 "model_complex": "deepseek-v4-pro"입니다.
+provider별 기본 모델은 [provider 안내](docs/providers.md)를 확인하세요. 검증 및 benchmark 기록은 [보고서 색인](docs/reports.md)을 참고하세요.
 
 ## 보안과 개발
 

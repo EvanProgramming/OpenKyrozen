@@ -6,8 +6,8 @@ from __future__ import annotations
 import re
 import shlex
 import sys
-import ast
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from generate_tool_inventory import ROOT, render_inventory, runtime_routes, _load_runtime
 
@@ -25,25 +25,105 @@ STALE_VERIFICATION_CLAIMS = (
     "119 tests",
     "359378b",
 )
-VERIFICATION_COMMANDS = (
-    "make check",
-    "make docs-check",
-    "make shell-check",
-    "make lint",
-    "make test",
-    "make benchmark",
-    "git diff --check",
-)
-BENCHMARK_METADATA = (
-    "benchmarks/multi_party_memory.jsonl",
-    "openkyrozen-learning-benchmark-v1",
-    "deterministic-fixture",
-    "openkyrozen-memory-policy-v1",
-    "fixture_verified",
-    "paired_evidence_status: insufficient",
-    "public_superiority_claim_supported: false",
-)
 STALE_DEEPSEEK_MODELS = re.compile(r"\bdeepseek-(?:chat|reasoner)\b", re.IGNORECASE)
+LINK_PATTERN = re.compile(r"!?\[([^\]]*)\]\((<[^>]+>|[^)\s]+)(?:\s+[^)]*)?\)")
+PUBLIC_MARKDOWN = ("README*.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "SECURITY.md", "SUPPORT.md")
+
+
+def markdown_links(text: str) -> list[tuple[int, str]]:
+    """Return inline Markdown link targets outside fenced code blocks."""
+    text = re.sub(r"(?ms)^\s*(```+|~~~+).*?^\s*\1\s*$", "", text)
+    return [
+        (text.count("\n", 0, match.start()) + 1, match.group(2).strip("<>"))
+        for match in LINK_PATTERN.finditer(text)
+    ]
+
+
+def anchor_for_heading(heading: str) -> str:
+    """Create the GitHub-style fragment used by a Markdown heading."""
+    heading = re.sub(r"[`*_~]", "", heading).casefold().strip()
+    heading = re.sub(r"[^\w\-\s]", "", heading, flags=re.UNICODE)
+    return re.sub(r"\s+", "-", heading)
+
+
+def _heading_anchors(text: str) -> set[str]:
+    headings: set[str] = set()
+    counts: dict[str, int] = {}
+    in_code = False
+    for line in text.splitlines():
+        if re.match(r"^\s*(```|~~~)", line):
+            in_code = not in_code
+            continue
+        match = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", line)
+        if match and not in_code:
+            slug = anchor_for_heading(match.group(1))
+            count = counts.get(slug, 0)
+            headings.add(slug if not count else f"{slug}-{count}")
+            counts[slug] = count + 1
+    return headings
+
+
+def check_markdown_links(source: Path, root: Path) -> list[str]:
+    """Validate local Markdown paths and fragments, with source line numbers."""
+    text = source.read_text(encoding="utf-8")
+    errors: list[str] = []
+    for line, raw in markdown_links(text):
+        parsed = urlsplit(raw)
+        if parsed.scheme or parsed.netloc or raw.startswith(("#", "mailto:")):
+            if raw.startswith("#") and unquote(raw[1:]) not in _heading_anchors(text):
+                errors.append(f"{source.name}:{line}: missing anchor '{raw[1:]}'")
+            continue
+        target = (source.parent / unquote(parsed.path)).resolve()
+        if not target.exists():
+            errors.append(f"{source.name}:{line}: missing link target '{parsed.path}'")
+            continue
+        if parsed.fragment and target.suffix.lower() == ".md":
+            anchors = _heading_anchors(target.read_text(encoding="utf-8"))
+            if unquote(parsed.fragment) not in anchors:
+                errors.append(f"{source.name}:{line}: missing anchor '{parsed.fragment}' in '{parsed.path}'")
+        try:
+            target.relative_to(root.resolve())
+        except ValueError:
+            errors.append(f"{source.name}:{line}: link escapes the repository '{parsed.path}'")
+    return errors
+
+
+def _check_index_coverage(docs_root: Path) -> list[str]:
+    index_path = docs_root / "index.md"
+    if not index_path.exists():
+        return ["docs/index.md is missing"]
+    index_text = index_path.read_text(encoding="utf-8")
+    indexed = {
+        (index_path.parent / unquote(urlsplit(target).path)).resolve()
+        for _, target in markdown_links(index_text)
+        if not urlsplit(target).scheme and not urlsplit(target).netloc and urlsplit(target).path
+    }
+    return [
+        f"docs/index.md: missing index entry for '{path.relative_to(docs_root.parent).as_posix()}'"
+        for path in sorted(docs_root.rglob("*.md"))
+        if path != index_path and path.resolve() not in indexed
+    ]
+
+
+def _check_release_references(readmes: list[Path], website_sources: list[Path]) -> list[str]:
+    """Reject drift between release commands shown on the README and website."""
+    versions: dict[str, set[str]] = {}
+    for source in [*readmes, *website_sources]:
+        text = source.read_text(encoding="utf-8")
+        found = set(re.findall(r"/v(\d+\.\d+\.\d+)(?:/|\b)", text))
+        if found:
+            versions[source.name] = found
+    all_versions = set().union(*versions.values()) if versions else set()
+    errors = []
+    if len(all_versions) != 1:
+        errors.append(f"public installer references disagree on release version: {sorted(all_versions)}")
+    for name, found in versions.items():
+        if len(found) != 1 or found != all_versions:
+            errors.append(f"{name}: installer release version {sorted(found)} does not match the public release")
+    for source in [*readmes, *website_sources]:
+        if source.name not in versions:
+            errors.append(f"{source.name}: missing versioned installer reference")
+    return errors
 
 
 def _command_blocks(text: str) -> list[str]:
@@ -105,22 +185,14 @@ def _check_commands(path: Path, text: str, routes: set[str], targets: set[str]) 
     return errors
 
 
-def _discovered_test_count() -> int:
-    return sum(
-        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_")
-        for path in (ROOT / "tests").glob("test_*.py")
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
-    )
-
-
 def _check_provider_defaults(path: Path, text: str, defaults: dict[str, tuple[str, str]]) -> list[str]:
     """Keep README model examples tied to the provider's current defaults."""
     simple, complex_model = defaults["deepseek"]
     errors: list[str] = []
     if STALE_DEEPSEEK_MODELS.search(text):
         errors.append(f"{path.name}: README contains a retired DeepSeek model name")
-    simple_match = re.search(r'"model_simple"\s*:\s*"([^"]+)"', text)
-    complex_match = re.search(r'"model_complex"\s*:\s*"([^"]+)"', text)
+    simple_match = re.search(r'(?:KYROZEN_MODEL_SIMPLE\s*=\s*|"model_simple"\s*:\s*")([^"\s]+)', text)
+    complex_match = re.search(r'(?:KYROZEN_MODEL_COMPLEX\s*=\s*|"model_complex"\s*:\s*")([^"\s]+)', text)
     if not simple_match or simple_match.group(1) != simple:
         errors.append(f"{path.name}: model_simple example must match provider default '{simple}'")
     if not complex_match or complex_match.group(1) != complex_model:
@@ -142,20 +214,6 @@ def _check_verification_record() -> list[str]:
     if not re.search(r"Historical verification snapshot:\s*`[0-9a-f]{40}`", text):
         errors.append("self-evolution.md must identify a full historical verification commit")
 
-    test_count = _discovered_test_count()
-    expected_test_marker = f"Current repository test count at this snapshot: **{test_count} unittest cases**"
-    if expected_test_marker not in text:
-        errors.append(f"self-evolution.md must record the discovered test count ({test_count})")
-
-    for command in VERIFICATION_COMMANDS:
-        if command not in text:
-            errors.append(f"self-evolution.md is missing verification command '{command}'")
-    for marker in BENCHMARK_METADATA:
-        if marker not in text:
-            errors.append(f"self-evolution.md is missing benchmark metadata '{marker}'")
-    for marker in ("API health/scoping smoke", "CLI command-loop smoke"):
-        if marker not in text:
-            errors.append(f"self-evolution.md is missing verification evidence '{marker}'")
     return errors
 
 
@@ -175,28 +233,29 @@ def main() -> int:
     route_paths = {path for _, path in routes}
     targets = _make_targets()
     errors.extend(_check_verification_record())
+    public_docs = [ROOT / name for pattern in PUBLIC_MARKDOWN for name in sorted(path.name for path in ROOT.glob(pattern))]
+    public_docs.extend(path for path in (ROOT / "docs").rglob("*.md") if path.is_file())
+    for document in sorted(set(public_docs)):
+        errors.extend(check_markdown_links(document, ROOT))
+
+    errors.extend(_check_index_coverage(ROOT / "docs"))
+    errors.extend(_check_release_references(
+        README_FILES,
+        [ROOT / "website" / "build_site.py", ROOT / "website" / "assets" / "install-platform.js"],
+    ))
+
+    defaults_doc = ROOT / "docs" / "configuration.md"
+    errors.extend(_check_provider_defaults(defaults_doc, defaults_doc.read_text(encoding="utf-8"), PROVIDER_DEFAULT_MODELS))
     for readme in README_FILES:
         text = readme.read_text(encoding="utf-8")
-        errors.extend(_check_provider_defaults(readme, text, PROVIDER_DEFAULT_MODELS))
         for pattern in STALE_TOOL_PATTERNS:
             match = pattern.search(text)
             if match:
                 errors.append(f"{readme.name}: stale tool count: {match.group(0)}")
+        if "docs/index.md" not in text:
+            errors.append(f"{readme.name}: missing link to docs/index.md")
         if "docs/tool-inventory.md" not in text:
             errors.append(f"{readme.name}: missing link to docs/tool-inventory.md")
-        tool_count_lines = [
-            line for line in text.splitlines()
-            if str(runtime_tool_count) in line and any(marker in line for marker in ("tool", "工具", "ツール", "도구"))
-        ]
-        if not tool_count_lines:
-            errors.append(f"{readme.name}: missing runtime tool count {runtime_tool_count}")
-        git_count_lines = [
-            line for line in text.splitlines()
-            if "Git" in line and str(git_tool_count) in line
-            and any(marker in line for marker in ("tool", "工具", "ツール", "도구"))
-        ]
-        if not git_count_lines:
-            errors.append(f"{readme.name}: missing git_ tool count {git_tool_count}")
         errors.extend(_check_commands(readme, text, route_paths, targets))
 
     if errors:

@@ -1,6 +1,6 @@
 # OpenKyrozen vs other open-source agents
 
-This is a capability comparison, not a speed, quality, or benchmark claim. It compares the documented product shape of OpenKyrozen, OpenCode, OpenClaw, and Codewhale as checked on **2026-09-30**.
+This is a capability comparison, not a speed, quality, or benchmark claim. It compares the documented product shape of OpenKyrozen, OpenCode, OpenClaw, and Codewhale as checked on **2026-10-05**.
 
 The feature is the vertical axis; each agent is a horizontal column. `🟡` means the capability is documented but narrower, optional, experimental, or not the project's main purpose. `❌` means it is not a documented core capability in the sources linked below.
 
@@ -17,12 +17,13 @@ The feature is the vertical axis; each agent is a horizontal column. `🟡` mean
 | Hosted and local model choices | ✅ | ✅ | ✅ | ✅ |
 | Multi-agent or subagent workflows | ✅ | ✅ | ✅ | ✅ |
 | Durable local sessions or state | ✅ | ✅ | ✅ | ✅ |
+| MCP or comparable tool extensions | ✅ | ✅ | ✅ | ✅ |
 | First-class claims, events, and learning ledger | ✅ | ❌ | ❌ | ❌ |
 | Evidence-gated self-evolution | ✅ | ❌ | ❌ | ❌ |
 
 ## What the matrix means
 
-OpenKyrozen is the broad local workflow: terminal work, project-aware research, web/API access, durable state, and measured self-improvement are part of the same runtime. The last two rows are deliberately narrow: they refer to OpenKyrozen's documented claims/events learning state and promotion gates, not to ordinary session history, plugins, skills, or project configuration.
+OpenKyrozen combines terminal work, project-aware research, web/API access, durable state, and measured self-improvement in one runtime. The last two rows are deliberately narrow: they refer to OpenKyrozen's documented claims/events learning state and promotion gates, not to ordinary session history, plugins, skills, or project configuration.
 
 The other projects have clear strengths, but those strengths point to different centers of gravity:
 
@@ -30,7 +31,7 @@ The other projects have clear strengths, but those strengths point to different 
 - **OpenClaw** is a self-hosted Gateway for an assistant across messaging channels, control UI, companion apps, and device nodes. It can connect tools and coding agents, but the Gateway and channel model is its center.
 - **Codewhale** is a Rust coding agent with a terminal TUI, `exec` mode, local browser client, explicit Plan/Work/Operate modes, model fleets, MCP, and resumable workflows.
 
-That makes OpenKyrozen the better default when the goal is one local agent for coding, research, workspace operations, inspectable memory, and evidence-backed improvement—not only a coding shell or a messaging gateway.
+These differences describe distinct product scopes. OpenKyrozen's differentiators in this table are its local claims/events ledger and evidence-gated learning workflow; the other projects document different interface, channel, and coding-agent priorities.
 
 ## Live prompt and tool-discovery pilot
 

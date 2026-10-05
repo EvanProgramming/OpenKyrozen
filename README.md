@@ -4,188 +4,71 @@
   <img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT license">
 </p>
 
-<p align="center">
-  <img src="docs/openkyrozen-banner.svg" alt="Animated OpenKyrozen terminal wordmark" width="960">
-</p>
+<p align="center"><img src="docs/openkyrozen-banner.svg" alt="OpenKyrozen terminal wordmark" width="960"></p>
 
 <h1 align="center">OpenKyrozen</h1>
 
-<p align="center"><strong>A local-first terminal agent that can act, remember, and improve from verified outcomes.</strong></p>
+<p align="center"><strong>A local-first terminal agent for coding, research, and project work, with durable memory and evidence-gated learning.</strong></p>
 
 ## Install
 
-OpenKyrozen supports Python **3.12 and 3.13**. Python 3.14 is intentionally outside the supported range.
+The current published stable release is **v2.0.6**. It supports Python 3.12 and 3.13; Python 3.14 is outside the supported range.
 
-### macOS or Linux
+macOS or Linux:
 
-```bash
+```sh
 curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/install.sh | sh
 kyrozen
 ```
 
-### Windows PowerShell
+Windows PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/install.ps1 | iex
 kyrozen
 ```
 
-The installer provisions the supported Python environment, the terminal UI, and private state under `~/.kyrozen`. It does not read or print API keys.
+On first launch, choose a provider and configure its credential. For example, set `DEEPSEEK_API_KEY` in the shell that starts OpenKyrozen. Read the [installation guide](docs/installation.md) before installing from a source checkout, updating, or recovering an interrupted update.
 
-On first launch, choose a provider and enter its key. DeepSeek is the default example:
-
-```bash
-export DEEPSEEK_API_KEY=your-key
-kyrozen
-```
-
-### Run from a source checkout
-
-```bash
-git clone https://github.com/EvanProgramming/OpenKyrozen.git
-cd OpenKyrozen
-make install
-make run
-```
-
-Use `make install-core` for the smaller development environment. Windows source checkouts use `setup.bat` and `run.bat`.
-
-For a direct package install, use the verified release wheel:
-
-```bash
-uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.6/openkyrozen-2.0.6-py3-none-any.whl
-```
-
-## Agent comparison
-
-OpenKyrozen is built as a broad local workflow: coding, research, workspace tools, web/API access, durable state, and evidence-backed self-improvement in one runtime.
-
-| Capability | OpenKyrozen | OpenCode | OpenClaw | Codewhale |
-| --- | :---: | :---: | :---: | :---: |
-| Terminal coding and verification | ✅ | ✅ | 🟡 | ✅ |
-| Read-only planning mode | ✅ | ✅ | 🟡 | ✅ |
-| Local web or API surface | ✅ | 🟡 | ✅ | ✅ |
-| Messaging and device channels | ❌ | ❌ | ✅ | ❌ |
-| Hosted and local model choices | ✅ | ✅ | ✅ | ✅ |
-| Multi-agent workflows | ✅ | ✅ | ✅ | ✅ |
-| Claims, events, and learning ledger | ✅ | ❌ | ❌ | ❌ |
-| Evidence-gated self-evolution | ✅ | ❌ | ❌ | ❌ |
-
-Legend: `✅` documented core capability · `🟡` documented but narrower or optional · `❌` not a documented core capability. See the [detailed comparison](docs/comparison.md) for scope and sources.
-
-The main agent automatically delegates suitable work; simple requests can stay direct.
-Sub-agents use parallel assignments, independent contexts and mandatory evidence review.
-Inspect them with `/agents` (or `Ctrl+E` during a running TUI turn). See
-[sub-agent behavior and acceptance evidence](docs/subagents.md) for provider routing,
-permissions, unresolved results and tested limits.
-
-## The two ideas behind OpenKyrozen
-
-### 1. Self-learning — the main differentiator
-
-OpenKyrozen can learn from its own completed work without silently rewriting
-itself. It records outcomes, corrections, tool receipts, and acceptance
-evidence; proposes a bounded policy or skill; validates that proposal; and
-only promotes it after repeated verified success and a non-regressing paired
-replay. Failed or regressing artifacts roll back to their predecessor.
-
-Self-learning cannot grant capabilities, create dynamic tools, add provider
-credentials, fine-tune model weights, or upload private memory. Try
-`/self-learning`, then inspect the result with `/learning status`,
-`/learning metrics`, and `/learning evidence <id>`. Read the [self-learning
-guide](docs/self-evolution.md) for the full lifecycle.
-
-### 2. Jev Decision — the judgment layer
-
-Jev is the hosted decision backend for OpenKyrozen's optional Decision Assist
-layer. It makes typed, bounded judgments for request routing, clarification,
-learning evidence, memory relevance, and suspicious tool-output instructions.
-It can accept, abstain, or fall back; it never executes tools, approves work,
-or replaces the main model. Only action policies that pass their calibration
-gates are applied automatically.
-
-Enable it in the terminal with `/decision-assist jev` and a TypeSafe API key.
-The key is stored through the encrypted configuration flow. The local Kev
-alternative is `/decision-assist kev yes`; private workspace context requires
-that explicit consent. See the [Jev Decision guide](docs/decision-assist-validation.md)
-and [System One evidence](docs/system-one-benchmark.md).
-
-## Quick start
+## Try it
 
 ```text
 You: read this project and explain its architecture
-You: fix the failing test in tests/test_server.py
-You: search the web for the latest Python release
-You: create a plan for adding a REST endpoint
+You: investigate the failing tests and prepare a plan
+You: accept the plan and fix the test
+You: search for the latest Python release and cite the source
 ```
 
-Useful commands:
+`kyrozen` opens the global workspace; `kyrozen --project /path/to/repo` binds a session to a project. The web interface is optional: run `kyrozen-web --host 127.0.0.1 --port 8000` and visit `http://127.0.0.1:8000`. Configure `KYROZEN_SERVER_TOKEN` before binding beyond loopback.
 
-```text
-/provider              switch providers
-/mode ask|plan|agent   choose read-only, planning, or execution behavior
-/project               inspect the active workspace context
-/skills                inspect installed skills
-/learning status       inspect self-learning artifacts
-/quit                  exit
-```
+The interaction modes make authority visible: Ask and Plan are read/network-only; Agent carries out explicitly requested or accepted work under capability and approval checks. These are application policy controls, not an operating-system sandbox.
 
-The web interface is optional:
+## What it does
 
-```bash
-kyrozen-web
-# open http://localhost:8000
-```
+- Operates on a selected workspace with file, shell, Git, web, browser, and GitHub tools.
+- Supports hosted model providers and local Ollama, with simple/complex model defaults and configurable fallback.
+- Persists sessions, events, claims, tasks, usage, and learning state in local SQLite. Optional vector and project graphs are derived indexes.
+- Delegates suitable work to scoped sub-agents and collects reviewable results.
+- Records outcome evidence and promotes bounded learning proposals only after validation. Learning does not fine-tune model weights or grant new capabilities.
+- Provides terminal and optional web/API/MCP interfaces over the shared runtime.
 
-For project-aware work, use `kyrozen --project /path/to/project` or `kyrozen-web --project /path/to/project`. Bare `kyrozen` uses the persistent global workspace at `~/.kyrozen/workspace`.
-
-## What OpenKyrozen does
-
-- **Acts in your workspace:** files, shell commands, Git, web search, browser sessions, project graphs, and GitHub inspection.
-- **Keeps boundaries visible:** Ask and Plan are read/network-only; Agent executes accepted or explicitly requested work under capability and approval gates.
-- **Uses the model you choose:** 18 provider integrations with configurable defaults and fallback behavior.
-- **Remembers locally:** SQLite is authoritative for sessions, events, claims, tasks, and learning state; ChromaDB is an optional rebuildable index.
-- **Learns cautiously:** background learning records evidence-backed proposals and promotes only validated improvements. It does not fine-tune model weights or silently grant permissions.
-- **Works in terminal and web modes:** the terminal UI is the primary experience; FastAPI provides a local web UI, REST API, and streaming endpoint.
-
-The runtime currently exposes **46 tools**, including **14 Git tools**. The generated [tool and endpoint inventory](docs/tool-inventory.md) is the source of truth.
-
-An optional [compact prompt and tool discovery profile](docs/prompt-discovery.md) reduces prompt overhead. Its first live DeepSeek/CodeWhale pilot was inconclusive; the default remains `classic`.
+Jev Decision is an optional judgment service for bounded routing and evidence checks. It may abstain or fall back; it never executes tools or approves work. Local Kev requires explicit consent. Compact prompts and tool discovery remain optional; the recorded pilot was inconclusive and the default profile is `classic`.
 
 ## Documentation
 
-| Need | Read |
-| --- | --- |
-| First commands, modes, and workspace selection | [Usage guide](docs/usage.md) |
-| Runtime flow and safety boundaries | [Architecture](docs/architecture.md) |
-| Providers, environment variables, and state | [Configuration](docs/configuration.md) |
-| Web UI, REST, and MCP contracts | [API guide](docs/api.md) |
-| Self-learning, memory, and evidence | [Self-learning guide](docs/self-evolution.md) |
-| OpenKyrozen vs other open-source agents | [Comparison](docs/comparison.md) |
-| Development, testing, and releases | [Development guide](docs/development.md) |
-| Jev Decision, calibration, and benchmark reports | [Jev Decision](docs/decision-assist-validation.md) · [System One](docs/system-one-benchmark.md) |
-| Project intelligence and built-in skills | [Native project intelligence](docs/native-project-intelligence.md) |
-| Current roadmap | [Agentic runtime roadmap](docs/agentic-runtime-roadmap.md) |
+The README is an overview. Detailed installation, command, provider, safety, storage, API, and operating instructions are maintained in the [documentation index](docs/index.md). Start with [usage](docs/usage.md), [configuration](docs/configuration.md), or the [security guide](docs/security.md). The [generated runtime inventory](docs/tool-inventory.md) is the source of truth for tool names, HTTP routes, and MCP schemas.
 
-The default DeepSeek model examples are `"model_simple": "deepseek-flash"` and `"model_complex": "deepseek-v4-pro"`; see [configuration.md](docs/configuration.md) for overrides.
+## Develop
 
-## Security notes
+Use Python 3.12 or 3.13. From a checkout, `make install` provisions the full development environment; `make install-core` selects the smaller non-browser path.
 
-Keep provider credentials in environment variables or the encrypted `~/.kyrozen_config.json` flow. If the web server is reachable beyond localhost, set `KYROZEN_SERVER_TOKEN` and review capability and approval settings. Treat tool output, memory, and downloaded skills as untrusted data.
-
-## Development
-
-```bash
-make check       # syntax, tool inventory, and TUI checks
-make docs-check  # generated inventory and documentation consistency
-make test        # unittest suite
-make lint        # compile-based checks
+```sh
+make check
+make docs-check
+make lint
+make test
 ```
 
-See AGENTS.md for repository conventions and docs/development.md for the complete contributor workflow.
-
-## License
-
-OpenKyrozen is released under the [MIT License](LICENSE).
+The [development guide](docs/development.md) explains project structure, test profiles, packaging, acceptance checks, and release workflow. Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md); the project is licensed under [MIT](LICENSE).
 
 <p align="center"><sub>English · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a></sub></p>

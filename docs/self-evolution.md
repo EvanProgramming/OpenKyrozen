@@ -39,7 +39,7 @@ Historical verification snapshot: `51be33361422e55e1f2f00c33a0e0f8c56132a91`
 (the post-#54 `main` revision, captured before this #55 documentation-only
 update). Snapshot date: 2026-09-04.
 
-Current repository test count at this snapshot: **456 unittest cases**.
+Current repository test count at this snapshot: **453 unittest cases**.
 
 ## Verified surface
 
@@ -55,10 +55,11 @@ Current repository test count at this snapshot: **456 unittest cases**.
 | Multi-party memory | Attributed beliefs, private facts, and group agreements are filtered by speaker, audience, channel, and visibility; receipts identify speakers whose claims were used. | `tests/test_multi_party_memory.py`, `tests/test_server.py` |
 | Harness-neutral benchmark | Clean/evolved runs and candidate, predecessor, omission, and no-memory ablations export JSON with a claim gate. | `learning_benchmark.py`, `benchmarks/multi_party_memory.jsonl` |
 
-The implementation is local-only. It does not fine-tune weights, synchronize a
-cloud memory, edit harness source, grant capabilities, or create dynamic tools.
-The base `openkyrozen.tools` registry exposes 38 actions; the terminal runtime adds
-`search_memory`, `check_stored_data` and five orchestration actions, for 45 runtime actions.
+The implementation stores its durable evidence locally. It does not fine-tune
+weights, synchronize cloud memory, edit harness source, or grant capabilities.
+Dynamic tools are controlled by a separate operator setting and remain subject
+to capability and approval gates. See [security](security.md) and the current
+[generated runtime inventory](tool-inventory.md) for tool names and counts.
 
 ## Terminal workflow
 
@@ -268,7 +269,7 @@ diagnostic only and is not treated as a release claim.
 
 ## Verification snapshot commands
 
-Current repository test count at this snapshot: **456 unittest cases**.
+Current repository test count at this snapshot: **453 unittest cases**.
 
 The post-#54 snapshot ran the repository's current checks and smoke coverage:
 
@@ -304,11 +305,13 @@ make benchmark
 git diff --check
 ```
 
-The historical post-#54 verification passed the 130 discovered tests; the current
-repository contains 409 discovered tests. The historical run also covered the API
-health/scoping smoke, the CLI command-loop smoke, and the five-case
-clean/evolved benchmark described above. `make check` reports the live 45-tool
-runtime inventory, including 14 `git_` tools. A new artifact is not immediate:
+The earlier 2026-09-04 post-#54 snapshot reported 130 discovered tests in its
+historical run and 409 discovered tests at that snapshot. Those counts are not a
+current test result. It also covered the API health/scoping smoke, the CLI
+command-loop smoke, and the five-case clean/evolved benchmark described above.
+Its `make check` receipt reported 45 runtime tools, including 14 `git_` tools;
+the current [generated inventory](tool-inventory.md) supersedes that historical
+count. A new artifact is not immediate:
 wait for an eligible run, at least
 60 seconds of idle time, reviewer evidence, and then the two-success plus
 replay gate. A model or environment mismatch intentionally downgrades an

@@ -8,6 +8,6 @@ export function detectInstallPlatform(hints = {}) {
 
 export function installCommand(platform) {
   return platform === "windows"
-    ? "irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.5/install.ps1 | iex"
-    : "curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.5/install.sh | sh";
+    ? "irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/install.ps1 | iex"
+    : "curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/install.sh | sh";
 }

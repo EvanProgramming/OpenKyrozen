@@ -97,19 +97,26 @@ kyrozen-web
 
 ## 文档
 
+详细的安装、命令、服务商、安全、存储和 API 文档集中在[文档索引](docs/index.md)中。
+
 | 主题 | 文档 |
 | --- | --- |
+| 安装、升级和恢复 | [安装指南](docs/installation.md) |
 | 命令、模式和工作区 | [使用指南](docs/usage.md) |
 | 运行时流程和安全边界 | [架构](docs/architecture.md) |
 | 服务商、环境变量和状态目录 | [配置](docs/configuration.md) |
 | Web、REST 和 MCP | [API 指南](docs/api.md) |
+| 命令、权限和本地数据 | [命令参考](docs/commands.md) · [安全](docs/security.md) · [存储](docs/memory-and-storage.md) |
+| 任务、恢复与扩展 | [任务](docs/tasks-and-automation.md) · [历史与回滚](docs/history-and-rollback.md) · [扩展](docs/extensions.md) |
+| 用量与常见问题 | [费用说明](docs/usage-and-cost.md) · [故障排查](docs/troubleshooting.md) |
 | 自动子智能体、独立上下文与交叉验证 | [子智能体指南](docs/subagents.md) |
 | 自学习、记忆和证据 | [自学习指南](docs/self-evolution.md) |
 | Jev Decision 与校准证据 | [Jev Decision](docs/decision-assist-validation.md) · [System One](docs/system-one-benchmark.md) |
 | 与其他开源智能体比较 | [比较](docs/comparison.md) |
 | 开发、测试和发布 | [开发指南](docs/development.md) |
+| 参与贡献 | [贡献指南](CONTRIBUTING.md) |
 
-默认 DeepSeek 示例为 "model_simple": "deepseek-flash" 和 "model_complex": "deepseek-v4-pro"。
+完整服务商模型默认值见[服务商指南](docs/providers.md)。历史验证与 benchmark 结果可在[报告索引](docs/reports.md)中查阅。
 
 ## 安全与开发
 

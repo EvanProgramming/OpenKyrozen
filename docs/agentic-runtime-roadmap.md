@@ -5,9 +5,9 @@ CLI, Bubble Tea TUI, web UI, REST, and SSE. Ask and Plan are read-only; accepted
 plans become evidence-gated `TaskManager` work in Agent mode. The following work
 is intentionally deferred rather than hidden behind speculative abstractions:
 
-1. **Active-run steering, cancellation, and queuing** — add when a turn can be
-   safely interrupted between receipts without leaving a tool or durable task in
-   an ambiguous state.
+1. **Consistent foreground turn steering** — extend scoped sub-agent cancellation
+   and assignment queuing to every foreground interface only when the UI can
+   reconcile interaction state and durable receipts after interruption.
 2. **Provider-native typed tool calls** — add per provider after parity tests
    prove the native schema preserves the current fail-closed control protocol.
 3. **OS-level sandboxing** — add platform-specific process/filesystem isolation

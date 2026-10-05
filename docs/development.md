@@ -1,5 +1,7 @@
 # Development guide
 
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for the issue, contribution, and pull request workflow.
+
 ## Setup
 
 ```bash
@@ -18,6 +20,12 @@ make lint
 make docs-check
 make test
 ```
+
+`make docs-check` compares the generated runtime inventory to live registries,
+checks local documentation paths/fragments and navigation coverage, compares
+README and website installer-version references, and validates documented Make
+targets and loopback HTTP examples. `tests/test_docs.py` covers broken links,
+fragments, nested relative paths, index coverage, and installer-version drift.
 
 Useful focused commands:
 
@@ -64,7 +72,13 @@ tests/, docs/            regression suites and documentation
 - Label historical measurements and avoid general performance claims from small samples.
 - Do not commit venv/, chroma_memory/, build artifacts, generated package metadata, credentials, or private runtime data.
 
-See AGENTS.md for naming, testing, security, and commit conventions.
+See [AGENTS.md](../AGENTS.md) for naming, testing, security, and commit conventions. The [documentation index](index.md) links the operator and product guides.
+
+## GitHub labels and releases
+
+`.github/labels.yml` is the canonical list of issue labels, including their colors and descriptions. When setting up or changing repository labels, create or update them manually in GitHub from that list; no label-sync workflow is configured. Issue forms apply their matching labels.
+
+Release tags are maintainer-created. Use `v` followed by the exact `project.version` in `pyproject.toml`; pushing a `v*` tag starts the existing release workflow, which checks that the versions match before building.
 
 All internal Python imports use `openkyrozen.*`. Keep the four console command names
 and root executable launches stable. Use `build_application(memory=..., tools=...)`

@@ -73,14 +73,13 @@ class ProviderConfigTests(unittest.TestCase):
         ciphertext = base64.b64encode(encrypted).decode()
         self.assertEqual(decrypt_api_key(ciphertext), plaintext)
 
-    def test_readmes_use_current_deepseek_defaults(self):
+    def test_provider_guide_documents_current_deepseek_defaults(self):
         simple, complex_model = PROVIDER_DEFAULT_MODELS["deepseek"]
         root = Path(__file__).resolve().parents[1]
-        for readme in sorted(root.glob("README*.md")):
-            text = readme.read_text(encoding="utf-8")
-            self.assertNotRegex(text, r"\bdeepseek-(?:chat|reasoner)\b")
-            self.assertIn(f'"model_simple": "{simple}"', text)
-            self.assertIn(f'"model_complex": "{complex_model}"', text)
+        text = (root / "docs" / "providers.md").read_text(encoding="utf-8")
+        self.assertNotRegex(text, r"\bdeepseek-(?:chat|reasoner)\b")
+        self.assertIn(simple, text)
+        self.assertIn(complex_model, text)
 
 
 class FallbackModelTests(unittest.TestCase):
