@@ -32,6 +32,7 @@ var commands = []command{
 	{name: "skills", aliases: nil, description: "Show built-in and installed skill versions"},
 	{name: "ponytail", aliases: nil, description: "Set coding simplicity level"},
 	{name: "provider", aliases: []string{"p"}, description: "Choose or configure an LLM provider"},
+	{name: "custom-provider", aliases: nil, description: "Create, edit, select, or remove a custom OpenAI-compatible profile"},
 	{name: "api_key", aliases: []string{"key"}, description: "Set a provider API key"},
 	{name: "learn", aliases: []string{"index"}, description: "Re-index the active workspace"},
 	{name: "tasks", aliases: []string{"task"}, description: "Show durable task progress"},

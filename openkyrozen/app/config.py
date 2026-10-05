@@ -24,6 +24,7 @@ class AgentConfigError(ValueError):
 
 
 SUPPORTED_PROVIDERS = frozenset({
+    "custom",
     "deepseek", "openai", "anthropic", "google", "ollama", "glm", "kimi",
     "openrouter", "groq", "mistral", "xai", "together", "fireworks", "cohere",
     "azure_openai", "perplexity", "bedrock", "vertex",
@@ -225,7 +226,7 @@ def _validate_layer(raw: Any, *, source: str, partial: bool) -> dict[str, Any]:
                 if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{2,48}", name):
                     raise AgentConfigError("Invalid sub-agent role name")
                 settings = _require_mapping(settings, "subagents.roles." + name)
-                _reject_unknown(settings, {"provider", "model"}, "subagents.roles." + name)
+                _reject_unknown(settings, {"provider", "model", "custom_profile"}, "subagents.roles." + name)
                 values = {key: _text(value, "subagents.roles." + name + "." + key, required=True, limit=200)
                           for key, value in settings.items()}
                 if "provider" in values and values["provider"] not in SUPPORTED_PROVIDERS:

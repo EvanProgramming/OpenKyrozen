@@ -69,6 +69,55 @@ def _handle_cli_command(self, user_input, interaction_before):
             except ValueError as exc:
                 self.console.print(f"[{self._ERROR}]{exc}[/{self._ERROR}]")
         return None
+    if user_input.lower() == "/custom-provider" or user_input.lower().startswith("/custom-provider "):
+        parts = user_input.split(maxsplit=2)
+        action = parts[1].lower() if len(parts) > 1 else "list"
+        name = parts[2] if len(parts) > 2 else ""
+        try:
+            if action == "list":
+                profiles = self.custom_provider_profiles()
+                self.console.print("\n".join(f"{p['name']} · {p['base_url']} · {p['model_simple']} / {p['model_complex']}" for p in profiles)
+                                   or "No custom provider profiles. Use /custom-provider create.")
+            elif action == "use" and name:
+                self.console.print(self.use_custom_provider(name))
+            elif action == "remove" and name:
+                if self.console.input(f"Remove custom provider profile {name!r}? [y/N] ").strip().lower() in {"y", "yes"}:
+                    self.console.print(self.delete_custom_provider(name))
+            elif action in {"create", "edit"}:
+                from getpass import getpass
+                if action == "edit" and name:
+                    from openkyrozen.providers.custom import load_custom_provider_profile
+                    try:
+                        config = load_custom_provider_profile(name)
+                        current = {"name": config.custom_profile, "base_url": config.base_url,
+                                   "api_key": config.api_key, "model_simple": config.model_simple,
+                                   "model_complex": config.model_complex,
+                                   "context_window_tokens": config.context_window_tokens}
+                    except ValueError:
+                        current = None
+                else:
+                    current = None
+                if action == "edit" and current is None:
+                    raise ValueError("Use /custom-provider edit <existing name>.")
+                current = current or {}
+                def ask(label, key):
+                    default = current.get(key, "")
+                    shown = "" if default is None else str(default)
+                    return self.console.input(f"{label} [{shown}]: ").strip() or shown
+                profile = {"name": ask("Profile name", "name"), "base_url": ask("OpenAI-compatible endpoint URL", "base_url"),
+                           "model_simple": ask("Simple model ID", "model_simple"), "model_complex": ask("Complex model ID", "model_complex"),
+                           "context_window_tokens": ask("Context limit (blank for none)", "context_window_tokens")}
+                if current:
+                    profile["_original_name"] = str(current["name"])
+                key = getpass("API key (optional; blank keeps existing/none): ")
+                profile["api_key"] = key or str(current.get("api_key", ""))
+                activate = self.console.input("Use for the main agent now? [Y/n] ").strip().lower() not in {"n", "no"}
+                self.console.print(self.save_custom_provider(profile, activate=activate))
+            else:
+                self.console.print("Usage: /custom-provider list | create | edit <name> | use <name> | remove <name>")
+        except (ValueError, OSError) as exc:
+            self.console.print(f"Custom provider setup failed: {exc}")
+        return None
     if user_input.lower() == "/update":
         self.console.print(f"[{self._ACCENT}]Updating the installed OpenKyrozen package...[/{self._ACCENT}]")
         update_result = self._self_update()

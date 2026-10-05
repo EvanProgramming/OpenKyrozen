@@ -46,7 +46,7 @@ The interaction modes make authority visible: Ask and Plan are read/network-only
 ## What it does
 
 - Operates on a selected workspace with file, shell, Git, web, browser, and GitHub tools.
-- Supports hosted model providers and local Ollama, with simple/complex model defaults and configurable fallback.
+- Supports hosted model providers, local Ollama, and named custom OpenAI-compatible endpoints, with simple/complex routing and configurable fallback.
 - Persists sessions, events, claims, tasks, usage, and learning state in local SQLite. Optional vector and project graphs are derived indexes.
 - Delegates suitable work to scoped sub-agents and collects reviewable results.
 - Records outcome evidence and promotes bounded learning proposals only after validation. Learning does not fine-tune model weights or grant new capabilities.

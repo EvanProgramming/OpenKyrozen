@@ -76,6 +76,7 @@ def save_provider_config_encrypted(config: ProviderConfig) -> None:
         except (json.JSONDecodeError, OSError):
             pass
     existing["provider"] = config.provider
+    existing["base_url"] = config.base_url
     existing["api_key"] = encrypt_api_key(config.api_key)
     existing["model_simple"] = config.model_simple
     existing["model_complex"] = config.model_complex
@@ -83,6 +84,10 @@ def save_provider_config_encrypted(config: ProviderConfig) -> None:
         existing["model_main"] = config.model_main
     else:
         existing.pop("model_main", None)
+    if config.custom_profile:
+        existing["custom_profile"] = config.custom_profile
+    else:
+        existing.pop("custom_profile", None)
     if config.context_window_tokens is None:
         existing.pop("context_window_tokens", None)
     else:

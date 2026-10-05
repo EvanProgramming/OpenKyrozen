@@ -1,6 +1,8 @@
 import tempfile
 import unittest
-from unittest.mock import patch
+import os
+from threading import RLock
+from unittest.mock import Mock, patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,9 +14,46 @@ _application = build_application(surface="cli")
 main = _application.runtime
 from openkyrozen.providers import OpenAICompatProvider, ProviderConfig
 from openkyrozen.agent.subagents import AgentProfile, SubAgentManager
+from openkyrozen.providers.custom import save_custom_provider_profile
+import openkyrozen.agent.delegation_runtime as delegation_runtime
 
 
 class SubAgentTests(unittest.TestCase):
+    def test_custom_provider_profile_is_used_for_explicit_subagent_assignment(self):
+        with tempfile.TemporaryDirectory() as home:
+            profile = {"name": "worker-gateway", "base_url": "https://workers.example/v1",
+                       "api_key": "worker-secret", "model_simple": "simple-id",
+                       "model_complex": "complex-id", "context_window_tokens": 48000}
+            with patch.dict(os.environ, {"HOME": home}):
+                save_custom_provider_profile(profile)
+                original = main._provider_config
+                original_model = main.DEEPSEEK_MODEL
+                main._provider_config = ProviderConfig(provider="deepseek", api_key="main-secret")
+                main.DEEPSEEK_MODEL = "main-model"
+                run = {"assignment": {"objective": "Inspect code", "context": "", "reason": "",
+                                       "scope": [], "dependencies": [], "acceptance": ["done"],
+                                       "deliverables": ["report"], "profile": "researcher",
+                                       "provider": "custom", "custom_profile": "worker-gateway",
+                                       "model": "special-review-id"},
+                       "profile": "researcher", "run_id": "custom-subagent", "provider_model": "pending",
+                       "review_agent": {}}
+                coordinator = SimpleNamespace(lock=RLock(), _publish=Mock(), root=Path(home))
+                def capture(config):
+                    self.assertEqual(config.provider, "custom")
+                    self.assertEqual(config.base_url, "https://workers.example/v1")
+                    self.assertEqual(config.api_key, "worker-secret")
+                    self.assertEqual((config.model_simple, config.model_complex),
+                                     ("special-review-id", "special-review-id"))
+                    raise RuntimeError("captured provider configuration")
+                try:
+                    with patch.object(delegation_runtime, "load_agent_config", return_value={"subagents": {"roles": {}}}), \
+                            patch.object(main, "get_provider", side_effect=capture):
+                        with self.assertRaisesRegex(RuntimeError, "captured provider configuration"):
+                            main._invoke_delegated(run, review=False, feedback=None, coordinator=coordinator)
+                finally:
+                    main._provider_config = original
+                    main.DEEPSEEK_MODEL = original_model
+
     def test_profile_has_independent_session_memory_and_capabilities(self):
         with tempfile.TemporaryDirectory() as directory:
             memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")

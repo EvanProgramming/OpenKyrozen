@@ -37,7 +37,8 @@ Use spawn_agents with a JSON string: {"assignments":[{"id":"inspect","profile":"
 "scope":["path/to/file"],"dependencies":[],"acceptance":["Cite the actual source"],
 "deliverables":["Evidence-backed findings"],"reason":"Independent specialist investigation"}]}.
 Scope lists exact writable files for coders; other profiles are read-only. Optional provider/model
-override a role default, otherwise inherit the main provider. Dependencies use assignment IDs or run IDs.
+override a role default, otherwise inherit the main provider. A custom provider can name its saved
+profile with custom_profile. Dependencies use assignment IDs or run IDs.
 Start independent assignments together, work on other tasks while they run, then use wait_subagents
 ({"run_ids":["returned ID"],"timeout":30}) and inspect the structured results and reviews.
 Reuse an agent via send_subagent ({"run_id":"ID","assignment":{...same brief fields...}}).
@@ -253,7 +254,7 @@ class Delegation:
             raise ValueError("Acceptance and deliverables cannot be empty")
         if brief.get("profile", "researcher") not in self.profiles:
             raise ValueError("Unknown sub-agent profile")
-        for key in ("provider", "model", "id"):
+        for key in ("provider", "model", "custom_profile", "id"):
             if key in brief and (not isinstance(brief[key], str) or not brief[key].strip()):
                 raise ValueError(key + " must be nonempty text")
         brief = copy.deepcopy(brief)

@@ -50,6 +50,21 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertEqual({item["name"] for item in event["providers"]}, set(PROVIDER_DEFAULT_MODELS))
         self.assertEqual({item["name"] for item in event["providers"] if item["auto_selection"]}, set(PROVIDER_AUTO_SELECTION))
 
+    def test_custom_provider_tui_wizard_masks_key_and_persists_profile(self):
+        with tempfile.TemporaryDirectory() as home, patch.dict("os.environ", {"HOME": home}), \
+                patch.object(self.backend.agent, "get_fallback_provider", return_value=object()):
+            self.backend._command("custom-provider", {"action": "create"}, "custom-start")
+            values = ["office", "https://gateway.example/v1", "private-token", "fast", "reasoning", "32000"]
+            for index, value in enumerate(values):
+                self.backend._command("custom-provider", {"action": "input", "value": value}, f"custom-{index}")
+            from openkyrozen.providers.custom import list_custom_provider_profiles
+            profile = list_custom_provider_profiles()[0]
+            self.assertEqual((profile["name"], profile["api_key"], profile["model_simple"]),
+                             ("office", "private-token", "fast"))
+            events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+            self.assertTrue(any(event.get("kind") == "custom_provider" and event.get("secret") for event in events))
+            self.assertNotIn("private-token", self.output.getvalue())
+
     def test_validation_rejects_malformed_shape_and_oversized_text(self):
         payload, error = self.backend.validate(["submit"])
         self.assertIsNone(payload)
