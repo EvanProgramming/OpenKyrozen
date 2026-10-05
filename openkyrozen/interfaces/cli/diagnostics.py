@@ -47,6 +47,7 @@ def run_smoke() -> int:
     # Keep this diagnostic process independent of personal credentials and
     # runtime state.  The environment changes affect only this child process.
     os.environ["KYROZEN_PROVIDER"] = "ollama"
+    os.environ["KYROZEN_MODEL_MAIN"] = "qwen3:8b"
     os.environ.pop("KYROZEN_API_KEY", None)
     for variable in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
         os.environ.pop(variable, None)

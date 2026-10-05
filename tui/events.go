@@ -1,6 +1,7 @@
 package main
 
 import (
+	"charm.land/bubbles/v2/textinput"
 	"fmt"
 	"strings"
 	"time"
@@ -91,6 +92,7 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		}
 		m.provider = stringValue(event, "provider")
 		m.modelName = stringValue(event, "model")
+		m.mainModel = stringValue(event, "main_model")
 		m.workspace = stringValue(event, "workspace")
 		m.activeSessionID = firstNonEmpty(stringValue(event, "session_id"), m.activeSessionID)
 		m.status = "Ready"
@@ -382,6 +384,8 @@ func (m *model) handlePrompt(event backendEvent) {
 		m.screen = screenOnboarding
 		m.startTransition()
 	case "api_key":
+		m.apiInput.EchoMode = textinput.EchoPassword
+		m.apiInput.EchoCharacter = '•'
 		m.fastKeyInput = false
 		m.permissionKeyInput = false
 		m.onboardingWaiting = false
@@ -391,6 +395,8 @@ func (m *model) handlePrompt(event backendEvent) {
 		m.apiInput.Placeholder = firstNonEmpty(stringValue(event, "message"), "Enter API key")
 		m.apiInput.Focus()
 	case "fast_key":
+		m.apiInput.EchoMode = textinput.EchoPassword
+		m.apiInput.EchoCharacter = '•'
 		m.fastKeyInput = true
 		m.decisionAssistKeyInput = false
 		m.permissionKeyInput = false
@@ -399,6 +405,8 @@ func (m *model) handlePrompt(event backendEvent) {
 		m.apiInput.Placeholder = "Enter Jev API key for System One (paid TypeSafe calls)"
 		m.apiInput.Focus()
 	case "decision_assist_key":
+		m.apiInput.EchoMode = textinput.EchoPassword
+		m.apiInput.EchoCharacter = '•'
 		m.fastKeyInput = false
 		m.decisionAssistKeyInput = true
 		m.permissionKeyInput = false
@@ -407,6 +415,8 @@ func (m *model) handlePrompt(event backendEvent) {
 		m.apiInput.Placeholder = "Enter Jev API key (paid TypeSafe calls)"
 		m.apiInput.Focus()
 	case "permission_jev_key":
+		m.apiInput.EchoMode = textinput.EchoPassword
+		m.apiInput.EchoCharacter = '•'
 		m.fastKeyInput = false
 		m.decisionAssistKeyInput = false
 		m.permissionKeyInput = true
@@ -425,6 +435,15 @@ func (m *model) handlePrompt(event backendEvent) {
 			}
 		}
 		m.providerIdx, m.screen = 0, screenProvider
+		m.startTransition()
+	case "model":
+		m.modelPromptReturn = m.screen
+		m.modelPromptMessage = stringValue(event, "message")
+		m.apiInput.EchoMode = textinput.EchoNormal
+		m.apiInput.Reset()
+		m.apiInput.Placeholder = firstNonEmpty(stringValue(event, "current"), "model name or auto")
+		m.apiInput.Focus()
+		m.screen = screenModel
 		m.startTransition()
 	case "approval":
 		m.approvalID = stringValue(event, "request_id")

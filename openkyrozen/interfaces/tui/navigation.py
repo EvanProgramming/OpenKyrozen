@@ -186,6 +186,7 @@ def _emit_bound_state(self, request_id: str) -> None:
     self.emit("ready", request_id, configured=runtime.llm_provider is not None,
               provider=getattr(runtime._provider_config, "provider", ""),
               model=getattr(runtime._provider_config, "model_simple", ""),
+              main_model=getattr(runtime._provider_config, "model_main", ""),
               workspace=str(context.active_root), mode=context.mode,
               session_id=self._active_session_id)
     self.usage(request_id)

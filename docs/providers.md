@@ -10,7 +10,7 @@ OpenKyrozen separates provider selection, credentials, model defaults, and task-
 | `openai` | `OPENAI_API_KEY` | `gpt-6-luna` / `gpt-6-astra` | Core |
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-haiku-4-5` / `claude-fable-5-1` | `claude` |
 | `google` | `GEMINI_API_KEY` | `gemini-3.5-flash-lite` / `gemini-3.1-pro-preview` | `gemini` |
-| `ollama` | None by default; local server | `llama3.2` / `llama3.2` | Core client; local Ollama required |
+| `ollama` | None; local server | User-selected local tag | Core client; local Ollama and an explicitly selected model required |
 | `glm` | `ZAI_API_KEY` | `glm-5.3-flash` / `glm-5.3` | OpenAI-compatible transport |
 | `kimi` | `MOONSHOT_API_KEY` | `kimi-k2.6` / `kimi-k3` | OpenAI-compatible transport |
 | `openrouter` | `OPENROUTER_API_KEY` | `~openai/gpt-sol-latest` / same | OpenAI-compatible transport |
@@ -45,7 +45,7 @@ OpenAI-compatible services can use `KYROZEN_BASE_URL` where the selected integra
 
 ## Model routing and fallback
 
-The normal provider setting has separate simple and complex model slots. The agent chooses between them using its task routing policy. An explicit model selection overrides the repository default. `KYROZEN_CONTEXT_WINDOW_TOKENS` supplies a context size when an otherwise unknown custom model cannot be detected; use the actual provider limit, including the space needed for output.
+The normal provider setting has separate simple and complex model slots. The agent chooses between them using its task routing policy. `/model <name>` pins the main agent to one model; `/model auto` restores complexity routing. Sub-agent model assignments remain independent. Ollama never selects an installed model automatically: setup lists installed tags as suggestions and requires a chosen tag. `KYROZEN_CONTEXT_WINDOW_TOKENS` supplies a context size when an otherwise unknown custom model cannot be detected; use the actual provider limit, including the space needed for output.
 
 The registry marks a subset of providers for automatic selection and records preferred fallback providers. A fallback is not guaranteed: it still needs credentials, an available compatible model, and a supported transport. Alternate sub-agent providers use their own configured environment credentials and do not inherit a generic main-provider key. See [sub-agents](subagents.md) before using cross-provider assignments.
 

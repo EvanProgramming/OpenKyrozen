@@ -25,6 +25,7 @@ def set_api_key(self, api_key: str, request_id: str | None = None) -> None:
         ))
         self.emit("ready", request_id, configured=configured,
                   provider=config.provider, model=config.model_simple,
+                  main_model=config.model_main,
                   workspace=str(runtime._get_workspace_root()))
         if configured and self._onboarding_kind == "new":
             self._prompt_onboarding_learning(request_id)
@@ -216,7 +217,12 @@ def _run_submit(self, text: str, request_id: str) -> None:
             text, command = inline
             self._command(command, {}, request_id)
         if runtime.llm_provider is None:
-            self.prompt_api_key(request_id=request_id)
+            if (runtime._provider_config and runtime._provider_config.provider == "ollama"
+                    and not (runtime._provider_config.model_main not in {"", "auto"} or runtime._provider_config.model_simple
+                             or runtime._provider_config.model_complex)):
+                self.prompt_model(request_id=request_id)
+            else:
+                self.prompt_api_key(request_id=request_id)
             self.status("waiting", "Provider setup required.", request_id)
             return
         sanitized, flagged = self._quiet_call(runtime._sanitize_input, text)

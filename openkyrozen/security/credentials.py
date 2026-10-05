@@ -79,6 +79,10 @@ def save_provider_config_encrypted(config: ProviderConfig) -> None:
     existing["api_key"] = encrypt_api_key(config.api_key)
     existing["model_simple"] = config.model_simple
     existing["model_complex"] = config.model_complex
+    if config.model_main:
+        existing["model_main"] = config.model_main
+    else:
+        existing.pop("model_main", None)
     if config.context_window_tokens is None:
         existing.pop("context_window_tokens", None)
     else:

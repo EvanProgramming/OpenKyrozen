@@ -6,6 +6,7 @@ from openkyrozen.agent.modes import mode_capabilities
 from openkyrozen.security.capabilities import issue_capability_token
 from openkyrozen.security.tool_policy import resolve_capabilities
 from openkyrozen.agent.compaction import ContextState
+from openkyrozen.routing.router import model_for_request
 
 def _prepare_turn(self, turn):
     """One user turn: build context, get LLM reply, execute tool calls
@@ -55,9 +56,9 @@ def _prepare_turn(self, turn):
     resolved_profile = self.learning_engine.route_profile(turn.user_input, turn.profile or self._agent_profile_mode)
     if fast_route.get("profile") and (turn.profile or self._agent_profile_mode) == "auto":
         resolved_profile = fast_route["profile"]
-    self.DEEPSEEK_MODEL = (self._provider_config.model_simple if fast_route.get("model") == "simple" else
-                      self._provider_config.model_complex if fast_route.get("model") == "reasoning" else
-                      self._select_model(turn.user_input)) if self._provider_config else self._select_model(turn.user_input)
+    self.DEEPSEEK_MODEL = model_for_request(
+        self._provider_config, fast_route, turn.user_input, self._select_model,
+    )
     context_state = ContextState(
         self.DEEPSEEK_MODEL,
         self._provider_config.context_window_tokens if self._provider_config else None,

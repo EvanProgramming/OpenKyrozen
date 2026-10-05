@@ -28,6 +28,7 @@ const (
 	screenChat          screen = "chat"
 	screenProvider      screen = "provider"
 	screenAPIKey        screen = "api_key"
+	screenModel         screen = "model"
 	screenApproval      screen = "approval"
 	screenSelfLearning  screen = "self_learning"
 	screenMode          screen = "mode"
@@ -124,6 +125,9 @@ type model struct {
 	status                    string
 	provider                  string
 	modelName                 string
+	mainModel                 string
+	modelPromptMessage        string
+	modelPromptReturn         screen
 	workspace                 string
 	activeSessionID           string
 	activeScopeID             string

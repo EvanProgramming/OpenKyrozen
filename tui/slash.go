@@ -43,6 +43,7 @@ var commands = []command{
 	{name: "forget", aliases: nil, description: "Review recent learnings"},
 	{name: "settings", aliases: nil, description: "Configure display, interaction mode, System One, and Decision Assist"},
 	{name: "update", aliases: nil, description: "Update the installed agent"},
+	{name: "model", aliases: nil, description: "Pin one main model or restore automatic selection"},
 	{name: "quit", aliases: []string{"exit"}, description: "Close OpenKyrozen"},
 }
 
@@ -60,6 +61,16 @@ func commandMatches(value string) []command {
 		token = fields[0]
 	}
 	token = strings.ToLower(token)
+	for _, item := range commands {
+		if item.name == token {
+			return []command{item}
+		}
+		for _, alias := range item.aliases {
+			if alias == token {
+				return []command{item}
+			}
+		}
+	}
 	var matches []command
 	for _, item := range commands {
 		if strings.HasPrefix(item.name, token) {

@@ -62,6 +62,8 @@ func (m model) modal(_ string) string {
 		}
 	case screenAPIKey:
 		body = brandStyle.Render("API KEY SETUP") + "\n" + titleStyle.Render("Add your API key") + "\n" + mutedStyle.Render("Your key is masked and stored encrypted locally.") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.apiInput.View()) + "\n\n" + mutedStyle.Render("Enter confirm  ·  Esc cancel")
+	case screenModel:
+		body = brandStyle.Render("MAIN MODEL") + "\n" + titleStyle.Render("Choose one model for the main agent") + "\n" + mutedStyle.Render(firstNonEmpty(m.modelPromptMessage, "Ollama choices are suggestions; type an exact installed model tag or 'auto'.")) + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.apiInput.View()) + "\n\n" + mutedStyle.Render("Enter save  ·  Esc cancel")
 	case screenProject:
 		body = brandStyle.Render("NEW PROJECT") + "\n" + titleStyle.Render("Create or open a project directory") + "\n" + mutedStyle.Render("Enter a folder path. OpenKyrozen creates it if needed and starts a new chat.") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.projectInput.View()) + "\n\n" + mutedStyle.Render("Enter create / open  ·  Esc cancel")
 	case screenDeleteConfirm:
@@ -142,6 +144,7 @@ func (m model) modal(_ string) string {
 			m.settingsRow(2, "System One backend", strings.ToUpper(firstNonEmpty(m.fastBackend, "off"))),
 			m.settingsRow(3, "Decision Assist", strings.ToUpper(firstNonEmpty(m.decisionAssistBackend, "off"))),
 			m.settingsRow(4, "Kev private context", consent),
+			m.settingsRow(5, "Main model", firstNonEmpty(m.mainModel, "AUTO (simple / complex)")),
 			mutedStyle.Render("Jev uses paid TypeSafe calls; Kev is local and less accurate. Kev needs private-context consent."),
 			mutedStyle.Render("/fast remains a legacy command alias for System One."),
 			mutedStyle.Render("Jev model " + firstNonEmpty(m.systemOneModel, "jev-latest") + " · release " + firstNonEmpty(m.systemOneRelease, "release unknown") + " · health " + firstNonEmpty(m.systemOneHealth, "unknown") + " · calibration " + firstNonEmpty(m.systemOneCalibration, "not calibrated")),

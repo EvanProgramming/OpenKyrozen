@@ -52,6 +52,23 @@ def _handle_cli_command(self, user_input, interaction_before):
     if user_input.lower() == "/provider":
         self._switch_provider()
         return None
+    if user_input.lower() == "/model" or user_input.lower().startswith("/model "):
+        parts = user_input.split(maxsplit=1)
+        value = parts[1].strip() if len(parts) > 1 else ""
+        if not value:
+            if self._provider_config.provider == "ollama":
+                models = self.discover_ollama_models(self._provider_config.base_url)
+                if models:
+                    self.console.print("Installed Ollama models: " + ", ".join(item[0] for item in models))
+                else:
+                    self.console.print("No Ollama models discovered; enter an exact installed tag.")
+            value = self.console.input("Main model name, or 'auto' to restore automatic selection: ").strip()
+        if value:
+            try:
+                self.console.print(self.set_main_model(value))
+            except ValueError as exc:
+                self.console.print(f"[{self._ERROR}]{exc}[/{self._ERROR}]")
+        return None
     if user_input.lower() == "/update":
         self.console.print(f"[{self._ACCENT}]Updating the installed OpenKyrozen package...[/{self._ACCENT}]")
         update_result = self._self_update()

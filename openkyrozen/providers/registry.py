@@ -25,7 +25,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
     "openai": ProviderSpec("openai", "OpenAI", "responses", "https://api.openai.com/v1", "OPENAI_API_KEY", "gpt-6-luna", "gpt-6-astra", 1_048_576, True, ("deepseek", "anthropic")),
     "anthropic": ProviderSpec("anthropic", "Anthropic", "messages", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "claude-haiku-4-5", "claude-fable-5-1", 1_000_000, True, ("openai", "deepseek")),
     "google": ProviderSpec("google", "Google Gemini", "google_genai", "", "GEMINI_API_KEY", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", 1_048_576, True, ("openai", "deepseek")),
-    "ollama": ProviderSpec("ollama", "Ollama", "openai_compat", "http://localhost:11434/v1", "", "llama3.2", "llama3.2", None, True),
+    "ollama": ProviderSpec("ollama", "Ollama", "openai_compat", "http://localhost:11434/v1", "", "", "", None, False),
     "glm": ProviderSpec("glm", "Z.AI / GLM", "openai_compat", "https://api.z.ai/api/paas/v4/", "ZAI_API_KEY", "glm-5.3-flash", "glm-5.3", 1_048_576, True, ("openai", "deepseek")),
     "kimi": ProviderSpec("kimi", "Moonshot / Kimi", "openai_compat", "https://api.moonshot.cn/v1", "MOONSHOT_API_KEY", "kimi-k2.6", "kimi-k3", 1_048_576, True, ("openai", "deepseek")),
     "openrouter": ProviderSpec("openrouter", "OpenRouter", "openai_compat", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "~openai/gpt-sol-latest", "~openai/gpt-sol-latest", 1_048_576, False, ("openai", "deepseek")),

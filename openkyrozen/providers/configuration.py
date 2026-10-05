@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from openkyrozen.providers import ProviderConfig, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS, save_provider_config_encrypted, encrypt_api_key, decrypt_api_key, provider_is_configured, PROVIDER_DISPLAY_NAMES
+from openkyrozen.providers import ProviderConfig, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS, save_provider_config_encrypted, encrypt_api_key, decrypt_api_key, provider_is_configured, PROVIDER_DISPLAY_NAMES, discover_ollama_models, resolve_ollama_models
 
 
 def _load_config_key(self) -> str | None:
@@ -52,6 +52,20 @@ def _prompt_and_init_deepseek(self,
 
     self._provider_config = config or self.detect_provider()
     self.llm_provider = None
+
+    if self._provider_config.provider == "ollama":
+        simple, complex_model = resolve_ollama_models(self._provider_config)
+        self._provider_config.model_simple = simple
+        self._provider_config.model_complex = complex_model
+        if not (simple or complex_model or self._provider_config.model_main not in {"", "auto"}):
+            if interactive:
+                self._prompt_ollama_model()
+                simple, complex_model = resolve_ollama_models(self._provider_config)
+                self._provider_config.model_simple = simple
+                self._provider_config.model_complex = complex_model
+            if not (simple or complex_model or self._provider_config.model_main not in {"", "auto"}):
+                self.console.print("Ollama needs an explicitly selected model; choose one with /model or enter its exact tag during setup.")
+                return False
 
     # Ollama, Bedrock, Vertex, and Azure Entra may use documented ambient auth.
     if not provider_is_configured(self._provider_config):
@@ -113,6 +127,59 @@ def _prompt_and_init_deepseek(self,
     return True
 
 
+def _prompt_ollama_model(self) -> bool:
+    """Ask for an exact Ollama model tag; discovered models are suggestions only."""
+    config = self._provider_config
+    installed = discover_ollama_models(config.base_url)
+    if installed:
+        self.console.print("Installed Ollama models:")
+        for name, _, _ in installed:
+            self.console.print(f"  {name}")
+    else:
+        self.console.print("No Ollama models discovered. Enter an exact installed model tag.")
+    try:
+        model = self.console.input("Ollama model tag (or cancel): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    if not model or model.lower() == "cancel":
+        return False
+    config.model_simple = config.model_complex = model
+    self.save_provider_config_encrypted(config)
+    return True
+
+
+def set_main_model(self, model: str) -> str:
+    """Pin every main-agent request to a model, or restore automatic routing."""
+    config = self._provider_config or self.detect_provider()
+    selected = model.strip()
+    if not selected:
+        raise ValueError("Enter a model name or 'auto'.")
+    if selected.lower() == "auto":
+        if config.provider == "ollama" and not (config.model_simple or config.model_complex):
+            raise ValueError("Ollama requires a model; enter its exact model tag.")
+        config.model_main = ""
+        result = "Automatic simple/complex model selection restored."
+    else:
+        config.model_main = selected
+        if config.provider == "ollama" and not (config.model_simple or config.model_complex):
+            config.model_simple = config.model_complex = selected
+        result = f"Main model pinned to {selected}."
+    self.save_provider_config_encrypted(config)
+    self._provider_config = config
+    self.DEEPSEEK_MODEL_SIMPLE = config.model_simple
+    self.DEEPSEEK_MODEL_COMPLEX = config.model_complex
+    self.DEEPSEEK_MODEL = config.model_main or config.model_simple
+    self.MODEL_NAME = f"{config.provider} ({config.model_main or config.model_simple})"
+    if config.provider == "ollama" and not (config.model_simple or config.model_complex or config.model_main not in {"", "auto"}):
+        self.llm_provider = None
+        return result
+    if not provider_is_configured(config):
+        self.llm_provider = None
+        return result
+    self.llm_provider = self.get_fallback_provider(config)
+    return result
+
+
 def _switch_provider(self) -> None:
     """Interactive menu to switch LLM provider at runtime."""
 
@@ -136,6 +203,7 @@ def _switch_provider(self) -> None:
             self._provider_config.provider = new_provider
             self._provider_config.model_simple = PROVIDER_DEFAULT_MODELS[new_provider][0]
             self._provider_config.model_complex = PROVIDER_DEFAULT_MODELS[new_provider][1]
+            self._provider_config.model_main = ""
 
             # Prompt for API key if needed
             env_var = PROVIDER_ENV_VARS.get(new_provider, "")
@@ -158,6 +226,9 @@ def _switch_provider(self) -> None:
             self.DEEPSEEK_MODEL_COMPLEX = self._provider_config.model_complex
             self.DEEPSEEK_MODEL = self.DEEPSEEK_MODEL_SIMPLE
             self.MODEL_NAME = f"{new_provider} ({self.DEEPSEEK_MODEL_SIMPLE})"
+            if new_provider == "ollama" and not self._prompt_ollama_model():
+                self.llm_provider = None
+                return
             self.llm_provider = self.get_provider(self._provider_config)
 
             self.console.print(f"[{self._SUCCESS}]Switched to {PROVIDER_DISPLAY_NAMES.get(new_provider, new_provider)} ({self.DEEPSEEK_MODEL_SIMPLE}).[/{self._SUCCESS}]")

@@ -51,6 +51,7 @@ run_server() {
     docker run --detach --name "$container" \
         --publish "127.0.0.1:${port}:8000" \
         --env KYROZEN_PROVIDER=ollama \
+        --env KYROZEN_MODEL_MAIN=docker-smoke-model \
         --env KYROZEN_SERVER_TOKEN="$TOKEN" \
         --env KYROZEN_DB_PATH=/data/openkyrozen.sqlite3 \
         --env KYROZEN_DISABLE_VECTOR_INDEX=1 \

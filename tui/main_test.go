@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
@@ -194,7 +195,7 @@ func TestSettingsExposeInteractionControlsAndKeepCommandDispatch(t *testing.T) {
 		"decision_assist": map[string]any{"backend": "jev", "kev_private_consent": false},
 	})
 	view := m.View().Content
-	for _, want := range []string{"Show tool details", "Interaction mode", "System One backend", "Decision Assist", "Kev private context", "PLAN", "KEV", "JEV"} {
+	for _, want := range []string{"Show tool details", "Interaction mode", "System One backend", "Decision Assist", "Kev private context", "Main model", "AUTO (simple / complex)", "PLAN", "KEV", "JEV"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("settings omitted %q: %s", want, view)
 		}
@@ -212,6 +213,31 @@ func TestSettingsExposeInteractionControlsAndKeepCommandDispatch(t *testing.T) {
 	}
 	if command["command"] != "command" || command["name"] != "mode" || command["args"] != "agent" {
 		t.Fatalf("settings sent unexpected mode command: %#v", command)
+	}
+}
+
+func TestMainModelPromptUsesVisibleUnmaskedInputAndDispatchesChoice(t *testing.T) {
+	m := initialModel("", true)
+	m.screen = screenSettings
+	m.handleBackendEvent(backendEvent{"event": "prompt", "kind": "model", "current": "auto", "message": "Installed Ollama models: qwen3:8b"})
+	if m.screen != screenModel || m.apiInput.EchoMode != textinput.EchoNormal {
+		t.Fatalf("model prompt is not visible: screen=%s echo=%v", m.screen, m.apiInput.EchoMode)
+	}
+	if m.modelPromptMessage != "Installed Ollama models: qwen3:8b" {
+		t.Fatal("installed Ollama model suggestions were not shown")
+	}
+	m.apiInput.SetValue("qwen3:8b")
+	var sent bytes.Buffer
+	m.bridge.stdin = bufio.NewWriter(&sent)
+	if _, quit := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter}); quit {
+		t.Fatal("model selection unexpectedly quit")
+	}
+	var command map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(sent.Bytes()), &command); err != nil {
+		t.Fatalf("model selection did not send valid command: %v", err)
+	}
+	if command["name"] != "model" || command["args"].(map[string]any)["model"] != "qwen3:8b" {
+		t.Fatalf("unexpected model command: %#v", command)
 	}
 }
 
