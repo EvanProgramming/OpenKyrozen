@@ -32,6 +32,7 @@ Set the preference with /mode auto, /mode ask, /mode plan, or /mode agent. Plan 
 | Command | Purpose |
 | --- | --- |
 | /provider | Change the active provider |
+| /model | Pin one main-agent model or restore automatic selection |
 | /api_key | Change the active provider key |
 | /mode ... | Change interaction mode |
 | /agent auto\|coder\|researcher | Select the learning profile |

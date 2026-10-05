@@ -104,6 +104,7 @@ def detect_provider() -> ProviderConfig:
         os.environ.get("KYROZEN_MODEL_COMPLEX", "")
         or config_data.get("model_complex", "")
     )
+    model_main = os.environ.get("KYROZEN_MODEL_MAIN", "") or config_data.get("model_main", "")
     context_window_raw = os.environ.get("KYROZEN_CONTEXT_WINDOW_TOKENS", "") or config_data.get("context_window_tokens")
     try:
         context_window_tokens = int(context_window_raw) if context_window_raw not in (None, "") else None
@@ -124,6 +125,7 @@ def detect_provider() -> ProviderConfig:
                 base_url=base_url,
                 model_simple=model_simple,
                 model_complex=model_complex,
+                model_main=model_main,
                 context_window_tokens=context_window_tokens,
             ))
         except Exception:
@@ -135,6 +137,7 @@ def detect_provider() -> ProviderConfig:
         base_url=base_url,
         model_simple=model_simple,
         model_complex=model_complex,
+        model_main=model_main,
         context_window_tokens=context_window_tokens,
     )
 

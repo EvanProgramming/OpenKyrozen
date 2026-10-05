@@ -27,6 +27,9 @@ def _command(self, name: str, args: Any, request_id: str) -> None:
             self.configure_provider(arg_text.strip(), request_id=request_id)
         else:
             self.prompt_provider(request_id)
+    elif command in {"/model", "model"}:
+        value = args.get("model") if isinstance(args, Mapping) else arg_text.strip()
+        self.configure_main_model(str(value) if value is not None else None, request_id)
     elif command in {"onboarding_continue", "/onboarding_continue"}:
         self._continue_onboarding(request_id)
     elif command in {"/api_key", "api_key"}:

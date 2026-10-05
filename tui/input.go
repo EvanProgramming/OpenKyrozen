@@ -199,6 +199,37 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.projectInput, cmd = m.projectInput.Update(msg)
 		return cmd, false
 	}
+	if m.screen == screenModel {
+		if key == "esc" {
+			m.apiInput.Reset()
+			m.apiInput.Blur()
+			if m.onboardingKind != "" {
+				m.screen = screenOnboarding
+				m.onboardingWaiting = false
+			} else {
+				m.screen = m.modelPromptReturn
+			}
+			return nil, false
+		}
+		if key == "enter" {
+			value := strings.TrimSpace(m.apiInput.Value())
+			if value != "" {
+				m.send("command", map[string]any{"name": "model", "args": map[string]any{"model": value}})
+			}
+			m.apiInput.Reset()
+			m.apiInput.Blur()
+			if m.onboardingKind != "" {
+				m.screen = screenOnboarding
+				m.onboardingWaiting = true
+			} else {
+				m.screen = m.modelPromptReturn
+			}
+			return nil, false
+		}
+		var cmd tea.Cmd
+		m.apiInput, cmd = m.apiInput.Update(msg)
+		return cmd, false
+	}
 	if m.screen == screenAPIKey {
 		if key == "esc" {
 			m.apiInput.Reset()
@@ -656,7 +687,7 @@ func (m *model) featureKey(key string) tea.Cmd {
 }
 
 func (m *model) settingsKey(key string) tea.Cmd {
-	const settingCount = 5
+	const settingCount = 6
 	if key == "esc" {
 		m.screen = screenChat
 		return nil
@@ -718,6 +749,8 @@ func (m *model) changeSetting(delta int) tea.Cmd {
 		m.send("command", map[string]any{"name": "decision-assist", "args": map[string]any{
 			"backend": "kev", "private_consent": true,
 		}})
+	case 5:
+		m.send("command", map[string]any{"name": "model"})
 	}
 	return nil
 }

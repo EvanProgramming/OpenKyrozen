@@ -45,7 +45,7 @@ class ProviderConfigTests(unittest.TestCase):
         self._home = os.environ.get("HOME")
         self._temp_home = tempfile.TemporaryDirectory()
         os.environ["HOME"] = self._temp_home.name
-        for key in ("KYROZEN_PROVIDER", "KYROZEN_API_KEY", "DEEPSEEK_API_KEY"):
+        for key in ("KYROZEN_PROVIDER", "KYROZEN_API_KEY", "KYROZEN_MODEL_MAIN", "DEEPSEEK_API_KEY"):
             os.environ.pop(key, None)
 
     def tearDown(self):
@@ -65,6 +65,17 @@ class ProviderConfigTests(unittest.TestCase):
         self.assertIn('"encryption": "fernet"', raw)
         self.assertNotIn("sk-test", raw)
         self.assertEqual(detect_provider().api_key, "sk-test")
+
+    def test_main_model_override_round_trips_and_can_be_cleared(self):
+        save_provider_config_encrypted(ProviderConfig(
+            provider="deepseek", api_key="sk-test", model_main="pinned-model",
+        ))
+        config = detect_provider()
+        self.assertEqual(config.model_main, "pinned-model")
+        save_provider_config_encrypted(ProviderConfig(
+            provider="deepseek", api_key="sk-test", model_main="",
+        ))
+        self.assertEqual(detect_provider().model_main, "")
 
     def test_legacy_xor_ciphertext_remains_readable(self):
         plaintext = "sk-legacy"

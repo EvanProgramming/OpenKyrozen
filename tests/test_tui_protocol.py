@@ -450,6 +450,29 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertEqual(events[1]["event"], "status")
         self.assertNotIn("sk-test-secret", self.output.getvalue())
 
+    def test_main_model_command_persists_override_without_replacing_complexity_models(self):
+        runtime = self.backend.agent
+        config = runtime.ProviderConfig(
+            provider="deepseek", api_key="sk-test", model_simple="quick", model_complex="reasoning",
+        )
+        runtime._provider_config = config
+        with patch.object(runtime, "save_provider_config_encrypted"), \
+                patch.object(runtime, "get_fallback_provider", return_value=object()):
+            self.backend._command("model", {"model": "pinned"}, "model-1")
+        self.assertEqual(config.model_main, "pinned")
+        self.assertEqual((config.model_simple, config.model_complex), ("quick", "reasoning"))
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        self.assertTrue(any(event.get("main_model") == "pinned" for event in events))
+
+    def test_ollama_model_command_lists_installed_tags_in_prompt(self):
+        runtime = self.backend.agent
+        runtime._provider_config = runtime.ProviderConfig(provider="ollama")
+        with patch.object(runtime, "discover_ollama_models", return_value=(("qwen3:8b", "", 0),)):
+            self.backend._command("model", {}, "ollama-model")
+        event = json.loads(self.output.getvalue().splitlines()[-1])
+        self.assertEqual(event["kind"], "model")
+        self.assertIn("qwen3:8b", event["message"])
+
     def test_start_launches_detached_learning_worker_when_provider_is_ready(self):
         context = type("Context", (), {
             "active_root": Path("/tmp/openkyrozen-tui-workspace"),

@@ -12,6 +12,7 @@ class ProviderConfig:
     base_url: str = ""
     model_simple: str = ""
     model_complex: str = ""
+    model_main: str = ""
     context_window_tokens: int | None = None
 
     def __post_init__(self) -> None:
@@ -23,6 +24,9 @@ class ProviderConfig:
             self.model_complex = os.environ.get(
                 "KYROZEN_MODEL_COMPLEX", "",
             ) or PROVIDER_DEFAULT_MODELS.get(self.provider, ("", ""))[1]
+        if self.provider == "ollama":
+            self.model_simple = os.environ.get("OLLAMA_MODEL_SIMPLE", "").strip() or self.model_simple
+            self.model_complex = os.environ.get("OLLAMA_MODEL_COMPLEX", "").strip() or self.model_complex
         if not self.base_url:
             self.base_url = os.environ.get(
                 "KYROZEN_BASE_URL", "",
@@ -37,6 +41,8 @@ class ProviderConfig:
             issues.append(f"Unknown provider '{self.provider}'")
         if self.provider in {"azure_openai", "bedrock", "vertex"} and not self.model_simple:
             issues.append(f"No model/deployment configured for {self.provider}")
+        if self.provider == "ollama" and not (self.model_main not in {"", "auto"} or self.model_simple or self.model_complex):
+            issues.append("No Ollama model configured; choose an installed model or enter its exact tag")
         if self.provider in AMBIENT_CREDENTIAL_PROVIDERS and not _ambient_provider_available(self.provider):
             issues.append(f"No ambient credentials available for {self.provider}")
         if self.provider not in AMBIENT_CREDENTIAL_PROVIDERS and not self.api_key and not _provider_env_key(self.provider):
@@ -104,6 +110,11 @@ def provider_is_configured(config: ProviderConfig) -> bool:
 
 def model_for_complexity(config: ProviderConfig, complex_task: bool) -> str:
     """Resolve a provider-specific simple/complex slot without cross-provider names."""
+    if config.model_main and config.model_main != "auto":
+        return config.model_main
+    if config.provider == "ollama":
+        return ((config.model_complex or config.model_simple) if complex_task
+                else (config.model_simple or config.model_complex)) or "auto"
     if config.provider in PROVIDER_AUTO_SELECTION:
         return (config.model_complex if complex_task else config.model_simple) or "auto"
     return config.model_complex or config.model_simple or "auto"
@@ -131,18 +142,15 @@ def discover_ollama_models(base_url: str) -> tuple[tuple[str, str, int], ...]:
 
 
 def resolve_ollama_models(config: ProviderConfig) -> tuple[str, str]:
-    """Use explicit Ollama models, then the newest installed model inventory."""
+    """Resolve only explicit Ollama model choices; discovery is for the settings UI."""
     simple = os.environ.get("OLLAMA_MODEL_SIMPLE", "").strip()
     complex_model = os.environ.get("OLLAMA_MODEL_COMPLEX", "").strip()
-    installed = discover_ollama_models(config.base_url)
-    names = {item[0] for item in installed}
-    configured_simple = config.model_simple not in {"", PROVIDER_DEFAULT_MODELS["ollama"][0]}
-    configured_complex = config.model_complex not in {"", PROVIDER_DEFAULT_MODELS["ollama"][1]}
-    if not simple and configured_simple:
-        simple = config.model_simple
-    if not complex_model and configured_complex:
-        complex_model = config.model_complex
-    if installed:
-        simple = simple or (config.model_simple if config.model_simple in names else installed[0][0])
-        complex_model = complex_model or (config.model_complex if config.model_complex in names else max(installed, key=lambda item: item[2])[0])
-    return simple or config.model_simple, complex_model or config.model_complex
+    simple = simple or config.model_simple
+    complex_model = complex_model or config.model_complex
+    if config.model_main and config.model_main != "auto":
+        return config.model_main, config.model_main
+    if simple and not complex_model:
+        complex_model = simple
+    if complex_model and not simple:
+        simple = complex_model
+    return simple, complex_model

@@ -400,10 +400,13 @@ class ServerBoundaryTests(unittest.TestCase):
             self.assertTrue(icon_response.headers["content-type"].startswith(icon["type"]))
         self.assertNotIn("/static/icon.png", json.dumps(manifest))
 
-    def test_ollama_initialization_never_prompts_for_a_key(self):
+    def test_ollama_initialization_requires_model_without_prompting_for_a_key(self):
         original_config = server._agent._provider_config
         original_provider = server._agent.llm_provider
-        config = ProviderConfig(provider="ollama", base_url="http://127.0.0.1:11434/v1")
+        config = ProviderConfig(
+            provider="ollama", base_url="http://127.0.0.1:11434/v1",
+            model_main="qwen3:8b",
+        )
         try:
             with patch.object(server._agent, "detect_provider", return_value=config):
                 with patch.object(server._agent, "get_fallback_provider", return_value=object()) as create:

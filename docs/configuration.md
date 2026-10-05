@@ -25,7 +25,7 @@ Unknown keys, duplicate YAML mapping keys, invalid types, and out-of-range value
 | Variable | Purpose |
 |---|---|
 | `KYROZEN_PROVIDER`, `KYROZEN_API_KEY`, `KYROZEN_BASE_URL` | Select the ordinary provider and, where supported, supply generic credentials/endpoint. Provider-specific credential variables take precedence where configured. |
-| `KYROZEN_MODEL_SIMPLE`, `KYROZEN_MODEL_COMPLEX`, `KYROZEN_CONTEXT_WINDOW_TOKENS`, `KYROZEN_PROVIDER_TIMEOUT_SECONDS` | Override model choices, custom-model context limit, and provider timeout. |
+| `KYROZEN_MODEL_SIMPLE`, `KYROZEN_MODEL_COMPLEX`, `KYROZEN_MODEL_MAIN`, `KYROZEN_CONTEXT_WINDOW_TOKENS`, `KYROZEN_PROVIDER_TIMEOUT_SECONDS` | Override model choices, pin one main-agent model, set a custom-model context limit, and set provider timeout. |
 | `KYROZEN_AGENT_CONFIG` | Select the explicit `agent.yaml` overlay. |
 | `KYROZEN_AGENT_PROVIDER`, `KYROZEN_AGENT_MODEL` | Override provider name/model in the agent role configuration layer. |
 | `KYROZEN_ROLE`, `KYROZEN_ROLE_PROMPT`, `KYROZEN_INSTRUCTIONS`, `KYROZEN_EXAMPLES`, `KYROZEN_AGENT_CAPABILITIES` | Override agent role/instruction/example content or configured upper-bound capability labels. Examples must be a JSON list. |
@@ -69,6 +69,8 @@ OpenKyrozen has separate defaults for simple and complex work:
 export KYROZEN_MODEL_SIMPLE=deepseek-flash
 export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
 ```
+
+Set `KYROZEN_MODEL_MAIN` or use `/model <name>` to pin every main-agent request to one model. Use `/model auto` to return to the simple/complex choices. Sub-agent model assignments remain independent. Ollama requires an explicit installed model tag; `/model` shows discovered tags as suggestions and accepts a manually entered tag.
 
 These names are the repository's DeepSeek registry defaults at the v2.0.6 documentation snapshot. They are not a promise that a provider account enables a particular model. The [provider guide](providers.md) lists every current selectable family and its repository default; choose a model your account can access.
 

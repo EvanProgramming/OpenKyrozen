@@ -25,7 +25,7 @@ from openkyrozen.security.dynamic_tools import SAFE_BUILTINS, validate_tool_sour
 from openkyrozen.workspace.context import LaunchContext, resolve_launch_context, source_scope_id
 from openkyrozen.workspace.history import HistoryError, HistoryManager, TurnToken
 from openkyrozen.tools import CommandResult, resolve_capabilities, tool_capability
-from openkyrozen.providers import ProviderConfig, LLMProvider, save_provider_config, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS, PROVIDER_FALLBACKS, get_cost_summary, reset_cost_tracker, usage_scope, save_provider_config_encrypted, encrypt_api_key, decrypt_api_key, model_for_complexity, provider_is_configured, resolve_ollama_models, PROVIDER_DISPLAY_NAMES
+from openkyrozen.providers import ProviderConfig, LLMProvider, save_provider_config, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS, PROVIDER_FALLBACKS, get_cost_summary, reset_cost_tracker, usage_scope, save_provider_config_encrypted, encrypt_api_key, decrypt_api_key, model_for_complexity, provider_is_configured, resolve_ollama_models, discover_ollama_models, PROVIDER_DISPLAY_NAMES
 from openkyrozen.agent.compaction import ContextState, compact_for_pressure, message_fingerprint, retain_context_digests
 from openkyrozen.agent.types import ProviderUnavailableError, ContextOverflowError, ContextTooLargeError, ExecutionReceipt, DeepSeekDSMLFilter
 
@@ -98,6 +98,7 @@ def bind_services(runtime):
     runtime.model_for_complexity = model_for_complexity
     runtime.provider_is_configured = provider_is_configured
     runtime.resolve_ollama_models = resolve_ollama_models
+    runtime.discover_ollama_models = discover_ollama_models
     runtime.PROVIDER_DISPLAY_NAMES = PROVIDER_DISPLAY_NAMES
     runtime.ContextState = ContextState
     runtime.compact_for_pressure = compact_for_pressure

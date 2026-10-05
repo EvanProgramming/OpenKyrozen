@@ -6,7 +6,38 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import openkyrozen.providers as providers
+from openkyrozen.routing.router import model_for_request
 class ProviderRegistryTests(unittest.TestCase):
+    def test_main_model_override_applies_to_both_complexity_routes(self):
+        config = providers.ProviderConfig(provider="deepseek", model_simple="quick", model_complex="reasoning", model_main="pinned")
+        self.assertEqual(providers.model_for_complexity(config, False), "pinned")
+        self.assertEqual(providers.model_for_complexity(config, True), "pinned")
+        config.model_main = ""
+        self.assertEqual(providers.model_for_complexity(config, False), "quick")
+        self.assertEqual(providers.model_for_complexity(config, True), "reasoning")
+
+    def test_main_model_override_precedes_fast_routes(self):
+        config = providers.ProviderConfig(
+            provider="deepseek", model_simple="quick", model_complex="reasoning", model_main="pinned",
+        )
+        selector = MagicMock(return_value="auto")
+        for route in ({"model": "simple"}, {"model": "reasoning"}, {}):
+            self.assertEqual(model_for_request(config, route, "request", selector), "pinned")
+        selector.assert_not_called()
+
+    def test_ollama_requires_explicit_model_instead_of_choosing_installed(self):
+        response = MagicMock()
+        response.json.return_value = {"models": [{"name": "available:latest"}]}
+        response.raise_for_status.return_value = None
+        providers.discover_ollama_models.cache_clear()
+        with patch("requests.get", return_value=response):
+            config = providers.ProviderConfig(provider="ollama")
+            self.assertEqual(providers.resolve_ollama_models(config), ("", ""))
+            self.assertIn("No Ollama model configured", config.validate()[0])
+        self.assertIn("No Ollama model configured", providers.ProviderConfig(
+            provider="ollama", model_main="auto",
+        ).validate()[0])
+
     def test_registry_contains_all_supported_transports(self):
         expected = {
             "deepseek", "openai", "anthropic", "google", "ollama", "glm", "kimi",
@@ -44,8 +75,11 @@ class ProviderRegistryTests(unittest.TestCase):
         providers.discover_ollama_models.cache_clear()
         with patch("requests.get", return_value=response) as get:
             config = providers.ProviderConfig(provider="ollama", base_url="http://127.0.0.1:11434/v1")
-            self.assertEqual(providers.resolve_ollama_models(config), ("small:latest", "large:latest"))
+            self.assertEqual(providers.resolve_ollama_models(config), ("", ""))
+            self.assertEqual(providers.discover_ollama_models(config.base_url)[0][0], "small:latest")
             get.assert_called_once_with("http://127.0.0.1:11434/api/tags", timeout=2)
+        config = providers.ProviderConfig(provider="ollama", model_simple="chosen:latest")
+        self.assertEqual(providers.resolve_ollama_models(config), ("chosen:latest", "chosen:latest"))
 
     def test_openai_compatible_contract_uses_provider_base_url_and_normalized_usage(self):
         response = SimpleNamespace(

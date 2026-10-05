@@ -1,7 +1,24 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Mapping
 from openkyrozen.providers import ProviderConfig, model_for_complexity, resolve_ollama_models
+
+
+def model_for_request(
+    config: ProviderConfig | None,
+    fast_route: Mapping[str, str],
+    user_input: str,
+    automatic_selector: Callable[[str], str],
+) -> str:
+    """Apply the main-model pin before either normal or fast routing."""
+    if config and config.model_main:
+        return config.model_main
+    if config and fast_route.get("model") == "simple":
+        return config.model_simple
+    if config and fast_route.get("model") == "reasoning":
+        return config.model_complex
+    return automatic_selector(user_input)
 
 
 def _select_model(self, user_input: str) -> str:

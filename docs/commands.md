@@ -31,6 +31,7 @@ The Bubble Tea terminal binary is normally selected by the installer. `KYROZEN_D
 | `/system-one jev\|kev\|off` | Select hosted Jev, explicit local Kev, or off. `/fast` is a legacy alias. |
 | `/decision-assist jev\|kev\|off` | Configure optional checks for learning, memory, and suspicious tool output. `/assist` is an alias. |
 | `/provider` | Select or configure a provider. `/p` is an alias. |
+| `/model [name|auto]` | Pin one main-agent model or restore automatic simple/complex selection. |
 | `/api_key` | Set the active provider credential. `/key` is an alias. |
 | `/settings` | Open terminal preferences. |
 | `/update` | Update installed Python and TUI components; restart after a successful update when prompted. |

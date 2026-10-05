@@ -13,6 +13,7 @@ def start(self, payload: dict[str, Any], request_id: str) -> None:
         self.emit("ready", request_id, configured=runtime.llm_provider is not None,
                   provider=getattr(runtime._provider_config, "provider", ""),
                   model=getattr(runtime._provider_config, "model_simple", ""),
+                  main_model=getattr(runtime._provider_config, "model_main", ""),
                   workspace=str(runtime._get_workspace_root()))
         return
     self._started = True
@@ -59,6 +60,7 @@ def start(self, payload: dict[str, Any], request_id: str) -> None:
             "ready", request_id, configured=configured,
             provider=getattr(config, "provider", ""),
             model=getattr(config, "model_simple", ""),
+            main_model=getattr(config, "model_main", ""),
             workspace=str(context.active_root),
             mode="global" if context.is_global else "project",
             recovered=len(task_results or []),
@@ -72,6 +74,9 @@ def start(self, payload: dict[str, Any], request_id: str) -> None:
                 previous_version=onboarding_previous_version,
                 version=getattr(runtime, "RELEASE_VERSION", ""),
             )
+        elif (not configured and getattr(config, "provider", "") == "ollama"
+              and not (config.model_main not in {"", "auto"} or config.model_simple or config.model_complex)):
+            self.prompt_model(request_id)
         elif not configured and not self._quiet_call(runtime.provider_is_configured, config):
             self.prompt_api_key(request_id=request_id)
         self.interaction(request_id)
@@ -115,6 +120,50 @@ def prompt_provider(self, request_id: str | None = None) -> None:
     )
 
 
+def prompt_model(self, request_id: str | None = None) -> None:
+    runtime = self.agent
+    config = runtime._provider_config or self._quiet_call(runtime.detect_provider)
+    choices = []
+    if config.provider == "ollama":
+        choices = [item[0] for item in runtime.discover_ollama_models(config.base_url)]
+    self.emit(
+        "prompt", request_id, kind="model", provider=config.provider,
+        current=config.model_main or "auto", choices=choices,
+        onboarding=bool(self._onboarding_kind),
+        message=("Installed Ollama models (suggestions only): " + ", ".join(choices)
+                 if choices else "Enter the exact model name. For Ollama, choose an installed tag."),
+    )
+
+
+def configure_main_model(self, model: str | None = None, request_id: str | None = None) -> None:
+    runtime = self.agent
+    if model is None or not model.strip():
+        self.prompt_model(request_id)
+        return
+    try:
+        message = self._quiet_call(runtime.set_main_model, model)
+        config = runtime._provider_config
+        configured = runtime.llm_provider is not None
+        self.emit(
+            "ready", request_id, configured=configured, provider=config.provider,
+            model=config.model_simple, main_model=config.model_main,
+            workspace=str(runtime._get_workspace_root()),
+        )
+        self.emit("response", request_id, text=message)
+        if configured and self._onboarding_kind == "new":
+            self._prompt_onboarding_learning(request_id)
+        elif configured and self._onboarding_kind == "update":
+            self._complete_onboarding(request_id)
+        elif not configured and config.provider == "ollama":
+            self.prompt_model(request_id)
+        elif not configured and not self._quiet_call(runtime.provider_is_configured, config):
+            self.prompt_api_key(request_id)
+        else:
+            self.status("ready" if configured else "waiting", message, request_id)
+    except (ValueError, OSError, RuntimeError) as exc:
+        self.emit("error", request_id, code="model_setup_failed", error=_redact(exc))
+
+
 def _prompt_onboarding_learning(self, request_id: str | None = None) -> None:
     runtime = self.agent
     self.emit(
@@ -138,6 +187,10 @@ def _continue_onboarding(self, request_id: str | None = None) -> None:
         self.prompt_provider(request_id)
         return
     if self._onboarding_kind == "update":
+        config = runtime._provider_config or self._quiet_call(runtime.detect_provider)
+        if config.provider == "ollama" and not (config.model_main not in {"", "auto"} or config.model_simple or config.model_complex):
+            self.prompt_model(request_id)
+            return
         if runtime.llm_provider is None and not self._quiet_call(
                 runtime.provider_is_configured, runtime._provider_config or self._quiet_call(runtime.detect_provider)):
             self.prompt_api_key(request_id=request_id)
@@ -153,12 +206,20 @@ def configure_provider(self, provider: str, api_key: str | None = None,
         self.emit("error", request_id, code="invalid_provider", error="Unknown provider.")
         return
     current = runtime._provider_config or self._quiet_call(runtime.detect_provider)
+    same_provider = provider == current.provider
     config = runtime.ProviderConfig(
         provider=provider,
         api_key=(api_key if api_key is not None else current.api_key),
+        model_simple=current.model_simple if same_provider else "",
+        model_complex=current.model_complex if same_provider else "",
+        model_main=current.model_main if same_provider else "",
     )
     if api_key is None and provider != current.provider:
         config.api_key = ""
+    if provider == "ollama" and not (config.model_main not in {"", "auto"} or config.model_simple or config.model_complex):
+        runtime._provider_config = config
+        self.prompt_model(request_id)
+        return
     try:
         if config.api_key or self._quiet_call(runtime.provider_is_configured, config):
             self._quiet_call(runtime.save_provider_config_encrypted, config)
@@ -167,7 +228,8 @@ def configure_provider(self, provider: str, api_key: str | None = None,
         ))
         self.emit(
             "ready", request_id, configured=configured, provider=provider,
-            model=config.model_simple, workspace=str(runtime._get_workspace_root()),
+            model=config.model_simple, main_model=config.model_main,
+            workspace=str(runtime._get_workspace_root()),
         )
         if not configured and not self._quiet_call(runtime.provider_is_configured, config):
             self.prompt_api_key(request_id=request_id)
