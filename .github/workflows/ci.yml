@@ -177,10 +177,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.updates == 'true' || needs.changes.outputs.all == 'true'
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
     steps:
       - uses: actions/checkout@v4
-      - name: Parse PowerShell installer and run help path
-        shell: pwsh
+      - name: Parse installer and run help path (${{ matrix.shell }})
+        shell: ${{ matrix.shell }}
         run: ./install.ps1 -Help
 
   docker-persistence:

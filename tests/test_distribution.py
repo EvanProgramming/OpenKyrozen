@@ -70,7 +70,7 @@ class DistributionTests(unittest.TestCase):
         with (ROOT / "pyproject.toml").open("rb") as handle:
             document = tomllib.load(handle)
         project = document["project"]
-        self.assertEqual(project["version"], "2.0.7")
+        self.assertEqual(project["version"], "2.0.8")
         self.assertEqual(project["requires-python"], ">=3.12,<3.14")
         self.assertEqual(project["scripts"]["kyrozen"], "openkyrozen.interfaces.cli.launcher:main")
         self.assertEqual(project["scripts"]["kyrozen-backend"], "openkyrozen.interfaces.tui.backend:main")
@@ -130,6 +130,8 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("openkyrozen-tui-", workflow)
         self.assertIn("sha256sum", workflow)
         self.assertIn("runs-on: windows-latest", workflow)
+        self.assertIn("shell: [powershell, pwsh]", workflow)
+        self.assertIn("irm \"https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/$env:RELEASE_TAG/install.ps1\" | iex", workflow)
         smoke = (ROOT / "scripts" / "wheel_smoke.py").read_text(encoding="utf-8")
         self.assertIn("/api/auth/session", smoke)
         self.assertIn("_task_status_counts", smoke)
@@ -137,12 +139,12 @@ class DistributionTests(unittest.TestCase):
     def test_public_install_paths_pin_the_verified_release(self):
         release_url = (
             "https://github.com/EvanProgramming/OpenKyrozen/releases/download/"
-            "v2.0.7/openkyrozen-2.0.7-py3-none-any.whl"
+            "v2.0.8/openkyrozen-2.0.8-py3-none-any.whl"
         )
         for readme in sorted(ROOT.glob("README*.md")):
             text = readme.read_text(encoding="utf-8")
             with self.subTest(readme=readme.name):
-                self.assertIn("raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.7/", text)
+                self.assertIn("raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.8/", text)
                 wheel_urls = re.findall(
                     r"https://github\.com/EvanProgramming/OpenKyrozen/releases/download/[^\s)]+\.whl",
                     text,
@@ -165,7 +167,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn('PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"', text)
         self.assertIn("grep -Fq '$HOME/.local/bin'", text)
         self.assertIn('tool install --python', text)
-        self.assertIn("release_version='2.0.7'", text)
+        self.assertIn("release_version='2.0.8'", text)
         self.assertIn("-X main.revision=$release_tag", text)
         self.assertIn("releases/download", text)
         self.assertIn("--with fastapi --with uvicorn", text)
@@ -195,10 +197,12 @@ class DistributionTests(unittest.TestCase):
         self.assertNotIn("OSArchitecture.ToString()", text)
         self.assertNotIn('Join-Path $HOME ".kyrozen"', text)
         self.assertIn("$env:UV_INSTALL_DIR = $localBin", text)
+        self.assertNotIn("-Method Head", text)
+        self.assertIn("($releaseWheelUrl)", text)
         self.assertIn("[Environment]::GetEnvironmentVariable(\"Path\", \"User\")", text)
         self.assertIn("SetEnvironmentVariable(\"Path\"", text)
         self.assertIn("tool install --python", text)
-        self.assertIn("v2.0.7", text)
+        self.assertIn("v2.0.8", text)
         self.assertIn("-X main.revision=$releaseTag", text)
         self.assertIn("releases/download", text)
         self.assertIn("--with fastapi --with uvicorn", text)
@@ -220,9 +224,10 @@ class DistributionTests(unittest.TestCase):
     def test_windows_release_acceptance_runs_the_public_streamed_installer_command(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn(
-            'Invoke-RestMethod "https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/$env:RELEASE_TAG/install.ps1" | Invoke-Expression',
+            'irm "https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/$env:RELEASE_TAG/install.ps1" | iex',
             workflow,
         )
+        self.assertIn("shell: [powershell, pwsh]", workflow)
 
     def test_posix_installer_retries_with_uncached_uv_install(self):
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as bin_dir:
@@ -241,7 +246,7 @@ if [ "$1" = "tool" ] && [ "$2" = "install" ]; then
 fi
 if [ "$1" = "--no-cache" ] && [ "$2" = "tool" ] && [ "$3" = "install" ]; then
     mkdir -p "$HOME/.local/bin"
-    printf '%s\n' '#!/bin/sh' 'if [ "$1" = "--version" ]; then printf "%s\n" "OpenKyrozen 2.0.7"; fi' > "$HOME/.local/bin/kyrozen"
+    printf '%s\n' '#!/bin/sh' 'if [ "$1" = "--version" ]; then printf "%s\n" "OpenKyrozen 2.0.8"; fi' > "$HOME/.local/bin/kyrozen"
     chmod +x "$HOME/.local/bin/kyrozen"
     exit 0
 fi
@@ -297,7 +302,7 @@ exit 0
         from openkyrozen.interfaces.web.service import WebService
 
         server = WebService(None)
-        self.assertEqual(server.app.version, "2.0.7")
+        self.assertEqual(server.app.version, "2.0.8")
 
     def test_web_parser_accepts_project_and_server_flags(self):
         from openkyrozen.interfaces.web.service import WebService
@@ -349,7 +354,7 @@ exit 0
         self.assertIn("--with", command)
         self.assertIn("fastapi", command)
         self.assertIn("uvicorn", command)
-        self.assertTrue(command[-1].endswith("/v2.0.7/openkyrozen-2.0.7-py3-none-any.whl"))
+        self.assertTrue(command[-1].endswith("/v2.0.8/openkyrozen-2.0.8-py3-none-any.whl"))
 
     def test_update_retries_without_uv_cache_after_install_failure(self):
         from openkyrozen.app.bootstrap import build_application

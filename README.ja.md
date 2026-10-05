@@ -19,14 +19,14 @@ OpenKyrozen は Python **3.12 と 3.13** をサポートします。Python 3.14 
 ### macOS または Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.7/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.8/install.sh | sh
 kyrozen
 ```
 
 ### Windows PowerShell
 
 ```powershell
-irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.7/install.ps1 | iex
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.8/install.ps1 | iex
 kyrozen
 ```
 
@@ -53,7 +53,7 @@ make run
 ### 検証済み release wheel を直接インストール
 
 ```bash
-uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.7/openkyrozen-2.0.7-py3-none-any.whl
+uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.8/openkyrozen-2.0.8-py3-none-any.whl
 ```
 
 ## クイックスタート
