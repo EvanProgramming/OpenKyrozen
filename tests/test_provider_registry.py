@@ -25,6 +25,14 @@ class ProviderRegistryTests(unittest.TestCase):
             self.assertEqual(model_for_request(config, route, "request", selector), "pinned")
         selector.assert_not_called()
 
+    def test_auto_main_model_value_restores_automatic_routing(self):
+        config = providers.ProviderConfig(
+            provider="deepseek", model_simple="quick", model_complex="reasoning", model_main="auto",
+        )
+        self.assertEqual(providers.model_for_complexity(config, False), "quick")
+        self.assertEqual(providers.model_for_complexity(config, True), "reasoning")
+        self.assertEqual(model_for_request(config, {}, "task", lambda _: "automatic"), "automatic")
+
     def test_ollama_requires_explicit_model_instead_of_choosing_installed(self):
         response = MagicMock()
         response.json.return_value = {"models": [{"name": "available:latest"}]}

@@ -12,7 +12,7 @@ def model_for_request(
     automatic_selector: Callable[[str], str],
 ) -> str:
     """Apply the main-model pin before either normal or fast routing."""
-    if config and config.model_main:
+    if config and config.model_main and config.model_main != "auto":
         return config.model_main
     if config and fast_route.get("model") == "simple":
         return config.model_simple
