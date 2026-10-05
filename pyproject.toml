@@ -31,6 +31,7 @@ dependencies = [
     "PyYAML>=6.0",
     "requests>=2.31.0",
     "rich>=13.0.0",
+    "send2trash>=1.8.3",
 ]
 
 [project.optional-dependencies]

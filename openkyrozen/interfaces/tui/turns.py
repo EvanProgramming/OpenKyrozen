@@ -220,15 +220,21 @@ def _run_submit(self, text: str, request_id: str) -> None:
             self.status("waiting", "Provider setup required.", request_id)
             return
         sanitized, flagged = self._quiet_call(runtime._sanitize_input, text)
+        if not sanitized.strip() and not self._staged_attachments:
+            self.status("ready", "Type a message before sending.", request_id)
+            return
         metadata = runtime.memory_bank.store.list_events(
             "tui.chat_metadata", limit=1, workspace_id=runtime.interaction_workspace_id(),
             session_id=self._active_session_id, user_id=runtime.memory_bank.user_id,
         ) if self._active_session_id and hasattr(runtime.memory_bank, "store") else []
-        if (self._active_session_id and hasattr(runtime.memory_bank, "store")
+        title = re.sub(r"\s+", " ", text.strip())[:72]
+        if not title and self._staged_attachments:
+            title = "Attached files"
+        if (title and self._active_session_id and hasattr(runtime.memory_bank, "store")
                 and (not metadata or metadata[0]["payload"].get("title") == "New chat")):
             self._register_chat(
                 self._active_session_id,
-                title=re.sub(r"\s+", " ", text.strip())[:72] or "New chat",
+                title=title,
             )
         if flagged:
             self.emit("status", request_id, state="warning",

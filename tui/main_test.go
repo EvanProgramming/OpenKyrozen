@@ -351,7 +351,7 @@ func TestActivityRailCannotPushComposerOffscreen(t *testing.T) {
 
 func TestProjectChatSidebarExposesCreationAndKeepsSelectedChatVisible(t *testing.T) {
 	m := initialModel("", true)
-	m.width, m.height, m.screen = 120, 16, screenChat
+	m.width, m.height, m.screen = 120, 24, screenChat
 	m.navigationFocused = true
 	for project := 0; project < 8; project++ {
 		group := navigationGroup{scopeID: fmt.Sprintf("scope-%d", project), name: fmt.Sprintf("Project %d", project)}
@@ -375,6 +375,47 @@ func TestProjectChatSidebarExposesCreationAndKeepsSelectedChatVisible(t *testing
 		if !strings.Contains(view, text) {
 			t.Fatalf("vertical project/chat navigation lost %q: %s", text, view)
 		}
+	}
+}
+
+func TestNavigationDeletionRequiresConfirmationAndCanBeCancelled(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height, m.screen = 100, 30, screenChat
+	m.navigationFocused = true
+	m.navigation = []navigationGroup{
+		{scope: "global", scopeID: "global", name: "No Project", chats: []navigationChat{{id: "chat-global", title: "Global"}}},
+		{scope: "project", scopeID: "scope-project", name: "Project", path: "/tmp/project", chats: []navigationChat{{id: "chat-project", title: "Project chat"}}},
+	}
+	m.navigationIndex = 3
+	var sent bytes.Buffer
+	m.bridge.stdin = bufio.NewWriter(&sent)
+	m.handleKey(tea.KeyPressMsg{Code: 'd'})
+	if string(m.screen) != "delete_confirm" || !strings.Contains(m.View().Content, "Project chat") {
+		t.Fatalf("deletion confirmation did not identify the selected chat: screen=%s view=%s", m.screen, m.View().Content)
+	}
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.screen != screenChat || sent.Len() != 0 {
+		t.Fatalf("cancelling deletion changed state or sent a command: screen=%s sent=%q", m.screen, sent.String())
+	}
+}
+
+func TestNavigationProjectRowCanBeDeleted(t *testing.T) {
+	m := initialModel("", true)
+	m.width, m.height = 100, 30
+	m.screen, m.navigationFocused = screenChat, true
+	m.navigation = []navigationGroup{
+		{scope: "global", scopeID: "global", name: "No Project"},
+		{scope: "project", scopeID: "scope-project", name: "Project", path: "/tmp/project"},
+	}
+	m.navigationIndex = 1
+	m.handleKey(tea.KeyPressMsg{Code: 'd'})
+	if string(m.screen) != "delete_confirm" || m.pendingDeleteKind != "delete_project" ||
+		!strings.Contains(m.View().Content, "/tmp/project") {
+		t.Fatalf("project row did not enter project delete confirmation: screen=%s kind=%q", m.screen, m.pendingDeleteKind)
+	}
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.screen != screenChat {
+		t.Fatalf("cancelling project deletion left the confirmation open: screen=%s", m.screen)
 	}
 }
 

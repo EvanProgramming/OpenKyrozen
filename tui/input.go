@@ -44,6 +44,21 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		}
 		return nil, false
 	}
+	if m.screen == screenDeleteConfirm {
+		switch key {
+		case "y", "Y", "enter":
+			m.send("navigate", map[string]any{
+				"action": m.pendingDeleteKind, "scope_id": m.pendingDeleteScopeID,
+				"session_id": m.pendingDeleteSessionID, "confirmed": true,
+			})
+			m.clearDeleteConfirmation()
+			m.screen = screenChat
+		case "n", "N", "esc":
+			m.clearDeleteConfirmation()
+			m.screen, m.navigationFocused = screenChat, true
+		}
+		return nil, false
+	}
 	if m.screen == screenGithubAuth {
 		if key == "esc" {
 			m.screen = screenChat
@@ -274,8 +289,53 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 			targets := m.navigationTargets()
 			if len(targets) > 0 {
 				target := targets[m.navigationIndex]
-				m.send("navigate", map[string]any{"action": "switch", "scope_id": target.scopeID, "session_id": target.id})
+				switch target.kind {
+				case "chat":
+					m.send("navigate", map[string]any{"action": "switch", "scope_id": target.scopeID, "session_id": target.id})
+				case "project":
+					m.send("navigate", map[string]any{"action": "project", "path": target.path})
+				default:
+					m.send("navigate", map[string]any{"action": "new"})
+				}
 			}
+		case "d":
+			if m.busy {
+				m.status = "Cannot delete while a turn is running."
+				return nil, false
+			}
+			targets := m.navigationTargets()
+			if len(targets) == 0 {
+				break
+			}
+			target := targets[m.navigationIndex]
+			if target.kind == "workspace" {
+				m.status = "The global workspace cannot be deleted as a project."
+				return nil, false
+			}
+			m.pendingDeleteKind = "delete_" + target.kind
+			m.pendingDeleteScopeID = target.scopeID
+			m.pendingDeleteSessionID = target.id
+			m.pendingDeletePath = target.path
+			m.pendingDeleteTitle = target.kind
+			if target.kind == "project" {
+				for _, group := range m.navigation {
+					if group.scopeID == target.scopeID {
+						m.pendingDeleteTitle = group.name
+					}
+				}
+			} else if target.kind == "chat" {
+				m.pendingDeleteTitle = "this saved conversation"
+				for _, group := range m.navigation {
+					if group.scopeID == target.scopeID {
+						for _, chat := range group.chats {
+							if chat.id == target.id {
+								m.pendingDeleteTitle = chat.title
+							}
+						}
+					}
+				}
+			}
+			m.screen = screenDeleteConfirm
 		case "n":
 			m.send("navigate", map[string]any{"action": "new"})
 		case "p":
@@ -344,6 +404,14 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	m.input, cmd = m.input.Update(msg)
 	m.refreshPalette()
 	return cmd, false
+}
+
+func (m *model) clearDeleteConfirmation() {
+	m.pendingDeleteKind = ""
+	m.pendingDeleteScopeID = ""
+	m.pendingDeleteSessionID = ""
+	m.pendingDeletePath = ""
+	m.pendingDeleteTitle = ""
 }
 
 func (m *model) graphKey(msg tea.KeyPressMsg) tea.Cmd {

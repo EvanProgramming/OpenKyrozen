@@ -12,7 +12,7 @@ from unittest.mock import patch
 import openkyrozen.interfaces.tui.backend as tui_backend
 from openkyrozen.agent.modes import InteractionController
 from openkyrozen.persistence.store import EventStore
-from openkyrozen.workspace.context import resolve_launch_context
+from openkyrozen.workspace.context import resolve_launch_context, source_scope_id
 
 
 class TUIProtocolTests(unittest.TestCase):
@@ -74,7 +74,8 @@ class TUIProtocolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store = EventStore(root / "state.sqlite3")
-            memory = SimpleNamespace(store=store, user_id="local", workspace_id="global")
+            memory = SimpleNamespace(store=store, user_id="local", workspace_id="global",
+                                     _collection=None, _files_collection=None, _last_error=None)
             project = root / "project"
             project.mkdir()
             context = resolve_launch_context(home=root / "home", project_path=project)
@@ -109,7 +110,8 @@ class TUIProtocolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store = EventStore(root / "state.sqlite3")
-            memory = SimpleNamespace(store=store, user_id="local", workspace_id="global")
+            memory = SimpleNamespace(store=store, user_id="local", workspace_id="global",
+                                     _collection=None, _files_collection=None, _last_error=None)
             project = root / "project"
             project.mkdir()
             context = resolve_launch_context(home=root / "home", project_path=project)
@@ -135,6 +137,103 @@ class TUIProtocolTests(unittest.TestCase):
                     [chat["session_id"] for chat in self.backend._scope_chats(context.source_scope_id)],
                     ["chat-empty"],
                 )
+
+    def test_repeated_empty_project_startup_does_not_add_empty_chats_or_duplicate_projects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = EventStore(root / "state.sqlite3")
+            memory = SimpleNamespace(store=store, user_id="local", workspace_id="global")
+            project = root / "project"
+            project.mkdir()
+            context = resolve_launch_context(home=root / "home", project_path=project)
+            with patch.object(self.backend.agent.current_session, "memory", memory), \
+                    patch.object(self.backend.agent, "get_launch_context", return_value=context), \
+                    patch.object(self.backend.agent, "interaction_workspace_id",
+                                 return_value=context.source_scope_id):
+                for index in range(5):
+                    self.backend._register_chat(f"chat-empty-{index}", title=None)
+                self.assertEqual(self.backend._scope_chats(context.source_scope_id), [])
+                self.assertEqual(len(store.list_events(
+                    "tui.project_opened", workspace_id="global", user_id="local",
+                )), 1)
+
+    def test_blank_tui_submission_does_not_persist_a_chat(self):
+        with patch.object(self.backend.agent, "llm_provider", object()), \
+                patch.object(self.backend.agent, "_sanitize_input", return_value=("", False)), \
+                patch.object(self.backend.agent, "chat") as chat, \
+                patch.object(self.backend, "status"):
+            self.backend._run_submit("   ", "blank-chat")
+        chat.assert_not_called()
+
+    def test_delete_chat_requires_confirmation_and_keeps_workspace_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            file = project / "keep.txt"
+            file.write_text("workspace survives", encoding="utf-8")
+            store = EventStore(root / "state.sqlite3")
+            scope_id = source_scope_id(project)
+            store.append_event("tui.chat_metadata", {"title": "Keep me"}, user_id="local",
+                               workspace_id=scope_id, session_id="chat-delete")
+            memory = SimpleNamespace(store=store, user_id="local", workspace_id="global")
+            group = {"scope": "project", "scope_id": scope_id, "path": str(project),
+                     "name": "project", "chats": [{"session_id": "chat-delete"}]}
+            with patch.object(self.backend.agent.current_session, "memory", memory), \
+                    patch.object(self.backend.agent, "_state_root", return_value=root / "state"), \
+                    patch.object(self.backend, "_navigation_groups", return_value=[group]), \
+                    patch.object(self.backend, "_bind_chat"), \
+                    patch.object(self.backend, "_emit_bound_state"):
+                self.backend.dispatch({"command": "navigate", "action": "delete_chat",
+                                       "scope_id": scope_id, "session_id": "chat-delete"})
+                self.assertEqual(len(store.list_events("tui.chat_metadata", workspace_id=scope_id)), 1)
+                self.backend._busy = True
+                self.backend.dispatch({"command": "navigate", "action": "delete_chat",
+                                       "scope_id": scope_id, "session_id": "chat-delete",
+                                       "confirmed": True})
+                self.assertEqual(json.loads(self.output.getvalue().splitlines()[-1])["code"], "busy")
+                self.backend._busy = False
+                self.assertEqual(len(store.list_events("tui.chat_metadata", workspace_id=scope_id)), 1)
+                self.backend.dispatch({"command": "navigate", "action": "delete_chat",
+                                       "scope_id": scope_id, "session_id": "chat-delete",
+                                       "confirmed": True})
+            self.assertEqual(store.list_events(workspace_id=scope_id, session_id="chat-delete"), [])
+            self.assertEqual(file.read_text(encoding="utf-8"), "workspace survives")
+
+    def test_delete_project_trashes_workspace_and_purges_scoped_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            (project / "keep-until-trash.txt").write_text("project content", encoding="utf-8")
+            store = EventStore(root / "state.sqlite3")
+            scope_id = source_scope_id(project)
+            memory = SimpleNamespace(store=store, user_id="local", workspace_id="global")
+            store.append_event("tui.project_opened", {
+                "path": str(project), "name": "project", "source_scope_id": scope_id,
+            }, user_id="local", workspace_id="global")
+            store.append_event("tui.chat_metadata", {"title": "Project chat"}, user_id="local",
+                               workspace_id=scope_id, session_id="chat-project")
+            store.upsert_memory("project memory", user_id="local", workspace_id=scope_id)
+            group = {"scope": "project", "scope_id": scope_id, "path": str(project),
+                     "name": "project", "chats": [{"session_id": "chat-project"}]}
+            memory = SimpleNamespace(store=store, user_id="local", workspace_id="global",
+                                     _collection=None, _files_collection=None, _last_error=None)
+            with patch.object(self.backend.agent.current_session, "memory", memory), \
+                    patch.object(self.backend.agent, "_state_root", return_value=root / "state"), \
+                    patch.object(self.backend.agent, "interaction_workspace_id", return_value=scope_id), \
+                    patch.object(self.backend, "_navigation_groups", return_value=[group]), \
+                    patch.object(self.backend, "_trash_project") as trash, \
+                    patch.object(self.backend, "_bind_chat") as bind, \
+                    patch.object(self.backend, "_emit_bound_state"):
+                self.backend.dispatch({"command": "navigate", "action": "delete_project",
+                                       "scope_id": scope_id, "confirmed": True})
+            self.assertTrue(trash.called, self.output.getvalue())
+            trash.assert_called_once_with(project.resolve())
+            bind.assert_called_once()
+            self.assertEqual(store.list_events(workspace_id=scope_id), [])
+            self.assertEqual(store.list_memories(user_id="local", workspace_id=scope_id), [])
+            self.assertEqual(store.list_events("tui.project_opened", workspace_id="global"), [])
 
     def test_switch_rejects_busy_and_unknown_targets(self):
         self.backend._busy = True
