@@ -130,7 +130,8 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("openkyrozen-tui-", workflow)
         self.assertIn("sha256sum", workflow)
         self.assertIn("runs-on: windows-latest", workflow)
-        self.assertIn("shell: [powershell, pwsh]", workflow)
+        self.assertIn("Install the tagged release with Windows PowerShell 5.1", workflow)
+        self.assertIn("Install the tagged release with PowerShell 7", workflow)
         self.assertIn("irm \"https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/$env:RELEASE_TAG/install.ps1\" | iex", workflow)
         smoke = (ROOT / "scripts" / "wheel_smoke.py").read_text(encoding="utf-8")
         self.assertIn("/api/auth/session", smoke)
@@ -227,7 +228,8 @@ class DistributionTests(unittest.TestCase):
             'irm "https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/$env:RELEASE_TAG/install.ps1" | iex',
             workflow,
         )
-        self.assertIn("shell: [powershell, pwsh]", workflow)
+        self.assertIn("shell: powershell", workflow)
+        self.assertIn("shell: pwsh", workflow)
 
     def test_posix_installer_retries_with_uncached_uv_install(self):
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as bin_dir:
