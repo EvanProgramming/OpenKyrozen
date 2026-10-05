@@ -31,6 +31,8 @@ make tui-acceptance
 make docker-smoke
 ```
 
+GitHub Actions runs the Python 3.12 core suite and the full Python 3.13 suite for application or test changes. It selects TUI, wheel, Docker, and installed-upgrade checks from the files changed. Documentation-only changes run inventory and documentation checks. Unknown paths and CI configuration changes run the full check set. A scheduled Monday run and manual dispatch run full browser-enabled suites on Python 3.12 and 3.13.
+
 tool-inventory.md is generated from the live tool and FastAPI registries. Run venv/bin/python scripts/generate_tool_inventory.py --write after changing a tool, endpoint, or MCP schema.
 
 ## Project layout

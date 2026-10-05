@@ -16,6 +16,55 @@ ROOT = Path(__file__).parents[1].resolve()
 
 
 class DistributionTests(unittest.TestCase):
+    def test_ci_change_routing_covers_known_inputs_and_fails_open(self):
+        from scripts.ci_changes import classify_paths
+
+        cases = {
+            "docs-only": (["README.md", "docs/development.md"], {"docs"}),
+            "python": (["openkyrozen/agent/turn.py", "tests/test_agent.py"], {"python", "wheel", "docker"}),
+            "tui": (["tui/model.go"], {"tui", "wheel", "updates"}),
+            "installer-update": (["install.ps1", "openkyrozen/updates/service.py"], {"python", "wheel", "updates", "docker"}),
+            "package": (["pyproject.toml"], {"python", "wheel", "updates", "docker"}),
+            "wheel-acceptance": (["scripts/wheel_smoke.py"], {"python", "wheel"}),
+            "update-acceptance": (["scripts/update_workflow_acceptance.py"], {"python", "updates"}),
+            "docker": (["Dockerfile"], {"docker"}),
+            "workflow": ([".github/workflows/ci.yml"], {"all"}),
+            "mixed": (["docs/development.md", "tui/model.go"], {"docs", "tui", "wheel", "updates"}),
+            "deleted": (["install.sh"], {"updates"}),
+            "unknown": (["assets/new-format.bin"], {"all"}),
+        }
+        for label, (paths, expected) in cases.items():
+            with self.subTest(label=label):
+                self.assertEqual(classify_paths(paths), expected)
+
+    def test_ci_change_classifier_uses_complete_git_ranges_and_fails_open(self):
+        from scripts.ci_changes import changed_paths
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "ci@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "CI Test"], check=True)
+            file = root / "old.txt"
+            file.write_text("before")
+            deleted_file = root / "deleted.txt"
+            deleted_file.write_text("remove me")
+            subprocess.run(["git", "-C", str(root), "add", "old.txt", "deleted.txt"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
+            base = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            file.rename(root / "new.txt")
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "rename"], check=True)
+            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            deleted_file.unlink()
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "delete"], check=True)
+            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            expected_paths = {"old.txt", "new.txt", "deleted.txt"}
+            self.assertEqual(changed_paths(root, "push", base, head), expected_paths)
+            self.assertEqual(changed_paths(root, "pull_request", base, head), expected_paths)
+            self.assertIsNone(changed_paths(root, "push", "missing-base", head))
+
     def test_pyproject_exposes_both_entry_points_and_launch_module(self):
         with (ROOT / "pyproject.toml").open("rb") as handle:
             document = tomllib.load(handle)
@@ -34,7 +83,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("openkyrozen*", document["tool"]["setuptools"]["packages"]["find"]["include"])
         self.assertIn("github_cli", document["tool"]["setuptools"]["py-modules"])
 
-    def test_full_development_setup_includes_browser_and_core_test_path(self):
+    def test_ci_keeps_core_and_full_python_coverage_without_duplicate_suites(self):
         with (ROOT / "pyproject.toml").open("rb") as handle:
             document = tomllib.load(handle)
         self.assertIn("playwright>=1.40", document["project"]["optional-dependencies"]["all"])
@@ -50,11 +99,19 @@ class DistributionTests(unittest.TestCase):
 
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn("pip install -e '.[all]'", workflow)
+        self.assertIn('python-version: "3.13"', workflow)
+        self.assertIn('python-version: "3.12"', workflow)
         self.assertIn("make test PYTHON=python", workflow)
         self.assertIn("make install-core PYTHON=python", workflow)
         self.assertIn("make test-core", workflow)
         self.assertIn("actions/setup-go@v5", workflow)
         self.assertIn("go test ./...", workflow)
+        self.assertIn("cache-dependency-path: tui/go.sum", workflow)
+        self.assertIn("17 20 * * 0", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("name: CI result", workflow)
+        self.assertIn("scripts/ci_changes.py", workflow)
+        self.assertNotIn("matrix:\n      python-version: [\"3.12\", \"3.13\"]", workflow)
 
     def test_one_shot_release_workflow_is_retired_after_v2_release(self):
         self.assertFalse((ROOT / ".github" / "workflows" / "publish.yml").exists())

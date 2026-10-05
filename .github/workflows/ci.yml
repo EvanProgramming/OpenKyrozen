@@ -5,126 +5,197 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Monday 04:17 Asia/Shanghai.
+    - cron: "17 20 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openkyrozen-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  tui-test:
+  changes:
     runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.classify.outputs.python }}
+      tui: ${{ steps.classify.outputs.tui }}
+      wheel: ${{ steps.classify.outputs.wheel }}
+      docker: ${{ steps.classify.outputs.docker }}
+      updates: ${{ steps.classify.outputs.updates }}
+      docs: ${{ steps.classify.outputs.docs }}
+      all: ${{ steps.classify.outputs.all }}
+      core: ${{ steps.classify.outputs.core }}
+      full: ${{ steps.classify.outputs.full }}
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Go 1.27.1
-      uses: actions/setup-go@v5
-      with:
-        go-version: "1.27.1"
-
-    - name: Test the Bubble Tea terminal UI
-      run: go test ./...
-      working-directory: tui
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Classify changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          FULL_RUN: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          args=(--event "$EVENT_NAME" --base "$BASE_SHA" --head "$HEAD_SHA")
+          if [[ "$FULL_RUN" == true ]]; then args+=(--full); fi
+          python scripts/ci_changes.py "${args[@]}"
 
   core-test:
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
+      - name: Install the core development environment
+        run: make install-core PYTHON=python
+      - name: Run non-browser tests
+        if: needs.changes.outputs.python == 'true' || needs.changes.outputs.all == 'true'
+        run: make test-core PYTHON=python
+      - name: Validate documentation and inventories
+        if: needs.changes.outputs.docs == 'true' || needs.changes.outputs.all == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y zsh
+          make docs-check PYTHON=python
 
-    - name: Set up Python 3.12
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.12"
-
-    - name: Provision the non-browser development path and run lightweight tests
-      run: |
-        make install-core PYTHON=python
-        make test-core
-
-  lint-and-test:
+  python-test:
+    needs: changes
+    if: needs.changes.outputs.python == 'true' || needs.changes.outputs.all == 'true'
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.12", "3.13"]
-
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
+      - name: Install full development dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y zsh
+          python -m pip install --upgrade pip
+          pip install -e '.[all]'
+      - name: Install Chromium and run the full test suite
+        run: |
+          python -m playwright install --with-deps chromium
+          make test PYTHON=python
+      - name: Agent workflow acceptance
+        run: make agent-acceptance PYTHON=python
+      - name: Syntax and shell checks
+        run: |
+          python -m compileall -q openkyrozen main.py server.py tui_launcher.py tui_backend.py main_debug.py learning_worker.py github_cli.py learning_benchmark.py migration.py scripts tests benchmarks
+          sh -n install.sh
+      - name: Tool inventory check
+        run: |
+          python -c "from openkyrozen.tools import ToolAdapters; available = ToolAdapters().AVAILABLE_TOOLS; assert len(available) >= 24, f'Expected >=24 tools, got {len(available)}'; print(f'{len(available)} tools OK')"
+      - name: Provider import check
+        run: python -c "from openkyrozen.providers import *; print('All providers imported OK')"
+      - name: Documentation and runtime inventory check
+        run: make docs-check PYTHON=python
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
+  full-python-312:
+    needs: changes
+    if: needs.changes.outputs.all == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
+      - name: Install all development dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y zsh
+          python -m pip install --upgrade pip
+          pip install -e '.[all]'
+      - name: Install Chromium and run the full test suite
+        run: |
+          python -m playwright install --with-deps chromium
+          make test PYTHON=python
+          python -m compileall -q openkyrozen main.py server.py tui_launcher.py tui_backend.py main_debug.py learning_worker.py github_cli.py learning_benchmark.py migration.py scripts tests benchmarks
+          sh -n install.sh
 
-    - name: Install full development dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install --no-install-recommends -y zsh
-        python -m pip install --upgrade pip
-        pip install -e '.[all]'
-
-    - name: Install Chromium and run the full test suite
-      run: |
-        python -m playwright install --with-deps chromium
-        make test PYTHON=python
-
-    - name: Agent workflow acceptance
-      run: make agent-acceptance
-
-    - name: Syntax check
-      run: |
-        python -m compileall -q openkyrozen main.py server.py tui_backend.py learning_worker.py scripts tests benchmarks
-        sh -n install.sh
-
-    - name: Tool inventory check
-      run: |
-        python -c "from openkyrozen.tools import ToolAdapters; AVAILABLE_TOOLS = ToolAdapters().AVAILABLE_TOOLS; assert len(AVAILABLE_TOOLS) >= 24, f'Expected >=24 tools, got {len(AVAILABLE_TOOLS)}'; print(f'{len(AVAILABLE_TOOLS)} tools OK')"
-
-    - name: Provider import check
-      run: |
-        python -c "from openkyrozen.providers import *; print('All providers imported OK')"
-
-    - name: Documentation and runtime inventory check
-      run: make docs-check
+  tui-test:
+    needs: changes
+    if: needs.changes.outputs.tui == 'true' || needs.changes.outputs.all == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.1"
+          cache-dependency-path: tui/go.sum
+      - name: Test the Bubble Tea terminal UI
+        run: go test ./...
+        working-directory: tui
 
   wheel-install:
+    needs: changes
+    if: needs.changes.outputs.wheel == 'true' || needs.changes.outputs.all == 'true'
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python 3.12
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.12"
-
-    - name: Set up Go 1.27.1
-      uses: actions/setup-go@v5
-      with:
-        go-version: "1.27.1"
-
-    - name: Build and run clean wheel installation smoke test
-      run: |
-        python -m pip install --upgrade pip build
-        python scripts/wheel_smoke.py
-        pip install -e '.[all]'
-
-    - name: Rebuilt TUI interaction acceptance
-      run: make tui-acceptance
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.1"
+          cache-dependency-path: tui/go.sum
+      - name: Build and run clean wheel installation smoke test
+        run: |
+          python -m pip install --upgrade pip build
+          python scripts/wheel_smoke.py
+          pip install -e '.[all]'
+      - name: Rebuilt TUI interaction acceptance
+        run: make tui-acceptance PYTHON=python
 
   installer-syntax:
+    needs: changes
+    if: needs.changes.outputs.updates == 'true' || needs.changes.outputs.all == 'true'
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Parse PowerShell installer and run help path
-      shell: pwsh
-      run: ./install.ps1 -Help
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell installer and run help path
+        shell: pwsh
+        run: ./install.ps1 -Help
 
   docker-persistence:
+    needs: changes
+    if: needs.changes.outputs.docker == 'true' || needs.changes.outputs.all == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Build and replace-container persistence smoke test
-      run: make docker-smoke
+      - uses: actions/checkout@v4
+      - name: Build and replace-container persistence smoke test
+        run: make docker-smoke
 
   update-install:
+    needs: changes
+    if: needs.changes.outputs.updates == 'true' || needs.changes.outputs.all == 'true'
     name: Installed update (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
@@ -133,33 +204,106 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-    - uses: actions/checkout@v4
-      with:
-        ref: ${{ github.event.pull_request.head.sha || github.sha }}
-    - uses: actions/setup-python@v5
-      with:
-        python-version: "3.12"
-    - uses: actions/setup-go@v5
-      with:
-        go-version: "1.27.1"
-    - name: Install uv
-      run: python -m pip install uv
-    - name: Install Linux browser system dependencies
-      if: runner.os == 'Linux'
-      run: |
-        python -m pip install playwright
-        python -m playwright install-deps chromium
-    - name: Upgrade a real prior installation and verify matching components
-      env:
-        AUDIT_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-      run: >-
-        python scripts/update_workflow_acceptance.py
-        --revision ${{ env.AUDIT_REVISION }}
-        --baseline git+https://github.com/EvanProgramming/OpenKyrozen.git@94a1d99eab337719308cbf998b0515f454c1acc6
-        --output update-acceptance.json
-    - name: Upload update acceptance evidence
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: update-acceptance-${{ matrix.os }}
-        path: update-acceptance.json
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.1"
+          cache-dependency-path: tui/go.sum
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Install Linux browser system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install playwright
+          python -m playwright install-deps chromium
+      - name: Upgrade a real prior installation and verify matching components
+        env:
+          AUDIT_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: >-
+          python scripts/update_workflow_acceptance.py
+          --revision ${{ env.AUDIT_REVISION }}
+          --baseline git+https://github.com/EvanProgramming/OpenKyrozen.git@94a1d99eab337719308cbf998b0515f454c1acc6
+          --output update-acceptance.json
+      - name: Upload update acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-acceptance-${{ matrix.os }}
+          path: update-acceptance.json
+
+  ci-result:
+    name: CI result
+    if: always()
+    needs:
+      - changes
+      - core-test
+      - python-test
+      - full-python-312
+      - tui-test
+      - wheel-install
+      - installer-syntax
+      - docker-persistence
+      - update-install
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every selected check to pass
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CORE_EXPECTED: ${{ needs.changes.outputs.core }}
+          CORE_RESULT: ${{ needs.core-test.result }}
+          PYTHON_EXPECTED: ${{ needs.changes.outputs.python }}
+          ALL_EXPECTED: ${{ needs.changes.outputs.all }}
+          PYTHON_RESULT: ${{ needs.python-test.result }}
+          PYTHON_312_RESULT: ${{ needs.full-python-312.result }}
+          TUI_EXPECTED: ${{ needs.changes.outputs.tui }}
+          TUI_RESULT: ${{ needs.tui-test.result }}
+          WHEEL_EXPECTED: ${{ needs.changes.outputs.wheel }}
+          WHEEL_RESULT: ${{ needs.wheel-install.result }}
+          UPDATE_EXPECTED: ${{ needs.changes.outputs.updates }}
+          INSTALLER_RESULT: ${{ needs.installer-syntax.result }}
+          UPDATE_RESULT: ${{ needs.update-install.result }}
+          DOCKER_EXPECTED: ${{ needs.changes.outputs.docker }}
+          DOCKER_RESULT: ${{ needs.docker-persistence.result }}
+        run: |
+          set -euo pipefail
+          test "$CHANGES_RESULT" = success
+          require_selected() {
+            local name="$1" expected="$2" result="$3"
+            if [ "$expected" = true ] && [ "$result" != success ]; then
+              echo "$name was selected but finished as $result" >&2
+              exit 1
+            fi
+          }
+          require_unselected() {
+            local name="$1" result="$2"
+            if [ "$result" != skipped ] && [ "$result" != success ]; then
+              echo "$name was not selected but finished as $result" >&2
+              exit 1
+            fi
+          }
+          require_selected "Core tests" "$CORE_EXPECTED" "$CORE_RESULT"
+          require_selected "Python tests" "$PYTHON_EXPECTED" "$PYTHON_RESULT"
+          require_selected "Full Python 3.12 tests" "$ALL_EXPECTED" "$PYTHON_312_RESULT"
+          require_selected "TUI tests" "$TUI_EXPECTED" "$TUI_RESULT"
+          require_selected "Wheel smoke" "$WHEEL_EXPECTED" "$WHEEL_RESULT"
+          require_selected "Installer syntax" "$UPDATE_EXPECTED" "$INSTALLER_RESULT"
+          require_selected "Installed update" "$UPDATE_EXPECTED" "$UPDATE_RESULT"
+          require_selected "Docker persistence" "$DOCKER_EXPECTED" "$DOCKER_RESULT"
+          if [ "$CORE_EXPECTED" != true ]; then require_unselected "Unselected core job" "$CORE_RESULT"; fi
+          if [ "$PYTHON_EXPECTED" != true ]; then require_unselected "Unselected Python tests" "$PYTHON_RESULT"; fi
+          if [ "$ALL_EXPECTED" != true ]; then require_unselected "Unselected full Python 3.12 tests" "$PYTHON_312_RESULT"; fi
+          require_unselected "Unselected TUI tests" "$TUI_RESULT"
+          require_unselected "Unselected wheel smoke" "$WHEEL_RESULT"
+          require_unselected "Unselected installer syntax" "$INSTALLER_RESULT"
+          require_unselected "Unselected installed update" "$UPDATE_RESULT"
+          require_unselected "Unselected Docker persistence" "$DOCKER_RESULT"
