@@ -137,7 +137,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.screen {
 		case screenAPIKey:
 			m.apiInput, cmd = m.apiInput.Update(msg)
-		case screenModel:
+		case screenModel, screenCustomProvider:
 			m.apiInput, cmd = m.apiInput.Update(msg)
 		case screenGraph:
 			if m.graphSearching {

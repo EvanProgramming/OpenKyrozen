@@ -30,6 +30,19 @@ def _command(self, name: str, args: Any, request_id: str) -> None:
     elif command in {"/model", "model"}:
         value = args.get("model") if isinstance(args, Mapping) else arg_text.strip()
         self.configure_main_model(str(value) if value is not None else None, request_id)
+    elif command in {"/custom-provider", "custom_provider"}:
+        values = args if isinstance(args, Mapping) else {}
+        if values:
+            action = str(values.get("action", "list"))
+            name = str(values.get("name", ""))
+        else:
+            parts = arg_text.split(maxsplit=1)
+            action = parts[0] if parts else "list"
+            name = parts[1] if len(parts) > 1 else ""
+        if action == "input":
+            self.custom_provider_input(str(values.get("value", "")), request_id)
+        else:
+            self.custom_provider_command({"action": action, "name": name}, request_id)
     elif command in {"onboarding_continue", "/onboarding_continue"}:
         self._continue_onboarding(request_id)
     elif command in {"/api_key", "api_key"}:

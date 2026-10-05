@@ -64,6 +64,8 @@ func (m model) modal(_ string) string {
 		body = brandStyle.Render("API KEY SETUP") + "\n" + titleStyle.Render("Add your API key") + "\n" + mutedStyle.Render("Your key is masked and stored encrypted locally.") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.apiInput.View()) + "\n\n" + mutedStyle.Render("Enter confirm  ·  Esc cancel")
 	case screenModel:
 		body = brandStyle.Render("MAIN MODEL") + "\n" + titleStyle.Render("Choose one model for the main agent") + "\n" + mutedStyle.Render(firstNonEmpty(m.modelPromptMessage, "Ollama choices are suggestions; type an exact installed model tag or 'auto'.")) + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.apiInput.View()) + "\n\n" + mutedStyle.Render("Enter save  ·  Esc cancel")
+	case screenCustomProvider:
+		body = brandStyle.Render("CUSTOM PROVIDER") + "\n" + titleStyle.Render("Configure OpenAI-compatible profile") + "\n" + mutedStyle.Render(m.apiInput.Prompt) + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.apiInput.View()) + "\n\n" + mutedStyle.Render("Enter continue  ·  Esc cancel")
 	case screenProject:
 		body = brandStyle.Render("NEW PROJECT") + "\n" + titleStyle.Render("Create or open a project directory") + "\n" + mutedStyle.Render("Enter a folder path. OpenKyrozen creates it if needed and starts a new chat.") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.projectInput.View()) + "\n\n" + mutedStyle.Render("Enter create / open  ·  Esc cancel")
 	case screenDeleteConfirm:

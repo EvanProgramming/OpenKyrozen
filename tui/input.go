@@ -1,6 +1,7 @@
 package main
 
 import (
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"fmt"
 	"os/exec"
@@ -233,6 +234,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if m.screen == screenAPIKey {
 		if key == "esc" {
 			m.apiInput.Reset()
+			m.apiInput.Prompt = ""
 			m.fastKeyInput = false
 			m.decisionAssistKeyInput = false
 			m.permissionKeyInput = false
@@ -264,6 +266,33 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 			} else {
 				m.screen = screenChat
 			}
+			return nil, false
+		}
+		var cmd tea.Cmd
+		m.apiInput, cmd = m.apiInput.Update(msg)
+		return cmd, false
+	}
+	if m.screen == screenCustomProvider {
+		if key == "esc" {
+			m.apiInput.Reset()
+			m.apiInput.Prompt = ""
+			m.apiInput.Blur()
+			m.apiInput.EchoMode = textinput.EchoNormal
+			if m.onboardingKind != "" {
+				m.screen = screenOnboarding
+				m.onboardingWaiting = false
+			} else {
+				m.screen = screenChat
+			}
+			return nil, false
+		}
+		if key == "enter" {
+			m.send("command", map[string]any{"name": "custom-provider", "args": map[string]any{
+				"action": "input", "value": m.apiInput.Value(),
+			}})
+			m.apiInput.Reset()
+			m.apiInput.Blur()
+			m.apiInput.EchoMode = textinput.EchoNormal
 			return nil, false
 		}
 		var cmd tea.Cmd

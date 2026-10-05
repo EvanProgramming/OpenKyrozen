@@ -123,7 +123,8 @@ The web stream shows brief lifecycle summaries.
 
 `GET /api/v2/agents` still discovers profiles. `POST /api/v2/agents/run` retains
 synchronous `profile`/`task` behavior and adds `session_id`, optional structured
-`assignment`, and optional `provider`/`model`. A plain task is converted into an
+`assignment`, and optional `provider`/`model`; custom provider assignments can add
+`custom_profile` to select a saved OpenAI-compatible profile. A plain task is converted into an
 assignment by the configured main provider. Inspect with
 `GET /api/v2/agents/runs` and `GET /api/v2/agents/runs/{run_id}`; cancel with
 `POST /api/v2/agents/runs/{run_id}/cancel`. Supply the same `session_id` query

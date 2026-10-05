@@ -241,6 +241,26 @@ func TestMainModelPromptUsesVisibleUnmaskedInputAndDispatchesChoice(t *testing.T
 	}
 }
 
+func TestCustomProviderPromptMasksKeysAndSubmitsInput(t *testing.T) {
+	m := initialModel("", true)
+	m.handleBackendEvent(backendEvent{"event": "prompt", "kind": "custom_provider", "message": "Optional API key", "secret": true})
+	if m.screen != screenCustomProvider || m.apiInput.EchoMode != textinput.EchoPassword {
+		t.Fatalf("custom key prompt is not masked: screen=%s echo=%v", m.screen, m.apiInput.EchoMode)
+	}
+	m.apiInput.SetValue("private-token")
+	var sent bytes.Buffer
+	m.bridge.stdin = bufio.NewWriter(&sent)
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	var command map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(sent.Bytes()), &command); err != nil {
+		t.Fatalf("custom provider value was not submitted: %v", err)
+	}
+	args := command["args"].(map[string]any)
+	if command["name"] != "custom-provider" || args["action"] != "input" || args["value"] != "private-token" {
+		t.Fatalf("unexpected custom provider input command: %#v", command)
+	}
+}
+
 func TestUsageEventAppearsInChatAndSettings(t *testing.T) {
 	m := initialModel("", true)
 	m.width, m.height = 110, 24

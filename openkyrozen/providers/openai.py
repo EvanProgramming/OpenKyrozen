@@ -22,7 +22,7 @@ class OpenAICompatProvider(LLMProvider):
                 "Install it with: pip install openai"
             )
         kwargs: dict[str, Any] = {
-            "api_key": config.api_key or _provider_env_key(config.provider) or "sk-placeholder",
+            "api_key": config.api_key or ("" if config.provider == "custom" else _provider_env_key(config.provider)) or "sk-placeholder",
         }
         if config.base_url:
             kwargs["base_url"] = config.base_url
