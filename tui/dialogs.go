@@ -64,6 +64,12 @@ func (m model) modal(_ string) string {
 		body = brandStyle.Render("API KEY SETUP") + "\n" + titleStyle.Render("Add your API key") + "\n" + mutedStyle.Render("Your key is masked and stored encrypted locally.") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.apiInput.View()) + "\n\n" + mutedStyle.Render("Enter confirm  ·  Esc cancel")
 	case screenProject:
 		body = brandStyle.Render("NEW PROJECT") + "\n" + titleStyle.Render("Create or open a project directory") + "\n" + mutedStyle.Render("Enter a folder path. OpenKyrozen creates it if needed and starts a new chat.") + "\n\n" + focusStyle.Copy().Width(maxInt(1, m.width-12)).MaxWidth(maxInt(1, m.width-12)).Render(m.projectInput.View()) + "\n\n" + mutedStyle.Render("Enter create / open  ·  Esc cancel")
+	case screenDeleteConfirm:
+		if m.pendingDeleteKind == "delete_project" {
+			body = redStyle.Render("DELETE PROJECT") + "\n" + titleStyle.Render(m.pendingDeleteTitle) + "\n" + softStyle.Render(m.pendingDeletePath) + "\n\n" + mutedStyle.Render("The workspace folder will move to system trash. Project chats and stored project data will be removed.") + "\n\n" + greenStyle.Render("Y / Enter  move to trash") + "    " + redStyle.Render("N / Esc  cancel")
+		} else {
+			body = redStyle.Render("DELETE CONVERSATION") + "\n" + titleStyle.Render(m.pendingDeleteTitle) + "\n\n" + mutedStyle.Render("Saved conversation data and history snapshots will be removed. Workspace files will stay.") + "\n\n" + greenStyle.Render("Y / Enter  delete") + "    " + redStyle.Render("N / Esc  cancel")
+		}
 	case screenApproval:
 		body = amberStyle.Render("!  APPROVAL REQUIRED") + "\n" + titleStyle.Render("Confirm this action") + "\n\n" + softStyle.Render(m.approvalTool) + "\n" + softStyle.Render(m.approvalArgs) + "\n\n" + mutedStyle.Render("This may change local or remote state.") + "\n\n" + greenStyle.Render("Y / Enter  approve") + "    " + redStyle.Render("N / Esc  deny")
 	case screenSelfLearning:

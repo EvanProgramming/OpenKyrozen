@@ -12,6 +12,7 @@ from .usage import UsageRepository
 from .memory import MemoryRepository
 from .learning import LearningRepository
 from .catalogs import CatalogsRepository
+from .deletion import DeletionRepository
 
 class EventStore:
     def __init__(self, path=None):
@@ -26,11 +27,19 @@ class EventStore:
         self.memory = MemoryRepository(self.database)
         self.learning = LearningRepository(self.database)
         self.catalogs = CatalogsRepository(self.database)
+        self.deletion = DeletionRepository(self.database)
     _json = staticmethod(SQLiteDatabase._json)
     _loads = staticmethod(SQLiteDatabase._loads)
 
     def append_event(self, event_type: str, payload: Any, *, user_id: str='local', workspace_id: str='default', session_id: str | None=None, task_id: str | None=None):
         return self.events.append_event(event_type, payload, user_id=user_id, workspace_id=workspace_id, session_id=session_id, task_id=task_id)
+
+    def delete_session_data(self, *, user_id: str, workspace_id: str, session_id: str):
+        return self.deletion.delete_session(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
+
+    def delete_workspace_data(self, *, user_id: str, workspace_id: str, registry_workspace_id: str):
+        return self.deletion.delete_workspace(user_id=user_id, workspace_id=workspace_id,
+                                              registry_workspace_id=registry_workspace_id)
 
     def list_events(self, event_type: str | None=None, *, limit: int=100, workspace_id: str='default', session_id: str | None=None, user_id: str | None=None):
         return self.events.list_events(event_type, limit=limit, workspace_id=workspace_id, session_id=session_id, user_id=user_id)

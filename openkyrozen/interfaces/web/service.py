@@ -13,7 +13,7 @@ class WebService:
         self._owns_application = application is None
         self._application = application
         self._scheduler_instance = None
-        self.app = FastAPI(title="OpenKyrozen API", description="Self-learning AI Agent — REST API + Web Chat", version="2.0.6")
+        self.app = FastAPI(title="OpenKyrozen API", description="Self-learning AI Agent — REST API + Web Chat", version="2.0.7")
         self._SERVER_TOKEN = os.environ.get("KYROZEN_SERVER_TOKEN", "").strip()
 
         self._BROWSER_AUTH_COOKIE = "openkyrozen_browser_session"

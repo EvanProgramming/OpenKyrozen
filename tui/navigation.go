@@ -4,13 +4,18 @@ import (
 	"strings"
 )
 
-type navigationTarget struct{ scopeID, id string }
+type navigationTarget struct{ scopeID, id, path, kind string }
 
 func (m model) navigationTargets() []navigationTarget {
 	var targets []navigationTarget
 	for _, group := range m.navigation {
+		kind := "workspace"
+		if group.scope == "project" {
+			kind = "project"
+		}
+		targets = append(targets, navigationTarget{scopeID: group.scopeID, path: group.path, kind: kind})
 		for _, chat := range group.chats {
-			targets = append(targets, navigationTarget{scopeID: group.scopeID, id: chat.id})
+			targets = append(targets, navigationTarget{scopeID: group.scopeID, id: chat.id, path: group.path, kind: "chat"})
 		}
 	}
 	return targets
@@ -24,6 +29,7 @@ func (m model) navigationSidebar(panelWidth, height int) string {
 		brandStyle.Render("N  + New chat"),
 		brandStyle.Render("P  + New project"),
 		mutedStyle.Render("Ctrl+B focus / close"),
+		mutedStyle.Render("d delete selected chat / project"),
 	}
 	if height > 9 {
 		lines = append(lines, "")
@@ -37,6 +43,10 @@ func (m model) navigationSidebar(panelWidth, height int) string {
 			groupStyle = brandStyle
 		}
 		body = append(body, groupStyle.Render(compactText(group.name, textWidth)))
+		if m.navigationFocused && index == m.navigationIndex {
+			selectedRow = len(body) - 1
+		}
+		index++
 		if len(group.chats) == 0 {
 			body = append(body, mutedStyle.Render("  No chats"))
 		}

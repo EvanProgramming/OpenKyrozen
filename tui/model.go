@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var version = "2.0.6"
+var version = "2.0.7"
 
 var openKyrozenBanner = []string{
 	" ███  ████  █████ █   █ █   █ █   █ ████   ███  █████ █████ █   █",
@@ -23,24 +23,25 @@ var openKyrozenBanner = []string{
 type screen string
 
 const (
-	screenSplash       screen = "splash"
-	screenOnboarding   screen = "onboarding"
-	screenChat         screen = "chat"
-	screenProvider     screen = "provider"
-	screenAPIKey       screen = "api_key"
-	screenApproval     screen = "approval"
-	screenSelfLearning screen = "self_learning"
-	screenMode         screen = "mode"
-	screenPermissions  screen = "permissions"
-	screenQuestion     screen = "question"
-	screenPlan         screen = "plan"
-	screenGraph        screen = "graph"
-	screenAgents       screen = "agents"
-	screenGithubAuth   screen = "github_auth"
-	screenSettings     screen = "settings"
-	screenProject      screen = "project"
-	screenUpdating     screen = "updating"
-	screenError        screen = "error"
+	screenSplash        screen = "splash"
+	screenOnboarding    screen = "onboarding"
+	screenChat          screen = "chat"
+	screenProvider      screen = "provider"
+	screenAPIKey        screen = "api_key"
+	screenApproval      screen = "approval"
+	screenSelfLearning  screen = "self_learning"
+	screenMode          screen = "mode"
+	screenPermissions   screen = "permissions"
+	screenQuestion      screen = "question"
+	screenPlan          screen = "plan"
+	screenGraph         screen = "graph"
+	screenAgents        screen = "agents"
+	screenGithubAuth    screen = "github_auth"
+	screenSettings      screen = "settings"
+	screenProject       screen = "project"
+	screenDeleteConfirm screen = "delete_confirm"
+	screenUpdating      screen = "updating"
+	screenError         screen = "error"
 )
 
 type chatMessage struct {
@@ -130,6 +131,11 @@ type model struct {
 	navigationIndex           int
 	navigationOpen            bool
 	navigationFocused         bool
+	pendingDeleteKind         string
+	pendingDeleteScopeID      string
+	pendingDeleteSessionID    string
+	pendingDeletePath         string
+	pendingDeleteTitle        string
 	messages                  []chatMessage
 	tasks                     []taskItem
 	agents                    []map[string]any

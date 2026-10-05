@@ -357,7 +357,7 @@ func (m *model) applyNavigation(event backendEvent) {
 	}
 	m.navigationIndex = 0
 	for index, target := range m.navigationTargets() {
-		if target.scopeID == m.activeScopeID && target.id == m.activeSessionID {
+		if target.kind == "chat" && target.scopeID == m.activeScopeID && target.id == m.activeSessionID {
 			m.navigationIndex = index
 			break
 		}

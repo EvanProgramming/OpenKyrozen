@@ -40,6 +40,10 @@ def source_files() -> list[Path]:
 
 def route_for(source: Path) -> str:
     relative = source.relative_to(ROOT).as_posix()
+    if relative == "docs/index.md":
+        return "/docs/"
+    if relative == "SECURITY.md":
+        return "/docs/security-policy/"
     if relative == "README.zh-CN.md":
         return "/zh-cn/docs/readme/"
     if relative in ("README.ja.md", "README.ko.md"):
@@ -368,6 +372,7 @@ def extend_sitemap(entries: list[dict[str, str]]) -> None:
             continue
         node = ET.SubElement(root, f"{{{SITEMAP_NS}}}url")
         ET.SubElement(node, f"{{{SITEMAP_NS}}}loc").text = url
+        existing.add(url)
         for code, alternate in alternate_links(route):
             link = ET.SubElement(node, f"{{{XHTML_NS}}}link")
             link.set("rel", "alternate")

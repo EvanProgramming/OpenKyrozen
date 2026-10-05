@@ -18,8 +18,8 @@ PATHS = {
     "zh-cn": {"home": "/zh-cn/", "features": "/zh-cn/features/", "install": "/zh-cn/install/", "faq": "/zh-cn/faq/", "docs": "/zh-cn/docs/"},
 }
 INSTALL_COMMANDS = {
-    "unix": "curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/install.sh | sh",
-    "windows": "irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/install.ps1 | iex",
+    "unix": "curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.7/install.sh | sh",
+    "windows": "irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.7/install.ps1 | iex",
 }
 
 PAGES = {
@@ -87,10 +87,10 @@ PAGES = {
             "body": """
 <section class="section install-section" id="start">
   <div class="section-heading"><p class="eyebrow">RECOMMENDED · macOS OR LINUX</p><h2>Install from a terminal.</h2><p>Run the installer, then launch OpenKyrozen. The first run guides you through provider setup.</p></div>
-  <div class="code-card"><div class="code-label"><span>Shell</span><button class="copy-button" type="button" data-copy="cmd-unix">Copy</button></div><pre><code id="cmd-unix">curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/install.sh | sh
+  <div class="code-card"><div class="code-label"><span>Shell</span><button class="copy-button" type="button" data-copy="cmd-unix">Copy</button></div><pre><code id="cmd-unix">curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.7/install.sh | sh
 kyrozen</code></pre></div>
   <div class="section-heading compact"><p class="eyebrow">WINDOWS POWERSHELL</p><h2>Use the Windows installer.</h2></div>
-  <div class="code-card"><div class="code-label"><span>PowerShell</span><button class="copy-button" type="button" data-copy="cmd-windows">Copy</button></div><pre><code id="cmd-windows">irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/install.ps1 | iex
+  <div class="code-card"><div class="code-label"><span>PowerShell</span><button class="copy-button" type="button" data-copy="cmd-windows">Copy</button></div><pre><code id="cmd-windows">irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.7/install.ps1 | iex
 kyrozen</code></pre></div>
   <p class="copy-status" aria-live="polite"></p>
 </section>
@@ -102,7 +102,7 @@ kyrozen</code></pre></div>
   <div class="section-heading"><p class="eyebrow">OTHER PATHS</p><h2>Prefer to work from source?</h2></div>
   <div class="card-grid two">
     <article class="feature-card"><span class="card-index">A</span><h3>Clone the repository</h3><p>For development, install the project dependencies and run the agent from the checkout.</p><div class="code-inline">git clone https://github.com/EvanProgramming/OpenKyrozen.git<br>cd OpenKyrozen<br>make install<br>make run</div><a href="https://github.com/EvanProgramming/OpenKyrozen">Source repository <span aria-hidden="true">↗</span></a></article>
-    <article class="feature-card"><span class="card-index">B</span><h3>Install the verified wheel</h3><p>Use the project’s published release wheel with uv and Python 3.12.</p><div class="code-inline">uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.6/openkyrozen-2.0.6-py3-none-any.whl</div><a href="https://github.com/EvanProgramming/OpenKyrozen/releases">Browse releases <span aria-hidden="true">↗</span></a></article>
+    <article class="feature-card"><span class="card-index">B</span><h3>Install the verified wheel</h3><p>Use the project’s published release wheel with uv and Python 3.12.</p><div class="code-inline">uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.7/openkyrozen-2.0.7-py3-none-any.whl</div><a href="https://github.com/EvanProgramming/OpenKyrozen/releases">Browse releases <span aria-hidden="true">↗</span></a></article>
   </div>
 </section>
 <section class="closing-cta"><div><p class="eyebrow">NEXT</p><h2>See what OpenKyrozen can do.</h2><p>Learn about the tools, memory, learning system, and safety model.</p></div><a class="button button-primary" href="/features/">Explore capabilities <span aria-hidden="true">↗</span></a></section>
@@ -193,10 +193,10 @@ kyrozen</code></pre></div>
             "body": """
 <section class="section install-section" id="start">
   <div class="section-heading"><p class="eyebrow">推荐 · macOS 或 Linux</p><h2>在终端中安装。</h2><p>运行安装程序后启动 OpenKyrozen。首次启动会引导你配置模型服务商。</p></div>
-  <div class="code-card"><div class="code-label"><span>Shell</span><button class="copy-button" type="button" data-copy="cmd-unix">复制</button></div><pre><code id="cmd-unix">curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/install.sh | sh
+  <div class="code-card"><div class="code-label"><span>Shell</span><button class="copy-button" type="button" data-copy="cmd-unix">复制</button></div><pre><code id="cmd-unix">curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.7/install.sh | sh
 kyrozen</code></pre></div>
   <div class="section-heading compact"><p class="eyebrow">WINDOWS POWERSHELL</p><h2>使用 Windows 安装程序。</h2></div>
-  <div class="code-card"><div class="code-label"><span>PowerShell</span><button class="copy-button" type="button" data-copy="cmd-windows">复制</button></div><pre><code id="cmd-windows">irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/install.ps1 | iex
+  <div class="code-card"><div class="code-label"><span>PowerShell</span><button class="copy-button" type="button" data-copy="cmd-windows">复制</button></div><pre><code id="cmd-windows">irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.7/install.ps1 | iex
 kyrozen</code></pre></div>
   <p class="copy-status" aria-live="polite"></p>
 </section>
@@ -208,7 +208,7 @@ kyrozen</code></pre></div>
   <div class="section-heading"><p class="eyebrow">其他方式</p><h2>更喜欢从源码运行？</h2></div>
   <div class="card-grid two">
     <article class="feature-card"><span class="card-index">A</span><h3>克隆代码仓库</h3><p>用于开发的方式：安装项目依赖并从源码目录运行智能体。</p><div class="code-inline">git clone https://github.com/EvanProgramming/OpenKyrozen.git<br>cd OpenKyrozen<br>make install<br>make run</div><a href="https://github.com/EvanProgramming/OpenKyrozen">源代码仓库 <span aria-hidden="true">↗</span></a></article>
-    <article class="feature-card"><span class="card-index">B</span><h3>安装已验证的 wheel</h3><p>使用 uv 和 Python 3.12 安装项目发布的 wheel。</p><div class="code-inline">uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.6/openkyrozen-2.0.6-py3-none-any.whl</div><a href="https://github.com/EvanProgramming/OpenKyrozen/releases">查看发布版本 <span aria-hidden="true">↗</span></a></article>
+    <article class="feature-card"><span class="card-index">B</span><h3>安装已验证的 wheel</h3><p>使用 uv 和 Python 3.12 安装项目发布的 wheel。</p><div class="code-inline">uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.7/openkyrozen-2.0.7-py3-none-any.whl</div><a href="https://github.com/EvanProgramming/OpenKyrozen/releases">查看发布版本 <span aria-hidden="true">↗</span></a></article>
   </div>
 </section>
 <section class="closing-cta"><div><p class="eyebrow">下一步</p><h2>了解 OpenKyrozen 能做什么。</h2><p>查看工具、记忆、学习系统与安全模型。</p></div><a class="button button-primary" href="/zh-cn/features/">浏览产品能力 <span aria-hidden="true">↗</span></a></section>

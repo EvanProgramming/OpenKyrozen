@@ -141,6 +141,8 @@ class Backend:
             action = payload.get("action")
             if action == "switch" and isinstance(payload.get("scope_id"), str) and isinstance(payload.get("session_id"), str):
                 self._switch_chat(payload["scope_id"], payload["session_id"], request_id)
+            elif action in {"delete_chat", "delete_project"} and isinstance(payload.get("scope_id"), str):
+                self._delete_navigation_item(action, payload, request_id)
             elif action == "new":
                 self._command("new", "", request_id)
             elif action == "project" and isinstance(payload.get("path"), str):
@@ -210,7 +212,7 @@ class Backend:
             return None, "Message is too large."
         return payload, None
 
-    from .navigation import (_new_chat_id, _register_chat, _chat_title, _scope_chats, _navigation_groups, navigation, _bind_chat, _switch_chat, _emit_bound_state)
+    from .navigation import (_new_chat_id, _register_chat, _chat_title, _scope_chats, _navigation_groups, navigation, _bind_chat, _switch_chat, _emit_bound_state, _delete_navigation_item, _delete_navigation_item_locked, _trash_project, _trash_vectors, _history_path, _remove_tree)
 
     from .onboarding import (start, _check_for_update, prompt_api_key, prompt_provider, _prompt_onboarding_learning, _complete_onboarding, _continue_onboarding, configure_provider)
 

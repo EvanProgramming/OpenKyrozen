@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Any
 
 from rich.console import Console
 from .protocol import (PROTOCOL_VERSION, MAX_LINE_BYTES, MAX_TEXT_CHARS, MAX_ARGS_CHARS, MAX_REQUEST_ID_CHARS, APPROVAL_TIMEOUT_SECONDS, MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, _SENSITIVE_KEY_RE, _OUTPUT_LOCK, _redact, _safe_json)
+from openkyrozen.workspace.context import source_scope_id
 
 @staticmethod
 def _new_chat_id() -> str:
@@ -21,13 +23,19 @@ def _register_chat(self, session_id: str, *, title: str | None = "New chat") -> 
         return
     store = runtime.memory_bank.store
     if not context.is_global:
-        store.append_event(
-            "tui.project_opened",
-            {"path": str(context.active_root), "name": context.active_root.name,
-             "source_scope_id": context.source_scope_id},
+        known = store.list_events(
+            "tui.project_opened", limit=None, workspace_id=runtime.memory_bank.workspace_id,
             user_id=runtime.memory_bank.user_id,
-            workspace_id=runtime.memory_bank.workspace_id,
         )
+        if not any(event.get("payload", {}).get("source_scope_id") == context.source_scope_id
+                   for event in known):
+            store.append_event(
+                "tui.project_opened",
+                {"path": str(context.active_root), "name": context.active_root.name,
+                 "source_scope_id": context.source_scope_id},
+                user_id=runtime.memory_bank.user_id,
+                workspace_id=runtime.memory_bank.workspace_id,
+            )
     if title is None:
         return
     store.append_event(
@@ -92,7 +100,7 @@ def _navigation_groups(self) -> list[dict[str, Any]]:
     }]
     projects: dict[str, dict[str, str]] = {}
     for event in store.list_events(
-            "tui.project_opened", limit=1000, workspace_id=runtime.memory_bank.workspace_id,
+            "tui.project_opened", limit=None, workspace_id=runtime.memory_bank.workspace_id,
             user_id=runtime.memory_bank.user_id):
         payload = event["payload"]
         scope_id, path = str(payload.get("source_scope_id") or ""), str(payload.get("path") or "")
@@ -183,3 +191,155 @@ def _emit_bound_state(self, request_id: str) -> None:
     self.usage(request_id)
     self.emit("agents", request_id, agents=runtime.delegation().snapshot(),
               session_id=runtime.current_session.session_id, source_scope_id=runtime.memory_bank.file_scope_id)
+
+
+def _trash_project(self, path: Path) -> None:
+    from send2trash import send2trash
+
+    send2trash(str(path))
+
+
+def _trash_vectors(self, *, session_id: str | None = None, workspace_id: str | None = None) -> None:
+    memory = self.agent.memory_bank
+    user_id = memory.user_id
+    conditions = [{"user_id": user_id}]
+    if session_id:
+        conditions.append({"session_id": session_id})
+    if workspace_id:
+        conditions.append({"workspace_id": workspace_id})
+    where = {"$and": conditions}
+    for collection in (memory._collection, memory._files_collection):
+        if collection is None:
+            continue
+        try:
+            collection.delete(where=where)
+        except Exception as exc:
+            memory._last_error = f"memory index deletion failed: {exc}"
+            raise RuntimeError(memory._last_error) from exc
+
+
+def _history_path(self, workspace_id: str, session_id: str | None = None) -> Path:
+    root = Path(self.agent._state_root()).expanduser().resolve() / "history" / workspace_id
+    if session_id is None:
+        return root
+    from openkyrozen.workspace.history import HistoryManager
+
+    return root / HistoryManager._safe_component(session_id)
+
+
+def _remove_tree(path: Path) -> None:
+    if path.is_symlink():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def _delete_navigation_item(self, action: str, payload: dict[str, Any], request_id: str) -> None:
+    # submit() sets busy while holding this same lock, so a delete cannot slip
+    # between checking the turn state and removing its session/project data.
+    with self._state_lock:
+        if self._busy:
+            self.emit("error", request_id, code="busy", error="Cannot delete while a turn is running.")
+            return
+        self._delete_navigation_item_locked(action, payload, request_id)
+
+
+def _delete_navigation_item_locked(self, action: str, payload: dict[str, Any], request_id: str) -> None:
+    if payload.get("confirmed") is not True:
+        self.emit("error", request_id, code="confirmation_required", error="Confirm deletion in the UI first.")
+        return
+
+    scope_id = str(payload.get("scope_id") or "")
+    groups = self._navigation_groups()
+    group = next((item for item in groups if item["scope_id"] == scope_id), None)
+    if group is None:
+        self.emit("error", request_id, code="unknown_scope", error="Unknown project or workspace.")
+        return
+
+    runtime = self.agent
+    store = runtime.memory_bank.store
+    user_id = runtime.memory_bank.user_id
+    if action == "delete_chat":
+        session_id = str(payload.get("session_id") or "")
+        chat = next((item for item in group["chats"] if item["session_id"] == session_id), None)
+        if chat is None or not session_id:
+            self.emit("error", request_id, code="unknown_session", error="Unknown conversation.")
+            return
+        try:
+            store.delete_session_data(user_id=user_id, workspace_id=scope_id, session_id=session_id)
+            self._trash_vectors(session_id=session_id)
+            _remove_tree(self._history_path(scope_id, session_id))
+        except Exception as exc:
+            self.emit("error", request_id, code="delete_failed", error=str(exc))
+            return
+        for key in list(getattr(runtime, "_sessions", {})):
+            if len(key) >= 3 and key[0] == user_id and key[2] == session_id:
+                runtime._sessions.pop(key, None)
+
+        if session_id == self._active_session_id and scope_id == runtime.interaction_workspace_id():
+            remaining = [item for item in group["chats"] if item["session_id"] != session_id]
+            target = remaining[0] if remaining else None
+            try:
+                self._bind_chat(
+                    target["session_id"] if target else self._new_chat_id(),
+                    project_path=group["path"] or None,
+                    global_mode=group["scope"] == "global",
+                )
+                self._emit_bound_state(request_id)
+            except (OSError, ValueError) as exc:
+                self.emit("error", request_id, code="session_switch_failed", error=str(exc))
+        else:
+            self.navigation(request_id)
+        self.emit("response", request_id, text="Conversation deleted.")
+        return
+
+    if action != "delete_project" or group["scope"] != "project":
+        self.emit("error", request_id, code="invalid_navigation", error="Only project folders can be deleted here.")
+        return
+    if not re.fullmatch(r"source-[a-f0-9]{32}", scope_id):
+        self.emit("error", request_id, code="invalid_project", error="Invalid project scope.")
+        return
+    try:
+        path = Path(group["path"]).expanduser().resolve(strict=True)
+        if not path.is_dir() or source_scope_id(path) != scope_id:
+            raise ValueError("The project path no longer matches this navigation entry.")
+        home = Path.home().expanduser().resolve()
+        application_state = (home / ".kyrozen").resolve()
+        global_workspace = application_state / "workspace"
+        if (path == Path(path.anchor) or path == home or home.is_relative_to(path)
+                or path == application_state or path.is_relative_to(application_state)
+                or application_state.is_relative_to(path)
+                or path == global_workspace or path.is_relative_to(global_workspace)
+                or global_workspace.is_relative_to(path)):
+            raise ValueError("This protected OpenKyrozen or home directory cannot be deleted as a project.")
+        self._trash_project(path)
+    except Exception as exc:
+        self.emit("error", request_id, code="project_delete_failed", error=str(exc))
+        return
+
+    try:
+        chat_ids = store.delete_workspace_data(
+            user_id=user_id, workspace_id=scope_id,
+            registry_workspace_id=runtime.memory_bank.workspace_id,
+        )
+        for session_id in chat_ids:
+            self._trash_vectors(session_id=session_id)
+        self._trash_vectors(workspace_id=scope_id)
+        _remove_tree(self._history_path(scope_id))
+        _remove_tree(Path(runtime._state_root()).expanduser().resolve() / "graphs" / scope_id)
+    except Exception as exc:
+        self.emit("error", request_id, code="project_cleanup_failed",
+                  error=f"Workspace moved to trash, but stored project data could not be fully cleared: {exc}")
+        return
+
+    if scope_id == runtime.interaction_workspace_id():
+        global_group = next((item for item in groups if item["scope"] == "global"), None)
+        target = global_group["chats"][0] if global_group and global_group["chats"] else None
+        try:
+            self._bind_chat(target["session_id"] if target else self._new_chat_id(), global_mode=True)
+            self._emit_bound_state(request_id)
+        except (OSError, ValueError) as exc:
+            self.emit("error", request_id, code="session_switch_failed", error=str(exc))
+    else:
+        self.navigation(request_id)
+    self.emit("response", request_id, text=f"Project moved to system trash: {path}")
