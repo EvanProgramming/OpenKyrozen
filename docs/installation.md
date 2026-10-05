@@ -2,21 +2,21 @@
 
 ## Requirements
 
-The published v2.0.6 release supports Python 3.12 and 3.13. Python 3.14 is excluded by the package metadata. The official installers provision Python through `uv`; a source checkout needs Git and a supported Python. The optional Bubble Tea terminal UI is a Go binary distributed with the release. Docker uses Python 3.12. See the live [release page](https://github.com/EvanProgramming/OpenKyrozen/releases/latest) before copying a pinned command: installer examples below identify the current release as of 5 October 2026.
+The published v2.0.7 release supports Python 3.12 and 3.13. Python 3.14 is excluded by the package metadata. The official installers provision Python through `uv`; a source checkout needs Git and a supported Python. The optional Bubble Tea terminal UI is a Go binary distributed with the release. Docker uses Python 3.12. See the live [release page](https://github.com/EvanProgramming/OpenKyrozen/releases/latest) before copying a pinned command: installer examples below identify the current release as of 5 October 2026.
 
 ## Install the published release
 
 On macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.7/install.sh | sh
 kyrozen --version
 ```
 
 On Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.6/install.ps1 | iex
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.7/install.ps1 | iex
 kyrozen --version
 ```
 
@@ -26,7 +26,7 @@ For a direct Python install, add the optional web server dependencies explicitly
 
 ```sh
 uv tool install --python 3.12 --force --with fastapi --with uvicorn \
-  https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.6/openkyrozen-2.0.6-py3-none-any.whl
+  https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.7/openkyrozen-2.0.7-py3-none-any.whl
 kyrozen --version
 ```
 
@@ -69,7 +69,7 @@ The value shown is a shell placeholder; replace it locally and never commit a re
 
 For an installed release, type `/update` in the running agent. The updater selects one verified source revision for Python and the terminal binary, checks installed package provenance, and stages the replacement TUI before activation. Restart when prompted so the new process loads the installed version. Updates need network access and package dependencies; errors and partial outcomes include recovery instructions.
 
-The published v2.0.6 one-line installers are pinned. The update command tracks the latest verified `main` revision, so it can install a development revision newer than the release version. If startup reports an incomplete update, exit and rerun the official installer. `kyrozen --help` is also intended to remain available for recovery. Historical Windows installations that predate the staged updater should exit the application and run the current official installer before updating.
+The published v2.0.7 one-line installers are pinned. The update command tracks the latest verified `main` revision, so it can install a development revision newer than the release version. If startup reports an incomplete update, exit and rerun the official installer. `kyrozen --help` is also intended to remain available for recovery. Historical Windows installations that predate the staged updater should exit the application and run the current official installer before updating.
 
 ## State and uninstalling
 

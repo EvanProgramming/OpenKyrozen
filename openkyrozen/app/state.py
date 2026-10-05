@@ -38,7 +38,7 @@ def initialise(self):
 
     self.UTC = datetime.timezone.utc
 
-    self.RELEASE_VERSION = "2.0.6"
+    self.RELEASE_VERSION = "2.0.7"
 
     self.RELEASE_TAG = f"v{self.RELEASE_VERSION}"
 
