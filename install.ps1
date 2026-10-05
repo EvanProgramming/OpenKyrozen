@@ -19,11 +19,11 @@ function Warn([string]$Message) {
 }
 
 if ($ShowHelp) {
-    Write-Output "OpenKyrozen installer: installs the pinned v2.0.7 GitHub release, uv, Python 3.12/3.13, and the Bubble Tea terminal UI."
+    Write-Output "OpenKyrozen installer: installs the pinned v2.0.8 GitHub release, uv, Python 3.12/3.13, and the Bubble Tea terminal UI."
     exit 0
 }
 
-$releaseVersion = "2.0.7"
+$releaseVersion = "2.0.8"
 $releaseTag = "v$releaseVersion"
 $goVersion = "1.27.1"
 $releaseBaseUrl = "https://github.com/EvanProgramming/OpenKyrozen/releases/download/$releaseTag"
@@ -70,12 +70,6 @@ try {
     Fail "Could not create writable OpenKyrozen state directories under $stateDir"
 }
 
-try {
-    Invoke-WebRequest -UseBasicParsing -Uri $releaseWheelUrl -Method Head -TimeoutSec 20 | Out-Null
-} catch {
-    Fail "GitHub release asset is unavailable: $releaseTag"
-}
-
 $localBin = Join-Path $homeDirectory ".local\bin"
 $cargoBin = Join-Path $homeDirectory ".cargo\bin"
 $env:Path = "$localBin;$cargoBin;$env:Path"
@@ -119,7 +113,9 @@ if ($LASTEXITCODE -ne 0) {
     Info "uv cache was incomplete; retrying without the existing cache..."
     & $uvCommand.Source --no-cache tool install --python $pythonVersion --force --with fastapi --with uvicorn $releaseWheelUrl
 }
-if ($LASTEXITCODE -ne 0) { Fail "OpenKyrozen installation failed from release $releaseTag." }
+if ($LASTEXITCODE -ne 0) {
+    Fail "OpenKyrozen installation failed from release $releaseTag ($releaseWheelUrl). Check the uv error above and verify GitHub access."
+}
 try { & $uvCommand.Source tool update-shell *> $null } catch { }
 
 $ghBootstrap = Join-Path $localBin "kyrozen-bootstrap-gh.exe"

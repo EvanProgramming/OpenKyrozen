@@ -80,14 +80,29 @@ jobs:
         with:
           ref: ${{ inputs.release_tag || github.ref }}
 
-      - name: Install the tagged release with the PowerShell installer
-        shell: pwsh
+      - name: Install the tagged release with Windows PowerShell 5.1
+        shell: powershell
         run: |
-          $auditHome = Join-Path $env:RUNNER_TEMP "openkyrozen-release-home"
+          $auditHome = Join-Path $env:RUNNER_TEMP "openkyrozen-release-home-ps51"
           New-Item -ItemType Directory -Force -Path $auditHome | Out-Null
           $env:HOME = $auditHome
           $env:USERPROFILE = $auditHome
-          Invoke-RestMethod "https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/$env:RELEASE_TAG/install.ps1" | Invoke-Expression
+          irm "https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/$env:RELEASE_TAG/install.ps1" | iex
+          $bin = Join-Path $auditHome ".local\bin"
+          & (Join-Path $bin "kyrozen.exe") --version
+          & (Join-Path $bin "kyrozen.exe") --help *> $null
+          & (Join-Path $bin "kyrozen-web.exe") --help *> $null
+          $revision = & (Join-Path $auditHome ".kyrozen\bin\openkyrozen-tui.exe") --revision
+          if ($revision -ne $env:RELEASE_TAG) { throw "Installed TUI revision does not match release" }
+
+      - name: Install the tagged release with PowerShell 7
+        shell: pwsh
+        run: |
+          $auditHome = Join-Path $env:RUNNER_TEMP "openkyrozen-release-home-pwsh"
+          New-Item -ItemType Directory -Force -Path $auditHome | Out-Null
+          $env:HOME = $auditHome
+          $env:USERPROFILE = $auditHome
+          irm "https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/$env:RELEASE_TAG/install.ps1" | iex
           $bin = Join-Path $auditHome ".local\bin"
           & (Join-Path $bin "kyrozen.exe") --version
           & (Join-Path $bin "kyrozen.exe") --help *> $null

@@ -12,19 +12,19 @@
 
 ## Install
 
-The current published stable release is **v2.0.7**. It supports Python 3.12 and 3.13; Python 3.14 is outside the supported range.
+The current published stable release is **v2.0.8**. It supports Python 3.12 and 3.13; Python 3.14 is outside the supported range.
 
 macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.7/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.8/install.sh | sh
 kyrozen
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.7/install.ps1 | iex
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.8/install.ps1 | iex
 kyrozen
 ```
 
