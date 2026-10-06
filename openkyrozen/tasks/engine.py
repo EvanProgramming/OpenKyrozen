@@ -126,12 +126,14 @@ class TaskManager:
             score = max(score, 120 if criterion_args else 100)
         return score or -1
 
-    def _match_receipt_task(self, action: str, args: str) -> dict[str, Any] | None:
+    def _match_receipt_task(self, action: str, args: str,
+                            args_fingerprint: str | None = None) -> dict[str, Any] | None:
         candidates = [
             task for task in self.tasks
             if canonical_status(task.get("status", "pending")) in {"pending", "running"}
         ]
-        scored = [(self._receipt_match_score(task, action, args), task) for task in candidates]
+        scored = [(self._receipt_match_score(task, action, args, args_fingerprint), task)
+                  for task in candidates]
         scored = [(score, task) for score, task in scored if score > 0]
         if scored:
             highest = max(score for score, _task in scored)
@@ -240,7 +242,7 @@ class TaskManager:
                 targets = [candidate]
                 item["task_id"] = requested_task_id
         if not task_id:
-            matched = self._match_receipt_task(canonical, normalized_args)
+            matched = self._match_receipt_task(canonical, normalized_args, args_fingerprint)
             if matched is not None:
                 targets = [matched]
                 inferred = True

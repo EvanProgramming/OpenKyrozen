@@ -63,6 +63,22 @@ class TaskConsistencyTests(unittest.TestCase):
             manager.set_status(index, "succeeded", evidence=evidence)
             self.assertEqual(manager.tasks[index]["status"], "succeeded")
 
+    def test_long_receipt_fingerprint_matches_inferred_acceptance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = MemoryBank(Path(directory) / "state.sqlite3").store
+            manager = TaskManager(store, workspace_id="long-inferred", session_id="args")
+            args = "result.txt|" + "x" * 1100
+            index = manager.add_task("Write long result", acceptance=[
+                {"action": "write_file", "args": args},
+            ])
+            evidence = manager.record_evidence(
+                action="write_file", args=args[:1000],
+                args_fingerprint=hashlib.sha256(args.encode()).hexdigest(),
+                result="Wrote file", success=True, acceptance="verified",
+            )
+            self.assertEqual(evidence.get("task_id"), manager.tasks[index]["id"])
+            self.assertNotIn("unmatched_reason", evidence)
+
     def setUp(self):
         self._original_interaction = main._interaction_controller
         self._interaction_directory = tempfile.TemporaryDirectory()
