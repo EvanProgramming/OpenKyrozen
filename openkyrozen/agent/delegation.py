@@ -95,13 +95,21 @@ class WorkspaceAccess:
     def __init__(self):
         self.condition = threading.Condition()
         self.paths = set()
+        self.readers = {}
+        self.recursive_readers = {}
         self.exclusive = False
         self.owners = {}
 
     @contextmanager
-    def acquire(self, path=None, cancelled=lambda: False, owner=None, reading=False):
+    def acquire(self, path=None, cancelled=lambda: False, owner=None, reading=False, recursive=False):
         with self.condition:
-            while (self.exclusive or (path is None and self.paths) or path in self.paths
+            while (self.exclusive or (path is None and (self.paths or self.readers)) or path in self.paths
+                   or (not reading and self.readers.get(path, 0))
+                   or (path is None and self.recursive_readers)
+                   or (not reading and any(Path(path).is_relative_to(Path(scope))
+                                           for scope in self.recursive_readers))
+                   or (reading and recursive and any(Path(active).is_relative_to(Path(path))
+                                                     for active in self.paths))
                    or (not reading and path in self.owners and self.owners[path] != owner)):
                 if cancelled():
                     raise RuntimeError("Sub-agent cancelled")
@@ -110,6 +118,10 @@ class WorkspaceAccess:
                 raise RuntimeError("Sub-agent cancelled")
             if path is None:
                 self.exclusive = True
+            elif reading and recursive:
+                self.recursive_readers[path] = self.recursive_readers.get(path, 0) + 1
+            elif reading:
+                self.readers[path] = self.readers.get(path, 0) + 1
             else:
                 self.paths.add(path)
         try:
@@ -118,6 +130,14 @@ class WorkspaceAccess:
             with self.condition:
                 if path is None:
                     self.exclusive = False
+                elif reading and recursive:
+                    self.recursive_readers[path] -= 1
+                    if not self.recursive_readers[path]:
+                        del self.recursive_readers[path]
+                elif reading:
+                    self.readers[path] -= 1
+                    if not self.readers[path]:
+                        del self.readers[path]
                 else:
                     self.paths.remove(path)
                 self.condition.notify_all()
@@ -125,7 +145,11 @@ class WorkspaceAccess:
     @contextmanager
     def claim(self, paths, owner, cancelled):
         with self.condition:
-            while any(path in self.owners or path in self.paths for path in paths):
+            while any(
+                path in self.owners or path in self.paths or self.readers.get(path, 0)
+                or any(Path(path).is_relative_to(Path(scope)) for scope in self.recursive_readers)
+                for path in paths
+            ):
                 if cancelled():
                     raise RuntimeError("Sub-agent cancelled")
                 self.condition.wait(.1)

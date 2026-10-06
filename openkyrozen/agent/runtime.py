@@ -227,6 +227,7 @@ class AgentRuntime:
     from openkyrozen.providers.calls import (
         _provider_timeout_seconds,
         _bounded_provider_call,
+        _bounded_provider_stream,
         _get_llm_response,
     )
 

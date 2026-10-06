@@ -254,14 +254,28 @@ def _delegation_summary(self):
 def _delegation_tool_access(self, action, args):
     context = self.execution_context
     coordinator = context.coordinator
-    access = coordinator.access if coordinator else self._workspace_access.get(str(self._get_workspace_root().resolve()))
+    access = coordinator.access if coordinator else self._workspace_access.setdefault(
+        str(self._get_workspace_root().resolve()), WorkspaceAccess(),
+    )
     path = None
-    if action in {"write_file", "read_file"}:
+    if action in {"write_file", "edit_file", "read_file", "search_files"}:
         raw = str(args).split("|", 1)[0].strip()
+        if action in {"edit_file", "read_file", "search_files"} and raw.startswith("{"):
+            try:
+                request = json.loads(str(args))
+                if isinstance(request, dict):
+                    default = "." if action == "search_files" else ""
+                    raw = request.get("path", default)
+                else:
+                    raw = "." if action == "search_files" else ""
+            except json.JSONDecodeError:
+                raw = "." if action == "search_files" else ""
+        if action == "search_files" and not raw:
+            raw = "."
         path = str(self.current_session.workspace.adapters._resolve_workspace_path(raw))
     if coordinator:
         coordinator.check_cancelled(context.child_run_id)
-        if action == "write_file":
+        if action in {"write_file", "edit_file"}:
             brief = coordinator.runs[context.child_run_id]["assignment"]
             owned = {str((coordinator.root / p).resolve()) for p in brief["scope"]}
             if path not in owned:
@@ -271,10 +285,12 @@ def _delegation_tool_access(self, action, args):
             allowed, reason = parent.tasks.mutation_matches_current_task(action, str(args))
             if not allowed:
                 raise ValueError("Sub-agent action does not match accepted plan: " + reason)
-    guarded = action in {"read_file", "write_file"} or self._is_state_changing_action(action, str(args)) or action in {"git_diff", "git_show"}
+    guarded = action in {"read_file", "write_file", "edit_file", "search_files"} or self._is_state_changing_action(action, str(args)) or action in {"git_diff", "git_show"}
     if access and guarded:
         cancelled = (lambda: coordinator.cancelled[context.child_run_id].is_set()) if coordinator else (lambda: False)
-        with access.acquire(path, cancelled, context.child_run_id, reading=action == "read_file"):
+        with access.acquire(path, cancelled, context.child_run_id,
+                            reading=action in {"read_file", "search_files"},
+                            recursive=action == "search_files"):
             yield
     else:
         yield

@@ -1,4 +1,5 @@
 import json
+import hashlib
 import re
 import tempfile
 import subprocess
@@ -24,6 +25,202 @@ set_workspace_root = tools.set_workspace_root
 write_file = tools.write_file
 
 class WorkspaceToolTests(unittest.TestCase):
+    def test_structured_read_returns_hash_and_truncation_metadata(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "module.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                result = json.loads(tools.read_file(json.dumps({"path": "module.py"})))
+                excerpt = json.loads(tools.read_file(json.dumps(
+                    {"path": "module.py", "start_line": 2, "max_lines": 1},
+                )))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertEqual(result["content"], "one\ntwo\nthree\n")
+        self.assertEqual(result["start_line"], 1)
+        self.assertFalse(result["truncated"])
+        self.assertRegex(result["sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual((excerpt["content"], excerpt["start_line"], excerpt["end_line"]), ("two\n", 2, 2))
+        self.assertTrue(excerpt["truncated"])
+
+    def test_structured_read_streams_large_file_and_preserves_full_hash(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "large.txt"
+            data = ("x" * 100_000 + "\nselected\n") * 100
+            target.write_text(data, encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                with patch.object(Path, "read_bytes", side_effect=AssertionError("whole-file read")):
+                    result = json.loads(tools.read_file(json.dumps(
+                        {"path": "large.txt", "start_line": 2, "max_lines": 1}
+                    )))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertEqual(result["content"], "selected\n")
+        self.assertEqual(result["sha256"], hashlib.sha256(data.encode()).hexdigest())
+        self.assertEqual(result["total_lines"], 200)
+
+    def test_structured_read_keeps_prefix_of_line_spanning_chunks(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "long.txt").write_text("z" * 200_000 + "\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                result = json.loads(tools.read_file(json.dumps(
+                    {"path": "long.txt", "max_chars": 100}
+                )))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertEqual(result["content"], "z" * 100)
+        self.assertTrue(result["truncated"])
+
+    def test_edit_file_requires_matching_hash_and_unique_old_text(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "module.py"
+            target.write_text("value = 1\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                digest = __import__("hashlib").sha256(target.read_bytes()).hexdigest()
+                args = {"path": "module.py", "old_text": "value = 1", "new_text": "value = 2",
+                        "expected_sha256": digest}
+                self.assertIn("Updated", tools.edit_file(json.dumps(args)))
+                args["expected_sha256"] = "0" * 64
+                self.assertIn("stale", tools.edit_file(json.dumps(args)).lower())
+                self.assertEqual(target.read_text(encoding="utf-8"), "value = 2\n")
+            finally:
+                tools.set_workspace_root(original)
+
+    def test_search_files_is_literal_and_returns_relative_line_numbers(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "module.py").write_text("if a == b:\n    return 1\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                result = tools.search_files(json.dumps({"query": "a == b", "glob": "*.py"}))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertIn("module.py:1:", result)
+        self.assertIn("a == b", result)
+
+    def test_search_ripgrep_includes_hidden_files_and_skips_runtime_directories(self):
+        import shutil
+        rg = shutil.which("rg")
+        if not rg:
+            self.skipTest("ripgrep is not installed")
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in (
+                ".config/needed.txt", ".git/needed.txt", "venv/needed.txt",
+                ".venv/needed.txt", "node_modules/needed.txt", "__pycache__/needed.txt",
+            ):
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("needle\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                results = []
+                for rg_path in (rg, None):
+                    with patch("openkyrozen.tools.filesystem.shutil.which", return_value=rg_path):
+                        results.append(tools.search_files(json.dumps({"query": "needle", "glob": "*.txt"})))
+            finally:
+                tools.set_workspace_root(original)
+        for result in results:
+            self.assertIn(".config/needed.txt:1:needle", result)
+            for directory in (".git", "venv", ".venv", "node_modules", "__pycache__"):
+                self.assertNotIn(f"{directory}/needed.txt", result)
+
+    def test_search_ripgrep_scopes_exclusions_to_requested_directory(self):
+        import shutil
+        rg = shutil.which("rg")
+        if not rg:
+            self.skipTest("ripgrep is not installed")
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in ("docs/.config/needed.txt", "docs/.venv/needed.txt"):
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("needle\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                with patch("openkyrozen.tools.filesystem.shutil.which", return_value=rg):
+                    result = tools.search_files(json.dumps(
+                        {"query": "needle", "path": "docs", "glob": "*.txt"}
+                    ))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertIn("docs/.config/needed.txt:1:needle", result)
+        self.assertNotIn("docs/.venv/needed.txt", result)
+
+    def test_search_ripgrep_includes_filename_for_explicit_file(self):
+        import shutil
+        rg = shutil.which("rg")
+        if not rg:
+            self.skipTest("ripgrep is not installed")
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "module.py").write_text("needle\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                with patch("openkyrozen.tools.filesystem.shutil.which", return_value=rg):
+                    result = tools.search_files(json.dumps({"query": "needle", "path": "module.py"}))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertTrue(result.startswith("module.py:1:"), result)
+
+    def test_search_fallback_skips_symlinks_outside_workspace(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "workspace"
+            root.mkdir()
+            outside = Path(directory) / "outside.txt"
+            outside.write_text("secret-marker", encoding="utf-8")
+            (root / "linked.txt").symlink_to(outside)
+            tools.set_workspace_root(root)
+            try:
+                with patch("openkyrozen.tools.filesystem.shutil.which", return_value=None):
+                    result = tools.search_files(json.dumps({"query": "secret-marker"}))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertEqual(result, "No matches.")
+
+    def test_search_reports_timeout_when_ripgrep_is_killed_without_output(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_rg = root / "fake-rg"
+            fake_rg.write_text("#!/bin/sh\nexec /bin/sleep 30\n", encoding="utf-8")
+            fake_rg.chmod(0o755)
+            tools.set_workspace_root(root)
+
+            class ImmediateTimer:
+                def __init__(self, _delay, function):
+                    self.function = function
+
+                def start(self):
+                    self.function()
+
+                def cancel(self):
+                    pass
+
+            try:
+                with patch("openkyrozen.tools.filesystem.shutil.which", return_value=str(fake_rg)), \
+                        patch("openkyrozen.tools.filesystem.threading.Timer", ImmediateTimer):
+                    result = tools.search_files(json.dumps({"query": "absent"}))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertEqual(result, "Search timed out.")
+
     def test_file_tools_stay_inside_workspace(self):
         original_root = Path.cwd()
         with tempfile.TemporaryDirectory() as directory:
@@ -65,6 +262,8 @@ class WorkspaceToolTests(unittest.TestCase):
         readonly = allowed_tool_names(AVAILABLE_TOOLS, "readonly")
         self.assertIn("run_cmd", workspace)
         self.assertIn("write_file", workspace)
+        self.assertIn("edit_file", workspace)
+        self.assertIn("search_files", readonly)
         self.assertNotIn("git_reset", workspace)
         self.assertIn("git_reset", full)
         self.assertIn("graph_query", readonly)

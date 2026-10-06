@@ -1,10 +1,13 @@
-import tempfile
-import unittest
+import json
 import os
-from threading import RLock
-from unittest.mock import Mock, patch
+import tempfile
+import threading
+import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from threading import RLock
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from openkyrozen.persistence.store import EventStore
 from openkyrozen.learning.engine import LearningEngine
@@ -13,9 +16,11 @@ from openkyrozen.app.bootstrap import build_application
 _application = build_application(surface="cli")
 main = _application.runtime
 from openkyrozen.providers import OpenAICompatProvider, ProviderConfig
-from openkyrozen.agent.subagents import AgentProfile, SubAgentManager
 from openkyrozen.providers.custom import save_custom_provider_profile
+from openkyrozen.agent.subagents import AgentProfile, SubAgentManager
 import openkyrozen.agent.delegation_runtime as delegation_runtime
+from openkyrozen.agent.delegation_runtime import _delegation_tool_access
+from openkyrozen.agent.delegation import WorkspaceAccess
 
 
 class SubAgentTests(unittest.TestCase):
@@ -38,6 +43,7 @@ class SubAgentTests(unittest.TestCase):
                        "profile": "researcher", "run_id": "custom-subagent", "provider_model": "pending",
                        "review_agent": {}}
                 coordinator = SimpleNamespace(lock=RLock(), _publish=Mock(), root=Path(home))
+
                 def capture(config):
                     self.assertEqual(config.provider, "custom")
                     self.assertEqual(config.base_url, "https://workers.example/v1")
@@ -45,14 +51,135 @@ class SubAgentTests(unittest.TestCase):
                     self.assertEqual((config.model_simple, config.model_complex),
                                      ("special-review-id", "special-review-id"))
                     raise RuntimeError("captured provider configuration")
+
                 try:
-                    with patch.object(delegation_runtime, "load_agent_config", return_value={"subagents": {"roles": {}}}), \
+                    with patch.object(delegation_runtime, "load_agent_config",
+                                      return_value={"subagents": {"roles": {}}}), \
                             patch.object(main, "get_provider", side_effect=capture):
                         with self.assertRaisesRegex(RuntimeError, "captured provider configuration"):
                             main._invoke_delegated(run, review=False, feedback=None, coordinator=coordinator)
                 finally:
                     main._provider_config = original
                     main.DEEPSEEK_MODEL = original_model
+
+    def test_edit_file_cannot_escape_subagent_assigned_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "other.py").write_text("value = 1", encoding="utf-8")
+            adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: (root / raw).resolve())
+            coordinator = SimpleNamespace(
+                root=root, access=None, check_cancelled=lambda _run: None,
+                runs={"child": {"assignment": {"scope": ["allowed.py"]}}},
+                cancelled={"child": threading.Event()},
+            )
+            parent = SimpleNamespace(interaction=SimpleNamespace(state=lambda: {}))
+            child = SimpleNamespace(workspace=SimpleNamespace(adapters=adapters), _delegation_parent=parent)
+            agent = SimpleNamespace(
+                execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
+                current_session=child, _workspace_access={},
+                _get_workspace_root=lambda: root,
+                _is_state_changing_action=lambda *_args: True,
+            )
+            args = json.dumps({"path": "other.py", "old_text": "1", "new_text": "2",
+                               "expected_sha256": "0" * 64})
+            with self.assertRaisesRegex(ValueError, "outside its assigned files"):
+                with _delegation_tool_access(agent, "edit_file", args):
+                    self.fail("out-of-scope edit entered the guarded operation")
+
+    def test_edit_file_scope_parsing_keeps_json_text_after_pipe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: (root / raw).resolve())
+            coordinator = SimpleNamespace(
+                root=root, access=WorkspaceAccess(), check_cancelled=lambda _run: None,
+                runs={"child": {"assignment": {"scope": ["allowed.py"]}}},
+                cancelled={"child": threading.Event()},
+            )
+            parent = SimpleNamespace(interaction=SimpleNamespace(state=lambda: {}))
+            child = SimpleNamespace(workspace=SimpleNamespace(adapters=adapters), _delegation_parent=parent)
+            agent = SimpleNamespace(
+                execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
+                current_session=child, _workspace_access={}, _get_workspace_root=lambda: root,
+                _is_state_changing_action=lambda *_args: True,
+            )
+            args = json.dumps({"path": "allowed.py", "old_text": "a || b", "new_text": "a",
+                               "expected_sha256": "0" * 64})
+            with _delegation_tool_access(agent, "edit_file", args):
+                self.assertEqual((root / "allowed.py").parent, root)
+
+    def test_delegated_search_uses_cancellable_workspace_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entered = []
+
+            class Access:
+                @contextmanager
+                def acquire(self, path, cancelled, owner, *, reading=False, recursive=False):
+                    entered.append((path, owner, reading, recursive, cancelled()))
+                    yield
+
+            coordinator = SimpleNamespace(access=Access(), check_cancelled=lambda _run: None,
+                                          cancelled={"child": threading.Event()})
+            adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: (root / raw).resolve())
+            agent = SimpleNamespace(
+                execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
+                current_session=SimpleNamespace(workspace=SimpleNamespace(adapters=adapters)), _workspace_access={},
+                _get_workspace_root=lambda: root,
+                _is_state_changing_action=lambda *_args: False,
+            )
+            with _delegation_tool_access(agent, "search_files", '{"query":"needle"}'):
+                pass
+        self.assertEqual(entered, [(str(root), "child", True, True, False)])
+
+    def test_delegated_search_lock_uses_requested_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "docs").mkdir()
+            entered = []
+
+            class Access:
+                @contextmanager
+                def acquire(self, path, cancelled, owner, *, reading=False, recursive=False):
+                    entered.append((path, owner, reading, recursive, cancelled()))
+                    yield
+
+            coordinator = SimpleNamespace(access=Access(), check_cancelled=lambda _run: None,
+                                          cancelled={"child": threading.Event()})
+            adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: (root / raw).resolve())
+            agent = SimpleNamespace(
+                execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
+                current_session=SimpleNamespace(workspace=SimpleNamespace(adapters=adapters)),
+                _workspace_access={},
+                _get_workspace_root=lambda: root,
+                _is_state_changing_action=lambda *_args: False,
+            )
+            with _delegation_tool_access(agent, "search_files", '{"query":"needle","path":"docs"}'):
+                pass
+        self.assertEqual(entered, [(str((root / "docs").resolve()), "child", True, True, False)])
+
+    def test_recursive_search_lock_blocks_descendant_writer_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            docs = root / "docs"
+            docs.mkdir()
+            access = WorkspaceAccess()
+            nested_writer_entered = threading.Event()
+            unrelated_writer_entered = threading.Event()
+
+            def write(path, entered):
+                with access.acquire(str(path)):
+                    entered.set()
+
+            with access.acquire(str(docs), reading=True, recursive=True):
+                nested = threading.Thread(target=write, args=(docs / "guide.md", nested_writer_entered))
+                unrelated = threading.Thread(target=write, args=(root / "notes.md", unrelated_writer_entered))
+                nested.start()
+                unrelated.start()
+                self.assertTrue(unrelated_writer_entered.wait(1))
+                self.assertFalse(nested_writer_entered.wait(0.05))
+            self.assertTrue(nested_writer_entered.wait(1))
+            nested.join(timeout=1)
+            unrelated.join(timeout=1)
 
     def test_profile_has_independent_session_memory_and_capabilities(self):
         with tempfile.TemporaryDirectory() as directory:
