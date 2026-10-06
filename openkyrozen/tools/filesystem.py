@@ -17,6 +17,8 @@ from pathlib import Path
 from openkyrozen.tools.models import CommandResult
 from openkyrozen.security.command_policy import _BLOCKED_RE
 
+_SEARCH_EXCLUDED_DIRECTORIES = (".git", "venv", ".venv", "node_modules", "__pycache__")
+
 def find_files(self, args: str) -> str:
     """
     Find files matching a pattern. Args format: "pattern" or "pattern|directory".
@@ -240,8 +242,14 @@ def search_files(self, args: str) -> str:
         if rg:
             target = scope.relative_to(self._WORKSPACE_ROOT).as_posix() or "."
             command = [rg, "--fixed-strings", "--line-number", "--no-heading", "--with-filename", "--color", "never",
-                       "--max-columns", "400", "--max-columns-preview", "--glob", pattern,
-                       "-m", str(limit), "-e", query, "--", target]
+                       "--max-columns", "400", "--max-columns-preview", "--hidden", "--glob", pattern,
+            ]
+            if scope.is_dir():
+                prefix = "" if target == "." else f"{target.rstrip('/')}/"
+                for directory in _SEARCH_EXCLUDED_DIRECTORIES:
+                    command.extend(("--glob", f"!{prefix}**/{directory}",
+                                    "--glob", f"!{prefix}**/{directory}/**"))
+            command.extend(("-m", str(limit), "-e", query, "--", target))
             process = subprocess.Popen(command, cwd=self._WORKSPACE_ROOT, stdout=subprocess.PIPE,
                                        stderr=subprocess.DEVNULL)
             output: list[str] = []
@@ -300,7 +308,7 @@ def search_files(self, args: str) -> str:
                 path = self._resolve_workspace_path(str(path))
             except ValueError:
                 continue
-            if not path.is_file() or any(part in {".git", "venv", ".venv", "node_modules", "__pycache__"}
+            if not path.is_file() or any(part in _SEARCH_EXCLUDED_DIRECTORIES
                                          for part in path.relative_to(scope if scope.is_dir() else scope.parent).parts):
                 continue
             relative = path.relative_to(self._WORKSPACE_ROOT).as_posix()

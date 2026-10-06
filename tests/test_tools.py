@@ -110,6 +110,57 @@ class WorkspaceToolTests(unittest.TestCase):
         self.assertIn("module.py:1:", result)
         self.assertIn("a == b", result)
 
+    def test_search_ripgrep_includes_hidden_files_and_skips_runtime_directories(self):
+        import shutil
+        rg = shutil.which("rg")
+        if not rg:
+            self.skipTest("ripgrep is not installed")
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in (
+                ".config/needed.txt", ".git/needed.txt", "venv/needed.txt",
+                ".venv/needed.txt", "node_modules/needed.txt", "__pycache__/needed.txt",
+            ):
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("needle\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                results = []
+                for rg_path in (rg, None):
+                    with patch("openkyrozen.tools.filesystem.shutil.which", return_value=rg_path):
+                        results.append(tools.search_files(json.dumps({"query": "needle", "glob": "*.txt"})))
+            finally:
+                tools.set_workspace_root(original)
+        for result in results:
+            self.assertIn(".config/needed.txt:1:needle", result)
+            for directory in (".git", "venv", ".venv", "node_modules", "__pycache__"):
+                self.assertNotIn(f"{directory}/needed.txt", result)
+
+    def test_search_ripgrep_scopes_exclusions_to_requested_directory(self):
+        import shutil
+        rg = shutil.which("rg")
+        if not rg:
+            self.skipTest("ripgrep is not installed")
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in ("docs/.config/needed.txt", "docs/.venv/needed.txt"):
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("needle\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                with patch("openkyrozen.tools.filesystem.shutil.which", return_value=rg):
+                    result = tools.search_files(json.dumps(
+                        {"query": "needle", "path": "docs", "glob": "*.txt"}
+                    ))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertIn("docs/.config/needed.txt:1:needle", result)
+        self.assertNotIn("docs/.venv/needed.txt", result)
+
     def test_search_ripgrep_includes_filename_for_explicit_file(self):
         import shutil
         rg = shutil.which("rg")
