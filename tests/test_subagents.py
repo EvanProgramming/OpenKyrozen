@@ -2,6 +2,7 @@ import tempfile
 import unittest
 import json
 import threading
+from contextlib import contextmanager
 from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
@@ -63,6 +64,29 @@ class SubAgentTests(unittest.TestCase):
                                "expected_sha256": "0" * 64})
             with _delegation_tool_access(agent, "edit_file", args):
                 self.assertEqual((root / "allowed.py").parent, root)
+
+    def test_delegated_search_uses_cancellable_workspace_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entered = []
+
+            class Access:
+                @contextmanager
+                def acquire(self, path, cancelled, owner, *, reading=False):
+                    entered.append((path, owner, reading, cancelled()))
+                    yield
+
+            coordinator = SimpleNamespace(access=Access(), check_cancelled=lambda _run: None,
+                                          cancelled={"child": threading.Event()})
+            agent = SimpleNamespace(
+                execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
+                current_session=SimpleNamespace(), _workspace_access={},
+                _get_workspace_root=lambda: root,
+                _is_state_changing_action=lambda *_args: False,
+            )
+            with _delegation_tool_access(agent, "search_files", '{"query":"needle"}'):
+                pass
+        self.assertEqual(entered, [(None, "child", True, False)])
 
     def test_profile_has_independent_session_memory_and_capabilities(self):
         with tempfile.TemporaryDirectory() as directory:

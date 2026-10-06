@@ -268,10 +268,11 @@ def _delegation_tool_access(self, action, args):
             allowed, reason = parent.tasks.mutation_matches_current_task(action, str(args))
             if not allowed:
                 raise ValueError("Sub-agent action does not match accepted plan: " + reason)
-    guarded = action in {"read_file", "write_file", "edit_file"} or self._is_state_changing_action(action, str(args)) or action in {"git_diff", "git_show"}
+    guarded = action in {"read_file", "write_file", "edit_file", "search_files"} or self._is_state_changing_action(action, str(args)) or action in {"git_diff", "git_show"}
     if access and guarded:
         cancelled = (lambda: coordinator.cancelled[context.child_run_id].is_set()) if coordinator else (lambda: False)
-        with access.acquire(path, cancelled, context.child_run_id, reading=action == "read_file"):
+        with access.acquire(path, cancelled, context.child_run_id,
+                            reading=action in {"read_file", "search_files"}):
             yield
     else:
         yield
