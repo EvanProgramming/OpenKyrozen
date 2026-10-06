@@ -78,15 +78,41 @@ class SubAgentTests(unittest.TestCase):
 
             coordinator = SimpleNamespace(access=Access(), check_cancelled=lambda _run: None,
                                           cancelled={"child": threading.Event()})
+            adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: (root / raw).resolve())
             agent = SimpleNamespace(
                 execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
-                current_session=SimpleNamespace(), _workspace_access={},
+                current_session=SimpleNamespace(workspace=SimpleNamespace(adapters=adapters)), _workspace_access={},
                 _get_workspace_root=lambda: root,
                 _is_state_changing_action=lambda *_args: False,
             )
             with _delegation_tool_access(agent, "search_files", '{"query":"needle"}'):
                 pass
-        self.assertEqual(entered, [(None, "child", True, False)])
+        self.assertEqual(entered, [(str(root), "child", True, False)])
+
+    def test_delegated_search_lock_uses_requested_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entered = []
+
+            class Access:
+                @contextmanager
+                def acquire(self, path, cancelled, owner, *, reading=False):
+                    entered.append((path, owner, reading, cancelled()))
+                    yield
+
+            coordinator = SimpleNamespace(access=Access(), check_cancelled=lambda _run: None,
+                                          cancelled={"child": threading.Event()})
+            adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: (root / raw).resolve())
+            agent = SimpleNamespace(
+                execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
+                current_session=SimpleNamespace(workspace=SimpleNamespace(adapters=adapters)),
+                _workspace_access={},
+                _get_workspace_root=lambda: root,
+                _is_state_changing_action=lambda *_args: False,
+            )
+            with _delegation_tool_access(agent, "search_files", '{"query":"needle","path":"docs"}'):
+                pass
+        self.assertEqual(entered, [(str((root / "docs").resolve()), "child", True, False)])
 
     def test_profile_has_independent_session_memory_and_capabilities(self):
         with tempfile.TemporaryDirectory() as directory:

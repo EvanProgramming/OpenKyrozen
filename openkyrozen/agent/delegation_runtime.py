@@ -247,14 +247,20 @@ def _delegation_tool_access(self, action, args):
         str(self._get_workspace_root().resolve()), WorkspaceAccess(),
     )
     path = None
-    if action in {"write_file", "edit_file", "read_file"}:
+    if action in {"write_file", "edit_file", "read_file", "search_files"}:
         raw = str(args).split("|", 1)[0].strip()
-        if action in {"edit_file", "read_file"} and raw.startswith("{"):
+        if action in {"edit_file", "read_file", "search_files"} and raw.startswith("{"):
             try:
                 request = json.loads(str(args))
-                raw = request.get("path", "") if isinstance(request, dict) else ""
+                if isinstance(request, dict):
+                    default = "." if action == "search_files" else ""
+                    raw = request.get("path", default)
+                else:
+                    raw = "." if action == "search_files" else ""
             except json.JSONDecodeError:
-                raw = ""
+                raw = "." if action == "search_files" else ""
+        if action == "search_files" and not raw:
+            raw = "."
         path = str(self.current_session.workspace.adapters._resolve_workspace_path(raw))
     if coordinator:
         coordinator.check_cancelled(context.child_run_id)
