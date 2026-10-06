@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 from openkyrozen.providers.registry import AMBIENT_CREDENTIAL_PROVIDERS, PROVIDER_AUTO_SELECTION, PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS
 
 @dataclass
@@ -14,6 +15,7 @@ class ProviderConfig:
     model_complex: str = ""
     model_main: str = ""
     context_window_tokens: int | None = None
+    custom_profile: str = ""
 
     def __post_init__(self) -> None:
         if not self.model_simple:
@@ -39,13 +41,28 @@ class ProviderConfig:
         issues: list[str] = []
         if self.provider not in PROVIDER_DEFAULT_MODELS:
             issues.append(f"Unknown provider '{self.provider}'")
+        if self.provider == "custom":
+            try:
+                endpoint = urlsplit(self.base_url)
+                valid_endpoint = (endpoint.scheme in {"http", "https"} and bool(endpoint.hostname)
+                                  and not endpoint.username and not endpoint.password and len(self.base_url) <= 2048)
+            except (TypeError, ValueError):
+                valid_endpoint = False
+            if not valid_endpoint:
+                issues.append("Custom provider endpoint must be an HTTP or HTTPS URL")
+            if not self.model_simple or not self.model_complex:
+                issues.append("Custom provider requires simple and complex model IDs")
+            elif len(self.model_simple) > 200 or len(self.model_complex) > 200:
+                issues.append("Custom provider model IDs must be 200 characters or fewer")
+            if self.context_window_tokens is not None and not 1 <= self.context_window_tokens <= 10_000_000:
+                issues.append("Custom provider context limit must be between 1 and 10000000")
         if self.provider in {"azure_openai", "bedrock", "vertex"} and not self.model_simple:
             issues.append(f"No model/deployment configured for {self.provider}")
         if self.provider == "ollama" and not (self.model_main not in {"", "auto"} or self.model_simple or self.model_complex):
             issues.append("No Ollama model configured; choose an installed model or enter its exact tag")
         if self.provider in AMBIENT_CREDENTIAL_PROVIDERS and not _ambient_provider_available(self.provider):
             issues.append(f"No ambient credentials available for {self.provider}")
-        if self.provider not in AMBIENT_CREDENTIAL_PROVIDERS and not self.api_key and not _provider_env_key(self.provider):
+        if self.provider not in AMBIENT_CREDENTIAL_PROVIDERS and self.provider != "custom" and not self.api_key and not _provider_env_key(self.provider):
             env_var = PROVIDER_ENV_VARS.get(self.provider, "")
             if self.provider == "azure_openai" and self.base_url and _azure_identity_available(self.base_url):
                 pass
@@ -104,6 +121,8 @@ def _ambient_provider_available(provider: str) -> bool:
 
 def provider_is_configured(config: ProviderConfig) -> bool:
     """Whether a provider has a key or can use its documented ambient auth."""
+    if config.provider == "custom":
+        return not any(config.validate())
     ambient = _azure_identity_available(config.base_url) if config.provider == "azure_openai" else _ambient_provider_available(config.provider)
     return bool(config.api_key or _provider_env_key(config.provider)) or ambient
 
@@ -115,6 +134,8 @@ def model_for_complexity(config: ProviderConfig, complex_task: bool) -> str:
     if config.provider == "ollama":
         return ((config.model_complex or config.model_simple) if complex_task
                 else (config.model_simple or config.model_complex)) or "auto"
+    if config.provider == "custom":
+        return (config.model_complex if complex_task else config.model_simple) or "auto"
     if config.provider in PROVIDER_AUTO_SELECTION:
         return (config.model_complex if complex_task else config.model_simple) or "auto"
     return config.model_complex or config.model_simple or "auto"

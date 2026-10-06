@@ -17,6 +17,7 @@ from openkyrozen.agent.compaction import ContextState
 from openkyrozen.app.config import load_agent_config, effective_capabilities
 from openkyrozen.providers.config import ProviderConfig, _ambient_provider_available
 from openkyrozen.providers.registry import PROVIDER_REGISTRY
+from openkyrozen.providers.custom import load_custom_provider_profile
 from openkyrozen.security.capabilities import issue_capability_token
 from openkyrozen.security.tool_policy import allowed_tool_names, resolve_capabilities
 
@@ -156,7 +157,17 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
         raise ValueError("Unknown sub-agent provider")
     spec = PROVIDER_REGISTRY[provider_name]
     model = (settings.get("model") if review else brief.get("model", settings.get("model")))
-    if provider_name == main_config.provider:
+    if provider_name == "custom":
+        profile_name = (settings.get("custom_profile") if review else
+                        brief.get("custom_profile", settings.get("custom_profile")))
+        if profile_name:
+            config = load_custom_provider_profile(str(profile_name))
+        elif main_config.provider == "custom":
+            config = main_config
+        else:
+            raise ValueError("Set custom_profile for a custom sub-agent provider")
+        model = model or config.model_complex
+    elif provider_name == main_config.provider:
         config = main_config
         model = model or self.DEEPSEEK_MODEL
     else:

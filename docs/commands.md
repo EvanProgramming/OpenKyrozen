@@ -32,6 +32,7 @@ The Bubble Tea terminal binary is normally selected by the installer. `KYROZEN_D
 | `/decision-assist jev\|kev\|off` | Configure optional checks for learning, memory, and suspicious tool output. `/assist` is an alias. |
 | `/provider` | Select or configure a provider. `/p` is an alias. |
 | `/model [name\|auto]` | Pin one main-agent model or restore automatic simple/complex selection. |
+| `/custom-provider list\|create\|edit <name>\|use <name>\|remove <name>` | Manage named OpenAI-compatible profiles; API keys are masked and encrypted locally. |
 | `/api_key` | Set the active provider credential. `/key` is an alias. |
 | `/settings` | Open terminal preferences. |
 | `/update` | Update installed Python and TUI components; restart after a successful update when prompted. |

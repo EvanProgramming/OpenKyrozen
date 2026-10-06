@@ -205,6 +205,9 @@ def configure_provider(self, provider: str, api_key: str | None = None,
     if provider not in runtime.PROVIDER_DEFAULT_MODELS:
         self.emit("error", request_id, code="invalid_provider", error="Unknown provider.")
         return
+    if provider == "custom":
+        self.custom_provider_command({"action": "create"}, request_id)
+        return
     current = runtime._provider_config or self._quiet_call(runtime.detect_provider)
     same_provider = provider == current.provider
     config = runtime.ProviderConfig(
@@ -242,3 +245,70 @@ def configure_provider(self, provider: str, api_key: str | None = None,
     except Exception as exc:
         self.emit("error", request_id, code="provider_setup_failed",
                   error=f"{type(exc).__name__}: {_redact(exc)}")
+
+
+def custom_provider_command(self, args: dict[str, Any], request_id: str | None = None) -> None:
+    runtime = self.agent
+    action, name = str(args.get("action", "list")).lower(), str(args.get("name", ""))
+    if action == "list":
+        profiles = runtime.custom_provider_profiles()
+        summary = "\n".join(f"{p['name']} · {p['base_url']} · {p['model_simple']} / {p['model_complex']}" for p in profiles)
+        self.emit("response", request_id, text=summary or "No custom provider profiles.")
+    elif action == "use":
+        self.emit("response", request_id, text=runtime.use_custom_provider(name))
+        self.emit("ready", request_id, configured=True, provider="custom", model=runtime._provider_config.model_simple)
+    elif action == "remove":
+        self.emit("response", request_id, text=runtime.delete_custom_provider(name))
+    elif action in {"create", "edit"}:
+        draft = {"name": "", "base_url": "", "api_key": "", "model_simple": "",
+                 "model_complex": "", "context_window_tokens": ""}
+        if action == "edit":
+            from openkyrozen.providers.custom import load_custom_provider_profile
+            try:
+                config = load_custom_provider_profile(name)
+            except ValueError as exc:
+                self.emit("error", request_id, code="custom_provider_not_found", error=str(exc))
+                return
+            draft = {"name": config.custom_profile, "base_url": config.base_url, "api_key": config.api_key,
+                     "model_simple": config.model_simple, "model_complex": config.model_complex,
+                     "context_window_tokens": config.context_window_tokens or "",
+                     "_original_name": config.custom_profile}
+        self._custom_provider_draft = draft
+        self._custom_provider_step = 0
+        self.custom_provider_input_prompt(request_id)
+    else:
+        self.emit("error", request_id, code="custom_provider_usage",
+                  error="Use /custom-provider list|create|edit <name>|use <name>|remove <name>.")
+
+
+def custom_provider_input_prompt(self, request_id: str | None = None) -> None:
+    fields = ("name", "base_url", "api_key", "model_simple", "model_complex", "context_window_tokens")
+    labels = ("Profile name", "OpenAI-compatible endpoint URL", "Optional API key", "Simple model ID",
+              "Complex model ID", "Context limit (optional)")
+    step, field = self._custom_provider_step, fields[self._custom_provider_step]
+    current = "" if field == "api_key" else str(self._custom_provider_draft[field] or "")
+    self.emit("prompt", request_id, kind="custom_provider", field=field, current=current,
+              secret=field == "api_key",
+              message=f"{labels[step]} ({step + 1}/{len(fields)}); Enter keeps the shown value; API key is optional.")
+
+
+def custom_provider_input(self, value: str, request_id: str | None = None) -> None:
+    fields = ("name", "base_url", "api_key", "model_simple", "model_complex", "context_window_tokens")
+    field = fields[self._custom_provider_step]
+    if value.strip():
+        self._custom_provider_draft[field] = value.strip()
+    self._custom_provider_step += 1
+    if self._custom_provider_step < len(fields):
+        self.custom_provider_input_prompt(request_id)
+        return
+    try:
+        text = self.agent.save_custom_provider(self._custom_provider_draft, activate=True)
+        self.emit("response", request_id, text=text)
+        self.emit("ready", request_id, configured=True, provider="custom",
+                  model=self.agent._provider_config.model_simple)
+        if self._onboarding_kind == "new":
+            self._prompt_onboarding_learning(request_id)
+        elif self._onboarding_kind == "update":
+            self._complete_onboarding(request_id)
+    except (ValueError, OSError) as exc:
+        self.emit("error", request_id, code="custom_provider_setup_failed", error=_redact(exc))

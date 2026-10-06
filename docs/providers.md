@@ -24,6 +24,7 @@ OpenKyrozen separates provider selection, credentials, model defaults, and task-
 | `perplexity` | `PERPLEXITY_API_KEY` | `perplexity/sonar` / same | `perplexity` |
 | `bedrock` | AWS SDK credential chain and region | Account-specific model ID | `bedrock` |
 | `vertex` | Google Cloud identity and project/location | Account-specific model ID | `vertex` |
+| `custom` | Optional API key in encrypted profile storage | Manually entered simple / complex model IDs | Core OpenAI-compatible client |
 
 Confirm names, default values, credential lookup, and optional extras against the current [provider registry](../openkyrozen/providers/registry.py), [`pyproject.toml`](../pyproject.toml), and [configuration](configuration.md) before changing them. Providers that use deployment names, ambient credentials, or regional catalogs intentionally leave model defaults blank in the registry.
 
@@ -42,6 +43,8 @@ kyrozen
 The interactive provider and `/api_key` flows can save credentials through OpenKyrozen's encrypted user configuration. Treat that file as private data. Environment settings are useful for servers and automation; do not place keys in `agent.yaml`, project files, command-line arguments, shell history, or issue reports.
 
 OpenAI-compatible services can use `KYROZEN_BASE_URL` where the selected integration supports it. Ollama normally listens at `http://localhost:11434/v1`; override its endpoint and model names if your server differs. Azure OpenAI, Bedrock, and Vertex need account-specific resource/deployment, region, or identity configuration; installing the optional Python extra alone does not provision cloud access.
+
+Use `/custom-provider create` to add a named OpenAI-compatible endpoint with its optional key, endpoint URL, simple and complex model IDs, and context limit. `/custom-provider list`, `edit <name>`, `use <name>`, and `remove <name>` manage profiles. The TUI provider picker opens the same guided setup with masked key entry. Profiles are stored in `~/.kyrozen_config.json`; API keys are encrypted. A sub-agent role can select a profile with `provider: custom` and `custom_profile: <name>` in `agent.yaml`.
 
 ## Model routing and fallback
 

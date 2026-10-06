@@ -3,7 +3,53 @@ from __future__ import annotations
 import json
 import os
 import sys
-from openkyrozen.providers import ProviderConfig, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS, save_provider_config_encrypted, encrypt_api_key, decrypt_api_key, provider_is_configured, PROVIDER_DISPLAY_NAMES, discover_ollama_models, resolve_ollama_models
+from openkyrozen.providers import (ProviderConfig, PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS,
+    PROVIDER_BASE_URLS, save_provider_config_encrypted, encrypt_api_key, decrypt_api_key,
+    provider_is_configured, PROVIDER_DISPLAY_NAMES, discover_ollama_models, resolve_ollama_models)
+from openkyrozen.providers.custom import (list_custom_provider_profiles, save_custom_provider_profile,
+    remove_custom_provider_profile, select_custom_provider_profile, load_custom_provider_profile)
+
+
+def custom_provider_profiles(self) -> list[dict[str, object]]:
+    return [{key: value for key, value in profile.items() if key != "api_key"}
+            for profile in list_custom_provider_profiles()]
+
+
+def save_custom_provider(self, profile: dict[str, object], *, activate: bool = False) -> str:
+    original_name = str(profile.get("_original_name", ""))
+    saved = save_custom_provider_profile(profile, replace_name=original_name)
+    active = bool(self._provider_config and self._provider_config.provider == "custom"
+                  and self._provider_config.custom_profile.casefold() in
+                  {str(saved["name"]).casefold(), original_name.casefold()})
+    if activate or active:
+        self._provider_config = select_custom_provider_profile(str(saved["name"]))
+        self.llm_provider = self.get_fallback_provider(self._provider_config)
+        self.DEEPSEEK_MODEL_SIMPLE = self._provider_config.model_simple
+        self.DEEPSEEK_MODEL_COMPLEX = self._provider_config.model_complex
+        self.DEEPSEEK_MODEL = self._provider_config.model_simple
+        self.MODEL_NAME = f"custom ({saved['name']})"
+    return f"Custom provider profile {saved['name']} saved." + (" Active for the main agent." if activate or active else "")
+
+
+def use_custom_provider(self, name: str) -> str:
+    self._provider_config = select_custom_provider_profile(name)
+    if not provider_is_configured(self._provider_config):
+        raise ValueError("Custom provider profile is incomplete.")
+    self.llm_provider = self.get_fallback_provider(self._provider_config)
+    self.DEEPSEEK_MODEL_SIMPLE = self._provider_config.model_simple
+    self.DEEPSEEK_MODEL_COMPLEX = self._provider_config.model_complex
+    self.DEEPSEEK_MODEL = self._provider_config.model_simple
+    self.MODEL_NAME = f"custom ({name})"
+    return f"Custom provider profile {name} is active for the main agent."
+
+
+def delete_custom_provider(self, name: str) -> str:
+    if not remove_custom_provider_profile(name):
+        raise ValueError(f"No custom provider profile named {name!r}.")
+    if self._provider_config and self._provider_config.provider == "custom" and self._provider_config.custom_profile.casefold() == name.casefold():
+        self._provider_config = self.detect_provider()
+        self.llm_provider = None
+    return f"Custom provider profile {name} removed."
 
 
 def _load_config_key(self) -> str | None:
@@ -197,10 +243,18 @@ def _switch_provider(self) -> None:
         idx = int(choice) - 1
         if 0 <= idx < len(providers_list):
             new_provider = providers_list[idx]
+            if new_provider == "custom":
+                self._handle_cli_command("/custom-provider create", None)
+                return
             if new_provider == self._provider_config.provider:
                 self.console.print(f"[{self._WARNING}]Already using {PROVIDER_DISPLAY_NAMES.get(new_provider, new_provider)}.[/{self._WARNING}]")
                 return
+            previous_provider = self._provider_config.provider
             self._provider_config.provider = new_provider
+            if previous_provider == "custom":
+                self._provider_config.api_key = ""
+                self._provider_config.custom_profile = ""
+                self._provider_config.base_url = PROVIDER_BASE_URLS.get(new_provider, "")
             self._provider_config.model_simple = PROVIDER_DEFAULT_MODELS[new_provider][0]
             self._provider_config.model_complex = PROVIDER_DEFAULT_MODELS[new_provider][1]
             self._provider_config.model_main = ""

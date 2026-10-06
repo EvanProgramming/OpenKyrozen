@@ -17,6 +17,7 @@ from openkyrozen.security.credentials import decrypt_api_key, save_provider_conf
 
 _PROVIDER_CLASSES: dict[str, type[LLMProvider]] = {
     "deepseek": OpenAICompatProvider,
+    "custom": OpenAICompatProvider,
     "openai": OpenAIResponsesProvider,
     "ollama": OpenAICompatProvider,
     "ollama_native": OllamaNativeProvider,
@@ -92,7 +93,7 @@ def detect_provider() -> ProviderConfig:
         api_key = config_data.get("api_key", "")
     base_url = os.environ.get("KYROZEN_BASE_URL", "")
     if not base_url:
-        base_url = PROVIDER_BASE_URLS.get(provider_name, "")
+        base_url = (config_data.get("base_url", "") if provider_name == "custom" else "") or PROVIDER_BASE_URLS.get(provider_name, "")
     if provider_name == "azure_openai" and not base_url:
         base_url = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
 
@@ -139,6 +140,7 @@ def detect_provider() -> ProviderConfig:
         model_complex=model_complex,
         model_main=model_main,
         context_window_tokens=context_window_tokens,
+        custom_profile=str(config_data.get("custom_profile", "")),
     )
 
 

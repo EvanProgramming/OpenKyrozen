@@ -41,6 +41,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
     "perplexity": ProviderSpec("perplexity", "Perplexity", "responses", "https://api.perplexity.ai", "PERPLEXITY_API_KEY", "perplexity/sonar", "perplexity/sonar", 1_000_000, False, ("openai", "deepseek")),
     "bedrock": ProviderSpec("bedrock", "Amazon Bedrock", "bedrock_converse", "", "", "", "", None, False, ("openai", "deepseek")),
     "vertex": ProviderSpec("vertex", "Google Vertex AI", "vertex_genai", "", "", "", "", None, False, ("openai", "deepseek")),
+    "custom": ProviderSpec("custom", "Custom OpenAI-compatible", "openai_compat", "", "", "", "", None, False),
 }
 
 

@@ -86,6 +86,13 @@ func (m *model) handleBackendEvent(event backendEvent) {
 			m.permissionStatus = ""
 		}
 	case "ready":
+		if m.screen == screenCustomProvider {
+			m.apiInput.Reset()
+			m.apiInput.Prompt = ""
+			m.apiInput.Blur()
+			m.apiInput.EchoMode = textinput.EchoNormal
+			m.screen = screenChat
+		}
 		if session := stringValue(event, "session_id"); session != "" && session != m.activeSessionID {
 			m.agents = nil
 			m.agentSelected, m.agentScroll = 0, 0
@@ -392,8 +399,21 @@ func (m *model) handlePrompt(event backendEvent) {
 		m.screen = screenAPIKey
 		m.startTransition()
 		m.apiInput.Reset()
+		m.apiInput.Prompt = ""
 		m.apiInput.Placeholder = firstNonEmpty(stringValue(event, "message"), "Enter API key")
 		m.apiInput.Focus()
+	case "custom_provider":
+		m.apiInput.Reset()
+		m.apiInput.Prompt = stringValue(event, "message")
+		m.apiInput.EchoMode = textinput.EchoNormal
+		if boolValue(event, "secret") {
+			m.apiInput.EchoMode = textinput.EchoPassword
+			m.apiInput.EchoCharacter = '•'
+		}
+		m.apiInput.Placeholder = stringValue(event, "current")
+		m.apiInput.Focus()
+		m.screen = screenCustomProvider
+		m.startTransition()
 	case "fast_key":
 		m.apiInput.EchoMode = textinput.EchoPassword
 		m.apiInput.EchoCharacter = '•'

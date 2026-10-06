@@ -83,7 +83,7 @@ export KYROZEN_CONTEXT_WINDOW_TOKENS=128000
 ## Sub-agent providers and concurrency
 
 `agent.yaml` accepts `subagents.concurrency` (default 4, integer 1–64) and
-`subagents.roles.<profile>.provider/model`. Additional assignments queue; there
+`subagents.roles.<profile>.provider/model`, with `custom_profile` for named custom endpoints. Additional assignments queue; there
 is no total-agent limit. Assignment overrides take precedence over role defaults,
 then the main provider/model. A reviewer uses the `reviewer` role default.
 
@@ -97,12 +97,26 @@ subagents:
     reviewer:
       provider: anthropic
       model: your-claude-model
+    local-reviewer:
+      provider: custom
+      custom_profile: office-gateway
+      model: reviewer-model-id
 ```
 
 Configure `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` securely in the launching
 environment. Alternate providers never receive the main provider's generic
 `KYROZEN_API_KEY`, endpoint or model settings. Missing credentials block the run;
 there is no implicit cross-provider fallback. See [sub-agents](subagents.md).
+
+## Custom OpenAI-compatible providers
+
+Use `/custom-provider create` to save a named endpoint, optional API key,
+simple and complex model IDs, and optional context limit. `/custom-provider
+edit <name>`, `list`, `use <name>`, and `remove <name>` manage profiles. The TUI
+provider picker starts the same masked setup flow. Profile API keys are
+encrypted in `~/.kyrozen_config.json`. Set `provider: custom` and
+`custom_profile: <name>` in a sub-agent role to use a different profile; a
+`model` value can override the profile's complex model for that role.
 
 ## Web server
 

@@ -48,6 +48,7 @@ class ProviderRegistryTests(unittest.TestCase):
 
     def test_registry_contains_all_supported_transports(self):
         expected = {
+            "custom",
             "deepseek", "openai", "anthropic", "google", "ollama", "glm", "kimi",
             "openrouter", "groq", "mistral", "xai", "together", "fireworks", "cohere",
             "azure_openai", "perplexity", "bedrock", "vertex",

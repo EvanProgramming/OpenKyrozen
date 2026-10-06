@@ -64,7 +64,7 @@ def main(self) -> None:
     provider_name = startup_config.provider.title()
     model_name = startup_config.model_main or startup_config.model_simple
     self.console.print(f"[{self._ACCENT}]Kyrozen[/{self._ACCENT}] [{self._MUTED}]{self._DOT} Provider: {provider_name} {self._DOT} Model: {model_name}[/{self._MUTED}]")
-    self.console.print(f"[{self._MUTED}]Chat:[/{self._MUTED}] [{self._ACCENT_DIM}] /mode /ask /plan /question /agent /system-one /fast /decision-assist /graph /github /skills /ponytail /provider /model /api_key /learn /update[/{self._ACCENT_DIM}]")
+    self.console.print(f"[{self._MUTED}]Chat:[/{self._MUTED}] [{self._ACCENT_DIM}] /mode /ask /plan /question /agent /system-one /fast /decision-assist /graph /github /skills /ponytail /provider /model /custom-provider /api_key /learn /update[/{self._ACCENT_DIM}]")
 
     # Compact self-learning summary
     enabled_count = sum(1 for v in self._SELF_LEARNING_FLAGS.values() if v)
