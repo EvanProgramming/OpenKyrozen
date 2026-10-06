@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+import json
+import threading
 from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,9 +14,34 @@ _application = build_application(surface="cli")
 main = _application.runtime
 from openkyrozen.providers import OpenAICompatProvider, ProviderConfig
 from openkyrozen.agent.subagents import AgentProfile, SubAgentManager
+from openkyrozen.agent.delegation_runtime import _delegation_tool_access
 
 
 class SubAgentTests(unittest.TestCase):
+    def test_edit_file_cannot_escape_subagent_assigned_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "other.py").write_text("value = 1", encoding="utf-8")
+            adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: (root / raw).resolve())
+            coordinator = SimpleNamespace(
+                root=root, access=None, check_cancelled=lambda _run: None,
+                runs={"child": {"assignment": {"scope": ["allowed.py"]}}},
+                cancelled={"child": threading.Event()},
+            )
+            parent = SimpleNamespace(interaction=SimpleNamespace(state=lambda: {}))
+            child = SimpleNamespace(workspace=SimpleNamespace(adapters=adapters), _delegation_parent=parent)
+            agent = SimpleNamespace(
+                execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
+                current_session=child, _workspace_access={},
+                _get_workspace_root=lambda: root,
+                _is_state_changing_action=lambda *_args: True,
+            )
+            args = json.dumps({"path": "other.py", "old_text": "1", "new_text": "2",
+                               "expected_sha256": "0" * 64})
+            with self.assertRaisesRegex(ValueError, "outside its assigned files"):
+                with _delegation_tool_access(agent, "edit_file", args):
+                    self.fail("out-of-scope edit entered the guarded operation")
+
     def test_profile_has_independent_session_memory_and_capabilities(self):
         with tempfile.TemporaryDirectory() as directory:
             memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")

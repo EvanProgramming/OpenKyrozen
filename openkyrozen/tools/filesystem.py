@@ -5,6 +5,7 @@ import glob
 import fnmatch
 import hashlib
 import json
+import codecs
 import shutil
 import stat
 import subprocess
@@ -115,9 +116,6 @@ def read_file(self, args: str) -> str:
             if not isinstance(request, dict) or not isinstance(request.get("path"), str):
                 return "Error: structured read requires a path"
             abs_path = self._resolve_workspace_path(request["path"])
-            data = abs_path.read_bytes()
-            content = data.decode("utf-8")
-            lines = content.splitlines(keepends=True)
             start = request.get("start_line", 1)
             limit = request.get("max_lines", 200)
             max_chars = request.get("max_chars", 20_000)
@@ -125,16 +123,45 @@ def read_file(self, args: str) -> str:
                     or start < 1 or limit < 1 or max_chars < 1):
                 return "Error: start_line, max_lines, and max_chars must be positive integers"
             limit, max_chars = min(limit, 200), min(max_chars, 20_000)
-            selected = lines[start - 1:start - 1 + limit]
-            excerpt = "".join(selected)
-            clipped = len(excerpt) > max_chars
-            excerpt = excerpt[:max_chars]
-            total = len(lines)
+            digest = hashlib.sha256()
+            decoder = codecs.getincrementaldecoder("utf-8")()
+            excerpt_parts, excerpt_size = [], 0
+            line_number, newline_count, has_content, ends_newline = 1, 0, False, False
+            pending = ""
+
+            def keep_piece(piece: str) -> None:
+                nonlocal excerpt_size
+                if start <= line_number < start + limit and excerpt_size <= max_chars:
+                    excerpt_parts.append(piece[:max_chars + 1 - excerpt_size])
+                    excerpt_size += len(piece)
+
+            with abs_path.open("rb") as source:
+                while chunk := source.read(64 * 1024):
+                    has_content = True
+                    digest.update(chunk)
+                    decoded = decoder.decode(chunk)
+                    parts = decoded.split("\n")
+                    for piece in parts[:-1]:
+                        keep_piece(pending + piece + "\n")
+                        pending = ""
+                        line_number += 1
+                        newline_count += 1
+                    pending = parts[-1] if start <= line_number < start + limit else ""
+                    ends_newline = decoded.endswith("\n") if decoded else ends_newline
+                final = decoder.decode(b"", final=True)
+                if final:
+                    has_content = True
+                    pending += final
+                if pending or (has_content and not ends_newline):
+                    keep_piece(pending)
+            total = newline_count + (1 if has_content and not ends_newline else 0)
+            excerpt = "".join(excerpt_parts)[:max_chars]
+            clipped = excerpt_size > max_chars
             relative = abs_path.relative_to(self._WORKSPACE_ROOT).as_posix()
             return json.dumps({
-                "path": relative, "sha256": hashlib.sha256(data).hexdigest(),
-                "start_line": start, "end_line": min(total, start + len(selected) - 1),
-                "total_lines": total, "truncated": clipped or start - 1 + len(selected) < total,
+                "path": relative, "sha256": digest.hexdigest(),
+                "start_line": start, "end_line": min(total, start + limit - 1),
+                "total_lines": total, "truncated": clipped or start + limit - 1 < total,
                 "content": excerpt,
             })
         raw_path = args.strip()
@@ -241,6 +268,10 @@ def search_files(self, args: str) -> str:
         output, size = [], 0
         files = [scope] if scope.is_file() else scope.rglob("*")
         for path in files:
+            try:
+                path = self._resolve_workspace_path(str(path))
+            except ValueError:
+                continue
             if not path.is_file() or any(part in {".git", "venv", ".venv", "node_modules", "__pycache__"}
                                          for part in path.relative_to(scope if scope.is_dir() else scope.parent).parts):
                 continue

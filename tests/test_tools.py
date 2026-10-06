@@ -1,4 +1,5 @@
 import json
+import hashlib
 import re
 import tempfile
 import subprocess
@@ -44,6 +45,25 @@ class WorkspaceToolTests(unittest.TestCase):
         self.assertEqual((excerpt["content"], excerpt["start_line"], excerpt["end_line"]), ("two\n", 2, 2))
         self.assertTrue(excerpt["truncated"])
 
+    def test_structured_read_streams_large_file_and_preserves_full_hash(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "large.txt"
+            data = ("x" * 100_000 + "\nselected\n") * 100
+            target.write_text(data, encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                with patch.object(Path, "read_bytes", side_effect=AssertionError("whole-file read")):
+                    result = json.loads(tools.read_file(json.dumps(
+                        {"path": "large.txt", "start_line": 2, "max_lines": 1}
+                    )))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertEqual(result["content"], "selected\n")
+        self.assertEqual(result["sha256"], hashlib.sha256(data.encode()).hexdigest())
+        self.assertEqual(result["total_lines"], 200)
+
     def test_edit_file_requires_matching_hash_and_unique_old_text(self):
         original = tools._WORKSPACE_ROOT
         with tempfile.TemporaryDirectory() as directory:
@@ -74,6 +94,22 @@ class WorkspaceToolTests(unittest.TestCase):
                 tools.set_workspace_root(original)
         self.assertIn("module.py:1:", result)
         self.assertIn("a == b", result)
+
+    def test_search_fallback_skips_symlinks_outside_workspace(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "workspace"
+            root.mkdir()
+            outside = Path(directory) / "outside.txt"
+            outside.write_text("secret-marker", encoding="utf-8")
+            (root / "linked.txt").symlink_to(outside)
+            tools.set_workspace_root(root)
+            try:
+                with patch("openkyrozen.tools.filesystem.shutil.which", return_value=None):
+                    result = tools.search_files(json.dumps({"query": "secret-marker"}))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertEqual(result, "No matches.")
 
     def test_file_tools_stay_inside_workspace(self):
         original_root = Path.cwd()
