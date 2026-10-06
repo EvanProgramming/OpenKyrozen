@@ -14,7 +14,7 @@ main = _application.runtime
 from openkyrozen.interfaces.web.service import WebService
 server = WebService(_application)
 from openkyrozen.agent.compaction import (
-    ContextState, DIGEST_PREFIX, OMISSION_PREFIX, compact_for_pressure,
+    ContextState, DIGEST_PREFIX, OMISSION_PREFIX, _bounded_summary, compact_for_pressure,
     retain_context_digests,
 )
 from openkyrozen.app.bootstrap import build_memory as MemoryBank
@@ -42,6 +42,13 @@ def _messages(old_count=4, *, chars=1_000):
 
 
 class ContextCompactionTests(unittest.TestCase):
+    def test_batched_summary_retains_distinct_facts_from_later_batches(self):
+        summaries = iter(("FIRST: " + "x" * 80, "LAST: required fix " + "y" * 80))
+        result = _bounded_summary("A" * 20 + "B" * 20, lambda _text, _limit: next(summaries), 20, 40)
+        self.assertIn("FIRST", result)
+        self.assertIn("LAST: required fix", result)
+        self.assertLessEqual(len(result), 40)
+
     def test_no_compaction_below_model_pressure(self):
         messages = _messages(chars=20)
         state = ContextState("gpt-4o", reserve_tokens=100)

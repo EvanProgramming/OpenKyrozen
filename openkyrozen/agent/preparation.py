@@ -11,6 +11,9 @@ from openkyrozen.routing.router import model_for_request
 def _prepare_turn(self, turn):
     """One user turn: build context, get LLM reply, execute tool calls
     with automatic retries and failure memory."""
+    turn.turn_start = time.time()
+    turn.turn_prompt_total = 0
+    turn.turn_completion_total = 0
     fast_mode = self.fast_mode
     coordinator = self.subagent_manager.coordinator
     turn.agent_versions = {run["run_id"]: run["version"] for run in coordinator.list()} if coordinator else {}
@@ -101,7 +104,3 @@ def _prepare_turn(self, turn):
 
     # Auto-select the best model for this turn based on task complexity
     turn.complexity = fast_route.get("complexity") or self._classify_complexity(turn.user_input)
-
-    turn.turn_start = time.time()
-    turn.turn_prompt_total = 0
-    turn.turn_completion_total = 0

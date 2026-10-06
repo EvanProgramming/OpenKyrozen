@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import uuid
 from typing import Any
@@ -87,7 +88,8 @@ class TaskManager:
         evidence_items = ([evidence] if evidence else []) + self.tasks[idx].get("evidence", [])
         return any(item.get("success") is True and item.get("acceptance") for item in evidence_items)
 
-    def _receipt_match_score(self, task: dict[str, Any], action: str, args: str) -> int:
+    def _receipt_match_score(self, task: dict[str, Any], action: str, args: str,
+                            args_fingerprint: str | None = None) -> int:
         """Match only an explicit action/argument contract on the task."""
         action = _receipt_action(action)
         args = _receipt_args(args)
@@ -97,8 +99,13 @@ class TaskManager:
         if checkpoint_action:
             if checkpoint_action != action:
                 return -1
-            if checkpoint_args and checkpoint_args != args:
-                return -1
+            if checkpoint_args:
+                checkpoint_fingerprint = hashlib.sha256(checkpoint_args.encode("utf-8")).hexdigest()
+                if args_fingerprint:
+                    if checkpoint_fingerprint != args_fingerprint:
+                        return -1
+                elif checkpoint_args != args:
+                    return -1
             return 200 if checkpoint_args else 150
 
         score = 0
@@ -109,8 +116,13 @@ class TaskManager:
             if not criterion_action or criterion_action != action:
                 continue
             criterion_args = _receipt_args(criterion.get("args"))
-            if criterion_args and criterion_args != args:
-                continue
+            if criterion_args:
+                criterion_fingerprint = hashlib.sha256(criterion_args.encode("utf-8")).hexdigest()
+                if args_fingerprint:
+                    if criterion_fingerprint != args_fingerprint:
+                        continue
+                elif criterion_args != args:
+                    continue
             score = max(score, 120 if criterion_args else 100)
         return score or -1
 
@@ -185,20 +197,28 @@ class TaskManager:
                 current.get("description", ""), action):
             return False, f"the next accepted step is: {current.get('description', '')}"
         if _receipt_action(action) == "write_file":
-            target = str(args).split("|", 1)[0].strip().replace("\\", "/").rsplit("/", 1)[-1]
+            try:
+                structured = json.loads(args)
+            except (TypeError, json.JSONDecodeError):
+                structured = None
+            raw_target = (structured.get("path") if isinstance(structured, dict)
+                          else str(args).split("|", 1)[0])
+            target = str(raw_target or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
             if not target or target.lower() not in str(current.get("description", "")).lower():
                 return False, f"the next accepted step does not name {target or 'that file'}"
         return True, ""
 
     def record_evidence(self, *, task_id: str | None = None, action: str, result: str, success: bool,
                         acceptance: str | None = None, args: str | None = None,
-                        receipt_id: str | None = None) -> dict[str, Any]:
+                        args_fingerprint: str | None = None, receipt_id: str | None = None) -> dict[str, Any]:
         canonical = _receipt_action(action)
         normalized_args = _receipt_args(args)
         item = {"action": canonical, "result": str(result)[:2000], "success": bool(success)}
         requested_task_id = str(task_id) if task_id else None
         if args:
             item["args"] = normalized_args[:1000]
+        if args_fingerprint:
+            item["args_sha256"] = args_fingerprint
         if receipt_id:
             item["receipt_id"] = str(receipt_id)
         if acceptance:
@@ -216,7 +236,7 @@ class TaskManager:
                 for item in (candidate or {}).get("acceptance", [])
             )
             if candidate is not None and (not has_contract or self._receipt_match_score(
-                    candidate, canonical, normalized_args) >= 0):
+                    candidate, canonical, normalized_args, args_fingerprint) >= 0):
                 targets = [candidate]
                 item["task_id"] = requested_task_id
         if not task_id:
@@ -448,7 +468,7 @@ class TaskManager:
                     and marker["id"] in ordered_plan_ids
                 ),
                 key=lambda task: _ordered_plan_info(task)["index"],
-            )
+            ) + [task for task in unfinished if _ordered_plan_info(task) is None]
         else:
             self.tasks = unfinished
         return unfinished

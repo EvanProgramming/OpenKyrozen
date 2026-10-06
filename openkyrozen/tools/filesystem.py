@@ -2,6 +2,15 @@ from __future__ import annotations
 
 import os
 import glob
+import fnmatch
+import hashlib
+import json
+import shutil
+import stat
+import subprocess
+import tempfile
+import time
+from pathlib import Path
 
 from openkyrozen.tools.models import CommandResult
 from openkyrozen.security.command_policy import _BLOCKED_RE
@@ -101,6 +110,33 @@ def read_file(self, args: str) -> str:
     The path must be relative to the active workspace (e.g. "notes.txt").
     """
     try:
+        if args.lstrip().startswith("{"):
+            request = json.loads(args)
+            if not isinstance(request, dict) or not isinstance(request.get("path"), str):
+                return "Error: structured read requires a path"
+            abs_path = self._resolve_workspace_path(request["path"])
+            data = abs_path.read_bytes()
+            content = data.decode("utf-8")
+            lines = content.splitlines(keepends=True)
+            start = request.get("start_line", 1)
+            limit = request.get("max_lines", 200)
+            max_chars = request.get("max_chars", 20_000)
+            if (any(not isinstance(item, int) or isinstance(item, bool) for item in (start, limit, max_chars))
+                    or start < 1 or limit < 1 or max_chars < 1):
+                return "Error: start_line, max_lines, and max_chars must be positive integers"
+            limit, max_chars = min(limit, 200), min(max_chars, 20_000)
+            selected = lines[start - 1:start - 1 + limit]
+            excerpt = "".join(selected)
+            clipped = len(excerpt) > max_chars
+            excerpt = excerpt[:max_chars]
+            total = len(lines)
+            relative = abs_path.relative_to(self._WORKSPACE_ROOT).as_posix()
+            return json.dumps({
+                "path": relative, "sha256": hashlib.sha256(data).hexdigest(),
+                "start_line": start, "end_line": min(total, start + len(selected) - 1),
+                "total_lines": total, "truncated": clipped or start - 1 + len(selected) < total,
+                "content": excerpt,
+            })
         raw_path = args.strip()
         if not raw_path:
             return "Error: read_file requires a path"
@@ -111,3 +147,119 @@ def read_file(self, args: str) -> str:
         return f"Error: file not found: {args.strip()}"
     except Exception as e:
         return f"Error reading file: {e}"
+
+
+def edit_file(self, args: str) -> str:
+    """Replace one exact snippet only when the file still matches its read hash."""
+    temporary = None
+    try:
+        request = json.loads(args)
+        if not isinstance(request, dict) or not all(isinstance(request.get(key), str)
+                for key in ("path", "old_text", "new_text", "expected_sha256")):
+            return "Error: edit_file requires path, old_text, new_text, and expected_sha256 strings"
+        old, new = request["old_text"], request["new_text"]
+        if not old:
+            return "Error: old_text must not be empty"
+        path = self._resolve_workspace_path(request["path"])
+        original = path.read_bytes()
+        digest = hashlib.sha256(original).hexdigest()
+        if digest != request["expected_sha256"]:
+            return "Error: file is stale; read it again before editing"
+        content = original.decode("utf-8")
+        if content.count(old) != 1:
+            return "Error: old_text must match exactly once"
+        updated = content.replace(old, new, 1).encode("utf-8")
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(updated)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
+        if hashlib.sha256(path.read_bytes()).hexdigest() != request["expected_sha256"]:
+            return "Error: file changed during edit; read it again before editing"
+        os.replace(temporary, path)
+        temporary = None
+        return f"Updated {path.relative_to(self._WORKSPACE_ROOT).as_posix()}"
+    except Exception as exc:
+        return f"Error editing file: {exc}"
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def search_files(self, args: str) -> str:
+    """Search literal text with bounded, relative file-and-line results."""
+    try:
+        request = json.loads(args)
+        if not isinstance(request, dict) or not isinstance(request.get("query"), str) or not request["query"]:
+            return "Error: search_files requires a non-empty literal query"
+        scope = self._resolve_workspace_path(request.get("path", "."))
+        pattern = request.get("glob", "*")
+        if not isinstance(pattern, str) or Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+            return "Error: glob must be a workspace-relative pattern"
+        limit = request.get("limit", 100)
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            return "Error: limit must be a positive integer"
+        limit = min(limit, 100)
+        query = request["query"]
+        rg = shutil.which("rg")
+        if rg:
+            target = scope.relative_to(self._WORKSPACE_ROOT).as_posix() or "."
+            command = [rg, "--fixed-strings", "--line-number", "--no-heading", "--color", "never",
+                       "--max-columns", "400", "--max-columns-preview", "--glob", pattern,
+                       "-m", str(limit), "-e", query, "--", target]
+            process = subprocess.Popen(command, cwd=self._WORKSPACE_ROOT, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL)
+            output: list[str] = []
+            size = 0
+            deadline = time.monotonic() + 5
+            for raw in process.stdout:
+                if time.monotonic() >= deadline or len(output) >= limit:
+                    process.terminate()
+                    break
+                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                if len(line) > 400:
+                    line = line[:400] + " …"
+                remaining = 20_000 - size
+                if remaining <= 0:
+                    process.terminate()
+                    break
+                line = line[:remaining]
+                output.append(line)
+                size += len(line) + 1
+            try:
+                process.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            process.stdout.close()
+            return "\n".join(output) if output else "No matches."
+
+        output, size = [], 0
+        files = [scope] if scope.is_file() else scope.rglob("*")
+        for path in files:
+            if not path.is_file() or any(part in {".git", "venv", ".venv", "node_modules", "__pycache__"}
+                                         for part in path.relative_to(scope if scope.is_dir() else scope.parent).parts):
+                continue
+            relative = path.relative_to(self._WORKSPACE_ROOT).as_posix()
+            if not fnmatch.fnmatch(path.name, pattern) and not fnmatch.fnmatch(relative, pattern):
+                continue
+            try:
+                with path.open(encoding="utf-8", errors="replace") as source:
+                    for number, line in enumerate(source, 1):
+                        if query not in line:
+                            continue
+                        remaining = 20_000 - size
+                        if remaining <= 0 or len(output) >= limit:
+                            return "\n".join(output)
+                        result = f"{relative}:{number}:{line.rstrip()}"[:remaining]
+                        output.append(result)
+                        size += len(result) + 1
+            except OSError:
+                continue
+        return "\n".join(output) if output else "No matches."
+    except Exception as exc:
+        return f"Error searching files: {exc}"

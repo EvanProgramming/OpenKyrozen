@@ -67,39 +67,7 @@ def _complete_turn(self, turn):
         turn.final_answer = (turn.protocol_error_message + "\n\n" + turn.final_answer
                              if delegated else turn.protocol_error_message)
 
-    elapsed = time.time() - turn.turn_start
-    self._turn_cost_log.append({
-        "tokens": turn.turn_prompt_total + turn.turn_completion_total,
-        "time": elapsed,
-        "tool_calls": len(turn.tool_calls)
-    })
     turn.final_answer = self._clean_final_response(turn.final_answer)
-
-    # If tasks were completed, generate a summary so the user knows what happened
-    total_tools_executed = len(turn.tool_records)
-    if total_tools_executed >= 2 and not delegated and not durable_tasks_incomplete and turn.interaction_mode == "agent":
-        summary_prompt = (
-            "You just completed a multi-step task. Summarise your work below.\n\n"
-            "## What was accomplished\n"
-            "- (2-4 bullet points: tools used, files created, key results)\n\n"
-            "Output only the completed summary in plain text (no Action blocks).\n\n"
-            f"Tool results:\n{turn.tool_results_text[:1500]}"
-        )
-        try:
-            summary_raw = self._get_llm_response(
-                [{"role": "system", "content": summary_prompt}]
-            ).strip()
-            turn.turn_prompt_total += self._last_prompt_tokens
-            turn.turn_completion_total += self._last_completion_tokens
-            summary_meta = self._parse_model_response(summary_raw)
-            summary = summary_meta["clean"] if not summary_meta["tool_calls"] else ""
-            if summary and len(summary) > 30:
-                if len(turn.final_answer.strip()) < 60:
-                    turn.final_answer = summary
-                else:
-                    turn.final_answer = turn.final_answer + "\n\n---\n\n" + summary
-        except Exception:
-            pass
 
     turn.fix_workflow, turn.final_answer = self._advance_fix_workflow(
         turn.fix_workflow, turn.user_input, turn.final_answer,
@@ -119,6 +87,11 @@ def _complete_turn(self, turn):
                 lines.extend(f"  Review finding: {item}" for item in run["reviews"][-1]["findings"])
         turn.final_answer = "\n".join(lines)
 
+    self._turn_cost_log.append({
+        "tokens": turn.turn_prompt_total + turn.turn_completion_total,
+        "time": time.time() - turn.turn_start,
+        "tool_calls": len(turn.tool_calls),
+    })
     return self._finish_learning_run(
         turn.learning_run, turn.learning_receipts, turn.user_input, turn.final_answer, turn.tool_records,
         turn.turn_prompt_total + turn.turn_completion_total, turn.turn_start,

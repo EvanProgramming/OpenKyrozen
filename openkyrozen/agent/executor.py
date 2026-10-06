@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import ast
 import json
 import uuid
@@ -52,7 +53,7 @@ def _is_state_changing_action(self, action: str, args: str) -> bool:
     if action == "git_remote":
         return str(args).lstrip().startswith(("add ", "remove "))
     return action in {
-        "write_file", "run_cmd", "git_clone", "git_add", "git_commit", "git_push",
+        "write_file", "edit_file", "run_cmd", "git_clone", "git_add", "git_commit", "git_push",
         "git_pull", "git_checkout", "git_stash", "git_reset", "git_remote", "github_cli", "define_tool",
     }
 
@@ -75,6 +76,9 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         operation_id=self._operation_id(operation_scope, canonical, args),
         action=canonical,
         args=self._fix_safe_text(self._operation_args(canonical, args), 1000),
+        args_sha256=hashlib.sha256(
+            str(self._operation_args(canonical, args)).replace("\r\n", "\n").replace("\n", " ").strip().encode("utf-8")
+        ).hexdigest(),
         authorized=authorized,
         started_at=started_at,
         completed_at=utc_now(),
@@ -224,7 +228,8 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                 success=False, result=result, operation_scope=operation_scope,
                 failure="plan_action_mismatch",
             )
-    if self._is_state_changing_action(canonical, args) and operation_id in successful_operations:
+    if (canonical != "run_cmd" and self._is_state_changing_action(canonical, args)
+            and operation_id in successful_operations):
         result = "Error: duplicate successful state-changing action refused for this turn."
         self._notify_tool_execute(canonical, args, result)
         return self._make_execution_receipt(
@@ -233,7 +238,8 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
         )
     receipt = self._run_tool(canonical, args, return_receipt=True, operation_scope=operation_scope)
     assert isinstance(receipt, ExecutionReceipt)
-    if receipt.success and self._is_state_changing_action(receipt.action, args):
+    if (receipt.success and receipt.action != "run_cmd"
+            and self._is_state_changing_action(receipt.action, args)):
         successful_operations.add(receipt.operation_id)
     return receipt
 
@@ -242,7 +248,7 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt) -> dict[str, Any]:
     """Persist a receipt and reconcile the current planned task from verified evidence."""
     from openkyrozen.agent.delegation import TOOLS
     evidence = {} if receipt.action in TOOLS else self.tasks.record_evidence(
-        action=receipt.action, args=receipt.args, result=receipt.result,
+        action=receipt.action, args=receipt.args, args_fingerprint=receipt.args_sha256, result=receipt.result,
         success=receipt.success, acceptance=receipt.acceptance, receipt_id=receipt.receipt_id,
     )
     task_id = evidence.get("task_id")

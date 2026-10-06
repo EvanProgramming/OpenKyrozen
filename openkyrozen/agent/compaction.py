@@ -182,12 +182,15 @@ def _format_entries(entries: list[dict[str, Any]]) -> str:
 def _bounded_summary(text: str, summarize: Summarizer, max_chars: int, output_chars: int) -> str | None:
     """Summarize in bounded batches so a huge history cannot overflow the digest call."""
     batches = [text[index:index + max_chars] for index in range(0, len(text), max_chars)] or [""]
+    batch_budget = (output_chars - len(batches) + 1) // len(batches)
+    if batch_budget < 8:
+        return None
     summaries: list[str] = []
     for batch in batches:
-        summary = summarize(batch, output_chars)
+        summary = summarize(batch, batch_budget)
         if not summary or len(summary.strip()) < 8:
             return None
-        summaries.append(summary.strip())
+        summaries.append(summary.strip()[:batch_budget])
     return "\n".join(summaries)[:output_chars]
 
 

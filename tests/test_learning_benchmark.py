@@ -7,9 +7,14 @@ import unittest
 from pathlib import Path
 
 from openkyrozen.learning.benchmark import compare, main, summarize
+from benchmarks.fast_mode import _usage_token_total
 
 
 class LearningBenchmarkTests(unittest.TestCase):
+    def test_fast_mode_cost_does_not_double_count_reasoning_tokens(self):
+        self.assertEqual(_usage_token_total({"prompt_tokens": 100, "completion_tokens": 50,
+                                             "reasoning_tokens": 20}), 150)
+
     def test_summary_and_comparison_are_harness_neutral(self):
         clean_results = [{"verified_success": True, "corrections": 1, "repeated_errors": 1,
                           "tool_calls": 10, "tokens": 1000, "latency": 10.0} for _ in range(6)]

@@ -24,6 +24,57 @@ set_workspace_root = tools.set_workspace_root
 write_file = tools.write_file
 
 class WorkspaceToolTests(unittest.TestCase):
+    def test_structured_read_returns_hash_and_truncation_metadata(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "module.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                result = json.loads(tools.read_file(json.dumps({"path": "module.py"})))
+                excerpt = json.loads(tools.read_file(json.dumps(
+                    {"path": "module.py", "start_line": 2, "max_lines": 1},
+                )))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertEqual(result["content"], "one\ntwo\nthree\n")
+        self.assertEqual(result["start_line"], 1)
+        self.assertFalse(result["truncated"])
+        self.assertRegex(result["sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual((excerpt["content"], excerpt["start_line"], excerpt["end_line"]), ("two\n", 2, 2))
+        self.assertTrue(excerpt["truncated"])
+
+    def test_edit_file_requires_matching_hash_and_unique_old_text(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "module.py"
+            target.write_text("value = 1\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                digest = __import__("hashlib").sha256(target.read_bytes()).hexdigest()
+                args = {"path": "module.py", "old_text": "value = 1", "new_text": "value = 2",
+                        "expected_sha256": digest}
+                self.assertIn("Updated", tools.edit_file(json.dumps(args)))
+                args["expected_sha256"] = "0" * 64
+                self.assertIn("stale", tools.edit_file(json.dumps(args)).lower())
+                self.assertEqual(target.read_text(encoding="utf-8"), "value = 2\n")
+            finally:
+                tools.set_workspace_root(original)
+
+    def test_search_files_is_literal_and_returns_relative_line_numbers(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "module.py").write_text("if a == b:\n    return 1\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                result = tools.search_files(json.dumps({"query": "a == b", "glob": "*.py"}))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertIn("module.py:1:", result)
+        self.assertIn("a == b", result)
+
     def test_file_tools_stay_inside_workspace(self):
         original_root = Path.cwd()
         with tempfile.TemporaryDirectory() as directory:
@@ -65,6 +116,8 @@ class WorkspaceToolTests(unittest.TestCase):
         readonly = allowed_tool_names(AVAILABLE_TOOLS, "readonly")
         self.assertIn("run_cmd", workspace)
         self.assertIn("write_file", workspace)
+        self.assertIn("edit_file", workspace)
+        self.assertIn("search_files", readonly)
         self.assertNotIn("git_reset", workspace)
         self.assertIn("git_reset", full)
         self.assertIn("graph_query", readonly)

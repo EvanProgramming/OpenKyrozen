@@ -7,7 +7,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 
 ## Runtime tools
 
-- Built-in runtime tools: **46**
+- Built-in runtime tools: **48**
 - Names with the `git_` prefix: **14**
 - The CLI Action contract is a plain string in the `args` field.
 - Web and MCP exposure is filtered by the configured capability profile.
@@ -24,6 +24,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `cancel_subagent` | `read` | Cancel a scoped sub-agent and prevent subsequent tool execution; args JSON contains run_id. | `args`: string |
 | `check_stored_data` | `read` | Return a categorized summary of stored memories. | `args`: string |
 | `discover_tools` | `read` | Discover permitted tools; args is empty for the catalog or comma-separated exact tool names for full descriptions. | `args`: string |
+| `edit_file` | `write` | Replace one exact snippet only when the file still matches its read hash. | `args`: string |
 | `execute_terminal_command` | `shell` | Execute a terminal command. This is an alias for run_cmd. | `command`: string; required: `command` |
 | `find_files` | `read` | Find files matching a pattern. Args format: "pattern" or "pattern\|directory". | `pattern`: string, `directory`: string; required: `pattern` |
 | `git_add` | `git` | Stage files for commit. Args format: "file1 file2" or "." (stage all). | `args`: string |
@@ -54,6 +55,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `read_file` | `read` | Read content from a file. Args format: "path". | `path`: string; required: `path` |
 | `read_webpage` | `network` | Fetch the content of a web page and return its plain‑text body. | `url`: string; required: `url` |
 | `run_cmd` | `shell` | Execute a shell command. Args: the full command string. | `command`: string; required: `command` |
+| `search_files` | `read` | Search literal text with bounded, relative file-and-line results. | `args`: string |
 | `search_memory` | `read` | Search stored memories for facts relevant to the query. Args: "query" | `args`: string |
 | `search_web` | `network` | Search the internet for real-time information. | `query`: string; required: `query` |
 | `send_subagent` | `read` | Reuse a finished sub-agent; args JSON contains run_id and a complete assignment. | `args`: string |

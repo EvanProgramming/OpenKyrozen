@@ -89,6 +89,7 @@ class ExecutionReceipt:
     exit_code: int | None = None
     verified_effect: str | None = None
     acceptance: str | None = None
+    args_sha256: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +97,7 @@ class ExecutionReceipt:
             "operation_id": self.operation_id,
             "action": self.action,
             "args": self.args,
+            "args_sha256": self.args_sha256,
             "authorized": self.authorized,
             "started_at": self.started_at,
             "completed_at": self.completed_at,

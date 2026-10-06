@@ -5,6 +5,7 @@ import queue
 from contextvars import copy_context
 import sys
 import threading
+import time
 from typing import Any
 from openkyrozen.providers.usage import usage_scope
 from openkyrozen.agent.types import ContextOverflowError, ProviderUnavailableError
@@ -39,12 +40,70 @@ def _bounded_provider_call(self, callback: Any) -> Any:
     return value
 
 
+def _bounded_provider_stream(self, provider: Any, messages: list[dict[str, str]], model: str,
+                             on_chunk: Any = None) -> str:
+    """Consume one provider stream under the same wall-clock deadline as calls."""
+    timeout = self._provider_timeout_seconds()
+    deadline = time.monotonic() + timeout
+    events: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=64)
+    stream_ref: list[Any] = []
+
+    def publish(event: tuple[str, Any]) -> bool:
+        try:
+            events.put(event, timeout=min(0.1, max(0.0, deadline - time.monotonic())))
+            return time.monotonic() < deadline
+        except queue.Full:
+            return False
+
+    def consume() -> None:
+        try:
+            stream = iter(provider.chat_stream(messages, model))
+            stream_ref.append(stream)
+            for chunk in stream:
+                if not publish(("chunk", chunk)):
+                    return
+            publish(("done", None))
+        except Exception as exc:
+            publish(("error", exc))
+
+    context = copy_context()
+    threading.Thread(target=lambda: context.run(consume), daemon=True).start()
+    chunks: list[str] = []
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise queue.Empty
+            kind, value = events.get(timeout=remaining)
+            if kind == "done":
+                return "".join(chunks).strip()
+            if kind == "error":
+                raise value
+            chunks.append(str(value))
+            if on_chunk:
+                on_chunk(value)
+            else:
+                sys.stdout.write(str(value))
+                sys.stdout.flush()
+    except queue.Empty as exc:
+        if stream_ref:
+            close = getattr(stream_ref[0], "close", None)
+            if close:
+                try:
+                    close()
+                except Exception:
+                    pass
+        raise TimeoutError(f"Provider timed out after {timeout:g}s") from exc
+
+
 def _get_llm_response(self, messages: list[dict[str, str]], model: str | None = None, stream: bool = False,
                       on_chunk: Any = None, on_stream_end: Any = None) -> str:
     provider = self.execution_context.provider or self.llm_provider
     if provider is None:
         raise ProviderUnavailableError(self.PROVIDER_UNAVAILABLE_MESSAGE)
     provider_reported_usage = False
+    self._last_prompt_tokens = 0
+    self._last_completion_tokens = 0
     try:
         with usage_scope(
                 store=self.memory_bank.store, user_id=self.memory_bank.user_id,
@@ -55,17 +114,11 @@ def _get_llm_response(self, messages: list[dict[str, str]], model: str | None = 
                     user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
                     session_id=self.memory_bank.session_id, run_id=self._active_usage_run_id.get(),
                 )
-                collected: list[str] = []
-                for chunk in provider.chat_stream(messages, model or self.DEEPSEEK_MODEL):
-                    if str(chunk).startswith("[Ollama Error]") and self._is_context_overflow_error(RuntimeError(str(chunk))):
-                        raise RuntimeError(str(chunk))
-                    collected.append(chunk)
-                    if on_chunk:
-                        on_chunk(chunk)
-                    else:
-                        sys.stdout.write(chunk)
-                        sys.stdout.flush()
-                text = "".join(collected).strip()
+                text = self._bounded_provider_stream(
+                    provider, messages, model or self.DEEPSEEK_MODEL, on_chunk,
+                )
+                if text.startswith("[Ollama Error]") and self._is_context_overflow_error(RuntimeError(text)):
+                    raise RuntimeError(text)
                 after = self.memory_bank.store.usage_totals(
                     user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
                     session_id=self.memory_bank.session_id, run_id=self._active_usage_run_id.get(),

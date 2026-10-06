@@ -29,6 +29,11 @@ def _p95(values: list[float]) -> float:
     return ordered[max(0, int((len(ordered) * 0.95 + 0.999999) - 1))]
 
 
+def _usage_token_total(usage: dict) -> int:
+    """Reasoning tokens are included in the provider's completion token count."""
+    return int(usage.get("prompt_tokens", 0)) + int(usage.get("completion_tokens", 0))
+
+
 def summarize(rows: list[dict], backend: str, first_activation_ms: float,
               later_activation_median_ms: float | None) -> dict:
     excluded = {(item["case"], item["repeat"]) for item in rows if item["provider_error"]}
@@ -134,7 +139,8 @@ def run(base_url: str, backend: str, token: str, repeats: int,
                     "decision_count": sum(bool(item.get("choices")) for item in decisions),
                     "fallback_count": sum(bool(item.get("fallback_reason")) for item in decisions),
                     "llm_calls": usage["attempts"],
-                    "llm_tokens": usage["prompt_tokens"] + usage["completion_tokens"] + usage["reasoning_tokens"],
+                    "llm_tokens": _usage_token_total(usage),
+                    "llm_reasoning_tokens": int(usage.get("reasoning_tokens", 0)),
                 })
     return summarize(rows, backend, activation_ms[0],
                      statistics.median(activation_ms[1:]) if len(activation_ms) > 1 else None)

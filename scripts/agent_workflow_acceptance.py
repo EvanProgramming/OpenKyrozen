@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import socket
 import sys
@@ -55,7 +56,8 @@ def _free_port() -> int:
 
 def main_acceptance() -> None:
     port = _free_port()
-    page = "<!doctype html><title>OpenKyrozen acceptance</title><h1>deployed</h1>"
+    initial_page = "<!doctype html><title>OpenKyrozen acceptance</title><h1>draft</h1>"
+    page = "<!doctype html><title>OpenKyrozen acceptance</title><h1>verified</h1>"
     deployment_test = f'''import http.server
 import threading
 import unittest
@@ -73,7 +75,7 @@ class DeploymentTest(unittest.TestCase):
         try:
             with urllib.request.urlopen("http://127.0.0.1:{port}/index.html", timeout=5) as response:
                 self.assertEqual(response.status, 200)
-                self.assertIn(b"deployed", response.read())
+                self.assertIn(b"verified", response.read())
         finally:
             server.shutdown()
             server.server_close()
@@ -91,6 +93,8 @@ if __name__ == "__main__":
         "steps": [
             {"step_id": "page", "title": "Create index.html", "details": "Write index.html.",
              "acceptance_criteria": ["index.html exists"]},
+            {"step_id": "edit", "title": "Edit index.html safely", "details": "Update the draft page before verification.",
+             "acceptance_criteria": ["index.html contains verified"]},
             {"step_id": "test", "title": "Create test_deploy.py", "details": "Write test_deploy.py.",
              "acceptance_criteria": ["test_deploy.py exists"]},
             {"step_id": "verify", "title": "Verify local deployment",
@@ -101,14 +105,20 @@ if __name__ == "__main__":
     responses = [
         'Action: {"action": "list_dir", "args": "."}',
         json.dumps(plan),
-        "Action: " + json.dumps({"action": "write_file", "args": f"index.html|{page}"}),
+        "Action: " + json.dumps({"action": "write_file", "args": f"index.html|{initial_page}"}),
+        "TaskDone: 0\nAction: " + json.dumps({
+            "action": "edit_file", "args": json.dumps({
+                "path": "index.html", "old_text": "draft", "new_text": "verified",
+                "expected_sha256": hashlib.sha256(initial_page.encode()).hexdigest(),
+            }),
+        }),
         "TaskDone: 0\nAction: " + json.dumps(
             {"action": "write_file", "args": f"test_deploy.py|{deployment_test}"}
         ),
-        "TaskDone: 1\nAction: " + json.dumps(
+        "TaskDone: 2\nAction: " + json.dumps(
             {"action": "run_cmd", "args": f"{sys.executable} -m unittest test_deploy.py -v"}
         ),
-        "TaskDone: 2\nDeployment verified.",
+        "TaskDone: 3\nDeployment verified.",
     ]
 
     original = (
@@ -148,12 +158,12 @@ if __name__ == "__main__":
                 reply = main._chat_turn("accept plan")
 
             assert "Deployment verified" in reply, reply
-            assert [task["status"] for task in main.tasks.tasks] == ["succeeded"] * 3
+            assert [task["status"] for task in main.tasks.tasks] == ["succeeded"] * 4
             receipts = store.list_events(
                 "execution.receipt", workspace_id="acceptance", session_id="release",
             )
             assert [event["payload"]["action"] for event in reversed(receipts)] == [
-                "list_dir", "write_file", "write_file", "run_cmd",
+                "list_dir", "write_file", "edit_file", "write_file", "run_cmd",
             ]
             state = main._interaction_controller.state()
             assert state["executing_plan"] is None

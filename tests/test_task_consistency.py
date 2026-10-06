@@ -1,3 +1,5 @@
+import hashlib
+import json
 import subprocess
 import tempfile
 import time
@@ -17,6 +19,50 @@ from openkyrozen.agent.modes import InteractionController
 
 
 class TaskConsistencyTests(unittest.TestCase):
+    def test_unfenced_action_json_parses_braces_inside_string_arguments(self):
+        payload = json.dumps({"action": "write_file", "args": 'module.py|text = "}"\n'})
+        self.assertEqual(
+            main._collect_tool_calls("Action: " + payload),
+            [{"action": "write_file", "args": 'module.py|text = "}"\n'}],
+        )
+
+    def test_recovery_keeps_unfinished_standalone_tasks_with_ordered_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = MemoryBank(Path(directory) / "state.sqlite3").store
+            manager = TaskManager(store, workspace_id="mixed", session_id="recover")
+            standalone = manager.add_task("Standalone retry")
+            standalone_id = manager.tasks[standalone]["id"]
+            manager.add_ordered_plan(["Write result.txt", "Run tests"])
+            manager.set_status(standalone, "blocked")
+
+            recovered = TaskManager(store, workspace_id="mixed", session_id="recover")
+            recovered.recover()
+
+            resumed = recovered.resume(standalone_id)
+            self.assertIsNotNone(resumed)
+            self.assertEqual(resumed["status"], "pending")
+            self.assertEqual(len(recovered.tasks), 3)
+
+    def test_long_receipt_arguments_match_complete_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = MemoryBank(Path(directory) / "state.sqlite3").store
+            manager = TaskManager(store, workspace_id="long", session_id="args")
+            args = "result.txt|" + "x" * 1100
+            index = manager.add_task(
+                "Write long result", checkpoint={"action": "write_file", "args": args},
+            )
+
+            evidence = manager.record_evidence(
+                task_id=manager.tasks[index]["id"], action="write_file", args=args[:1000],
+                args_fingerprint=hashlib.sha256(args.encode()).hexdigest(),
+                result="Wrote file", success=True, acceptance="verified",
+            )
+
+            self.assertEqual(evidence["task_id"], manager.tasks[index]["id"])
+            self.assertNotIn("unmatched_reason", evidence)
+            manager.set_status(index, "succeeded", evidence=evidence)
+            self.assertEqual(manager.tasks[index]["status"], "succeeded")
+
     def setUp(self):
         self._original_interaction = main._interaction_controller
         self._interaction_directory = tempfile.TemporaryDirectory()
@@ -919,6 +965,89 @@ class TaskConsistencyTests(unittest.TestCase):
             main.llm_provider = original_provider
         self.assertLess(time.monotonic() - started, 0.1)
         self.assertIn("Provider timed out", response)
+
+    def test_streaming_provider_obeys_deadline_and_discards_late_chunks(self):
+        class SlowStreamingProvider:
+            def chat_stream(self, _messages, _model):
+                time.sleep(0.2)
+                yield "late"
+
+        original_provider = main.llm_provider
+        main.llm_provider = SlowStreamingProvider()
+        chunks = []
+        try:
+            with patch.object(main, "_provider_timeout_seconds", return_value=0.01):
+                started = time.monotonic()
+                response = main._get_llm_response([], stream=True, on_chunk=chunks.append)
+        finally:
+            main.llm_provider = original_provider
+        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertIn("Provider timed out", response)
+        self.assertEqual(chunks, [])
+
+    def test_successful_shell_command_can_be_repeated_after_workspace_changes(self):
+        operations: set[str] = set()
+        original_root = main._get_workspace_root()
+        with tempfile.TemporaryDirectory() as directory:
+            main._set_workspace_root(Path(directory))
+            try:
+                with patch.object(main, "run_command", return_value=main.CommandResult("passed", True, 0)) as command:
+                    baseline = main._execute_turn_action(
+                        "run_cmd", "python -m unittest", operation_scope="edit-verify",
+                        successful_operations=operations,
+                    )
+                    main.AVAILABLE_TOOLS["write_file"]("module.py|fixed")
+                    verification = main._execute_turn_action(
+                        "run_cmd", "python -m unittest", operation_scope="edit-verify",
+                        successful_operations=operations,
+                    )
+            finally:
+                main._set_workspace_root(original_root)
+        self.assertTrue(baseline.success)
+        self.assertTrue(verification.success)
+        self.assertEqual(command.call_count, 2)
+
+    def test_completion_keeps_verified_answer_without_second_recap_call(self):
+        from types import SimpleNamespace
+        original_manager, original_tasks = main.subagent_manager, main.tasks
+        main.subagent_manager = SimpleNamespace(coordinator=None)
+        main.tasks = SimpleNamespace(tasks=[])
+        turn = SimpleNamespace(
+            final_answer="Verified result", protocol_error_message=None, tool_records=[{}, {}],
+            turn_prompt_total=10, turn_completion_total=5, turn_start=time.time(), tool_calls=[],
+            pending_interaction_reply=None, interaction_mode="agent", fix_workflow=None,
+            user_input="complete work", response_text="", learning_run=None,
+            learning_receipts=[],
+        )
+        try:
+            with patch.object(main, "_get_llm_response", side_effect=AssertionError("unexpected recap")) as recap, \
+                    patch.object(main, "_advance_fix_workflow", side_effect=lambda state, _request, answer, *_args: (state, answer)), \
+                    patch.object(main, "_finish_learning_run", side_effect=lambda _run, _receipts, _task, result, *_args: result):
+                answer = main._complete_turn(turn)
+        finally:
+            main.subagent_manager, main.tasks = original_manager, original_tasks
+        self.assertEqual(answer, "Verified result")
+        self.assertEqual(recap.call_count, 0)
+
+    def test_streaming_provider_timeout_covers_stalls_after_first_chunk(self):
+        class SlowStreamingProvider:
+            def chat_stream(self, _messages, _model):
+                yield "first"
+                time.sleep(0.2)
+                yield "late"
+
+        original_provider = main.llm_provider
+        main.llm_provider = SlowStreamingProvider()
+        chunks = []
+        try:
+            with patch.object(main, "_provider_timeout_seconds", return_value=0.03):
+                response = main._get_llm_response([], stream=True, on_chunk=chunks.append)
+        finally:
+            main.llm_provider = original_provider
+        self.assertIn("Provider timed out", response)
+        self.assertEqual(chunks, ["first"])
+        self.assertEqual(main._last_prompt_tokens, 0)
+        self.assertEqual(main._last_completion_tokens, 0)
 
 
 if __name__ == "__main__":

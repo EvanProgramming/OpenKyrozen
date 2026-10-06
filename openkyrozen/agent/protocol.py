@@ -65,29 +65,19 @@ def parse_json_from_response(self, text: str) -> dict | None:
 def _extract_json_objects(self, text: str) -> list[dict]:
     objects: list[dict] = []
     i = 0
+    decoder = json.JSONDecoder()
     while True:
         start = text.find("{", i)
         if start == -1:
             break
-        depth = 0
-        for pos in range(start, len(text)):
-            char = text[pos]
-            if char == '{':
-                depth += 1
-            elif char == '}':
-                depth -= 1
-                if depth == 0:
-                    candidate = text[start:pos + 1]
-                    try:
-                        obj = json.loads(candidate)
-                        if isinstance(obj, dict):
-                            objects.append(obj)
-                    except json.JSONDecodeError:
-                        pass
-                    i = pos + 1
-                    break
-        else:
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
             i = start + 1
+            continue
+        if isinstance(obj, dict):
+            objects.append(obj)
+        i = end
     return objects
 
 
