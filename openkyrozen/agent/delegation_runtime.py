@@ -243,13 +243,15 @@ def _delegation_summary(self):
 def _delegation_tool_access(self, action, args):
     context = self.execution_context
     coordinator = context.coordinator
-    access = coordinator.access if coordinator else self._workspace_access.get(str(self._get_workspace_root().resolve()))
+    access = coordinator.access if coordinator else self._workspace_access.setdefault(
+        str(self._get_workspace_root().resolve()), WorkspaceAccess(),
+    )
     path = None
     if action in {"write_file", "edit_file", "read_file"}:
         raw = str(args).split("|", 1)[0].strip()
         if action in {"edit_file", "read_file"} and raw.startswith("{"):
             try:
-                request = json.loads(raw)
+                request = json.loads(str(args))
                 raw = request.get("path", "") if isinstance(request, dict) else ""
             except json.JSONDecodeError:
                 raw = ""

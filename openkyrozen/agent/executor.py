@@ -12,6 +12,7 @@ from openkyrozen.security.capabilities import issue_capability_token
 from openkyrozen.tools.models import CommandResult
 from openkyrozen.security.tool_policy import tool_capability
 from openkyrozen.agent.types import ExecutionReceipt
+from openkyrozen.tasks.models import _receipt_args
 
 
 def _notify_tool_execute(self, action: str, args: Any, result: Any) -> None:
@@ -77,7 +78,7 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         action=canonical,
         args=self._fix_safe_text(self._operation_args(canonical, args), 1000),
         args_sha256=hashlib.sha256(
-            str(self._operation_args(canonical, args)).replace("\r\n", "\n").replace("\n", " ").strip().encode("utf-8")
+            _receipt_args(self._operation_args(canonical, args)).encode("utf-8")
         ).hexdigest(),
         authorized=authorized,
         started_at=started_at,

@@ -64,6 +64,21 @@ class WorkspaceToolTests(unittest.TestCase):
         self.assertEqual(result["sha256"], hashlib.sha256(data.encode()).hexdigest())
         self.assertEqual(result["total_lines"], 200)
 
+    def test_structured_read_keeps_prefix_of_line_spanning_chunks(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "long.txt").write_text("z" * 200_000 + "\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                result = json.loads(tools.read_file(json.dumps(
+                    {"path": "long.txt", "max_chars": 100}
+                )))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertEqual(result["content"], "z" * 100)
+        self.assertTrue(result["truncated"])
+
     def test_edit_file_requires_matching_hash_and_unique_old_text(self):
         original = tools._WORKSPACE_ROOT
         with tempfile.TemporaryDirectory() as directory:
@@ -94,6 +109,23 @@ class WorkspaceToolTests(unittest.TestCase):
                 tools.set_workspace_root(original)
         self.assertIn("module.py:1:", result)
         self.assertIn("a == b", result)
+
+    def test_search_ripgrep_includes_filename_for_explicit_file(self):
+        import shutil
+        rg = shutil.which("rg")
+        if not rg:
+            self.skipTest("ripgrep is not installed")
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "module.py").write_text("needle\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                with patch("openkyrozen.tools.filesystem.shutil.which", return_value=rg):
+                    result = tools.search_files(json.dumps({"query": "needle", "path": "module.py"}))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertTrue(result.startswith("module.py:1:"), result)
 
     def test_search_fallback_skips_symlinks_outside_workspace(self):
         original = tools._WORKSPACE_ROOT

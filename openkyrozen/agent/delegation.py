@@ -94,13 +94,15 @@ class WorkspaceAccess:
     def __init__(self):
         self.condition = threading.Condition()
         self.paths = set()
+        self.readers = {}
         self.exclusive = False
         self.owners = {}
 
     @contextmanager
     def acquire(self, path=None, cancelled=lambda: False, owner=None, reading=False):
         with self.condition:
-            while (self.exclusive or (path is None and self.paths) or path in self.paths
+            while (self.exclusive or (path is None and (self.paths or self.readers)) or path in self.paths
+                   or (not reading and self.readers.get(path, 0))
                    or (not reading and path in self.owners and self.owners[path] != owner)):
                 if cancelled():
                     raise RuntimeError("Sub-agent cancelled")
@@ -109,6 +111,8 @@ class WorkspaceAccess:
                 raise RuntimeError("Sub-agent cancelled")
             if path is None:
                 self.exclusive = True
+            elif reading:
+                self.readers[path] = self.readers.get(path, 0) + 1
             else:
                 self.paths.add(path)
         try:
@@ -117,6 +121,10 @@ class WorkspaceAccess:
             with self.condition:
                 if path is None:
                     self.exclusive = False
+                elif reading:
+                    self.readers[path] -= 1
+                    if not self.readers[path]:
+                        del self.readers[path]
                 else:
                     self.paths.remove(path)
                 self.condition.notify_all()
@@ -124,7 +132,7 @@ class WorkspaceAccess:
     @contextmanager
     def claim(self, paths, owner, cancelled):
         with self.condition:
-            while any(path in self.owners or path in self.paths for path in paths):
+            while any(path in self.owners or path in self.paths or self.readers.get(path, 0) for path in paths):
                 if cancelled():
                     raise RuntimeError("Sub-agent cancelled")
                 self.condition.wait(.1)

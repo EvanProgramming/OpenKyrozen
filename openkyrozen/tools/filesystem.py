@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -146,7 +147,10 @@ def read_file(self, args: str) -> str:
                         pending = ""
                         line_number += 1
                         newline_count += 1
-                    pending = parts[-1] if start <= line_number < start + limit else ""
+                    if start <= line_number < start + limit:
+                        pending = (pending + parts[-1])[:max(0, max_chars + 1 - excerpt_size)]
+                    else:
+                        pending = ""
                     ends_newline = decoded.endswith("\n") if decoded else ends_newline
                 final = decoder.decode(b"", final=True)
                 if final:
@@ -235,7 +239,7 @@ def search_files(self, args: str) -> str:
         rg = shutil.which("rg")
         if rg:
             target = scope.relative_to(self._WORKSPACE_ROOT).as_posix() or "."
-            command = [rg, "--fixed-strings", "--line-number", "--no-heading", "--color", "never",
+            command = [rg, "--fixed-strings", "--line-number", "--no-heading", "--with-filename", "--color", "never",
                        "--max-columns", "400", "--max-columns-preview", "--glob", pattern,
                        "-m", str(limit), "-e", query, "--", target]
             process = subprocess.Popen(command, cwd=self._WORKSPACE_ROOT, stdout=subprocess.PIPE,
@@ -243,20 +247,32 @@ def search_files(self, args: str) -> str:
             output: list[str] = []
             size = 0
             deadline = time.monotonic() + 5
-            for raw in process.stdout:
-                if time.monotonic() >= deadline or len(output) >= limit:
-                    process.terminate()
-                    break
-                line = raw.decode("utf-8", "replace").rstrip("\r\n")
-                if len(line) > 400:
-                    line = line[:400] + " …"
-                remaining = 20_000 - size
-                if remaining <= 0:
-                    process.terminate()
-                    break
-                line = line[:remaining]
-                output.append(line)
-                size += len(line) + 1
+            def kill_search() -> None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+
+            timer = threading.Timer(5, kill_search)
+            timer.daemon = True
+            timer.start()
+            try:
+                for raw in process.stdout:
+                    if len(output) >= limit:
+                        process.terminate()
+                        break
+                    line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                    if len(line) > 400:
+                        line = line[:400] + " …"
+                    remaining = 20_000 - size
+                    if remaining <= 0:
+                        process.terminate()
+                        break
+                    line = line[:remaining]
+                    output.append(line)
+                    size += len(line) + 1
+            finally:
+                timer.cancel()
             try:
                 process.wait(timeout=0.2)
             except subprocess.TimeoutExpired:
@@ -266,8 +282,11 @@ def search_files(self, args: str) -> str:
             return "\n".join(output) if output else "No matches."
 
         output, size = [], 0
+        deadline = time.monotonic() + 5
         files = [scope] if scope.is_file() else scope.rglob("*")
         for path in files:
+            if time.monotonic() >= deadline:
+                return "\n".join(output) if output else "Search timed out."
             try:
                 path = self._resolve_workspace_path(str(path))
             except ValueError:
@@ -279,16 +298,43 @@ def search_files(self, args: str) -> str:
             if not fnmatch.fnmatch(path.name, pattern) and not fnmatch.fnmatch(relative, pattern):
                 continue
             try:
-                with path.open(encoding="utf-8", errors="replace") as source:
-                    for number, line in enumerate(source, 1):
-                        if query not in line:
-                            continue
-                        remaining = 20_000 - size
-                        if remaining <= 0 or len(output) >= limit:
+                needle = query.encode("utf-8")
+                overlap, prefix, found, number = b"", b"", False, 1
+
+                def record_line() -> bool:
+                    nonlocal size
+                    if not found:
+                        return False
+                    remaining = 20_000 - size
+                    if remaining <= 0 or len(output) >= limit:
+                        return True
+                    text = prefix.decode("utf-8", "replace").rstrip()
+                    result = f"{relative}:{number}:{text}"[:remaining]
+                    output.append(result)
+                    size += len(result) + 1
+                    return len(output) >= limit or size >= 20_000
+
+                with path.open("rb") as source:
+                    while chunk := source.read(64 * 1024):
+                        if time.monotonic() >= deadline:
+                            return "\n".join(output) if output else "Search timed out."
+                        parts = chunk.split(b"\n")
+                        for piece in parts[:-1]:
+                            probe = overlap + piece
+                            found = found or needle in probe
+                            prefix = (prefix + piece)[:401]
+                            if record_line():
+                                return "\n".join(output)
+                            number += 1
+                            overlap, prefix, found = b"", b"", False
+                        piece = parts[-1]
+                        probe = overlap + piece
+                        found = found or needle in probe
+                        prefix = (prefix + piece)[:401]
+                        overlap = probe[-(len(needle) - 1):] if len(needle) > 1 else b""
+                    if prefix or found:
+                        if record_line():
                             return "\n".join(output)
-                        result = f"{relative}:{number}:{line.rstrip()}"[:remaining]
-                        output.append(result)
-                        size += len(result) + 1
             except OSError:
                 continue
         return "\n".join(output) if output else "No matches."

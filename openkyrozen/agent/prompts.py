@@ -79,6 +79,11 @@ def _agent_prompt_tools_list(self, agent_config: dict[str, Any]) -> str:
                                 | set(self.execution_context.discovered_tools))
     lines = [f"- {name}: {(getattr(fn, '__doc__', None) or '').strip()}"
              for name, fn in self.AVAILABLE_TOOLS.items() if name in detailed]
+    if self._prompt_profile() == "compact":
+        if "search_files" in detailed:
+            lines.append('search_files JSON: {"query":"literal text","path":".","glob":"*.py","limit":100}')
+        if "edit_file" in detailed:
+            lines.append('edit_file JSON: {"path":"file","old_text":"exact text","new_text":"replacement","expected_sha256":"hash from structured read_file"}')
     groups: dict[str, list[str]] = {}
     for name in sorted(permitted - detailed):
         groups.setdefault(tool_capability(name), []).append(name)

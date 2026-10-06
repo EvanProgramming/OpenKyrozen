@@ -15,6 +15,7 @@ main = _application.runtime
 from openkyrozen.providers import OpenAICompatProvider, ProviderConfig
 from openkyrozen.agent.subagents import AgentProfile, SubAgentManager
 from openkyrozen.agent.delegation_runtime import _delegation_tool_access
+from openkyrozen.agent.delegation import WorkspaceAccess
 
 
 class SubAgentTests(unittest.TestCase):
@@ -41,6 +42,27 @@ class SubAgentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "outside its assigned files"):
                 with _delegation_tool_access(agent, "edit_file", args):
                     self.fail("out-of-scope edit entered the guarded operation")
+
+    def test_edit_file_scope_parsing_keeps_json_text_after_pipe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: (root / raw).resolve())
+            coordinator = SimpleNamespace(
+                root=root, access=WorkspaceAccess(), check_cancelled=lambda _run: None,
+                runs={"child": {"assignment": {"scope": ["allowed.py"]}}},
+                cancelled={"child": threading.Event()},
+            )
+            parent = SimpleNamespace(interaction=SimpleNamespace(state=lambda: {}))
+            child = SimpleNamespace(workspace=SimpleNamespace(adapters=adapters), _delegation_parent=parent)
+            agent = SimpleNamespace(
+                execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
+                current_session=child, _workspace_access={}, _get_workspace_root=lambda: root,
+                _is_state_changing_action=lambda *_args: True,
+            )
+            args = json.dumps({"path": "allowed.py", "old_text": "a || b", "new_text": "a",
+                               "expected_sha256": "0" * 64})
+            with _delegation_tool_access(agent, "edit_file", args):
+                self.assertEqual((root / "allowed.py").parent, root)
 
     def test_profile_has_independent_session_memory_and_capabilities(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -46,7 +46,7 @@ def _bounded_provider_stream(self, provider: Any, messages: list[dict[str, str]]
     timeout = self._provider_timeout_seconds()
     deadline = time.monotonic() + timeout
     events: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=64)
-    stream_ref: list[Any] = []
+    cancelled = threading.Event()
 
     def publish(event: tuple[str, Any]) -> bool:
         try:
@@ -56,15 +56,27 @@ def _bounded_provider_stream(self, provider: Any, messages: list[dict[str, str]]
             return False
 
     def consume() -> None:
+        stream = None
         try:
             stream = iter(provider.chat_stream(messages, model))
-            stream_ref.append(stream)
+            if cancelled.is_set():
+                return
             for chunk in stream:
+                if cancelled.is_set():
+                    return
                 if not publish(("chunk", chunk)):
                     return
             publish(("done", None))
         except Exception as exc:
-            publish(("error", exc))
+            if not cancelled.is_set():
+                publish(("error", exc))
+        finally:
+            close = getattr(stream, "close", None)
+            if close:
+                try:
+                    close()
+                except Exception:
+                    pass
 
     context = copy_context()
     threading.Thread(target=lambda: context.run(consume), daemon=True).start()
@@ -86,13 +98,7 @@ def _bounded_provider_stream(self, provider: Any, messages: list[dict[str, str]]
                 sys.stdout.write(str(value))
                 sys.stdout.flush()
     except queue.Empty as exc:
-        if stream_ref:
-            close = getattr(stream_ref[0], "close", None)
-            if close:
-                try:
-                    close()
-                except Exception:
-                    pass
+        cancelled.set()
         raise TimeoutError(f"Provider timed out after {timeout:g}s") from exc
 
 
