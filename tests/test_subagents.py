@@ -72,8 +72,8 @@ class SubAgentTests(unittest.TestCase):
 
             class Access:
                 @contextmanager
-                def acquire(self, path, cancelled, owner, *, reading=False):
-                    entered.append((path, owner, reading, cancelled()))
+                def acquire(self, path, cancelled, owner, *, reading=False, recursive=False):
+                    entered.append((path, owner, reading, recursive, cancelled()))
                     yield
 
             coordinator = SimpleNamespace(access=Access(), check_cancelled=lambda _run: None,
@@ -87,17 +87,18 @@ class SubAgentTests(unittest.TestCase):
             )
             with _delegation_tool_access(agent, "search_files", '{"query":"needle"}'):
                 pass
-        self.assertEqual(entered, [(str(root), "child", True, False)])
+        self.assertEqual(entered, [(str(root), "child", True, True, False)])
 
     def test_delegated_search_lock_uses_requested_path(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
+            (root / "docs").mkdir()
             entered = []
 
             class Access:
                 @contextmanager
-                def acquire(self, path, cancelled, owner, *, reading=False):
-                    entered.append((path, owner, reading, cancelled()))
+                def acquire(self, path, cancelled, owner, *, reading=False, recursive=False):
+                    entered.append((path, owner, reading, recursive, cancelled()))
                     yield
 
             coordinator = SimpleNamespace(access=Access(), check_cancelled=lambda _run: None,
@@ -112,7 +113,31 @@ class SubAgentTests(unittest.TestCase):
             )
             with _delegation_tool_access(agent, "search_files", '{"query":"needle","path":"docs"}'):
                 pass
-        self.assertEqual(entered, [(str((root / "docs").resolve()), "child", True, False)])
+        self.assertEqual(entered, [(str((root / "docs").resolve()), "child", True, True, False)])
+
+    def test_recursive_search_lock_blocks_descendant_writer_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            docs = root / "docs"
+            docs.mkdir()
+            access = WorkspaceAccess()
+            nested_writer_entered = threading.Event()
+            unrelated_writer_entered = threading.Event()
+
+            def write(path, entered):
+                with access.acquire(str(path)):
+                    entered.set()
+
+            with access.acquire(str(docs), reading=True, recursive=True):
+                nested = threading.Thread(target=write, args=(docs / "guide.md", nested_writer_entered))
+                unrelated = threading.Thread(target=write, args=(root / "notes.md", unrelated_writer_entered))
+                nested.start()
+                unrelated.start()
+                self.assertTrue(unrelated_writer_entered.wait(1))
+                self.assertFalse(nested_writer_entered.wait(0.05))
+            self.assertTrue(nested_writer_entered.wait(1))
+            nested.join(timeout=1)
+            unrelated.join(timeout=1)
 
     def test_profile_has_independent_session_memory_and_capabilities(self):
         with tempfile.TemporaryDirectory() as directory:

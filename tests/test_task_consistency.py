@@ -79,6 +79,29 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertEqual(evidence.get("task_id"), manager.tasks[index]["id"])
             self.assertNotIn("unmatched_reason", evidence)
 
+    def test_failed_inferred_long_receipt_can_match_successful_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = MemoryBank(Path(directory) / "state.sqlite3").store
+            manager = TaskManager(store, workspace_id="long-retry", session_id="args")
+            args = "result.txt|" + "x" * 1100
+            full_hash = hashlib.sha256(args.encode()).hexdigest()
+            index = manager.add_task("Write long result", acceptance=[
+                {"action": "write_file", "args": args},
+            ])
+            failed = manager.record_evidence(
+                action="write_file", args=args[:1000], args_fingerprint=full_hash,
+                result="temporary failure", success=False,
+            )
+            self.assertEqual(failed.get("task_id"), manager.tasks[index]["id"])
+            self.assertEqual(manager.tasks[index]["checkpoint"].get("args_sha256"), full_hash)
+
+            retry = manager.record_evidence(
+                action="write_file", args=args[:1000], args_fingerprint=full_hash,
+                result="Wrote file", success=True, acceptance="verified",
+            )
+            self.assertEqual(retry.get("task_id"), manager.tasks[index]["id"])
+            self.assertNotIn("unmatched_reason", retry)
+
     def setUp(self):
         self._original_interaction = main._interaction_controller
         self._interaction_directory = tempfile.TemporaryDirectory()

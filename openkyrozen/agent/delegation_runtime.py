@@ -278,7 +278,8 @@ def _delegation_tool_access(self, action, args):
     if access and guarded:
         cancelled = (lambda: coordinator.cancelled[context.child_run_id].is_set()) if coordinator else (lambda: False)
         with access.acquire(path, cancelled, context.child_run_id,
-                            reading=action in {"read_file", "search_files"}):
+                            reading=action in {"read_file", "search_files"},
+                            recursive=action == "search_files"):
             yield
     else:
         yield

@@ -143,6 +143,33 @@ class WorkspaceToolTests(unittest.TestCase):
                 tools.set_workspace_root(original)
         self.assertEqual(result, "No matches.")
 
+    def test_search_reports_timeout_when_ripgrep_is_killed_without_output(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_rg = root / "fake-rg"
+            fake_rg.write_text("#!/bin/sh\nexec /bin/sleep 30\n", encoding="utf-8")
+            fake_rg.chmod(0o755)
+            tools.set_workspace_root(root)
+
+            class ImmediateTimer:
+                def __init__(self, _delay, function):
+                    self.function = function
+
+                def start(self):
+                    self.function()
+
+                def cancel(self):
+                    pass
+
+            try:
+                with patch("openkyrozen.tools.filesystem.shutil.which", return_value=str(fake_rg)), \
+                        patch("openkyrozen.tools.filesystem.threading.Timer", ImmediateTimer):
+                    result = tools.search_files(json.dumps({"query": "absent"}))
+            finally:
+                tools.set_workspace_root(original)
+        self.assertEqual(result, "Search timed out.")
+
     def test_file_tools_stay_inside_workspace(self):
         original_root = Path.cwd()
         with tempfile.TemporaryDirectory() as directory:

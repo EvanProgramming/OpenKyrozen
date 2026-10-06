@@ -246,12 +246,16 @@ def search_files(self, args: str) -> str:
                                        stderr=subprocess.DEVNULL)
             output: list[str] = []
             size = 0
-            deadline = time.monotonic() + 5
+            timed_out = threading.Event()
+
             def kill_search() -> None:
+                if process.poll() is not None:
+                    return
                 try:
                     process.kill()
                 except OSError:
-                    pass
+                    return
+                timed_out.set()
 
             timer = threading.Timer(5, kill_search)
             timer.daemon = True
@@ -277,9 +281,14 @@ def search_files(self, args: str) -> str:
                 process.wait(timeout=0.2)
             except subprocess.TimeoutExpired:
                 process.kill()
-                process.wait()
+                try:
+                    process.wait(timeout=0.2)
+                except subprocess.TimeoutExpired:
+                    pass
             process.stdout.close()
-            return "\n".join(output) if output else "No matches."
+            if output:
+                return "\n".join(output)
+            return "Search timed out." if timed_out.is_set() else "No matches."
 
         output, size = [], 0
         deadline = time.monotonic() + 5

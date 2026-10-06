@@ -100,7 +100,8 @@ class TaskManager:
             if checkpoint_action != action:
                 return -1
             if checkpoint_args:
-                checkpoint_fingerprint = hashlib.sha256(checkpoint_args.encode("utf-8")).hexdigest()
+                checkpoint_fingerprint = (checkpoint.get("args_sha256")
+                                          or hashlib.sha256(checkpoint_args.encode("utf-8")).hexdigest())
                 if args_fingerprint:
                     if checkpoint_fingerprint != args_fingerprint:
                         return -1
@@ -258,9 +259,13 @@ class TaskManager:
                 task["checkpoint"] = {
                     **(task.get("checkpoint") or {}), "action": canonical,
                     "args": normalized_args, "ordered_receipt": True,
+                    **({"args_sha256": args_fingerprint} if args_fingerprint else {}),
                 }
             elif inferred and not (task.get("checkpoint") or {}).get("action"):
-                task["checkpoint"] = {"action": canonical, "args": normalized_args}
+                task["checkpoint"] = {
+                    "action": canonical, "args": normalized_args,
+                    **({"args_sha256": args_fingerprint} if args_fingerprint else {}),
+                }
             task.setdefault("evidence", []).append(item)
             task["updated_at"] = utc_now()
             self._persist(task)
