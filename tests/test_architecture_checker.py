@@ -87,3 +87,105 @@ class ArchitectureCheckerTests(unittest.TestCase):
             "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from . import a\n"
         )
         self.assertEqual(self.check_sources(sources), [])
+
+    def test_qualified_type_checking_guard_excludes_only_type_branch(self):
+        sources = {
+            "openkyrozen/tasks/a.py": "from . import b",
+            "openkyrozen/tasks/b.py": (
+                "import typing\nif typing.TYPE_CHECKING:\n    from . import a\n"
+            ),
+        }
+        self.assertEqual(self.check_sources(sources), [])
+        sources["openkyrozen/tasks/b.py"] += "else:\n    from . import a\n"
+        self.assertTrue(any("Import cycle:" in e for e in self.check_sources(sources)))
+        sources["openkyrozen/tasks/b.py"] = (
+            "other = object()\nif other.TYPE_CHECKING:\n    from . import a\n"
+        )
+        self.assertTrue(any("Import cycle:" in e for e in self.check_sources(sources)))
+
+    def test_cycle_imports_in_compound_statements_are_detected(self):
+        for source in (
+            "try:\n    pass\nexcept Exception:\n    pass\nelse:\n    from . import a",
+            "try:\n    pass\nfinally:\n    from . import a",
+            "with context():\n    from . import a",
+            "for item in items:\n    from . import a",
+            "while ready:\n    from . import a",
+            "for item in items:\n    pass\nelse:\n    from . import a",
+            "match value:\n    case 1:\n        from . import a",
+            "if ready:\n    pass\nelse:\n    with context():\n        from . import a",
+            "class Binding:\n    from . import a",
+        ):
+            with self.subTest(source=source):
+                self.assertTrue(any("Import cycle:" in e for e in self.check_sources({
+                    "openkyrozen/tasks/a.py": "from . import b",
+                    "openkyrozen/tasks/b.py": source,
+                })))
+        for source in ("def later():\n    from . import a",
+                       "async def later():\n    from . import a",
+                       "class Binding:\n    def later(self):\n        from . import a"):
+            with self.subTest(source=source):
+                self.assertEqual(self.check_sources({
+                    "openkyrozen/tasks/a.py": "from . import b",
+                    "openkyrozen/tasks/b.py": source,
+                }), [])
+
+    def test_named_reexports_do_not_hide_concrete_adapters(self):
+        sources = {
+            "openkyrozen/tools/__init__.py": (
+                "from .adapters import ToolAdapters as Adapters\n"
+                "from .models import CommandResult\n"
+            ),
+            "openkyrozen/tools/adapters.py": "class ToolAdapters: pass",
+            "openkyrozen/tools/models.py": "class CommandResult: pass",
+            "openkyrozen/providers/__init__.py": (
+                "from .openai import OpenAICompatProvider\n"
+                "from .base import LLMProvider\n"
+            ),
+            "openkyrozen/providers/openai.py": "class OpenAICompatProvider: pass",
+            "openkyrozen/providers/base.py": "class LLMProvider: pass",
+            "openkyrozen/tools/public.py": "from . import Adapters as Wrapped",
+        }
+        for source in ("from openkyrozen.tools import Adapters",
+                       "from ..tools import Adapters as Factory",
+                       "from ..tools.public import Wrapped",
+                       "from ..providers import OpenAICompatProvider",
+                       "from ..tools import *"):
+            with self.subTest(source=source):
+                errors = self.check_sources(sources | {"openkyrozen/agent/probe.py": source})
+                self.assertTrue(any("core imports adapter" in e for e in errors), errors)
+        self.assertEqual(self.check_sources(sources | {
+            "openkyrozen/agent/probe.py": (
+                "from ..tools import CommandResult\nfrom ..providers import LLMProvider"
+            ),
+        }), [])
+
+    def test_module_reexport_alias_does_not_hide_adapter(self):
+        errors = self.check_sources({
+            "openkyrozen/tools/__init__.py": "from . import adapters as Backend",
+            "openkyrozen/tools/adapters.py": "",
+            "openkyrozen/agent/probe.py": "from ..tools import Backend",
+        })
+        self.assertTrue(any("core imports adapter openkyrozen.tools.adapters" in e
+                            for e in errors), errors)
+
+    def test_wildcard_reexports_respect_literal_all(self):
+        sources = {
+            "openkyrozen/tools/__init__.py": (
+                "from .adapters import ToolAdapters, ToolAdapters as _Factory\n"
+                "from .models import CommandResult\n__all__ = ['CommandResult']"
+            ),
+            "openkyrozen/tools/adapters.py": "class ToolAdapters: pass",
+            "openkyrozen/tools/models.py": "class CommandResult: pass",
+            "openkyrozen/agent/probe.py": "from ..tools import *",
+        }
+        self.assertEqual(self.check_sources(sources), [])
+        sources["openkyrozen/tools/__init__.py"] += "\n__all__ = ['CommandResult', '_Factory']"
+        self.assertTrue(any("core imports adapter" in e for e in self.check_sources(sources)))
+
+    def test_circular_reexport_resolution_terminates_with_cycle_error(self):
+        errors = self.check_sources({
+            "openkyrozen/tools/__init__.py": "from .public import Factory",
+            "openkyrozen/tools/public.py": "from . import Factory",
+            "openkyrozen/agent/probe.py": "from ..tools import Factory",
+        })
+        self.assertTrue(any("Import cycle:" in e for e in errors), errors)

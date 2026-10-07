@@ -118,14 +118,18 @@ must preserve these authority limits and avoid import-time cycles.
 `agent`, `tasks`, `memory` and `learning`: no legacy root implementation imports, no
 interface package-root or descendant imports, and no listed concrete adapters or
 external adapter libraries. Absolute and relative imports are checked, including
-function-local imports. Existing entry adapters (`memory.vector`, `learning.worker`
+function-local imports and concrete adapters reached through statically named import
+re-exports (including aliased and chained re-exports). Existing entry adapters (`memory.vector`, `learning.worker`
 and `learning.benchmark`) retain their explicit exemption from core adapter bans.
-Import-time cycles are rejected; function-local and `TYPE_CHECKING` imports do not
-create runtime cycle edges. `check(root=...)` accepts a temporary source root for
+Import-time statement bodies (including branches, try/else/finally, with, loops,
+match and class bodies) contribute cycle edges. Function bodies and type-only
+`TYPE_CHECKING` / `typing.TYPE_CHECKING` branches do not; their runtime `else`
+branches still do. `check(root=...)` accepts a temporary source root for
 regressions; `check()` and the script entry point still check this repository.
 
 This is a static import guard, not an authority proof: it does not inspect dynamic
-imports, injected callables or every semantic dependency listed above. Runtime safety
+imports, dynamically assigned exports, injected callables or every semantic
+dependency listed above. Runtime safety
 and ownership tests remain necessary. Each linked implementation issue must extend
 contract/authority tests as it migrates behavior; this issue does not claim the whole
 V3 architecture is already implemented.

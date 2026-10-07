@@ -28,31 +28,75 @@ ENTRY_ADAPTERS = {"openkyrozen.learning.worker", "openkyrozen.learning.benchmark
 
 
 def _imports_at_import_time(tree):
-    """Include class method bindings; skip function bodies and type-only imports."""
-    for node in tree.body:
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            yield node
-        elif isinstance(node, ast.ClassDef):
-            yield from _imports_at_import_time(node)
-        elif isinstance(node, ast.If):
-            if isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING":
-                continue
-            yield from _imports_at_import_time(node)
-            for child in node.orelse:
-                if isinstance(child, (ast.Import, ast.ImportFrom)):
-                    yield child
-        elif isinstance(node, ast.Try):
-            yield from _imports_at_import_time(node)
-            for handler in node.handlers:
-                yield from _imports_at_import_time(handler)
+    """Traverse initialization statements, excluding deferred/type-only bodies."""
+    if isinstance(tree, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        return
+    if isinstance(tree, (ast.Import, ast.ImportFrom)):
+        yield tree
+        return
+    if isinstance(tree, ast.If):
+        guard = tree.test
+        if ((isinstance(guard, ast.Name) and guard.id == "TYPE_CHECKING")
+                or (isinstance(guard, ast.Attribute) and guard.attr == "TYPE_CHECKING"
+                    and isinstance(guard.value, ast.Name) and guard.value.id == "typing")):
+            for statement in tree.orelse:
+                yield from _imports_at_import_time(statement)
+            return
+    for child in ast.iter_child_nodes(tree):
+        yield from _imports_at_import_time(child)
+
+
+def _imported_module(module, path, node):
+    """Resolve an ImportFrom namespace without importing application code."""
+    if not node.level:
+        return node.module or ""
+    base = module if path.name == "__init__.py" else module.rsplit(".", 1)[0]
+    parts = base.split(".")
+    base = ".".join(parts[:len(parts) - node.level + 1])
+    return base + ("." + node.module if node.module else "")
 
 
 def check(root: Path = ROOT) -> list[str]:
     paths = {".".join(p.relative_to(root).with_suffix("").parts).removesuffix(".__init__"): p
              for p in (root / "openkyrozen").rglob("*.py")}
+    trees = {module: ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+             for module, path in paths.items()}
+    exports = {(module, alias.asname or alias.name): (_imported_module(module, paths[module], node), alias.name)
+               for module, tree in trees.items() for node in tree.body
+               if isinstance(node, ast.ImportFrom) for alias in node.names if alias.name != "*"}
+
+    wildcard_exports = {}
+    for module, tree in trees.items():
+        names = {name for owner, name in exports if owner == module and not name.startswith("_")}
+        for node in tree.body:
+            if (isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets)):
+                try:
+                    value = ast.literal_eval(node.value)
+                except (ValueError, TypeError, SyntaxError):
+                    continue
+                if isinstance(value, (list, tuple)) and all(isinstance(name, str) for name in value):
+                    names = set(value)
+        wildcard_exports[module] = names
+
+    def reexport_origins(module, name, seen=frozenset()):
+        """Follow named import re-exports, terminating on circular bindings."""
+        key = (module, name)
+        if key in seen:
+            return
+        if name == "*":
+            for exported in wildcard_exports.get(module, ()):
+                yield from reexport_origins(module, exported, seen | {key})
+        elif key in exports:
+            source, imported = exports[key]
+            yield source
+            if source + "." + imported in paths:
+                yield source + "." + imported
+            yield from reexport_origins(source, imported, seen | {key})
+
     errors, graph = [], {}
     for module, path in paths.items():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = trees[module]
         graph[module] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -71,19 +115,18 @@ def check(root: Path = ROOT) -> list[str]:
             if isinstance(node, ast.Import):
                 targets = [alias.name for alias in node.names]
             else:
-                base = module if path.name == "__init__.py" else module.rsplit(".", 1)[0]
-                if node.level:
-                    parts = base.split(".")
-                    base = ".".join(parts[:len(parts) - node.level + 1])
-                    target = base + ("." + node.module if node.module else "")
-                else:
-                    target = node.module or ""
+                target = _imported_module(module, path, node)
                 targets = [target]
                 targets.extend(target + "." + alias.name for alias in node.names
                                if target + "." + alias.name in paths)
+                policy_targets = [origin for alias in node.names
+                                  for origin in reexport_origins(target, alias.name)]
+            if isinstance(node, ast.Import):
+                policy_targets = []
             for target in targets:
                 if node in import_time_nodes and target in paths and target != module:
                     graph[module].add(target)
+            for target in targets + policy_targets:
                 if (module.partition(".")[2].split(".")[0] in CORE and module not in ENTRY_ADAPTERS
                         and (target == "openkyrozen.interfaces" or target.startswith("openkyrozen.interfaces.")
                              or target in ADAPTERS or target.split(".")[0] in EXTERNAL_ADAPTERS)):
