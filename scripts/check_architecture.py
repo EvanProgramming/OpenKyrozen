@@ -6,7 +6,6 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE = ROOT / "openkyrozen"
 LEGACY_MODULES = frozenset({
     "main", "server", "providers", "tools", "memory", "task_engine", "event_store",
     "learning_engine", "learning_worker", "interaction", "fast_mode", "system_one_policy",
@@ -48,9 +47,9 @@ def _imports_at_import_time(tree):
                 yield from _imports_at_import_time(handler)
 
 
-def check() -> list[str]:
-    paths = {".".join(p.relative_to(ROOT).with_suffix("").parts).removesuffix(".__init__"): p
-             for p in PACKAGE.rglob("*.py")}
+def check(root: Path = ROOT) -> list[str]:
+    paths = {".".join(p.relative_to(root).with_suffix("").parts).removesuffix(".__init__"): p
+             for p in (root / "openkyrozen").rglob("*.py")}
     errors, graph = [], {}
     for module, path in paths.items():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -64,7 +63,7 @@ def check() -> list[str]:
                 continue
             for name in names:
                 if name.split(".")[0] in LEGACY_MODULES:
-                    errors.append(f"{path.relative_to(ROOT)}:{node.lineno}: legacy import {name}")
+                    errors.append(f"{path.relative_to(root)}:{node.lineno}: legacy import {name}")
         import_time_nodes = set(_imports_at_import_time(tree))
         for node in ast.walk(tree):
             if not isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -85,9 +84,10 @@ def check() -> list[str]:
             for target in targets:
                 if node in import_time_nodes and target in paths and target != module:
                     graph[module].add(target)
-                if (module.split(".")[1] in CORE and module not in ENTRY_ADAPTERS
-                        and (target.startswith("openkyrozen.interfaces.") or target in ADAPTERS or target.split(".")[0] in EXTERNAL_ADAPTERS)):
-                    errors.append(f"{path.relative_to(ROOT)}:{node.lineno}: core imports adapter {target}")
+                if (module.partition(".")[2].split(".")[0] in CORE and module not in ENTRY_ADAPTERS
+                        and (target == "openkyrozen.interfaces" or target.startswith("openkyrozen.interfaces.")
+                             or target in ADAPTERS or target.split(".")[0] in EXTERNAL_ADAPTERS)):
+                    errors.append(f"{path.relative_to(root)}:{node.lineno}: core imports adapter {target}")
     visiting, complete = [], set()
 
     def visit(module):
