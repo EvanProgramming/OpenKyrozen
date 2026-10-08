@@ -5,6 +5,7 @@ import sys
 import time
 from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
+from openkyrozen.providers.models import ModelResponse, model_response
 from openkyrozen.providers.config import ProviderConfig
 from openkyrozen.providers.retry import _retry_with_backoff
 
@@ -39,6 +40,9 @@ class AnthropicProvider(LLMProvider):
         return system_prompts, claude_messages
 
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
+        return self.chat_response(messages, model).as_legacy_tuple()
+
+    def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
         model = model or self.config.model_simple
         system_prompts, claude_messages = self._prepare_messages(messages)
         started = time.monotonic()
@@ -68,7 +72,11 @@ class AnthropicProvider(LLMProvider):
             }
         usage_ledger._track_cost(self.config.provider, usage_dict, model=getattr(response, "model", None) or model,
                     latency_ms=round((time.monotonic() - started) * 1000))
-        return text.strip(), usage_dict
+        calls = [(getattr(block, "id", None), getattr(block, "name", None), getattr(block, "input", None))
+                 for block in response.content if getattr(block, "type", None) == "tool_use"]
+        return model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None), text=text, usage=usage_dict,
+                              calls=calls, response_id=getattr(response, "id", None),
+                              raw_finish_reason=getattr(response, "stop_reason", None))
 
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple

@@ -229,6 +229,7 @@ class AgentRuntime:
         _bounded_provider_call,
         _bounded_provider_stream,
         _get_llm_response,
+        _get_model_response,
     )
 
     # agent.planner

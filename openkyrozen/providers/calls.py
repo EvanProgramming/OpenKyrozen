@@ -8,6 +8,8 @@ import threading
 import time
 from typing import Any
 from openkyrozen.providers.usage import usage_scope
+from openkyrozen.providers.base import get_model_response
+from openkyrozen.providers.models import ModelResponse
 from openkyrozen.agent.types import ContextOverflowError, ProviderUnavailableError
 
 
@@ -102,6 +104,37 @@ def _bounded_provider_stream(self, provider: Any, messages: list[dict[str, str]]
         raise TimeoutError(f"Provider timed out after {timeout:g}s") from exc
 
 
+def _get_model_response(self, messages: list[dict], model: str | None = None) -> ModelResponse:
+    """Receive the full response under existing deadline, usage and context scopes."""
+    provider = self.execution_context.provider or self.llm_provider
+    if provider is None:
+        raise ProviderUnavailableError(self.PROVIDER_UNAVAILABLE_MESSAGE)
+    self._last_prompt_tokens = self._last_completion_tokens = 0
+    with usage_scope(store=self.memory_bank.store, user_id=self.memory_bank.user_id,
+                     workspace_id=self.memory_bank.workspace_id, session_id=self.memory_bank.session_id,
+                     run_id=self._active_usage_run_id.get(), surface=self._EXECUTION_SURFACE):
+        response = self._bounded_provider_call(
+            lambda: get_model_response(provider, messages, model or self.DEEPSEEK_MODEL)
+        )
+    usage = response.usage or {}
+    self._last_prompt_tokens = usage.get("prompt_tokens", 0) or 0
+    self._last_completion_tokens = usage.get("completion_tokens", 0) or 0
+    if not self.execution_context.child_run_id:
+        self._total_prompt_tokens += self._last_prompt_tokens
+        self._total_completion_tokens += self._last_completion_tokens
+    if response.text.startswith("[Ollama Error]") and self._is_context_overflow_error(RuntimeError(response.text)):
+        raise RuntimeError(response.text)
+    state = self._active_context_state.get()
+    if state is not None and not self._in_context_compaction.get():
+        if usage and not usage.get("_estimated"):
+            state.note_provider_usage(messages, int(self._last_prompt_tokens))
+            self._cache_reported_context_tokens(messages, int(self._last_prompt_tokens))
+        else:
+            state.update(messages)
+        self._store_context_status(state)
+    return response
+
+
 def _get_llm_response(self, messages: list[dict[str, str]], model: str | None = None, stream: bool = False,
                       on_chunk: Any = None, on_stream_end: Any = None) -> str:
     provider = self.execution_context.provider or self.llm_provider
@@ -137,22 +170,7 @@ def _get_llm_response(self, messages: list[dict[str, str]], model: str | None = 
                 if on_stream_end:
                     on_stream_end()
             else:
-                text, usage_dict = self._bounded_provider_call(
-                    lambda: provider.chat(messages, model or self.DEEPSEEK_MODEL)
-                )
-                if (isinstance(text, str) and text.startswith("[Ollama Error]")
-                        and self._is_context_overflow_error(RuntimeError(text))):
-                    raise RuntimeError(text)
-                if usage_dict:
-                    self._last_prompt_tokens = usage_dict.get("prompt_tokens", 0)
-                    self._last_completion_tokens = usage_dict.get("completion_tokens", 0)
-                    if not self.execution_context.child_run_id:
-                        self._total_prompt_tokens += self._last_prompt_tokens
-                        self._total_completion_tokens += self._last_completion_tokens
-                    provider_reported_usage = not bool(usage_dict.get("_estimated"))
-                else:
-                    self._last_prompt_tokens = 0
-                    self._last_completion_tokens = 0
+                return self._get_model_response(messages, model).as_legacy_tuple()[0]
     except TimeoutError as exc:
         return f"[LLM Error] {exc}"
     except Exception as exc:
