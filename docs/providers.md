@@ -52,6 +52,48 @@ The normal provider setting has separate simple and complex model slots. The age
 
 The registry marks a subset of providers for automatic selection and records preferred fallback providers. A fallback is not guaranteed: it still needs credentials, an available compatible model, and a supported transport. Alternate sub-agent providers use their own configured environment credentials and do not inherit a generic main-provider key. See [sub-agents](subagents.md) before using cross-provider assignments.
 
+## Structured response contract (V3 issue #228)
+
+`LLMProvider.chat_response(messages, model=None)` returns `ModelResponse`:
+`text`, ordered `ToolCall` objects, normalized `finish_reason`, usage and explicit
+provider/model/response metadata. `ToolCall` preserves a native call ID, name and
+JSON-object arguments. Contract validation raises `ProviderContractError`, a
+`ValueError` subclass; fallback does not replay a received malformed response.
+All processing after a successful SDK return is marked as the received-response
+phase, so parsing or accounting failures cannot trigger another generation. IDs omitted by a transport are generated within the response
+scope and listed in `metadata["synthesized_call_ids"]`. Malformed arguments,
+duplicate IDs/JSON keys and non-JSON values are rejected; calls are never rendered
+as assistant text or executed by the provider boundary.
+
+Finish reasons distinguish `final`, `tool_request`, `length`, `provider_error`,
+`cancelled`, `blocked` and `unknown`. The original status remains in metadata.
+Absent or unfamiliar status does not prove completion. The existing `chat()`
+tuple API delegates to this contract and refuses tool requests, incomplete,
+blocked, cancelled or failed responses rather than silently losing their meaning.
+Ordinary text retains its existing behavior. Direct Ollama `chat()` transport
+failures now raise exceptions instead of returning an error-string tuple. Legacy-only providers are bridged
+with unknown finish status and an explicit `legacy` marker.
+
+`get_capabilities(model=None)` reports flags for `native_tools`, `strict_schemas`,
+`parallel_calls`, `text_streaming`, `streaming_tool_calls` and `reasoning_controls`.
+These describe usable features of the shipped adapter API, not every feature an
+underlying model might support. Text streaming reflects the existing implementation;
+other flags remain false until the corresponding request paths are implemented.
+Fallback capabilities are the conservative intersection of the configured,
+model-mapped candidates. Structured responses retain the responding provider's
+metadata. A successful response rejected by text conversion does not cause another
+provider request.
+
+The runtime's `_get_model_response` preserves this object under the existing
+bounded-call, usage and context scopes; `_get_llm_response` is the checked text
+compatibility boundary. Existing stream methods remain text-only. Tool request
+serialization, native history round trips and structured stream events belong to
+[#229](https://github.com/EvanProgramming/OpenKyrozen/issues/229) and
+[#230](https://github.com/EvanProgramming/OpenKyrozen/issues/230). This foundation
+also relates to [provider adapter issue #225](https://github.com/EvanProgramming/OpenKyrozen/issues/225).
+Offline fixtures and installed SDK types validate the contract; they do not establish
+live provider interoperability.
+
 ## Optional dependencies
 
 `pip install -e '.[web]'` installs FastAPI and Uvicorn. Provider extras are `.[claude]`, `.[gemini]`, `.[perplexity]`, `.[bedrock]`, and `.[vertex]`; `.[cloud]` groups the cloud integrations. `.[browser]` installs Playwright; browser execution also needs a browser installation. `.[all]` installs the supported optional Python integrations. The official installer has its own pinned set of dependencies; see [installation](installation.md).

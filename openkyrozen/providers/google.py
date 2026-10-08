@@ -6,6 +6,7 @@ import sys
 import time
 from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
+from openkyrozen.providers.models import received_response, ModelResponse, model_response
 from openkyrozen.providers.config import ProviderConfig
 from openkyrozen.providers.retry import _retry_with_backoff
 
@@ -53,6 +54,9 @@ class GoogleProvider(LLMProvider):
         }
 
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
+        return self.chat_response(messages, model).as_legacy_tuple()
+
+    def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
         model = model or self.config.model_simple
         started = time.monotonic()
 
@@ -67,11 +71,28 @@ class GoogleProvider(LLMProvider):
             )
 
         response = _retry_with_backoff(_call)
-        text = str(getattr(response, "text", "") or "")
-        usage_dict = self._usage(response)
-        usage_ledger._track_cost(self.config.provider, usage_dict, model=model,
-                    latency_ms=round((time.monotonic() - started) * 1000))
-        return text.strip(), usage_dict
+        with received_response():
+            usage_dict = self._usage(response)
+            usage_ledger._track_cost(self.config.provider, usage_dict, model=model,
+                        latency_ms=round((time.monotonic() - started) * 1000))
+            candidates = getattr(response, "candidates", None) or ()
+            candidate = candidates[0] if candidates else None
+            parts = getattr(getattr(candidate, "content", None), "parts", None)
+            text = ("".join(part.text for part in parts if getattr(part, "text", None)
+                            and not getattr(part, "thought", False)) if parts is not None
+                    else str(getattr(response, "text", "") or ""))
+            calls = []
+            for part in parts or ():
+                call = getattr(part, "function_call", None)
+                if call is not None:
+                    arguments = getattr(call, "args", None)
+                    calls.append((getattr(call, "id", None), getattr(call, "name", None),
+                                  {} if arguments is None else arguments))
+            block_reason = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
+            return model_response(provider=self.name, model=model, actual_model=getattr(response, "model_version", None), text=text, usage=usage_dict,
+                                  calls=calls, response_id=getattr(response, "response_id", None),
+                                  raw_finish_reason=getattr(candidate, "finish_reason", None) or block_reason,
+                                  blocked=block_reason not in {None, "BLOCK_REASON_UNSPECIFIED", "BLOCKED_REASON_UNSPECIFIED"})
 
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple

@@ -6,6 +6,7 @@ import sys
 import time
 from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
+from openkyrozen.providers.models import received_response, ModelResponse, model_response
 from openkyrozen.providers.config import ProviderConfig
 from openkyrozen.providers.retry import _retry_with_backoff
 
@@ -49,6 +50,9 @@ class BedrockProvider(LLMProvider):
         }
 
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
+        return self.chat_response(messages, model).as_legacy_tuple()
+
+    def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
         model = model or self.config.model_simple
         conversation, system = self._request(messages)
         started = time.monotonic()
@@ -60,12 +64,17 @@ class BedrockProvider(LLMProvider):
         if system:
             kwargs["system"] = system
         response = _retry_with_backoff(lambda: self._client.converse(**kwargs))
-        content = response.get("output", {}).get("message", {}).get("content", [])
-        text = "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
-        usage = self._usage(response)
-        usage_ledger._track_cost(self.config.provider, usage, model=model,
-                    latency_ms=round((time.monotonic() - started) * 1000))
-        return text.strip(), usage
+        with received_response():
+            usage = self._usage(response)
+            usage_ledger._track_cost(self.config.provider, usage, model=model,
+                        latency_ms=round((time.monotonic() - started) * 1000))
+            content = response.get("output", {}).get("message", {}).get("content", [])
+            text = "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
+            calls = [(item["toolUse"].get("toolUseId"), item["toolUse"].get("name"), item["toolUse"].get("input"))
+                     for item in content if isinstance(item, dict) and "toolUse" in item]
+            return model_response(provider=self.name, model=model, text=text, usage=usage,
+                                  calls=calls, response_id=response.get("ResponseMetadata", {}).get("RequestId"),
+                                  raw_finish_reason=response.get("stopReason"))
 
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple

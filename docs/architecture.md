@@ -74,7 +74,8 @@ requirements R236–R249. Each row names one package owner, not a new class to s
 The existing components are the migration starting points on V2; the linked issues
 implement the V3 behavior. In particular, native AgentEngine execution, separate
 Working/Strategic Plans, typed provider responses and typed runtime events are
-future work, not capabilities delivered by this ownership change.
+separate implementation work, not capabilities established by ownership names
+alone. The structured provider foundation is described in [providers](providers.md).
 
 | Requirement / subsystem | Package owner and existing components | Responsibility and authority boundary | V3 implementation |
 | --- | --- | --- | --- |
@@ -139,7 +140,8 @@ V3 architecture is already implemented.
 The inbound chat contract is
 `AgentRuntime.chat(session, message, *, clear_tasks=False, profile=None,
 memory_context=None, on_event=None, approve=None) -> str`.
-Providers keep `LLMProvider.chat/chat_stream`. Small feature-owned protocols describe
+Providers expose structured `LLMProvider.chat_response` and `get_capabilities`,
+with checked `chat` tuple compatibility and existing text-only `chat_stream`. Small feature-owned protocols describe
 memory/vector, task, learning, scheduling, history and interaction storage; event and
 approval boundaries are callables. Concrete adapters are supplied at composition.
 Foreground, durable, MCP and subagent actions share the executor and produce the same

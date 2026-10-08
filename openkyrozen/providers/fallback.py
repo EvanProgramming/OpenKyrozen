@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 from typing import Iterator
-from openkyrozen.providers.base import LLMProvider
+from openkyrozen.providers.base import LLMProvider, get_model_response
+from openkyrozen.providers.models import ModelResponse, ProviderCapabilities, ProviderContractError
 from openkyrozen.providers.registry import PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS, PROVIDER_FALLBACKS
 from openkyrozen.providers.config import ProviderConfig, provider_is_configured
 from openkyrozen.providers.factory import get_provider
@@ -79,12 +80,23 @@ class FallbackProvider(LLMProvider):
         error = RuntimeError(f"All providers failed ({details})")
         raise error from attempts[0][1]
 
+    def get_capabilities(self, model: str | None = None) -> ProviderCapabilities:
+        return ProviderCapabilities.intersection(
+            provider.get_capabilities(self._model_for(provider, model))
+            for provider in [self._primary] + self._fallbacks
+        )
+
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
+        return self.chat_response(messages, model).as_legacy_tuple()
+
+    def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
         providers = [self._primary] + self._fallbacks
         attempts: list[tuple[str, Exception]] = []
         for prov in providers:
             try:
-                return prov.chat(messages, self._model_for(prov, model))
+                return get_model_response(prov, messages, self._model_for(prov, model))
+            except ProviderContractError:
+                raise
             except Exception as e:
                 attempts.append((prov.name, e))
         self._raise_all_failed(attempts)
