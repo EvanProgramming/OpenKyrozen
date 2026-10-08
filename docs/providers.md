@@ -58,7 +58,9 @@ The registry marks a subset of providers for automatic selection and records pre
 `text`, ordered `ToolCall` objects, normalized `finish_reason`, usage and explicit
 provider/model/response metadata. `ToolCall` preserves a native call ID, name and
 JSON-object arguments. Contract validation raises `ProviderContractError`, a
-`ValueError` subclass; fallback does not replay a received malformed response. IDs omitted by a transport are generated within the response
+`ValueError` subclass; fallback does not replay a received malformed response.
+All processing after a successful SDK return is marked as the received-response
+phase, so parsing or accounting failures cannot trigger another generation. IDs omitted by a transport are generated within the response
 scope and listed in `metadata["synthesized_call_ids"]`. Malformed arguments,
 duplicate IDs/JSON keys and non-JSON values are rejected; calls are never rendered
 as assistant text or executed by the provider boundary.

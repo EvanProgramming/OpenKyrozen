@@ -5,7 +5,7 @@ import sys
 import time
 from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
-from openkyrozen.providers.models import ModelResponse, model_response, responses_output, ProviderContractError
+from openkyrozen.providers.models import received_response, ModelResponse, model_response, responses_output, ProviderContractError
 from openkyrozen.providers.config import ProviderConfig, _provider_env_key
 from openkyrozen.providers.usage import _openai_usage_dict
 from openkyrozen.providers.retry import _retry_with_backoff
@@ -41,28 +41,29 @@ class OpenAICompatProvider(LLMProvider):
             return response
 
         response = _retry_with_backoff(_call)
-        text = response.choices[0].message.content or ""
-        usage = getattr(response, "usage", None)
-        usage_dict = None
-        if usage is not None:
-            usage_dict = _openai_usage_dict(usage)
-        usage_ledger._track_cost(self.config.provider, usage_dict, model=getattr(response, "model", None) or model,
-                    latency_ms=round((time.monotonic() - started) * 1000))
-        message = response.choices[0].message
-        calls = []
-        for call in getattr(message, "tool_calls", None) or ():
-            function = getattr(call, "function", None)
-            if function is None:
-                raise ProviderContractError("Unsupported native tool call type")
-            calls.append((getattr(call, "id", None), getattr(function, "name", None),
-                          getattr(function, "arguments", None)))
-        legacy_call = getattr(message, "function_call", None)
-        if legacy_call is not None and not calls:
-            calls.append((None, getattr(legacy_call, "name", None), getattr(legacy_call, "arguments", None)))
-        return model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None), text=text, usage=usage_dict,
-                              calls=calls, response_id=getattr(response, "id", None),
-                              raw_finish_reason=getattr(response.choices[0], "finish_reason", None),
-                              blocked=bool(getattr(message, "refusal", None)))
+        with received_response():
+            usage = getattr(response, "usage", None)
+            usage_dict = None
+            if usage is not None:
+                usage_dict = _openai_usage_dict(usage)
+            usage_ledger._track_cost(self.config.provider, usage_dict, model=getattr(response, "model", None) or model,
+                        latency_ms=round((time.monotonic() - started) * 1000))
+            message = response.choices[0].message
+            text = message.content or ""
+            calls = []
+            for call in getattr(message, "tool_calls", None) or ():
+                function = getattr(call, "function", None)
+                if function is None:
+                    raise ProviderContractError("Unsupported native tool call type")
+                calls.append((getattr(call, "id", None), getattr(function, "name", None),
+                              getattr(function, "arguments", None)))
+            legacy_call = getattr(message, "function_call", None)
+            if legacy_call is not None and not calls:
+                calls.append((None, getattr(legacy_call, "name", None), getattr(legacy_call, "arguments", None)))
+            return model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None), text=text, usage=usage_dict,
+                                  calls=calls, response_id=getattr(response, "id", None),
+                                  raw_finish_reason=getattr(response.choices[0], "finish_reason", None),
+                                  blocked=bool(getattr(message, "refusal", None)))
 
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple
@@ -145,17 +146,18 @@ class OpenAIResponsesProvider(LLMProvider):
         response = _retry_with_backoff(
             lambda: self._client.responses.create(model=model, input=messages),
         )
-        usage = self._usage(response)
-        usage_ledger._track_cost(self.config.provider, usage, model=getattr(response, "model", None) or model,
-                    latency_ms=round((time.monotonic() - started) * 1000))
-        return model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None),
-                              text=str(getattr(response, "output_text", "") or ""), usage=usage,
-                              calls=responses_output(response), response_id=getattr(response, "id", None),
-                              raw_finish_reason=getattr(response, "status", None),
-                              finish_detail=getattr(getattr(response, "incomplete_details", None), "reason", None),
-                              blocked=any(getattr(part, "type", None) == "refusal"
-                                          for item in getattr(response, "output", None) or ()
-                                          for part in getattr(item, "content", None) or ()))
+        with received_response():
+            usage = self._usage(response)
+            usage_ledger._track_cost(self.config.provider, usage, model=getattr(response, "model", None) or model,
+                        latency_ms=round((time.monotonic() - started) * 1000))
+            return model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None),
+                                  text=str(getattr(response, "output_text", "") or ""), usage=usage,
+                                  calls=responses_output(response), response_id=getattr(response, "id", None),
+                                  raw_finish_reason=getattr(response, "status", None),
+                                  finish_detail=getattr(getattr(response, "incomplete_details", None), "reason", None),
+                                  blocked=any(getattr(part, "type", None) == "refusal"
+                                              for item in getattr(response, "output", None) or ()
+                                              for part in getattr(item, "content", None) or ()))
 
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple

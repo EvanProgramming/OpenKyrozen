@@ -6,12 +6,24 @@ import json
 import math
 import uuid
 from dataclasses import dataclass, field, fields
+from contextlib import contextmanager
 from enum import StrEnum
 from typing import Any
 
 
 class ProviderContractError(ValueError):
     """A received response cannot satisfy the contract; do not replay generation."""
+
+
+@contextmanager
+def received_response():
+    """A successful SDK return ends failover eligibility, including parse/billing errors."""
+    try:
+        yield
+    except ProviderContractError:
+        raise
+    except Exception as exc:
+        raise ProviderContractError("Received provider response could not be processed") from exc
 
 
 class FinishReason(StrEnum):
@@ -119,8 +131,10 @@ class ModelResponse:
 
     def as_legacy_tuple(self) -> tuple[str, dict | None]:
         """Refuse to hide calls or unsuccessful completion in a text-only API."""
+        raw = self.metadata.get("raw_finish_reason")
+        unfinished = isinstance(raw, str) and raw.lower() in ("incomplete", "in_progress", "queued", "pause_turn", "continuation")
         if (self.tool_calls or self.finish_reason not in {FinishReason.FINAL, FinishReason.UNKNOWN}
-                or self.metadata.get("raw_finish_reason") in ("incomplete", "in_progress", "queued", "pause_turn")):
+                or unfinished):
             raise ProviderContractError(f"Structured response ({self.finish_reason}) requires chat_response(); text conversion refused")
         return (self.text if self.metadata.get("legacy") else self.text.strip()), self.usage
 
@@ -136,12 +150,14 @@ def normalize_finish(reason, *, has_calls=False, detail=None) -> FinishReason:
         return FinishReason.TOOL_REQUEST
     if reason in {"length", "max_tokens", "max_output_tokens", "max_token", "model_context_window_exceeded"}:
         return FinishReason.LENGTH
-    if reason in {"failed", "error", "malformed_function_call", "unexpected_tool_call"}:
+    if reason in {"failed", "error", "malformed_function_call", "unexpected_tool_call",
+                  "too_many_tool_calls", "language", "no_image"}:
         return FinishReason.ERROR
     if reason in {"cancelled", "canceled"}:
         return FinishReason.CANCELLED
     if reason in {"content_filter", "content_filtered", "guardrail_intervened", "safety", "recitation",
-                  "refusal", "blocked", "blocklist", "prohibited_content", "spii"}:
+                  "refusal", "blocked", "blocklist", "prohibited_content", "spii", "model_armor",
+                  "image_safety", "image_prohibited_content", "image_recitation"}:
         return FinishReason.BLOCKED
     return FinishReason.UNKNOWN
 

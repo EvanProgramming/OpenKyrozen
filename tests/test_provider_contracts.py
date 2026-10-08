@@ -101,7 +101,7 @@ class ContractTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):
                         response.as_legacy_tuple()
-        for raw in ("incomplete", "in_progress", "queued", "pause_turn"):
+        for raw in ("incomplete", "in_progress", "queued", "pause_turn", "CONTINUATION"):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 model_response(provider="test", model="m", text="partial", usage=None,
                                raw_finish_reason=raw).as_legacy_tuple()
@@ -386,3 +386,53 @@ class AdapterContractTests(unittest.TestCase):
         primary._client.chat.completions.create.assert_called_once()
         fallback.chat_response.assert_not_called()
         charge.assert_called_once()
+
+    def test_all_received_response_parsing_failures_stop_fallback(self):
+        cases = self.wires(calls=False)
+        for cls, wire in cases:
+            wire = copy.deepcopy(wire)
+            if cls in {OpenAICompatProvider, AzureOpenAIProvider}:
+                wire.choices = []
+            elif cls in {OpenAIResponsesProvider, PerplexityProvider}:
+                wire.output = [NS(type="function_call", call_id="id", name="read", arguments=[]) ]
+            elif cls is AnthropicProvider:
+                wire.content = [NS(type="text", text=7)]
+            elif cls in {GoogleProvider, VertexProvider}:
+                wire.candidates[0].content.parts = [NS(text=7)]
+            elif cls is BedrockProvider:
+                wire["output"]["message"]["content"] = [{"toolUse": []}]
+            else:
+                wire["message"] = []
+            primary = self.adapter(cls, wire)
+            fallback = NS(config=ProviderConfig(provider="custom", model_simple="f", model_complex="f"),
+                          name="fallback", chat_response=Mock(return_value=ModelResponse(text="fallback")))
+            wrapper = FallbackProvider.__new__(FallbackProvider)
+            wrapper._primary, wrapper._fallbacks = primary, [fallback]
+            with self.subTest(cls=cls.__name__), patch("openkyrozen.providers.usage._track_cost"), self.assertRaises(ValueError):
+                wrapper.chat_response([])
+            fallback.chat_response.assert_not_called()
+
+    def test_google_sdk_blocked_and_unsuccessful_finish_reasons(self):
+        from openkyrozen.providers.models import normalize_finish
+        for raw in ("MODEL_ARMOR", "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION"):
+            with self.subTest(raw=raw):
+                self.assertEqual(normalize_finish(raw), FinishReason.BLOCKED)
+        self.assertEqual(normalize_finish("TOO_MANY_TOOL_CALLS"), FinishReason.ERROR)
+
+    def test_google_unspecified_prompt_feedback_does_not_block_valid_reply(self):
+        wire = self.wires(calls=False)[5][1]
+        wire.prompt_feedback = NS(block_reason="BLOCKED_REASON_UNSPECIFIED")
+        with patch("openkyrozen.providers.usage._track_cost"):
+            self.assertEqual(self.adapter(GoogleProvider, wire).chat_response([]).finish_reason, FinishReason.FINAL)
+
+    def test_ollama_http_error_retains_context_overflow_detail(self):
+        import requests
+        response = requests.Response()
+        response.status_code = 400
+        response.url = "http://localhost:11434/api/chat"
+        response._content = b'{"error":"context length exceeded"}'
+        provider = self.adapter(OllamaNativeProvider, {})
+        provider._requests = NS(post=Mock(return_value=response), HTTPError=requests.HTTPError)
+        with self.assertRaises(requests.HTTPError) as raised:
+            provider.chat_response([])
+        self.assertIn("context length exceeded", str(raised.exception))

@@ -5,7 +5,7 @@ import sys
 import time
 from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
-from openkyrozen.providers.models import ModelResponse, model_response
+from openkyrozen.providers.models import received_response, ModelResponse, model_response
 from openkyrozen.providers.config import ProviderConfig
 from openkyrozen.providers.retry import _retry_with_backoff
 
@@ -59,24 +59,25 @@ class AnthropicProvider(LLMProvider):
             return self._client.messages.create(**kwargs)
 
         response = _retry_with_backoff(_call)
-        text = ""
-        for block in response.content:
-            if hasattr(block, "text"):
-                text += block.text
-        usage = getattr(response, "usage", None)
-        usage_dict = None
-        if usage is not None:
-            usage_dict = {
-                "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
-                "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
-            }
-        usage_ledger._track_cost(self.config.provider, usage_dict, model=getattr(response, "model", None) or model,
-                    latency_ms=round((time.monotonic() - started) * 1000))
-        calls = [(getattr(block, "id", None), getattr(block, "name", None), getattr(block, "input", None))
-                 for block in response.content if getattr(block, "type", None) == "tool_use"]
-        return model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None), text=text, usage=usage_dict,
-                              calls=calls, response_id=getattr(response, "id", None),
-                              raw_finish_reason=getattr(response, "stop_reason", None))
+        with received_response():
+            usage = getattr(response, "usage", None)
+            usage_dict = None
+            if usage is not None:
+                usage_dict = {
+                    "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
+                    "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
+                }
+            usage_ledger._track_cost(self.config.provider, usage_dict, model=getattr(response, "model", None) or model,
+                        latency_ms=round((time.monotonic() - started) * 1000))
+            text = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    text += block.text
+            calls = [(getattr(block, "id", None), getattr(block, "name", None), getattr(block, "input", None))
+                     for block in response.content if getattr(block, "type", None) == "tool_use"]
+            return model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None), text=text, usage=usage_dict,
+                                  calls=calls, response_id=getattr(response, "id", None),
+                                  raw_finish_reason=getattr(response, "stop_reason", None))
 
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple

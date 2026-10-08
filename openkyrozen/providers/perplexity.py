@@ -6,7 +6,7 @@ import sys
 import time
 from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
-from openkyrozen.providers.models import ModelResponse, model_response, responses_output
+from openkyrozen.providers.models import received_response, ModelResponse, model_response, responses_output
 from openkyrozen.providers.config import ProviderConfig
 from openkyrozen.providers.retry import _retry_with_backoff
 
@@ -54,17 +54,18 @@ class PerplexityProvider(LLMProvider):
         if instructions:
             kwargs["instructions"] = instructions
         response = _retry_with_backoff(lambda: self._client.responses.create(**kwargs))
-        usage = self._usage(response)
-        usage_ledger._track_cost(self.config.provider, usage, model=model,
-                    latency_ms=round((time.monotonic() - started) * 1000))
-        return model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None),
-                              text=str(getattr(response, "output_text", "") or ""), usage=usage,
-                              calls=responses_output(response), response_id=getattr(response, "id", None),
-                              raw_finish_reason=getattr(response, "status", None),
-                              finish_detail=getattr(getattr(response, "incomplete_details", None), "reason", None),
-                              blocked=any(getattr(part, "type", None) == "refusal"
-                                          for item in getattr(response, "output", None) or ()
-                                          for part in getattr(item, "content", None) or ()))
+        with received_response():
+            usage = self._usage(response)
+            usage_ledger._track_cost(self.config.provider, usage, model=model,
+                        latency_ms=round((time.monotonic() - started) * 1000))
+            return model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None),
+                                  text=str(getattr(response, "output_text", "") or ""), usage=usage,
+                                  calls=responses_output(response), response_id=getattr(response, "id", None),
+                                  raw_finish_reason=getattr(response, "status", None),
+                                  finish_detail=getattr(getattr(response, "incomplete_details", None), "reason", None),
+                                  blocked=any(getattr(part, "type", None) == "refusal"
+                                              for item in getattr(response, "output", None) or ()
+                                              for part in getattr(item, "content", None) or ()))
 
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple
