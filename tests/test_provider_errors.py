@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 from openkyrozen.providers.retry import _retry_with_backoff
 from openkyrozen.providers.fallback import FallbackProvider
 from openkyrozen.providers.config import ProviderConfig
+from openkyrozen.providers.errors import ProviderError
 
 
 class StatusError(Exception):
@@ -31,7 +32,7 @@ def fallback(*providers):
 class ExistingBoundaryRegressions(unittest.TestCase):
     def test_message_numbers_do_not_trigger_retry(self):
         call = Mock(side_effect=ValueError("Invalid argument containing 500 or 429"))
-        with patch("openkyrozen.providers.retry.ProviderRequest.wait"), self.assertRaises(Exception):
+        with patch("openkyrozen.providers.retry.ProviderRequest.wait"), self.assertRaises(ProviderError):
             _retry_with_backoff(call)
         self.assertEqual(call.call_count, 1)
 
@@ -51,13 +52,13 @@ class ExistingBoundaryRegressions(unittest.TestCase):
         secondary.chat_stream = Mock(return_value=iter(["replayed"]))
         result = fallback(primary, secondary).chat_stream([])
         self.assertEqual(next(result), "first")
-        with self.assertRaises(Exception):
+        with self.assertRaises(ProviderError):
             next(result)
         secondary.chat_stream.assert_not_called()
 
     def test_unknown_failure_is_terminal(self):
         primary, secondary = probe("primary", ValueError("bad local input")), probe("secondary")
-        with self.assertRaises(Exception):
+        with self.assertRaises(ProviderError):
             fallback(primary, secondary).chat([])
         secondary.chat.assert_not_called()
 
@@ -104,7 +105,7 @@ class TypedFailureTests(unittest.TestCase):
                     raise StatusError(503)
                 return _retry_with_backoff(transport, base_delay=0)
             return NS(name=name, config=ProviderConfig(provider=name, model_simple=name), chat=fail)
-        with patch("openkyrozen.providers.retry.ProviderRequest.wait"), self.assertRaises(Exception):
+        with patch("openkyrozen.providers.retry.ProviderRequest.wait"), self.assertRaises(ProviderError):
             fallback(provider("a"), provider("b")).chat([])
         self.assertEqual(calls, ["a", "b", "a", "b"])
 
@@ -302,7 +303,7 @@ class RetryPolicyTests(unittest.TestCase):
                 yield
             provider.chat_stream = stream
             return provider
-        with patch('openkyrozen.providers.retry.ProviderRequest.wait'), self.assertRaises(Exception):
+        with patch('openkyrozen.providers.retry.ProviderRequest.wait'), self.assertRaises(ProviderError):
             list(fallback(make('a'),make('b')).chat_stream([]))
         self.assertEqual(calls,['a','b','a','b'])
 
@@ -415,7 +416,7 @@ class ReviewRegressions(unittest.TestCase):
                     raise StatusError(503)
                     yield
                 primary.chat_stream,secondary.chat_stream=first,second
-            with self.subTest(streaming=streaming), patch('openkyrozen.providers.retry.ProviderRequest.wait') as wait, self.assertRaises(Exception):
+            with self.subTest(streaming=streaming), patch('openkyrozen.providers.retry.ProviderRequest.wait') as wait, self.assertRaises(ProviderError):
                 if streaming:
                     list(fallback(primary,secondary).chat_stream([]))
                 else:
