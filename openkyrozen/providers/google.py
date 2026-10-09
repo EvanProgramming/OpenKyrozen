@@ -122,7 +122,7 @@ class GoogleProvider(LLMProvider):
             usage_ledger._track_cost(self.config.provider, usage_dict, model=model,
                         latency_ms=round((time.monotonic() - started) * 1000))
             candidates = getattr(response, "candidates", None) or ()
-            candidate = candidates[0] if candidates else None
+            candidate = candidates if candidates else None
             parts = getattr(getattr(candidate, "content", None), "parts", None)
             text = ("".join(part.text for part in parts if getattr(part, "text", None)
                             and not getattr(part, "thought", False)) if parts is not None
