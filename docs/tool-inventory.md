@@ -2,7 +2,7 @@
 # OpenKyrozen runtime inventory
 
 This file is generated from the live runtime registry (`AgentRuntime.AVAILABLE_TOOLS`),
-the FastAPI route table (`server.app.routes`), and the MCP schema builder.
+ToolSpec metadata and the FastAPI route table (`server.app.routes`).
 Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 
 ## Runtime tools
@@ -12,56 +12,56 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 - The CLI Action contract is a plain string in the `args` field.
 - Web and MCP exposure is filtered by the configured capability profile.
 
-| Tool | Capability | Plain-string Action contract | MCP object input schema |
-|---|---|---|---|
-| `analyze_remote_repo` | `network` | Clone a remote git repository, read its files, and return a summary. | `url`: string; required: `url` |
-| `browser_click` | `browser` | Click a selector. Args format: session_id\|CSS selector. | `session_id`: string, `selector`: string; required: `session_id`, `selector` |
-| `browser_close` | `browser` | Close an isolated browser session. Args: browser session ID. | `session_id`: string; required: `session_id` |
-| `browser_open` | `browser` | Open a URL in an isolated headless browser profile. Args: URL. | `url`: string; required: `url` |
-| `browser_snapshot` | `browser` | Read the current page text. Args: browser session ID. | `session_id`: string; required: `session_id` |
-| `browser_type` | `browser` | Fill a selector. Args format: session_id\|CSS selector\|text. | `session_id`: string, `selector`: string, `text`: string; required: `session_id`, `selector`, `text` |
-| `calculate` | `read` | Check a bounded arithmetic expression, e.g. sum([Decimal('1.00'), Decimal('2.00')]); no workspace code runs. | `args`: string |
-| `cancel_subagent` | `read` | Cancel a scoped sub-agent and prevent subsequent tool execution; args JSON contains run_id. | `args`: string |
-| `check_stored_data` | `read` | Return a categorized summary of stored memories. | `args`: string |
-| `discover_tools` | `read` | Discover permitted tools; args is empty for the catalog or comma-separated exact tool names for full descriptions. | `args`: string |
-| `edit_file` | `write` | Replace one exact snippet only when the file still matches its read hash. | `args`: string |
-| `execute_terminal_command` | `shell` | Execute a terminal command. This is an alias for run_cmd. | `command`: string; required: `command` |
-| `find_files` | `read` | Find files matching a pattern. Args format: "pattern" or "pattern\|directory". | `pattern`: string, `directory`: string; required: `pattern` |
-| `git_add` | `git` | Stage files for commit. Args format: "file1 file2" or "." (stage all). | `args`: string |
-| `git_branch` | `git` | List or manage git branches. Args format: "" (list all), "branch_name" (create), | `args`: string |
-| `git_checkout` | `git` | Switch branches or restore files. Args format: "branch_name" (switch), | `args`: string |
-| `git_clone` | `git` | Clone a git repository. Args format: "url" or "url\|destination". | `url`: string, `destination`: string; required: `url` |
-| `git_commit` | `git` | Commit staged changes. Args format: '"commit message"' (quotes recommended). | `args`: string |
-| `git_diff` | `read` | Show git diff (unstaged, staged, or between commits). | `args`: string |
-| `git_log` | `read` | Show git commit log. Args format: "-5" or "--since='2 days ago' --author='Name'" | `args`: string |
-| `git_pull` | `git` | Pull changes from remote. Args format: "" (pull current branch), | `args`: string |
-| `git_push` | `git` | Push commits to remote. Args format: "" (push current branch), | `args`: string |
-| `git_remote` | `git` | Manage remote repositories. Args format: "" (list remotes), | `args`: string |
-| `git_reset` | `destructive` | Reset current HEAD to a specified state. | `args`: string |
-| `git_show` | `read` | Show details of a git object (commit, tag, etc). Args format: "HEAD" or commit hash. | `args`: string |
-| `git_stash` | `git` | Stash or unstash working directory changes. | `args`: string |
-| `git_status` | `read` | Show git status of a repository. Args format: "path" (default "."). | `args`: string |
-| `github_cli` | `git` | Run GitHub CLI arguments directly without a shell. Agent mode and approval are required. | `args`: string |
-| `github_read` | `network` | Run an allowlisted read-only GitHub CLI command. | `args`: string |
-| `github_status` | `network` | Inspect GitHub CLI installation and authentication without exposing tokens. | `args`: string |
-| `graph_explain` | `read` | Explain one graph node. Args: node label. | `args`: string |
-| `graph_path` | `read` | Trace the shortest graph path. Args: left\|right. | `args`: string |
-| `graph_query` | `read` | Query the private Graphify index. Args: a project question. | `args`: string |
-| `graph_refresh` | `read` | Refresh the private local code graph. Pass --full for a clean rebuild. | `args`: string |
-| `graph_status` | `read` | Return the private Graphify index state and a bounded mini graph. | `args`: string |
-| `list_dir` | `read` | List contents of a directory. Args format: "path" (default "."). | `path`: string |
-| `list_subagents` | `read` | List agents or inspect one run_id from this chat/project; args is JSON. | `args`: string |
-| `list_tree` | `read` | Recursively list the directory tree of the given path. Args format: "path" (default "."). | `path`: string |
-| `read_file` | `read` | Read content from a file. Args format: "path". | `path`: string; required: `path` |
-| `read_webpage` | `network` | Fetch the content of a web page and return its plain‑text body. | `url`: string; required: `url` |
-| `run_cmd` | `shell` | Execute a shell command. Args: the full command string. | `command`: string; required: `command` |
-| `search_files` | `read` | Search literal text with bounded, relative file-and-line results. | `args`: string |
-| `search_memory` | `read` | Search stored memories for facts relevant to the query. Args: "query" | `args`: string |
-| `search_web` | `network` | Search the internet for real-time information. | `query`: string; required: `query` |
-| `send_subagent` | `read` | Reuse a finished sub-agent; args JSON contains run_id and a complete assignment. | `args`: string |
-| `spawn_agents` | `read` | Automatically start parallel specialist assignments; args is a JSON assignment batch. | `args`: string |
-| `wait_subagents` | `read` | Wait up to 60 seconds for delegated work and its mandatory reviews; args is JSON. | `args`: string |
-| `write_file` | `write` | Write content to a file. Args format: "path\|content". | `path`: string, `content`: string; required: `path`, `content` |
+| Tool | Capability | Side effects | Parallel safe | Plain-string Action contract | MCP object input schema |
+|---|---|---|---|---|---|
+| `analyze_remote_repo` | `network` | `external` | false | Clone a remote git repository, read its files, and return a summary. | `url`: string; required: `url` |
+| `browser_click` | `browser` | `stateful` | false | Click a selector. Args format: session_id\|CSS selector. | `selector`: string, `session_id`: string; required: `session_id`, `selector` |
+| `browser_close` | `browser` | `stateful` | false | Close an isolated browser session. Args: browser session ID. | `session_id`: string; required: `session_id` |
+| `browser_open` | `browser` | `stateful` | false | Open a URL in an isolated headless browser profile. Args: URL. | `url`: string; required: `url` |
+| `browser_snapshot` | `browser` | `stateful` | false | Read the current page text. Args: browser session ID. | `session_id`: string; required: `session_id` |
+| `browser_type` | `browser` | `stateful` | false | Fill a selector. Args format: session_id\|CSS selector\|text. | `selector`: string, `session_id`: string, `text`: string; required: `session_id`, `selector`, `text` |
+| `calculate` | `read` | `none` | true | Check a bounded arithmetic expression, e.g. sum([Decimal('1.00'), Decimal('2.00')]); no workspace code runs. | `args`: string |
+| `cancel_subagent` | `read` | `orchestration` | false | Cancel a scoped sub-agent and prevent subsequent tool execution; args JSON contains run_id. | `args`: string |
+| `check_stored_data` | `read` | `read` | false | Return a categorized summary of stored memories. | `args`: string |
+| `discover_tools` | `read` | `read` | false | Discover permitted tools; args is empty for the catalog or comma-separated exact tool names for full descriptions. | `args`: string |
+| `edit_file` | `write` | `mutation` | false | Replace one exact snippet only when the file still matches its read hash. | `args`: string |
+| `execute_terminal_command` | `shell` | `unknown` | false | Execute a terminal command. This is an alias for run_cmd. | `command`: string; required: `command` |
+| `find_files` | `read` | `read` | false | Find files matching a pattern. Args format: "pattern" or "pattern\|directory". | `directory`: string, `pattern`: string; required: `pattern` |
+| `git_add` | `git` | `mutation` | false | Stage files for commit. Args format: "file1 file2" or "." (stage all). | `args`: string |
+| `git_branch` | `git` | `mutation` | false | List or manage git branches. Args format: "" (list all), "branch_name" (create), | `args`: string |
+| `git_checkout` | `git` | `mutation` | false | Switch branches or restore files. Args format: "branch_name" (switch), | `args`: string |
+| `git_clone` | `git` | `mutation` | false | Clone a git repository. Args format: "url" or "url\|destination". | `destination`: string, `url`: string; required: `url` |
+| `git_commit` | `git` | `mutation` | false | Commit staged changes. Args format: '"commit message"' (quotes recommended). | `args`: string |
+| `git_diff` | `read` | `read` | false | Show git diff (unstaged, staged, or between commits). | `args`: string |
+| `git_log` | `read` | `read` | false | Show git commit log. Args format: "-5" or "--since='2 days ago' --author='Name'" | `args`: string |
+| `git_pull` | `git` | `mutation` | false | Pull changes from remote. Args format: "" (pull current branch), | `args`: string |
+| `git_push` | `git` | `mutation` | false | Push commits to remote. Args format: "" (push current branch), | `args`: string |
+| `git_remote` | `git` | `mutation` | false | Manage remote repositories. Args format: "" (list remotes), | `args`: string |
+| `git_reset` | `destructive` | `mutation` | false | Reset current HEAD to a specified state. | `args`: string |
+| `git_show` | `read` | `read` | false | Show details of a git object (commit, tag, etc). Args format: "HEAD" or commit hash. | `args`: string |
+| `git_stash` | `git` | `mutation` | false | Stash or unstash working directory changes. | `args`: string |
+| `git_status` | `read` | `read` | false | Show git status of a repository. Args format: "path" (default "."). | `args`: string |
+| `github_cli` | `git` | `mutation` | false | Run GitHub CLI arguments directly without a shell. Agent mode and approval are required. | `args`: string |
+| `github_read` | `network` | `external` | false | Run an allowlisted read-only GitHub CLI command. | `args`: string |
+| `github_status` | `network` | `external` | false | Inspect GitHub CLI installation and authentication without exposing tokens. | `args`: string |
+| `graph_explain` | `read` | `read` | false | Explain one graph node. Args: node label. | `args`: string |
+| `graph_path` | `read` | `read` | false | Trace the shortest graph path. Args: left\|right. | `args`: string |
+| `graph_query` | `read` | `read` | false | Query the private Graphify index. Args: a project question. | `args`: string |
+| `graph_refresh` | `read` | `internal_write` | false | Refresh the private local code graph. Pass --full for a clean rebuild. | `args`: string |
+| `graph_status` | `read` | `read` | false | Return the private Graphify index state and a bounded mini graph. | `args`: string |
+| `list_dir` | `read` | `read` | false | List contents of a directory. Args format: "path" (default "."). | `path`: string |
+| `list_subagents` | `read` | `orchestration` | false | List agents or inspect one run_id from this chat/project; args is JSON. | `args`: string |
+| `list_tree` | `read` | `read` | false | Recursively list the directory tree of the given path. Args format: "path" (default "."). | `path`: string |
+| `read_file` | `read` | `read` | false | Read content from a file. Args format: "path". | `path`: string; required: `path` |
+| `read_webpage` | `network` | `external` | false | Fetch the content of a web page and return its plain‑text body. | `url`: string; required: `url` |
+| `run_cmd` | `shell` | `unknown` | false | Execute a shell command. Args: the full command string. | `command`: string; required: `command` |
+| `search_files` | `read` | `read` | false | Search literal text with bounded, relative file-and-line results. | `args`: string |
+| `search_memory` | `read` | `read` | false | Search stored memories for facts relevant to the query. Args: "query" | `args`: string |
+| `search_web` | `network` | `external` | false | Search the internet for real-time information. | `query`: string; required: `query` |
+| `send_subagent` | `read` | `orchestration` | false | Reuse a finished sub-agent; args JSON contains run_id and a complete assignment. | `args`: string |
+| `spawn_agents` | `read` | `orchestration` | false | Automatically start parallel specialist assignments; args is a JSON assignment batch. | `args`: string |
+| `wait_subagents` | `read` | `orchestration` | false | Wait up to 60 seconds for delegated work and its mandatory reviews; args is JSON. | `args`: string |
+| `write_file` | `write` | `mutation` | false | Write content to a file. Args format: "path\|content". | `content`: string, `path`: string; required: `path`, `content` |
 
 ## HTTP and MCP endpoints
 

@@ -39,7 +39,8 @@ def _record_tool_approval(self, action: str, decision: str, args: str = "") -> N
 
 def _confirm_tool_action(self, action: str, args: str = "", *, force: bool = False) -> bool:
     """Confirm high-impact local CLI actions while keeping normal tools frictionless."""
-    if (not force and action not in self._APPROVAL_REQUIRED_TOOLS) or self._EXECUTION_SURFACE not in {"cli", "tui"}:
+    from openkyrozen.security.tool_policy import tool_confirmation_required
+    if (not force and not tool_confirmation_required(action,self._EXECUTION_SURFACE,self.AVAILABLE_TOOLS)) or self._EXECUTION_SURFACE not in {"cli", "tui"}:
         return True
     mode = os.environ.get("KYROZEN_APPROVAL_MODE", "dangerous").strip().lower()
     if not force and mode in {"never", "none", "off"}:
@@ -128,7 +129,7 @@ def _authorize_tool_action(self, action: str, args: object, *, approve=None) -> 
     from openkyrozen.security.permission_gate import requires_ask_approval, risk_category
 
     mode = self.permission_mode()
-    risk = risk_category(action, args)
+    risk = risk_category(action, args, self.AVAILABLE_TOOLS)
     if mode == "full":
         if risk:
             self._record_permission_decision(action, risk, "unprotected_full")
@@ -137,7 +138,7 @@ def _authorize_tool_action(self, action: str, args: object, *, approve=None) -> 
         return True
     if mode == "full_jev" and risk and self._jev_permission_check(action, risk):
         return True
-    if mode == "ask" and not requires_ask_approval(action, args):
+    if mode == "ask" and not requires_ask_approval(action, args, self.AVAILABLE_TOOLS):
         return True
     callback = approve or (lambda current, details: self._confirm_tool_action(current, details, force=True))
     self._emit_stream_event({"event": "permission_check", "state": "approval_required",

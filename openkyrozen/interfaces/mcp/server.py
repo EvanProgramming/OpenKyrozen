@@ -29,136 +29,16 @@ def _mcp_error(self, request_id: Any, code: int, message: str, data: Any = None)
 
 
 def _mcp_tool_schema(self, name: str, fn: Any) -> dict[str, Any]:
-    service = self
-    """Return the object schema for a tool's existing string contract."""
-    schemas: dict[str, dict[str, Any]] = {
-        "read_file": {
-            "properties": {"path": {"type": "string"}}, "required": ["path"],
-        },
-        "write_file": {
-            "properties": {
-                "path": {"type": "string"},
-                "content": {"type": "string"},
-            }, "required": ["path", "content"],
-        },
-        "list_dir": {"properties": {"path": {"type": "string"}}},
-        "list_tree": {"properties": {"path": {"type": "string"}}},
-        "find_files": {
-            "properties": {
-                "pattern": {"type": "string"},
-                "directory": {"type": "string"},
-            }, "required": ["pattern"],
-        },
-        "run_cmd": {"properties": {"command": {"type": "string"}}, "required": ["command"]},
-        "execute_terminal_command": {
-            "properties": {"command": {"type": "string"}}, "required": ["command"],
-        },
-        "search_web": {"properties": {"query": {"type": "string"}}, "required": ["query"]},
-        "read_webpage": {"properties": {"url": {"type": "string"}}, "required": ["url"]},
-        "git_clone": {
-            "properties": {
-                "url": {"type": "string"},
-                "destination": {"type": "string"},
-            }, "required": ["url"],
-        },
-        "analyze_remote_repo": {"properties": {"url": {"type": "string"}}, "required": ["url"]},
-        "browser_open": {"properties": {"url": {"type": "string"}}, "required": ["url"]},
-        "browser_snapshot": {"properties": {"session_id": {"type": "string"}}, "required": ["session_id"]},
-        "browser_close": {"properties": {"session_id": {"type": "string"}}, "required": ["session_id"]},
-        "browser_click": {
-            "properties": {
-                "session_id": {"type": "string"},
-                "selector": {"type": "string"},
-            }, "required": ["session_id", "selector"],
-        },
-        "browser_type": {
-            "properties": {
-                "session_id": {"type": "string"},
-                "selector": {"type": "string"},
-                "text": {"type": "string"},
-            }, "required": ["session_id", "selector", "text"],
-        },
-    }
-    schema = copy.deepcopy(schemas.get(name, {
-        "properties": {"args": {"type": "string"}},
-    }))
-    schema["type"] = "object"
-    schema["additionalProperties"] = False
-    if name not in schemas:
-        schema["description"] = "Plain-string arguments can be supplied as the `args` property."
-    return schema
+    return self._agent.tool_registry.get_spec(name).input_schema
 
 
 def _mcp_tool_descriptors(self, allowed: set[str]) -> list[dict[str, Any]]:
-    service = self
-    return [
-        {
-            "name": name,
-            "description": (getattr(fn, "__doc__", "") or "").strip().split("\n")[0],
-            "inputSchema": service._mcp_tool_schema(name, fn),
-        }
-        for name, fn in service._agent.AVAILABLE_TOOLS.items()
-        if name in allowed
-    ]
+    return self._agent.tool_registry.mcp_descriptors(names=allowed)
 
 
 def _mcp_string_arguments(self, tool_name: str, arguments: Any) -> str:
-    service = self
-    """Map MCP object arguments to the tool's documented pipe/string format."""
-    if arguments is None:
-        return ""
-    if isinstance(arguments, str):
-        return arguments
-    if not isinstance(arguments, dict):
-        raise ValueError("arguments must be an object or plain string")
-    if not arguments:
-        return ""
-    if set(arguments) == {"args"}:
-        if not isinstance(arguments["args"], str):
-            raise ValueError("arguments.args must be a string")
-        return arguments["args"]
-
-    def value(*names: str, required: bool = True) -> str:
-        present = next((name for name in names if name in arguments), None)
-        if present is None:
-            if required:
-                raise ValueError(f"missing required argument: {names[0]}")
-            return ""
-        if not isinstance(arguments[present], str):
-            raise ValueError(f"argument '{present}' must be a string")
-        return arguments[present]
-
-    if tool_name == "read_file":
-        return value("path", "file_path")
-    if tool_name == "write_file":
-        return f"{value('path', 'file_path')}|{value('content', 'text')}"
-    if tool_name in {"list_dir", "list_tree"}:
-        return value("path", required=False)
-    if tool_name == "find_files":
-        pattern = value("pattern")
-        directory = value("directory", required=False)
-        return f"{pattern}|{directory}" if directory else pattern
-    if tool_name in {"run_cmd", "execute_terminal_command"}:
-        return value("command", "cmd")
-    if tool_name == "search_web":
-        return value("query")
-    if tool_name in {"read_webpage", "browser_open", "analyze_remote_repo"}:
-        return value("url")
-    if tool_name == "git_clone":
-        url = value("url")
-        destination = value("destination", required=False)
-        return f"{url}|{destination}" if destination else url
-    if tool_name in {"browser_snapshot", "browser_close"}:
-        return value("session_id", "sessionId")
-    if tool_name == "browser_click":
-        return f"{value('session_id', 'sessionId')}|{value('selector')}"
-    if tool_name == "browser_type":
-        return f"{value('session_id', 'sessionId')}|{value('selector')}|{value('text')}"
-
-    # Every legacy tool has a plain-string contract.  Requiring the explicit
-    # `args` wrapper keeps ambiguous object shapes from silently changing the
-    # command sent to a tool.
-    raise ValueError(f"tool '{tool_name}' accepts object arguments only as {{'args': '<string>'}}")
+    """Translate compatibility inputs using the catalog's declared string adapter."""
+    return self._agent.tool_registry.get_spec(tool_name).legacy_arguments(arguments)
 
 
 async def mcp_endpoint(self, request: Request):
@@ -219,7 +99,7 @@ async def mcp_endpoint(self, request: Request):
                 tool_name, tool_args, f"Error: Tool '{tool_name}' is not authorized",
             )
             return service._mcp_error(request_id, -32001, (
-                f"Tool requires '{tool_capability(tool_name)}' capability; "
+                f"Tool requires '{tool_capability(tool_name,service._agent.AVAILABLE_TOOLS)}' capability; "
                 "set KYROZEN_MCP_CAPABILITIES or use the full profile to enable it"
             ))
         try:

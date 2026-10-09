@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from typing import Any
 
 
-TOOL_ALIASES = {'bash': 'run_cmd', 'shell': 'run_cmd', 'sh': 'run_cmd', 'browse_summary': 'read_webpage', 'run_terminal_command': 'execute_terminal_command', 'run_terminal': 'execute_terminal_command', 'terminal': 'execute_terminal_command', 'run_command': 'run_cmd', 'cmd': 'run_cmd', 'exec': 'run_cmd', 'execute': 'run_cmd', 'list_tree': 'list_tree', 'tree': 'list_tree', 'check_memory': 'check_stored_data', 'run_shell_command': 'run_cmd', 'run_shell': 'run_cmd', 'shell_command': 'run_cmd', 'execute_shell': 'run_cmd', 'shell_cmd': 'run_cmd', 'bash_cmd': 'run_cmd', 'command': 'run_cmd', 'run': 'run_cmd', 'run_shell': 'run_cmd', 'write': 'write_file', 'status': 'git_status', 'diff': 'git_diff', 'log': 'git_log', 'branch': 'git_branch', 'add': 'git_add', 'commit': 'git_commit', 'push': 'git_push', 'pull': 'git_pull', 'checkout': 'git_checkout', 'stash': 'git_stash', 'clone': 'git_clone', 'reset': 'git_reset', 'show': 'git_show', 'remote': 'git_remote'}
-_ACTION_MARKER_NAMES = ('execute_terminal_command', 'run_terminal_command', 'analyze_remote_repo', 'run_shell_command', 'check_stored_data', 'browser_snapshot', 'browse_summary', 'browser_close', 'graph_refresh', 'graph_explain', 'shell_command', 'github_status', 'browser_click', 'search_memory', 'execute_shell', 'read_webpage', 'graph_status', 'browser_open', 'run_terminal', 'git_checkout', 'browser_type', 'check_memory', 'run_command', 'graph_query', 'github_read', 'graph_path', 'git_status', 'search_web', 'find_files', 'github_cli', 'git_remote', 'git_branch', 'git_commit', 'write_file', 'git_reset', 'read_file', 'list_tree', 'git_stash', 'shell_cmd', 'run_shell', 'git_clone', 'list_dir', 'git_pull', 'git_diff', 'terminal', 'checkout', 'bash_cmd', 'git_push', 'git_show', 'git_log', 'execute', 'run_cmd', 'git_add', 'command', 'status', 'commit', 'remote', 'branch', 'write', 'shell', 'reset', 'stash', 'clone', 'show', 'pull', 'push', 'diff', 'bash', 'exec', 'tree', 'cmd', 'add', 'run', 'log', 'sh')
+from openkyrozen.tools.catalog import builtin_aliases, builtin_names
+TOOL_ALIASES = builtin_aliases()
+_ACTION_MARKER_NAMES = tuple(sorted(set(builtin_names()) | set(TOOL_ALIASES), key=len, reverse=True))
 _ACTION_MARKER_RE = re.compile(
     r"(?i)(?<![\w])(?P<name>(?:" + "|".join(map(re.escape, _ACTION_MARKER_NAMES)) + r"))\s*:"
 )
@@ -149,8 +150,11 @@ class DeepSeekDSMLFilter:
         for length in range(1, len(item) + 1)
     )
 
-    def __init__(self, is_valid_action=None) -> None:
+    def __init__(self, is_valid_action=None, action_names=None) -> None:
         self._is_valid_action = is_valid_action or _is_valid_action
+        if action_names is not None:
+            self._ACTION_MARKER_RE = re.compile(r"(?i)(?<![\w])(?P<name>"+'|'.join(map(re.escape,action_names))+r")\s*:")
+            self._CONTROL_PREFIXES = self._CONTROL_PREFIXES + tuple(name[:length].lower() for name in action_names for length in range(1,len(name)+1))
         self._buffer = ""
         self._control_buffer = ""
 
@@ -170,8 +174,7 @@ class DeepSeekDSMLFilter:
     def _close_for(cls, match: re.Match[str]) -> str:
         return f"</{match.group('marker')}{match.group('kind')}>"
 
-    @classmethod
-    def _control_partial_suffix_length(cls, value: str) -> int:
+    def _control_partial_suffix_length(self, value: str) -> int:
         start = value.rfind("<")
         if start >= 0:
             suffix = value[start:]
@@ -185,11 +188,11 @@ class DeepSeekDSMLFilter:
                 name_match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", remainder)
                 if name_match:
                     name = name_match.group(0).lower()
-                    if any(kind.startswith(name) for kind in cls._GENERIC_KINDS):
+                    if any(kind.startswith(name) for kind in self._GENERIC_KINDS):
                         return len(suffix)
         lowered = value.lower()
-        for length in range(min(len(value), max(map(len, cls._CONTROL_PREFIXES))), 0, -1):
-            if lowered[-length:] in cls._CONTROL_PREFIXES:
+        for length in range(min(len(value), max(map(len, self._CONTROL_PREFIXES))), 0, -1):
+            if lowered[-length:] in self._CONTROL_PREFIXES:
                 start = len(value) - length
                 if start and value[start - 1].isalnum():
                     continue
@@ -203,9 +206,8 @@ class DeepSeekDSMLFilter:
                 return match
         return None
 
-    @classmethod
-    def _find_action_marker(cls, value: str, *, final: bool) -> re.Match[str] | None:
-        for match in cls._ACTION_MARKER_RE.finditer(value):
+    def _find_action_marker(self, value: str, *, final: bool) -> re.Match[str] | None:
+        for match in self._ACTION_MARKER_RE.finditer(value):
             if _action_marker_is_protocol(value, match, final=final):
                 return match
         return None

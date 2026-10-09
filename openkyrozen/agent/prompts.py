@@ -29,9 +29,11 @@ def _compose_skills(self, task_description: str) -> str | None:
 def _build_tools_list(self, capabilities: frozenset[str] | None = None) -> str:
     lines = []
     for name, fn in self.AVAILABLE_TOOLS.items():
-        if capabilities is not None and tool_capability(name) not in capabilities:
+        if self.tool_registry.get_spec(name).visibility != 'public':
             continue
-        doc = getattr(fn, "__doc__", None) or ""
+        if capabilities is not None and tool_capability(name,self.AVAILABLE_TOOLS) not in capabilities:
+            continue
+        doc = self.tool_registry.get_spec(name).description
         desc = doc.strip().replace("\n", " ").strip()
         lines.append(f"- {name}: {desc}")
     return "\n".join(lines)
@@ -49,7 +51,7 @@ def _permitted_tool_names(self, agent_config: dict[str, Any] | None = None) -> s
     active = getattr(self, "_execution_capability_token", None)
     capabilities = configured & active.capabilities if active else configured
     capabilities = mode_capabilities(capabilities, self._active_interaction_mode.get())
-    return {name for name in self.AVAILABLE_TOOLS if tool_capability(name) in capabilities}
+    return {name for name in self.AVAILABLE_TOOLS if self.tool_registry.get_spec(name).visibility == 'public' and tool_capability(name,self.AVAILABLE_TOOLS) in capabilities}
 
 
 def _discover_tools(self, args: str) -> str:
@@ -59,13 +61,13 @@ def _discover_tools(self, args: str) -> str:
     if not names:
         groups: dict[str, list[str]] = {}
         for name in sorted(permitted):
-            groups.setdefault(tool_capability(name), []).append(name)
+            groups.setdefault(tool_capability(name,self.AVAILABLE_TOOLS), []).append(name)
         return "\n".join(f"{capability}: {', '.join(group)}" for capability, group in sorted(groups.items()))
     if any(name not in permitted for name in names):
         return "Error: unknown or unavailable tool requested"
     self.execution_context.discovered_tools |= frozenset(names)
     return "\n".join(
-        f"- {name}: {(getattr(self.AVAILABLE_TOOLS[name], '__doc__', None) or '').strip()}"
+        f"- {name}: {self.tool_registry.get_spec(name).description}"
         for name in names
     )
 
@@ -77,7 +79,7 @@ def _agent_prompt_tools_list(self, agent_config: dict[str, Any]) -> str:
     if self._prompt_profile() == "compact":
         detailed = permitted & ({"list_dir", "find_files", "search_files", "read_file", "write_file", "edit_file", "run_cmd", "discover_tools"}
                                 | set(self.execution_context.discovered_tools))
-    lines = [f"- {name}: {(getattr(fn, '__doc__', None) or '').strip()}"
+    lines = [f"- {name}: {self.tool_registry.get_spec(name).description}"
              for name, fn in self.AVAILABLE_TOOLS.items() if name in detailed]
     if self._prompt_profile() == "compact":
         if "search_files" in detailed:
@@ -86,7 +88,7 @@ def _agent_prompt_tools_list(self, agent_config: dict[str, Any]) -> str:
             lines.append('edit_file JSON: {"path":"file","old_text":"exact text","new_text":"replacement","expected_sha256":"hash from structured read_file"}')
     groups: dict[str, list[str]] = {}
     for name in sorted(permitted - detailed):
-        groups.setdefault(tool_capability(name), []).append(name)
+        groups.setdefault(tool_capability(name,self.AVAILABLE_TOOLS), []).append(name)
     if groups:
         lines.append("Other permitted tools (call discover_tools with comma-separated names for descriptions):")
         lines.extend(f"{capability}: {', '.join(group)}" for capability, group in sorted(groups.items()))

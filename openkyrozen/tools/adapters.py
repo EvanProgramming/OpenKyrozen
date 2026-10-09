@@ -22,8 +22,25 @@ class ToolAdapters:
         self._BROWSER = BrowserManager(root=str(self._WORKSPACE_ROOT))
         self._PROJECT_GRAPH = None
         self._GITHUB_CLI = None
-        self.AVAILABLE_TOOLS = {'write_file': self.write_file, 'edit_file': self.edit_file, 'read_file': self.read_file, 'search_files': self.search_files, 'run_cmd': self.run_cmd, 'search_web': self.search_web, 'find_files': self.find_files, 'list_dir': self.list_dir, 'git_clone': self.git_clone, 'git_status': self.git_status, 'git_diff': self.git_diff, 'git_log': self.git_log, 'git_branch': self.git_branch, 'git_add': self.git_add, 'git_commit': self.git_commit, 'git_push': self.git_push, 'git_pull': self.git_pull, 'git_checkout': self.git_checkout, 'git_stash': self.git_stash, 'git_reset': self.git_reset, 'git_show': self.git_show, 'git_remote': self.git_remote, 'execute_terminal_command': self.execute_terminal_command, 'analyze_remote_repo': self.analyze_remote_repo, 'list_tree': self.list_tree, 'read_webpage': self.read_webpage, 'browser_open': self.browser_open, 'browser_snapshot': self.browser_snapshot, 'browser_click': self.browser_click, 'browser_type': self.browser_type, 'browser_close': self.browser_close, 'graph_status': self.graph_status, 'graph_query': self.graph_query, 'graph_explain': self.graph_explain, 'graph_path': self.graph_path, 'graph_refresh': self.graph_refresh, 'github_status': self.github_status, 'github_read': self.github_read, 'github_cli': self.github_cli}
-        self.AVAILABLE_TOOLS["calculate"] = self.calculate
+        from .manifest import ToolRegistry
+        from .catalog import builtin_names
+        self.tool_registry = ToolRegistry({name:getattr(self,name) for name in builtin_names('adapter')})
+
+    @property
+    def AVAILABLE_TOOLS(self):
+        return self.tool_registry.tools
+
+    @AVAILABLE_TOOLS.setter
+    def AVAILABLE_TOOLS(self,value):
+        from .manifest import ToolRegistry
+        previous = self.tool_registry.snapshot() if hasattr(self,'tool_registry') else {}
+        registry = ToolRegistry()
+        for name,function in value.items():
+            if name in previous:
+                registry.register_spec(previous[name].replace(executor=function))
+            else:
+                registry.register(name,function)
+        self.tool_registry = registry
 
     from .calculation import calculate
 

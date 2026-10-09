@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import inspect
 import re
 import sys
 from pathlib import Path
@@ -21,12 +20,14 @@ def _load_runtime() -> tuple[dict[str, Any], Any, Any]:
     from openkyrozen.memory.retrieval import _check_stored_data, _search_memory
     from openkyrozen.interfaces.web.service import WebService
     tools = ToolAdapters().AVAILABLE_TOOLS
-    tools.update(check_stored_data=_check_stored_data, search_memory=_search_memory)
     from openkyrozen.agent import delegation_runtime
-    from openkyrozen.agent.delegation import TOOLS
-    tools.update({name: getattr(delegation_runtime, name) for name in TOOLS})
     from openkyrozen.agent.prompts import _discover_tools
-    tools["discover_tools"] = _discover_tools
+    from openkyrozen.tools.catalog import builtin_names
+    runtime_functions = {'check_stored_data':_check_stored_data, 'search_memory':_search_memory, 'discover_tools':_discover_tools}
+    for name in builtin_names('runtime'):
+        tools[name] = runtime_functions[name]
+    for name in builtin_names('orchestration'):
+        tools[name] = getattr(delegation_runtime,name)
     return tools, WebService(), tool_capability
 
 
@@ -41,17 +42,12 @@ def runtime_routes(server: Any) -> list[tuple[str, str]]:
     return sorted(rows, key=lambda row: (row[1], row[0]))
 
 
-def _first_doc_line(function: Any) -> str:
-    doc = inspect.getdoc(function) or "No description provided."
-    return doc.splitlines()[0].strip()
-
-
 def _escape_table(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("|", "\\|"))
 
 
 def _mcp_contract(server: Any, name: str, function: Any) -> str:
-    schema = server._mcp_tool_schema(name, function)
+    schema = function.input_schema
     properties = schema.get("properties", {})
     if not properties:
         return "none"
@@ -71,7 +67,7 @@ def render_inventory() -> str:
         "# OpenKyrozen runtime inventory",
         "",
         "This file is generated from the live runtime registry (`AgentRuntime.AVAILABLE_TOOLS`),",
-        "the FastAPI route table (`server.app.routes`), and the MCP schema builder.",
+        "ToolSpec metadata and the FastAPI route table (`server.app.routes`).",
         "Run `make docs-check` after changing a tool, endpoint, or MCP contract.",
         "",
         "## Runtime tools",
@@ -81,13 +77,13 @@ def render_inventory() -> str:
         "- The CLI Action contract is a plain string in the `args` field.",
         "- Web and MCP exposure is filtered by the configured capability profile.",
         "",
-        "| Tool | Capability | Plain-string Action contract | MCP object input schema |",
-        "|---|---|---|---|",
+        "| Tool | Capability | Side effects | Parallel safe | Plain-string Action contract | MCP object input schema |",
+        "|---|---|---|---|---|---|",
     ]
     for name in sorted(tools):
-        function = tools[name]
+        function = tools.registry.get_spec(name)
         lines.append(
-            f"| `{name}` | `{tool_capability(name)}` | {_escape_table(_first_doc_line(function))} "
+            f"| `{name}` | `{function.capability}` | `{function.side_effects}` | {str(function.parallel_safe).lower()} | {_escape_table(function.description.splitlines()[0])} "
             f"| {_escape_table(_mcp_contract(server, name, function))} |"
         )
 

@@ -15,7 +15,8 @@ from pathlib import Path
 
 NAMES = ("Evan", "Morning", "Joseph", "Addison", "Jerry", "Leo", "Obert",
          "Jason", "Justin", "Dewey", "Old Fool", "Lianto")
-TOOLS = ("spawn_agents", "send_subagent", "list_subagents", "wait_subagents", "cancel_subagent")
+from openkyrozen.tools.catalog import builtin_names
+TOOLS = builtin_names("orchestration")
 TERMINAL = {"succeeded", "unverified", "failed", "blocked", "cancelled", "interrupted"}
 REPORT_LISTS = ("findings", "evidence", "artifacts", "checks", "uncertainties", "suggested_followups")
 GUIDANCE = '''Delegate automatically when independent work can run in parallel or a specialist can

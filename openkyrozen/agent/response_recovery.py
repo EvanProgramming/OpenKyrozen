@@ -127,7 +127,7 @@ def _recover_plan_response(self, turn, text: str, parsed: dict[str, Any],
             return inspection_complete
         calls = candidate.get("tool_calls") or []
         return bool(calls) and all(
-            tool_capability(self._operation_action(call.get("action", ""))) in {"read", "network"}
+            tool_capability(self._operation_action(call.get("action", "")),self.AVAILABLE_TOOLS) in {"read", "network"}
             for call in calls
         )
 

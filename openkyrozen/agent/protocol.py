@@ -470,7 +470,7 @@ def _parse_model_response(self, text: str) -> dict[str, Any]:
     )
     disallowed_plan_action = (
         self._active_interaction_mode.get() == "plan"
-        and any(tool_capability(self._operation_action(call.get("action", ""))) not in {"read", "network"}
+        and any(tool_capability(self._operation_action(call.get("action", "")),self.AVAILABLE_TOOLS) not in {"read", "network"}
                 for call in tool_calls)
     )
     if disallowed_plan_action:
