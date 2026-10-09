@@ -87,10 +87,12 @@ class FallbackProvider(LLMProvider):
         candidates = [self._primary] + self._fallbacks
         last_error = None
         round_number = 0
+        retry_after = 0.0
         while candidates and state.attempts < 4:
             if round_number:
-                state.wait(backoff_delay(round_number - 1, last_error))
+                state.wait(max(backoff_delay(round_number - 1, last_error), retry_after))
             transient = []
+            retry_after = 0.0
             for provider in candidates:
                 if state.attempts >= 4:
                     break
@@ -102,6 +104,7 @@ class FallbackProvider(LLMProvider):
                     last_error = error
                     if error.retryable:
                         transient.append(provider)
+                        retry_after = max(retry_after, error.retry_after or 0.0)
                     elif error.terminal or error.kind != ProviderErrorKind.AUTHENTICATION:
                         raise
             candidates = transient
@@ -114,10 +117,12 @@ class FallbackProvider(LLMProvider):
             candidates = [self._primary] + self._fallbacks
             last_error = None
             round_number = 0
+            retry_after = 0.0
             while candidates and state.attempts < 4:
                 if round_number:
-                    state.wait(backoff_delay(round_number - 1, last_error))
+                    state.wait(max(backoff_delay(round_number - 1, last_error), retry_after))
                 transient = []
+                retry_after = 0.0
                 for provider in candidates:
                     if state.attempts >= 4:
                         break
@@ -131,7 +136,7 @@ class FallbackProvider(LLMProvider):
                     try:
                         with single_provider_attempt():
                             method = getattr_static(provider, "chat_stream", None)
-                            if getattr(method, "_provider_retry_managed", False):
+                            if getattr(method, "_provider_retry_managed", False) is True:
                                 first = start()
                             else:
                                 first = _retry_with_backoff(start, max_retries=0, provider=provider.name, model=mapped)
@@ -152,6 +157,7 @@ class FallbackProvider(LLMProvider):
                         last_error = error
                         if error.retryable:
                             transient.append(provider)
+                            retry_after = max(retry_after, error.retry_after or 0.0)
                         elif error.terminal or error.kind != ProviderErrorKind.AUTHENTICATION:
                             raise error
                     finally:

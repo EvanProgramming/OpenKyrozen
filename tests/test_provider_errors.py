@@ -194,16 +194,20 @@ class RuntimeLifecycleTests(unittest.TestCase):
         from openkyrozen.providers.errors import ProviderError, ProviderErrorKind as K
         event, entered = threading.Event(), threading.Event()
         call = Mock(side_effect=StatusError(429, headers={"Retry-After":"600"}))
+        from openkyrozen.providers.retry import ProviderRequest
+        original_wait = ProviderRequest.wait
         def callback():
-            entered.set()
             return _retry_with_backoff(call)
+        def observed_wait(request, seconds):
+            entered.set()
+            return original_wait(request, seconds)
         timer = threading.Thread(target=lambda: (entered.wait(1), event.set()))
         timer.start()
-        with self.assertRaises(ProviderError) as caught:
+        with patch.object(ProviderRequest, 'wait', observed_wait), self.assertRaises(ProviderError) as caught:
             _bounded_provider_call(self.runtime(1, event), callback)
         timer.join(1)
         self.assertEqual(caught.exception.kind, K.CANCELLED)
-        self.assertLessEqual(call.call_count, 1)
+        self.assertEqual(call.call_count, 1)
         fresh = threading.Event()
         self.assertEqual(_bounded_provider_call(self.runtime(1, fresh), lambda: "ok"), "ok")
         self.assertFalse(fresh.is_set())
@@ -388,3 +392,32 @@ class ReviewRegressions(unittest.TestCase):
         for source, kind in cases:
             with self.subTest(source=type(source)):
                 self.assertEqual(normalize_provider_error(source).kind,kind)
+
+    def test_dynamic_callable_attributes_do_not_claim_retry_ownership(self):
+        from openkyrozen.providers.base import get_model_response
+        from openkyrozen.providers.models import ModelResponse
+        send = Mock(side_effect=[StatusError(503),ModelResponse(text='ok')])
+        provider = NS(chat_response=send,name='foreign')
+        with patch('openkyrozen.providers.retry.ProviderRequest.wait'):
+            self.assertEqual(get_model_response(provider,[]).text,'ok')
+        self.assertEqual(send.call_count,2)
+
+    def test_fallback_honors_retry_after_from_every_transient_candidate(self):
+        for streaming in (False,True):
+            primary = probe('a',StatusError(429,headers={'Retry-After':'12'}))
+            secondary = probe('b',StatusError(503))
+            if streaming:
+                def first(*args):
+                    raise StatusError(429,headers={'Retry-After':'12'})
+                    yield
+                def second(*args):
+                    raise StatusError(503)
+                    yield
+                primary.chat_stream,secondary.chat_stream=first,second
+            with self.subTest(streaming=streaming), patch('openkyrozen.providers.retry.ProviderRequest.wait') as wait, self.assertRaises(Exception):
+                if streaming:
+                    list(fallback(primary,secondary).chat_stream([]))
+                else:
+                    fallback(primary,secondary).chat_response([])
+            wait.assert_called_once()
+            self.assertGreaterEqual(wait.call_args.args[0],12)

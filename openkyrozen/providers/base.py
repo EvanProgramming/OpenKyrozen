@@ -54,7 +54,7 @@ def _get_model_response(provider, messages, model=None) -> ModelResponse:
 def get_model_response(provider, messages, model=None) -> ModelResponse:
     with provider_request_scope():
         method = getattr_static(provider, "chat_response", None)
-        if getattr(method, "_provider_retry_managed", False):
+        if getattr(method, "_provider_retry_managed", False) is True:
             try:
                 return _get_model_response(provider, messages, model)
             except Exception as exc:
