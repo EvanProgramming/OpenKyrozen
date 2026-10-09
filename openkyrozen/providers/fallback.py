@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import os
 from typing import Iterator
+from inspect import getattr_static
 from openkyrozen.providers.base import LLMProvider, get_model_response
-from openkyrozen.providers.models import ModelResponse, ProviderCapabilities, ProviderContractError
+from openkyrozen.providers.models import ModelResponse, ProviderCapabilities
 from openkyrozen.providers.registry import PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS, PROVIDER_FALLBACKS
 from openkyrozen.providers.config import ProviderConfig, provider_is_configured
 from openkyrozen.providers.factory import get_provider
+from openkyrozen.providers.errors import ProviderError, ProviderErrorKind, normalize_provider_error
+from openkyrozen.providers.retry import provider_request_scope, _retry_with_backoff, close_stream, backoff_delay, single_provider_attempt, manages_provider_retry, terminal_after_response, provider_call, provider_stream, budget_exhausted_error, wait_for_retry
 
 class FallbackProvider(LLMProvider):
     """Wraps multiple providers and falls back on failure."""
@@ -66,20 +69,6 @@ class FallbackProvider(LLMProvider):
             return target_config.model_simple
         return requested
 
-    @staticmethod
-    def _raise_all_failed(attempts: list[tuple[str, Exception]]) -> None:
-        """Raise a useful error without discarding the primary failure."""
-        if not attempts:
-            raise RuntimeError("All providers failed")
-        if len(attempts) == 1:
-            raise attempts[0][1]
-        details = "; ".join(
-            f"{provider}: {type(error).__name__}: {error}"
-            for provider, error in attempts
-        )
-        error = RuntimeError(f"All providers failed ({details})")
-        raise error from attempts[0][1]
-
     def get_capabilities(self, model: str | None = None) -> ProviderCapabilities:
         return ProviderCapabilities.intersection(
             provider.get_capabilities(self._model_for(provider, model))
@@ -89,28 +78,95 @@ class FallbackProvider(LLMProvider):
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         return self.chat_response(messages, model).as_legacy_tuple()
 
+    @provider_call
+    @manages_provider_retry
     def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
-        providers = [self._primary] + self._fallbacks
-        attempts: list[tuple[str, Exception]] = []
-        for prov in providers:
-            try:
-                return get_model_response(prov, messages, self._model_for(prov, model))
-            except ProviderContractError:
-                raise
-            except Exception as e:
-                attempts.append((prov.name, e))
-        self._raise_all_failed(attempts)
+        with provider_request_scope() as state:
+            return self._fallback_response(state, messages, model)
 
+    def _fallback_response(self, state, messages, model):
+        candidates = [self._primary] + self._fallbacks
+        last_error = None
+        round_number = 0
+        retry_after = 0.0
+        while candidates and state.attempts < 4:
+            if round_number:
+                wait_for_retry(state, backoff_delay(round_number - 1, retry_after), last_error)
+            transient = []
+            retry_after = 0.0
+            for provider in candidates:
+                if state.attempts >= 4:
+                    break
+                mapped = self._model_for(provider, model)
+                try:
+                    with single_provider_attempt():
+                        return get_model_response(provider, messages, mapped)
+                except ProviderError as error:
+                    last_error = error
+                    if error.retryable:
+                        transient.append(provider)
+                        retry_after = max(retry_after, error.retry_after or 0.0)
+                    elif error.terminal or error.kind != ProviderErrorKind.AUTHENTICATION:
+                        raise
+            candidates = transient
+            round_number += 1
+        raise last_error if last_error is not None else budget_exhausted_error(state)
+
+    @provider_stream
+    @manages_provider_retry
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
-        providers = [self._primary] + self._fallbacks
-        attempts: list[tuple[str, Exception]] = []
-        for prov in providers:
-            try:
-                yield from prov.chat_stream(messages, self._model_for(prov, model))
-                return
-            except Exception as e:
-                attempts.append((prov.name, e))
-        self._raise_all_failed(attempts)
+        with provider_request_scope() as state:
+            candidates = [self._primary] + self._fallbacks
+            last_error = None
+            round_number = 0
+            retry_after = 0.0
+            while candidates and state.attempts < 4:
+                if round_number:
+                    wait_for_retry(state, backoff_delay(round_number - 1, retry_after), last_error)
+                transient = []
+                retry_after = 0.0
+                for provider in candidates:
+                    if state.attempts >= 4:
+                        break
+                    iterator = None
+                    emitted = False
+                    mapped = self._model_for(provider, model)
+                    def start():
+                        nonlocal iterator
+                        iterator = iter(provider.chat_stream(messages, mapped))
+                        return next(iterator, None)
+                    try:
+                        with single_provider_attempt():
+                            method = getattr_static(provider, "chat_stream", None)
+                            if getattr(method, "_provider_retry_managed", False) is True:
+                                first = start()
+                            else:
+                                first = _retry_with_backoff(start, max_retries=0, provider=provider.name, model=mapped)
+                        if first is not None:
+                            emitted = True
+                            yield first
+                        for chunk in iterator:
+                            state.check()
+                            emitted = True
+                            yield chunk
+                        state.check()
+                        return
+                    except Exception as exc:
+                        error = terminal_after_response(normalize_provider_error(exc, provider.name, mapped), state)
+                        error.attempts = state.attempts
+                        if emitted:
+                            raise error
+                        last_error = error
+                        if error.retryable:
+                            transient.append(provider)
+                            retry_after = max(retry_after, error.retry_after or 0.0)
+                        elif error.terminal or error.kind != ProviderErrorKind.AUTHENTICATION:
+                            raise error
+                    finally:
+                        close_stream(iterator)
+                candidates = transient
+                round_number += 1
+            raise last_error if last_error is not None else budget_exhausted_error(state)
 
     @property
     def name(self) -> str:

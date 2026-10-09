@@ -31,4 +31,4 @@ class AzureOpenAIProvider(OpenAICompatProvider):
                 )
             except ImportError:
                 pass
-        self._client = OpenAI(**kwargs)
+        self._client = OpenAI(max_retries=0, timeout=90.0, **kwargs)

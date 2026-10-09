@@ -732,8 +732,8 @@ class DelegationTests(unittest.TestCase):
         self.runtime.get_provider = get_provider
         (self.root / "agent.yaml").write_text("subagents:\n  roles:\n    researcher:\n      provider: anthropic\n      model: claude-fixture\n")
         with (patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fixture-claude", "KYROZEN_API_KEY": "wrong-main"}),
-              patch("openai.OpenAI", side_effect=lambda **kw: real_openai(**kw, http_client=httpx.Client(transport=transport), max_retries=0)),
-              patch("anthropic.Anthropic", side_effect=lambda **kw: real_anthropic(**kw, http_client=claude_http.Client(transport=claude_http.MockTransport(handle)), max_retries=0))):
+              patch("openai.OpenAI", side_effect=lambda **kw: real_openai(**kw, http_client=httpx.Client(transport=transport))),
+              patch("anthropic.Anthropic", side_effect=lambda **kw: real_anthropic(**kw, http_client=claude_http.Client(transport=claude_http.MockTransport(handle))))):
             coordinator = self.runtime.delegation()
             coordinator.spawn([brief(0, provider="openai", model="gpt-assignment"), brief(1)])
             runs = coordinator.wait(timeout=10)

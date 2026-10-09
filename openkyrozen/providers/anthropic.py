@@ -7,7 +7,7 @@ from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
 from openkyrozen.providers.models import received_response, ModelResponse, model_response
 from openkyrozen.providers.config import ProviderConfig
-from openkyrozen.providers.retry import _retry_with_backoff
+from openkyrozen.providers.retry import _retry_with_backoff, provider_call, provider_stream, remaining_timeout, close_stream, mark_response_received
 
 
 class AnthropicProvider(LLMProvider):
@@ -25,7 +25,7 @@ class AnthropicProvider(LLMProvider):
         kwargs: dict[str, Any] = {"api_key": config.api_key}
         if config.base_url:
             kwargs["base_url"] = config.base_url
-        self._client = anthropic.Anthropic(**kwargs)
+        self._client = anthropic.Anthropic(max_retries=0, timeout=90.0, **kwargs)
 
     def _prepare_messages(self, messages):
         system_prompts: list[str] = []
@@ -42,6 +42,7 @@ class AnthropicProvider(LLMProvider):
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         return self.chat_response(messages, model).as_legacy_tuple()
 
+    @provider_call
     def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
         model = model or self.config.model_simple
         system_prompts, claude_messages = self._prepare_messages(messages)
@@ -56,7 +57,7 @@ class AnthropicProvider(LLMProvider):
             kwargs["system"] = "\n\n".join(system_prompts)
 
         def _call():
-            return self._client.messages.create(**kwargs)
+            return self._client.messages.create(**kwargs, timeout=remaining_timeout())
 
         response = _retry_with_backoff(_call)
         with received_response():
@@ -79,6 +80,7 @@ class AnthropicProvider(LLMProvider):
                                   calls=calls, response_id=getattr(response, "id", None),
                                   raw_finish_reason=getattr(response, "stop_reason", None))
 
+    @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple
         system_prompts, claude_messages = self._prepare_messages(messages)
@@ -95,11 +97,12 @@ class AnthropicProvider(LLMProvider):
         completed = False
 
         def _call():
-            return self._client.messages.stream(**kwargs)
+            return self._client.messages.stream(**kwargs, timeout=remaining_timeout())
 
         stream_context = _retry_with_backoff(_call)
         try:
             with stream_context as stream:
+                mark_response_received()
                 for delta in stream.text_stream:
                     collected.append(delta)
                     yield delta

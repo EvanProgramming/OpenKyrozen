@@ -67,12 +67,8 @@ def _cache_reported_context_tokens(self, messages: list[dict], prompt_tokens: in
 
 
 def _is_context_overflow_error(self, exc: Exception) -> bool:
-    text = str(exc).lower()
-    return any(marker in text for marker in (
-        "context length", "context window", "maximum context", "max context",
-        "prompt is too long", "input is too long", "too many tokens", "token limit",
-        "exceeds the context", "exceeded context", "context_limit",
-    ))
+    from openkyrozen.providers.errors import legacy_context_overflow
+    return legacy_context_overflow(exc)
 
 
 def _summarize_context_with_chat_model(self, text: str, output_chars: int, model: str) -> str | None:
