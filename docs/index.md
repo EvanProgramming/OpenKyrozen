@@ -28,6 +28,7 @@ This index covers the current product guides, developer references, and dated en
 - [Modular refactor validation](modular-refactor-validation.md), [production audit](production-audit-2026-10-04.md), [shipping audit](production-shipping-audit-2026-10-04.md), and [self-learning audit](self-learning-audit-2026-10-03.md) preserve historical evidence.
 - [V3 architecture ownership plan](superpowers/plans/2026-10-07-v3-issue-227.md) records the scoped implementation and verification for issue #227.
 - [V3 provider contract plan](superpowers/plans/2026-10-08-v3-issue-228.md) records the structured response and compatibility migration for issue #228.
+- [V3 provider error plan](superpowers/plans/2026-10-09-v3-issue-231.md) records typed failures, cancellation and bounded retry for issue #231.
 - Machine-readable audit receipts and benchmark inputs remain beside their corresponding reports under `docs/` and `docs/benchmarks/`.
 
 The repository's [English overview](../README.md) links here. Technical guides are maintained in English; README translations provide localized entry points.

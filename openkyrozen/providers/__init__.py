@@ -16,3 +16,5 @@ from openkyrozen.providers.factory import (_PROVIDER_CLASSES, get_provider, get_
 from openkyrozen.security.credentials import (_get_encryption_key, _get_fernet, encrypt_api_key, decrypt_api_key, save_provider_config_encrypted)
 
 from openkyrozen.providers.models import ModelResponse, ToolCall, ProviderCapabilities, FinishReason, ProviderContractError
+
+from openkyrozen.providers.errors import ProviderError, ProviderErrorKind

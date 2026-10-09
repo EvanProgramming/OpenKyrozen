@@ -3,6 +3,7 @@ import os
 import stat
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from openkyrozen.providers import (
@@ -101,7 +102,7 @@ class FallbackModelTests(unittest.TestCase):
         return wrapper
 
     def test_sync_maps_deepseek_complex_model_to_openai_default(self):
-        primary = _ProbeProvider("deepseek", "deepseek-chat", "deepseek-reasoner", error=RuntimeError("primary down"))
+        primary = _ProbeProvider("deepseek", "deepseek-chat", "deepseek-reasoner", error=ConnectionError("primary down"))
         fallback = _ProbeProvider("openai", "gpt-4o", "gpt-4o", response="fallback")
         result = self._fallback(primary, fallback).chat([], "deepseek-reasoner")
         self.assertEqual(result[0], "fallback")
@@ -110,7 +111,7 @@ class FallbackModelTests(unittest.TestCase):
 
     def test_stream_maps_anthropic_simple_model_to_deepseek_default(self):
         primary = _ProbeProvider("anthropic", "claude-sonnet-4-20250514", "claude-sonnet-4-20250514",
-                                 error=RuntimeError("primary down"))
+                                 error=ConnectionError("primary down"))
         fallback = _ProbeProvider("deepseek", "deepseek-chat", "deepseek-reasoner", response="stream fallback")
         result = list(self._fallback(primary, fallback).chat_stream([], "claude-sonnet-4-20250514"))
         self.assertEqual(result, ["stream fallback"])
@@ -118,23 +119,25 @@ class FallbackModelTests(unittest.TestCase):
         self.assertEqual(fallback.stream_models, ["deepseek-chat"])
 
     def test_auto_and_unknown_explicit_models_have_documented_behavior(self):
-        primary = _ProbeProvider("deepseek", "deepseek-chat", "deepseek-reasoner", error=RuntimeError("primary down"))
+        primary = _ProbeProvider("deepseek", "deepseek-chat", "deepseek-reasoner", error=ConnectionError("primary down"))
         fallback = _ProbeProvider("openai", "gpt-4o", "gpt-4o", response="fallback")
         wrapper = self._fallback(primary, fallback)
         wrapper.chat([], "auto")
         wrapper.chat([], "shared-model")
         self.assertEqual(fallback.models, ["gpt-4o", "shared-model"])
 
-    def test_all_provider_failures_keep_primary_error_as_cause_and_include_both(self):
-        primary_error = RuntimeError("primary outage")
-        fallback_error = RuntimeError("fallback outage")
+    def test_all_provider_failures_preserve_safe_typed_final_cause(self):
+        from openkyrozen.providers.errors import ProviderError, ProviderErrorKind
+        primary_error = ConnectionError("primary private outage")
+        fallback_error = ConnectionError("fallback private outage")
         primary = _ProbeProvider("deepseek", "deepseek-chat", "deepseek-reasoner", error=primary_error)
         fallback = _ProbeProvider("openai", "gpt-4o", "gpt-4o", error=fallback_error)
-        with self.assertRaises(RuntimeError) as context:
+        with patch("openkyrozen.providers.retry.ProviderRequest.wait"), self.assertRaises(ProviderError) as context:
             self._fallback(primary, fallback).chat([], "auto")
-        self.assertIs(context.exception.__cause__, primary_error)
-        self.assertIn("primary outage", str(context.exception))
-        self.assertIn("fallback outage", str(context.exception))
+        self.assertIs(context.exception.__cause__, fallback_error)
+        self.assertEqual(context.exception.kind, ProviderErrorKind.TRANSPORT)
+        self.assertEqual(context.exception.attempts, 4)
+        self.assertNotIn("private", str(context.exception))
 
 
 if __name__ == "__main__":

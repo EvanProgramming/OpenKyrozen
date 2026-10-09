@@ -18,6 +18,8 @@ class ProviderContractError(ValueError):
 @contextmanager
 def received_response():
     """A successful SDK return ends failover eligibility, including parse/billing errors."""
+    from openkyrozen.providers.retry import mark_response_received
+    mark_response_received()
     try:
         yield
     except ProviderContractError:

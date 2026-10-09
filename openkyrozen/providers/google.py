@@ -8,7 +8,7 @@ from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
 from openkyrozen.providers.models import received_response, ModelResponse, model_response
 from openkyrozen.providers.config import ProviderConfig
-from openkyrozen.providers.retry import _retry_with_backoff
+from openkyrozen.providers.retry import _retry_with_backoff, provider_call, provider_stream, remaining_timeout, close_stream, mark_response_received
 
 
 class GoogleProvider(LLMProvider):
@@ -23,7 +23,15 @@ class GoogleProvider(LLMProvider):
                 "The 'google-genai' package is required for Gemini. "
                 "Install it with: pip install google-genai"
             )
+        self._supports_retry_options = "retry_options" in genai.types.HttpOptions.model_fields
         self._client = genai.Client(api_key=config.api_key or os.environ.get("GEMINI_API_KEY", ""))
+
+    def _http_options(self):
+        options = {"timeout": max(1, int(remaining_timeout() * 1000))}
+        # Gen AI 1.0 has no SDK retries and rejects the later retry_options field.
+        if getattr(self, "_supports_retry_options", False):
+            options["retry_options"] = {"attempts": 1}
+        return options
 
     @staticmethod
     def _contents(messages: list[dict[str, str]]) -> tuple[list[dict[str, Any]], str | None]:
@@ -56,12 +64,13 @@ class GoogleProvider(LLMProvider):
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         return self.chat_response(messages, model).as_legacy_tuple()
 
+    @provider_call
     def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
         model = model or self.config.model_simple
         started = time.monotonic()
 
         contents, system_instruction = self._contents(messages)
-        request_config: dict[str, Any] = {}
+        request_config: dict[str, Any] = {"http_options": self._http_options()}
         if system_instruction:
             request_config["system_instruction"] = system_instruction
 
@@ -94,10 +103,11 @@ class GoogleProvider(LLMProvider):
                                   raw_finish_reason=getattr(candidate, "finish_reason", None) or block_reason,
                                   blocked=block_reason not in {None, "BLOCK_REASON_UNSPECIFIED", "BLOCKED_REASON_UNSPECIFIED"})
 
+    @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple
         contents, system_instruction = self._contents(messages)
-        request_config: dict[str, Any] = {}
+        request_config: dict[str, Any] = {"http_options": self._http_options()}
         if system_instruction:
             request_config["system_instruction"] = system_instruction
         started = time.monotonic()
@@ -108,6 +118,7 @@ class GoogleProvider(LLMProvider):
         ))
         try:
             for chunk in stream:
+                mark_response_received()
                 usage = self._usage(chunk)
                 if usage is not None:
                     final_usage = usage
@@ -116,6 +127,7 @@ class GoogleProvider(LLMProvider):
                     yield delta
             completed = True
         finally:
+            close_stream(stream)
             if completed:
                 usage_ledger._track_cost(self.config.provider, final_usage, model=model,
                             latency_ms=round((time.monotonic() - started) * 1000))
@@ -133,6 +145,7 @@ class VertexProvider(GoogleProvider):
                 "The 'google-genai' package is required for Vertex AI. "
                 "Install it with: pip install google-genai"
             )
+        self._supports_retry_options = "retry_options" in genai.types.HttpOptions.model_fields
         self._client = genai.Client(
             vertexai=True,
             project=os.environ.get("GOOGLE_CLOUD_PROJECT"),

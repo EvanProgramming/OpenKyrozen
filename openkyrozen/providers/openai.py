@@ -8,7 +8,7 @@ from openkyrozen.providers.base import LLMProvider
 from openkyrozen.providers.models import received_response, ModelResponse, model_response, responses_output, ProviderContractError
 from openkyrozen.providers.config import ProviderConfig, _provider_env_key
 from openkyrozen.providers.usage import _openai_usage_dict
-from openkyrozen.providers.retry import _retry_with_backoff
+from openkyrozen.providers.retry import _retry_with_backoff, provider_call, provider_stream, remaining_timeout, close_stream, mark_response_received
 
 class OpenAICompatProvider(LLMProvider):
     """Handles any OpenAI-compatible /v1/chat/completions endpoint."""
@@ -27,17 +27,18 @@ class OpenAICompatProvider(LLMProvider):
         }
         if config.base_url:
             kwargs["base_url"] = config.base_url
-        self._client = OpenAI(**kwargs)
+        self._client = OpenAI(max_retries=0, timeout=90.0, **kwargs)
 
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         return self.chat_response(messages, model).as_legacy_tuple()
 
+    @provider_call
     def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
         model = model or self.config.model_simple
         started = time.monotonic()
 
         def _call():
-            response = self._client.chat.completions.create(model=model, messages=messages)
+            response = self._client.chat.completions.create(model=model, messages=messages, timeout=remaining_timeout())
             return response
 
         response = _retry_with_backoff(_call)
@@ -65,6 +66,7 @@ class OpenAICompatProvider(LLMProvider):
                                   raw_finish_reason=getattr(response.choices[0], "finish_reason", None),
                                   blocked=bool(getattr(message, "refusal", None)))
 
+    @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple
         collected: list[str] = []
@@ -80,9 +82,10 @@ class OpenAICompatProvider(LLMProvider):
             # final chunk without this extension; the rest remain compatible.
             if self.config.provider in {"deepseek", "openai", "ollama", "glm", "kimi"}:
                 kwargs["stream_options"] = {"include_usage": True}
-            return self._client.chat.completions.create(**kwargs)
+            return self._client.chat.completions.create(**kwargs, timeout=remaining_timeout())
 
         stream = _retry_with_backoff(_call)
+        mark_response_received()
         try:
             for chunk in stream:
                 billed_model = getattr(chunk, "model", None) or billed_model
@@ -95,6 +98,7 @@ class OpenAICompatProvider(LLMProvider):
                     yield delta.content
             completed = True
         finally:
+            close_stream(stream)
             if completed:
                 if final_usage is None:
                     final_usage = {
@@ -122,7 +126,7 @@ class OpenAIResponsesProvider(LLMProvider):
         }
         if config.base_url:
             kwargs["base_url"] = config.base_url
-        self._client = OpenAI(**kwargs)
+        self._client = OpenAI(max_retries=0, timeout=90.0, **kwargs)
 
     @staticmethod
     def _usage(response: Any) -> dict[str, int | None] | None:
@@ -139,12 +143,13 @@ class OpenAIResponsesProvider(LLMProvider):
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         return self.chat_response(messages, model).as_legacy_tuple()
 
+    @provider_call
     def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
         model = model or self.config.model_simple
         started = time.monotonic()
 
         response = _retry_with_backoff(
-            lambda: self._client.responses.create(model=model, input=messages),
+            lambda: self._client.responses.create(model=model, input=messages, timeout=remaining_timeout()),
         )
         with received_response():
             usage = self._usage(response)
@@ -159,6 +164,7 @@ class OpenAIResponsesProvider(LLMProvider):
                                               for item in getattr(response, "output", None) or ()
                                               for part in getattr(item, "content", None) or ()))
 
+    @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple
         started = time.monotonic()
@@ -167,8 +173,9 @@ class OpenAIResponsesProvider(LLMProvider):
         completed = False
 
         stream = _retry_with_backoff(
-            lambda: self._client.responses.create(model=model, input=messages, stream=True),
+            lambda: self._client.responses.create(model=model, input=messages, stream=True, timeout=remaining_timeout()),
         )
+        mark_response_received()
         try:
             for event in stream:
                 event_type = str(getattr(event, "type", ""))
@@ -184,6 +191,7 @@ class OpenAIResponsesProvider(LLMProvider):
                     yield delta
             completed = True
         finally:
+            close_stream(stream)
             if completed:
                 if final_usage is None:
                     final_usage = {

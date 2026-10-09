@@ -281,7 +281,7 @@ class AdapterContractTests(unittest.TestCase):
         result = ModelResponse(tool_calls=(ToolCall("id", "read", {}),), finish_reason=FinishReason.TOOL_REQUEST,
                                metadata={"provider": "fallback", "model": "f-slow"})
         primary = Probe(ProviderConfig(provider="custom", model_simple="p-quick", model_complex="p-slow"),
-                        RuntimeError("offline failure"), ProviderCapabilities(text_streaming=True, native_tools=True))
+                        ConnectionError("offline failure"), ProviderCapabilities(text_streaming=True, native_tools=True))
         fallback = Probe(ProviderConfig(provider="custom", model_simple="f-quick", model_complex="f-slow"),
                          result, ProviderCapabilities(text_streaming=True))
         wrapper = FallbackProvider.__new__(FallbackProvider)
@@ -433,6 +433,7 @@ class AdapterContractTests(unittest.TestCase):
         response._content = b'{"error":"context length exceeded"}'
         provider = self.adapter(OllamaNativeProvider, {})
         provider._requests = NS(post=Mock(return_value=response), HTTPError=requests.HTTPError)
-        with self.assertRaises(requests.HTTPError) as raised:
+        from openkyrozen.providers.errors import ProviderError, ProviderErrorKind
+        with self.assertRaises(ProviderError) as raised:
             provider.chat_response([])
-        self.assertIn("context length exceeded", str(raised.exception))
+        self.assertEqual(raised.exception.kind, ProviderErrorKind.CONTEXT_OVERFLOW)

@@ -101,3 +101,37 @@ live provider interoperability.
 ## Costs and changing provider catalogs
 
 The cost ledger attributes usage to the provider and model returned by the integration, including streaming usage when provided. Displayed costs can be estimates when a provider does not report token usage or published pricing is missing. Do not use a README model label or price as evidence that your account can access that model. See [usage and cost](usage-and-cost.md) for price provenance and interpretation.
+
+## Provider failures and request limits
+
+Provider failures raise SDK-independent `ProviderError`, exported with
+`ProviderErrorKind`. Kinds distinguish transport, transport timeout, rate limit,
+server failure, context overflow, authentication, invalid request, cancellation
+and unknown failures. Errors retain provider/model identity, available HTTP
+status and provider code, retry eligibility and bounded Retry-After information.
+Displayed messages omit request bodies and credentials; the original exception
+remains chained for private debugging and must not be exposed as a public traceback.
+`ProviderContractError` remains a separate terminal response-validation failure.
+
+Each logical request shares one wall-clock deadline and at most four transport
+attempts across retries and fallback. Runtime defaults remain 90 seconds for
+foreground calls and 180 seconds for child calls. `KYROZEN_PROVIDER_TIMEOUT_SECONDS`
+accepts finite values clamped to 1–600 seconds; invalid/nonfinite values use the
+default. Native SDK retries are disabled and transport timeouts use remaining time.
+Standalone adapter calls use a 90-second request scope.
+
+Transient transport, timeout, rate-limit and server failures use exponential
+backoff from one second with jitter, respecting Retry-After within the deadline.
+Fallback tries configured providers in order before repeating transient failures.
+Authentication can advance to another provider but never repeats the failed
+credentials. Invalid requests, context overflow, unknown failures, contract
+failures, cancellation and deadline expiry stop immediately. This intentionally
+replaces fallback on arbitrary exceptions. After a streaming chunk or a successful
+response, failure never causes regeneration or provider switching.
+
+Structured runtime callers receive typed errors. Existing text callers retain
+`[LLM Error]` rendering and the existing single context-compaction recovery.
+Provider retry does not execute or retry tools. Child cancellation and foreground
+interruption stop waiting and prevent later transport attempts/output. Streams are
+closed when the SDK permits; an uncooperative legacy transport may remain in a
+daemon worker until it returns because Python cannot forcibly stop that thread.

@@ -3,7 +3,7 @@ import sys
 import types
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, ANY
 
 import openkyrozen.providers as providers
 from openkyrozen.routing.router import model_for_request
@@ -103,10 +103,10 @@ class ProviderRegistryTests(unittest.TestCase):
             )
             text, usage = provider.chat([{"role": "user", "content": "hi"}], "command-a-plus-05-2026")
             client_factory.assert_called_once_with(
-                api_key="cohere-key", base_url="https://api.cohere.ai/compatibility/v1",
+                max_retries=0, timeout=90.0, api_key="cohere-key", base_url="https://api.cohere.ai/compatibility/v1",
             )
             client.chat.completions.create.assert_called_once_with(
-                model="command-a-plus-05-2026", messages=[{"role": "user", "content": "hi"}],
+                model="command-a-plus-05-2026", messages=[{"role": "user", "content": "hi"}], timeout=ANY,
             )
             self.assertEqual((text, usage), ("ok", {
                 "prompt_tokens": 3, "completion_tokens": 2,
@@ -135,15 +135,20 @@ class ProviderRegistryTests(unittest.TestCase):
             ))
             self.assertEqual("".join(provider.chat_stream([], "gpt-6-luna")), "token")
             self.assertEqual(client.responses.create.call_args_list[0].kwargs, {
-                "model": "gpt-6-luna", "input": [{"role": "user", "content": "hi"}],
+                "model": "gpt-6-luna", "input": [{"role": "user", "content": "hi"}], "timeout": ANY,
             })
             self.assertEqual(client.responses.create.call_args_list[1].kwargs, {
-                "model": "gpt-6-luna", "input": [], "stream": True,
+                "model": "gpt-6-luna", "input": [], "stream": True, "timeout": ANY,
             })
 
     def test_bedrock_converse_contract(self):
+        try:
+            from botocore.config import Config
+        except ImportError:
+            self.skipTest("optional botocore SDK unavailable")
         fake_boto3 = types.ModuleType("boto3")
         fake_client = MagicMock()
+        fake_client.meta.endpoint_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
         fake_boto3.client = MagicMock()
         fake_client.converse.return_value = {
             "output": {"message": {"content": [{"text": "ok"}]}},
@@ -159,7 +164,10 @@ class ProviderRegistryTests(unittest.TestCase):
                 {"role": "system", "content": "be concise"},
                 {"role": "user", "content": "hi"},
             ]), ("ok", {"prompt_tokens": 7, "completion_tokens": 3}))
-            fake_boto3.client.assert_called_once_with("bedrock-runtime", region_name="us-east-1")
+            self.assertEqual(fake_boto3.client.call_count, 2)
+            initial_config = fake_boto3.client.call_args_list[0].kwargs["config"]
+            self.assertEqual(initial_config.retries["total_max_attempts"], 1)
+            self.assertEqual(initial_config.read_timeout, 90.0)
             fake_client.converse.assert_called_once_with(
                 modelId="anthropic.claude-sonnet-5",
                 messages=[{"role": "user", "content": [{"text": "hi"}]}],

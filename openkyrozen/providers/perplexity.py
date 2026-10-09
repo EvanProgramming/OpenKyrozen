@@ -8,7 +8,7 @@ from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
 from openkyrozen.providers.models import received_response, ModelResponse, model_response, responses_output
 from openkyrozen.providers.config import ProviderConfig
-from openkyrozen.providers.retry import _retry_with_backoff
+from openkyrozen.providers.retry import _retry_with_backoff, provider_call, provider_stream, remaining_timeout, close_stream, mark_response_received
 
 
 class PerplexityProvider(LLMProvider):
@@ -20,7 +20,7 @@ class PerplexityProvider(LLMProvider):
             from perplexity import Perplexity
         except ImportError:
             sys.exit("The 'perplexityai' package is required for Perplexity. Install it with: pip install perplexityai")
-        self._client = Perplexity(api_key=config.api_key or os.environ.get("PERPLEXITY_API_KEY", ""))
+        self._client = Perplexity(max_retries=0, timeout=90.0, api_key=config.api_key or os.environ.get("PERPLEXITY_API_KEY", ""))
 
     @staticmethod
     def _prompt(messages: list[dict[str, str]]) -> tuple[str, str | None]:
@@ -46,6 +46,7 @@ class PerplexityProvider(LLMProvider):
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         return self.chat_response(messages, model).as_legacy_tuple()
 
+    @provider_call
     def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
         model = model or self.config.model_simple
         prompt, instructions = self._prompt(messages)
@@ -53,7 +54,7 @@ class PerplexityProvider(LLMProvider):
         kwargs: dict[str, Any] = {"model": model, "input": prompt}
         if instructions:
             kwargs["instructions"] = instructions
-        response = _retry_with_backoff(lambda: self._client.responses.create(**kwargs))
+        response = _retry_with_backoff(lambda: self._client.responses.create(**kwargs, timeout=remaining_timeout()))
         with received_response():
             usage = self._usage(response)
             usage_ledger._track_cost(self.config.provider, usage, model=model,
@@ -67,6 +68,7 @@ class PerplexityProvider(LLMProvider):
                                               for item in getattr(response, "output", None) or ()
                                               for part in getattr(item, "content", None) or ()))
 
+    @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple
         prompt, instructions = self._prompt(messages)
@@ -74,9 +76,10 @@ class PerplexityProvider(LLMProvider):
         kwargs: dict[str, Any] = {"model": model, "input": prompt, "stream": True}
         if instructions:
             kwargs["instructions"] = instructions
-        stream = _retry_with_backoff(lambda: self._client.responses.create(**kwargs))
+        stream = _retry_with_backoff(lambda: self._client.responses.create(**kwargs, timeout=remaining_timeout()))
         final_usage: dict[str, int | None] | None = None
         completed = False
+        mark_response_received()
         try:
             for event in stream:
                 response = getattr(event, "response", None) or event
@@ -91,6 +94,7 @@ class PerplexityProvider(LLMProvider):
                     yield delta
             completed = True
         finally:
+            close_stream(stream)
             if completed:
                 usage_ledger._track_cost(self.config.provider, final_usage, model=model,
                             latency_ms=round((time.monotonic() - started) * 1000))

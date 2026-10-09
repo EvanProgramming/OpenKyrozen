@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, ANY
 
 from openkyrozen.providers.config import ProviderConfig, model_for_complexity, provider_is_configured
 from openkyrozen.providers.custom import (list_custom_provider_profiles, remove_custom_provider_profile,
@@ -68,13 +68,13 @@ class CustomProviderTests(unittest.TestCase):
         with patch.dict(os.environ, {"KYROZEN_API_KEY": "main-provider-secret"}), \
                 patch("openai.OpenAI") as openai_client:
             provider = get_provider(config)
-            openai_client.assert_called_once_with(api_key="sk-placeholder", base_url="https://gateway.example/v1")
+            openai_client.assert_called_once_with(max_retries=0, timeout=90.0, api_key="sk-placeholder", base_url="https://gateway.example/v1")
             openai_client.return_value.chat.completions.create.return_value = SimpleNamespace(
                 choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))], usage=None, model="fast",
             )
             text, _ = provider.chat([], model="fast")
             self.assertEqual(text, "ok")
-            openai_client.return_value.chat.completions.create.assert_called_once_with(model="fast", messages=[])
+            openai_client.return_value.chat.completions.create.assert_called_once_with(model="fast", messages=[], timeout=ANY)
 
     def test_subagent_role_can_select_named_custom_profile(self):
         source = Path(__file__).parents[1] / "agent.yaml"
