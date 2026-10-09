@@ -27,14 +27,35 @@ class GoogleProvider(LLMProvider):
 
     @staticmethod
     def _contents(messages: list[dict[str, str]]) -> tuple[list[dict[str, Any]], str | None]:
+        import json
         contents: list[dict[str, Any]] = []
         system: list[str] = []
         for message in messages:
             role = message.get("role", "user")
-            text = str(message.get("content", ""))
+            content_payload = message.get("content", "")
+            
             if role == "system":
-                system.append(text)
+                system.append(str(content_payload))
                 continue
+                
+            if role in ["tool", "function"]:
+                if isinstance(content_payload, (dict, list)):
+                    text_content = json.dumps(content_payload)
+                else:
+                    text_content = str(content_payload)
+                
+                contents.append({
+                    "role": "user",
+                    "parts": [{
+                        "function_response": {
+                            "name": message.get("name", "tool_execution"),
+                            "response": {"output": text_content}
+                        }
+                    }],
+                })
+                continue
+
+            text = str(content_payload)
             contents.append({
                 "role": "model" if role == "assistant" else "user",
                 "parts": [{"text": text}],
