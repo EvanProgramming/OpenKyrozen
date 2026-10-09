@@ -133,6 +133,7 @@ class SDKShapeTests(unittest.TestCase):
             (BadRequestError("secret", response=response, body={"type":"invalid_request_error", "message":"prompt is too long"}), K.CONTEXT_OVERFLOW),
             (ClientError(400, {"error":{"code":400,"status":"INVALID_ARGUMENT","message":"input token count exceeds the maximum number of tokens allowed"}}), K.CONTEXT_OVERFLOW),
             (ServerError(503, {"error":{"code":503,"status":"UNAVAILABLE"}}), K.SERVER),
+            (ClientError(499, {"error":{"code":499,"status":"CANCELLED"}}), K.CANCELLED),
             (BedrockError({"Error":{"Code":"ThrottlingException"},"ResponseMetadata":{"HTTPStatusCode":429}}, "Converse"), K.RATE_LIMIT),
             (NoCredentialsError(), K.AUTHENTICATION),
             (APIStatusError("secret", response=httpx.Response(503, request=response.request), body={}), K.SERVER),
@@ -193,11 +194,11 @@ class RuntimeLifecycleTests(unittest.TestCase):
         from openkyrozen.providers.calls import _bounded_provider_call
         from openkyrozen.providers.errors import ProviderError, ProviderErrorKind as K
         event, entered = threading.Event(), threading.Event()
-        call = Mock(side_effect=StatusError(429, headers={"Retry-After":"600"}))
+        call = Mock(side_effect=StatusError(429, headers={"Retry-After":"0.5"}))
         from openkyrozen.providers.retry import ProviderRequest
         original_wait = ProviderRequest.wait
         def callback():
-            return _retry_with_backoff(call)
+            return _retry_with_backoff(call, base_delay=0.01)
         def observed_wait(request, seconds):
             entered.set()
             return original_wait(request, seconds)
@@ -255,7 +256,7 @@ class RuntimeLifecycleTests(unittest.TestCase):
         def interrupt(*args, **kwargs):
             self.assertTrue(entered.wait(1))
             raise KeyboardInterrupt
-        with patch('openkyrozen.providers.calls.queue.Queue.get', side_effect=interrupt), self.assertRaises(KeyboardInterrupt):
+        with patch('openkyrozen.providers.retry.queue.Queue.get', side_effect=interrupt), self.assertRaises(KeyboardInterrupt):
             _bounded_provider_call(self.runtime(1), callback)
         self.assertTrue(captured[0].cancelled.is_set())
 
@@ -365,7 +366,7 @@ class ReviewRegressions(unittest.TestCase):
             wrapper=fallback(a,b)
             if nested:
                 wrapper=fallback(wrapper)
-            with self.subTest(nested=nested), provider_request_scope(timeout=0.02), \
+            with self.subTest(nested=nested), provider_request_scope(timeout=10), \
                  patch('openkyrozen.providers.retry.ProviderRequest.wait'), self.assertRaises(ProviderError):
                 get_model_response(wrapper,[])
             self.assertEqual(calls,['a','b','a','b'])

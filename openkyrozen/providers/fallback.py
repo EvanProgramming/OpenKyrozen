@@ -9,7 +9,7 @@ from openkyrozen.providers.registry import PROVIDER_DEFAULT_MODELS, PROVIDER_ENV
 from openkyrozen.providers.config import ProviderConfig, provider_is_configured
 from openkyrozen.providers.factory import get_provider
 from openkyrozen.providers.errors import ProviderError, ProviderErrorKind, normalize_provider_error
-from openkyrozen.providers.retry import provider_request_scope, _retry_with_backoff, close_stream, backoff_delay, single_provider_attempt, manages_provider_retry, terminal_after_response
+from openkyrozen.providers.retry import provider_request_scope, _retry_with_backoff, close_stream, backoff_delay, single_provider_attempt, manages_provider_retry, terminal_after_response, provider_call, provider_stream, budget_exhausted_error, wait_for_retry
 
 class FallbackProvider(LLMProvider):
     """Wraps multiple providers and falls back on failure."""
@@ -78,6 +78,7 @@ class FallbackProvider(LLMProvider):
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         return self.chat_response(messages, model).as_legacy_tuple()
 
+    @provider_call
     @manages_provider_retry
     def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
         with provider_request_scope() as state:
@@ -90,7 +91,7 @@ class FallbackProvider(LLMProvider):
         retry_after = 0.0
         while candidates and state.attempts < 4:
             if round_number:
-                state.wait(max(backoff_delay(round_number - 1, last_error), retry_after))
+                wait_for_retry(state, backoff_delay(round_number - 1, retry_after), last_error)
             transient = []
             retry_after = 0.0
             for provider in candidates:
@@ -109,8 +110,9 @@ class FallbackProvider(LLMProvider):
                         raise
             candidates = transient
             round_number += 1
-        raise last_error
+        raise last_error if last_error is not None else budget_exhausted_error(state)
 
+    @provider_stream
     @manages_provider_retry
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         with provider_request_scope() as state:
@@ -120,7 +122,7 @@ class FallbackProvider(LLMProvider):
             retry_after = 0.0
             while candidates and state.attempts < 4:
                 if round_number:
-                    state.wait(max(backoff_delay(round_number - 1, last_error), retry_after))
+                    wait_for_retry(state, backoff_delay(round_number - 1, retry_after), last_error)
                 transient = []
                 retry_after = 0.0
                 for provider in candidates:
@@ -164,7 +166,7 @@ class FallbackProvider(LLMProvider):
                         close_stream(iterator)
                 candidates = transient
                 round_number += 1
-            raise last_error
+            raise last_error if last_error is not None else budget_exhausted_error(state)
 
     @property
     def name(self) -> str:

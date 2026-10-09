@@ -97,7 +97,7 @@ def normalize_provider_error(exc: Exception, provider=None, model=None) -> Provi
         if body is None and callable(getattr(response, "json", None)):
             try:
                 body = response.json()
-            except (ValueError, TypeError):
+            except Exception:
                 pass
     if body is None:
         body = getattr(exc, "details", None)
@@ -113,13 +113,15 @@ def normalize_provider_error(exc: Exception, provider=None, model=None) -> Provi
     status = status if isinstance(status, int) and not isinstance(status, bool) else None
     code_key = str(code or "").lower()
     names = {cls.__name__ for cls in type(exc).__mro__}
-    known_sdk = bool(sdk_modules & {"openai", "anthropic", "perplexity", "google", "botocore", "requests", "httpx"})
+    known_sdk = bool(sdk_modules & {"openai", "anthropic", "perplexity", "google", "botocore", "requests", "httpx", "azure"})
     message = str(exc)
     if isinstance(body, dict):
         message = str(body.get("message") or body.get("Message") or body.get("error") or message)
     if code_key in _CONTEXT_CODES or ((status in {400, 413, 422} or (status is None and not known_sdk)) and legacy_context_overflow(RuntimeError(message))):
         kind = ProviderErrorKind.CONTEXT_OVERFLOW
-    elif (known_sdk and names & {"NoCredentialsError", "PartialCredentialsError", "CredentialRetrievalError", "RefreshError", "DefaultCredentialsError"}) or status in {401, 403} or code_key in {"unauthenticated", "permission_denied", "unrecognizedclientexception", "accessdeniedexception", "invalid_api_key"}:
+    elif status == 499 or code_key in {"cancelled", "canceled"}:
+        kind = ProviderErrorKind.CANCELLED
+    elif (known_sdk and names & {"NoCredentialsError", "PartialCredentialsError", "CredentialRetrievalError", "RefreshError", "DefaultCredentialsError", "ClientAuthenticationError", "CredentialUnavailableError"}) or status in {401, 403} or code_key in {"unauthenticated", "permission_denied", "unrecognizedclientexception", "accessdeniedexception", "invalid_api_key"}:
         kind = ProviderErrorKind.AUTHENTICATION
     elif status == 429 or code_key in {"resource_exhausted", "throttlingexception", "toomanyrequestsexception"}:
         kind = ProviderErrorKind.RATE_LIMIT
@@ -131,7 +133,7 @@ def normalize_provider_error(exc: Exception, provider=None, model=None) -> Provi
         kind = ProviderErrorKind.SERVER
     elif (status is not None and 400 <= status <= 499) or code_key in {"invalid_argument", "validationexception"}:
         kind = ProviderErrorKind.INVALID_REQUEST
-    elif isinstance(exc, ConnectionError) or (known_sdk and names & {"APIConnectionError", "ConnectionError", "ConnectError", "NetworkError", "EndpointConnectionError", "ConnectionClosedError", "RemoteProtocolError", "TransportError"}):
+    elif isinstance(exc, ConnectionError) or (known_sdk and names & {"APIConnectionError", "ConnectionError", "ConnectError", "NetworkError", "EndpointConnectionError", "ConnectionClosedError", "RemoteProtocolError", "TransportError", "ChunkedEncodingError"}):
         kind = ProviderErrorKind.TRANSPORT
     else:
         kind = ProviderErrorKind.UNKNOWN

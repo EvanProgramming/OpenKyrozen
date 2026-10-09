@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from inspect import getattr_static
 from openkyrozen.providers.models import ModelResponse, ProviderCapabilities, ProviderContractError
 from openkyrozen.providers.config import ProviderConfig
-from openkyrozen.providers.retry import provider_call, provider_request_scope, _retry_with_backoff
+from openkyrozen.providers.retry import provider_call, provider_stream, provider_request_scope, _retry_with_backoff
 from openkyrozen.providers.errors import normalize_provider_error
 
 class LLMProvider(ABC):
@@ -30,6 +30,7 @@ class LLMProvider(ABC):
         """Only advertise features usable through the shipped adapter API."""
         return ProviderCapabilities(text_streaming=type(self).chat_stream is not LLMProvider.chat_stream)
 
+    @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         """Stream response tokens. Default: fall back to non-streaming chat()."""
         text, _ = self.chat(messages, model)

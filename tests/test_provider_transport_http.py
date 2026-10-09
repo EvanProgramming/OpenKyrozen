@@ -1,6 +1,7 @@
 """Real SDK requests to a local fixture server; no paid provider calls."""
 import json
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
@@ -24,6 +25,25 @@ class LocalSDKTransportTests(unittest.TestCase):
                 outer.requests.append((self.path, list(body)))
                 if outer.status == 'stall':
                     outer.release.wait(2)
+                    return
+                if outer.status == 'trickle':
+                    self.send_response(200)
+                    self.send_header('Content-Type','application/json')
+                    self.end_headers()
+                    while not outer.release.wait(0.005):
+                        try:
+                            self.wfile.write(b' ')
+                            self.wfile.flush()
+                        except BrokenPipeError:
+                            return
+                    payload={'id':'fixture','object':'chat.completion','created':0,'model':'fixture',
+                             'choices':[{'index':0,'finish_reason':'stop','message':{'role':'assistant','content':'ok'}}],
+                             'message':{'role':'assistant','content':'ok'},'done_reason':'stop',
+                             'usage':{'prompt_tokens':1,'completion_tokens':1},'prompt_eval_count':1,'eval_count':1}
+                    try:
+                        self.wfile.write(json.dumps(payload).encode())
+                    except BrokenPipeError:
+                        pass
                     return
                 self.send_response(outer.status)
                 self.send_header('Content-Type','application/json')
@@ -142,3 +162,28 @@ class LocalSDKTransportTests(unittest.TestCase):
             self.assertEqual(len(self.requests),1)
         finally:
             self.close(provider)
+
+    def exercise_trickle(self,family):
+        self.status='trickle'
+        provider=self.adapter(family)
+        charged=threading.Event()
+        try:
+            with patch('openkyrozen.providers.usage._track_cost',side_effect=lambda *a,**k:charged.set()):
+                started=time.monotonic()
+                try:
+                    with provider_request_scope(timeout=0.07), self.assertRaises(ProviderError) as caught:
+                        provider.chat_response([{'role':'user','content':'fixture'}])
+                    self.assertEqual(caught.exception.kind,ProviderErrorKind.TIMEOUT)
+                    self.assertLess(time.monotonic()-started,0.25)
+                    self.assertEqual(len(self.requests),1)
+                finally:
+                    self.release.set()
+                self.assertTrue(charged.wait(2))
+        finally:
+            self.close(provider)
+
+    def test_openai_trickle_cannot_extend_standalone_deadline(self):
+        self.exercise_trickle('openai')
+
+    def test_ollama_trickle_cannot_extend_standalone_deadline(self):
+        self.exercise_trickle('ollama')

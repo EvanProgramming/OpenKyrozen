@@ -118,10 +118,13 @@ attempts across retries and fallback. Runtime defaults remain 90 seconds for
 foreground calls and 180 seconds for child calls. `KYROZEN_PROVIDER_TIMEOUT_SECONDS`
 accepts finite values clamped to 1–600 seconds; invalid/nonfinite values use the
 default. Native SDK retries are disabled and transport timeouts use remaining time.
-Standalone adapter calls use a 90-second request scope.
+Standalone adapter calls use the same bounded worker with a 90-second deadline.
+Pausing a direct stream does not retain its request context in the caller.
 
 Transient transport, timeout, rate-limit and server failures use exponential
-backoff from one second with jitter, respecting Retry-After within the deadline.
+backoff from one second with jitter, respecting every transient candidate's
+Retry-After. If the required wait cannot fit before the deadline, the classified
+failure returns immediately.
 Fallback tries configured providers in order before repeating transient failures.
 Authentication can advance to another provider but never repeats the failed
 credentials. Invalid requests, context overflow, unknown failures, contract

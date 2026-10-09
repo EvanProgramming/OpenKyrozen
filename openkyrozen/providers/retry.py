@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 from functools import wraps
 import math
+import queue
 import random
 import threading
 import time
@@ -41,6 +42,7 @@ class ProviderRequest:
 
 _request: ContextVar[ProviderRequest | None] = ContextVar("provider_request", default=None)
 _retry_limit: ContextVar[int] = ContextVar("provider_retry_limit", default=3)
+_in_worker: ContextVar[bool] = ContextVar("provider_in_worker", default=False)
 _in_attempt: ContextVar[bool] = ContextVar("provider_in_attempt", default=False)
 
 
@@ -89,6 +91,107 @@ def terminal_after_response(error, state):
     return error
 
 
+def budget_exhausted_error(state):
+    return ProviderError(ProviderErrorKind.UNKNOWN, provider=state.provider, model=state.model,
+                         provider_code="attempt_limit_exceeded", attempts=state.attempts, terminal=True)
+
+
+def wait_for_retry(state, seconds, error):
+    state.check()
+    if seconds >= state.deadline - time.monotonic():
+        error.retryable = False
+        error.terminal = True
+        raise error
+    state.wait(seconds)
+
+
+def _start_worker(callback, state):
+    context = copy_context()
+    def run():
+        request_token = _request.set(state)
+        worker_token = _in_worker.set(True)
+        try:
+            callback()
+        finally:
+            _in_worker.reset(worker_token)
+            _request.reset(request_token)
+    state.check()
+    threading.Thread(target=lambda: context.run(run), daemon=True).start()
+
+
+def _next_event(events, state):
+    while True:
+        state.check()
+        try:
+            event = events.get(timeout=max(0.001, min(0.05, state.deadline - time.monotonic())))
+        except queue.Empty:
+            continue
+        state.check()
+        return event
+
+
+def bounded_call(callback, state):
+    """Reuse the active worker, or bound a standalone caller's entire lifecycle."""
+    if _in_worker.get():
+        state.check()
+        return callback()
+    outcome = queue.Queue(maxsize=1)
+    def run():
+        try:
+            value = callback()
+            state.check()
+            outcome.put_nowait((True, value))
+        except BaseException as exc:
+            if not state.cancelled.is_set():
+                outcome.put_nowait((False, exc))
+    _start_worker(run, state)
+    succeeded, value = _next_event(outcome, state)
+    if not succeeded:
+        raise value
+    return value
+
+
+def bounded_stream(factory, state):
+    """Keep stream contexts in their worker, never across a caller's yield."""
+    events = queue.Queue(maxsize=64)
+    def publish(event):
+        while True:
+            state.check()
+            try:
+                events.put(event, timeout=max(0.001, min(0.05, state.deadline - time.monotonic())))
+                return
+            except queue.Full:
+                continue
+    def consume():
+        iterator = None
+        try:
+            iterator = iter(factory())
+            for chunk in iterator:
+                publish(("chunk", chunk))
+            publish(("done", None))
+        except BaseException as exc:
+            try:
+                publish(("error", exc))
+            except Exception:
+                pass
+        finally:
+            close_stream(iterator)
+    _start_worker(consume, state)
+    finished = False
+    try:
+        while True:
+            kind, value = _next_event(events, state)
+            if kind != "chunk":
+                finished = True
+                if kind == "error":
+                    raise value
+                return
+            yield value
+    finally:
+        if not finished:
+            state.cancelled.set()
+
+
 def remaining_timeout():
     state = _request.get()
     if state is None:
@@ -100,6 +203,9 @@ def remaining_timeout():
 def _retry_with_backoff(fn, max_retries=3, base_delay=1.0, *, provider=None, model=None):
     with provider_request_scope() as state:
         state.provider, state.model = provider or state.provider, model or state.model
+        if not _in_worker.get():
+            return bounded_call(lambda: _retry_with_backoff(
+                fn, max_retries, base_delay, provider=provider, model=model), state)
         if _in_attempt.get():
             state.check()
             return fn()
@@ -107,8 +213,7 @@ def _retry_with_backoff(fn, max_retries=3, base_delay=1.0, *, provider=None, mod
         for attempt in range(max_retries + 1):
             state.check()
             if state.attempts >= 4:
-                raise ProviderError(ProviderErrorKind.UNKNOWN, provider=state.provider, model=state.model,
-                                    attempts=state.attempts, terminal=True)
+                raise budget_exhausted_error(state)
             state.attempts += 1
             token = _in_attempt.set(True)
             try:
@@ -123,16 +228,20 @@ def _retry_with_backoff(fn, max_retries=3, base_delay=1.0, *, provider=None, mod
                     raise error
             finally:
                 _in_attempt.reset(token)
-            state.wait(backoff_delay(attempt, error, base_delay))
+            wait_for_retry(state, backoff_delay(attempt, error.retry_after or 0.0, base_delay), error)
 
 
-def backoff_delay(attempt, error, base_delay=1.0):
-    return max(base_delay * 2 ** attempt + random.uniform(0, base_delay), error.retry_after or 0)
+def backoff_delay(attempt, retry_after=0.0, base_delay=1.0):
+    return max(base_delay * 2 ** attempt + random.uniform(0, base_delay), retry_after)
 
 
 def provider_call(fn):
     @wraps(fn)
     def call(self, messages, model=None):
+        if getattr(fn, "_provider_retry_managed", False) is True:
+            with provider_request_scope() as state:
+                state.provider, state.model = self.name, model or self.config.model_simple
+                return bounded_call(lambda: fn(self, messages, model), state)
         return _retry_with_backoff(lambda: fn(self, messages, model), provider=self.name,
                                    model=model or self.config.model_simple)
     return manages_provider_retry(call)
@@ -141,7 +250,19 @@ def provider_call(fn):
 def provider_stream(fn):
     @wraps(fn)
     def stream(self, messages, model=None):
+        if not _in_worker.get():
+            existing = _request.get()
+            state = existing or ProviderRequest(time.monotonic() + 90.0)
+            try:
+                yield from bounded_stream(lambda: stream(self, messages, model), state)
+            finally:
+                if existing is None:
+                    state.cancelled.set()
+            return
         with provider_request_scope() as state:
+            if getattr(fn, "_provider_retry_managed", False) is True:
+                yield from fn(self, messages, model)
+                return
             iterator = None
             def start():
                 nonlocal iterator
@@ -158,7 +279,9 @@ def provider_stream(fn):
                     yield chunk
                 state.check()
             except Exception as exc:
-                raise terminal_after_response(normalize_provider_error(exc, self.name, model or self.config.model_simple), state)
+                error = terminal_after_response(normalize_provider_error(exc, self.name, model or self.config.model_simple), state)
+                error.attempts = state.attempts
+                raise error
             finally:
                 close_stream(iterator)
     return manages_provider_retry(stream)
