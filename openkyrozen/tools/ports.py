@@ -1,9 +1,12 @@
 """Workspace-bound tool operations required by the executor."""
 from typing import Protocol, Callable
+from collections.abc import MutableMapping
+from .manifest import ToolRegistry
 from .models import CommandResult
 
 class ToolPort(Protocol):
-    AVAILABLE_TOOLS: dict[str, Callable[[str], str]]
+    tool_registry: ToolRegistry
+    AVAILABLE_TOOLS: MutableMapping[str, Callable[[str], str]]
     def run_command(self, args: str) -> CommandResult: ...
     def set_workspace_root(self, root: str) -> None: ...
     def set_project_graph(self, graph) -> None: ...

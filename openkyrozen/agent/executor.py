@@ -140,7 +140,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         result = f"Error: unknown tool '{action}'"
         self._notify_tool_execute(action, args, result)
         return finish(result, failure="unknown_tool")
-    required_capability = tool_capability(action)
+    required_capability = tool_capability(action,self.AVAILABLE_TOOLS)
     try:
         if required_capability not in effective_capabilities(load_agent_config(self._get_workspace_root())):
             result = (

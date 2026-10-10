@@ -5,14 +5,10 @@ from __future__ import annotations
 import re
 import shlex
 
-from openkyrozen.security.tool_policy import tool_capability
+from openkyrozen.security.tool_policy import tool_capability, tool_risk
 
 
 _PRIVATE = re.compile(r"(?i)(?:^|[\s/\\.\"'=|])(?:\.env(?:[./\\\s|\"']|$)|\.ssh|\.aws|\.config|keychain|credentials?|secrets?|private[_-]?key|id_rsa|id_ed25519)")
-_HIGH_IMPACT = frozenset({
-    "git_push", "git_pull", "git_reset", "git_checkout", "git_stash", "git_remote",
-    "git_commit", "git_add", "git_clone", "github_cli", "define_tool",
-})
 _SAFE_COMMANDS = frozenset({
     "pwd", "ls", "find", "rg", "grep", "cat", "head", "tail", "wc", "file",
     "git status", "git diff", "git log", "git show", "git branch --show-current",
@@ -99,13 +95,13 @@ def _safe_shell_command(args: str) -> bool:
     return True
 
 
-def risk_category(action: str, args: object) -> str | None:
+def risk_category(action: str, args: object, tools=None) -> str | None:
     """Return a bounded risk label requiring Jev or local approval."""
     action = str(action or "").strip()
     text = _arguments(args)
     if _PRIVATE.search(text) or re.search(r"(?i)\b(api[_-]?key|password|credential|secret|private key|token)\b", text):
         return "private_data_access"
-    if action in _HIGH_IMPACT:
+    if action == 'define_tool' or tool_risk(action,tools) == 'high':
         return "external_or_irreversible_change"
     if action in {"search_memory", "check_stored_data", "browser_snapshot"}:
         return "private_data_access"
@@ -117,13 +113,13 @@ def risk_category(action: str, args: object) -> str | None:
         return None if _safe_shell_command(text) else "opaque_or_high_impact_command"
     if action == "write_file":
         return None
-    if tool_capability(action) in {"shell", "git", "destructive", "dynamic"}:
+    if tool_capability(action, tools) in {"shell", "git", "destructive", "dynamic"}:
         return "external_or_irreversible_change"
     return None
 
 
-def requires_ask_approval(action: str, args: object) -> bool:
+def requires_ask_approval(action: str, args: object, tools=None) -> bool:
     action = str(action or "").strip()
-    if risk_category(action, args):
+    if risk_category(action, args, tools):
         return True
-    return tool_capability(action) in {"write", "shell", "git", "browser", "destructive", "dynamic"}
+    return tool_capability(action, tools) in {"write", "shell", "git", "browser", "destructive", "dynamic"}

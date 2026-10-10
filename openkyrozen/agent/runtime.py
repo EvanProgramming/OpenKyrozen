@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-from collections import ChainMap
 from contextlib import contextmanager
 from contextvars import ContextVar
 from .models import AgentSession, WorkspaceState
@@ -343,14 +342,45 @@ class AgentRuntime:
                 self._approval_callback.reset(approval)
 
     @property
+    def tool_registry(self):
+        from openkyrozen.tools.catalog import builtin_names
+        registry = self.current_session.workspace.adapters.tool_registry
+        if not registry.runtime_bindings_initialized:
+            for owner in ('runtime','orchestration'):
+                for name in builtin_names(owner):
+                    if name not in registry.specs:
+                        registry.register(name,getattr(self,('_' if owner=='runtime' else '')+name))
+            registry.runtime_bindings_initialized=True
+        return registry
+
+    @property
     def AVAILABLE_TOOLS(self):
+        from openkyrozen.tools.manifest import ToolMapping
         from .delegation import TOOLS
-        orchestration = {} if self.execution_context.child_run_id else {name: getattr(self, name) for name in TOOLS}
-        return ChainMap(self.current_session.workspace.adapters.AVAILABLE_TOOLS, orchestration)
+        return ToolMapping(self.tool_registry, TOOLS if self.execution_context.child_run_id else ())
 
     @AVAILABLE_TOOLS.setter
     def AVAILABLE_TOOLS(self, value):
         self.current_session.workspace.adapters.AVAILABLE_TOOLS = value
+
+    @property
+    def TOOL_ALIASES(self):
+        return self.tool_registry.aliases
+
+
+    @property
+    def _ACTION_MARKER_NAMES(self):
+        return tuple(sorted(set(self.AVAILABLE_TOOLS)|set(self.TOOL_ALIASES),key=lambda name:(-len(name),name)))
+
+    @property
+    def _ACTION_MARKER_RE(self):
+        names = self._ACTION_MARKER_NAMES
+        cached = getattr(self,'_action_marker_cache',None)
+        if cached is None or cached[0] != names:
+            import re
+            cached = (names,re.compile(r"(?i)(?<![\w])(?P<name>(?:"+'|'.join(map(re.escape,names))+r"))\s*:"))
+            self._action_marker_cache = cached
+        return cached[1]
 
     def run_command(self, args):
         return self.current_session.workspace.adapters.run_command(args)
@@ -582,4 +612,4 @@ class AgentRuntime:
 
     def DeepSeekDSMLFilter(self):
         from .types import DeepSeekDSMLFilter
-        return DeepSeekDSMLFilter(self._is_valid_action)
+        return DeepSeekDSMLFilter(self._is_valid_action,self._ACTION_MARKER_NAMES)

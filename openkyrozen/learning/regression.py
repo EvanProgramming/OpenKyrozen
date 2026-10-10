@@ -3,16 +3,17 @@ from __future__ import annotations
 
 
 def _take_tool_snapshot(self) -> None:
-    self._saved_user_tools = {k: v for k, v in self.AVAILABLE_TOOLS.items() if k not in self._BUILTIN_TOOL_NAMES}
+    names = {k for k in self.AVAILABLE_TOOLS if k not in self._BUILTIN_TOOL_NAMES}
+    self._saved_user_tools = self.tool_registry.snapshot(names)
 
 
 def _restore_tool_snapshot(self) -> None:
-    # Remove current user‑defined tools
-    keys_to_remove = [k for k in self.AVAILABLE_TOOLS if k not in self._BUILTIN_TOOL_NAMES]
-    for k in keys_to_remove:
-        del self.AVAILABLE_TOOLS[k]
-    # Restore from snapshot
-    self.AVAILABLE_TOOLS.update(self._saved_user_tools)
+    for name in tuple(self.AVAILABLE_TOOLS):
+        if name not in self._BUILTIN_TOOL_NAMES:
+            self.tool_registry.unregister(name)
+    for spec in self._saved_user_tools.values():
+        self.tool_registry.register_spec(spec)
+    self.TOOLS_LIST = self._build_tools_list()
 
 
 def _run_regression_tests(self) -> bool:

@@ -2,53 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-_TOOL_CAPABILITIES: dict[str, str] = {
-    "spawn_agents": "read", "send_subagent": "read", "list_subagents": "read",
-    "wait_subagents": "read", "cancel_subagent": "read",
-    "check_stored_data": "read",
-    "search_memory": "read",
-    "read_file": "read",
-    "search_files": "read",
-    "calculate": "read",
-    "discover_tools": "read",
-    "list_dir": "read",
-    "list_tree": "read",
-    "find_files": "read",
-    "git_status": "read",
-    "git_diff": "read",
-    "git_log": "read",
-    "git_show": "read",
-    "write_file": "write",
-    "edit_file": "write",
-    "run_cmd": "shell",
-    "execute_terminal_command": "shell",
-    "search_web": "network",
-    "read_webpage": "network",
-    "git_clone": "git",
-    "git_branch": "git",
-    "analyze_remote_repo": "network",
-    "browser_open": "browser",
-    "browser_snapshot": "browser",
-    "browser_click": "browser",
-    "browser_type": "browser",
-    "browser_close": "browser",
-    "git_add": "git",
-    "git_commit": "git",
-    "git_push": "git",
-    "git_pull": "git",
-    "git_checkout": "git",
-    "git_stash": "git",
-    "git_reset": "destructive",
-    "git_remote": "git",
-    "graph_status": "read",
-    "graph_query": "read",
-    "graph_explain": "read",
-    "graph_path": "read",
-    "graph_refresh": "read",
-    "github_status": "network",
-    "github_read": "network",
-    "github_cli": "git",
-}
 
 
 _CAPABILITY_PROFILES: dict[str, frozenset[str]] = {
@@ -75,20 +28,38 @@ def allowed_tool_names(tools: dict[str, Any] | None = None, capabilities: str | 
     Unknown tools are treated as dynamic tools, so a newly registered tool
     cannot silently bypass a restricted Web/MCP profile.
     """
-    available = tools if tools is not None else _TOOL_CAPABILITIES
+    from openkyrozen.tools.catalog import builtin_names
+    available = tools if tools is not None else builtin_names()
     granted = resolve_capabilities(capabilities)
-    allowed: set[str] = set()
-    for name in available:
-        capability = _TOOL_CAPABILITIES.get(name)
-        if capability is None:
-            if "dynamic" in granted:
-                allowed.add(name)
-            continue
-        if capability in granted:
-            allowed.add(name)
-    return allowed
+    return {name for name in available if tool_capability(name,tools) in granted}
 
 
-def tool_capability(name: str) -> str:
-    """Return the capability required by a tool, treating unknown tools as dynamic."""
-    return _TOOL_CAPABILITIES.get(name, "dynamic")
+def tool_capability(name: str, tools=None) -> str:
+    """Read active registry policy; unknown compatibility tools remain dynamic."""
+    registry = getattr(tools, 'registry', None)
+    if registry is not None and name in registry.specs:
+        return registry.get_spec(name).capability
+    from openkyrozen.tools.catalog import builtin_metadata
+    metadata = builtin_metadata(name)
+    return metadata['capability'] if metadata else 'dynamic'
+
+
+def tool_policy(name, tools=None):
+    registry = getattr(tools, 'registry', None)
+    if registry is not None and name in registry.specs:
+        return registry.get_spec(name)
+    from openkyrozen.tools.catalog import builtin_metadata
+    return builtin_metadata(name)
+
+
+def tool_risk(name, tools=None):
+    policy = tool_policy(name,tools)
+    return policy.risk if hasattr(policy,'risk') else policy['risk'] if policy else 'normal'
+
+
+def tool_confirmation_required(name, surface, tools=None):
+    if name == 'define_tool':
+        return True
+    policy = tool_policy(name,tools)
+    surfaces = policy.confirmation_surfaces if hasattr(policy,'confirmation_surfaces') else policy.get('confirmation_surfaces',()) if policy else ()
+    return tool_risk(name,tools) == 'high' and surface in surfaces

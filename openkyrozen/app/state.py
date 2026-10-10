@@ -74,48 +74,6 @@ def initialise(self):
     except importlib.metadata.PackageNotFoundError:
         self.__version__ = self.RELEASE_VERSION
 
-    self.TOOL_ALIASES: dict[str, str] = {
-        "bash": "run_cmd",
-        "shell": "run_cmd",
-        "sh": "run_cmd",
-        "browse_summary": "read_webpage",
-        "run_terminal_command": "execute_terminal_command",
-        "run_terminal": "execute_terminal_command",
-        "terminal": "execute_terminal_command",
-        "run_command": "run_cmd",
-        "cmd": "run_cmd",
-        "exec": "run_cmd",
-        "execute": "run_cmd",
-        "list_tree": "list_tree",
-        "tree": "list_tree",
-        "check_memory": "check_stored_data",
-        "run_shell_command": "run_cmd",
-        "run_shell": "run_cmd",
-        "shell_command": "run_cmd",
-        "execute_shell": "run_cmd",
-        "shell_cmd": "run_cmd",
-        "bash_cmd": "run_cmd",
-        "command": "run_cmd",
-        "run": "run_cmd",
-        "run_shell": "run_cmd",
-        "write": "write_file",
-        # Git aliases
-        "status": "git_status",
-        "diff": "git_diff",
-        "log": "git_log",
-        "branch": "git_branch",
-        "add": "git_add",
-        "commit": "git_commit",
-        "push": "git_push",
-        "pull": "git_pull",
-        "checkout": "git_checkout",
-        "stash": "git_stash",
-        "clone": "git_clone",
-        "reset": "git_reset",
-        "show": "git_show",
-        "remote": "git_remote",
-    }
-
     self._UNSUPPORTED_ACTION_PROTOCOL_RE = re.compile(
         r"(?is)<\s*ssai_action\b[^>]*>(?:[\s\S]*?</\s*ssai_action\s*>|[\s\S]*\Z)"
         r"|<\s*details\b[^>]*>\s*<\s*summary\b[^>]*>\s*Action\s*:[\s\S]*?(?:</\s*details\s*>|\Z)"
@@ -176,11 +134,6 @@ def initialise(self):
         if self._dynamic_tools_env is not None
         else self._EXECUTION_SURFACE == "cli" or self._surface_capabilities == "full"
     )
-
-    self._APPROVAL_REQUIRED_TOOLS = frozenset({
-        "git_push", "git_pull", "git_checkout", "git_stash", "git_reset", "git_remote",
-        "github_cli", "define_tool",
-    })
 
     self._provider_config: ProviderConfig | None = None
 
@@ -275,17 +228,8 @@ def initialise(self):
         },
     ]
 
-    self._BUILTIN_TOOL_NAMES = {
-        "write_file","read_file","calculate","run_cmd","search_web","find_files","list_dir",
-        "git_clone","git_status","execute_terminal_command","analyze_remote_repo",
-        "list_tree","read_webpage","check_stored_data","search_memory",
-        "git_diff","git_log","git_branch","git_add","git_commit",
-        "git_push","git_pull","git_checkout","git_stash","git_reset",
-        "git_show","git_remote",
-        "browser_open","browser_snapshot","browser_click","browser_type","browser_close",
-        "graph_status","graph_query","graph_explain","graph_path","graph_refresh",
-        "github_status","github_read","github_cli",
-    }
+    from openkyrozen.tools.catalog import builtin_names
+    self._BUILTIN_TOOL_NAMES = set(builtin_names())
 
     self._saved_user_tools: dict[str, Any] = {}
 
@@ -430,11 +374,6 @@ def initialise(self):
         re.IGNORECASE,
     )
 
-    self.AVAILABLE_TOOLS["check_stored_data"] = self._check_stored_data
-
-    self.AVAILABLE_TOOLS["search_memory"] = self._search_memory
-    self.AVAILABLE_TOOLS["discover_tools"] = self._discover_tools
-
     self.TOOLS_LIST = self._build_tools_list()
 
 
@@ -454,12 +393,6 @@ def initialise(self):
         r"pretend\s+you\s+are",
         r"act\s+as\s+if",
     ]
-
-    self._ACTION_MARKER_NAMES = tuple(sorted(set(self.AVAILABLE_TOOLS) | set(self.TOOL_ALIASES), key=len, reverse=True))
-
-    self._ACTION_MARKER_RE = re.compile(
-        r"(?i)(?<![\w])(?P<name>(?:" + "|".join(map(re.escape, self._ACTION_MARKER_NAMES)) + r"))\s*:"
-    )
 
     self._ACTION_SENTENCE_ENDS = (".", "!", "?", "…", "。", "！", "？", ")", "]", "}", "`", '"', "'")
 

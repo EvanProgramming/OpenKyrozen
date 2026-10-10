@@ -29,6 +29,7 @@ This index covers the current product guides, developer references, and dated en
 - [V3 architecture ownership plan](superpowers/plans/2026-10-07-v3-issue-227.md) records the scoped implementation and verification for issue #227.
 - [V3 provider contract plan](superpowers/plans/2026-10-08-v3-issue-228.md) records the structured response and compatibility migration for issue #228.
 - [V3 provider error plan](superpowers/plans/2026-10-09-v3-issue-231.md) records typed failures, cancellation and bounded retry for issue #231.
+- [V3 authoritative tool catalog plan](superpowers/plans/2026-10-09-v3-issue-232.md) records registry ownership and schema/policy migration for issue #232.
 - Machine-readable audit receipts and benchmark inputs remain beside their corresponding reports under `docs/` and `docs/benchmarks/`.
 
 The repository's [English overview](../README.md) links here. Technical guides are maintained in English; README translations provide localized entry points.

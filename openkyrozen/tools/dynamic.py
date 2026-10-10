@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import Any
 from openkyrozen.app.config import AgentConfigError, effective_capabilities, load_agent_config
@@ -10,6 +12,11 @@ def _record_dynamic_tool_event(self, event_type: str, name: str, *, reason: str 
                                description: str = "") -> None:
     """Record a bounded dynamic-tool decision without persisting source code."""
     payload = {"name": str(name)[:80] or "<unknown>"}
+    if event_type == 'tool.registered' and name in self.tool_registry.specs:
+        spec = self.tool_registry.get_spec(name)
+        payload.update(capability=spec.capability,risk=spec.risk,version=spec.version,source=spec.source,
+                       visibility=spec.visibility,parallel_safe=spec.parallel_safe,side_effects=spec.side_effects,
+                       schema_sha256=hashlib.sha256(json.dumps(spec.input_schema,sort_keys=True).encode()).hexdigest())
     if reason:
         payload["reason"] = str(reason)[:300]
     if description:
@@ -47,7 +54,7 @@ def _register_tool(self, name: str, code: str, description: str = "") -> bool:
         return self._reject_dynamic_tool(name, "tool name must be a Python identifier")
 
     # Don't overwrite built-in or already registered tools.
-    if name in self.AVAILABLE_TOOLS:
+    if name in self.tool_registry.specs or name in self.tool_registry.aliases:
         return self._reject_dynamic_tool(name, "tool name is already registered")
 
     valid, reason = validate_tool_source(code, name)
@@ -72,7 +79,10 @@ def _register_tool(self, name: str, code: str, description: str = "") -> bool:
         return self._reject_dynamic_tool(name, "dynamic-tool approval was denied")
 
     # Register
-    self.AVAILABLE_TOOLS[name] = fn
+    try:
+        self.tool_registry.register(name,fn,capability='dynamic',source='dynamic')
+    except (TypeError,ValueError) as exc:
+        return self._reject_dynamic_tool(name,f'registry rejected registration: {type(exc).__name__}')
     # Rebuild tools list for system prompt
     self.TOOLS_LIST = self._build_tools_list()
 
