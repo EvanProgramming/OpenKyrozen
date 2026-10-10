@@ -35,6 +35,7 @@ class ToolAdapters:
         from .manifest import ToolRegistry
         previous = self.tool_registry.snapshot() if hasattr(self,'tool_registry') else {}
         registry = ToolRegistry()
+        registry.runtime_bindings_initialized = getattr(getattr(self,'tool_registry',None),'runtime_bindings_initialized',False)
         for name,function in value.items():
             if name in previous:
                 registry.register_spec(previous[name].replace(executor=function))

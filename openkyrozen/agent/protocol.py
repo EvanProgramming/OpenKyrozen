@@ -129,7 +129,7 @@ def _collect_unwrapped_tool_calls(self, text: str) -> tuple[list[dict], bool]:
             if next_marker is not None and next_marker.start() < line_end:
                 malformed = True
                 continue
-        raw_action = match.group("name").lower()
+        raw_action = self.tool_registry.resolve_legacy_name(match.group("name"))
         calls.append({"action": self.TOOL_ALIASES.get(raw_action, raw_action), "args": args})
     return calls, malformed
 
@@ -189,7 +189,7 @@ def _collect_tool_calls(self, text: str) -> list[dict]:
     )
     for invoke in invoke_pattern.finditer(text):
         parameters = list(parameter_pattern.finditer(invoke.group("body")))
-        raw_action = invoke.group("name").strip().lower()
+        raw_action = self.tool_registry.resolve_legacy_name(invoke.group("name").strip())
         if (len(parameters) == 1 and parameters[0].group("name").strip().lower() == "args"
                 and self._is_valid_action(raw_action)):
             args = html.unescape(parameters[0].group("value").strip())
@@ -206,7 +206,7 @@ def _collect_tool_calls(self, text: str) -> list[dict]:
     if len(xml_actions) == 1 and not re.search(
             r"<\s*action\s*>[\s\S]*<\s*action\s*>", text, re.IGNORECASE):
         xml_action = xml_actions[0]
-        raw_action = xml_action.group("name").strip().lower()
+        raw_action = self.tool_registry.resolve_legacy_name(xml_action.group("name").strip())
         args = html.unescape(xml_action.group("args").strip())
         if args and self._is_valid_action(raw_action):
             _add({"action": self.TOOL_ALIASES.get(raw_action, raw_action), "args": args})

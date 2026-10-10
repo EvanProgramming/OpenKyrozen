@@ -53,7 +53,7 @@ def _schema_shape(schema):
         raise ValueError('additionalProperties must be a boolean')
     kinds = {'string','integer','number','boolean','object','array','null'}
     kind = schema.get('type')
-    if kind is not None and (not isinstance(kind,str) or kind not in kinds):
+    if 'type' in schema and (not isinstance(kind,str) or kind not in kinds):
         raise ValueError('Invalid schema type')
     if 'examples' in schema and not isinstance(schema['examples'],list):
         raise ValueError('Schema examples must be an array')
@@ -137,16 +137,16 @@ class ToolSpec:
         if schema.get('additionalProperties') is not False:
             raise ValueError("Tool schema must reject additional properties")
         for key,value in schema['properties'].items():
-            if not isinstance(value,dict) or value.get('type') not in {'string','integer','number','boolean','object','array','null'}:
+            if not isinstance(value,dict) or (value.get('type') not in {'string','integer','number','boolean','object','array','null'} and not any(key in value for key in ('anyOf','oneOf','allOf'))):
                 raise ValueError("Invalid tool property schema")
         if isinstance(aliases,str) or isinstance(legacy_fields,str) or isinstance(legacy_argument_aliases,str):
             raise ValueError('Alias and conversion metadata must be collections')
         alias_values=tuple(aliases)
-        if any(not isinstance(a,str) or not a.isidentifier() or a==name for a in alias_values) or len(set(alias_values))!=len(alias_values):
+        if any(not isinstance(a,str) or not a.isidentifier() or a.casefold()==name.casefold() for a in alias_values) or len({a.casefold() for a in alias_values})!=len(alias_values):
             raise ValueError("Invalid tool aliases")
         legacy_values=tuple(legacy_fields)
         argument_aliases=tuple(tuple(pair) for pair in legacy_argument_aliases)
-        if any(field not in schema['properties'] for field in legacy_values):
+        if any(field not in schema['properties'] or schema['properties'][field].get('type') != 'string' for field in legacy_values):
             raise ValueError("Legacy conversion fields must match schema")
         if len(set(argument_aliases)) != len(argument_aliases) or any(len(pair)!=2 or pair[0] not in legacy_values or not isinstance(pair[1],str) or pair[1] in legacy_values for pair in argument_aliases):
             raise ValueError("Invalid legacy argument aliases")
@@ -228,6 +228,7 @@ class ToolMapping(MutableMapping):
 class ToolRegistry:
     def __init__(self, tools=None):
         self._specs={}
+        self.runtime_bindings_initialized=False
         self.tools=ToolMapping(self)
         for name,executor in (tools or {}).items():
             self.register(name,executor)
@@ -244,6 +245,11 @@ class ToolRegistry:
     def aliases(self):
         return {alias:name for name,spec in self._specs.items() for alias in spec.aliases}
 
+    def resolve_legacy_name(self,name):
+        identities={key.casefold():key for key in self._specs}
+        identities.update({alias.casefold():canonical for alias,canonical in self.aliases.items()})
+        return identities.get(name.casefold(),name)
+
     def get_spec(self,name):
         return self._specs[name]
 
@@ -252,11 +258,11 @@ class ToolRegistry:
             raise TypeError('Registration requires ToolSpec')
         if spec.name in self._specs and not replace:
             raise ValueError(f'Tool already registered: {spec.name}')
-        occupied=set(self._specs)|set(self.aliases)
+        occupied={value.casefold() for value in (set(self._specs)|set(self.aliases))}
         previous=self._specs.get(spec.name)
         if previous:
-            occupied-=set(previous.aliases)|{previous.name}
-        if spec.name in occupied or any(alias in occupied for alias in spec.aliases):
+            occupied-={value.casefold() for value in (*previous.aliases,previous.name)}
+        if spec.name.casefold() in occupied or any(alias.casefold() in occupied for alias in spec.aliases):
             raise ValueError('Tool name or alias collision')
         self._specs[spec.name]=spec
 

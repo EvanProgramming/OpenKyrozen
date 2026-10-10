@@ -345,10 +345,12 @@ class AgentRuntime:
     def tool_registry(self):
         from openkyrozen.tools.catalog import builtin_names
         registry = self.current_session.workspace.adapters.tool_registry
-        for owner in ('runtime','orchestration'):
-            for name in builtin_names(owner):
-                if name not in registry.specs:
-                    registry.register(name,getattr(self,('_' if owner=='runtime' else '')+name))
+        if not registry.runtime_bindings_initialized:
+            for owner in ('runtime','orchestration'):
+                for name in builtin_names(owner):
+                    if name not in registry.specs:
+                        registry.register(name,getattr(self,('_' if owner=='runtime' else '')+name))
+            registry.runtime_bindings_initialized=True
         return registry
 
     @property

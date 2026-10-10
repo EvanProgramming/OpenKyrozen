@@ -187,3 +187,47 @@ class LiveInventoryRegressions(unittest.TestCase):
                 self.assertNotIn('helper_alias:',filter.feed('helper_alias: hello',final=True))
             finally:
                 app.close()
+
+class GitHubReviewRegressions(unittest.TestCase):
+    def test_combinator_properties_register_but_nonstring_legacy_fields_do_not(self):
+        helper=RegistryContractTests()
+        schema={'type':'object','properties':{'args':{'oneOf':[{'type':'string'},{'type':'number'}]}},'additionalProperties':False}
+        self.assertEqual(helper.make(input_schema=schema).input_schema,schema)
+        schema['properties']['args']['type']=None
+        with self.assertRaises(ValueError):
+            helper.make(input_schema=schema)
+        for kind in ('integer','number','boolean','object','array'):
+            schema={'type':'object','properties':{'args':{'type':kind}},'additionalProperties':False}
+            with self.subTest(kind=kind),self.assertRaises(ValueError):
+                helper.make(input_schema=schema,legacy_fields=('args',))
+
+    def test_case_insensitive_identity_collisions_rejected(self):
+        registry=ToolRegistry()
+        registry.register_spec(RegistryContractTests().make('MyTool',aliases=('MyAlias',)))
+        for name in ('mytool','MYALIAS'):
+            with self.assertRaises(ValueError):
+                registry.register_spec(RegistryContractTests().make(name,aliases=()))
+
+    def test_runtime_removal_and_case_preserving_parser(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from openkyrozen.app.bootstrap import build_application,build_memory
+        with tempfile.TemporaryDirectory() as home,patch.dict('os.environ',{'KYROZEN_DISABLE_VECTOR_INDEX':'1'}):
+            app=build_application(memory=build_memory(Path(home)/'state.sqlite3'))
+            try:
+                runtime=app.runtime
+                runtime.tool_registry.register_spec(RegistryContractTests().make('MyTool',aliases=('MyAlias',)))
+                for spelling in ('MyTool','mytool','MYALIAS'):
+                    for text in (spelling+': hello', '<action>\n'+spelling+'\nhello\n</action>',
+                                 '<｜DSML｜invoke name="'+spelling+'"><｜DSML｜parameter name="args">hello</｜DSML｜parameter></｜DSML｜invoke>'):
+                        with self.subTest(text=text):
+                            self.assertEqual(runtime._collect_tool_calls(text),[{'action':'MyTool','args':'hello'}])
+                for name in ('spawn_agents','discover_tools'):
+                    del runtime.AVAILABLE_TOOLS[name]
+                    self.assertNotIn(name,runtime.AVAILABLE_TOOLS)
+                    self.assertNotIn(name,runtime.tool_registry.specs)
+                runtime.AVAILABLE_TOOLS=dict(runtime.AVAILABLE_TOOLS)
+                self.assertNotIn('spawn_agents',runtime.AVAILABLE_TOOLS)
+            finally:
+                app.close()
