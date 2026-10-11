@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import MutableMapping
 from dataclasses import dataclass, fields
@@ -31,10 +32,10 @@ def _schema_shape(schema):
     supported = {'type','properties','required','additionalProperties','items','enum','anyOf','oneOf','allOf',
                  'description','title','default','examples','minLength','maxLength','minItems','maxItems',
                  'minProperties','maxProperties','minimum','maximum','exclusiveMinimum','exclusiveMaximum',
-                 'multipleOf','pattern','format','uniqueItems'}
+                 'multipleOf','pattern','uniqueItems'}
     if set(schema) - supported:
         raise ValueError('Unsupported schema keyword')
-    for key in ('description','title','pattern','format'):
+    for key in ('description','title','pattern'):
         if key in schema and not isinstance(schema[key],str):
             raise ValueError(f'{key} must be a string')
     if 'pattern' in schema:
@@ -318,6 +319,81 @@ class ToolRegistry:
         return [{'name':s.name,'description':s.description.splitlines()[0],'parameters':s.input_schema} for s in self._visible(token,names)]
 
     @staticmethod
+    def _argument_error(schema, value, path='$'):
+        """Return the first validation error for the deliberately small JSON Schema subset."""
+        try:
+            if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+                return f'{path} must be an object'
+            if any(not ToolRegistry._json_argument(item) for item in value.values()):
+                return f'{path} must contain only finite JSON values'
+            return ToolRegistry._schema_error(schema, value, path)
+        except RecursionError:
+            return f'{path} exceeds supported JSON nesting'
+
+    @staticmethod
+    def _json_argument(value):
+        if value is None or type(value) in {str, bool, int}:
+            return True
+        if type(value) is float:
+            return math.isfinite(value)
+        if isinstance(value, list):
+            return all(ToolRegistry._json_argument(item) for item in value)
+        if isinstance(value, dict):
+            return all(isinstance(key, str) and ToolRegistry._json_argument(item) for key, item in value.items())
+        return False
+
+    @staticmethod
+    def _schema_error(schema, value, path='$'):
+        for alternative in schema.get('allOf', ()):
+            error = ToolRegistry._schema_error(alternative, value, path)
+            if error: return error
+        for keyword in ('anyOf', 'oneOf'):
+            if keyword in schema:
+                matches = sum(ToolRegistry._schema_error(item, value, path) is None for item in schema[keyword])
+                if (keyword == 'anyOf' and matches == 0) or (keyword == 'oneOf' and matches != 1):
+                    return f'{path} does not match {keyword}'
+        kind = schema.get('type')
+        valid = {
+            'object': isinstance(value, dict), 'array': isinstance(value, list), 'string': isinstance(value, str),
+            'integer': type(value) is int, 'number': type(value) in {int, float},
+            'boolean': type(value) is bool, 'null': value is None,
+        }
+        if kind and not valid[kind]: return f'{path} must be {kind}'
+        if 'enum' in schema and not any(type(value) is type(item) and value == item for item in schema['enum']):
+            return f'{path} is not an allowed value'
+        if isinstance(value, dict):
+            props = schema.get('properties', {})
+            missing = [key for key in schema.get('required', ()) if key not in value]
+            if missing: return f'{path} is missing required property {missing[0]}'
+            if schema.get('additionalProperties') is False and any(key not in props for key in value):
+                return f'{path} contains an unknown property'
+            if len(value) < schema.get('minProperties', 0) or len(value) > schema.get('maxProperties', float('inf')):
+                return f'{path} has an invalid number of properties'
+            for key, item in value.items():
+                if key in props:
+                    error = ToolRegistry._schema_error(props[key], item, f'{path}.{key}')
+                    if error: return error
+        if isinstance(value, list):
+            if len(value) < schema.get('minItems', 0) or len(value) > schema.get('maxItems', float('inf')):
+                return f'{path} has an invalid number of items'
+            if schema.get('uniqueItems') and len({json.dumps(item, sort_keys=True) for item in value}) != len(value):
+                return f'{path} items must be unique'
+            if 'items' in schema:
+                for index, item in enumerate(value):
+                    error = ToolRegistry._schema_error(schema['items'], item, f'{path}[{index}]')
+                    if error: return error
+        if isinstance(value, str):
+            if len(value) < schema.get('minLength', 0) or len(value) > schema.get('maxLength', float('inf')):
+                return f'{path} has an invalid length'
+            if 'pattern' in schema and re.search(schema['pattern'], value) is None: return f'{path} has an invalid format'
+        if type(value) in {int, float}:
+            for key, predicate in (('minimum', lambda n, v: n >= v), ('maximum', lambda n, v: n <= v),
+                                   ('exclusiveMinimum', lambda n, v: n > v), ('exclusiveMaximum', lambda n, v: n < v)):
+                if key in schema and not predicate(value, schema[key]): return f'{path} violates {key}'
+            if 'multipleOf' in schema and value / schema['multipleOf'] % 1 != 0: return f'{path} violates multipleOf'
+        return None
+
+    @staticmethod
     def _invoke_executor(spec,args):
         try:
             result=spec.executor(args)
@@ -336,7 +412,20 @@ class ToolRegistry:
         if not token.allows(spec.capability):
             return ToolResult(text=f"Error: Capability '{spec.capability}' is not granted by token",
                               error=ToolError("permission_denied",f"Capability '{spec.capability}' is not granted by token"))
+        if spec.source == 'legacy':
+            return ToolResult(text='Error: legacy executors support only the text compatibility API', error=ToolError(
+                'contract_error', 'Native invocation requires an object executor and declared schema'))
+        error=self._argument_error(spec.input_schema,args)
+        if error:
+            return ToolResult(text=f'Error: invalid tool arguments: {error}',error=ToolError(
+                'invalid_arguments',f'Invalid arguments for {name}: {error}'))
         return self._invoke_executor(spec,args)
 
     def invoke(self,name,args,token):
+        spec=self.get_spec(name)
+        if spec.source == 'legacy':
+            if not token.allows(spec.capability):
+                return render_tool_result(ToolResult(text=f"Error: Capability '{spec.capability}' is not granted by token",
+                    error=ToolError("permission_denied",f"Capability '{spec.capability}' is not granted by token")))
+            return render_tool_result(self._invoke_executor(spec,args))
         return render_tool_result(self.invoke_result(name,args,token))

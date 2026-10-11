@@ -23,12 +23,12 @@ def git_clone(self, args: str) -> str:
     Supports ~ for user home.
     """
     try:
-        parts = args.split("|", 1)
-        url = parts[0].strip()
-        dest = ""
-        if len(parts) > 1:
-            dest = parts[1].strip()
-            dest = str(self._resolve_workspace_path(dest))
+        if isinstance(args, dict):
+            url, dest = args['url'].strip(), args.get('destination', '').strip()
+        else:
+            parts = args.split("|", 1)
+            url, dest = parts[0].strip(), parts[1].strip() if len(parts) > 1 else ''
+        if dest: dest = str(self._resolve_workspace_path(dest))
         cmd = ["git", "clone", url]
         if dest:
             cmd.append(dest)
@@ -50,12 +50,11 @@ def git_diff(self, args: str) -> str:
     Supports ~ for user home.
     """
     try:
-        extra_args = args.strip()
+        extra_args = args.get('options', []) if isinstance(args, dict) else args.strip()
         cmd = ["git", "-C", self._git_working_directory(), "diff", "--no-textconv", "--no-ext-diff"]
         if extra_args:
             # Support --cached, --staged, HEAD~N, commit hashes
-            for part in extra_args.split():
-                cmd.append(part)
+            cmd.extend(extra_args if isinstance(extra_args, list) else extra_args.split())
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             return tool_failure('command_failed', f"Git diff failed:\n{result.stderr}", retriable=False)
@@ -75,9 +74,10 @@ def git_log(self, args: str) -> str:
     try:
         import shlex
         cmd = ["git", "-C", self._git_working_directory(), "log", "--no-textconv", "--no-ext-diff", "--oneline", "--decorate"]
-        if args.strip():
+        extra_args = args.get('options', []) if isinstance(args, dict) else args.strip()
+        if extra_args:
             try:
-                extra = shlex.split(args.strip())
+                extra = list(extra_args) if isinstance(extra_args, list) else shlex.split(extra_args)
             except ValueError:
                 extra = args.strip().split()
             cmd.extend(extra)
@@ -98,11 +98,14 @@ def git_branch(self, args: str) -> str:
     """
     try:
         import shlex
-        raw_args = args.strip()
-        try:
-            extra = shlex.split(raw_args) if raw_args else []
-        except ValueError:
-            extra = raw_args.split()
+        if isinstance(args, dict):
+            extra = args.get('options', [])
+        else:
+            raw_args = args.strip()
+            try:
+                extra = shlex.split(raw_args) if raw_args else []
+            except ValueError:
+                extra = raw_args.split()
         cmd = ["git", "-C", self._git_working_directory(), "branch"]
         if extra:
             cmd.extend(extra)
@@ -135,10 +138,9 @@ def git_add(self, args: str) -> str:
     Supports ~ for user home.
     """
     try:
-        files = args.strip() or "."
+        files = args.get('paths', []) if isinstance(args, dict) else args.strip() or "."
         cmd = ["git", "-C", self._git_working_directory(), "add"]
-        for f in files.split():
-            cmd.append(f)
+        cmd.extend(files if isinstance(files, list) else files.split())
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             return tool_failure('command_failed', f"Git add failed:\n{result.stderr}", retriable=False)
@@ -155,7 +157,8 @@ def git_commit(self, args: str) -> str:
     """
     try:
         import shlex
-        message = args.strip().strip('"').strip("'")
+        message = (args.get('message', '').strip() if isinstance(args, dict)
+                   else args.strip().strip('"').strip("'"))
         if not message:
             return tool_failure('invalid_arguments', "Error: git_commit requires a commit message.", retriable=False)
         cmd = ["git", "-C", self._git_working_directory(), "commit", "-m", message]
@@ -175,9 +178,8 @@ def git_push(self, args: str) -> str:
     """
     try:
         cmd = ["git", "-C", self._git_working_directory(), "push"]
-        if args.strip():
-            for part in args.strip().split():
-                cmd.append(part)
+        extra = args.get('arguments', []) if isinstance(args, dict) else args.strip()
+        if extra: cmd.extend(extra if isinstance(extra, list) else extra.split())
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
             return tool_failure('command_failed', f"Git push failed:\n{result.stderr}", retriable=False)
@@ -194,9 +196,8 @@ def git_pull(self, args: str) -> str:
     """
     try:
         cmd = ["git", "-C", self._git_working_directory(), "pull"]
-        if args.strip():
-            for part in args.strip().split():
-                cmd.append(part)
+        extra = args.get('arguments', []) if isinstance(args, dict) else args.strip()
+        if extra: cmd.extend(extra if isinstance(extra, list) else extra.split())
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
             return tool_failure('command_failed', f"Git pull failed:\n{result.stderr}", retriable=False)
@@ -214,9 +215,8 @@ def git_checkout(self, args: str) -> str:
     """
     try:
         cmd = ["git", "-C", self._git_working_directory(), "checkout"]
-        if args.strip():
-            for part in args.strip().split():
-                cmd.append(part)
+        extra = args.get('arguments', []) if isinstance(args, dict) else args.strip()
+        if extra: cmd.extend(extra if isinstance(extra, list) else extra.split())
         else:
             return tool_failure('invalid_arguments', "Error: git_checkout requires a branch name or argument.", retriable=False)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -236,8 +236,8 @@ def git_stash(self, args: str) -> str:
     """
     try:
         cmd = ["git", "-C", self._git_working_directory(), "stash"]
-        if args.strip():
-            cmd.append(args.strip())
+        extra = args.get('arguments', []) if isinstance(args, dict) else args.strip()
+        if extra: cmd.extend(extra if isinstance(extra, list) else [extra.strip()])
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             return tool_failure('command_failed', f"Git stash failed:\n{result.stderr}", retriable=False)
@@ -256,9 +256,8 @@ def git_reset(self, args: str) -> str:
     """
     try:
         cmd = ["git", "-C", self._git_working_directory(), "reset"]
-        if args.strip():
-            for part in args.strip().split():
-                cmd.append(part)
+        extra = args.get('arguments', []) if isinstance(args, dict) else args.strip()
+        if extra: cmd.extend(extra if isinstance(extra, list) else extra.split())
         else:
             return tool_failure('invalid_arguments', "Error: git_reset requires arguments (e.g., 'file' to unstage, '--soft HEAD~1' to undo commit).", retriable=False)
         # Safety: block --hard without explicit confirmation path
@@ -282,7 +281,7 @@ def git_show(self, args: str) -> str:
     Supports ~ for user home.
     """
     try:
-        target = args.strip() or "HEAD"
+        target = (args.get('reference', '') if isinstance(args, dict) else args).strip() or "HEAD"
         cmd = ["git", "-C", self._git_working_directory(), "show", "--stat", target]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
@@ -302,7 +301,11 @@ def git_remote(self, args: str) -> str:
     try:
         git_dir = self._git_working_directory()
         try:
-            parts = shlex.split(args or "")
+            if isinstance(args, dict):
+                operation = args.get('operation', 'list')
+                parts = [] if operation == 'list' else [operation] + ([args['name'], args['url']] if operation == 'add' else [args['name']])
+            else:
+                parts = shlex.split(args or "")
         except ValueError:
             return tool_failure('invalid_arguments', "Error: git_remote arguments contain invalid shell quoting.", retriable=False)
 
@@ -341,7 +344,8 @@ def git_status(self, args: str) -> str:
     Supports ~ for user home.
     """
     try:
-        abs_path = self._git_working_directory(args.strip() or ".")
+        path = args.get('path', '.') if isinstance(args, dict) else args
+        abs_path = self._git_working_directory(path.strip() or ".")
         cmd = ["git", "-C", abs_path, "status"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
@@ -356,4 +360,5 @@ def execute_terminal_command(self, args: str) -> str:
     """
     Execute a terminal command. This is an alias for run_cmd.
     """
-    return command_tool_result(self.run_command(args))
+    command = args.get('command', '') if isinstance(args, dict) else args
+    return command_tool_result(self.run_command(command))

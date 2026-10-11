@@ -43,8 +43,9 @@ class DynamicToolTests(unittest.TestCase):
     def test_chat_observer_registers_and_runs_a_real_dynamic_tool(self):
         source = (
             "DefineTool:\n```python\n"
-            "def count_chars(args: str) -> ToolResult:\n"
-            "    return ToolResult(data=len(args), text=str(len(args)))\n"
+            "def count_chars(args: dict) -> ToolResult:\n"
+            "    value = args['args']\n"
+            "    return ToolResult(data=len(value), text=str(len(value)))\n"
             "```"
         )
         original_tools = dict(main.AVAILABLE_TOOLS)
@@ -91,8 +92,9 @@ class DynamicToolTests(unittest.TestCase):
 
         source = (
             "DefineTool:\n```python\n"
-            "def count_chars(args: str) -> ToolResult:\n"
-            "    return ToolResult(data=len(args), text=str(len(args)))\n"
+            "def count_chars(args: dict) -> ToolResult:\n"
+            "    value = args['args']\n"
+            "    return ToolResult(data=len(value), text=str(len(value)))\n"
             "```"
         )
         responses = [
@@ -148,8 +150,9 @@ class DynamicToolTests(unittest.TestCase):
 
         source = (
             "DefineTool:\n```python\n"
-            "def count_chars(args: str) -> ToolResult:\n"
-            "    return ToolResult(data=len(args), text=str(len(args)))\n"
+            "def count_chars(args: dict) -> ToolResult:\n"
+            "    value = args['args']\n"
+            "    return ToolResult(data=len(value), text=str(len(value)))\n"
             "```"
         )
         original_tools = dict(main.AVAILABLE_TOOLS)

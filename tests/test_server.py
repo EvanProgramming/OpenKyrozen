@@ -259,10 +259,11 @@ class ServerBoundaryTests(unittest.TestCase):
             previous_root = server._agent._get_workspace_root()
             server._agent._set_workspace_root(root)
             try:
-                called = client.post("/mcp", json={
+                with patch.object(server, "_mcp_string_arguments", side_effect=AssertionError("legacy converter called")):
+                    called = client.post("/mcp", json={
                     "jsonrpc": "2.0", "id": 5, "method": "tools/call",
                     "params": {"name": "read_file", "arguments": {"path": "mcp.txt"}},
-                }).json()
+                    }).json()
             finally:
                 server._agent._set_workspace_root(previous_root)
             self.assertEqual(called["id"], 5)
@@ -283,7 +284,8 @@ class ServerBoundaryTests(unittest.TestCase):
             "params": {"name": "read_file", "arguments": {"path": 123}},
         }).json()
         self.assertEqual(invalid["id"], 21)
-        self.assertEqual(invalid["error"]["code"], -32602)
+        self.assertIn("error", invalid["result"]["content"][0]["text"].lower())
+        self.assertTrue(invalid["result"]["isError"])
 
         execution = client.post("/mcp", json={
             "jsonrpc": "2.0", "id": 22, "method": "tools/call",
@@ -505,7 +507,7 @@ class ServerBoundaryTests(unittest.TestCase):
             self.assertNotIn("git_branch", server._allowed_server_tools("web"))
             denied = TestClient(server.app).post("/mcp", json={
                 "jsonrpc": "2.0", "id": 77, "method": "tools/call",
-                "params": {"name": "git_branch", "arguments": {"args": ""}},
+                "params": {"name": "git_branch", "arguments": {"options": []}},
             }).json()
         self.assertEqual(denied["error"]["code"], -32001)
 
@@ -518,7 +520,7 @@ class ServerBoundaryTests(unittest.TestCase):
                 with patch.dict(os.environ, {"KYROZEN_MCP_CAPABILITIES": "workspace"}):
                     allowed = TestClient(server.app).post("/mcp", json={
                         "jsonrpc": "2.0", "id": 78, "method": "tools/call",
-                        "params": {"name": "git_branch", "arguments": {"args": ""}},
+                        "params": {"name": "git_branch", "arguments": {"options": []}},
                     }).json()
             finally:
                 server._agent._set_workspace_root(previous_root)

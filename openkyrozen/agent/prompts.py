@@ -59,7 +59,13 @@ def _permitted_tool_names(self, agent_config: dict[str, Any] | None = None) -> s
 def _discover_tools(self, args: str) -> str:
     """Discover permitted tools; args is empty for the catalog or comma-separated exact tool names for full descriptions."""
     permitted = self._permitted_tool_names()
-    names = list(dict.fromkeys(name.strip() for name in args.split(",") if name.strip()))
+    query = args.get('query', '') if isinstance(args, dict) else ''
+    values = args.get('names', []) if isinstance(args, dict) else args.split(",")
+    names = list(dict.fromkeys(name.strip() for name in values if name.strip()))
+    if query and not names:
+        names = [name for name in sorted(permitted)
+                 if query.casefold() in name.casefold()
+                 or query.casefold() in self.tool_registry.get_spec(name).description.casefold()]
     if not names:
         groups: dict[str, list[str]] = {}
         for name in sorted(permitted):
@@ -162,7 +168,7 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
         "Dynamic tools are enabled only when the active surface grants the `dynamic` capability and the approval policy allows registration. "
         "When a missing pure helper is genuinely needed, you may output exactly one DefineTool block; never include imports, filesystem/process/network access, secrets, permission changes, or capability grants. "
         "The runtime validates and registers it, refreshes the tool inventory, and then you may call it by its exact name:\n"
-        "DefineTool:\n```python\ndef tool_name(args: str) -> ToolResult:\n    return ToolResult(data=args.strip(), text=args.strip())\n```\n"
+        "DefineTool:\n```python\ndef tool_name(args: dict) -> ToolResult:\n    value = args['args']\n    return ToolResult(data=value, text=value)\n```\n"
     ) if self.ALLOW_DYNAMIC_TOOLS and interaction_mode == "agent" else (
         "## Dynamic tools\n"
         "Dynamic tool creation is disabled for this execution surface. Do not emit DefineTool blocks.\n"

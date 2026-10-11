@@ -14,7 +14,7 @@ def analyze_remote_repo(self, args: str) -> str:
     Clone a remote git repository, read its files, and return a summary.
     Args format: "git_url" (e.g., "https://github.com/user/repo.git")
     """
-    url = args.strip()
+    url = (args.get('url', '') if isinstance(args, dict) else args).strip()
     if not url:
         return tool_failure('invalid_arguments', "Error: no URL provided.", retriable=False)
     try:

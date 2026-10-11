@@ -193,12 +193,13 @@ class ApprovalRequestTests(unittest.TestCase):
                 long_value = "x" * 900
                 seen = []
                 call = ToolCall("call-1", "approval_probe", {"args": long_value})
-                receipt = app.runtime.execute_call(
-                    app.runtime.current_session, call, approve=lambda request: seen.append(request) or True,
-                )
+                with patch.object(ToolSpec, "legacy_arguments", side_effect=AssertionError("legacy encoding used")):
+                    receipt = app.runtime.execute_call(
+                        app.runtime.current_session, call, approve=lambda request: seen.append(request) or True,
+                    )
                 self.assertTrue(receipt.success)
                 self.assertEqual(seen[0].arguments, {"args": long_value})
-                self.assertEqual(calls, [long_value])
+                self.assertEqual(calls, [{"args": long_value}])
 
                 calls.clear()
                 def replace_during_approval(_request):
@@ -261,7 +262,7 @@ class ApprovalRequestTests(unittest.TestCase):
             finally:
                 app.close()
 
-    def test_legacy_adapter_rejects_argument_values_that_change_pipe_protocol_meaning(self):
+    def test_structured_file_arguments_preserve_pipe_characters(self):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
@@ -276,12 +277,14 @@ class ApprovalRequestTests(unittest.TestCase):
             root.mkdir()
             app = build_application(surface="cli", memory=build_memory(Path(directory) / "state.sqlite3"), tools=ToolAdapters(root))
             try:
+                app.runtime._set_workspace_root(root)
                 receipt = app.runtime.execute_call(
                     app.runtime.current_session,
                     ToolCall("call-pipe", "write_file", {"path": "part|outside.txt", "content": "x"}),
+                    approve=lambda request: True,
                 )
-                self.assertFalse(receipt.success)
-                self.assertFalse((root / "outside.txt").exists())
+                self.assertTrue(receipt.success, receipt.result)
+                self.assertEqual((root / "part|outside.txt").read_text(encoding="utf-8"), "x")
             finally:
                 app.close()
 

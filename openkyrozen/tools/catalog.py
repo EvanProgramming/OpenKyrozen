@@ -115,6 +115,52 @@ _SCHEMAS = {'read_file': {'properties': {'path': {'type': 'string'}},
                    'type': 'object',
                    'additionalProperties': False}}
 
+_OBJECT_FIELDS = {
+    'spawn_agents': {'assignments': {'type':'array','items':{'type':'object','properties':{},'additionalProperties':True}}},
+    'send_subagent': {'run_id': {'type':'string'}, 'assignment': {'type':'object','properties':{},'additionalProperties':True}},
+    'list_subagents': {'run_id': {'type':'string'}}, 'wait_subagents': {'run_ids': {'type':'array','items':{'type':'string'}}, 'timeout': {'type':'number','minimum':0,'maximum':60}},
+    'cancel_subagent': {'run_id': {'type':'string'}},
+    'check_stored_data': {'category': {'type':'string'}}, 'search_memory': {'query': {'type':'string','minLength':1}},
+    'discover_tools': {'query': {'type':'string'}, 'names': {'type':'array','items':{'type':'string'}}},
+    'search_files': {'query': {'type':'string'}, 'path': {'type':'string'}, 'glob': {'type':'string'}, 'limit': {'type':'integer','minimum':1,'maximum':100}},
+    'calculate': {'expression': {'type':'string','minLength':1,'maxLength':4000}},
+    'read_file': {'path': {'type':'string'}, 'start_line': {'type':'integer','minimum':1}, 'max_lines': {'type':'integer','minimum':1}, 'max_chars': {'type':'integer','minimum':1}},
+    'edit_file': {'path': {'type':'string'}, 'old_text': {'type':'string','minLength':1}, 'new_text': {'type':'string'}, 'expected_sha256': {'type':'string'}},
+    'git_status': {'path': {'type':'string'}},
+    'git_diff': {'options': {'type':'array','items':{'type':'string'}}}, 'git_log': {'options': {'type':'array','items':{'type':'string'}}},
+    'git_branch': {'options': {'type':'array','items':{'type':'string'}}}, 'git_add': {'paths': {'type':'array','items':{'type':'string'}}},
+    'git_commit': {'message': {'type':'string','minLength':1}}, 'git_push': {'arguments': {'type':'array','items':{'type':'string'}}},
+    'git_pull': {'arguments': {'type':'array','items':{'type':'string'}}}, 'git_checkout': {'arguments': {'type':'array','items':{'type':'string'}}},
+    'git_stash': {'arguments': {'type':'array','items':{'type':'string'}}}, 'git_reset': {'arguments': {'type':'array','items':{'type':'string'}}},
+    'git_show': {'reference': {'type':'string'}}, 'git_remote': {'operation': {'type':'string','enum':['list','add','remove']}, 'name': {'type':'string'}, 'url': {'type':'string'}},
+    'git_clone': {'url': {'type':'string'}, 'destination': {'type':'string'}},
+    'run_cmd': {'command': {'type':'string','minLength':1}}, 'execute_terminal_command': {'command': {'type':'string','minLength':1}},
+    'search_web': {'query': {'type':'string','minLength':1}}, 'read_webpage': {'url': {'type':'string','minLength':1}},
+    'analyze_remote_repo': {'url': {'type':'string','minLength':1}},
+    'browser_open': {'url': {'type':'string','minLength':1}}, 'browser_snapshot': {'session_id': {'type':'string','minLength':1}},
+    'browser_click': {'session_id': {'type':'string','minLength':1}, 'selector': {'type':'string','minLength':1}},
+    'browser_type': {'session_id': {'type':'string','minLength':1}, 'selector': {'type':'string','minLength':1}, 'text': {'type':'string'}},
+    'browser_close': {'session_id': {'type':'string','minLength':1}},
+    'graph_query': {'question': {'type':'string','minLength':1}}, 'graph_explain': {'symbol': {'type':'string','minLength':1}},
+    'graph_path': {'source': {'type':'string','minLength':1}, 'target': {'type':'string','minLength':1}}, 'graph_refresh': {'full': {'type':'boolean'}},
+    'github_status': {'query': {'type':'string'}}, 'github_read': {'arguments': {'type':'array','items':{'type':'string'}}},
+    'github_cli': {'arguments': {'type':'array','items':{'type':'string'}}},
+}
+for _name, _properties in _OBJECT_FIELDS.items():
+    _required = [key for key, value in _properties.items() if key in {
+        'path','pattern','content','command','query','expression','url','session_id','selector','text',
+        'old_text','new_text','expected_sha256','question','symbol','source','target','message','run_id',
+    }]
+    if _name == 'read_file': _required = ['path']
+    if _name == 'git_clone': _required = ['url']
+    if _name == 'send_subagent': _required = ['run_id','assignment']
+    if _name == 'list_subagents': _required = []
+    if _name == 'wait_subagents': _required = []
+    if _name == 'cancel_subagent': _required = ['run_id']
+    if _name == 'git_status': _required = []
+    if _name == 'git_remote': _required = ['operation']
+    _SCHEMAS[_name] = {'type':'object','properties':_properties,'required':_required,'additionalProperties':False}
+
 
 def builtin_names(owner=None):
     return tuple(row[0] for row in _ROWS if owner is None or row[3] == owner)
@@ -125,8 +171,7 @@ def builtin_metadata(name):
         if row[0] != name:
             continue
         _, capability, effects, _, risk, parallel, aliases, legacy_fields, argument_aliases, surfaces = row
-        schema = _SCHEMAS.get(name, {'type':'object','properties':{'args':{'type':'string'}},'additionalProperties':False,
-                                   'description':'Plain-string arguments can be supplied as the `args` property.'})
+        schema = _SCHEMAS.get(name, {'type':'object','properties':{},'additionalProperties':False})
         return dict(capability=capability,side_effects=effects,risk=risk,parallel_safe=parallel,aliases=aliases,
                     input_schema=copy.deepcopy(schema),legacy_fields=legacy_fields,legacy_argument_aliases=argument_aliases,
                     confirmation_surfaces=surfaces)

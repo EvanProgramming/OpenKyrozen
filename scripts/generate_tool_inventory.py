@@ -106,8 +106,8 @@ def render_inventory() -> str:
         "",
         "- JSON Action blocks use `{" + '"action": "<tool>", "args": "<plain string>"' + "}`.",
         "- MCP `tools/list` and `server/discover` expose an `inputSchema` for every allowed tool.",
-        "- MCP object arguments are explicitly converted to the same plain-string contract; generic tools accept `{" + '"args": "<plain string>"' + "}`.",
-        "- Unknown or capability-denied MCP tools are JSON-RPC protocol errors; a tool that runs and returns an error uses `result.isError: true`.",
+        "- MCP passes JSON object arguments to the shared typed invocation boundary; schema errors and tool failures use `result.isError: true`.",
+        "- Structured invocation and tool-schema requirements are tracked in [issue #226](https://github.com/EvanProgramming/OpenKyrozen/issues/226).",
         "",
     ])
     return "\n".join(lines)

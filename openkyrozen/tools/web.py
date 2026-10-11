@@ -168,7 +168,7 @@ def read_webpage(self, args: str) -> str:
     """
     import html
     import re
-    url = str(args or "").strip()
+    url = str(args.get('url', '') if isinstance(args, dict) else args or "").strip()
     if not url:
         return tool_failure('invalid_arguments', "Error: read_webpage requires a valid URL.", retriable=False)
     try:

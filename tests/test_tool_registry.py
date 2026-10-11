@@ -24,6 +24,10 @@ class RegistryRegressions(unittest.TestCase):
         self.assertEqual(spec.capability,'dynamic')
         self.assertFalse(spec.parallel_safe)
         self.assertEqual(spec.input_schema['properties'],{'args':{'type':'string'}})
+        from openkyrozen.security.capabilities import issue_capability_token
+        result=adapters.tool_registry.invoke_result('new_helper', {'args':'x'}, issue_capability_token('test', {'dynamic'}))
+        self.assertFalse(result.success)
+        self.assertEqual(result.error.code, 'contract_error')
 
     def test_replacing_legacy_mapping_preserves_typed_builtins(self):
         import tempfile
@@ -32,7 +36,7 @@ class RegistryRegressions(unittest.TestCase):
             adapters = ToolAdapters(directory)
             adapters.AVAILABLE_TOOLS = dict(adapters.AVAILABLE_TOOLS)
             result = adapters.tool_registry.invoke_result(
-                'read_file', 'missing.txt', issue_capability_token('test', {'read'}))
+                'read_file', {'path':'missing.txt'}, issue_capability_token('test', {'read'}))
             self.assertFalse(result.success)
             self.assertEqual(result.error.code, 'not_found')
 
@@ -64,7 +68,8 @@ class RegistryContractTests(unittest.TestCase):
             self.assertEqual(dict(registry.specs),{'custom':spec})
         for change in ({'capability':'admin'},{'parallel_safe':True,'side_effects':'stateful'},
                        {'input_schema':{'type':'object','properties':{},'required':['missing'],'additionalProperties':False}},
-                       {'input_schema':{'type':'object','properties':{},'additionalProperties':False,'default':float('nan')}}):
+                       {'input_schema':{'type':'object','properties':{},'additionalProperties':False,'default':float('nan')}},
+                       {'input_schema':{'type':'object','properties':{'value':{'type':'string','format':'email'}},'additionalProperties':False}}):
             with self.assertRaises(ValueError):
                 self.make(**change)
 
@@ -132,6 +137,51 @@ class RuntimeCatalogTests(unittest.TestCase):
                 app.close()
 
 class SchemaValidationRegressions(unittest.TestCase):
+    def test_all_builtins_expose_meaningful_object_schemas(self):
+        adapters = ToolAdapters()
+        for name, spec in adapters.tool_registry.specs.items():
+            with self.subTest(name=name):
+                self.assertEqual(spec.input_schema['type'], 'object')
+                self.assertFalse(spec.input_schema.get('additionalProperties', True))
+                self.assertNotIn('args', spec.input_schema['properties'])
+
+    def test_git_argument_arrays_preserve_spaces_without_legacy_encoding(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from openkyrozen.security.capabilities import issue_capability_token
+        from openkyrozen.tools import ToolAdapters
+        tools = ToolAdapters().tool_registry
+        seen = {}
+        def run(command, **kwargs):
+            seen['command'] = command
+            return SimpleNamespace(returncode=0, stdout='', stderr='')
+        with patch('openkyrozen.tools.git.subprocess.run', side_effect=run), \
+             patch.object(type(tools.get_spec('git_add')), 'legacy_arguments', side_effect=AssertionError('legacy path')):
+            result = tools.invoke_result('git_add', {'paths':['file with spaces.txt','odd|name.txt']},
+                                          issue_capability_token('test', {'git'}))
+        self.assertTrue(result.success, result.text)
+        self.assertEqual(seen['command'][-2:], ['file with spaces.txt','odd|name.txt'])
+
+    def test_invoke_result_validates_object_arguments_before_executor(self):
+        from openkyrozen.security.capabilities import issue_capability_token
+        calls = []
+        registry = ToolRegistry()
+        from openkyrozen.tools import ToolSpec
+        spec = ToolSpec('custom', lambda args: calls.append(args) or ToolResult(data=args), description='custom',
+            input_schema={'type':'object','properties':{'count':{'type':'integer','minimum':1}},
+                          'required':['count'],'additionalProperties':False},
+            capability='read',side_effects='read',aliases=())
+        registry.register_spec(spec)
+        token = issue_capability_token('test', {'read'})
+        for args in ({}, {'count':True}, {'count':1.0}, {'count':0}, {'count':1,'extra':2}, {'count':float('nan')}):
+            result = registry.invoke_result('custom', args, token)
+            self.assertFalse(result.success, args)
+            self.assertEqual(result.error.code, 'invalid_arguments')
+        self.assertEqual(calls, [])
+        value={'count':2}
+        self.assertEqual(registry.invoke_result('custom',value,token).data,value)
+        self.assertEqual(calls,[value])
+
     def test_schema_rejects_non_json_keys_and_bad_nested_keywords(self):
         helper=RegistryContractTests()
         for schema in ({'type':'object','properties':{1:{'type':'string'}},'additionalProperties':False},

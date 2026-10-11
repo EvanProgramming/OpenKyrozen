@@ -40,7 +40,7 @@ def _operation_action(self, action: str) -> str:
 
 
 def _operation_args(self, action: str, args: Any) -> str:
-    value = str(args)
+    value = json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":")) if isinstance(args, dict) else str(args)
     return value.strip() if action == "run_cmd" else value
 
 
@@ -51,6 +51,12 @@ def _operation_id(self, scope: str, action: str, args: Any) -> str:
 
 def _is_state_changing_action(self, action: str, args: str) -> bool:
     action = self._operation_action(action)
+    if isinstance(args, dict):
+        if action == 'git_branch':
+            options = args.get('options', [])
+            return bool(options and (options[0] in {'-d','-D','--delete','-m','-M','--move','-c','-C','--copy','-f','--force'} or not options[0].startswith('-')))
+        if action == 'git_remote': return args.get('operation', 'list') in {'add','remove'}
+        return action in {"write_file", "edit_file", "run_cmd", "git_clone", "git_add", "git_commit", "git_push", "git_pull", "git_checkout", "git_stash", "git_reset", "github_cli"}
     if action == "git_branch":
         return bool(str(args).strip()) and not str(args).lstrip().startswith(("-a", "-v"))
     if action == "git_remote":
@@ -68,8 +74,8 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
     from openkyrozen.agent.delegation import TOOLS
     result_text = self._fix_safe_text(result, max(2000, len(str(result))) if canonical in TOOLS else 200000 if canonical in {"read_file", "read_webpage", "git_diff", "git_show", "graph_query"} else 2000, preserve_lines=True)
     command = raw_result if isinstance(raw_result, CommandResult) else None
-    effect, effect_verified = self._subagent_tool_evidence(canonical, str(args), result_text, success=success)
-    acceptance, accepted = self._acceptance_for_tool(canonical, str(args), result_text, success=success)
+    effect, effect_verified = self._subagent_tool_evidence(canonical, args, result_text, success=success)
+    acceptance, accepted = self._acceptance_for_tool(canonical, args, result_text, success=success)
     if not accepted and effect_verified:
         acceptance = effect
 
@@ -136,6 +142,13 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
     receipt_args = _typed_arguments if _typed_arguments is not None else args
     if _typed_arguments is not None:
         args = _typed_arguments
+    elif action in self.tool_registry.specs and self.tool_registry.get_spec(action).source == "dynamic":
+        if isinstance(args, str):
+            try:
+                parsed = json.loads(args) if args.lstrip().startswith("{") else None
+            except json.JSONDecodeError:
+                parsed = None
+            args = parsed if isinstance(parsed, dict) else {"args": args}
     elif isinstance(args, dict):
         if action in ("run_cmd", "execute_terminal_command"):
             args = args.get("cmd") or args.get("command") or ""
@@ -155,6 +168,8 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                     args = json.dumps(parsed)
         except (ValueError, SyntaxError):
             pass
+    if isinstance(args, dict):
+        receipt_args = args
     def finish(outcome: ToolResult, authorized: bool = False, raw_result: Any = None):
         text = render_tool_result(outcome)
         if return_receipt:
@@ -170,7 +185,8 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         self._notify_tool_execute(action, args, outcome)
         return finish(outcome)
     from openkyrozen.security.permission_gate import git_read_arguments_allowed
-    if not git_read_arguments_allowed(action, args):
+    policy_args = (json.dumps(args, ensure_ascii=False, sort_keys=True) if isinstance(args, dict) else args)
+    if not git_read_arguments_allowed(action, policy_args):
         outcome = tool_failure("invalid_arguments", "Error: read-only Git tools reject output-writing and external-execution options.")
         self._notify_tool_execute(action, args, outcome)
         return finish(outcome)
@@ -229,15 +245,10 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                 outcome = tool_failure("permission_denied", "Error: tool authority or registration changed before execution.")
                 self._notify_tool_execute(action, args, outcome)
                 return finish(outcome)
-            try:
-                execution_args = approved_spec.legacy_arguments(_typed_arguments)
-            except (TypeError, ValueError) as exc:
-                outcome = tool_failure("invalid_arguments", f"Error: {exc}")
-                self._notify_tool_execute(action, args, outcome)
-                return finish(outcome)
+            execution_args = _typed_arguments
         with self._delegation_tool_access(action, execution_args):
             if action in {"run_cmd", "execute_terminal_command"}:
-                raw_result = self.run_command(execution_args)
+                raw_result = self.run_command(execution_args['command'] if isinstance(execution_args, dict) else execution_args)
                 outcome = command_tool_result(raw_result)
             else:
                 outcome = self.tool_registry._invoke_executor(approved_spec, execution_args)

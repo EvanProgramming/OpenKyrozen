@@ -57,6 +57,12 @@ class DelegationTests(unittest.TestCase):
         self.env.stop()
         self.temp.cleanup()
 
+    def test_subagent_legacy_action_adapter_keeps_optional_fields_optional(self):
+        self.assertEqual(self.runtime._subagent_action_arguments('find_files', '*.py'),
+                         {'pattern': '*.py', 'directory': ''})
+        self.assertEqual(self.runtime._subagent_action_arguments('git_clone', 'https://example.test/repo'),
+                         {'url': 'https://example.test/repo', 'destination': ''})
+
     def fake_provider(self, config):
         runtime, calls, lock = self.runtime, self.calls, self.call_lock
         class Provider:
@@ -822,7 +828,7 @@ class DelegationTests(unittest.TestCase):
         client = TestClient(WebService(self.app).app)
         def call(name, args, session="mcp-a"):
             response = client.post("/mcp", json={"jsonrpc": "2.0", "id": name, "method": "tools/call",
-                "params": {"session_id": session, "name": name, "arguments": {"args": json.dumps(args)}}}).json()
+                "params": {"session_id": session, "name": name, "arguments": args}}).json()
             self.assertFalse(response["result"]["isError"], response)
             return json.loads(response["result"]["content"][0]["text"])
         run = call("spawn_agents", {"assignments": [brief()]})["agents"][0]

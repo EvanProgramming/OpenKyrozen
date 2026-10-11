@@ -485,7 +485,17 @@ class Delegation:
                     findings.append("Artifact URL was not independently read: " + reference)
                 continue
             path = (self.root / reference).resolve()
-            inspected = any(item.get("action") == "read_file" and (self.root / str(item.get("args", "")).split("|", 1)[0]).resolve() == path for item in receipts)
+            def read_path(item):
+                args = item.get("args", "")
+                if isinstance(args, dict):
+                    return args.get("path", "")
+                try:
+                    parsed = json.loads(args)
+                    if isinstance(parsed, dict): return parsed.get("path", "")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                return str(args).split("|", 1)[0]
+            inspected = any(item.get("action") == "read_file" and (self.root / str(read_path(item))).resolve() == path for item in receipts)
             exists = path.is_relative_to(self.root) and path.is_file()
             check = {"path": reference, "exists": exists, "independently_read": inspected}
             if not exists:

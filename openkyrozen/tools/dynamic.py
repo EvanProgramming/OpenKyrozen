@@ -98,7 +98,7 @@ def _attempt_define_tool(self, text: str) -> bool:
     Format:
     DefineTool:
     ```python
-    def tool_name(args: str) -> ToolResult:
+    def tool_name(args: dict) -> ToolResult:
         '''Description'''
         ...
     ```
