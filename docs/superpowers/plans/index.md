@@ -5,5 +5,6 @@
 - [V3 #231 — Provider errors, deadlines, and retries](2026-10-09-v3-issue-231.md)
 - [V3 #232 — Authoritative tool registry](2026-10-09-v3-issue-232.md)
 - [V3 #261 — Secure typed tool invocation](2026-10-11-v3-issue-261.md)
+- [V3 #233 — Structured tool arguments and MCP](2026-10-11-v3-issue-233.md)
 
 Add a linked issue-specific plan here before coding any later V3 issue.
