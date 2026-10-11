@@ -107,6 +107,19 @@ func TestApprovalModalKeepsStructuredArgumentsScrollable(t *testing.T) {
 	}
 }
 
+func TestApprovalArgumentsRewrapAfterNarrowResize(t *testing.T) {
+	m := initialModel(".", false)
+	m.width, m.height = 120, 30
+	m.approvalArgs = strings.Repeat("word ", 80)
+	m.resize()
+	wideLines := m.approvalView.TotalLineCount()
+	m.width = 50
+	m.resize()
+	if m.approvalView.TotalLineCount() <= wideLines {
+		t.Fatalf("approval arguments did not rewrap after resize: wide=%d narrow=%d", wideLines, m.approvalView.TotalLineCount())
+	}
+}
+
 func TestApprovalModalReassemblesLongArgumentChunks(t *testing.T) {
 	m := initialModel(".", false)
 	m.width, m.height = 100, 30
@@ -122,6 +135,20 @@ func TestApprovalModalReassemblesLongArgumentChunks(t *testing.T) {
 	m.approvalView.ScrollDown(20)
 	if m.approvalView.YOffset() == 0 {
 		t.Fatal("chunked approval arguments cannot be scrolled")
+	}
+}
+
+func TestApprovalDetailEventsAppendOnlyToMatchingRequest(t *testing.T) {
+	m := initialModel(".", false)
+	m.approvalID = "approval-1"
+	m.approvalArgs = "first"
+	m.handleBackendEvent(backendEvent{"event": "approval_detail", "request_id": "stale", "text": " ignored"})
+	if m.approvalArgs != "first" {
+		t.Fatal("stale approval detail changed the active request")
+	}
+	m.handleBackendEvent(backendEvent{"event": "approval_detail", "request_id": "approval-1", "text": " second"})
+	if m.approvalArgs != "first second" {
+		t.Fatalf("approval detail was not appended: %q", m.approvalArgs)
 	}
 }
 

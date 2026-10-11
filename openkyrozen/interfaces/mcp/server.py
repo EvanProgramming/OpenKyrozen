@@ -113,7 +113,11 @@ async def mcp_endpoint(self, request: Request):
                 runtime = service._agent
                 session_id = service._normalise_session_id(params.get("session_id") or "surface:mcp")
                 session = runtime.open_session(session_id, user_id=service._SERVER_ACTOR_ID)
-                return runtime.execute(session, tool_name, string_args, capabilities=service._server_capabilities("mcp"), operation_scope=f"mcp:{request_id}")
+                allowed = service._server_capabilities("mcp")
+                return runtime.execute(
+                    session, tool_name, string_args, capabilities=allowed,
+                    operation_scope=f"mcp:{request_id}", _surface_capability_bound=allowed,
+                )
             receipt = await asyncio.to_thread(execute)
             result_text = receipt.result
             is_error = not receipt.success

@@ -192,6 +192,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         outcome = tool_failure("permission_denied", f"Error: tool '{action}' requires capability '{required_capability}'")
         self._notify_tool_execute(action, args, outcome)
         return finish(outcome)
+    approved_spec = self.tool_registry.specs.get(action)
     authorized = (self._authorize_tool_action(action, args) if self._EXECUTION_SURFACE == "tui"
                   else self._confirm_tool_action(action, str(args)))
     if authorized:
@@ -202,6 +203,8 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
             authorized = False
     request_var = getattr(self, "_approval_request", None)
     request = request_var.get() if request_var is not None else None
+    if authorized and self.tool_registry.specs.get(action) is not approved_spec:
+        authorized = False
     if authorized and request is not None:
         approved_spec = self._approval_tool_spec.get()
         current_spec = self.tool_registry.specs.get(action)
@@ -222,13 +225,12 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
     try:
         execution_args = args
         if _typed_arguments is not None:
-            spec = self.tool_registry.specs.get(action)
-            if spec is not _expected_spec or self._execution_capability_token.allows(spec.capability) is not True:
+            if approved_spec is not _expected_spec or self._execution_capability_token.allows(approved_spec.capability) is not True:
                 outcome = tool_failure("permission_denied", "Error: tool authority or registration changed before execution.")
                 self._notify_tool_execute(action, args, outcome)
                 return finish(outcome)
             try:
-                execution_args = spec.legacy_arguments(_typed_arguments)
+                execution_args = approved_spec.legacy_arguments(_typed_arguments)
             except (TypeError, ValueError) as exc:
                 outcome = tool_failure("invalid_arguments", f"Error: {exc}")
                 self._notify_tool_execute(action, args, outcome)
@@ -238,7 +240,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                 raw_result = self.run_command(execution_args)
                 outcome = command_tool_result(raw_result)
             else:
-                outcome = self.tool_registry._invoke_executor(self.tool_registry.get_spec(action), execution_args)
+                outcome = self.tool_registry._invoke_executor(approved_spec, execution_args)
     except KeyboardInterrupt:
         outcome = tool_failure("cancelled", "Tool execution interrupted by user (Ctrl+C).")
     except Exception as exc:

@@ -129,13 +129,17 @@ def git_read_arguments_allowed(action: str, args: object) -> bool:
     """Reject output-writing and external-execution flags on read-labelled Git tools."""
     if action not in {"git_diff", "git_show", "git_log", "git_status"}:
         return True
-    text = _arguments(args)
-    if re.search(r"(?i)(?:^|\s)(?:-o|--output(?:=|\s)|--ext-diff\b|--textconv\b|--external-diff\b|--exec(?:=|\s)|--upload-pack(?:=|\s)|--receive-pack(?:=|\s))", text):
+    try:
+        words = shlex.split(_arguments(args))
+    except ValueError:
+        return False
+    if any(
+        word in {"-o", "--output", "--ext-diff", "--textconv", "--external-diff", "--exec", "--upload-pack", "--receive-pack"}
+        or word.startswith(("--output=", "--exec=", "--upload-pack=", "--receive-pack="))
+        for word in words
+    ):
         return False
     if action == "git_show":
-        try:
-            if any(word.startswith("-") for word in shlex.split(text)):
-                return False
-        except ValueError:
+        if any(word.startswith("-") for word in words):
             return False
     return True

@@ -51,17 +51,23 @@ def _approval(self, action: str, args: str | None = None) -> bool:
         from openkyrozen.security.permissions import _redacted_approval_value
         args = json.dumps(_redacted_approval_value(request.arguments), ensure_ascii=False, sort_keys=True)
     chunks = [args[index:index + 8000] for index in range(0, len(args or ""), 8000)]
+    chunked = len((args or "").encode("utf-8")) > 20_000
+    inline_args = chunks[0] if chunked and chunks else (args or "")
+    inline_chunks = [] if chunked else chunks
     self.emit(
         "prompt", kind="approval", request_id=approval_id,
-        masked=True, action=action, args=_redact(args or ""),
-        args_chunks=chunks,
-        args_truncated=len(args or "") > MAX_TEXT_CHARS,
-        operation=request.arguments if request is not None and len(args or "") <= MAX_TEXT_CHARS else None,
+        masked=True, action=action, args=_redact(inline_args),
+        args_chunks=inline_chunks,
+        args_truncated=chunked or len(args or "") > MAX_TEXT_CHARS,
+        operation=_redacted_approval_value(request.arguments) if request is not None and not chunked and len(args or "") <= 3000 else None,
         fingerprint=request.fingerprint if request is not None else None,
         workspace_id=request.workspace_id if request is not None else None,
         session_id=request.session_id if request is not None else None,
         message="This action may change local or remote state.",
     )
+    if chunked:
+        for index, chunk in enumerate(chunks[1:], start=1):
+            self.emit("approval_detail", approval_id, index=index, total=len(chunks), text=chunk)
     waiter.wait(timeout=APPROVAL_TIMEOUT_SECONDS)
     with self._approval_lock:
         self._pending_approvals.pop(approval_id, None)

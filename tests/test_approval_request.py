@@ -115,6 +115,58 @@ class ApprovalRequestTests(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_explicit_mcp_surface_bound_preserves_configured_dangerous_opt_in(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.tools import ToolAdapters
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WEB_CAPABILITIES": "workspace"}
+        ):
+            app = build_application(
+                surface="web", memory=build_memory(Path(directory) / "state.sqlite3"),
+                tools=ToolAdapters(directory),
+            )
+            try:
+                from openkyrozen.security.capabilities import issue_capability_token
+                app.runtime._execution_capability_token = issue_capability_token(
+                    "test", {"read", "write", "shell", "network", "git", "browser", "destructive", "dynamic"},
+                )
+                self.assertNotIn("destructive", app.runtime._effective_execution_capabilities())
+                surface = app.runtime._surface_capability_override.set(
+                    frozenset({"read", "write", "shell", "network", "git", "browser", "destructive", "dynamic"})
+                )
+                try:
+                    self.assertIn("destructive", app.runtime._effective_execution_capabilities("full"))
+                finally:
+                    app.runtime._surface_capability_override.reset(surface)
+                empty_surface = app.runtime._surface_capability_override.set(frozenset())
+                try:
+                    self.assertEqual(app.runtime._effective_execution_capabilities("full"), frozenset())
+                finally:
+                    app.runtime._surface_capability_override.reset(empty_surface)
+                from openkyrozen.tools.models import ToolResult
+                spec = app.runtime.tool_registry.get_spec("git_reset")
+                calls = []
+                app.runtime.tool_registry.register_spec(
+                    spec.replace(executor=lambda args: calls.append(args) or ToolResult(text="executed")),
+                    replace=True,
+                )
+                requested = {"read", "write", "shell", "network", "git", "browser", "destructive", "dynamic"}
+                denied = app.runtime.execute(app.runtime.current_session, "git_reset", "--hard HEAD", capabilities=requested)
+                self.assertFalse(denied.success)
+                self.assertEqual(calls, [])
+                allowed = app.runtime.execute(
+                    app.runtime.current_session, "git_reset", "--hard HEAD", capabilities=requested,
+                    _surface_capability_bound=requested,
+                )
+                self.assertTrue(allowed.success, allowed.result)
+                self.assertEqual(calls, ["--hard HEAD"])
+            finally:
+                app.close()
+
     def test_execute_call_approval_is_bound_to_the_structured_operation_and_spec(self):
         import tempfile
         from pathlib import Path
@@ -230,6 +282,43 @@ class ApprovalRequestTests(unittest.TestCase):
                 )
                 self.assertFalse(receipt.success)
                 self.assertFalse((root / "outside.txt").exists())
+            finally:
+                app.close()
+
+    def test_legacy_runtime_entry_rejects_registry_replacement_during_approval(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.tools import ToolAdapters
+        from openkyrozen.tools.models import ToolResult
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_CLI_CAPABILITIES": "full"}
+        ):
+            app = build_application(
+                surface="cli", memory=build_memory(Path(directory) / "state.sqlite3"),
+                tools=ToolAdapters(directory),
+            )
+            executed = []
+            try:
+                original = app.runtime.tool_registry.get_spec("git_reset")
+                replacement = original.replace(executor=lambda _args: executed.append("replacement") or ToolResult(text="ran"))
+
+                def replace_while_approving(_action, _args):
+                    app.runtime.tool_registry.register_spec(replacement, replace=True)
+                    return True
+
+                approval = app.runtime._approval_callback.set(replace_while_approving)
+                try:
+                    receipt = app.runtime._execute_turn_action(
+                        "git_reset", "--hard HEAD", operation_scope="approval-replacement",
+                        successful_operations=set(),
+                    )
+                finally:
+                    app.runtime._approval_callback.reset(approval)
+                self.assertFalse(receipt.success)
+                self.assertEqual(executed, [])
             finally:
                 app.close()
 

@@ -283,6 +283,7 @@ class AgentRuntime:
         self._default_turn = ExecutionContext()
         self._turn_context = ContextVar("agent_turn", default=None)
         self._session_context = ContextVar("agent_session", default=None)
+        self._surface_capability_override = ContextVar("agent_surface_capabilities", default=None)
         self._sessions = {}
         self._workspaces = {workspace.root: workspace}
 
@@ -542,13 +543,15 @@ class AgentRuntime:
     def _last_completion_tokens(self, value):
         self.execution_context.last_completion_tokens = value
 
-    def execute(self, session, action, args, *, capabilities=None, operation_scope="", approve=None):
+    def execute(self, session, action, args, *, capabilities=None, operation_scope="", approve=None,
+                _surface_capability_bound=None):
         """All inbound tool surfaces share authorization, approvals and receipts."""
         from openkyrozen.security.capabilities import issue_capability_token
         from openkyrozen.app.config import AgentConfigError
         with self.use_session(session):
             context_token = self._turn_context.set(copy.copy(self.execution_context))
             approval_token = self._approval_callback.set(approve)
+            surface_token = self._surface_capability_override.set(_surface_capability_bound)
             try:
                 current = self._execution_capability_token
                 try:
@@ -564,6 +567,7 @@ class AgentRuntime:
                     session_id=self.memory_bank.session_id)
                 return receipt
             finally:
+                self._surface_capability_override.reset(surface_token)
                 self._approval_callback.reset(approval_token)
                 self._turn_context.reset(context_token)
 
@@ -576,7 +580,11 @@ class AgentRuntime:
         default_surface = "full" if self._EXECUTION_SURFACE == "cli" else "workspace"
         if self._EXECUTION_SURFACE == "tui" and self.permission_mode() in {"full_jev", "full"}:
             default_surface = "full"
-        surface = resolve_capabilities(self._surface_capabilities or default_surface)
+        surface_bound = self._surface_capability_override.get()
+        surface_value = (surface_bound if surface_bound is not None else
+                         self._surface_capabilities or default_surface)
+        surface = (frozenset(surface_value) if not isinstance(surface_value, str)
+                   else resolve_capabilities(surface_value))
         granted = self._execution_capability_token.capabilities & config & surface
         granted = mode_capabilities(granted, self._active_interaction_mode.get())
         if requested is not None:

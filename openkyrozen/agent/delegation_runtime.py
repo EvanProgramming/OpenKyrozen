@@ -317,14 +317,15 @@ def _delegation_tool_access(self, action, args):
             policy.get("side_effects", "unknown") if isinstance(policy, dict)
             else getattr(policy, "side_effects", "unknown")
         )
-        if action not in {"write_file", "edit_file"} and (
+        read_only_network = capability == "network" and effects == "external"
+        if action not in {"write_file", "edit_file"} and not read_only_network and (
             capability in {"write", "shell", "git", "browser", "destructive", "dynamic"}
             or effects not in {"none", "read"}
         ):
             raise PermissionError(f"Sub-agent capability '{capability}' is not confined to assigned files")
         if action in {"write_file", "edit_file"}:
             brief = coordinator.runs[context.child_run_id]["assignment"]
-            owned = {str((coordinator.root / p).resolve()) for p in brief["scope"]}
+            owned = {str(coordinator.root / p) for p in brief["scope"]}
             if path not in owned:
                 raise ValueError("Sub-agent write is outside its assigned files")
         parent = getattr(self.current_session, "_delegation_parent", None)

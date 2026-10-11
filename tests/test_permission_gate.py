@@ -56,8 +56,27 @@ class PermissionGateTests(unittest.TestCase):
         ):
             with self.subTest(action=action, args=args):
                 self.assertFalse(git_read_arguments_allowed(action, args))
+        for args in ('"--output=patch.txt"', "'--ext-diff'", '"--textconv"', '"--exec=helper"'):
+            with self.subTest(args=args):
+                self.assertFalse(git_read_arguments_allowed("git_log", args))
+        self.assertFalse(git_read_arguments_allowed("git_log", '"unterminated'))
         self.assertTrue(git_read_arguments_allowed("git_diff", "--cached HEAD~1"))
         self.assertTrue(git_read_arguments_allowed("git_log", "--oneline -5"))
+
+    def test_read_only_git_executors_disable_external_diff_and_textconv(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from openkyrozen.tools.git import git_diff, git_log
+
+        tools = SimpleNamespace(_git_working_directory=lambda: "/tmp/workspace")
+        with patch("openkyrozen.tools.git.subprocess.run") as run:
+            run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+            git_diff(tools, "")
+            git_log(tools, "")
+        commands = [call.args[0] for call in run.call_args_list]
+        for command in commands:
+            self.assertIn("--no-textconv", command)
+            self.assertIn("--no-ext-diff", command)
 
 
 if __name__ == "__main__":

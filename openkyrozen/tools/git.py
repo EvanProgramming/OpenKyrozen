@@ -51,7 +51,7 @@ def git_diff(self, args: str) -> str:
     """
     try:
         extra_args = args.strip()
-        cmd = ["git", "-C", self._git_working_directory(), "diff"]
+        cmd = ["git", "-C", self._git_working_directory(), "diff", "--no-textconv", "--no-ext-diff"]
         if extra_args:
             # Support --cached, --staged, HEAD~N, commit hashes
             for part in extra_args.split():
@@ -74,7 +74,7 @@ def git_log(self, args: str) -> str:
     """
     try:
         import shlex
-        cmd = ["git", "-C", self._git_working_directory(), "log", "--oneline", "--decorate"]
+        cmd = ["git", "-C", self._git_working_directory(), "log", "--no-textconv", "--no-ext-diff", "--oneline", "--decorate"]
         if args.strip():
             try:
                 extra = shlex.split(args.strip())

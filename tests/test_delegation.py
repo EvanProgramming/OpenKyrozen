@@ -78,7 +78,7 @@ class DelegationTests(unittest.TestCase):
 
         child_id = "scoped-child"
         coordinator = SimpleNamespace(
-            access=WorkspaceAccess(), root=self.root,
+            access=WorkspaceAccess(), root=self.root.resolve(),
             runs={child_id: {"assignment": brief()}},
             cancelled={child_id: threading.Event()}, check_cancelled=lambda _run_id: None,
         )
@@ -95,6 +95,32 @@ class DelegationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 with self.runtime._delegation_tool_access("write_file", "outside.txt|denied"):
                     self.fail("child writes outside assigned files must not run")
+            (self.root / "other.txt").write_text("keep")
+            (self.root / "marker.txt").unlink()
+            (self.root / "marker.txt").symlink_to(self.root / "other.txt")
+            with self.assertRaises(ValueError):
+                with self.runtime._delegation_tool_access("write_file", "marker.txt|overwrite"):
+                    self.fail("a post-assignment symlink must not retarget a child write")
+            self.assertEqual((self.root / "other.txt").read_text(), "keep")
+        finally:
+            self.runtime._turn_context.reset(context_token)
+
+    def test_child_can_use_read_only_network_tools(self):
+        from openkyrozen.agent.turn import ExecutionContext
+        from types import SimpleNamespace
+
+        child_id = "scoped-network-reader"
+        coordinator = SimpleNamespace(
+            access=WorkspaceAccess(), root=self.root.resolve(),
+            runs={child_id: {"assignment": brief()}},
+            cancelled={child_id: threading.Event()}, check_cancelled=lambda _run_id: None,
+        )
+        context_token = self.runtime._turn_context.set(ExecutionContext(child_run_id=child_id, coordinator=coordinator))
+        try:
+            with self.runtime._delegation_tool_access("search_web", "specific research query"):
+                pass
+            with self.runtime._delegation_tool_access("read_webpage", "https://example.invalid"):
+                pass
         finally:
             self.runtime._turn_context.reset(context_token)
 

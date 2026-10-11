@@ -2,7 +2,6 @@ package main
 
 import (
 	"charm.land/bubbles/v2/textinput"
-	"charm.land/lipgloss/v2"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -206,6 +205,12 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		m.completeOnboarding()
 	case "prompt":
 		m.handlePrompt(event)
+	case "approval_detail":
+		if stringValue(event, "request_id") != m.approvalID {
+			break
+		}
+		m.approvalArgs = safeApprovalArgs(m.approvalArgs + stringValue(event, "text"))
+		m.setApprovalContent()
 	case "error":
 		m.setError(firstNonEmpty(stringValue(event, "error"), "Backend error"))
 	case "exit":
@@ -486,7 +491,7 @@ func (m *model) handlePrompt(event backendEvent) {
 			}
 		}
 		m.approvalArgs = safeApprovalArgs(m.approvalArgs)
-		m.approvalView.SetContent(lipgloss.Wrap(m.approvalArgs, maxInt(1, minInt(70, m.width-14)), ""))
+		m.setApprovalContent()
 		m.approvalView.GotoTop()
 		m.screen = screenApproval
 		m.startTransition()
