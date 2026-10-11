@@ -130,7 +130,21 @@ def git_read_arguments_allowed(action: str, args: object) -> bool:
     if action not in {"git_diff", "git_show", "git_log", "git_status"}:
         return True
     try:
-        words = shlex.split(_arguments(args))
+        if isinstance(args, dict):
+            if action in {"git_diff", "git_log"}:
+                options = args.get("options", [])
+                if not isinstance(options, list) or not all(isinstance(item, str) for item in options):
+                    return False
+                words = options
+            elif action == "git_show":
+                reference = args.get("reference", "")
+                if not isinstance(reference, str):
+                    return False
+                words = [reference] if reference else []
+            else:
+                words = []
+        else:
+            words = shlex.split(_arguments(args))
     except ValueError:
         return False
     if any(

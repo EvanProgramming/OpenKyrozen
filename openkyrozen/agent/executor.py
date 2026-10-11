@@ -185,8 +185,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         self._notify_tool_execute(action, args, outcome)
         return finish(outcome)
     from openkyrozen.security.permission_gate import git_read_arguments_allowed
-    policy_args = (json.dumps(args, ensure_ascii=False, sort_keys=True) if isinstance(args, dict) else args)
-    if not git_read_arguments_allowed(action, policy_args):
+    if not git_read_arguments_allowed(action, args):
         outcome = tool_failure("invalid_arguments", "Error: read-only Git tools reject output-writing and external-execution options.")
         self._notify_tool_execute(action, args, outcome)
         return finish(outcome)

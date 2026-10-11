@@ -109,6 +109,28 @@ class RegistryContractTests(unittest.TestCase):
             registry.get_spec('read_file').legacy_arguments({'path':1})
 
 class RuntimeCatalogTests(unittest.TestCase):
+    def test_runtime_blocks_output_writing_git_options_before_execution(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.providers.models import ToolCall
+        with tempfile.TemporaryDirectory() as home, patch.dict('os.environ', {
+            'KYROZEN_DISABLE_VECTOR_INDEX': '1', 'KYROZEN_CLI_CAPABILITIES': 'full',
+        }):
+            app = build_application(memory=build_memory(Path(home) / 'state.sqlite3'), tools=ToolAdapters(home))
+            try:
+                with patch('openkyrozen.tools.git.subprocess.run') as run:
+                    receipt = app.runtime.execute_call(
+                        app.runtime.current_session,
+                        ToolCall('call-guard', 'git_diff', {'options': ['--output=/tmp/guard-bypass.patch']}),
+                    )
+                self.assertFalse(receipt.success)
+                self.assertEqual(receipt.failure, 'invalid_arguments')
+                run.assert_not_called()
+            finally:
+                app.close()
+
     def test_all48_bound_tools_and_workspace_isolation(self):
         import tempfile
         from pathlib import Path
