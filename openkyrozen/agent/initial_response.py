@@ -67,9 +67,8 @@ def _initial_turn_response(self, turn):
         if not unknown_action:
             break
         _unknown_retries += 1
-        self._notify_tool_execute(
-            unknown_action, "", f"Error: unknown tool '{unknown_action}'",
-        )
+        from openkyrozen.tools.models import tool_failure
+        self._notify_tool_execute(unknown_action, "", tool_failure("invalid_arguments", f"Error: unknown tool '{unknown_action}'"))
         allowed_actions = sorted(self._permitted_tool_names())
         msg = (
             f"System: Action '{unknown_action}' is not recognized. "

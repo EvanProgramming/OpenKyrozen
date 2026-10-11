@@ -3,31 +3,33 @@ from __future__ import annotations
 import hashlib
 import ast
 import json
+import re
 import uuid
 import time
 from typing import Any
 from openkyrozen.persistence.models import stable_hash, utc_now
 from openkyrozen.app.config import AgentConfigError, effective_capabilities, load_agent_config
 from openkyrozen.security.capabilities import issue_capability_token
-from openkyrozen.tools.models import CommandResult
+from openkyrozen.tools.models import (CommandResult, ToolError, ToolResult, command_tool_result,
+                                      render_tool_result, tool_failure)
 from openkyrozen.security.tool_policy import tool_capability
 from openkyrozen.agent.types import ExecutionReceipt
 from openkyrozen.tasks.models import _receipt_args
 
 
-def _notify_tool_execute(self, action: str, args: Any, result: Any) -> None:
-    """Emit exactly one isolated plugin hook for every attempted tool call."""
-    result_text = str(result)
+def _notify_tool_execute(self, action: str, args: Any, result: ToolResult) -> None:
+    """Emit the typed outcome to observers; display text cannot change status."""
+    result = result if isinstance(result, ToolResult) else tool_failure(
+        "contract_error", "Tool observers require a typed result"
+    )
     try:
         self._plugin_runtime_for_surface().tool_execute(
-            action=action, args=args, result=result_text,
-            success=not self._is_tool_error(result_text),
-            error=None if not self._is_tool_error(result_text) else result_text,
+            action=action, args=args, result=render_tool_result(result),
+            success=result.success, error=result.error.message if result.error else None,
             user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
             session_id=self.memory_bank.session_id,
         )
     except Exception:
-        # A plugin is an observer and cannot change tool semantics.
         pass
 
 
@@ -61,17 +63,49 @@ def _is_state_changing_action(self, action: str, args: str) -> bool:
 
 def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, started_at: str,
                             success: bool, result: Any, operation_scope: str,
-                            failure: str | None = None, raw_result: Any = None) -> ExecutionReceipt:
+                            failure: str | None = None, raw_result: Any = None, tool_error: ToolError | None = None) -> ExecutionReceipt:
     canonical = self._operation_action(action)
     from openkyrozen.agent.delegation import TOOLS
     result_text = self._fix_safe_text(result, max(2000, len(str(result))) if canonical in TOOLS else 200000 if canonical in {"read_file", "read_webpage", "git_diff", "git_show", "graph_query"} else 2000, preserve_lines=True)
     command = raw_result if isinstance(raw_result, CommandResult) else None
-    if command is not None:
-        failure = command.failure
-    effect, effect_verified = self._subagent_tool_evidence(canonical, str(args), result_text)
-    acceptance, accepted = self._acceptance_for_tool(canonical, str(args), result_text)
+    effect, effect_verified = self._subagent_tool_evidence(canonical, str(args), result_text, success=success)
+    acceptance, accepted = self._acceptance_for_tool(canonical, str(args), result_text, success=success)
     if not accepted and effect_verified:
         acceptance = effect
+
+    def safe_metadata(value, budget=4000):
+        def clean(item, remaining, depth=0):
+            if remaining <= 0:
+                return "<truncated>", 0
+            if isinstance(item, dict) and depth < 5:
+                result = {}
+                for key, nested in list(item.items())[:40]:
+                    key = str(key)[:100]
+                    if re.search(r"(?i)(api.?key|credential|password|secret|token|authorization|request.?body|^body$)", key):
+                        result[key] = "<redacted>"
+                        remaining -= len(key) + 12
+                    else:
+                        result[key], remaining = clean(nested, remaining - len(key), depth + 1)
+                    if remaining <= 0:
+                        break
+                return result, remaining
+            if isinstance(item, list) and depth < 5:
+                result = []
+                for nested in item[:40]:
+                    value, remaining = clean(nested, remaining, depth + 1)
+                    result.append(value)
+                    if remaining <= 0:
+                        break
+                return result, remaining
+            if isinstance(item, str):
+                value = self._fix_safe_text(item, min(500, remaining), preserve_lines=True)
+                return value, remaining - len(value)
+            if item is None or type(item) in {bool, int, float}:
+                return item, remaining - 16
+            value = self._fix_safe_text(item, min(200, remaining))
+            return value, remaining - len(value)
+        return clean(value, budget)[0]
+
     return ExecutionReceipt(
         receipt_id=f"receipt_{uuid.uuid4().hex}",
         operation_id=self._operation_id(operation_scope, canonical, args),
@@ -89,114 +123,92 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         exit_code=command.exit_code if command is not None else None,
         verified_effect=effect if effect_verified else None,
         acceptance=acceptance if success and (accepted or effect_verified) else None,
+        tool_error=({"code": tool_error.code, "message": self._fix_safe_text(tool_error.message, 1000),
+                     "retriable": tool_error.retriable, "metadata": safe_metadata(tool_error.metadata)} if tool_error else None),
     )
 
 
 def _run_tool(self, action: str, args: str, *, return_success: bool = False,
               return_receipt: bool = False, operation_scope: str = "") -> str | tuple[str, bool] | ExecutionReceipt:
     started_at = utc_now()
-
-    def finish(result: str, success: bool = False, authorized: bool = False,
-               failure: str | None = None, raw_result: Any = None) -> str | tuple[str, bool] | ExecutionReceipt:
-        if return_receipt:
-            return self._make_execution_receipt(
-                action=action, args=args, authorized=authorized, started_at=started_at,
-                success=success, result=result, operation_scope=operation_scope, failure=failure,
-                raw_result=raw_result,
-            )
-        return (result, success) if return_success else result
-
-    # Map aliases
     action = self.TOOL_ALIASES.get(action, action)
-    # Handle dict arguments for tools that expect a simple string
     if isinstance(args, dict):
         if action in ("run_cmd", "execute_terminal_command"):
-            cmd = args.get("cmd") or args.get("command") or ""
-            args = cmd
+            args = args.get("cmd") or args.get("command") or ""
         elif action == "write_file":
-            path = args.get("file_path") or args.get("path") or ""
-            content = args.get("content") or args.get("text") or ""
-            args = f"{path}|{content}"
+            args = f"{args.get('file_path') or args.get('path') or ''}|{args.get('content') or args.get('text') or ''}"
         else:
             args = json.dumps(args)
-    # also try to parse a string that looks like a Python dict literal
     elif isinstance(args, str) and args.startswith("{"):
         try:
             parsed = ast.literal_eval(args)
             if isinstance(parsed, dict):
                 if action in ("run_cmd", "execute_terminal_command"):
-                    cmd = parsed.get("cmd") or parsed.get("command") or ""
-                    args = cmd
+                    args = parsed.get("cmd") or parsed.get("command") or ""
                 elif action == "write_file":
-                    path = parsed.get("file_path") or parsed.get("path") or ""
-                    content = parsed.get("content") or parsed.get("text") or ""
-                    args = f"{path}|{content}"
+                    args = f"{parsed.get('file_path') or parsed.get('path') or ''}|{parsed.get('content') or parsed.get('text') or ''}"
                 else:
                     args = json.dumps(parsed)
         except (ValueError, SyntaxError):
             pass
-    fn = self.AVAILABLE_TOOLS.get(action)
-    if not fn:
-        result = f"Error: unknown tool '{action}'"
-        self._notify_tool_execute(action, args, result)
-        return finish(result, failure="unknown_tool")
-    required_capability = tool_capability(action,self.AVAILABLE_TOOLS)
+    def finish(outcome: ToolResult, authorized: bool = False, raw_result: Any = None):
+        text = render_tool_result(outcome)
+        if return_receipt:
+            return self._make_execution_receipt(
+                action=action, args=args, authorized=authorized, started_at=started_at,
+                success=outcome.success, result=text, operation_scope=operation_scope,
+                failure=outcome.error.code if outcome.error else None, raw_result=raw_result,
+                tool_error=outcome.error,
+            )
+        return (text, outcome.success) if return_success else text
+    if action not in self.AVAILABLE_TOOLS:
+        outcome = tool_failure("invalid_arguments", f"Error: unknown tool '{action}'")
+        self._notify_tool_execute(action, args, outcome)
+        return finish(outcome)
+    required_capability = tool_capability(action, self.AVAILABLE_TOOLS)
     try:
         if required_capability not in effective_capabilities(load_agent_config(self._get_workspace_root())):
-            result = (
-                f"Error: tool '{action}' requires capability '{required_capability}', "
-                "which is outside the configured agent capability bound"
-            )
-            self._notify_tool_execute(action, args, result)
-            return finish(result, failure="capability_denied")
+            outcome = tool_failure("permission_denied", f"Error: tool '{action}' requires capability '{required_capability}', which is outside the configured agent capability bound")
+            self._notify_tool_execute(action, args, outcome)
+            return finish(outcome)
     except AgentConfigError as exc:
-        result = f"Error: invalid agent configuration: {exc}"
-        self._notify_tool_execute(action, args, result)
-        return finish(result, failure="invalid_configuration")
+        outcome = tool_failure("execution_error", f"Error: invalid agent configuration: {exc}")
+        self._notify_tool_execute(action, args, outcome)
+        return finish(outcome)
     if time.time() >= self._execution_capability_token.expires_at:
         self._execution_capability_token = issue_capability_token(
-            self._execution_capability_token.subject,
-            self._execution_capability_token.capabilities,
+            self._execution_capability_token.subject, self._execution_capability_token.capabilities,
         )
     if not self._execution_capability_token.allows(required_capability):
-        result = f"Error: tool '{action}' requires capability '{required_capability}'"
-        self._notify_tool_execute(action, args, result)
-        return finish(result, failure="capability_denied")
-    authorized = (
-        self._authorize_tool_action(action, args)
-        if self._EXECUTION_SURFACE == "tui"
-        else self._confirm_tool_action(action, str(args))
-    )
+        outcome = tool_failure("permission_denied", f"Error: tool '{action}' requires capability '{required_capability}'")
+        self._notify_tool_execute(action, args, outcome)
+        return finish(outcome)
+    authorized = (self._authorize_tool_action(action, args) if self._EXECUTION_SURFACE == "tui"
+                  else self._confirm_tool_action(action, str(args)))
     if not authorized:
-        result = (
-            f"Error: {action} requires confirmation. "
-            "Approve it interactively or set KYROZEN_APPROVAL_MODE=never for an explicitly automated CLI."
-        )
-        self._notify_tool_execute(action, args, result)
-        return finish(result, failure="approval_denied")
+        outcome = tool_failure("approval_denied", f"Error: {action} requires confirmation. Approve it interactively or set KYROZEN_APPROVAL_MODE=never for an explicitly automated CLI.")
+        self._notify_tool_execute(action, args, outcome)
+        return finish(outcome)
     start = time.time()
-    tool_result: Any = None
-    failure: str | None = None
+    raw_result = None
     try:
         with self._delegation_tool_access(action, args):
-            tool_result = self.run_command(args) if action in {"run_cmd", "execute_terminal_command"} else fn(args)
-        result = str(tool_result)
-        from openkyrozen.agent.delegation import TOOLS
-        success = tool_result.success if isinstance(tool_result, CommandResult) else (action in TOOLS or not self._is_tool_error(result))
+            if action in {"run_cmd", "execute_terminal_command"}:
+                raw_result = self.run_command(args)
+                outcome = command_tool_result(raw_result)
+            else:
+                outcome = self.tool_registry._invoke_executor(self.tool_registry.get_spec(action), args)
     except KeyboardInterrupt:
-        result = "Tool execution interrupted by user (Ctrl+C)."
-        success = False
-        failure = "interrupted"
-    except Exception as e:
-        result = f"Error: {e}"
-        success = False
-        failure = "execution_error"
+        outcome = tool_failure("cancelled", "Tool execution interrupted by user (Ctrl+C).")
+    except Exception as exc:
+        outcome = tool_failure("execution_error", f"Error: {type(exc).__name__}: {exc}")
     elapsed = time.time() - start
-    self._track_tool_performance(action, result, elapsed)
-    self._notify_tool_execute(action, args, result)
-    if success and action in {"git_pull", "git_checkout", "git_reset", "git_clone"} and self._project_graph is not None:
+    text = render_tool_result(outcome)
+    self._track_tool_performance(action, outcome.success, elapsed)
+    self._notify_tool_execute(action, args, outcome)
+    if outcome.success and action in {"git_pull", "git_checkout", "git_reset", "git_clone"} and self._project_graph is not None:
         self._project_graph.refresh_async()
-    return finish(result, success, authorized=True, failure=failure, raw_result=tool_result)
+    return finish(outcome, authorized=True, raw_result=raw_result)
 
 
 def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
@@ -211,10 +223,11 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             "Example: `\"args\": \"python3 process_logs.py\"`.\n"
             "Do NOT use `\"args\": {\"cmd\": ...}`.\n"
         )
-        self._notify_tool_execute(action, args, result)
+        outcome = tool_failure("invalid_arguments", result)
+        self._notify_tool_execute(action, args, outcome)
         return self._make_execution_receipt(
             action=canonical, args=args, authorized=False, started_at=started_at, success=False,
-            result=result, operation_scope=operation_scope, failure="invalid_arguments",
+            result=result, operation_scope=operation_scope, failure=outcome.error.code, tool_error=outcome.error,
         )
     args = str(args)
     operation_id = self._operation_id(operation_scope, canonical, args)
@@ -223,19 +236,21 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
         allowed, reason = self.tasks.mutation_matches_current_task(canonical, args)
         if not allowed:
             result = f"Error: action does not match the accepted plan; {reason}."
-            self._notify_tool_execute(canonical, args, result)
+            outcome = tool_failure("permission_denied", result)
+            self._notify_tool_execute(canonical, args, outcome)
             return self._make_execution_receipt(
                 action=canonical, args=args, authorized=False, started_at=started_at,
                 success=False, result=result, operation_scope=operation_scope,
-                failure="plan_action_mismatch",
+                failure=outcome.error.code, tool_error=outcome.error,
             )
     if (canonical != "run_cmd" and self._is_state_changing_action(canonical, args)
             and operation_id in successful_operations):
-        result = "Error: duplicate successful state-changing action refused for this turn."
-        self._notify_tool_execute(canonical, args, result)
+        outcome = tool_failure("conflict", "Error: duplicate successful state-changing action refused for this turn.")
+        result = render_tool_result(outcome)
+        self._notify_tool_execute(canonical, args, outcome)
         return self._make_execution_receipt(
             action=canonical, args=args, authorized=True, started_at=started_at, success=False,
-            result=result, operation_scope=operation_scope, failure="duplicate_operation",
+            result=result, operation_scope=operation_scope, failure=outcome.error.code, tool_error=outcome.error,
         )
     receipt = self._run_tool(canonical, args, return_receipt=True, operation_scope=operation_scope)
     assert isinstance(receipt, ExecutionReceipt)
@@ -274,7 +289,7 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt) -> dict[str, Any]:
         "receipt_id": receipt.receipt_id, "operation_id": receipt.operation_id,
         "action": receipt.action, "args": receipt.args, "result": receipt.result,
         "success": receipt.success, "authorized": receipt.authorized,
-        "acceptance": effective_acceptance, "failure": receipt.failure, "task_id": task_id,
+        "acceptance": effective_acceptance, "failure": receipt.failure, "tool_error": receipt.tool_error, "task_id": task_id,
     }
     if evidence.get("unmatched_reason"):
         result["unmatched_reason"] = evidence["unmatched_reason"]

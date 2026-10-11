@@ -32,13 +32,13 @@ class ToolAdapters:
 
     @AVAILABLE_TOOLS.setter
     def AVAILABLE_TOOLS(self,value):
-        from .manifest import ToolRegistry
+        from .manifest import ToolRegistry, typed_executor
         previous = self.tool_registry.snapshot() if hasattr(self,'tool_registry') else {}
         registry = ToolRegistry()
         registry.runtime_bindings_initialized = getattr(getattr(self,'tool_registry',None),'runtime_bindings_initialized',False)
         for name,function in value.items():
             if name in previous:
-                registry.register_spec(previous[name].replace(executor=function))
+                registry.register_spec(previous[name].replace(executor=typed_executor(function)))
             else:
                 registry.register(name,function)
         self.tool_registry = registry

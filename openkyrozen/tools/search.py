@@ -1,12 +1,13 @@
 from __future__ import annotations
+from openkyrozen.tools.models import ToolError, ToolResult, command_tool_result, legacy_text_api, tool_failure, tool_json_result, tool_success
 
 import json
 import re
 import requests
 
-from openkyrozen.tools.models import CommandResult
 from openkyrozen.security.command_policy import _BLOCKED_RE
 
+@legacy_text_api
 def search_web(self, args: str) -> str:
     """
     Search the internet for real-time information.
@@ -21,7 +22,7 @@ def search_web(self, args: str) -> str:
 
     query = (args or "").strip()
     if not query:
-        return "Search Error: query is empty."
+        return tool_failure('invalid_arguments', "Search Error: query is empty.", retriable=False)
 
     def _fmt(results):
         lines = []
@@ -74,7 +75,7 @@ def search_web(self, args: str) -> str:
                     snippet = html.unescape(m2.group(1)).strip()
                 results.append({"title": title, "body": snippet, "url": url})
             if results:
-                return _fmt(results)
+                return tool_success(str(_fmt(results)))
 
     # ---- attempt 2: DuckDuckGo Lite HTML (GET) ----
     lite_url = f"https://lite.duckduckgo.com/lite/?q={quote(query)}"
@@ -95,7 +96,7 @@ def search_web(self, args: str) -> str:
                     snippet = html.unescape(snippet)
                 results.append({"title": title, "body": snippet, "url": ""})
             if results:
-                return _fmt(results)
+                return tool_success(str(_fmt(results)))
     except Exception:
         pass
 
@@ -118,7 +119,7 @@ def search_web(self, args: str) -> str:
                     snippet = html.unescape(snippet)
                 results.append({"title": title, "body": snippet, "url": ""})
             if results:
-                return _fmt(results)
+                return tool_success(str(_fmt(results)))
     except Exception:
         pass
 
@@ -139,7 +140,7 @@ def search_web(self, args: str) -> str:
                     title = title.split(" - ")[0]
                 results.append({"title": title[:200], "body": "", "url": url})
             if results:
-                return _fmt(results)
+                return tool_success(str(_fmt(results)))
     except Exception:
         pass
 
@@ -156,14 +157,14 @@ def search_web(self, args: str) -> str:
                 url = data[3][i] if i < len(data[3]) else ""
                 results.append({"title": title, "body": desc[:300], "url": url})
             if results:
-                return _fmt(results)
+                return tool_success(str(_fmt(results)))
     except Exception:
         pass
 
     # All backends failed — return a useful error message
     return (
-        "Search temporarily unavailable: all backends (Google, DuckDuckGo, Wikipedia) "
+        tool_failure('dependency_unavailable', "Search temporarily unavailable: all backends (Google, DuckDuckGo, Wikipedia) "
         f"failed for query '{query[:80]}'. This may be due to rate-limiting or "
         "network issues. Suggestions: try a shorter query, wait a few seconds and "
-        "retry, or use read_webpage on a known URL instead."
+        "retry, or use read_webpage on a known URL instead.", retriable=True)
     )

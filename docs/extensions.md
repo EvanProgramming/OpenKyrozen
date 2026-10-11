@@ -20,7 +20,7 @@ The plugin lifecycle supports project Python extensions such as the sample `plug
 
 ## Dynamic tools
 
-Runtime-created dynamic tools are a distinct feature from skills. They remain disabled unless the operator enables them with `KYROZEN_ALLOW_DYNAMIC_TOOLS` and all normal tool capability and approval checks still apply. Review generated source and permissions before activation. A learning feature that observes successful tools does not silently switch this policy on.
+Runtime-created dynamic tools are a distinct feature from skills. They remain disabled unless the operator enables them with `KYROZEN_ALLOW_DYNAMIC_TOOLS` and all normal tool capability and approval checks still apply. Dynamic executors must return `ToolResult`; the restricted source namespace provides `ToolResult` and `ToolError` constructors. Review generated source and permissions before activation. A learning feature that observes successful tools does not silently switch this policy on.
 
 ## Learned policies and skills
 
@@ -63,3 +63,6 @@ Registration validates the supported object-schema vocabulary, including nested
 properties/items/combinators and scalar constraints. Unsupported keywords are
 rejected rather than forwarded unchecked; this registry is not a general JSON
 Schema evaluation engine. Existing legacy argument conversion remains unchanged.
+
+
+Built-in tools use stable result codes such as `invalid_arguments`, `not_found`, `permission_denied`, `approval_denied`, `dependency_unavailable`, `timeout`, `cancelled`, `command_failed`, `stale_file`, `conflict`, `execution_error`, and `contract_error`. Mutating tools keep failures non-retriable unless retry safety is explicitly established.

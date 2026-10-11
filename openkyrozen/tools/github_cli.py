@@ -18,6 +18,8 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
+from openkyrozen.tools.models import ToolError, ToolResult, tool_failure, tool_success, render_tool_result
+
 
 GH_VERSION = "2.101.0"
 GH_RELEASE_BASE = f"https://github.com/cli/cli/releases/download/v{GH_VERSION}"
@@ -143,39 +145,44 @@ class GitHubCLI:
             return True
         return len(values) >= 2 and (values[0], values[1]) in READ_ONLY
 
-    def run(self, value: str | list[str], *, read_only: bool = False) -> str:
+    def run_result(self, value: str | list[str], *, read_only: bool = False) -> ToolResult:
         binary = self.binary()
         if not binary:
-            return "AUTH_REQUIRED: GitHub CLI is not installed. Use /github login to install and authenticate it."
+            return tool_failure("dependency_unavailable", "AUTH_REQUIRED: GitHub CLI is not installed. Use /github login to install and authenticate it.")
         try:
             argv = self.parse_args(value)
         except ValueError as exc:
-            return f"Error: {exc}"
+            return tool_failure("invalid_arguments", f"Error: {exc}")
         if not argv:
-            return "Error: github_cli requires arguments."
+            return tool_failure("invalid_arguments", "Error: github_cli requires arguments.")
         if (argv[:2] == ["auth", "token"] or "--show-token" in argv
                 or any(value.split("=", 1)[0] in SENSITIVE_FLAGS for value in argv)):
-            return "Error: credential arguments are blocked; let gh own authentication."
+            return tool_failure("permission_denied", "Error: credential arguments are blocked; let gh own authentication.")
         if argv[:2] == ["auth", "login"]:
-            return "AUTH_REQUIRED: Interactive login is available through /github login."
+            return tool_failure("permission_denied", "AUTH_REQUIRED: Interactive login is available through /github login.")
         if read_only and not self.is_read_only(argv):
-            return "Error: this GitHub command is not in the read-only allowlist."
+            return tool_failure("permission_denied", "Error: this GitHub command is not in the read-only allowlist.")
         status = self.status()
         if not status["authenticated"] and argv[:2] != ["auth", "status"]:
-            return f"AUTH_REQUIRED: {status['command']}"
+            return tool_failure("dependency_unavailable", f"AUTH_REQUIRED: {status['command']}")
         try:
             result = self.runner(
                 [binary, *argv], cwd=str(self.workspace), capture_output=True, text=True,
                 timeout=120, check=False, env=os.environ.copy(),
             )
         except subprocess.TimeoutExpired:
-            return "Error: GitHub CLI timed out after 120 seconds."
+            return tool_failure("timeout", "Error: GitHub CLI timed out after 120 seconds.")
         except OSError as exc:
-            return f"Error: GitHub CLI could not start: {exc}"
+            return tool_failure("dependency_unavailable", f"Error: GitHub CLI could not start: {exc}")
         output = self._redact((result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")).strip()
         if result.returncode:
-            return f"Error: gh exited with {result.returncode}: {output or '(no output)'}"
-        return output or "GitHub CLI completed successfully."
+            return ToolResult(data={"exit_code": result.returncode}, text=f"Error: gh exited with {result.returncode}: {output or '(no output)'}",
+                              error=ToolError(
+                                  "command_failed", f"gh exited with {result.returncode}", metadata={"exit_code": result.returncode}))
+        return tool_success(output or "GitHub CLI completed successfully.", data={"exit_code": result.returncode})
+
+    def run(self, value: str | list[str], *, read_only: bool = False) -> str:
+        return render_tool_result(self.run_result(value, read_only=read_only))
 
     def login_command(self, hostname: str | None = None) -> list[str] | None:
         binary = self.binary()

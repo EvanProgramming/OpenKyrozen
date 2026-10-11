@@ -1,11 +1,11 @@
 from __future__ import annotations
+from openkyrozen.tools.models import ToolError, ToolResult, command_tool_result, legacy_text_api, tool_failure, tool_json_result, tool_success
 
 import os
 import shlex
 import subprocess
 from pathlib import Path
 
-from openkyrozen.tools.models import CommandResult
 from openkyrozen.security.command_policy import _BLOCKED_RE
 
 def _git_working_directory(self, path: str = ".") -> str:
@@ -16,6 +16,7 @@ def _git_working_directory(self, path: str = ".") -> str:
     return str(candidate.resolve())
 
 
+@legacy_text_api
 def git_clone(self, args: str) -> str:
     """
     Clone a git repository. Args format: "url" or "url|destination".
@@ -35,12 +36,13 @@ def git_clone(self, args: str) -> str:
             cmd, capture_output=True, text=True, timeout=60, cwd=str(self._WORKSPACE_ROOT),
         )
         if result.returncode != 0:
-            return f"Git clone failed:\n{result.stderr}"
-        return f"Repository cloned successfully:\n{result.stdout}"
+            return tool_failure('command_failed', f"Git clone failed:\n{result.stderr}", retriable=False)
+        return tool_success(str(f"Repository cloned successfully:\n{result.stdout}"))
     except Exception as e:
-        return f"Error during git clone: {e}"
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error during git clone: {e}", retriable=False)
 
 
+@legacy_text_api
 def git_diff(self, args: str) -> str:
     """
     Show git diff (unstaged, staged, or between commits).
@@ -56,13 +58,14 @@ def git_diff(self, args: str) -> str:
                 cmd.append(part)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            return f"Git diff failed:\n{result.stderr}"
+            return tool_failure('command_failed', f"Git diff failed:\n{result.stderr}", retriable=False)
         out = result.stdout.strip()
-        return out if out else "(no changes)"
+        return (tool_success(str(out)) if out else tool_success(str("(no changes)")))
     except Exception as e:
-        return f"Error running git diff: {e}"
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git diff: {e}", retriable=False)
 
 
+@legacy_text_api
 def git_log(self, args: str) -> str:
     """
     Show git commit log. Args format: "-5" or "--since='2 days ago' --author='Name'"
@@ -80,13 +83,14 @@ def git_log(self, args: str) -> str:
             cmd.extend(extra)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            return f"Git log failed:\n{result.stderr}"
+            return tool_failure('command_failed', f"Git log failed:\n{result.stderr}", retriable=False)
         out = result.stdout.strip()
-        return out if out else "(no commits)"
+        return (tool_success(str(out)) if out else tool_success(str("(no commits)")))
     except Exception as e:
-        return f"Error running git log: {e}"
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git log: {e}", retriable=False)
 
 
+@legacy_text_api
 def git_branch(self, args: str) -> str:
     """
     List or manage git branches. Args format: "" (list all), "branch_name" (create),
@@ -104,7 +108,7 @@ def git_branch(self, args: str) -> str:
             cmd.extend(extra)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            return f"Git branch failed:\n{result.stderr}"
+            return tool_failure('command_failed', f"Git branch failed:\n{result.stderr}", retriable=False)
         out = result.stdout.strip()
         mutation_flags = {"-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy", "-f", "--force"}
         mutation = bool(extra and (extra[0] in mutation_flags or not extra[0].startswith("-")))
@@ -112,18 +116,19 @@ def git_branch(self, args: str) -> str:
             targets = [item for item in extra if item != "--" and not item.startswith("-")]
             if extra[0] in {"-d", "-D", "--delete"}:
                 names = ", ".join(repr(item) for item in targets) or "the requested branch"
-                return f"Deleted branch {names}."
+                return tool_success(str(f"Deleted branch {names}."))
             if extra[0] in {"-m", "-M", "--move"} and len(targets) >= 2:
-                return f"Renamed branch {targets[-2]!r} to {targets[-1]!r}."
+                return tool_success(str(f"Renamed branch {targets[-2]!r} to {targets[-1]!r}."))
             if extra[0] in {"-c", "-C", "--copy"} and len(targets) >= 2:
-                return f"Copied branch {targets[-2]!r} to {targets[-1]!r}."
+                return tool_success(str(f"Copied branch {targets[-2]!r} to {targets[-1]!r}."))
             name = targets[-1] if targets else "the requested branch"
-            return f"Created branch {name!r}."
-        return out if out else "(no branches)"
+            return tool_success(str(f"Created branch {name!r}."))
+        return (tool_success(str(out)) if out else tool_success(str("(no branches)")))
     except Exception as e:
-        return f"Error running git branch: {e}"
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git branch: {e}", retriable=False)
 
 
+@legacy_text_api
 def git_add(self, args: str) -> str:
     """
     Stage files for commit. Args format: "file1 file2" or "." (stage all).
@@ -136,12 +141,13 @@ def git_add(self, args: str) -> str:
             cmd.append(f)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            return f"Git add failed:\n{result.stderr}"
-        return "Files staged successfully."
+            return tool_failure('command_failed', f"Git add failed:\n{result.stderr}", retriable=False)
+        return tool_success(str("Files staged successfully."))
     except Exception as e:
-        return f"Error running git add: {e}"
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git add: {e}", retriable=False)
 
 
+@legacy_text_api
 def git_commit(self, args: str) -> str:
     """
     Commit staged changes. Args format: '"commit message"' (quotes recommended).
@@ -151,16 +157,17 @@ def git_commit(self, args: str) -> str:
         import shlex
         message = args.strip().strip('"').strip("'")
         if not message:
-            return "Error: git_commit requires a commit message."
+            return tool_failure('invalid_arguments', "Error: git_commit requires a commit message.", retriable=False)
         cmd = ["git", "-C", self._git_working_directory(), "commit", "-m", message]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            return f"Git commit failed:\n{result.stderr}"
-        return result.stdout.strip() or "Commit successful."
+            return tool_failure('command_failed', f"Git commit failed:\n{result.stderr}", retriable=False)
+        return tool_success(str(result.stdout.strip() or "Commit successful."))
     except Exception as e:
-        return f"Error running git commit: {e}"
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git commit: {e}", retriable=False)
 
 
+@legacy_text_api
 def git_push(self, args: str) -> str:
     """
     Push commits to remote. Args format: "" (push current branch),
@@ -173,12 +180,13 @@ def git_push(self, args: str) -> str:
                 cmd.append(part)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
-            return f"Git push failed:\n{result.stderr}"
-        return result.stdout.strip() or "Push successful."
+            return tool_failure('command_failed', f"Git push failed:\n{result.stderr}", retriable=False)
+        return tool_success(str(result.stdout.strip() or "Push successful."))
     except Exception as e:
-        return f"Error running git push: {e}"
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git push: {e}", retriable=False)
 
 
+@legacy_text_api
 def git_pull(self, args: str) -> str:
     """
     Pull changes from remote. Args format: "" (pull current branch),
@@ -191,12 +199,13 @@ def git_pull(self, args: str) -> str:
                 cmd.append(part)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
-            return f"Git pull failed:\n{result.stderr}"
-        return result.stdout.strip() or "Already up to date."
+            return tool_failure('command_failed', f"Git pull failed:\n{result.stderr}", retriable=False)
+        return tool_success(str(result.stdout.strip() or "Already up to date."))
     except Exception as e:
-        return f"Error running git pull: {e}"
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git pull: {e}", retriable=False)
 
 
+@legacy_text_api
 def git_checkout(self, args: str) -> str:
     """
     Switch branches or restore files. Args format: "branch_name" (switch),
@@ -209,15 +218,16 @@ def git_checkout(self, args: str) -> str:
             for part in args.strip().split():
                 cmd.append(part)
         else:
-            return "Error: git_checkout requires a branch name or argument."
+            return tool_failure('invalid_arguments', "Error: git_checkout requires a branch name or argument.", retriable=False)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            return f"Git checkout failed:\n{result.stderr}"
-        return result.stdout.strip() or "Checkout successful."
+            return tool_failure('command_failed', f"Git checkout failed:\n{result.stderr}", retriable=False)
+        return tool_success(str(result.stdout.strip() or "Checkout successful."))
     except Exception as e:
-        return f"Error running git checkout: {e}"
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git checkout: {e}", retriable=False)
 
 
+@legacy_text_api
 def git_stash(self, args: str) -> str:
     """
     Stash or unstash working directory changes.
@@ -230,12 +240,13 @@ def git_stash(self, args: str) -> str:
             cmd.append(args.strip())
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            return f"Git stash failed:\n{result.stderr}"
-        return result.stdout.strip() or "Working directory clean."
+            return tool_failure('command_failed', f"Git stash failed:\n{result.stderr}", retriable=False)
+        return tool_success(str(result.stdout.strip() or "Working directory clean."))
     except Exception as e:
-        return f"Error running git stash: {e}"
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git stash: {e}", retriable=False)
 
 
+@legacy_text_api
 def git_reset(self, args: str) -> str:
     """
     Reset current HEAD to a specified state.
@@ -249,21 +260,22 @@ def git_reset(self, args: str) -> str:
             for part in args.strip().split():
                 cmd.append(part)
         else:
-            return "Error: git_reset requires arguments (e.g., 'file' to unstage, '--soft HEAD~1' to undo commit)."
+            return tool_failure('invalid_arguments', "Error: git_reset requires arguments (e.g., 'file' to unstage, '--soft HEAD~1' to undo commit).", retriable=False)
         # Safety: block --hard without explicit confirmation path
         if "--hard" in cmd:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if result.returncode != 0:
-                return f"Git reset failed:\n{result.stderr}"
-            return result.stdout.strip() or "Hard reset completed. WARNING: working directory changes were destroyed."
+                return tool_failure('command_failed', f"Git reset failed:\n{result.stderr}", retriable=False)
+            return tool_success(str(result.stdout.strip() or "Hard reset completed. WARNING: working directory changes were destroyed."))
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            return f"Git reset failed:\n{result.stderr}"
-        return result.stdout.strip() or "Reset successful."
+            return tool_failure('command_failed', f"Git reset failed:\n{result.stderr}", retriable=False)
+        return tool_success(str(result.stdout.strip() or "Reset successful."))
     except Exception as e:
-        return f"Error running git reset: {e}"
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git reset: {e}", retriable=False)
 
 
+@legacy_text_api
 def git_show(self, args: str) -> str:
     """
     Show details of a git object (commit, tag, etc). Args format: "HEAD" or commit hash.
@@ -274,12 +286,13 @@ def git_show(self, args: str) -> str:
         cmd = ["git", "-C", self._git_working_directory(), "show", "--stat", target]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            return f"Git show failed:\n{result.stderr}"
-        return result.stdout.strip()
+            return tool_failure('command_failed', f"Git show failed:\n{result.stderr}", retriable=False)
+        return tool_success(str(result.stdout.strip()))
     except Exception as e:
-        return f"Error running git show: {e}"
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git show: {e}", retriable=False)
 
 
+@legacy_text_api
 def git_remote(self, args: str) -> str:
     """
     Manage remote repositories. Args format: "" (list remotes),
@@ -291,36 +304,37 @@ def git_remote(self, args: str) -> str:
         try:
             parts = shlex.split(args or "")
         except ValueError:
-            return "Error: git_remote arguments contain invalid shell quoting."
+            return tool_failure('invalid_arguments', "Error: git_remote arguments contain invalid shell quoting.", retriable=False)
 
         cmd = ["git", "-C", git_dir, "remote"]
         if not parts:
             cmd.append("-v")
         elif parts[0] == "add":
             if len(parts) != 3:
-                return "Error: git_remote add requires exactly: add <name> <url>."
+                return tool_failure('invalid_arguments', "Error: git_remote add requires exactly: add <name> <url>.", retriable=False)
             cmd.extend(parts)
         elif parts[0] == "remove":
             if len(parts) != 2:
-                return "Error: git_remote remove requires exactly: remove <name>."
+                return tool_failure('invalid_arguments', "Error: git_remote remove requires exactly: remove <name>.", retriable=False)
             cmd.extend(parts)
         else:
-            return "Error: git_remote requires empty args, add <name> <url>, or remove <name>."
+            return tool_failure('invalid_arguments', "Error: git_remote requires empty args, add <name> <url>, or remove <name>.", retriable=False)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            return f"Git remote failed:\n{result.stderr}"
+            return tool_failure('command_failed', f"Git remote failed:\n{result.stderr}", retriable=False)
         output = result.stdout.strip()
         if output:
-            return output
+            return tool_success(str(output))
         if parts and parts[0] == "add":
-            return f"Remote '{parts[1]}' added."
+            return tool_success(str(f"Remote '{parts[1]}' added."))
         if parts and parts[0] == "remove":
-            return f"Remote '{parts[1]}' removed."
-        return "(no remotes configured)"
+            return tool_success(str(f"Remote '{parts[1]}' removed."))
+        return tool_success(str("(no remotes configured)"))
     except Exception as e:
-        return f"Error running git remote: {e}"
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git remote: {e}", retriable=False)
 
 
+@legacy_text_api
 def git_status(self, args: str) -> str:
     """
     Show git status of a repository. Args format: "path" (default ".").
@@ -331,14 +345,15 @@ def git_status(self, args: str) -> str:
         cmd = ["git", "-C", abs_path, "status"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            return f"Git status failed:\n{result.stderr}"
-        return result.stdout.strip() or "(clean)"
+            return tool_failure('command_failed', f"Git status failed:\n{result.stderr}", retriable=False)
+        return tool_success(str(result.stdout.strip() or "(clean)"))
     except Exception as e:
-        return f"Error running git status: {e}"
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git status: {e}", retriable=False)
 
 
+@legacy_text_api
 def execute_terminal_command(self, args: str) -> str:
     """
     Execute a terminal command. This is an alias for run_cmd.
     """
-    return str(self.run_command(args))
+    return command_tool_result(self.run_command(args))

@@ -33,7 +33,7 @@ class DynamicToolTests(unittest.TestCase):
         self._interaction_directory.cleanup()
 
     def test_static_validator_accepts_small_pure_tool(self):
-        valid, reason = validate_tool_source("def add(args):\n    return str(len(args))\n", "add")
+        valid, reason = validate_tool_source("def add(args):\n    return ToolResult(data=len(args), text=str(len(args)))\n", "add")
         self.assertTrue(valid, reason)
 
     def test_static_validator_rejects_imports_and_process_access(self):
@@ -43,8 +43,8 @@ class DynamicToolTests(unittest.TestCase):
     def test_chat_observer_registers_and_runs_a_real_dynamic_tool(self):
         source = (
             "DefineTool:\n```python\n"
-            "def count_chars(args: str) -> str:\n"
-            "    return str(len(args))\n"
+            "def count_chars(args: str) -> ToolResult:\n"
+            "    return ToolResult(data=len(args), text=str(len(args)))\n"
             "```"
         )
         original_tools = dict(main.AVAILABLE_TOOLS)
@@ -91,8 +91,8 @@ class DynamicToolTests(unittest.TestCase):
 
         source = (
             "DefineTool:\n```python\n"
-            "def count_chars(args: str) -> str:\n"
-            "    return str(len(args))\n"
+            "def count_chars(args: str) -> ToolResult:\n"
+            "    return ToolResult(data=len(args), text=str(len(args)))\n"
             "```"
         )
         responses = [
@@ -148,8 +148,8 @@ class DynamicToolTests(unittest.TestCase):
 
         source = (
             "DefineTool:\n```python\n"
-            "def count_chars(args: str) -> str:\n"
-            "    return str(len(args))\n"
+            "def count_chars(args: str) -> ToolResult:\n"
+            "    return ToolResult(data=len(args), text=str(len(args)))\n"
             "```"
         )
         original_tools = dict(main.AVAILABLE_TOOLS)

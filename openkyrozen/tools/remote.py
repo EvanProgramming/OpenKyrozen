@@ -1,13 +1,14 @@
 from __future__ import annotations
+from openkyrozen.tools.models import ToolError, ToolResult, command_tool_result, legacy_text_api, tool_failure, tool_json_result, tool_success
 
 import os
 import subprocess
 import tempfile
 import shutil
 
-from openkyrozen.tools.models import CommandResult
 from openkyrozen.security.command_policy import _BLOCKED_RE
 
+@legacy_text_api
 def analyze_remote_repo(self, args: str) -> str:
     """
     Clone a remote git repository, read its files, and return a summary.
@@ -15,7 +16,7 @@ def analyze_remote_repo(self, args: str) -> str:
     """
     url = args.strip()
     if not url:
-        return "Error: no URL provided."
+        return tool_failure('invalid_arguments', "Error: no URL provided.", retriable=False)
     try:
         import tempfile
         import shutil
@@ -26,7 +27,7 @@ def analyze_remote_repo(self, args: str) -> str:
         )
         if proc.returncode != 0:
             shutil.rmtree(tmp_dir)
-            return f"Clone failed:\n{proc.stderr}"
+            return tool_failure('command_failed', f"Clone failed:\n{proc.stderr}", retriable=False)
         summaries = []
         for root, dirs, files in os.walk(tmp_dir):
             dirs[:] = [d for d in dirs if d != ".git"]
@@ -46,6 +47,6 @@ def analyze_remote_repo(self, args: str) -> str:
         if not summaries:
             summaries.append("(empty repo or all files binary)")
         shutil.rmtree(tmp_dir)
-        return "\n\n".join(summaries)
+        return tool_success(str("\n\n".join(summaries)))
     except Exception as e:
-        return f"Error analyzing repository: {e}"
+        return tool_failure('execution_error', f"Error analyzing repository: {e}", retriable=False)

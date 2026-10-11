@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from openkyrozen.tools.models import ToolResult
 from pathlib import Path
 from unittest.mock import patch
 
@@ -355,10 +356,10 @@ class TaskConsistencyTests(unittest.TestCase):
             original_tasks = main.tasks
             original_learning = main.learning_engine
             main._set_workspace_root(root)
-            original_write = main.AVAILABLE_TOOLS["write_file"]
+            original_write = main.tool_registry.get_spec("write_file").executor
             writes: list[str] = []
 
-            def counted_write(args: str) -> str:
+            def counted_write(args: str) -> ToolResult:
                 writes.append(args)
                 return original_write(args)
 
@@ -390,7 +391,9 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertEqual({item["payload"]["operation_id"] for item in receipts},
                              {receipts[0]["payload"]["operation_id"]})
             self.assertEqual({item["payload"]["success"] for item in receipts}, {True, False})
-            self.assertIn("duplicate_operation", {item["payload"]["failure"] for item in receipts})
+            self.assertIn("conflict", {item["payload"]["failure"] for item in receipts})
+            duplicate = next(item["payload"] for item in receipts if item["payload"]["failure"] == "conflict")
+            self.assertEqual(duplicate["tool_error"]["code"], "conflict")
             self.assertIn("marker is complete", reply.lower())
 
     def test_multi_task_plan_reconciles_receipts_without_taskdone_and_survives_restart(self):
@@ -986,7 +989,7 @@ class TaskConsistencyTests(unittest.TestCase):
             failed = main._execute_turn_action("run_cmd", "python -c pass", operation_scope="retry", successful_operations=operations)
             retried = main._execute_turn_action("run_cmd", "python -c pass", operation_scope="retry", successful_operations=operations)
         self.assertFalse(failed.success)
-        self.assertEqual(failed.failure, "nonzero_exit")
+        self.assertEqual(failed.failure, "command_failed")
         self.assertTrue(retried.success)
 
         class SlowProvider:

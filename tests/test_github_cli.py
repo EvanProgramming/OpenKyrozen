@@ -15,6 +15,7 @@ class Runner:
     def __init__(self):
         self.calls = []
         self.authenticated = True
+        self.returncode = 0
 
     def __call__(self, command, **kwargs):
         self.calls.append(command)
@@ -25,7 +26,7 @@ class Runner:
             return subprocess.CompletedProcess(command, code, "", "token=ghp_abcdefghijklmnopqrstuvwxyz123456")
         if command[1:3] == ["auth", "login"]:
             return subprocess.CompletedProcess(command, 1, "", "cancelled")
-        return subprocess.CompletedProcess(command, 0, "ok", "")
+        return subprocess.CompletedProcess(command, self.returncode, "ok", "rejected" if self.returncode else "")
 
 
 class GitHubCLITests(unittest.TestCase):
@@ -42,6 +43,12 @@ class GitHubCLITests(unittest.TestCase):
                 self.assertTrue(status["authenticated"])
                 self.assertNotIn("ghp_", status["message"])
                 self.assertEqual(client.run(["pr", "view"], read_only=True), "ok")
+                self.assertTrue(client.run_result(["pr", "view"], read_only=True).success)
+                runner.returncode = 1
+                failed = client.run_result(["pr", "view"], read_only=True)
+                self.assertFalse(failed.success)
+                self.assertEqual(failed.error.code, "command_failed")
+                runner.returncode = 0
                 before = len(runner.calls)
                 self.assertIn("allowlist", client.run(["pr", "merge"], read_only=True))
                 self.assertEqual(len(runner.calls), before)

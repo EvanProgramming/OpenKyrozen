@@ -7,12 +7,12 @@ from typing import Any
 from openkyrozen.tasks.engine import canonical_status
 
 
-def _acceptance_for_tool(self, action: str, args: str, result: str) -> tuple[str | None, bool]:
+def _acceptance_for_tool(self, action: str, args: str, result: str, *, success: bool) -> tuple[str | None, bool]:
     """Recognise hard coding checks; ordinary successful tools are not acceptance evidence."""
     if action not in {"run_cmd", "execute_terminal_command"} or not self._ACCEPTANCE_COMMAND_RE.search(str(args)):
         return None, False
     lowered = str(result).lower()
-    failed = self._is_tool_error(result) or any(marker in lowered for marker in (
+    failed = not success or any(marker in lowered for marker in (
         "failed (failures=", "failed (errors=", "tests failed", "error: test failed", "not ok",
     ))
     return str(args)[:300], not failed

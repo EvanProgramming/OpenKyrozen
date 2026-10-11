@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -38,6 +39,16 @@ CODE_NAMES = {
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass(frozen=True)
+class GraphQueryResult:
+    text: str
+    error_code: str | None = None
+
+    @property
+    def success(self) -> bool:
+        return self.error_code is None
 
 
 class ProjectGraph:
@@ -288,32 +299,46 @@ class ProjectGraph:
         counts = self._graph_counts()
         return {**state, **counts, "scope": self.cache_root.name, "mini": {"nodes": mini_nodes, "edges": mini_edges}}
 
-    def _query_command(self, args: list[str]) -> str:
+    def _query_command_result(self, args: list[str]) -> GraphQueryResult:
         with self._lock:
             if not self.graph_path.is_file():
-                return "Error: project graph is not ready. Run /graph refresh."
+                return GraphQueryResult("Error: project graph is not ready. Run /graph refresh.", "not_found")
             try:
                 result = self._run_graphify(args, timeout=120)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                return f"Error: Graphify query failed: {exc}"
+            except subprocess.TimeoutExpired as exc:
+                return GraphQueryResult(f"Error: Graphify query failed: {exc}", "timeout")
+            except OSError as exc:
+                return GraphQueryResult(f"Error: Graphify query failed: {exc}", "execution_error")
         output = (result.stdout or result.stderr or "").strip()
         if result.returncode != 0:
-            return f"Error: Graphify exited with {result.returncode}: {output[-2000:]}"
-        return self._remap(output)[:MAX_QUERY_CHARS] or "No graph results."
+            return GraphQueryResult(f"Error: Graphify exited with {result.returncode}: {output[-2000:]}", "execution_error")
+        return GraphQueryResult(self._remap(output)[:MAX_QUERY_CHARS] or "No graph results.")
+
+    def _query_command(self, args: list[str]) -> str:
+        return self._query_command_result(args).text
 
     def _remap(self, value: str) -> str:
         return str(value).replace(str(self.mirror_root), str(self.source_root))
 
     def query(self, question: str, *, budget: int = 2500) -> str:
+        return self.query_result(question, budget=budget).text
+
+    def query_result(self, question: str, *, budget: int = 2500) -> GraphQueryResult:
         question = str(question).strip()[:2000]
         if not question:
-            return "Error: graph_query requires a question."
-        return self._query_command(["query", question, "--budget", str(max(200, min(int(budget), 5000)))])
+            return GraphQueryResult("Error: graph_query requires a question.", "invalid_arguments")
+        return self._query_command_result(["query", question, "--budget", str(max(200, min(int(budget), 5000)))])
 
     def explain(self, node: str) -> str:
+        return self.explain_result(node).text
+
+    def explain_result(self, node: str) -> GraphQueryResult:
         node = str(node).strip()[:300]
-        return self._query_command(["explain", node]) if node else "Error: graph_explain requires a node."
+        return self._query_command_result(["explain", node]) if node else GraphQueryResult("Error: graph_explain requires a node.", "invalid_arguments")
 
     def path(self, left: str, right: str) -> str:
+        return self.path_result(left, right).text
+
+    def path_result(self, left: str, right: str) -> GraphQueryResult:
         left, right = str(left).strip()[:300], str(right).strip()[:300]
-        return self._query_command(["path", left, right]) if left and right else "Error: graph_path requires left|right."
+        return self._query_command_result(["path", left, right]) if left and right else GraphQueryResult("Error: graph_path requires left|right.", "invalid_arguments")

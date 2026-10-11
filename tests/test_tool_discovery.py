@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from openkyrozen.tools.models import ToolResult
 from pathlib import Path
 from unittest.mock import patch
 
@@ -77,7 +78,7 @@ class ToolDiscoveryTests(unittest.TestCase):
             self.assertNotIn("- git_log:", turn(self.agent, "git_show"))
         with self.agent.use_session(second):
             self.assertNotIn("- git_log:", turn(self.agent, "git_show"))
-        self.agent.AVAILABLE_TOOLS["pure_helper"] = lambda args: args.strip()
+        self.agent.AVAILABLE_TOOLS["pure_helper"] = lambda args: ToolResult(text=args.strip())
         self.assertIn("pure_helper", self.agent._agent_prompt_tools_list(self.config))
         self.assertIn("- pure_helper:", self.agent._discover_tools("pure_helper"))
         self.agent._execution_capability_token = issue_capability_token("test", frozenset({"read"}))

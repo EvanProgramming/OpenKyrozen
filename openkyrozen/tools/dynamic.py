@@ -63,8 +63,9 @@ def _register_tool(self, name: str, code: str, description: str = "") -> bool:
 
     # Compile the tool function in a restricted global namespace.
     try:
+        from openkyrozen.tools.models import ToolError, ToolResult
         local_ns: dict[str, Any] = {}
-        exec(code, {"__builtins__": SAFE_BUILTINS}, local_ns)
+        exec(code, {"__builtins__": SAFE_BUILTINS, "ToolError": ToolError, "ToolResult": ToolResult}, local_ns)
         fn = local_ns.get(name)
         if fn is None or not callable(fn):
             return self._reject_dynamic_tool(name, "source did not create the requested callable")
@@ -97,7 +98,7 @@ def _attempt_define_tool(self, text: str) -> bool:
     Format:
     DefineTool:
     ```python
-    def tool_name(args: str) -> str:
+    def tool_name(args: str) -> ToolResult:
         '''Description'''
         ...
     ```

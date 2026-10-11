@@ -5,6 +5,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from openkyrozen.tools.models import ToolResult
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
@@ -137,7 +138,7 @@ class LearningDispatcherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             self._isolated_runtime(Path(directory))
             stats = {"audit_probe": {"calls": 2, "successes": 2}}
-            with patch.dict(main.AVAILABLE_TOOLS, {"audit_probe": lambda _args: "ok"}), \
+            with patch.dict(main.AVAILABLE_TOOLS, {"audit_probe": lambda _args: ToolResult(text="ok")}), \
                     patch.object(main, "_tool_stats", stats), \
                     patch.object(main, "ALLOW_DYNAMIC_TOOLS", True), \
                     patch.object(main.learning_engine, "_review_claim_evidence", return_value=None):
@@ -349,7 +350,7 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertIn("TODO", main._build_memory_context("Orion parser TODO", n=8))
 
             main._set_learning_runtime("remote", "ready")
-            with patch.dict(main.AVAILABLE_TOOLS, {"search_web": lambda _query: "- Title: Orionlib documentation\n  Usage: parser API"}), \
+            with patch.dict(main.AVAILABLE_TOOLS, {"search_web": lambda _query: ToolResult(text="- Title: Orionlib documentation\n  Usage: parser API")}), \
                     patch.object(main._technology_executor, "submit", side_effect=lambda fn, lib: fn(lib)):
                 main.dispatch_learning_cycle(surface="test", trigger="turn", max_features=1,
                     user_input="use orionlib for parser work", feature_names=("auto_patch_technology",))
@@ -375,7 +376,7 @@ class LearningDispatcherTests(unittest.TestCase):
             root = Path(directory)
             self._isolated_runtime(root)
             for _ in range(3):
-                main._track_tool_performance("parse_tool", "Error: failed", 0.1)
+                main._track_tool_performance("parse_tool", False, 0.1)
             self._isolated_runtime(root)
             with patch.object(main, "_tool_stats", {}):
                 stats = main._learning_tool_stats()

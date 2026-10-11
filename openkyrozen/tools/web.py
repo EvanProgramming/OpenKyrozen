@@ -1,4 +1,5 @@
 from __future__ import annotations
+from openkyrozen.tools.models import ToolError, ToolResult, command_tool_result, legacy_text_api, tool_failure, tool_json_result, tool_success
 
 import re
 import http.client
@@ -8,7 +9,6 @@ import ssl
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
-from openkyrozen.tools.models import CommandResult
 from openkyrozen.security.command_policy import _BLOCKED_RE
 
 _MAX_WEBPAGE_BYTES = 1_000_000
@@ -160,6 +160,7 @@ def _read_pinned_web_response(self, parsed: Any, hostname: str, port: int, addre
         connection.close()
 
 
+@legacy_text_api
 def read_webpage(self, args: str) -> str:
     """
     Fetch the content of a web page and return its plain‑text body.
@@ -169,7 +170,7 @@ def read_webpage(self, args: str) -> str:
     import re
     url = str(args or "").strip()
     if not url:
-        return "Error: read_webpage requires a valid URL."
+        return tool_failure('invalid_arguments', "Error: read_webpage requires a valid URL.", retriable=False)
     try:
         current_url = url
         for redirect_count in range(_MAX_WEBPAGE_REDIRECTS + 1):
@@ -177,22 +178,22 @@ def read_webpage(self, args: str) -> str:
             status, location, body = self._read_pinned_web_response(parsed, hostname, port, address)
             if status in {301, 302, 303, 307, 308}:
                 if not location:
-                    return f"Error fetching webpage: HTTP {status} redirect has no Location header"
+                    return tool_failure('network_error', f"Error fetching webpage: HTTP {status} redirect has no Location header", retriable=True)
                 if redirect_count >= _MAX_WEBPAGE_REDIRECTS:
-                    return f"Error fetching webpage: too many redirects (maximum {_MAX_WEBPAGE_REDIRECTS})"
+                    return tool_failure('network_error', f"Error fetching webpage: too many redirects (maximum {_MAX_WEBPAGE_REDIRECTS})", retriable=True)
                 current_url = urljoin(current_url, location)
                 continue
             if status < 200 or status >= 400:
-                return f"Error fetching webpage: HTTP {status}"
+                return tool_failure('network_error', f"Error fetching webpage: HTTP {status}", retriable=True)
             text = re.sub(r"<[^>]*>", "", body)
             text = html.unescape(text)
             text = re.sub(r"\s+", " ", text).strip()
             if len(text) > 5000:
                 text = text[:5000] + "\n[...truncated...]"
-            return text
-        return f"Error fetching webpage: too many redirects (maximum {_MAX_WEBPAGE_REDIRECTS})"
+            return tool_success(str(text))
+        return tool_failure('network_error', f"Error fetching webpage: too many redirects (maximum {_MAX_WEBPAGE_REDIRECTS})", retriable=True)
     except (OSError, http.client.HTTPException, ValueError) as e:
         message = str(e)
         if "blocked address" in message or "only http" in message or "credentials in URLs" in message:
-            return f"Error: URL blocked: {message}"
-        return f"Error fetching webpage: {message}"
+            return tool_failure('permission_denied', f"Error: URL blocked: {message}", retriable=False)
+        return tool_failure('network_error', f"Error fetching webpage: {message}", retriable=True)

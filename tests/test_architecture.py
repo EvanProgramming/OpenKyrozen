@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from openkyrozen.tools.models import ToolResult
 from pathlib import Path
 from unittest.mock import patch
 
@@ -98,7 +99,7 @@ print('imports are inert')
             def read(_args):
                 runtime.DEEPSEEK_MODEL = runtime.current_session.session_id
                 barrier.wait(timeout=5)
-                return runtime.current_session.session_id + ":" + runtime.DEEPSEEK_MODEL
+                return ToolResult(text=runtime.current_session.session_id + ":" + runtime.DEEPSEEK_MODEL)
 
             runtime.AVAILABLE_TOOLS["read_file"] = read
             try:

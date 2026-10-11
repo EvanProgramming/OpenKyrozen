@@ -1,8 +1,10 @@
 from __future__ import annotations
+from openkyrozen.tools.models import ToolError, ToolResult, command_tool_result, legacy_text_api, tool_failure, tool_json_result, tool_success
 
 from typing import Any
 
 
+@legacy_text_api
 def _check_stored_data(self, args: str) -> str:
     """Return a categorized summary of stored memories.
     Usage: empty args for overview, or a category prefix like 'FACT', 'SKILL', 'STRATEGY'
@@ -83,7 +85,7 @@ def _check_stored_data(self, args: str) -> str:
                 lines.append(f"\n'{filter_arg}' entries are excluded from the learning overview (source code or raw conversations).")
             else:
                 lines.append(f"\nUnknown category '{filter_arg}'. Known learning categories: {', '.join(k.rstrip(':') for k in _LEARNING_CATEGORIES)}")
-            return "\n".join(lines)
+            return tool_success(str("\n".join(lines)))
 
         # ---- Overview ----
         lines.append("\n## Learning Categories Overview")
@@ -119,9 +121,9 @@ def _check_stored_data(self, args: str) -> str:
             lines.append("\n(No self‑learning artifacts found in the recent window. They may be deeper in storage — try `search_memory`.)")
 
         lines.append(f"\nTip: use `check_stored_data FACT` to drill into a category, or `search_memory <query>` for semantic search.")
-        return "\n".join(lines)
+        return tool_success(str("\n".join(lines)))
     except Exception as e:
-        return f"Error reading memory: {e}"
+        return tool_failure('execution_error', f"Error reading memory: {e}", retriable=False)
 
 
 def _has_cjk(self, text: str) -> bool:
@@ -167,12 +169,13 @@ def _cjk_approximate_words(self, text: str) -> int:
     return max(count, 1)
 
 
+@legacy_text_api
 def _search_memory(self, args: str) -> str:
     """Search stored memories for facts relevant to the query. Args: "query" """
     try:
         query = args.strip() if args else ""
         if not query:
-            return "Search Error: provide a query."
+            return tool_failure('invalid_arguments', "Search Error: provide a query.", retriable=False)
         # First attempt: semantic search via ChromaDB/memory recall
         results = self.memory_bank.recall(query, n_results=5)
         if not results:
@@ -198,17 +201,17 @@ def _search_memory(self, args: str) -> str:
                 results = matched[:5]
             else:
                 # No results even after fallback
-                return "No relevant memories found."
+                return tool_success(str("No relevant memories found."))
         lines = [f"Relevant memories ({len(results)}):"]
         for i, doc in enumerate(results):
             snippet = self._safe_fstring(doc[:500].replace("\n", " "))
             lines.append(f"\n--- Result {i+1} ---\n{snippet}")
         ret = "\n".join(lines)
         if ret.strip() == f"Relevant memories ({len(results)}):":
-            return "No relevant memories found for that query."
-        return ret
+            return tool_success(str("No relevant memories found for that query."))
+        return tool_success(str(ret))
     except Exception as e:
-        return f"Error searching memory: {e}"
+        return tool_failure('execution_error', f"Error searching memory: {e}", retriable=False)
 
 
 def _build_memory_context(self, query: str, n: int = 3, context: dict[str, Any] | None = None) -> str:

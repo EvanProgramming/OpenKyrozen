@@ -1,4 +1,5 @@
 import unittest
+from openkyrozen.tools.models import ToolResult
 from openkyrozen.tools.manifest import ToolRegistry
 from openkyrozen.tools import ToolAdapters
 
@@ -8,7 +9,8 @@ class RegistryRegressions(unittest.TestCase):
         self.assertEqual(len(adapters.AVAILABLE_TOOLS),40)
         for name, executor in adapters.AVAILABLE_TOOLS.items():
             spec = adapters.tool_registry.get_spec(name)
-            self.assertIs(spec.executor,executor)
+            self.assertTrue(callable(spec.executor))
+            self.assertTrue(getattr(spec.executor, "__tool_result_executor__", spec.executor))
             self.assertTrue(spec.description)
             self.assertEqual(spec.input_schema['type'],'object')
             self.assertTrue(spec.capability)
@@ -17,11 +19,22 @@ class RegistryRegressions(unittest.TestCase):
 
     def test_compatibility_registration_has_restrictive_metadata(self):
         adapters = ToolAdapters()
-        adapters.AVAILABLE_TOOLS['new_helper'] = lambda args: args
+        adapters.AVAILABLE_TOOLS['new_helper'] = lambda args: ToolResult(text=args)
         spec = adapters.tool_registry.get_spec('new_helper')
         self.assertEqual(spec.capability,'dynamic')
         self.assertFalse(spec.parallel_safe)
         self.assertEqual(spec.input_schema['properties'],{'args':{'type':'string'}})
+
+    def test_replacing_legacy_mapping_preserves_typed_builtins(self):
+        import tempfile
+        from openkyrozen.security.capabilities import issue_capability_token
+        with tempfile.TemporaryDirectory() as directory:
+            adapters = ToolAdapters(directory)
+            adapters.AVAILABLE_TOOLS = dict(adapters.AVAILABLE_TOOLS)
+            result = adapters.tool_registry.invoke_result(
+                'read_file', 'missing.txt', issue_capability_token('test', {'read'}))
+            self.assertFalse(result.success)
+            self.assertEqual(result.error.code, 'not_found')
 
     def test_mcp_provider_schemas_cannot_drift_or_mutate_catalog(self):
         adapters = ToolAdapters()
@@ -39,7 +52,7 @@ class RegistryContractTests(unittest.TestCase):
         values=dict(description='Custom helper.',input_schema={'type':'object','properties':{'args':{'type':'string'}},'additionalProperties':False},
                     capability='read',side_effects='read',parallel_safe=False,aliases=('helper_alias',),source='test',version='2.0.0')
         values.update(changes)
-        return ToolSpec(name,lambda args:args,**values)
+        return ToolSpec(name,lambda args:ToolResult(text=args),**values)
 
     def test_collision_and_invalid_registration_are_atomic(self):
         registry=ToolRegistry()
@@ -60,11 +73,15 @@ class RegistryContractTests(unittest.TestCase):
         spec=self.make(visibility='hidden',risk='high')
         registry.register_spec(spec)
         snapshot=registry.snapshot()
-        registry.tools['custom']=lambda args:'changed'
+        registry.tools['custom']=lambda args:ToolResult(text='changed')
         self.assertEqual(registry.get_spec('custom').manifest,spec.manifest)
         del registry.tools['custom']
         registry.register_spec(snapshot['custom'])
         self.assertIs(registry.get_spec('custom'),spec)
+        adapters = ToolAdapters()
+        original = adapters.tool_registry.get_spec('read_file').executor
+        adapters.AVAILABLE_TOOLS['read_file'] = adapters.AVAILABLE_TOOLS['read_file']
+        self.assertIs(adapters.tool_registry.get_spec('read_file').executor, original)
         self.assertEqual(registry.mcp_descriptors(),[])
 
     def test_specs_are_immutable_including_schema_and_aliases(self):
@@ -98,10 +115,12 @@ class RuntimeCatalogTests(unittest.TestCase):
                 runtime=app.runtime
                 self.assertEqual(len(runtime.AVAILABLE_TOOLS),48)
                 self.assertEqual(set(runtime.AVAILABLE_TOOLS),set(runtime.tool_registry.specs))
+                self.assertTrue(all(getattr(spec.executor, "__tool_result_executor__", None)
+                                    for spec in runtime.tool_registry.specs.values()))
                 first=Path(home)/'first';second=Path(home)/'second';first.mkdir();second.mkdir()
                 runtime._set_workspace_root(first)
                 original=runtime.tool_registry
-                runtime.AVAILABLE_TOOLS['private_helper']=lambda args:'first'
+                runtime.AVAILABLE_TOOLS['private_helper']=lambda args:ToolResult(text='first')
                 runtime._set_workspace_root(second)
                 self.assertNotIn('private_helper',runtime.AVAILABLE_TOOLS)
                 self.assertIsNot(runtime.tool_registry,original)
@@ -138,10 +157,10 @@ class PolicyMetadataRegressions(unittest.TestCase):
 class ViewAuthorizationRegressions(unittest.TestCase):
     def test_filtered_mapping_cannot_overwrite_hidden_executor(self):
         from openkyrozen.tools.manifest import ToolMapping
-        registry=ToolRegistry({'spawn_agents':lambda args:'original'})
+        registry=ToolRegistry({'spawn_agents':lambda args:ToolResult(text='original')})
         child=ToolMapping(registry,excluded=('spawn_agents',))
         with self.assertRaises(PermissionError):
-            child['spawn_agents']=lambda args:'overwritten'
+            child['spawn_agents']=lambda args:ToolResult(text='overwritten')
         self.assertEqual(registry.tools['spawn_agents'](''),'original')
 
 class ReviewRegressions(unittest.TestCase):

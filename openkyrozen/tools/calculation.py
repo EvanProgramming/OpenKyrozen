@@ -1,5 +1,6 @@
 """Bounded arithmetic checks, with no code, filesystem or process execution."""
 from __future__ import annotations
+from openkyrozen.tools.models import ToolError, ToolResult, command_tool_result, legacy_text_api, tool_failure, tool_json_result, tool_success
 
 import ast
 from decimal import Decimal, localcontext
@@ -49,6 +50,7 @@ def _value(node):
     raise ValueError("Only literals, arithmetic, comparisons and listed pure functions are allowed")
 
 
+@legacy_text_api
 def calculate(self, args: str) -> str:
     """Check a bounded arithmetic expression, e.g. sum([Decimal('1.00'), Decimal('2.00')]); no workspace code runs."""
     try:
@@ -60,6 +62,6 @@ def calculate(self, args: str) -> str:
         with localcontext() as context:
             context.prec, context.Emax, context.Emin = 28, 256, -256
             value = _value(tree.body)
-        return f"{type(value).__name__}: {value!r} (arithmetic check only; Decimal precision 28)"
+        return tool_success(str(f"{type(value).__name__}: {value!r} (arithmetic check only; Decimal precision 28)"))
     except Exception as exc:
-        return f"Error: arithmetic check {type(exc).__name__}: {exc}"
+        return tool_failure('invalid_arguments', f"Error: arithmetic check {type(exc).__name__}: {exc}", retriable=False)
