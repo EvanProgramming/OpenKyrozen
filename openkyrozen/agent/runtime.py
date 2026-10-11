@@ -578,8 +578,6 @@ class AgentRuntime:
             default_surface = "full"
         surface = resolve_capabilities(self._surface_capabilities or default_surface)
         granted = self._execution_capability_token.capabilities & config & surface
-        if self._EXECUTION_SURFACE == "tui" and self.permission_mode() == "ask":
-            granted &= resolve_capabilities("workspace")
         granted = mode_capabilities(granted, self._active_interaction_mode.get())
         if requested is not None:
             requested = requested if isinstance(requested, str) else ",".join(requested)

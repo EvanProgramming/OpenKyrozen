@@ -4,6 +4,26 @@ from openkyrozen.security.approvals import ApprovalRequest
 
 
 class ApprovalRequestTests(unittest.TestCase):
+    def test_ask_permission_mode_keeps_destructive_capability_for_explicit_approval(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.tools import ToolAdapters
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_TUI_CAPABILITIES": "full"}
+        ):
+            app = build_application(
+                surface="tui", memory=build_memory(Path(directory) / "state.sqlite3"),
+                tools=ToolAdapters(directory),
+            )
+            try:
+                app.runtime.set_permission_mode("ask")
+                self.assertIn("destructive", app.runtime._effective_execution_capabilities())
+            finally:
+                app.close()
+
     def test_request_is_frozen_and_snapshots_arguments(self):
         arguments = {"path": "src/a.py", "options": ["--write"]}
         request = ApprovalRequest(
