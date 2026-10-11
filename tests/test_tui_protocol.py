@@ -488,11 +488,18 @@ class TUIProtocolTests(unittest.TestCase):
         thread = threading.Thread(target=lambda: result.setdefault("approved", self.backend._approval(request)))
         thread.start()
         deadline = time.monotonic() + 1
-        while "request_id" not in self.output.getvalue() and time.monotonic() < deadline:
+        events = []
+        while time.monotonic() < deadline:
+            lines = self.output.getvalue().splitlines()
+            events = [json.loads(line) for line in lines]
+            if len(events) > 1 and len(events) >= events[1].get("total", len(events) + 1):
+                break
             time.sleep(0.005)
         lines = self.output.getvalue().splitlines()
-        self.assertGreater(len(lines), 1)
         events = [json.loads(line) for line in lines]
+        self.assertGreater(len(events), 1, "approval detail chunks were not emitted")
+        self.assertGreaterEqual(len(events), events[1]["total"], "approval detail chunks were incomplete")
+        self.assertGreater(len(lines), 1)
         self.assertTrue(all(len(line.encode("utf-8")) <= tui_backend.MAX_LINE_BYTES for line in lines))
         self.assertEqual(events[0]["event"], "prompt")
         self.assertTrue(all(event["request_id"] == request.request_id for event in events))
