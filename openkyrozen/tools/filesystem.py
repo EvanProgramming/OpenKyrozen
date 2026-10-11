@@ -60,6 +60,8 @@ def list_dir(self, args: str) -> str:
         abs_path = self._resolve_workspace_path(dir_path)
         entries = os.listdir(abs_path)
         return tool_success(str("\n".join(sorted(entries))))
+    except FileNotFoundError as e:
+        return tool_failure('not_found', f"Error listing directory: {e}", retriable=False)
     except Exception as e:
         return tool_failure('execution_error', f"Error listing directory: {e}", retriable=False)
 

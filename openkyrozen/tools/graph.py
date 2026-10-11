@@ -17,13 +17,19 @@ def graph_status(self, _args: str = "") -> str:
 @legacy_text_api
 def graph_query(self, args: str) -> str:
     """Query the private Graphify index. Args: a project question."""
-    return (tool_success(str(self._PROJECT_GRAPH.query(args))) if self._PROJECT_GRAPH is not None else tool_failure('not_found', "Error: project graph is not configured.", retriable=False))
+    if self._PROJECT_GRAPH is None:
+        return tool_failure('not_found', "Error: project graph is not configured.", retriable=False)
+    result = self._PROJECT_GRAPH.query_result(args)
+    return tool_success(result.text) if result.success else tool_failure(result.error_code, result.text)
 
 
 @legacy_text_api
 def graph_explain(self, args: str) -> str:
     """Explain one graph node. Args: node label."""
-    return (tool_success(str(self._PROJECT_GRAPH.explain(args))) if self._PROJECT_GRAPH is not None else tool_failure('not_found', "Error: project graph is not configured.", retriable=False))
+    if self._PROJECT_GRAPH is None:
+        return tool_failure('not_found', "Error: project graph is not configured.", retriable=False)
+    result = self._PROJECT_GRAPH.explain_result(args)
+    return tool_success(result.text) if result.success else tool_failure(result.error_code, result.text)
 
 
 @legacy_text_api
@@ -34,7 +40,8 @@ def graph_path(self, args: str) -> str:
     parts = str(args).split("|", 1)
     if len(parts) != 2:
         return tool_failure('invalid_arguments', "Error: graph_path requires left|right.", retriable=False)
-    return tool_success(str(self._PROJECT_GRAPH.path(parts[0], parts[1])))
+    result = self._PROJECT_GRAPH.path_result(parts[0], parts[1])
+    return tool_success(result.text) if result.success else tool_failure(result.error_code, result.text)
 
 
 @legacy_text_api

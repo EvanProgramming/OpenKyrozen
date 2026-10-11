@@ -39,6 +39,21 @@ class FakeGraphify:
 
 
 class ProjectGraphTests(unittest.TestCase):
+    def test_typed_queries_distinguish_validation_index_and_execution_failures(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "project"
+            root.mkdir()
+            (root / "app.py").write_text("x = 1\n", encoding="utf-8")
+            graph = ProjectGraph(root, Path(directory) / "state", "scope", runner=FakeGraphify())
+            self.assertEqual(graph.query_result("").error_code, "invalid_arguments")
+            self.assertEqual(graph.query_result("question").error_code, "not_found")
+            graph.refresh()
+            with patch.object(graph, "_run_graphify", return_value=subprocess.CompletedProcess([], 1, "", "failed")):
+                self.assertEqual(graph.query_result("question").error_code, "execution_error")
+            with patch.object(graph, "_run_graphify", side_effect=subprocess.TimeoutExpired("graphify", 1)):
+                self.assertEqual(graph.query_result("question").error_code, "timeout")
+
     def test_git_incremental_sync_ignores_files_and_removes_vanished_sources(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repo"

@@ -391,7 +391,9 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertEqual({item["payload"]["operation_id"] for item in receipts},
                              {receipts[0]["payload"]["operation_id"]})
             self.assertEqual({item["payload"]["success"] for item in receipts}, {True, False})
-            self.assertIn("duplicate_operation", {item["payload"]["failure"] for item in receipts})
+            self.assertIn("conflict", {item["payload"]["failure"] for item in receipts})
+            duplicate = next(item["payload"] for item in receipts if item["payload"]["failure"] == "conflict")
+            self.assertEqual(duplicate["tool_error"]["code"], "conflict")
             self.assertIn("marker is complete", reply.lower())
 
     def test_multi_task_plan_reconciles_receipts_without_taskdone_and_survives_restart(self):

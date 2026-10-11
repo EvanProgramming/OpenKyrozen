@@ -230,6 +230,13 @@ class ToolMapping(MutableMapping):
         return sum(1 for _ in self)
 
 
+def typed_executor(function):
+    typed=getattr(getattr(function,"__func__",function),"__tool_result_executor__",None)
+    if typed is None:
+        return function
+    return typed.__get__(function.__self__,type(function.__self__)) if hasattr(function,"__self__") else typed
+
+
 class ToolRegistry:
     def __init__(self, tools=None):
         self._specs={}
@@ -274,9 +281,7 @@ class ToolRegistry:
     def register(self,name,function,*,capability=None,risk=None,version=None,source=None):
         from .catalog import builtin_metadata
         old=self._specs.get(name)
-        typed=getattr(getattr(function,"__func__",function),"__tool_result_executor__",None)
-        if typed is not None:
-            function=typed.__get__(function.__self__,type(function.__self__)) if hasattr(function,"__self__") else typed
+        function=typed_executor(function)
         if old:
             updates={'executor':function}
             updates.update({k:v for k,v in {'capability':capability,'risk':risk,'version':version,'source':source}.items() if v is not None})

@@ -25,6 +25,17 @@ class RegistryRegressions(unittest.TestCase):
         self.assertFalse(spec.parallel_safe)
         self.assertEqual(spec.input_schema['properties'],{'args':{'type':'string'}})
 
+    def test_replacing_legacy_mapping_preserves_typed_builtins(self):
+        import tempfile
+        from openkyrozen.security.capabilities import issue_capability_token
+        with tempfile.TemporaryDirectory() as directory:
+            adapters = ToolAdapters(directory)
+            adapters.AVAILABLE_TOOLS = dict(adapters.AVAILABLE_TOOLS)
+            result = adapters.tool_registry.invoke_result(
+                'read_file', 'missing.txt', issue_capability_token('test', {'read'}))
+            self.assertFalse(result.success)
+            self.assertEqual(result.error.code, 'not_found')
+
     def test_mcp_provider_schemas_cannot_drift_or_mutate_catalog(self):
         adapters = ToolAdapters()
         registry = adapters.tool_registry

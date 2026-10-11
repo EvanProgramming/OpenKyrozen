@@ -1,4 +1,5 @@
 import dataclasses
+import json
 import unittest
 
 from openkyrozen.tools import models
@@ -148,3 +149,66 @@ class TypedObserverTests(unittest.TestCase):
         self.assertEqual(runtime._tool_stats["read_file"]["successes"], 1)
         self.assertEqual(runtime._tool_stats["write_file"]["successes"], 0)
         self.assertEqual([event[1]["success"] for event in events], [True, False])
+
+
+class ReviewFindingRegressions(unittest.TestCase):
+    def test_receipt_error_metadata_is_redacted_and_bounded(self):
+        from types import SimpleNamespace
+        from openkyrozen.agent.executor import _make_execution_receipt
+        runtime = SimpleNamespace(
+            _operation_action=lambda action: action,
+            _operation_args=lambda _action, args: str(args),
+            _operation_id=lambda *_args: "operation",
+            _fix_safe_text=lambda value, limit=500, **_kwargs: str(value)[:limit],
+            _subagent_tool_evidence=lambda *_args, **_kwargs: (None, False),
+            _acceptance_for_tool=lambda *_args, **_kwargs: (None, False),
+        )
+        receipt = _make_execution_receipt(
+            runtime, action="read_file", args="x", authorized=True, started_at="now", success=False,
+            result="failed", operation_scope="test",
+            tool_error=ToolError("execution_error", "failed", metadata={
+                "api_key": "secret-value", "request_body": "private request", "details": "x" * 10000,
+            }),
+        ).as_dict()
+        metadata = receipt["tool_error"]["metadata"]
+        self.assertEqual(metadata["api_key"], "<redacted>")
+        self.assertEqual(metadata["request_body"], "<redacted>")
+        self.assertLessEqual(len(json.dumps(metadata)), 4100)
+        self.assertNotIn("secret-value", json.dumps(receipt))
+
+    def test_filesystem_and_git_failures_have_specific_codes(self):
+        import tempfile
+        import subprocess
+        from unittest.mock import patch
+        from openkyrozen.security.capabilities import issue_capability_token
+        from openkyrozen.tools import ToolAdapters
+        with tempfile.TemporaryDirectory() as directory:
+            tools = ToolAdapters(directory).tool_registry
+            token = issue_capability_token("test", {"read", "git"})
+            missing = tools.invoke_result("list_dir", "missing", token)
+            self.assertEqual(missing.error.code, "not_found")
+            with patch("openkyrozen.tools.git.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 60)):
+                timed_out = tools.invoke_result("git_clone", "https://example.invalid/repo", token)
+            self.assertEqual(timed_out.error.code, "timeout")
+
+    def test_malformed_delegation_json_is_invalid_arguments(self):
+        from types import SimpleNamespace
+        from openkyrozen.tools.models import invoke_tool_result
+        from openkyrozen.agent.delegation_runtime import spawn_agents
+        runtime = SimpleNamespace(execution_context=SimpleNamespace(child_run_id=""))
+        result = invoke_tool_result(spawn_agents, runtime, "{")
+        self.assertEqual(result.error.code, "invalid_arguments")
+
+    def test_graph_tool_propagates_workspace_failure_status(self):
+        import tempfile
+        from pathlib import Path
+        from openkyrozen.security.capabilities import issue_capability_token
+        from openkyrozen.tools import ToolAdapters
+        from openkyrozen.workspace.graph import ProjectGraph
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = ToolAdapters(root)
+            graph = ProjectGraph(root, root / "state", "scope", runner=lambda *_args, **_kwargs: None)
+            tools._PROJECT_GRAPH = graph
+            result = tools.tool_registry.invoke_result("graph_query", "question", issue_capability_token("test", {"read"}))
+            self.assertEqual(result.error.code, "not_found")

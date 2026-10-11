@@ -39,7 +39,7 @@ def git_clone(self, args: str) -> str:
             return tool_failure('command_failed', f"Git clone failed:\n{result.stderr}", retriable=False)
         return tool_success(str(f"Repository cloned successfully:\n{result.stdout}"))
     except Exception as e:
-        return tool_failure('execution_error', f"Error during git clone: {e}", retriable=False)
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error during git clone: {e}", retriable=False)
 
 
 @legacy_text_api
@@ -62,7 +62,7 @@ def git_diff(self, args: str) -> str:
         out = result.stdout.strip()
         return (tool_success(str(out)) if out else tool_success(str("(no changes)")))
     except Exception as e:
-        return tool_failure('execution_error', f"Error running git diff: {e}", retriable=False)
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git diff: {e}", retriable=False)
 
 
 @legacy_text_api
@@ -87,7 +87,7 @@ def git_log(self, args: str) -> str:
         out = result.stdout.strip()
         return (tool_success(str(out)) if out else tool_success(str("(no commits)")))
     except Exception as e:
-        return tool_failure('execution_error', f"Error running git log: {e}", retriable=False)
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git log: {e}", retriable=False)
 
 
 @legacy_text_api
@@ -125,7 +125,7 @@ def git_branch(self, args: str) -> str:
             return tool_success(str(f"Created branch {name!r}."))
         return (tool_success(str(out)) if out else tool_success(str("(no branches)")))
     except Exception as e:
-        return tool_failure('execution_error', f"Error running git branch: {e}", retriable=False)
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git branch: {e}", retriable=False)
 
 
 @legacy_text_api
@@ -144,7 +144,7 @@ def git_add(self, args: str) -> str:
             return tool_failure('command_failed', f"Git add failed:\n{result.stderr}", retriable=False)
         return tool_success(str("Files staged successfully."))
     except Exception as e:
-        return tool_failure('execution_error', f"Error running git add: {e}", retriable=False)
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git add: {e}", retriable=False)
 
 
 @legacy_text_api
@@ -164,7 +164,7 @@ def git_commit(self, args: str) -> str:
             return tool_failure('command_failed', f"Git commit failed:\n{result.stderr}", retriable=False)
         return tool_success(str(result.stdout.strip() or "Commit successful."))
     except Exception as e:
-        return tool_failure('execution_error', f"Error running git commit: {e}", retriable=False)
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git commit: {e}", retriable=False)
 
 
 @legacy_text_api
@@ -183,7 +183,7 @@ def git_push(self, args: str) -> str:
             return tool_failure('command_failed', f"Git push failed:\n{result.stderr}", retriable=False)
         return tool_success(str(result.stdout.strip() or "Push successful."))
     except Exception as e:
-        return tool_failure('execution_error', f"Error running git push: {e}", retriable=False)
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git push: {e}", retriable=False)
 
 
 @legacy_text_api
@@ -202,7 +202,7 @@ def git_pull(self, args: str) -> str:
             return tool_failure('command_failed', f"Git pull failed:\n{result.stderr}", retriable=False)
         return tool_success(str(result.stdout.strip() or "Already up to date."))
     except Exception as e:
-        return tool_failure('execution_error', f"Error running git pull: {e}", retriable=False)
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git pull: {e}", retriable=False)
 
 
 @legacy_text_api
@@ -224,7 +224,7 @@ def git_checkout(self, args: str) -> str:
             return tool_failure('command_failed', f"Git checkout failed:\n{result.stderr}", retriable=False)
         return tool_success(str(result.stdout.strip() or "Checkout successful."))
     except Exception as e:
-        return tool_failure('execution_error', f"Error running git checkout: {e}", retriable=False)
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git checkout: {e}", retriable=False)
 
 
 @legacy_text_api
@@ -243,7 +243,7 @@ def git_stash(self, args: str) -> str:
             return tool_failure('command_failed', f"Git stash failed:\n{result.stderr}", retriable=False)
         return tool_success(str(result.stdout.strip() or "Working directory clean."))
     except Exception as e:
-        return tool_failure('execution_error', f"Error running git stash: {e}", retriable=False)
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git stash: {e}", retriable=False)
 
 
 @legacy_text_api
@@ -272,7 +272,7 @@ def git_reset(self, args: str) -> str:
             return tool_failure('command_failed', f"Git reset failed:\n{result.stderr}", retriable=False)
         return tool_success(str(result.stdout.strip() or "Reset successful."))
     except Exception as e:
-        return tool_failure('execution_error', f"Error running git reset: {e}", retriable=False)
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git reset: {e}", retriable=False)
 
 
 @legacy_text_api
@@ -289,7 +289,7 @@ def git_show(self, args: str) -> str:
             return tool_failure('command_failed', f"Git show failed:\n{result.stderr}", retriable=False)
         return tool_success(str(result.stdout.strip()))
     except Exception as e:
-        return tool_failure('execution_error', f"Error running git show: {e}", retriable=False)
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git show: {e}", retriable=False)
 
 
 @legacy_text_api
@@ -331,7 +331,7 @@ def git_remote(self, args: str) -> str:
             return tool_success(str(f"Remote '{parts[1]}' removed."))
         return tool_success(str("(no remotes configured)"))
     except Exception as e:
-        return tool_failure('execution_error', f"Error running git remote: {e}", retriable=False)
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git remote: {e}", retriable=False)
 
 
 @legacy_text_api
@@ -348,7 +348,7 @@ def git_status(self, args: str) -> str:
             return tool_failure('command_failed', f"Git status failed:\n{result.stderr}", retriable=False)
         return tool_success(str(result.stdout.strip() or "(clean)"))
     except Exception as e:
-        return tool_failure('execution_error', f"Error running git status: {e}", retriable=False)
+        return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git status: {e}", retriable=False)
 
 
 @legacy_text_api

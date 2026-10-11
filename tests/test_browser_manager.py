@@ -53,6 +53,25 @@ class BrowserManagerTests(unittest.TestCase):
                 result = manager.open("https://example.com")
             self.assertIn("playwright", result.lower())
 
+    def test_missing_chromium_is_dependency_unavailable(self):
+        import builtins
+        from types import SimpleNamespace
+        from openkyrozen.tools.models import invoke_tool_result
+        with tempfile.TemporaryDirectory() as directory:
+            manager = BrowserManager(root=directory)
+            playwright = SimpleNamespace(stop=lambda: None, chromium=SimpleNamespace(
+                launch_persistent_context=lambda **_kwargs: (_ for _ in ()).throw(
+                    RuntimeError("Executable doesn't exist at /missing/chromium"))))
+            real_import = builtins.__import__
+            def fake_import(name, *args, **kwargs):
+                if name == "playwright.sync_api":
+                    return SimpleNamespace(sync_playwright=lambda: SimpleNamespace(start=lambda: playwright))
+                return real_import(name, *args, **kwargs)
+            with patch("openkyrozen.tools.browser_manager.socket.gethostbyname", return_value="93.184.216.34"), \
+                    patch("builtins.__import__", side_effect=fake_import):
+                result = invoke_tool_result(manager.open, "https://example.com")
+            self.assertEqual(result.error.code, "dependency_unavailable")
+
     @unittest.skipUnless(
         os.environ.get("KYROZEN_BROWSER_TESTS") == "1",
         "browser integration requires `make install` (Playwright and Chromium)",

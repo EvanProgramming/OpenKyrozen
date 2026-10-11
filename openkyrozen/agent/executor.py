@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import ast
 import json
+import re
 import uuid
 import time
 from typing import Any
@@ -71,6 +72,40 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
     acceptance, accepted = self._acceptance_for_tool(canonical, str(args), result_text, success=success)
     if not accepted and effect_verified:
         acceptance = effect
+
+    def safe_metadata(value, budget=4000):
+        def clean(item, remaining, depth=0):
+            if remaining <= 0:
+                return "<truncated>", 0
+            if isinstance(item, dict) and depth < 5:
+                result = {}
+                for key, nested in list(item.items())[:40]:
+                    key = str(key)[:100]
+                    if re.search(r"(?i)(api.?key|credential|password|secret|token|authorization|request.?body|^body$)", key):
+                        result[key] = "<redacted>"
+                        remaining -= len(key) + 12
+                    else:
+                        result[key], remaining = clean(nested, remaining - len(key), depth + 1)
+                    if remaining <= 0:
+                        break
+                return result, remaining
+            if isinstance(item, list) and depth < 5:
+                result = []
+                for nested in item[:40]:
+                    value, remaining = clean(nested, remaining, depth + 1)
+                    result.append(value)
+                    if remaining <= 0:
+                        break
+                return result, remaining
+            if isinstance(item, str):
+                value = self._fix_safe_text(item, min(500, remaining), preserve_lines=True)
+                return value, remaining - len(value)
+            if item is None or type(item) in {bool, int, float}:
+                return item, remaining - 16
+            value = self._fix_safe_text(item, min(200, remaining))
+            return value, remaining - len(value)
+        return clean(value, budget)[0]
+
     return ExecutionReceipt(
         receipt_id=f"receipt_{uuid.uuid4().hex}",
         operation_id=self._operation_id(operation_scope, canonical, args),
@@ -89,7 +124,7 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         verified_effect=effect if effect_verified else None,
         acceptance=acceptance if success and (accepted or effect_verified) else None,
         tool_error=({"code": tool_error.code, "message": self._fix_safe_text(tool_error.message, 1000),
-                     "retriable": tool_error.retriable, "metadata": tool_error.metadata} if tool_error else None),
+                     "retriable": tool_error.retriable, "metadata": safe_metadata(tool_error.metadata)} if tool_error else None),
     )
 
 
@@ -210,11 +245,12 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             )
     if (canonical != "run_cmd" and self._is_state_changing_action(canonical, args)
             and operation_id in successful_operations):
-        result = "Error: duplicate successful state-changing action refused for this turn."
-        self._notify_tool_execute(canonical, args, tool_failure("permission_denied", result))
+        outcome = tool_failure("conflict", "Error: duplicate successful state-changing action refused for this turn.")
+        result = render_tool_result(outcome)
+        self._notify_tool_execute(canonical, args, outcome)
         return self._make_execution_receipt(
             action=canonical, args=args, authorized=True, started_at=started_at, success=False,
-            result=result, operation_scope=operation_scope, failure="duplicate_operation",
+            result=result, operation_scope=operation_scope, failure=outcome.error.code, tool_error=outcome.error,
         )
     receipt = self._run_tool(canonical, args, return_receipt=True, operation_scope=operation_scope)
     assert isinstance(receipt, ExecutionReceipt)

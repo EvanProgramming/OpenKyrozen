@@ -111,19 +111,31 @@ def _json_args(args):
     return value
 
 
+def _typed_json_args(args):
+    try:
+        return _json_args(args), None
+    except (TypeError, ValueError) as exc:
+        return None, tool_failure("invalid_arguments", f"Error: invalid delegation arguments: {exc}")
+
+
 @legacy_text_api
 def spawn_agents(self, args):
     """Automatically start parallel specialist assignments; args is a JSON assignment batch."""
     if self.execution_context.child_run_id:
         raise ValueError("Only the main agent can delegate")
-    data = {"agents": self.delegation().spawn(_json_args(args).get("assignments"))}
+    value, error = _typed_json_args(args)
+    if error:
+        return error
+    data = {"agents": self.delegation().spawn(value.get("assignments"))}
     return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
 
 
 @legacy_text_api
 def send_subagent(self, args):
     """Reuse a finished sub-agent; args JSON contains run_id and a complete assignment."""
-    value = _json_args(args)
+    value, error = _typed_json_args(args)
+    if error:
+        return error
     data = self.delegation().send(value.get("run_id"), value.get("assignment"))
     return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
 
@@ -131,7 +143,9 @@ def send_subagent(self, args):
 @legacy_text_api
 def list_subagents(self, args):
     """List agents or inspect one run_id from this chat/project; args is JSON."""
-    value = _json_args(args)
+    value, error = _typed_json_args(args)
+    if error:
+        return error
     coordinator = self.delegation()
     data = coordinator.detail(value["run_id"]) if value.get("run_id") else {
         "agents": [coordinator.summary(run, results=True) for run in coordinator.list()]}
@@ -141,7 +155,9 @@ def list_subagents(self, args):
 @legacy_text_api
 def wait_subagents(self, args):
     """Wait up to 60 seconds for delegated work and its mandatory reviews; args is JSON."""
-    value = _json_args(args)
+    value, error = _typed_json_args(args)
+    if error:
+        return error
     coordinator = self.delegation()
     data = {"agents": [coordinator.summary(run, results=True) for run in coordinator.wait(value.get("run_ids"), value.get("timeout", 30))]}
     return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
@@ -150,7 +166,10 @@ def wait_subagents(self, args):
 @legacy_text_api
 def cancel_subagent(self, args):
     """Cancel a scoped sub-agent and prevent subsequent tool execution; args JSON contains run_id."""
-    data = self.delegation().cancel(_json_args(args).get("run_id"))
+    value, error = _typed_json_args(args)
+    if error:
+        return error
+    data = self.delegation().cancel(value.get("run_id"))
     return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
 
 

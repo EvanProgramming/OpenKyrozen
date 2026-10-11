@@ -69,7 +69,8 @@ class BrowserManager:
                 playwright.stop()
             except Exception:
                 pass
-            return tool_failure('execution_error', f"Error opening browser: {exc}", retriable=False)
+            code = 'dependency_unavailable' if 'executable doesn\'t exist' in str(exc).lower() else 'execution_error'
+            return tool_failure(code, f"Error opening browser: {exc}", retriable=False)
 
     @legacy_text_api
     def snapshot(self, session_id: str) -> str:
