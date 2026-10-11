@@ -89,6 +89,42 @@ func TestReducerProjectsStreamingResponseTasksAndApproval(t *testing.T) {
 	}
 }
 
+func TestApprovalModalKeepsStructuredArgumentsScrollable(t *testing.T) {
+	m := initialModel(".", false)
+	m.width, m.height = 100, 30
+	m.resize()
+	value := strings.Repeat("x", 1800)
+	m.handleBackendEvent(backendEvent{
+		"event": "prompt", "kind": "approval", "request_id": "approval-long", "action": "write_file",
+		"operation": map[string]any{"path": "src/long.txt", "content": value},
+	})
+	if !strings.Contains(m.approvalArgs, value) {
+		t.Fatal("structured approval arguments were truncated")
+	}
+	m.approvalView.ScrollDown(20)
+	if m.approvalView.YOffset() == 0 {
+		t.Fatal("long approval arguments cannot be scrolled")
+	}
+}
+
+func TestApprovalModalReassemblesLongArgumentChunks(t *testing.T) {
+	m := initialModel(".", false)
+	m.width, m.height = 100, 30
+	m.resize()
+	first, middle, last := strings.Repeat("a", 8000), strings.Repeat("b", 8000), strings.Repeat("c", 8000)
+	m.handleBackendEvent(backendEvent{
+		"event": "prompt", "kind": "approval", "request_id": "approval-chunks", "action": "write_file",
+		"args": first, "args_chunks": []any{first, middle, last}, "args_truncated": true,
+	})
+	if m.approvalArgs != first+middle+last {
+		t.Fatal("approval view did not reassemble the complete argument")
+	}
+	m.approvalView.ScrollDown(20)
+	if m.approvalView.YOffset() == 0 {
+		t.Fatal("chunked approval arguments cannot be scrolled")
+	}
+}
+
 func TestRestartEventQuitsForLauncherRelaunch(t *testing.T) {
 	m := initialModel(".", false)
 	updated, cmd := m.Update(backendLineMsg{event: backendEvent{"event": "restart"}})

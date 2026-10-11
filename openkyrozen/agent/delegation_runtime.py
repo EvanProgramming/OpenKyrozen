@@ -305,6 +305,23 @@ def _delegation_tool_access(self, action, args):
         path = str(self.current_session.workspace.adapters._resolve_workspace_path(raw))
     if coordinator:
         coordinator.check_cancelled(context.child_run_id)
+        from openkyrozen.security.tool_policy import tool_policy
+        tools = getattr(self, "AVAILABLE_TOOLS", None)
+        policy = tool_policy(action, tools)
+        spec = getattr(getattr(self, "tool_registry", None), "specs", {}).get(action)
+        capability = spec.capability if spec is not None else (
+            policy.get("capability", "dynamic") if isinstance(policy, dict)
+            else getattr(policy, "capability", "dynamic")
+        )
+        effects = spec.side_effects if spec is not None else (
+            policy.get("side_effects", "unknown") if isinstance(policy, dict)
+            else getattr(policy, "side_effects", "unknown")
+        )
+        if action not in {"write_file", "edit_file"} and (
+            capability in {"write", "shell", "git", "browser", "destructive", "dynamic"}
+            or effects not in {"none", "read"}
+        ):
+            raise PermissionError(f"Sub-agent capability '{capability}' is not confined to assigned files")
         if action in {"write_file", "edit_file"}:
             brief = coordinator.runs[context.child_run_id]["assignment"]
             owned = {str((coordinator.root / p).resolve()) for p in brief["scope"]}

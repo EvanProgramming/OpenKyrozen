@@ -129,10 +129,14 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
 
 
 def _run_tool(self, action: str, args: str, *, return_success: bool = False,
-              return_receipt: bool = False, operation_scope: str = "") -> str | tuple[str, bool] | ExecutionReceipt:
+              return_receipt: bool = False, operation_scope: str = "",
+              _typed_arguments: dict | None = None, _expected_spec=None) -> str | tuple[str, bool] | ExecutionReceipt:
     started_at = utc_now()
     action = self.TOOL_ALIASES.get(action, action)
-    if isinstance(args, dict):
+    receipt_args = _typed_arguments if _typed_arguments is not None else args
+    if _typed_arguments is not None:
+        args = _typed_arguments
+    elif isinstance(args, dict):
         if action in ("run_cmd", "execute_terminal_command"):
             args = args.get("cmd") or args.get("command") or ""
         elif action == "write_file":
@@ -155,7 +159,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         text = render_tool_result(outcome)
         if return_receipt:
             return self._make_execution_receipt(
-                action=action, args=args, authorized=authorized, started_at=started_at,
+                action=action, args=receipt_args, authorized=authorized, started_at=started_at,
                 success=outcome.success, result=text, operation_scope=operation_scope,
                 failure=outcome.error.code if outcome.error else None, raw_result=raw_result,
                 tool_error=outcome.error,
@@ -163,6 +167,11 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         return (text, outcome.success) if return_success else text
     if action not in self.AVAILABLE_TOOLS:
         outcome = tool_failure("invalid_arguments", f"Error: unknown tool '{action}'")
+        self._notify_tool_execute(action, args, outcome)
+        return finish(outcome)
+    from openkyrozen.security.permission_gate import git_read_arguments_allowed
+    if not git_read_arguments_allowed(action, args):
+        outcome = tool_failure("invalid_arguments", "Error: read-only Git tools reject output-writing and external-execution options.")
         self._notify_tool_execute(action, args, outcome)
         return finish(outcome)
     required_capability = tool_capability(action, self.AVAILABLE_TOOLS)
@@ -185,6 +194,25 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         return finish(outcome)
     authorized = (self._authorize_tool_action(action, args) if self._EXECUTION_SURFACE == "tui"
                   else self._confirm_tool_action(action, str(args)))
+    if authorized:
+        try:
+            authorized = (self._execution_capability_token.allows(required_capability)
+                          and required_capability in self._effective_execution_capabilities())
+        except AgentConfigError:
+            authorized = False
+    request_var = getattr(self, "_approval_request", None)
+    request = request_var.get() if request_var is not None else None
+    if authorized and request is not None:
+        approved_spec = self._approval_tool_spec.get()
+        current_spec = self.tool_registry.specs.get(action)
+        authorized = (
+            current_spec is approved_spec
+            and request.tool_name == action
+            and request.arguments == _typed_arguments
+            and request.workspace_id == self.memory_bank.workspace_id
+            and request.session_id == self.current_session.session_id
+            and self._execution_capability_token.allows(current_spec.capability)
+        )
     if not authorized:
         outcome = tool_failure("approval_denied", f"Error: {action} requires confirmation. Approve it interactively or set KYROZEN_APPROVAL_MODE=never for an explicitly automated CLI.")
         self._notify_tool_execute(action, args, outcome)
@@ -192,12 +220,25 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
     start = time.time()
     raw_result = None
     try:
-        with self._delegation_tool_access(action, args):
+        execution_args = args
+        if _typed_arguments is not None:
+            spec = self.tool_registry.specs.get(action)
+            if spec is not _expected_spec or self._execution_capability_token.allows(spec.capability) is not True:
+                outcome = tool_failure("permission_denied", "Error: tool authority or registration changed before execution.")
+                self._notify_tool_execute(action, args, outcome)
+                return finish(outcome)
+            try:
+                execution_args = spec.legacy_arguments(_typed_arguments)
+            except (TypeError, ValueError) as exc:
+                outcome = tool_failure("invalid_arguments", f"Error: {exc}")
+                self._notify_tool_execute(action, args, outcome)
+                return finish(outcome)
+        with self._delegation_tool_access(action, execution_args):
             if action in {"run_cmd", "execute_terminal_command"}:
-                raw_result = self.run_command(args)
+                raw_result = self.run_command(execution_args)
                 outcome = command_tool_result(raw_result)
             else:
-                outcome = self.tool_registry._invoke_executor(self.tool_registry.get_spec(action), args)
+                outcome = self.tool_registry._invoke_executor(self.tool_registry.get_spec(action), execution_args)
     except KeyboardInterrupt:
         outcome = tool_failure("cancelled", "Tool execution interrupted by user (Ctrl+C).")
     except Exception as exc:

@@ -54,11 +54,15 @@ func initialModel(project string, global bool) model {
 	transcript := viewport.New()
 	transcript.MouseWheelEnabled = true
 	transcript.MouseWheelDelta = mouseWheelScrollStep
+	approval := viewport.New()
+	approval.MouseWheelEnabled = true
+	approval.MouseWheelDelta = mouseWheelScrollStep
 	return model{
 		bridge:                    newBridge(),
 		project:                   project,
 		global:                    global,
 		view:                      transcript,
+		approvalView:              approval,
 		input:                     input,
 		apiInput:                  apiInput,
 		graphInput:                graphInput,

@@ -108,6 +108,7 @@ type model struct {
 	width                     int
 	height                    int
 	view                      viewport.Model
+	approvalView              viewport.Model
 	input                     textarea.Model
 	apiInput                  textinput.Model
 	fastKeyInput              bool

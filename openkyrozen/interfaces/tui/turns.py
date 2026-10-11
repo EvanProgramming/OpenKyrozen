@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 import shlex
 import shutil
 import threading
@@ -38,15 +39,27 @@ def set_api_key(self, api_key: str, request_id: str | None = None) -> None:
                   error=f"{type(exc).__name__}: {_redact(exc)}")
 
 
-def _approval(self, action: str, args: str) -> bool:
-    approval_id = uuid.uuid4().hex
+def _approval(self, action: str, args: str | None = None) -> bool:
+    request = action if hasattr(action, "fingerprint") else None
+    approval_id = request.request_id if request is not None else uuid.uuid4().hex
     waiter = threading.Event()
     decision = {"approved": False}
     with self._approval_lock:
         self._pending_approvals[approval_id] = (waiter, decision)
+    if request is not None:
+        action = request.tool_name
+        from openkyrozen.security.permissions import _redacted_approval_value
+        args = json.dumps(_redacted_approval_value(request.arguments), ensure_ascii=False, sort_keys=True)
+    chunks = [args[index:index + 8000] for index in range(0, len(args or ""), 8000)]
     self.emit(
         "prompt", kind="approval", request_id=approval_id,
-        masked=True, action=action, args=_redact(args, 600),
+        masked=True, action=action, args=_redact(args or ""),
+        args_chunks=chunks,
+        args_truncated=len(args or "") > MAX_TEXT_CHARS,
+        operation=request.arguments if request is not None and len(args or "") <= MAX_TEXT_CHARS else None,
+        fingerprint=request.fingerprint if request is not None else None,
+        workspace_id=request.workspace_id if request is not None else None,
+        session_id=request.session_id if request is not None else None,
         message="This action may change local or remote state.",
     )
     waiter.wait(timeout=APPROVAL_TIMEOUT_SECONDS)
@@ -63,7 +76,7 @@ def approval_response(self, payload: dict[str, Any]) -> None:
         pending = self._pending_approvals.get(approval_id)
     if pending is None:
         return
-    pending[1]["approved"] = bool(payload.get("approved", False))
+    pending[1]["approved"] = payload.get("approved") is True
     pending[0].set()
 
 

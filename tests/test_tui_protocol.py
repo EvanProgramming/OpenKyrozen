@@ -413,6 +413,45 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertFalse(result["approved"])
 
+    def test_approval_handshake_rejects_truthy_non_boolean_responses(self):
+        result = {}
+        thread = threading.Thread(target=lambda: result.setdefault("approved", self.backend._approval("git_push", "origin main")))
+        thread.start()
+        deadline = time.monotonic() + 1
+        while "request_id" not in self.output.getvalue() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        prompt = json.loads(self.output.getvalue().splitlines()[0])
+        self.backend.approval_response({"request_id": prompt["request_id"], "approved": "yes"})
+        thread.join(timeout=1)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(result["approved"])
+
+    def test_structured_approval_keeps_long_arguments_in_redacted_scroll_chunks(self):
+        from openkyrozen.security.approvals import ApprovalRequest
+
+        request = ApprovalRequest(
+            call_id="call-long", tool_name="write_file",
+            arguments={"content": "x" * 20000, "api_key": "never-display-this"},
+            workspace_id="workspace", session_id="session", tool_version="1",
+            tool_source="builtin", capability="write", risk="normal", side_effects="mutation",
+        )
+        result = {}
+        thread = threading.Thread(target=lambda: result.setdefault("approved", self.backend._approval(request)))
+        thread.start()
+        deadline = time.monotonic() + 1
+        while "request_id" not in self.output.getvalue() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        event = json.loads(self.output.getvalue().splitlines()[0])
+        self.assertEqual(event["request_id"], request.request_id)
+        encoded = "".join(event["args_chunks"])
+        displayed = json.loads(encoded)
+        self.assertEqual(displayed["content"], "x" * 20000)
+        self.assertEqual(displayed["api_key"], "<redacted>")
+        self.assertTrue(event["args_truncated"])
+        self.backend.approval_response({"request_id": event["request_id"], "approved": True})
+        thread.join(timeout=1)
+        self.assertTrue(result["approved"])
+
     def test_stream_projection_preserves_event_order_and_redacts_receipts(self):
         callback = self.backend._stream_projection("turn-1")
         callback({"event": "content", "chunk": "Answer"})

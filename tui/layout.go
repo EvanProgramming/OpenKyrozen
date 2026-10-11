@@ -18,6 +18,8 @@ func (m *model) resize() {
 	m.apiInput.SetWidth(maxInt(1, minInt(68, m.width-14)))
 	m.view.SetWidth(mainWidth)
 	m.view.SetHeight(m.historyHeight())
+	m.approvalView.SetWidth(maxInt(1, minInt(70, m.width-14)))
+	m.approvalView.SetHeight(maxInt(1, m.height-18))
 	m.planScroll = minInt(m.planScroll, m.planMaxScroll())
 	m.syncViewport()
 }

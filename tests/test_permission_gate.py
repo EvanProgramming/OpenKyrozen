@@ -1,6 +1,6 @@
 import unittest
 
-from openkyrozen.security.permission_gate import requires_ask_approval, risk_category
+from openkyrozen.security.permission_gate import git_read_arguments_allowed, requires_ask_approval, risk_category
 
 
 class PermissionGateTests(unittest.TestCase):
@@ -47,6 +47,17 @@ class PermissionGateTests(unittest.TestCase):
             risk_category("run_cmd", long_executable_option),
             "opaque_or_high_impact_command",
         )
+
+    def test_read_only_git_tools_reject_output_and_external_execution_options(self):
+        for action, args in (
+            ("git_diff", "--output=patch.txt"), ("git_diff", "--ext-diff"),
+            ("git_log", "--output patch.txt"), ("git_log", "--textconv"),
+            ("git_show", "--output=patch.txt"), ("git_show", "--exec=helper"),
+        ):
+            with self.subTest(action=action, args=args):
+                self.assertFalse(git_read_arguments_allowed(action, args))
+        self.assertTrue(git_read_arguments_allowed("git_diff", "--cached HEAD~1"))
+        self.assertTrue(git_read_arguments_allowed("git_log", "--oneline -5"))
 
 
 if __name__ == "__main__":

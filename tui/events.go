@@ -2,6 +2,8 @@ package main
 
 import (
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/lipgloss/v2"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -468,7 +470,24 @@ func (m *model) handlePrompt(event backendEvent) {
 	case "approval":
 		m.approvalID = stringValue(event, "request_id")
 		m.approvalTool = stringValue(event, "action")
-		m.approvalArgs = safeApprovalArgs(stringValue(event, "args"))
+		m.approvalArgs = stringValue(event, "args")
+		if chunks, ok := event["args_chunks"].([]any); ok {
+			var joined strings.Builder
+			for _, chunk := range chunks {
+				if text, ok := chunk.(string); ok {
+					joined.WriteString(text)
+				}
+			}
+			m.approvalArgs = joined.String()
+		}
+		if operation, ok := event["operation"]; ok && operation != nil {
+			if encoded, err := json.MarshalIndent(operation, "", "  "); err == nil {
+				m.approvalArgs = string(encoded)
+			}
+		}
+		m.approvalArgs = safeApprovalArgs(m.approvalArgs)
+		m.approvalView.SetContent(lipgloss.Wrap(m.approvalArgs, maxInt(1, minInt(70, m.width-14)), ""))
+		m.approvalView.GotoTop()
 		m.screen = screenApproval
 		m.startTransition()
 	case "self_learning":

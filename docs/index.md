@@ -31,6 +31,8 @@ This index covers the current product guides, developer references, and dated en
 - [V3 provider error plan](superpowers/plans/2026-10-09-v3-issue-231.md) records typed failures, cancellation and bounded retry for issue #231.
 - [V3 authoritative tool catalog plan](superpowers/plans/2026-10-09-v3-issue-232.md) records registry ownership and schema/policy migration for issue #232.
 - [V3 typed tool results plan](superpowers/plans/2026-10-11-v3-issue-235.md) records typed execution outcomes, error codes, observer propagation, and compatibility for issue #235.
+- [V3 security boundary plan](superpowers/plans/2026-10-11-v3-issue-261.md) records capability intersection, structured approvals, delegated scope, and verification for issue #261.
+- [V3 plan index](superpowers/plans/README.md) links the issue-specific implementation plans and identifies their coverage.
 - Machine-readable audit receipts and benchmark inputs remain beside their corresponding reports under `docs/` and `docs/benchmarks/`.
 
 The repository's [English overview](../README.md) links here. Technical guides are maintained in English; README translations provide localized entry points.
