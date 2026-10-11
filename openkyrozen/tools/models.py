@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from functools import wraps
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -109,6 +110,69 @@ def render_tool_result(result: ToolResult) -> str:
     if result.data is not None:
         return json.dumps(result.data, ensure_ascii=False)
     return ""
+
+
+def tool_success(text: str, *, data: Any = None, metadata: dict[str, Any] | None = None) -> ToolResult:
+    return ToolResult(data=data, text=text, metadata=metadata)
+
+
+def tool_json_result(data: Any, *, text: str | None = None) -> ToolResult:
+    rendered = json.dumps(data, ensure_ascii=False) if text is None else text
+    return ToolResult(data=data, text=rendered)
+
+
+def tool_failure(code: str, text: str, *, message: str | None = None, retriable: bool = False,
+                 data: Any = None, metadata: dict[str, Any] | None = None) -> ToolResult:
+    display = text if isinstance(text,str) else str(text)
+    error_message = message or display.removeprefix("Error: ").strip() or code.replace("_", " ")
+    return ToolResult(data=data, text=display,
+                      error=ToolError(code,error_message,retriable,metadata))
+
+
+def require_tool_result(value: Any) -> ToolResult:
+    """Convert a bad executor contract into a terminal typed failure."""
+    if isinstance(value, ToolResult):
+        return value
+    return ToolResult(text="Error: tool executor returned an invalid result", error=ToolError(
+        "contract_error", "Tool executor must return ToolResult",
+        metadata={"return_type": type(value).__name__},
+    ))
+
+
+def legacy_text_api(function):
+    """Expose a typed producer through its historical rendered string interface."""
+    function.__tool_result_executor__ = function
+    @wraps(function)
+    def render(*args, **kwargs):
+        return render_tool_result(require_tool_result(function(*args, **kwargs)))
+
+    render.__tool_result_executor__ = function
+    return render
+
+
+def invoke_tool_result(function, *args, **kwargs) -> ToolResult:
+    """Call a legacy-wrapped producer through its typed implementation."""
+    bound = getattr(function, "__func__", function)
+    typed = getattr(bound, "__tool_result_executor__", None)
+    if typed is None:
+        return require_tool_result(function(*args, **kwargs))
+    owner = getattr(function, "__self__", None)
+    return require_tool_result(typed(owner, *args, **kwargs) if owner is not None else typed(*args, **kwargs))
+
+
+def command_tool_result(result: "CommandResult") -> ToolResult:
+    """Preserve explicit process status and exit details as a typed outcome."""
+    if not isinstance(result, CommandResult):
+        raise TypeError("Expected CommandResult")
+    data = {"exit_code": result.exit_code} if result.exit_code is not None else None
+    if result.success:
+        return ToolResult(data=data, text=result.output)
+    code = {"nonzero_exit": "command_failed", "denied": "permission_denied"}.get(
+        result.failure, result.failure or "command_failed"
+    )
+    return ToolResult(data=data, text=result.output, error=ToolError(
+        code, result.output or "Command failed", metadata={"exit_code": result.exit_code},
+    ))
 
 
 @dataclass(frozen=True)

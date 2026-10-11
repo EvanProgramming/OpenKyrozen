@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from openkyrozen.agent.subagents import AgentProfile
 from openkyrozen.persistence.models import utc_now
+from openkyrozen.tools.models import ToolError, render_tool_result, tool_failure
 from openkyrozen.security.capabilities import issue_capability_token
 from openkyrozen.security.tool_policy import resolve_capabilities
 
@@ -27,9 +28,9 @@ def _subagent_action_arguments(self, action: str, args: Any) -> Any:
     return args
 
 
-def _subagent_tool_evidence(self, action: str, args: str, result: str) -> tuple[str | None, bool]:
+def _subagent_tool_evidence(self, action: str, args: str, result: str, *, success: bool) -> tuple[str | None, bool]:
     """Verify the observable effect of the small set of artifact-producing tools."""
-    if action != "write_file" or self._is_tool_error(result):
+    if action != "write_file" or not success:
         return None, False
     raw_path = str(args).split("|", 1)[0].strip()
     if not raw_path:
@@ -61,15 +62,16 @@ def _run_subagent_tool(self, profile: AgentProfile, action: str, args: Any, tool
         rejection = "Error: Action args must be a plain string or supported object."
     if rejection:
         authorized = canonical in tools
+        outcome = tool_failure("invalid_arguments" if authorized else "permission_denied", rejection)
         receipt = self._make_execution_receipt(
             action=canonical, args=args, authorized=authorized, started_at=utc_now(),
             success=False, result=rejection, operation_scope=f"subagent:{profile.name}",
-            failure="invalid_arguments" if authorized else "capability_denied",
+            failure=outcome.error.code, tool_error=outcome.error,
         )
         self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
             user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
             session_id=self.memory_bank.session_id)
-        self._notify_tool_execute(canonical, args, rejection)
+        self._notify_tool_execute(canonical, args, tool_failure("invalid_arguments" if authorized else "permission_denied", rejection))
         return {"receipt_id": receipt_id, "action": canonical, "args": str(args)[:500],
                 "result": rejection, "success": False, "authorized": authorized}
     normalized_args = self._subagent_action_arguments(canonical, args)
@@ -88,15 +90,22 @@ def _run_subagent_tool(self, profile: AgentProfile, action: str, args: Any, tool
                 operation_scope=f"subagent:{profile.name}", approve=self._approval_callback.get())
             result = receipt.result
         except Exception as exc:
-            result = f"Error: {type(exc).__name__}: {exc}"
+            outcome = tool_failure("execution_error", f"Error: {type(exc).__name__}")
+            result = render_tool_result(outcome)
+            receipt = self._make_execution_receipt(
+                action=canonical, args=normalized_args, authorized=True, started_at=utc_now(),
+                success=False, result=result, operation_scope=f"subagent:{profile.name}",
+                failure=outcome.error.code, tool_error=outcome.error,
+            )
     finally:
         self._execution_capability_token = previous_token
     if receipt and self.execution_context.coordinator:
         self.execution_context.coordinator.record_receipt(self.execution_context.child_run_id,
             self._active_usage_run_id.get(), receipt.as_dict())
-    acceptance, accepted = self._acceptance_for_tool(canonical, normalized_args, result)
-    effect, effect_verified = self._subagent_tool_evidence(canonical, normalized_args, result)
-    success = receipt is not None and receipt.success and (canonical != "write_file" or effect_verified)
+    execution_success = bool(receipt and receipt.success)
+    acceptance, accepted = self._acceptance_for_tool(canonical, normalized_args, result, success=execution_success)
+    effect, effect_verified = self._subagent_tool_evidence(canonical, normalized_args, result, success=execution_success)
+    success = execution_success
     return {
         **(receipt.as_dict() if receipt else {}),
         "receipt_id": receipt.receipt_id if receipt else receipt_id, "action": canonical, "args": normalized_args[:1000],
@@ -214,7 +223,8 @@ def _run_subagent_llm_result(self, profile: AgentProfile, task: str, context: li
                 rejected_action = unknown or ("unsupported_protocol" if unsupported_protocol else "malformed")
                 self._notify_tool_execute(
                     str(rejected_action), "",
-                    "Error: malformed or unknown Action rejected; no tool was executed.",
+                    tool_failure(
+                        "invalid_arguments", "Error: malformed or unknown Action rejected; no tool was executed."),
                 )
                 tool_records.append({
                     "receipt_id": f"subagent_receipt_{uuid.uuid4().hex}",

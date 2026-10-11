@@ -1,6 +1,7 @@
 """Optional isolated browser control with per-agent profiles."""
 
 from __future__ import annotations
+from openkyrozen.tools.models import ToolError, ToolResult, command_tool_result, invoke_tool_result, legacy_text_api, tool_failure, tool_json_result, tool_success
 
 import ipaddress
 import os
@@ -44,14 +45,15 @@ class BrowserManager:
         self.root.mkdir(parents=True, exist_ok=True)
         self._sessions: dict[str, tuple[object, object, object]] = {}
 
+    @legacy_text_api
     def open(self, url: str) -> str:
         valid, reason = validate_browser_url(url)
         if not valid:
-            return f"Error: {reason}"
+            return tool_failure('permission_denied' if 'private' in reason.lower() or 'credentials' in reason.lower() else 'invalid_arguments', f"Error: {reason}", retriable=False)
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
-            return "Error: browser support requires playwright; install it with `pip install playwright && playwright install chromium`."
+            return tool_failure('dependency_unavailable', "Error: browser support requires playwright; install it with `pip install playwright && playwright install chromium`.", retriable=False)
         session_id = f"browser_{uuid.uuid4().hex[:12]}"
         try:
             playwright = sync_playwright().start()
@@ -61,63 +63,67 @@ class BrowserManager:
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=30_000)
             self._sessions[session_id] = (playwright, context, page)
-            return f"Browser session {session_id} opened {page.url}\nTitle: {page.title()}"
+            return tool_success(str(f"Browser session {session_id} opened {page.url}\nTitle: {page.title()}"))
         except Exception as exc:
             try:
                 playwright.stop()
             except Exception:
                 pass
-            return f"Error opening browser: {exc}"
+            return tool_failure('execution_error', f"Error opening browser: {exc}", retriable=False)
 
+    @legacy_text_api
     def snapshot(self, session_id: str) -> str:
         session = self._sessions.get(session_id.strip())
         if not session:
-            return "Error: browser session not found"
+            return tool_failure('not_found', "Error: browser session not found", retriable=False)
         _, _, page = session
         try:
             return (
-                f"URL: {page.url}\nTitle: {page.title()}\n\n"
-                f"{page.locator('body').inner_text(timeout=BROWSER_SNAPSHOT_TIMEOUT_MS)[:12000]}"
+                tool_success(str(f"URL: {page.url}\nTitle: {page.title()}\n\n"
+                f"{page.locator('body').inner_text(timeout=BROWSER_SNAPSHOT_TIMEOUT_MS)[:12000]}"))
             )
         except Exception as exc:
-            return f"Error reading browser page: {exc}"
+            return tool_failure('execution_error', f"Error reading browser page: {exc}", retriable=False)
 
+    @legacy_text_api
     def click(self, args: str) -> str:
         parts = args.split("|", 1)
         if len(parts) != 2:
-            return "Error: browser_click args format is session_id|selector"
+            return tool_failure('invalid_arguments', "Error: browser_click args format is session_id|selector", retriable=False)
         session = self._sessions.get(parts[0].strip())
         if not session:
-            return "Error: browser session not found"
+            return tool_failure('not_found', "Error: browser session not found", retriable=False)
         try:
             session[2].locator(parts[1].strip()).click(timeout=10_000)
-            return self.snapshot(parts[0])
+            return invoke_tool_result(self.snapshot, parts[0])
         except Exception as exc:
-            return f"Error clicking browser element: {exc}"
+            return tool_failure('execution_error', f"Error clicking browser element: {exc}", retriable=False)
 
+    @legacy_text_api
     def type_text(self, args: str) -> str:
         parts = args.split("|", 2)
         if len(parts) != 3:
-            return "Error: browser_type args format is session_id|selector|text"
+            return tool_failure('invalid_arguments', "Error: browser_type args format is session_id|selector|text", retriable=False)
         session = self._sessions.get(parts[0].strip())
         if not session:
-            return "Error: browser session not found"
+            return tool_failure('not_found', "Error: browser session not found", retriable=False)
         try:
             session[2].locator(parts[1].strip()).fill(parts[2])
-            return "Text entered."
+            return tool_success(str("Text entered."))
         except Exception as exc:
-            return f"Error typing in browser: {exc}"
+            return tool_failure('execution_error', f"Error typing in browser: {exc}", retriable=False)
 
+    @legacy_text_api
     def close(self, session_id: str) -> str:
         session = self._sessions.pop(session_id.strip(), None)
         if not session:
-            return "Error: browser session not found"
+            return tool_failure('not_found', "Error: browser session not found", retriable=False)
         try:
             session[1].close()
             session[0].stop()
-            return f"Browser session {session_id} closed."
+            return tool_success(str(f"Browser session {session_id} closed."))
         except Exception as exc:
-            return f"Error closing browser: {exc}"
+            return tool_failure('execution_error', f"Error closing browser: {exc}", retriable=False)
 
     def close_all(self) -> None:
         for session_id in list(self._sessions):

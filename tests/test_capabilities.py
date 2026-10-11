@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from openkyrozen.security.capabilities import CapabilityToken, issue_capability_token
 from openkyrozen.app.bootstrap import build_application
+from openkyrozen.tools.models import ToolResult
 _application = build_application(surface="cli")
 main = _application.runtime
 from openkyrozen.tools.manifest import ToolRegistry
@@ -12,13 +13,14 @@ from openkyrozen.tools.manifest import ToolRegistry
 class CapabilityTests(unittest.TestCase):
     def test_token_expires_and_registry_filters_and_blocks_tools(self):
         registry = ToolRegistry()
-        registry.register("read", lambda args: "ok", capability="read")
-        registry.register("write", lambda args: "changed", capability="write")
+        registry.register("read", lambda args: ToolResult(text="ok"), capability="read")
+        registry.register("write", lambda args: ToolResult(text="changed"), capability="write")
         token = issue_capability_token("test", {"read"}, ttl_seconds=1)
         self.assertEqual([item["name"] for item in registry.catalog(token)], ["read"])
         self.assertEqual(registry.invoke("read", "", token), "ok")
-        with self.assertRaises(PermissionError):
-            registry.invoke("write", "", token)
+        denied = registry.invoke_result("write", "", token)
+        self.assertFalse(denied.success)
+        self.assertEqual(denied.error.code, "permission_denied")
         self.assertTrue(token.allows("read"))
         time.sleep(1.05)
         self.assertFalse(token.allows("read"))

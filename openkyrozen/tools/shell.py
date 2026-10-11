@@ -1,11 +1,11 @@
 from __future__ import annotations
+from openkyrozen.tools.models import CommandResult, ToolError, ToolResult, command_tool_result, legacy_text_api, tool_failure, tool_json_result, tool_success
 
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-from openkyrozen.tools.models import CommandResult
 from openkyrozen.security.command_policy import _BLOCKED_RE
 
 def _is_dangerous(self, cmd: str) -> bool:
@@ -65,6 +65,7 @@ def run_command(self, args: str) -> CommandResult:
         return CommandResult(f"Error running command: {e}", False, failure="execution_error")
 
 
+@legacy_text_api
 def run_cmd(self, args: str) -> str:
     """Execute a shell command. Args: the full command string."""
-    return str(self.run_command(args))
+    return command_tool_result(self.run_command(args))

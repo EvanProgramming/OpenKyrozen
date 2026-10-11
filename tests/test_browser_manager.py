@@ -18,6 +18,26 @@ class BrowserManagerTests(unittest.TestCase):
         with patch.dict("os.environ", {"KYROZEN_BROWSER_ALLOW_PRIVATE": ""}):
             self.assertFalse(validate_browser_url("http://127.0.0.1:8000")[0])
 
+    def test_click_propagates_snapshot_failure_as_typed_error(self):
+        from openkyrozen.tools.models import invoke_tool_result
+        class Page:
+            url = "https://example.com"
+            def title(self):
+                return "Example"
+            def locator(self, _selector):
+                return Locator()
+        class Locator:
+            def click(self, **_kwargs):
+                return None
+            def inner_text(self, **_kwargs):
+                raise RuntimeError("snapshot failed")
+        manager = BrowserManager()
+        manager._sessions["session"] = (None, None, Page())
+        result = invoke_tool_result(manager.click, "session|button")
+        self.assertFalse(result.success)
+        self.assertEqual(result.error.code, "execution_error")
+        self.assertIn("snapshot failed", result.text)
+
     def test_missing_playwright_is_actionable(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = BrowserManager(root=directory)

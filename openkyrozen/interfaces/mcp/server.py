@@ -4,6 +4,7 @@ import copy
 import asyncio
 from typing import Any
 from openkyrozen.tools import tool_capability
+from openkyrozen.tools.models import tool_failure
 from openkyrozen.security.capabilities import issue_capability_token
 
 from fastapi import FastAPI, Request, HTTPException, Depends
@@ -88,15 +89,15 @@ async def mcp_endpoint(self, request: Request):
         tool_name = params.get("name", "")
         tool_args = params.get("arguments", "")
         if not isinstance(tool_name, str) or not tool_name:
-            service._agent._notify_tool_execute(str(tool_name), tool_args, "Error: tool name is required")
+            service._agent._notify_tool_execute(str(tool_name), tool_args, tool_failure("invalid_arguments", "Error: tool name is required"))
             return service._mcp_error(request_id, -32602, "Invalid params: tool name is required")
         fn = service._agent.AVAILABLE_TOOLS.get(tool_name)
         if fn is None:
-            service._agent._notify_tool_execute(tool_name, tool_args, f"Error: Tool '{tool_name}' not found")
+            service._agent._notify_tool_execute(tool_name, tool_args, tool_failure("invalid_arguments", f"Error: Tool '{tool_name}' not found"))
             return service._mcp_error(request_id, -32601, f"Tool '{tool_name}' not found")
         if tool_name not in service._allowed_server_tools("mcp"):
             service._agent._notify_tool_execute(
-                tool_name, tool_args, f"Error: Tool '{tool_name}' is not authorized",
+                tool_name, tool_args, tool_failure("permission_denied", f"Error: Tool '{tool_name}' is not authorized"),
             )
             return service._mcp_error(request_id, -32001, (
                 f"Tool requires '{tool_capability(tool_name,service._agent.AVAILABLE_TOOLS)}' capability; "
@@ -105,7 +106,7 @@ async def mcp_endpoint(self, request: Request):
         try:
             string_args = service._mcp_string_arguments(tool_name, tool_args)
         except (TypeError, ValueError) as e:
-            service._agent._notify_tool_execute(tool_name, tool_args, f"Error: invalid params: {e}")
+            service._agent._notify_tool_execute(tool_name, tool_args, tool_failure("invalid_arguments", f"Error: invalid params: {e}"))
             return service._mcp_error(request_id, -32602, f"Invalid params: {e}")
         try:
             def execute():

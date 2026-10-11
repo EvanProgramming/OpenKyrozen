@@ -1,4 +1,5 @@
 from __future__ import annotations
+from openkyrozen.tools.models import ToolError, ToolResult, command_tool_result, legacy_text_api, tool_failure, tool_json_result, tool_success
 
 import os
 from typing import Any
@@ -54,6 +55,7 @@ def _permitted_tool_names(self, agent_config: dict[str, Any] | None = None) -> s
     return {name for name in self.AVAILABLE_TOOLS if self.tool_registry.get_spec(name).visibility == 'public' and tool_capability(name,self.AVAILABLE_TOOLS) in capabilities}
 
 
+@legacy_text_api
 def _discover_tools(self, args: str) -> str:
     """Discover permitted tools; args is empty for the catalog or comma-separated exact tool names for full descriptions."""
     permitted = self._permitted_tool_names()
@@ -62,14 +64,14 @@ def _discover_tools(self, args: str) -> str:
         groups: dict[str, list[str]] = {}
         for name in sorted(permitted):
             groups.setdefault(tool_capability(name,self.AVAILABLE_TOOLS), []).append(name)
-        return "\n".join(f"{capability}: {', '.join(group)}" for capability, group in sorted(groups.items()))
+        return tool_success(str("\n".join(f"{capability}: {', '.join(group)}" for capability, group in sorted(groups.items()))))
     if any(name not in permitted for name in names):
-        return "Error: unknown or unavailable tool requested"
+        return tool_failure('execution_error', "Error: unknown or unavailable tool requested", retriable=False)
     self.execution_context.discovered_tools |= frozenset(names)
-    return "\n".join(
+    return tool_success(str("\n".join(
         f"- {name}: {self.tool_registry.get_spec(name).description}"
         for name in names
-    )
+    )))
 
 
 def _agent_prompt_tools_list(self, agent_config: dict[str, Any]) -> str:
@@ -160,7 +162,7 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
         "Dynamic tools are enabled only when the active surface grants the `dynamic` capability and the approval policy allows registration. "
         "When a missing pure helper is genuinely needed, you may output exactly one DefineTool block; never include imports, filesystem/process/network access, secrets, permission changes, or capability grants. "
         "The runtime validates and registers it, refreshes the tool inventory, and then you may call it by its exact name:\n"
-        "DefineTool:\n```python\ndef tool_name(args: str) -> str:\n    return args.strip()\n```\n"
+        "DefineTool:\n```python\ndef tool_name(args: str) -> ToolResult:\n    return ToolResult(data=args.strip(), text=args.strip())\n```\n"
     ) if self.ALLOW_DYNAMIC_TOOLS and interaction_mode == "agent" else (
         "## Dynamic tools\n"
         "Dynamic tool creation is disabled for this execution surface. Do not emit DefineTool blocks.\n"

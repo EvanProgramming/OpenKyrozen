@@ -1,4 +1,5 @@
 from __future__ import annotations
+from openkyrozen.tools.models import ToolError, ToolResult, command_tool_result, legacy_text_api, tool_failure, tool_json_result, tool_success
 
 import os
 import glob
@@ -14,11 +15,11 @@ import threading
 import time
 from pathlib import Path
 
-from openkyrozen.tools.models import CommandResult
 from openkyrozen.security.command_policy import _BLOCKED_RE
 
 _SEARCH_EXCLUDED_DIRECTORIES = (".git", "venv", ".venv", "node_modules", "__pycache__")
 
+@legacy_text_api
 def find_files(self, args: str) -> str:
     """
     Find files matching a pattern. Args format: "pattern" or "pattern|directory".
@@ -32,7 +33,7 @@ def find_files(self, args: str) -> str:
             directory = parts[1].strip()
         directory_path = self._resolve_workspace_path(directory)
         if os.path.isabs(pattern):
-            return "Error: absolute patterns are not allowed"
+            return tool_failure('invalid_arguments', "Error: absolute patterns are not allowed", retriable=False)
         full_path = os.path.join(str(directory_path), pattern)
         matches = []
         for match in glob.glob(full_path, recursive=True):
@@ -42,12 +43,13 @@ def find_files(self, args: str) -> str:
                 continue
             matches.append(match)
         if not matches:
-            return "No files found."
-        return "\n".join(matches)
+            return tool_success(str("No files found."))
+        return tool_success(str("\n".join(matches)))
     except Exception as e:
-        return f"Error finding files: {e}"
+        return tool_failure('execution_error', f"Error finding files: {e}", retriable=False)
 
 
+@legacy_text_api
 def list_dir(self, args: str) -> str:
     """
     List contents of a directory. Args format: "path" (default ".").
@@ -57,11 +59,12 @@ def list_dir(self, args: str) -> str:
         dir_path = args.strip() or "."
         abs_path = self._resolve_workspace_path(dir_path)
         entries = os.listdir(abs_path)
-        return "\n".join(sorted(entries))
+        return tool_success(str("\n".join(sorted(entries))))
     except Exception as e:
-        return f"Error listing directory: {e}"
+        return tool_failure('execution_error', f"Error listing directory: {e}", retriable=False)
 
 
+@legacy_text_api
 def list_tree(self, args: str) -> str:
     """
     Recursively list the directory tree of the given path. Args format: "path" (default ".").
@@ -73,7 +76,7 @@ def list_tree(self, args: str) -> str:
         path = args.strip() or "."
         root = self._resolve_workspace_path(path)
         if not root.is_dir():
-            return f"Error: '{path}' is not a directory"
+            return tool_failure('not_found', f"Error: '{path}' is not a directory", retriable=False)
         lines = [f"{root.name}/"]
         for dirpath, dirnames, filenames in os.walk(root):
             # skip hidden dirs
@@ -84,11 +87,12 @@ def list_tree(self, args: str) -> str:
                 lines.append(f"{prefix}{d}/")
             for f in sorted(filenames):
                 lines.append(f"{prefix}{f}")
-        return "\n".join(lines)
+        return tool_success(str("\n".join(lines)))
     except Exception as e:
-        return f"Error listing tree: {e}"
+        return tool_failure('execution_error', f"Error listing tree: {e}", retriable=False)
 
 
+@legacy_text_api
 def write_file(self, args: str) -> str:
     """
     Write content to a file. Args format: "path|content".
@@ -97,17 +101,18 @@ def write_file(self, args: str) -> str:
     try:
         parts = args.split("|", 1)
         if len(parts) < 2:
-            return "Error: write_file requires args in format path|content"
+            return tool_failure('invalid_arguments', "Error: write_file requires args in format path|content", retriable=False)
         raw_path, content = parts[0].strip(), parts[1]
         abs_path = self._resolve_workspace_path(raw_path)
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         with open(abs_path, "w", encoding="utf-8") as f:
             f.write(content)
-        return f"Wrote {len(content)} characters to {abs_path}"
+        return tool_success(str(f"Wrote {len(content)} characters to {abs_path}"))
     except Exception as e:
-        return f"Error writing file: {e}"
+        return tool_failure('execution_error', f"Error writing file: {e}", retriable=False)
 
 
+@legacy_text_api
 def read_file(self, args: str) -> str:
     """
     Read content from a file. Args format: "path".
@@ -117,14 +122,14 @@ def read_file(self, args: str) -> str:
         if args.lstrip().startswith("{"):
             request = json.loads(args)
             if not isinstance(request, dict) or not isinstance(request.get("path"), str):
-                return "Error: structured read requires a path"
+                return tool_failure('invalid_arguments', "Error: structured read requires a path", retriable=False)
             abs_path = self._resolve_workspace_path(request["path"])
             start = request.get("start_line", 1)
             limit = request.get("max_lines", 200)
             max_chars = request.get("max_chars", 20_000)
             if (any(not isinstance(item, int) or isinstance(item, bool) for item in (start, limit, max_chars))
                     or start < 1 or limit < 1 or max_chars < 1):
-                return "Error: start_line, max_lines, and max_chars must be positive integers"
+                return tool_failure('invalid_arguments', "Error: start_line, max_lines, and max_chars must be positive integers", retriable=False)
             limit, max_chars = min(limit, 200), min(max_chars, 20_000)
             digest = hashlib.sha256()
             decoder = codecs.getincrementaldecoder("utf-8")()
@@ -164,24 +169,26 @@ def read_file(self, args: str) -> str:
             excerpt = "".join(excerpt_parts)[:max_chars]
             clipped = excerpt_size > max_chars
             relative = abs_path.relative_to(self._WORKSPACE_ROOT).as_posix()
-            return json.dumps({
+            data = {
                 "path": relative, "sha256": digest.hexdigest(),
                 "start_line": start, "end_line": min(total, start + limit - 1),
                 "total_lines": total, "truncated": clipped or start + limit - 1 < total,
                 "content": excerpt,
-            })
+            }
+            return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
         raw_path = args.strip()
         if not raw_path:
-            return "Error: read_file requires a path"
+            return tool_failure('invalid_arguments', "Error: read_file requires a path", retriable=False)
         abs_path = self._resolve_workspace_path(raw_path)
         with open(abs_path, "r", encoding="utf-8") as f:
-            return f.read()
+            return tool_success(str(f.read()))
     except FileNotFoundError:
-        return f"Error: file not found: {args.strip()}"
+        return tool_failure('not_found', f"Error: file not found: {args.strip()}", retriable=False)
     except Exception as e:
-        return f"Error reading file: {e}"
+        return tool_failure('execution_error', f"Error reading file: {e}", retriable=False)
 
 
+@legacy_text_api
 def edit_file(self, args: str) -> str:
     """Replace one exact snippet only when the file still matches its read hash."""
     temporary = None
@@ -189,18 +196,18 @@ def edit_file(self, args: str) -> str:
         request = json.loads(args)
         if not isinstance(request, dict) or not all(isinstance(request.get(key), str)
                 for key in ("path", "old_text", "new_text", "expected_sha256")):
-            return "Error: edit_file requires path, old_text, new_text, and expected_sha256 strings"
+            return tool_failure('invalid_arguments', "Error: edit_file requires path, old_text, new_text, and expected_sha256 strings", retriable=False)
         old, new = request["old_text"], request["new_text"]
         if not old:
-            return "Error: old_text must not be empty"
+            return tool_failure('invalid_arguments', "Error: old_text must not be empty", retriable=False)
         path = self._resolve_workspace_path(request["path"])
         original = path.read_bytes()
         digest = hashlib.sha256(original).hexdigest()
         if digest != request["expected_sha256"]:
-            return "Error: file is stale; read it again before editing"
+            return tool_failure('stale_file', "Error: file is stale; read it again before editing", retriable=False)
         content = original.decode("utf-8")
         if content.count(old) != 1:
-            return "Error: old_text must match exactly once"
+            return tool_failure('stale_file', "Error: old_text must match exactly once", retriable=False)
         updated = content.replace(old, new, 1).encode("utf-8")
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         with os.fdopen(descriptor, "wb") as output:
@@ -209,12 +216,12 @@ def edit_file(self, args: str) -> str:
             os.fsync(output.fileno())
         os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
         if hashlib.sha256(path.read_bytes()).hexdigest() != request["expected_sha256"]:
-            return "Error: file changed during edit; read it again before editing"
+            return tool_failure('stale_file', "Error: file changed during edit; read it again before editing", retriable=False)
         os.replace(temporary, path)
         temporary = None
-        return f"Updated {path.relative_to(self._WORKSPACE_ROOT).as_posix()}"
+        return tool_success(str(f"Updated {path.relative_to(self._WORKSPACE_ROOT).as_posix()}"))
     except Exception as exc:
-        return f"Error editing file: {exc}"
+        return tool_failure('execution_error', f"Error editing file: {exc}", retriable=False)
     finally:
         if temporary:
             try:
@@ -223,19 +230,20 @@ def edit_file(self, args: str) -> str:
                 pass
 
 
+@legacy_text_api
 def search_files(self, args: str) -> str:
     """Search literal text with bounded, relative file-and-line results."""
     try:
         request = json.loads(args)
         if not isinstance(request, dict) or not isinstance(request.get("query"), str) or not request["query"]:
-            return "Error: search_files requires a non-empty literal query"
+            return tool_failure('invalid_arguments', "Error: search_files requires a non-empty literal query", retriable=False)
         scope = self._resolve_workspace_path(request.get("path", "."))
         pattern = request.get("glob", "*")
         if not isinstance(pattern, str) or Path(pattern).is_absolute() or ".." in Path(pattern).parts:
-            return "Error: glob must be a workspace-relative pattern"
+            return tool_failure('invalid_arguments', "Error: glob must be a workspace-relative pattern", retriable=False)
         limit = request.get("limit", 100)
         if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
-            return "Error: limit must be a positive integer"
+            return tool_failure('invalid_arguments', "Error: limit must be a positive integer", retriable=False)
         limit = min(limit, 100)
         query = request["query"]
         rg = shutil.which("rg")
@@ -295,15 +303,15 @@ def search_files(self, args: str) -> str:
                     pass
             process.stdout.close()
             if output:
-                return "\n".join(output)
-            return "Search timed out." if timed_out.is_set() else "No matches."
+                return tool_success(str("\n".join(output)))
+            return (tool_failure('timeout', "Search timed out.", retriable=False) if timed_out.is_set() else tool_success(str("No matches.")))
 
         output, size = [], 0
         deadline = time.monotonic() + 5
         files = [scope] if scope.is_file() else scope.rglob("*")
         for path in files:
             if time.monotonic() >= deadline:
-                return "\n".join(output) if output else "Search timed out."
+                return (tool_success(str("\n".join(output))) if output else tool_failure('timeout', "Search timed out.", retriable=False))
             try:
                 path = self._resolve_workspace_path(str(path))
             except ValueError:
@@ -334,14 +342,14 @@ def search_files(self, args: str) -> str:
                 with path.open("rb") as source:
                     while chunk := source.read(64 * 1024):
                         if time.monotonic() >= deadline:
-                            return "\n".join(output) if output else "Search timed out."
+                            return (tool_success(str("\n".join(output))) if output else tool_failure('timeout', "Search timed out.", retriable=False))
                         parts = chunk.split(b"\n")
                         for piece in parts[:-1]:
                             probe = overlap + piece
                             found = found or needle in probe
                             prefix = (prefix + piece)[:401]
                             if record_line():
-                                return "\n".join(output)
+                                return tool_success(str("\n".join(output)))
                             number += 1
                             overlap, prefix, found = b"", b"", False
                         piece = parts[-1]
@@ -351,9 +359,9 @@ def search_files(self, args: str) -> str:
                         overlap = probe[-(len(needle) - 1):] if len(needle) > 1 else b""
                     if prefix or found:
                         if record_line():
-                            return "\n".join(output)
+                            return tool_success(str("\n".join(output)))
             except OSError:
                 continue
-        return "\n".join(output) if output else "No matches."
+        return (tool_success(str("\n".join(output))) if output else tool_success(str("No matches.")))
     except Exception as exc:
-        return f"Error searching files: {exc}"
+        return tool_failure('execution_error', f"Error searching files: {exc}", retriable=False)

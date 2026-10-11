@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Any, Callable
 
 from openkyrozen.security.capabilities import CapabilityToken
+from .models import CommandResult, ToolResult, ToolError, render_tool_result, require_tool_result
 
 
 def _json_value(value):
@@ -210,7 +211,11 @@ class ToolMapping(MutableMapping):
     def __getitem__(self,name):
         if name in self.excluded:
             raise KeyError(name)
-        return self.registry.get_spec(name).executor
+        spec=self.registry.get_spec(name)
+        def render(args):
+            return render_tool_result(self.registry._invoke_executor(spec,args))
+        render.__tool_result_executor__ = spec.executor
+        return render
     def __setitem__(self,name,function):
         if name in self.excluded:
             raise PermissionError('Tool is excluded from this view')
@@ -269,6 +274,9 @@ class ToolRegistry:
     def register(self,name,function,*,capability=None,risk=None,version=None,source=None):
         from .catalog import builtin_metadata
         old=self._specs.get(name)
+        typed=getattr(getattr(function,"__func__",function),"__tool_result_executor__",None)
+        if typed is not None:
+            function=typed.__get__(function.__self__,type(function.__self__)) if hasattr(function,"__self__") else typed
         if old:
             updates={'executor':function}
             updates.update({k:v for k,v in {'capability':capability,'risk':risk,'version':version,'source':source}.items() if v is not None})
@@ -301,8 +309,26 @@ class ToolRegistry:
     def provider_schemas(self,token=None,*,names=None):
         return [{'name':s.name,'description':s.description.splitlines()[0],'parameters':s.input_schema} for s in self._visible(token,names)]
 
-    def invoke(self,name,args,token):
+    @staticmethod
+    def _invoke_executor(spec,args):
+        try:
+            result=spec.executor(args)
+        except Exception as exc:
+            return ToolResult(text=f"Error: {type(exc).__name__}", error=ToolError(
+                "execution_error", f"Tool execution failed ({type(exc).__name__})",
+                metadata={"exception_type":type(exc).__name__},
+            ))
+        if isinstance(result, CommandResult):
+            from .models import command_tool_result
+            return command_tool_result(result)
+        return require_tool_result(result)
+
+    def invoke_result(self,name,args,token):
         spec=self.get_spec(name)
         if not token.allows(spec.capability):
-            raise PermissionError(f"Capability '{spec.capability}' is not granted by token")
-        return spec.executor(args)
+            return ToolResult(text=f"Error: Capability '{spec.capability}' is not granted by token",
+                              error=ToolError("permission_denied",f"Capability '{spec.capability}' is not granted by token"))
+        return self._invoke_executor(spec,args)
+
+    def invoke(self,name,args,token):
+        return render_tool_result(self.invoke_result(name,args,token))

@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from openkyrozen.tools.models import ToolResult
 from pathlib import Path
 from unittest.mock import patch
 
@@ -355,10 +356,10 @@ class TaskConsistencyTests(unittest.TestCase):
             original_tasks = main.tasks
             original_learning = main.learning_engine
             main._set_workspace_root(root)
-            original_write = main.AVAILABLE_TOOLS["write_file"]
+            original_write = main.tool_registry.get_spec("write_file").executor
             writes: list[str] = []
 
-            def counted_write(args: str) -> str:
+            def counted_write(args: str) -> ToolResult:
                 writes.append(args)
                 return original_write(args)
 
@@ -986,7 +987,7 @@ class TaskConsistencyTests(unittest.TestCase):
             failed = main._execute_turn_action("run_cmd", "python -c pass", operation_scope="retry", successful_operations=operations)
             retried = main._execute_turn_action("run_cmd", "python -c pass", operation_scope="retry", successful_operations=operations)
         self.assertFalse(failed.success)
-        self.assertEqual(failed.failure, "nonzero_exit")
+        self.assertEqual(failed.failure, "command_failed")
         self.assertTrue(retried.success)
 
         class SlowProvider:

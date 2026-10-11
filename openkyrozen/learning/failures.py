@@ -31,11 +31,10 @@ def _emit_stream_event(self, event: dict[str, Any]) -> None:
         pass
 
 
-def _track_tool_performance(self, action: str, result: str, elapsed: float) -> None:
+def _track_tool_performance(self, action: str, success: bool, elapsed: float) -> None:
     stats = self._tool_stats.setdefault(action, {"calls":0,"successes":0,"total_time":0.0})
     stats["calls"] += 1
     stats["total_time"] += elapsed
-    success = not self._is_tool_error(result)
     if success:
         stats["successes"] += 1
     self._record_learning_event("learning.tool_performance", {

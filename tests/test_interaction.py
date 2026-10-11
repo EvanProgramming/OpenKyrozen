@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from openkyrozen.tools.models import ToolResult
 from pathlib import Path
 from unittest.mock import patch
 
@@ -656,7 +657,7 @@ class InteractionTests(unittest.TestCase):
                     "plan",
                 ),
             )
-            self.agent.AVAILABLE_TOOLS["temporary_dynamic_tool"] = lambda args: f"ran:{args}"
+            self.agent.AVAILABLE_TOOLS["temporary_dynamic_tool"] = lambda args: ToolResult(text=f"ran:{args}")
             try:
                 self.assertIn("safe", self.agent._run_tool("read_file", "notes.txt"))
                 for action, args in (
@@ -711,7 +712,7 @@ class InteractionTests(unittest.TestCase):
                     successful_operations=operations,
                 )
                 self.assertFalse(rejected.success)
-                self.assertEqual(rejected.failure, "plan_action_mismatch")
+                self.assertEqual(rejected.failure, "permission_denied")
                 self.assertFalse((root / "README.md").exists())
 
                 accepted = self.agent._execute_turn_action(
