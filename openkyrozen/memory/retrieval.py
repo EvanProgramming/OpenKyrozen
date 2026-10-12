@@ -32,6 +32,7 @@ def _check_stored_data(self, args: str) -> str:
     _EXCLUDED_PREFIXES = {"FILE:", "User:"}
 
     try:
+        category = args.get('category', '') if isinstance(args, dict) else args
         total = self.memory_bank.count_logs()
         recent_all = self.memory_bank.get_recent(500)
 
@@ -69,7 +70,7 @@ def _check_stored_data(self, args: str) -> str:
         )
 
         # If user specified a category filter
-        filter_arg = args.strip().upper() if args and args.strip() else ""
+        filter_arg = category.strip().upper() if category and category.strip() else ""
         if filter_arg:
             filter_prefix = filter_arg + ":" if not filter_arg.endswith(":") else filter_arg
             if filter_prefix in _LEARNING_CATEGORIES:
@@ -173,7 +174,7 @@ def _cjk_approximate_words(self, text: str) -> int:
 def _search_memory(self, args: str) -> str:
     """Search stored memories for facts relevant to the query. Args: "query" """
     try:
-        query = args.strip() if args else ""
+        query = args.get('query', '') if isinstance(args, dict) else args.strip() if args else ""
         if not query:
             return tool_failure('invalid_arguments', "Search Error: provide a query.", retriable=False)
         # First attempt: semantic search via ChromaDB/memory recall

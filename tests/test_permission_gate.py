@@ -63,6 +63,14 @@ class PermissionGateTests(unittest.TestCase):
         self.assertTrue(git_read_arguments_allowed("git_diff", "--cached HEAD~1"))
         self.assertTrue(git_read_arguments_allowed("git_log", "--oneline -5"))
 
+    def test_read_only_git_guard_checks_structured_options_as_executed(self):
+        for action in ("git_diff", "git_log"):
+            with self.subTest(action=action):
+                self.assertFalse(git_read_arguments_allowed(action, {"options": ["--output=/tmp/result"]}))
+                self.assertFalse(git_read_arguments_allowed(action, {"options": ["--exec=helper"]}))
+                self.assertTrue(git_read_arguments_allowed(action, {"options": ["--oneline", "-5"]}))
+        self.assertFalse(git_read_arguments_allowed("git_show", {"reference": "--output=/tmp/result"}))
+
     def test_read_only_git_executors_disable_external_diff_and_textconv(self):
         from types import SimpleNamespace
         from unittest.mock import patch

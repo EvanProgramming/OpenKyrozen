@@ -20,7 +20,7 @@ The plugin lifecycle supports project Python extensions such as the sample `plug
 
 ## Dynamic tools
 
-Runtime-created dynamic tools are a distinct feature from skills. They remain disabled unless the operator enables them with `KYROZEN_ALLOW_DYNAMIC_TOOLS` and all normal tool capability and approval checks still apply. Dynamic executors must return `ToolResult`; the restricted source namespace provides `ToolResult` and `ToolError` constructors. Review generated source and permissions before activation. A learning feature that observes successful tools does not silently switch this policy on.
+Runtime-created dynamic tools are a distinct feature from skills. They remain disabled unless the operator enables them with `KYROZEN_ALLOW_DYNAMIC_TOOLS` and all normal tool capability and approval checks still apply. Dynamic executors receive the declared object arguments (currently `{"args": "<string>"}`) and must return `ToolResult`; the restricted source namespace provides `ToolResult` and `ToolError` constructors. Review generated source and permissions before activation. A learning feature that observes successful tools does not silently switch this policy on.
 
 ## Learned policies and skills
 

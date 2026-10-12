@@ -551,7 +551,10 @@ class AgentRuntime:
         with self.use_session(session):
             context_token = self._turn_context.set(copy.copy(self.execution_context))
             approval_token = self._approval_callback.set(approve)
-            surface_token = self._surface_capability_override.set(_surface_capability_bound)
+            previous_surface_bound = self._surface_capability_override.get()
+            surface_token = self._surface_capability_override.set(
+                _surface_capability_bound if _surface_capability_bound is not None else previous_surface_bound
+            )
             try:
                 current = self._execution_capability_token
                 try:
@@ -592,7 +595,8 @@ class AgentRuntime:
             granted &= resolve_capabilities(requested, default="readonly") if requested.strip() else frozenset()
         return granted
 
-    def execute_call(self, session, call, *, capabilities=None, operation_scope="", approve=None):
+    def execute_call(self, session, call, *, capabilities=None, operation_scope="", approve=None,
+                     _surface_capability_bound=None):
         """Authorize and execute one structured provider call at the shared boundary."""
         from openkyrozen.providers.models import ToolCall
         from openkyrozen.security.approvals import ApprovalRequest
@@ -609,6 +613,10 @@ class AgentRuntime:
             existing_approve = self._approval_callback.get()
             user_approve = approve if approve is not None else existing_approve
             approval_token = self._approval_callback.set(user_approve)
+            previous_surface_bound = self._surface_capability_override.get()
+            surface_token = self._surface_capability_override.set(
+                _surface_capability_bound if _surface_capability_bound is not None else previous_surface_bound
+            )
             request_token = None
             spec_token = None
             started_at = utc_now()
@@ -619,6 +627,23 @@ class AgentRuntime:
                 except KeyError:
                     receipt = self._run_tool(name, call_arguments, return_receipt=True,
                                              operation_scope=operation_scope)
+                    self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
+                        user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
+                        session_id=self.memory_bank.session_id)
+                    return receipt
+                validation_error = self.tool_registry._argument_error(spec.input_schema, call_arguments)
+                if spec.source == 'legacy':
+                    validation_error = 'native calls require a ToolSpec with a declared object executor contract'
+                if validation_error:
+                    from openkyrozen.tools.models import tool_failure, render_tool_result
+                    code = 'contract_error' if spec.source == 'legacy' else 'invalid_arguments'
+                    outcome = tool_failure(code, f"Error: {validation_error}")
+                    self._notify_tool_execute(name, call_arguments, outcome)
+                    receipt = self._make_execution_receipt(
+                        action=name, args=call_arguments, authorized=False, started_at=started_at,
+                        success=False, result=render_tool_result(outcome), operation_scope=operation_scope,
+                        failure=outcome.error.code, tool_error=outcome.error,
+                    )
                     self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
                         user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
                         session_id=self.memory_bank.session_id)
@@ -680,6 +705,7 @@ class AgentRuntime:
                 finally:
                     self._approval_callback.reset(approval_token2)
             finally:
+                self._surface_capability_override.reset(surface_token)
                 if request_token is not None:
                     self._approval_request.reset(request_token)
                 if spec_token is not None:

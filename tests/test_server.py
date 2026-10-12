@@ -22,6 +22,35 @@ from openkyrozen.workspace.context import source_scope_id
 
 
 class ServerBoundaryTests(unittest.TestCase):
+    def test_mcp_normalizes_declared_argument_aliases_and_rejects_conflicts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "note.txt").write_text("MCP alias content", encoding="utf-8")
+            with patch.dict(os.environ, {
+                "KYROZEN_DB_PATH": str(root / "state.sqlite3"),
+                "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_MCP_CAPABILITIES": "workspace",
+            }):
+                service = WebService(None)
+                client = TestClient(service.app)
+                previous_root = service._agent._get_workspace_root()
+                service._agent._set_workspace_root(root)
+                try:
+                    aliased = client.post("/mcp", json={
+                        "jsonrpc": "2.0", "id": 810, "method": "tools/call",
+                        "params": {"name": "read_file", "arguments": {"file_path": "note.txt"}},
+                    }).json()
+                    conflict = client.post("/mcp", json={
+                        "jsonrpc": "2.0", "id": 811, "method": "tools/call",
+                        "params": {"name": "read_file", "arguments": {
+                            "path": "note.txt", "file_path": "other.txt",
+                        }},
+                    }).json()
+                finally:
+                    service._agent._set_workspace_root(previous_root)
+        self.assertFalse(aliased["result"]["isError"])
+        self.assertIn("MCP alias content", aliased["result"]["content"][0]["text"])
+        self.assertTrue(conflict["result"]["isError"])
+
     def test_history_api_lists_tree_rejects_stale_or_unconfirmed_rollbacks_and_restores(self):
         client = TestClient(server.app)
         with tempfile.TemporaryDirectory() as directory:
@@ -259,10 +288,11 @@ class ServerBoundaryTests(unittest.TestCase):
             previous_root = server._agent._get_workspace_root()
             server._agent._set_workspace_root(root)
             try:
-                called = client.post("/mcp", json={
+                with patch.object(server, "_mcp_string_arguments", side_effect=AssertionError("legacy converter called")):
+                    called = client.post("/mcp", json={
                     "jsonrpc": "2.0", "id": 5, "method": "tools/call",
                     "params": {"name": "read_file", "arguments": {"path": "mcp.txt"}},
-                }).json()
+                    }).json()
             finally:
                 server._agent._set_workspace_root(previous_root)
             self.assertEqual(called["id"], 5)
@@ -283,7 +313,8 @@ class ServerBoundaryTests(unittest.TestCase):
             "params": {"name": "read_file", "arguments": {"path": 123}},
         }).json()
         self.assertEqual(invalid["id"], 21)
-        self.assertEqual(invalid["error"]["code"], -32602)
+        self.assertIn("error", invalid["result"]["content"][0]["text"].lower())
+        self.assertTrue(invalid["result"]["isError"])
 
         execution = client.post("/mcp", json={
             "jsonrpc": "2.0", "id": 22, "method": "tools/call",
@@ -505,7 +536,7 @@ class ServerBoundaryTests(unittest.TestCase):
             self.assertNotIn("git_branch", server._allowed_server_tools("web"))
             denied = TestClient(server.app).post("/mcp", json={
                 "jsonrpc": "2.0", "id": 77, "method": "tools/call",
-                "params": {"name": "git_branch", "arguments": {"args": ""}},
+                "params": {"name": "git_branch", "arguments": {"options": []}},
             }).json()
         self.assertEqual(denied["error"]["code"], -32001)
 
@@ -518,7 +549,7 @@ class ServerBoundaryTests(unittest.TestCase):
                 with patch.dict(os.environ, {"KYROZEN_MCP_CAPABILITIES": "workspace"}):
                     allowed = TestClient(server.app).post("/mcp", json={
                         "jsonrpc": "2.0", "id": 78, "method": "tools/call",
-                        "params": {"name": "git_branch", "arguments": {"args": ""}},
+                        "params": {"name": "git_branch", "arguments": {"options": []}},
                     }).json()
             finally:
                 server._agent._set_workspace_root(previous_root)

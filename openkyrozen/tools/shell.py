@@ -68,4 +68,5 @@ def run_command(self, args: str) -> CommandResult:
 @legacy_text_api
 def run_cmd(self, args: str) -> str:
     """Execute a shell command. Args: the full command string."""
-    return command_tool_result(self.run_command(args))
+    command = args.get('command', '') if isinstance(args, dict) else args
+    return command_tool_result(self.run_command(command))

@@ -54,6 +54,7 @@ def _value(node):
 def calculate(self, args: str) -> str:
     """Check a bounded arithmetic expression, e.g. sum([Decimal('1.00'), Decimal('2.00')]); no workspace code runs."""
     try:
+        args = args.get('expression', '') if isinstance(args, dict) else args
         if not isinstance(args, str) or len(args) > 4000:
             raise ValueError("Expression exceeds calculation budget")
         tree = ast.parse(args, mode="eval")

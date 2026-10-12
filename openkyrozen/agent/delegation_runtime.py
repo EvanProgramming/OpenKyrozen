@@ -112,6 +112,8 @@ def _json_args(args):
 
 
 def _typed_json_args(args):
+    if isinstance(args, dict):
+        return args, None
     try:
         return _json_args(args), None
     except (TypeError, ValueError) as exc:
@@ -289,7 +291,7 @@ def _delegation_tool_access(self, action, args):
     )
     path = None
     if action in {"write_file", "edit_file", "read_file", "search_files"}:
-        raw = str(args).split("|", 1)[0].strip()
+        raw = args.get('path', '') if isinstance(args, dict) else str(args).split("|", 1)[0].strip()
         if action in {"edit_file", "read_file", "search_files"} and raw.startswith("{"):
             try:
                 request = json.loads(str(args))
@@ -329,11 +331,12 @@ def _delegation_tool_access(self, action, args):
             if path not in owned:
                 raise ValueError("Sub-agent write is outside its assigned files")
         parent = getattr(self.current_session, "_delegation_parent", None)
-        if parent and parent.interaction.state().get("executing_plan") and self._is_state_changing_action(action, str(args)):
-            allowed, reason = parent.tasks.mutation_matches_current_task(action, str(args))
+        if parent and parent.interaction.state().get("executing_plan") and self._is_state_changing_action(action, args):
+            structured = json.dumps(args, ensure_ascii=False, sort_keys=True) if isinstance(args, dict) else str(args)
+            allowed, reason = parent.tasks.mutation_matches_current_task(action, structured)
             if not allowed:
                 raise ValueError("Sub-agent action does not match accepted plan: " + reason)
-    guarded = action in {"read_file", "write_file", "edit_file", "search_files"} or self._is_state_changing_action(action, str(args)) or action in {"git_diff", "git_show"}
+    guarded = action in {"read_file", "write_file", "edit_file", "search_files"} or self._is_state_changing_action(action, args) or action in {"git_diff", "git_show"}
     if access and guarded:
         cancelled = (lambda: coordinator.cancelled[context.child_run_id].is_set()) if coordinator else (lambda: False)
         with access.acquire(path, cancelled, context.child_run_id,

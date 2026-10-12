@@ -26,11 +26,12 @@ def find_files(self, args: str) -> str:
     Supports ~ for user home. Returns newline-separated list of relative paths.
     """
     try:
-        parts = args.split("|", 1)
-        pattern = parts[0].strip()
-        directory = "."
-        if len(parts) > 1:
-            directory = parts[1].strip()
+        if isinstance(args, dict):
+            pattern, directory = args.get('pattern', ''), args.get('directory', '.')
+        else:
+            parts = args.split("|", 1)
+            pattern, directory = parts[0], parts[1] if len(parts) > 1 else '.'
+        pattern, directory = pattern.strip(), directory.strip()
         directory_path = self._resolve_workspace_path(directory)
         if os.path.isabs(pattern):
             return tool_failure('invalid_arguments', "Error: absolute patterns are not allowed", retriable=False)
@@ -56,7 +57,7 @@ def list_dir(self, args: str) -> str:
     Supports ~ for user home.
     """
     try:
-        dir_path = args.strip() or "."
+        dir_path = (args.get('path', '.') if isinstance(args, dict) else args).strip() or "."
         abs_path = self._resolve_workspace_path(dir_path)
         entries = os.listdir(abs_path)
         return tool_success(str("\n".join(sorted(entries))))
@@ -75,7 +76,7 @@ def list_tree(self, args: str) -> str:
     import os
     import pathlib
     try:
-        path = args.strip() or "."
+        path = (args.get('path', '.') if isinstance(args, dict) else args).strip() or "."
         root = self._resolve_workspace_path(path)
         if not root.is_dir():
             return tool_failure('not_found', f"Error: '{path}' is not a directory", retriable=False)
@@ -101,10 +102,13 @@ def write_file(self, args: str) -> str:
     The path must be relative to the active workspace (e.g. "notes.txt").
     """
     try:
-        parts = args.split("|", 1)
-        if len(parts) < 2:
-            return tool_failure('invalid_arguments', "Error: write_file requires args in format path|content", retriable=False)
-        raw_path, content = parts[0].strip(), parts[1]
+        if isinstance(args, dict):
+            raw_path, content = args['path'], args['content']
+        else:
+            parts = args.split("|", 1)
+            if len(parts) < 2:
+                return tool_failure('invalid_arguments', "Error: write_file requires args in format path|content", retriable=False)
+            raw_path, content = parts[0].strip(), parts[1]
         abs_path = self._resolve_workspace_path(raw_path)
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         with open(abs_path, "w", encoding="utf-8") as f:
@@ -121,8 +125,32 @@ def read_file(self, args: str) -> str:
     The path must be relative to the active workspace (e.g. "notes.txt").
     """
     try:
-        if args.lstrip().startswith("{"):
-            request = json.loads(args)
+        if isinstance(args, dict) or args.lstrip().startswith("{"):
+            request = args if isinstance(args, dict) else json.loads(args)
+            if not isinstance(request, dict) or not isinstance(request.get("path"), str):
+                return tool_failure('invalid_arguments', "Error: structured read requires a path", retriable=False)
+            if not isinstance(args, dict) or set(request) != {"path"}:
+                return _read_file_excerpt(self, request)
+            raw_path = request["path"].strip()
+            abs_path = self._resolve_workspace_path(raw_path)
+            with open(abs_path, "r", encoding="utf-8") as f:
+                return tool_success(f.read())
+        raw_path = args.strip()
+        if not raw_path:
+            return tool_failure('invalid_arguments', "Error: read_file requires a path", retriable=False)
+        abs_path = self._resolve_workspace_path(raw_path)
+        with open(abs_path, "r", encoding="utf-8") as f:
+            return tool_success(str(f.read()))
+    except FileNotFoundError:
+        missing = args.get('path', '') if isinstance(args, dict) else args.strip()
+        return tool_failure('not_found', f"Error: file not found: {missing}", retriable=False)
+    except Exception as e:
+        return tool_failure('execution_error', f"Error reading file: {e}", retriable=False)
+
+
+def _read_file_excerpt(self, request):
+    """Return the established bounded, hash-bearing read response."""
+    try:
             if not isinstance(request, dict) or not isinstance(request.get("path"), str):
                 return tool_failure('invalid_arguments', "Error: structured read requires a path", retriable=False)
             abs_path = self._resolve_workspace_path(request["path"])
@@ -178,14 +206,8 @@ def read_file(self, args: str) -> str:
                 "content": excerpt,
             }
             return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
-        raw_path = args.strip()
-        if not raw_path:
-            return tool_failure('invalid_arguments', "Error: read_file requires a path", retriable=False)
-        abs_path = self._resolve_workspace_path(raw_path)
-        with open(abs_path, "r", encoding="utf-8") as f:
-            return tool_success(str(f.read()))
     except FileNotFoundError:
-        return tool_failure('not_found', f"Error: file not found: {args.strip()}", retriable=False)
+        return tool_failure('not_found', f"Error: file not found: {request.get('path', '')}", retriable=False)
     except Exception as e:
         return tool_failure('execution_error', f"Error reading file: {e}", retriable=False)
 
@@ -195,7 +217,7 @@ def edit_file(self, args: str) -> str:
     """Replace one exact snippet only when the file still matches its read hash."""
     temporary = None
     try:
-        request = json.loads(args)
+        request = args if isinstance(args, dict) else json.loads(args)
         if not isinstance(request, dict) or not all(isinstance(request.get(key), str)
                 for key in ("path", "old_text", "new_text", "expected_sha256")):
             return tool_failure('invalid_arguments', "Error: edit_file requires path, old_text, new_text, and expected_sha256 strings", retriable=False)
@@ -236,7 +258,7 @@ def edit_file(self, args: str) -> str:
 def search_files(self, args: str) -> str:
     """Search literal text with bounded, relative file-and-line results."""
     try:
-        request = json.loads(args)
+        request = args if isinstance(args, dict) else json.loads(args)
         if not isinstance(request, dict) or not isinstance(request.get("query"), str) or not request["query"]:
             return tool_failure('invalid_arguments', "Error: search_files requires a non-empty literal query", retriable=False)
         scope = self._resolve_workspace_path(request.get("path", "."))

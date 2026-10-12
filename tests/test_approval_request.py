@@ -4,6 +4,43 @@ from openkyrozen.security.approvals import ApprovalRequest
 
 
 class ApprovalRequestTests(unittest.TestCase):
+    def test_execute_call_preserves_inherited_surface_capability_bound(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.providers.models import ToolCall
+        from openkyrozen.tools import ToolAdapters, ToolSpec
+        from openkyrozen.tools.models import ToolResult
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {
+            "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_CLI_CAPABILITIES": "full",
+            "KYROZEN_APPROVAL_MODE": "never",
+        }):
+            app = build_application(surface="cli", memory=build_memory(Path(directory) / "state.sqlite3"),
+                                    tools=ToolAdapters(directory))
+            calls = []
+            spec = ToolSpec(
+                "bound_probe", lambda args: calls.append(args) or ToolResult(text="ran"),
+                description="Capability inheritance probe.",
+                input_schema={"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+                capability="write", side_effects="mutation",
+            )
+            try:
+                app.runtime.tool_registry.register_spec(spec)
+                bound = app.runtime._surface_capability_override.set(frozenset({"read"}))
+                try:
+                    receipt = app.runtime.execute_call(
+                        app.runtime.current_session, ToolCall("bound-call", "bound_probe", {}),
+                    )
+                finally:
+                    app.runtime._surface_capability_override.reset(bound)
+                self.assertFalse(receipt.success)
+                self.assertEqual(receipt.failure, "permission_denied")
+                self.assertEqual(calls, [])
+            finally:
+                app.close()
+
     def test_ask_permission_mode_keeps_destructive_capability_for_explicit_approval(self):
         import tempfile
         from pathlib import Path
@@ -249,12 +286,13 @@ class ApprovalRequestTests(unittest.TestCase):
                 long_value = "x" * 900
                 seen = []
                 call = ToolCall("call-1", "approval_probe", {"args": long_value})
-                receipt = app.runtime.execute_call(
-                    app.runtime.current_session, call, approve=lambda request: seen.append(request) or True,
-                )
+                with patch.object(ToolSpec, "legacy_arguments", side_effect=AssertionError("legacy encoding used")):
+                    receipt = app.runtime.execute_call(
+                        app.runtime.current_session, call, approve=lambda request: seen.append(request) or True,
+                    )
                 self.assertTrue(receipt.success)
                 self.assertEqual(seen[0].arguments, {"args": long_value})
-                self.assertEqual(calls, [long_value])
+                self.assertEqual(calls, [{"args": long_value}])
 
                 calls.clear()
                 def replace_during_approval(_request):
@@ -317,7 +355,7 @@ class ApprovalRequestTests(unittest.TestCase):
             finally:
                 app.close()
 
-    def test_legacy_adapter_rejects_argument_values_that_change_pipe_protocol_meaning(self):
+    def test_structured_file_arguments_preserve_pipe_characters(self):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
@@ -332,12 +370,14 @@ class ApprovalRequestTests(unittest.TestCase):
             root.mkdir()
             app = build_application(surface="cli", memory=build_memory(Path(directory) / "state.sqlite3"), tools=ToolAdapters(root))
             try:
+                app.runtime._set_workspace_root(root)
                 receipt = app.runtime.execute_call(
                     app.runtime.current_session,
                     ToolCall("call-pipe", "write_file", {"path": "part|outside.txt", "content": "x"}),
+                    approve=lambda request: True,
                 )
-                self.assertFalse(receipt.success)
-                self.assertFalse((root / "outside.txt").exists())
+                self.assertTrue(receipt.success, receipt.result)
+                self.assertEqual((root / "part|outside.txt").read_text(encoding="utf-8"), "x")
             finally:
                 app.close()
 

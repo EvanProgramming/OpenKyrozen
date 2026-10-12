@@ -20,7 +20,7 @@ def search_web(self, args: str) -> str:
     from urllib.parse import quote
     import requests
 
-    query = (args or "").strip()
+    query = (args.get('query', '') if isinstance(args, dict) else args or "").strip()
     if not query:
         return tool_failure('invalid_arguments', "Search Error: query is empty.", retriable=False)
 

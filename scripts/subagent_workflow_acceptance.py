@@ -102,11 +102,21 @@ def acceptance(*, live=False):
                 observed_sources = set()
                 for run in runs:
                     for records in (run["result"]["tool_records"], run["reviews"][-1]["tool_receipts"]):
-                        sources = [receipt for receipt in records if receipt.get("success") and receipt.get("action") == "read_file"
-                            and Path(receipt["args"]).name in {"alpha.py", "beta.py"}]
+                        sources = []
+                        for receipt in records:
+                            arguments = receipt.get("args")
+                            if isinstance(arguments, str):
+                                try:
+                                    arguments = json.loads(arguments)
+                                except json.JSONDecodeError:
+                                    arguments = {"path": arguments}
+                            path = arguments.get("path", "") if isinstance(arguments, dict) else ""
+                            if (receipt.get("success") and receipt.get("action") == "read_file"
+                                    and Path(path).name in {"alpha.py", "beta.py"}):
+                                sources.append((receipt, path))
                         assert sources, "FAIL: author or reviewer did not inspect a fixture source"
-                        for receipt in sources:
-                            path = root / receipt["args"]
+                        for receipt, relative_path in sources:
+                            path = root / relative_path
                             assert receipt["result"] == path.read_text(), "FAIL: inspection receipt changed physical source lines"
                             observed_sources.add(path.name)
                 assert observed_sources == {"alpha.py", "beta.py"}

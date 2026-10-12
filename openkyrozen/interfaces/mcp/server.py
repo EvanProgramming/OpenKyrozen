@@ -5,6 +5,7 @@ import asyncio
 from typing import Any
 from openkyrozen.tools import tool_capability
 from openkyrozen.tools.models import tool_failure
+from openkyrozen.providers.models import ToolCall
 from openkyrozen.security.capabilities import issue_capability_token
 
 from fastapi import FastAPI, Request, HTTPException, Depends
@@ -87,36 +88,40 @@ async def mcp_endpoint(self, request: Request):
         return service._mcp_response(request_id, result={"tools": service._mcp_tool_descriptors(allowed)})
     if method == "tools/call":
         tool_name = params.get("name", "")
-        tool_args = params.get("arguments", "")
+        tool_args = params.get("arguments", {})
         if not isinstance(tool_name, str) or not tool_name:
             service._agent._notify_tool_execute(str(tool_name), tool_args, tool_failure("invalid_arguments", "Error: tool name is required"))
             return service._mcp_error(request_id, -32602, "Invalid params: tool name is required")
-        fn = service._agent.AVAILABLE_TOOLS.get(tool_name)
-        if fn is None:
+        canonical_name = service._agent.tool_registry.resolve_legacy_name(tool_name)
+        spec = service._agent.tool_registry.specs.get(canonical_name)
+        if spec is None:
             service._agent._notify_tool_execute(tool_name, tool_args, tool_failure("invalid_arguments", f"Error: Tool '{tool_name}' not found"))
             return service._mcp_error(request_id, -32601, f"Tool '{tool_name}' not found")
-        if tool_name not in service._allowed_server_tools("mcp"):
+        if canonical_name not in service._allowed_server_tools("mcp"):
             service._agent._notify_tool_execute(
-                tool_name, tool_args, tool_failure("permission_denied", f"Error: Tool '{tool_name}' is not authorized"),
+            canonical_name, tool_args, tool_failure("permission_denied", f"Error: Tool '{canonical_name}' is not authorized"),
             )
             return service._mcp_error(request_id, -32001, (
                 f"Tool requires '{tool_capability(tool_name,service._agent.AVAILABLE_TOOLS)}' capability; "
                 "set KYROZEN_MCP_CAPABILITIES or use the full profile to enable it"
             ))
+        if not isinstance(tool_args, dict):
+            service._agent._notify_tool_execute(canonical_name, tool_args, tool_failure("invalid_arguments", "Error: tool arguments must be an object"))
+            return service._mcp_error(request_id, -32602, "Invalid params: tool arguments must be an object")
         try:
-            string_args = service._mcp_string_arguments(tool_name, tool_args)
-        except (TypeError, ValueError) as e:
-            service._agent._notify_tool_execute(tool_name, tool_args, tool_failure("invalid_arguments", f"Error: invalid params: {e}"))
-            return service._mcp_error(request_id, -32602, f"Invalid params: {e}")
+            tool_args = spec.normalize_argument_aliases(tool_args)
+        except ValueError:
+            # Leave conflicting aliases intact so the canonical schema rejects the call.
+            pass
         try:
             def execute():
                 runtime = service._agent
                 session_id = service._normalise_session_id(params.get("session_id") or "surface:mcp")
                 session = runtime.open_session(session_id, user_id=service._SERVER_ACTOR_ID)
                 allowed = service._server_capabilities("mcp")
-                return runtime.execute(
-                    session, tool_name, string_args, capabilities=allowed,
-                    operation_scope=f"mcp:{request_id}", _surface_capability_bound=allowed,
+                return runtime.execute_call(
+                    session, ToolCall(str(request_id if request_id is not None else "mcp-call"), canonical_name, tool_args),
+                    capabilities=allowed, operation_scope=f"mcp:{request_id}", _surface_capability_bound=allowed,
                 )
             receipt = await asyncio.to_thread(execute)
             result_text = receipt.result

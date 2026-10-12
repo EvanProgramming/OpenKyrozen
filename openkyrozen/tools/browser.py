@@ -8,13 +8,13 @@ from openkyrozen.security.command_policy import _BLOCKED_RE
 @legacy_text_api
 def browser_open(self, args: str) -> str:
     """Open a URL in an isolated headless browser profile. Args: URL."""
-    return invoke_tool_result(self._BROWSER.open, args.strip())
+    return invoke_tool_result(self._BROWSER.open, args if isinstance(args, dict) else args.strip())
 
 
 @legacy_text_api
 def browser_snapshot(self, args: str) -> str:
     """Read the current page text. Args: browser session ID."""
-    return invoke_tool_result(self._BROWSER.snapshot, args.strip())
+    return invoke_tool_result(self._BROWSER.snapshot, args if isinstance(args, dict) else args.strip())
 
 
 @legacy_text_api
@@ -32,4 +32,4 @@ def browser_type(self, args: str) -> str:
 @legacy_text_api
 def browser_close(self, args: str) -> str:
     """Close an isolated browser session. Args: browser session ID."""
-    return invoke_tool_result(self._BROWSER.close, args.strip())
+    return invoke_tool_result(self._BROWSER.close, args if isinstance(args, dict) else args.strip())

@@ -47,6 +47,7 @@ class BrowserManager:
 
     @legacy_text_api
     def open(self, url: str) -> str:
+        url = url.get('url', '') if isinstance(url, dict) else url
         valid, reason = validate_browser_url(url)
         if not valid:
             return tool_failure('permission_denied' if 'private' in reason.lower() or 'credentials' in reason.lower() else 'invalid_arguments', f"Error: {reason}", retriable=False)
@@ -74,6 +75,7 @@ class BrowserManager:
 
     @legacy_text_api
     def snapshot(self, session_id: str) -> str:
+        session_id = session_id.get('session_id', '') if isinstance(session_id, dict) else session_id
         session = self._sessions.get(session_id.strip())
         if not session:
             return tool_failure('not_found', "Error: browser session not found", retriable=False)
@@ -88,34 +90,43 @@ class BrowserManager:
 
     @legacy_text_api
     def click(self, args: str) -> str:
-        parts = args.split("|", 1)
-        if len(parts) != 2:
-            return tool_failure('invalid_arguments', "Error: browser_click args format is session_id|selector", retriable=False)
-        session = self._sessions.get(parts[0].strip())
+        if isinstance(args, dict):
+            session_id, selector = args['session_id'], args['selector']
+        else:
+            parts = args.split("|", 1)
+            if len(parts) != 2:
+                return tool_failure('invalid_arguments', "Error: browser_click args format is session_id|selector", retriable=False)
+            session_id, selector = parts
+        session = self._sessions.get(session_id.strip())
         if not session:
             return tool_failure('not_found', "Error: browser session not found", retriable=False)
         try:
-            session[2].locator(parts[1].strip()).click(timeout=10_000)
-            return invoke_tool_result(self.snapshot, parts[0])
+            session[2].locator(selector.strip()).click(timeout=10_000)
+            return invoke_tool_result(self.snapshot, session_id)
         except Exception as exc:
             return tool_failure('execution_error', f"Error clicking browser element: {exc}", retriable=False)
 
     @legacy_text_api
     def type_text(self, args: str) -> str:
-        parts = args.split("|", 2)
-        if len(parts) != 3:
-            return tool_failure('invalid_arguments', "Error: browser_type args format is session_id|selector|text", retriable=False)
-        session = self._sessions.get(parts[0].strip())
+        if isinstance(args, dict):
+            session_id, selector, text = args['session_id'], args['selector'], args['text']
+        else:
+            parts = args.split("|", 2)
+            if len(parts) != 3:
+                return tool_failure('invalid_arguments', "Error: browser_type args format is session_id|selector|text", retriable=False)
+            session_id, selector, text = parts
+        session = self._sessions.get(session_id.strip())
         if not session:
             return tool_failure('not_found', "Error: browser session not found", retriable=False)
         try:
-            session[2].locator(parts[1].strip()).fill(parts[2])
+            session[2].locator(selector.strip()).fill(text)
             return tool_success(str("Text entered."))
         except Exception as exc:
             return tool_failure('execution_error', f"Error typing in browser: {exc}", retriable=False)
 
     @legacy_text_api
     def close(self, session_id: str) -> str:
+        session_id = session_id.get('session_id', '') if isinstance(session_id, dict) else session_id
         session = self._sessions.pop(session_id.strip(), None)
         if not session:
             return tool_failure('not_found', "Error: browser session not found", retriable=False)
