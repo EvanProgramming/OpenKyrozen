@@ -80,12 +80,21 @@ class FallbackProvider(LLMProvider):
 
     @provider_call
     @manages_provider_retry
-    def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
+    def chat_response(self, messages: list[dict[str, str]] | list, model: str | None = None, *, tools=None) -> ModelResponse:
         with provider_request_scope() as state:
-            return self._fallback_response(state, messages, model)
+            return self._fallback_response(state, messages, model, tools)
 
-    def _fallback_response(self, state, messages, model):
+    def _fallback_response(self, state, messages, model, tools=None):
         candidates = [self._primary] + self._fallbacks
+        from openkyrozen.providers.models import ModelResponse, provider_identity, ProviderContractError
+        continuation = next((item.continuation for item in reversed(messages)
+                             if isinstance(item, ModelResponse) and item.tool_calls), None)
+        if continuation is not None:
+            provider = next((candidate for candidate in candidates
+                             if provider_identity(candidate) == continuation.provider_id), None)
+            if provider is None:
+                raise ProviderContractError("The provider that issued native calls is no longer available")
+            return get_model_response(provider, messages, continuation.request_model, tools=tools)
         last_error = None
         round_number = 0
         retry_after = 0.0
@@ -100,7 +109,7 @@ class FallbackProvider(LLMProvider):
                 mapped = self._model_for(provider, model)
                 try:
                     with single_provider_attempt():
-                        return get_model_response(provider, messages, mapped)
+                        return get_model_response(provider, messages, mapped, tools=tools)
                 except ProviderError as error:
                     last_error = error
                     if error.retryable:

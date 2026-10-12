@@ -1,12 +1,15 @@
 from __future__ import annotations
 import openkyrozen.providers.usage as usage_ledger
 
+import json
 import os
 import sys
 import time
 from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
-from openkyrozen.providers.models import received_response, ModelResponse, model_response, responses_output
+from openkyrozen.providers.models import (received_response, ModelResponse, model_response, responses_output,
+    ToolReply, ProviderContractError, validate_tool_definitions, validate_tool_history, provider_identity,
+    validate_replied_tool_definitions, with_provider_continuation, _snapshot_from_sdk)
 from openkyrozen.providers.config import ProviderConfig
 from openkyrozen.providers.retry import _retry_with_backoff, provider_call, provider_stream, remaining_timeout, close_stream, mark_response_received
 
@@ -21,6 +24,10 @@ class PerplexityProvider(LLMProvider):
         except ImportError:
             sys.exit("The 'perplexityai' package is required for Perplexity. Install it with: pip install perplexityai")
         self._client = Perplexity(max_retries=0, timeout=90.0, api_key=config.api_key or os.environ.get("PERPLEXITY_API_KEY", ""))
+
+    def get_capabilities(self, model: str | None = None):
+        from openkyrozen.providers.models import ProviderCapabilities
+        return ProviderCapabilities(native_tools=self.config.provider == "perplexity", text_streaming=True)
 
     @staticmethod
     def _prompt(messages: list[dict[str, str]]) -> tuple[str, str | None]:
@@ -47,19 +54,40 @@ class PerplexityProvider(LLMProvider):
         return self.chat_response(messages, model).as_legacy_tuple()
 
     @provider_call
-    def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
+    def chat_response(self, messages: list[dict[str, str]] | list, model: str | None = None, *, tools=None) -> ModelResponse:
         model = model or self.config.model_simple
-        prompt, instructions = self._prompt(messages)
+        tools = validate_tool_definitions(tools)
+        validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=tools is not None)
+        validate_replied_tool_definitions(messages, tools)
+        input_items = []
+        instructions = []
+        for item in messages:
+            if isinstance(item, dict):
+                if item.get("role") == "system":
+                    instructions.append(str(item.get("content", "")))
+                else:
+                    role = "assistant" if item.get("role") == "assistant" else "user"
+                    input_items.append({"role": role, "content": [{"type": "input_text", "text": str(item.get("content", ""))}]})
+            elif isinstance(item, ModelResponse):
+                if item.continuation.protocol != "perplexity-responses":
+                    raise ProviderContractError("Continuation protocol does not match Perplexity Responses")
+                input_items.extend(item.continuation.payload["output"])
+            else:
+                input_items.append({"type": "function_call_output", "call_id": item.call_id,
+                    "output": json.dumps({"is_error": item.is_error, "result": item.output}, ensure_ascii=False)})
         started = time.monotonic()
-        kwargs: dict[str, Any] = {"model": model, "input": prompt}
+        kwargs: dict[str, Any] = {"model": model, "input": input_items or "Continue."}
         if instructions:
-            kwargs["instructions"] = instructions
+            kwargs["instructions"] = "\n\n".join(instructions)
+        if tools:
+            kwargs["tools"] = [{"type": "function", "name": item["name"], "description": item["description"],
+                                "parameters": item["parameters"], "strict": False} for item in tools]
         response = _retry_with_backoff(lambda: self._client.responses.create(**kwargs, timeout=remaining_timeout()))
         with received_response():
             usage = self._usage(response)
             usage_ledger._track_cost(self.config.provider, usage, model=model,
                         latency_ms=round((time.monotonic() - started) * 1000))
-            return model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None),
+            result = model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None),
                                   text=str(getattr(response, "output_text", "") or ""), usage=usage,
                                   calls=responses_output(response), response_id=getattr(response, "id", None),
                                   raw_finish_reason=getattr(response, "status", None),
@@ -67,6 +95,8 @@ class PerplexityProvider(LLMProvider):
                                   blocked=any(getattr(part, "type", None) == "refusal"
                                               for item in getattr(response, "output", None) or ()
                                               for part in getattr(item, "content", None) or ()))
+            return with_provider_continuation(result, self, model, "perplexity-responses",
+                                              {"output": _snapshot_from_sdk(getattr(response, "output", None) or [])})
 
     @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:

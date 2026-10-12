@@ -50,17 +50,30 @@ def _bounded_provider_stream(self, provider: Any, messages: list[dict[str, str]]
         return "".join(chunks).strip()
 
 
-def _get_model_response(self, messages: list[dict], model: str | None = None) -> ModelResponse:
+def _get_model_response(self, messages: list[dict], model: str | None = None, *, tool_names=None) -> ModelResponse:
     """Receive the full response under existing deadline, usage and context scopes."""
     provider = self.execution_context.provider or self.llm_provider
     if provider is None:
         raise ProviderUnavailableError(self.PROVIDER_UNAVAILABLE_MESSAGE)
+    tools = None
+    if tool_names is not None:
+        if isinstance(tool_names, str) or not isinstance(tool_names, (list, tuple, set, frozenset)):
+            raise TypeError("tool_names must be a collection of canonical tool names")
+        registry = self.tool_registry
+        allowed = self._effective_execution_capabilities()
+        names = set()
+        for requested in tool_names:
+            canonical = registry.resolve_legacy_name(requested)
+            if canonical in registry.specs:
+                names.add(canonical)
+        tools = [item for item in registry.provider_schemas(names=names)
+                 if registry.get_spec(item["name"]).capability in allowed]
     self._last_prompt_tokens = self._last_completion_tokens = 0
     with usage_scope(store=self.memory_bank.store, user_id=self.memory_bank.user_id,
                      workspace_id=self.memory_bank.workspace_id, session_id=self.memory_bank.session_id,
                      run_id=self._active_usage_run_id.get(), surface=self._EXECUTION_SURFACE):
         response = self._bounded_provider_call(
-            lambda: get_model_response(provider, messages, model or self.DEEPSEEK_MODEL)
+            lambda: get_model_response(provider, messages, model or self.DEEPSEEK_MODEL, tools=tools)
         )
     usage = response.usage or {}
     self._last_prompt_tokens = usage.get("prompt_tokens", 0) or 0

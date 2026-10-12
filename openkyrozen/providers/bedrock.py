@@ -1,13 +1,16 @@
 from __future__ import annotations
 import openkyrozen.providers.usage as usage_ledger
 
+import json
 from contextlib import contextmanager
 import os
 import sys
 import time
 from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
-from openkyrozen.providers.models import received_response, ModelResponse, model_response
+from openkyrozen.providers.models import (received_response, ModelResponse, model_response, ToolReply,
+    ProviderContractError, validate_tool_definitions, validate_tool_history, provider_identity,
+    validate_replied_tool_definitions, with_provider_continuation)
 from openkyrozen.providers.config import ProviderConfig
 from openkyrozen.providers.retry import _retry_with_backoff, provider_call, provider_stream, remaining_timeout, close_stream, mark_response_received
 
@@ -27,6 +30,10 @@ class BedrockProvider(LLMProvider):
             region_name=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
             config=Config(connect_timeout=90.0, read_timeout=90.0, retries={"total_max_attempts": 1}),
         )
+
+    def get_capabilities(self, model: str | None = None):
+        from openkyrozen.providers.models import ProviderCapabilities
+        return ProviderCapabilities(native_tools=self.config.provider == "bedrock", text_streaming=True)
 
     @contextmanager
     def _request_client(self):
@@ -48,10 +55,26 @@ class BedrockProvider(LLMProvider):
             client.close()
 
     @staticmethod
-    def _request(messages: list[dict[str, str]]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    def _request(messages: list, model: str, provider) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
         system: list[dict[str, str]] = []
         conversation: list[dict[str, Any]] = []
         for item in messages:
+            if isinstance(item, ModelResponse):
+                if item.continuation.protocol != "bedrock-converse":
+                    raise ProviderContractError("Continuation protocol does not match Bedrock Converse")
+                conversation.append({"role": "assistant", "content": item.continuation.payload["content"]})
+                continue
+            if isinstance(item, ToolReply):
+                block = {"toolResult": {"toolUseId": item.call_id,
+                    "content": [{"json": {"is_error": item.is_error, "result": item.output}}]}}
+                if item.is_error:
+                    block["toolResult"]["status"] = "error"
+                if conversation and conversation[-1]["role"] == "user" and all(
+                        "toolResult" in old for old in conversation[-1]["content"]):
+                    conversation[-1]["content"].append(block)
+                else:
+                    conversation.append({"role": "user", "content": [block]})
+                continue
             if item.get("role") == "system":
                 system.append({"text": str(item.get("content", ""))})
             else:
@@ -75,10 +98,13 @@ class BedrockProvider(LLMProvider):
         return self.chat_response(messages, model).as_legacy_tuple()
 
     @provider_call
-    def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
+    def chat_response(self, messages: list[dict[str, str]] | list, model: str | None = None, *, tools=None) -> ModelResponse:
         with self._request_client() as client:
             model = model or self.config.model_simple
-            conversation, system = self._request(messages)
+            tools = validate_tool_definitions(tools)
+            validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=tools is not None)
+            validate_replied_tool_definitions(messages, tools)
+            conversation, system = self._request(messages, model, self)
             started = time.monotonic()
             kwargs: dict[str, Any] = {
                 "modelId": model,
@@ -87,6 +113,10 @@ class BedrockProvider(LLMProvider):
             }
             if system:
                 kwargs["system"] = system
+            if tools:
+                kwargs["toolConfig"] = {"tools": [{"toolSpec": {"name": item["name"],
+                    "description": item["description"], "inputSchema": {"json": item["parameters"]}}}
+                    for item in tools]}
             response = _retry_with_backoff(lambda: client.converse(**kwargs))
             with received_response():
                 usage = self._usage(response)
@@ -96,15 +126,17 @@ class BedrockProvider(LLMProvider):
                 text = "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
                 calls = [(item["toolUse"].get("toolUseId"), item["toolUse"].get("name"), item["toolUse"].get("input"))
                          for item in content if isinstance(item, dict) and "toolUse" in item]
-                return model_response(provider=self.name, model=model, text=text, usage=usage,
-                                      calls=calls, response_id=response.get("ResponseMetadata", {}).get("RequestId"),
-                                      raw_finish_reason=response.get("stopReason"))
+                result = model_response(provider=self.name, model=model, text=text, usage=usage,
+                                        calls=calls, response_id=response.get("ResponseMetadata", {}).get("RequestId"),
+                                        raw_finish_reason=response.get("stopReason"))
+                return with_provider_continuation(result, self, model, "bedrock-converse",
+                                                  {"content": response.get("output", {}).get("message", {}).get("content", [])})
 
     @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         with self._request_client() as client:
             model = model or self.config.model_simple
-            conversation, system = self._request(messages)
+            conversation, system = self._request(messages, model, self)
             started = time.monotonic()
             kwargs: dict[str, Any] = {
                 "modelId": model,

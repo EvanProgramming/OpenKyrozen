@@ -1,12 +1,15 @@
 from __future__ import annotations
 import openkyrozen.providers.usage as usage_ledger
 
+import json
 import os
 import sys
 import time
 from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
-from openkyrozen.providers.models import received_response, ModelResponse, model_response
+from openkyrozen.providers.models import (received_response, ModelResponse, model_response, ToolReply,
+    ProviderContractError, validate_tool_definitions, validate_tool_history, provider_identity,
+    validate_replied_tool_definitions, with_provider_continuation, _snapshot_from_sdk)
 from openkyrozen.providers.config import ProviderConfig
 from openkyrozen.providers.retry import _retry_with_backoff, provider_call, provider_stream, remaining_timeout, close_stream, mark_response_received
 
@@ -26,6 +29,11 @@ class GoogleProvider(LLMProvider):
         self._supports_retry_options = "retry_options" in genai.types.HttpOptions.model_fields
         self._client = genai.Client(api_key=config.api_key or os.environ.get("GEMINI_API_KEY", ""))
 
+    def get_capabilities(self, model: str | None = None):
+        from openkyrozen.providers.models import ProviderCapabilities
+        return ProviderCapabilities(native_tools=self.config.provider in {"google", "vertex"},
+                                   text_streaming=True)
+
     def _http_options(self):
         options = {"timeout": max(1, int(remaining_timeout() * 1000))}
         # Gen AI 1.0 has no SDK retries and rejects the later retry_options field.
@@ -34,10 +42,24 @@ class GoogleProvider(LLMProvider):
         return options
 
     @staticmethod
-    def _contents(messages: list[dict[str, str]]) -> tuple[list[dict[str, Any]], str | None]:
+    def _contents(messages: list, model: str, provider) -> tuple[list[dict[str, Any]], str | None]:
         contents: list[dict[str, Any]] = []
         system: list[str] = []
         for message in messages:
+            if isinstance(message, ModelResponse):
+                if message.continuation.protocol != "google-genai":
+                    raise ProviderContractError("Continuation protocol does not match Gemini/Vertex")
+                contents.append({"role": "model", "parts": message.continuation.payload["parts"]})
+                continue
+            if isinstance(message, ToolReply):
+                part = {"function_response": {"id": message.call_id, "name": message.name,
+                        "response": {"is_error": message.is_error, "result": message.output}}}
+                if contents and contents[-1]["role"] == "user" and all(
+                        "function_response" in old for old in contents[-1]["parts"]):
+                    contents[-1]["parts"].append(part)
+                else:
+                    contents.append({"role": "user", "parts": [part]})
+                continue
             role = message.get("role", "user")
             text = str(message.get("content", ""))
             if role == "system":
@@ -65,14 +87,46 @@ class GoogleProvider(LLMProvider):
         return self.chat_response(messages, model).as_legacy_tuple()
 
     @provider_call
-    def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
+    def chat_response(self, messages: list[dict[str, str]] | list, model: str | None = None, *, tools=None) -> ModelResponse:
         model = model or self.config.model_simple
+        tools = validate_tool_definitions(tools)
+        if tools:
+            from google.genai import types
+            supported = {"type", "properties", "required", "items", "enum", "description", "title", "default",
+                         "examples", "minLength", "maxLength", "minItems", "maxItems", "minProperties",
+                         "maxProperties", "minimum", "maximum", "pattern", "additionalProperties", "anyOf",
+                         "format", "nullable"}
+
+            def check_schema(schema):
+                if set(schema) - supported:
+                    raise ProviderContractError("Gemini/Vertex cannot represent every field in this tool schema")
+                for nested in schema.get("properties", {}).values():
+                    check_schema(nested)
+                if "items" in schema:
+                    check_schema(schema["items"])
+                for nested in schema.get("anyOf", ()):
+                    check_schema(nested)
+
+            for tool in tools:
+                try:
+                    check_schema(tool["parameters"])
+                    types.Schema.model_validate(tool["parameters"])
+                except ProviderContractError:
+                    raise
+                except Exception as exc:
+                    raise ProviderContractError("Gemini/Vertex rejected the provider tool schema") from exc
+        validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=tools is not None)
+        validate_replied_tool_definitions(messages, tools)
         started = time.monotonic()
 
-        contents, system_instruction = self._contents(messages)
+        contents, system_instruction = self._contents(messages, model, self)
         request_config: dict[str, Any] = {"http_options": self._http_options()}
         if system_instruction:
             request_config["system_instruction"] = system_instruction
+        if tools:
+            request_config["tools"] = [{"function_declarations": [
+                {"name": item["name"], "description": item["description"], "parameters": item["parameters"]}
+                for item in tools]}]
 
         def _call():
             return self._client.models.generate_content(
@@ -98,15 +152,17 @@ class GoogleProvider(LLMProvider):
                     calls.append((getattr(call, "id", None), getattr(call, "name", None),
                                   {} if arguments is None else arguments))
             block_reason = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
-            return model_response(provider=self.name, model=model, actual_model=getattr(response, "model_version", None), text=text, usage=usage_dict,
-                                  calls=calls, response_id=getattr(response, "response_id", None),
-                                  raw_finish_reason=getattr(candidate, "finish_reason", None) or block_reason,
-                                  blocked=block_reason not in {None, "BLOCK_REASON_UNSPECIFIED", "BLOCKED_REASON_UNSPECIFIED"})
+            result = model_response(provider=self.name, model=model, actual_model=getattr(response, "model_version", None), text=text, usage=usage_dict,
+                                    calls=calls, response_id=getattr(response, "response_id", None),
+                                    raw_finish_reason=getattr(candidate, "finish_reason", None) or block_reason,
+                                    blocked=block_reason not in {None, "BLOCK_REASON_UNSPECIFIED", "BLOCKED_REASON_UNSPECIFIED"})
+            return with_provider_continuation(result, self, model, "google-genai",
+                                              {"parts": _snapshot_from_sdk(parts or [])})
 
     @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
         model = model or self.config.model_simple
-        contents, system_instruction = self._contents(messages)
+        contents, system_instruction = self._contents(messages, model, self)
         request_config: dict[str, Any] = {"http_options": self._http_options()}
         if system_instruction:
             request_config["system_instruction"] = system_instruction

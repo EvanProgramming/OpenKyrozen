@@ -1,11 +1,15 @@
 from __future__ import annotations
 import openkyrozen.providers.usage as usage_ledger
 
+import json
 import sys
 import time
 from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
-from openkyrozen.providers.models import received_response, ModelResponse, model_response, responses_output, ProviderContractError
+from openkyrozen.providers.models import (received_response, ModelResponse, model_response, responses_output,
+    ProviderContractError, ModelResponse as ProviderModelResponse, ToolReply, validate_tool_history,
+    validate_tool_definitions, validate_replied_tool_definitions, provider_identity,
+    with_provider_continuation, _snapshot_from_sdk)
 from openkyrozen.providers.config import ProviderConfig, _provider_env_key
 from openkyrozen.providers.usage import _openai_usage_dict
 from openkyrozen.providers.retry import _retry_with_backoff, provider_call, provider_stream, remaining_timeout, close_stream, mark_response_received
@@ -29,16 +33,44 @@ class OpenAICompatProvider(LLMProvider):
             kwargs["base_url"] = config.base_url
         self._client = OpenAI(max_retries=0, timeout=90.0, **kwargs)
 
+    def get_capabilities(self, model: str | None = None):
+        from openkyrozen.providers.models import ProviderCapabilities
+        return ProviderCapabilities(native_tools=self.config.provider in {
+            "openai", "azure_openai", "deepseek", "ollama", "glm", "kimi", "openrouter",
+            "groq", "mistral", "xai", "together", "fireworks", "cohere"}, text_streaming=True)
+
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         return self.chat_response(messages, model).as_legacy_tuple()
 
     @provider_call
-    def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
+    def chat_response(self, messages: list[dict[str, str]] | list, model: str | None = None, *, tools=None) -> ModelResponse:
         model = model or self.config.model_simple
+        tools = validate_tool_definitions(tools)
+        validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=tools is not None)
+        validate_replied_tool_definitions(messages, tools)
+        request_messages = []
+        for item in messages:
+            if isinstance(item, dict):
+                request_messages.append(item)
+            elif isinstance(item, ProviderModelResponse):
+                if item.continuation.protocol != "openai-chat":
+                    raise ProviderContractError("Continuation protocol does not match OpenAI Chat Completions")
+                request_messages.append(item.continuation.payload["assistant"])
+            elif isinstance(item, ToolReply):
+                result = {"is_error": item.is_error, "result": item.output}
+                request_messages.append({"role": "tool", "tool_call_id": item.call_id,
+                                         "content": json.dumps(result, ensure_ascii=False)})
         started = time.monotonic()
 
         def _call():
-            response = self._client.chat.completions.create(model=model, messages=messages, timeout=remaining_timeout())
+            kwargs = {"model": model, "messages": request_messages, "timeout": remaining_timeout()}
+            if tools:
+                kwargs["tools"] = [{"type": "function", "function": {"name": tool["name"],
+                    "description": tool["description"], "parameters": tool["parameters"]}}
+                    for tool in tools]
+                if tools:
+                    kwargs["tool_choice"] = "auto"
+            response = self._client.chat.completions.create(**kwargs)
             return response
 
         response = _retry_with_backoff(_call)
@@ -61,10 +93,14 @@ class OpenAICompatProvider(LLMProvider):
             legacy_call = getattr(message, "function_call", None)
             if legacy_call is not None and not calls:
                 calls.append((None, getattr(legacy_call, "name", None), getattr(legacy_call, "arguments", None)))
-            return model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None), text=text, usage=usage_dict,
+            result = model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None), text=text, usage=usage_dict,
                                   calls=calls, response_id=getattr(response, "id", None),
                                   raw_finish_reason=getattr(response.choices[0], "finish_reason", None),
                                   blocked=bool(getattr(message, "refusal", None)))
+            assistant = _snapshot_from_sdk(message)
+            if "role" not in assistant:
+                assistant["role"] = "assistant"
+            return with_provider_continuation(result, self, model, "openai-chat", {"assistant": assistant})
 
     @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
@@ -128,6 +164,11 @@ class OpenAIResponsesProvider(LLMProvider):
             kwargs["base_url"] = config.base_url
         self._client = OpenAI(max_retries=0, timeout=90.0, **kwargs)
 
+    def get_capabilities(self, model: str | None = None):
+        from openkyrozen.providers.models import ProviderCapabilities
+        return ProviderCapabilities(native_tools=self.config.provider in {"openai", "perplexity"},
+                                   text_streaming=True)
+
     @staticmethod
     def _usage(response: Any) -> dict[str, int | None] | None:
         usage = getattr(response, "usage", None)
@@ -144,18 +185,35 @@ class OpenAIResponsesProvider(LLMProvider):
         return self.chat_response(messages, model).as_legacy_tuple()
 
     @provider_call
-    def chat_response(self, messages: list[dict[str, str]], model: str | None = None) -> ModelResponse:
+    def chat_response(self, messages: list[dict[str, str]] | list, model: str | None = None, *, tools=None) -> ModelResponse:
         model = model or self.config.model_simple
+        tools = validate_tool_definitions(tools)
+        validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=tools is not None)
+        validate_replied_tool_definitions(messages, tools)
+        request_input = []
+        for item in messages:
+            if isinstance(item, dict):
+                request_input.append(item)
+            elif isinstance(item, ProviderModelResponse):
+                if item.continuation.protocol != "openai-responses":
+                    raise ProviderContractError("Continuation protocol does not match OpenAI Responses")
+                request_input.extend(item.continuation.payload["output"])
+            elif isinstance(item, ToolReply):
+                result = {"is_error": item.is_error, "result": item.output}
+                request_input.append({"type": "function_call_output", "call_id": item.call_id,
+                                     "output": json.dumps(result, ensure_ascii=False)})
         started = time.monotonic()
 
-        response = _retry_with_backoff(
-            lambda: self._client.responses.create(model=model, input=messages, timeout=remaining_timeout()),
-        )
+        kwargs = {"model": model, "input": request_input, "timeout": remaining_timeout()}
+        if tools:
+            kwargs["tools"] = [{"type": "function", "name": tool["name"], "description": tool["description"],
+                                "parameters": tool["parameters"], "strict": False} for tool in tools]
+        response = _retry_with_backoff(lambda: self._client.responses.create(**kwargs))
         with received_response():
             usage = self._usage(response)
             usage_ledger._track_cost(self.config.provider, usage, model=getattr(response, "model", None) or model,
                         latency_ms=round((time.monotonic() - started) * 1000))
-            return model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None),
+            result = model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None),
                                   text=str(getattr(response, "output_text", "") or ""), usage=usage,
                                   calls=responses_output(response), response_id=getattr(response, "id", None),
                                   raw_finish_reason=getattr(response, "status", None),
@@ -163,6 +221,8 @@ class OpenAIResponsesProvider(LLMProvider):
                                   blocked=any(getattr(part, "type", None) == "refusal"
                                               for item in getattr(response, "output", None) or ()
                                               for part in getattr(item, "content", None) or ()))
+            return with_provider_continuation(result, self, model, "openai-responses",
+                                              {"output": _snapshot_from_sdk(getattr(response, "output", None) or [])})
 
     @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
