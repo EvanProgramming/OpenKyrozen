@@ -23,6 +23,16 @@ class ToolResultContractTests(unittest.TestCase):
         self.assertTrue(success.success)
         self.assertFalse(failure.success)
 
+    def test_browser_close_forwards_structured_session_id(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from openkyrozen.tools.browser import browser_close
+        close = Mock(return_value=ToolResult(text="closed"))
+        with patch("openkyrozen.tools.browser.invoke_tool_result", side_effect=lambda fn, arg: fn(arg)):
+            self.assertEqual(browser_close(SimpleNamespace(_BROWSER=SimpleNamespace(close=close)),
+                                           {"session_id": "browser_123"}), "closed")
+        close.assert_called_once_with({"session_id": "browser_123"})
+
     def test_contracts_are_frozen_and_return_defensive_json_copies(self):
         self.require_api()
         source = {"nested": [1]}

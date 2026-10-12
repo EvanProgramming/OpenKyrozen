@@ -22,6 +22,35 @@ from openkyrozen.workspace.context import source_scope_id
 
 
 class ServerBoundaryTests(unittest.TestCase):
+    def test_mcp_normalizes_declared_argument_aliases_and_rejects_conflicts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "note.txt").write_text("MCP alias content", encoding="utf-8")
+            with patch.dict(os.environ, {
+                "KYROZEN_DB_PATH": str(root / "state.sqlite3"),
+                "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_MCP_CAPABILITIES": "workspace",
+            }):
+                service = WebService(None)
+                client = TestClient(service.app)
+                previous_root = service._agent._get_workspace_root()
+                service._agent._set_workspace_root(root)
+                try:
+                    aliased = client.post("/mcp", json={
+                        "jsonrpc": "2.0", "id": 810, "method": "tools/call",
+                        "params": {"name": "read_file", "arguments": {"file_path": "note.txt"}},
+                    }).json()
+                    conflict = client.post("/mcp", json={
+                        "jsonrpc": "2.0", "id": 811, "method": "tools/call",
+                        "params": {"name": "read_file", "arguments": {
+                            "path": "note.txt", "file_path": "other.txt",
+                        }},
+                    }).json()
+                finally:
+                    service._agent._set_workspace_root(previous_root)
+        self.assertFalse(aliased["result"]["isError"])
+        self.assertIn("MCP alias content", aliased["result"]["content"][0]["text"])
+        self.assertTrue(conflict["result"]["isError"])
+
     def test_history_api_lists_tree_rejects_stale_or_unconfirmed_rollbacks_and_restores(self):
         client = TestClient(server.app)
         with tempfile.TemporaryDirectory() as directory:

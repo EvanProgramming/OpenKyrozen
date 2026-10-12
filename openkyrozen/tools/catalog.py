@@ -147,18 +147,19 @@ _OBJECT_FIELDS = {
     'github_cli': {'arguments': {'type':'array','items':{'type':'string'}}},
 }
 for _name, _properties in _OBJECT_FIELDS.items():
-    _required = [key for key, value in _properties.items() if key in {
-        'path','pattern','content','command','query','expression','url','session_id','selector','text',
-        'old_text','new_text','expected_sha256','question','symbol','source','target','message','run_id',
-    }]
-    if _name == 'read_file': _required = ['path']
-    if _name == 'git_clone': _required = ['url']
-    if _name == 'send_subagent': _required = ['run_id','assignment']
-    if _name == 'list_subagents': _required = []
-    if _name == 'wait_subagents': _required = []
-    if _name == 'cancel_subagent': _required = ['run_id']
-    if _name == 'git_status': _required = []
-    if _name == 'git_remote': _required = ['operation']
+    _required = {
+        'read_file': ['path'], 'find_files': ['pattern'], 'write_file': ['path', 'content'],
+        'run_cmd': ['command'], 'execute_terminal_command': ['command'], 'search_web': ['query'],
+        'search_files': ['query'],
+        'read_webpage': ['url'], 'git_clone': ['url'], 'analyze_remote_repo': ['url'],
+        'browser_open': ['url'], 'browser_snapshot': ['session_id'],
+        'browser_click': ['session_id', 'selector'], 'browser_type': ['session_id', 'selector', 'text'],
+        'browser_close': ['session_id'], 'send_subagent': ['run_id', 'assignment'],
+        'cancel_subagent': ['run_id'], 'search_memory': ['query'], 'calculate': ['expression'],
+        'edit_file': ['path', 'old_text', 'new_text', 'expected_sha256'],
+        'git_commit': ['message'], 'git_remote': ['operation'], 'graph_query': ['question'],
+        'graph_explain': ['symbol'], 'graph_path': ['source', 'target'],
+    }.get(_name, [])
     _SCHEMAS[_name] = {'type':'object','properties':_properties,'required':_required,'additionalProperties':False}
 
 

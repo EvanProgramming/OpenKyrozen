@@ -109,6 +109,11 @@ async def mcp_endpoint(self, request: Request):
             service._agent._notify_tool_execute(canonical_name, tool_args, tool_failure("invalid_arguments", "Error: tool arguments must be an object"))
             return service._mcp_error(request_id, -32602, "Invalid params: tool arguments must be an object")
         try:
+            tool_args = spec.normalize_argument_aliases(tool_args)
+        except ValueError:
+            # Leave conflicting aliases intact so the canonical schema rejects the call.
+            pass
+        try:
             def execute():
                 runtime = service._agent
                 session_id = service._normalise_session_id(params.get("session_id") or "surface:mcp")

@@ -32,4 +32,4 @@ def browser_type(self, args: str) -> str:
 @legacy_text_api
 def browser_close(self, args: str) -> str:
     """Close an isolated browser session. Args: browser session ID."""
-    return invoke_tool_result(self._BROWSER.close, args.strip())
+    return invoke_tool_result(self._BROWSER.close, args if isinstance(args, dict) else args.strip())

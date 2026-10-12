@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from decimal import Decimal, InvalidOperation, localcontext
 from collections.abc import MutableMapping
 from dataclasses import dataclass, fields
 from types import MappingProxyType
@@ -207,6 +208,20 @@ class ToolSpec:
             raise ValueError('arguments cannot be represented without changing the legacy operation')
         return encoded
 
+    def normalize_argument_aliases(self, arguments):
+        """Resolve declared transport aliases without changing the operation."""
+        if not isinstance(arguments, dict):
+            return arguments
+        normalized = dict(arguments)
+        for canonical, alias in self.legacy_argument_aliases:
+            if alias not in normalized:
+                continue
+            if canonical in normalized and normalized[canonical] != normalized[alias]:
+                raise ValueError(f"conflicting values for '{canonical}' and its alias '{alias}'")
+            normalized.setdefault(canonical, normalized[alias])
+            del normalized[alias]
+        return normalized
+
 
 class ToolMapping(MutableMapping):
     def __init__(self, registry, excluded=()):
@@ -390,7 +405,21 @@ class ToolRegistry:
             for key, predicate in (('minimum', lambda n, v: n >= v), ('maximum', lambda n, v: n <= v),
                                    ('exclusiveMinimum', lambda n, v: n > v), ('exclusiveMaximum', lambda n, v: n < v)):
                 if key in schema and not predicate(value, schema[key]): return f'{path} violates {key}'
-            if 'multipleOf' in schema and value / schema['multipleOf'] % 1 != 0: return f'{path} violates multipleOf'
+            if 'multipleOf' in schema:
+                try:
+                    decimal_value = Decimal(str(value))
+                    divisor = Decimal(str(schema['multipleOf']))
+                    with localcontext() as context:
+                        context.prec = max(
+                            context.prec,
+                            len(decimal_value.as_tuple().digits)
+                            + max(0, decimal_value.adjusted() - divisor.adjusted())
+                            + len(divisor.as_tuple().digits) + 2,
+                        )
+                        if decimal_value % divisor != 0:
+                            return f'{path} violates multipleOf'
+                except InvalidOperation:
+                    return f'{path} violates multipleOf'
         return None
 
     @staticmethod

@@ -159,6 +159,48 @@ class RuntimeCatalogTests(unittest.TestCase):
                 app.close()
 
 class SchemaValidationRegressions(unittest.TestCase):
+    def test_optional_builtin_fields_remain_optional(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', {'KYROZEN_DISABLE_VECTOR_INDEX': '1'}):
+            app = build_application(memory=build_memory(Path(directory) / 'state.sqlite3'), tools=ToolAdapters(directory))
+            registry = app.runtime.tool_registry
+            try:
+                self._assert_optional_examples(registry)
+            finally:
+                app.close()
+
+    def _assert_optional_examples(self, registry):
+        for name, arguments in (
+            ('search_files', {'query': 'needle'}),
+            ('discover_tools', {'names': ['git_log']}),
+            ('discover_tools', {}),
+            ('github_status', {}),
+        ):
+            with self.subTest(name=name, arguments=arguments):
+                self.assertIsNone(registry._argument_error(registry.get_spec(name).input_schema, arguments))
+        self.assertIsNotNone(registry._argument_error(
+            registry.get_spec('search_files').input_schema, {'path': '.'},
+        ))
+
+    def test_decimal_multiple_of_accepts_exact_decimal_multiples(self):
+        registry = ToolRegistry()
+        spec = RegistryContractTests().make(input_schema={
+            'type': 'object', 'properties': {'amount': {'type': 'number', 'multipleOf': 0.1}},
+            'required': ['amount'], 'additionalProperties': False,
+        })
+        registry.register_spec(spec)
+        self.assertIsNone(registry._argument_error(spec.input_schema, {'amount': 0.3}))
+        self.assertIsNone(registry._argument_error(spec.input_schema, {'amount': 1e30}))
+
+    def test_tool_argument_alias_normalization_is_lossless_and_rejects_conflicts(self):
+        spec = ToolAdapters().tool_registry.get_spec('read_file')
+        self.assertEqual(spec.normalize_argument_aliases({'file_path': 'notes.txt'}), {'path': 'notes.txt'})
+        with self.assertRaises(ValueError):
+            spec.normalize_argument_aliases({'path': 'one.txt', 'file_path': 'two.txt'})
+
     def test_all_builtins_expose_meaningful_object_schemas(self):
         adapters = ToolAdapters()
         for name, spec in adapters.tool_registry.specs.items():

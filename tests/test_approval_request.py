@@ -4,6 +4,43 @@ from openkyrozen.security.approvals import ApprovalRequest
 
 
 class ApprovalRequestTests(unittest.TestCase):
+    def test_execute_call_preserves_inherited_surface_capability_bound(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.providers.models import ToolCall
+        from openkyrozen.tools import ToolAdapters, ToolSpec
+        from openkyrozen.tools.models import ToolResult
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {
+            "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_CLI_CAPABILITIES": "full",
+            "KYROZEN_APPROVAL_MODE": "never",
+        }):
+            app = build_application(surface="cli", memory=build_memory(Path(directory) / "state.sqlite3"),
+                                    tools=ToolAdapters(directory))
+            calls = []
+            spec = ToolSpec(
+                "bound_probe", lambda args: calls.append(args) or ToolResult(text="ran"),
+                description="Capability inheritance probe.",
+                input_schema={"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+                capability="write", side_effects="mutation",
+            )
+            try:
+                app.runtime.tool_registry.register_spec(spec)
+                bound = app.runtime._surface_capability_override.set(frozenset({"read"}))
+                try:
+                    receipt = app.runtime.execute_call(
+                        app.runtime.current_session, ToolCall("bound-call", "bound_probe", {}),
+                    )
+                finally:
+                    app.runtime._surface_capability_override.reset(bound)
+                self.assertFalse(receipt.success)
+                self.assertEqual(receipt.failure, "permission_denied")
+                self.assertEqual(calls, [])
+            finally:
+                app.close()
+
     def test_ask_permission_mode_keeps_destructive_capability_for_explicit_approval(self):
         import tempfile
         from pathlib import Path

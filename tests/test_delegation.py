@@ -63,6 +63,41 @@ class DelegationTests(unittest.TestCase):
         self.assertEqual(self.runtime._subagent_action_arguments('git_clone', 'https://example.test/repo'),
                          {'url': 'https://example.test/repo', 'destination': ''})
 
+    def test_subagent_legacy_git_parser_rejects_unmatched_quotes_without_raising(self):
+        self.assertIsNone(self.runtime._subagent_action_arguments('git_log', "--author='Alice"))
+        receipt = self.runtime._run_subagent_tool(
+            self.runtime.subagent_manager.profiles['researcher'], 'git_log', "--author='Alice", {'git_log'},
+        )
+        self.assertFalse(receipt['success'])
+        self.assertIn('could not be converted', receipt['result'])
+
+    def test_reviewer_receipt_arguments_match_structured_artifact_paths(self):
+        from openkyrozen.agent.subagent_runtime import _receipt_argument
+        self.assertEqual(_receipt_argument({'path': 'delivered.txt'}, 'path'), 'delivered.txt')
+        self.assertEqual(_receipt_argument('{"path":"delivered.txt"}', 'path'), 'delivered.txt')
+
+    def test_url_artifact_inspection_recognizes_structured_receipt_arguments(self):
+        url = 'https://example.test/report'
+        coordinator = self.manager(lambda *_: None)
+        findings, checks = coordinator._inspect_artifacts(
+            {'report': {'artifacts': [url]}},
+            {'tool_records': [{'action': 'read_webpage', 'args': json.dumps({'url': url}), 'success': True}]},
+        )
+        self.assertTrue(checks[0]['independently_read'])
+        self.assertEqual(findings, [])
+
+    def test_structured_artifact_path_keeps_literal_pipe(self):
+        path = 'artifact|name.txt'
+        (self.root / path).write_text('artifact', encoding='utf-8')
+        coordinator = self.manager(lambda *_: None)
+        coordinator.cancelled['test-run'] = threading.Event()
+        findings, checks = coordinator._inspect_artifacts(
+            {'run_id': 'test-run', 'report': {'artifacts': [path]}},
+            {'tool_records': [{'action': 'read_file', 'args': json.dumps({'path': path}), 'success': True}]},
+        )
+        self.assertTrue(checks[0]['independently_read'])
+        self.assertEqual(findings, [])
+
     def fake_provider(self, config):
         runtime, calls, lock = self.runtime, self.calls, self.call_lock
         class Provider:
@@ -177,14 +212,17 @@ class DelegationTests(unittest.TestCase):
     def test_reviewer_repairs_its_missing_artifact_inspection(self):
         (self.root / "delivered.txt").write_text("actual delivered artifact")
         runtime = self.runtime
+        repair_requests = []
         class Provider:
             def chat(inner, messages, model):
                 reviewing = "Independently verify" in messages[1]["content"]
                 if len(messages) == 2:
-                    return 'Action: {"action":"read_file","args":"marker.txt"}', None
+                    target = "delivered.txt" if reviewing else "marker.txt"
+                    return 'Action: ' + json.dumps({"action":"read_file","args":{"path":target}}), None
                 if not reviewing:
                     return json.dumps(result(artifacts=["delivered.txt"])), None
                 if "Verification requires independent tool inspection" in messages[-1]["content"]:
+                    repair_requests.append(messages[-1]["content"])
                     return 'Action: {"action":"read_file","args":"delivered.txt"}', None
                 return json.dumps(reviewed()), None
         runtime.get_provider = lambda _: Provider()
@@ -195,6 +233,7 @@ class DelegationTests(unittest.TestCase):
         self.assertEqual(finished["corrections"], 0)
         self.assertEqual(len(finished["reviews"]), 1)
         self.assertTrue(finished["reviews"][0]["artifact_checks"][0]["independently_read"])
+        self.assertEqual(repair_requests, [])
 
     def test_live_oracle_rejects_joint_false_positive(self):
         from scripts.subagent_autonomy_acceptance import false_decimal_sum_claim, ground_truth

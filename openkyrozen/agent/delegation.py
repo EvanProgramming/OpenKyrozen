@@ -478,24 +478,26 @@ class Delegation:
             if not isinstance(reference, str) or not reference.strip():
                 findings.append("Artifact needs an inspectable path or URL")
                 continue
+            def read_argument(item, field):
+                args = item.get("args", "")
+                if isinstance(args, dict):
+                    return args.get(field, "")
+                try:
+                    parsed = json.loads(args)
+                    if isinstance(parsed, dict): return parsed.get(field, "")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                return str(args).split("|", 1)[0] if field == "path" else args
             if reference.startswith(("https://", "http://")):
-                inspected = any(item.get("action") == "read_webpage" and item.get("args") == reference for item in receipts)
+                inspected = any(item.get("action") == "read_webpage" and read_argument(item, "url") == reference for item in receipts)
                 checks.append({"url": reference, "independently_read": inspected})
                 if not inspected:
                     findings.append("Artifact URL was not independently read: " + reference)
                 continue
             path = (self.root / reference).resolve()
-            def read_path(item):
-                args = item.get("args", "")
-                if isinstance(args, dict):
-                    return args.get("path", "")
-                try:
-                    parsed = json.loads(args)
-                    if isinstance(parsed, dict): return parsed.get("path", "")
-                except (json.JSONDecodeError, TypeError):
-                    pass
-                return str(args).split("|", 1)[0]
-            inspected = any(item.get("action") == "read_file" and (self.root / str(read_path(item))).resolve() == path for item in receipts)
+            inspected = any(item.get("action") == "read_file" and
+                            (self.root / str(read_argument(item, "path"))).resolve() == path
+                            for item in receipts)
             exists = path.is_relative_to(self.root) and path.is_file()
             check = {"path": reference, "exists": exists, "independently_read": inspected}
             if not exists:

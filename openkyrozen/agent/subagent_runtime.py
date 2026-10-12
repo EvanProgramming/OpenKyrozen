@@ -13,11 +13,31 @@ from openkyrozen.security.capabilities import issue_capability_token
 from openkyrozen.security.tool_policy import resolve_capabilities
 
 
+def _split_arguments(value: str) -> list[str] | None:
+    import shlex
+    try:
+        return shlex.split(value)
+    except ValueError:
+        return None
+
+
+def _receipt_argument(args: Any, field: str) -> Any:
+    if isinstance(args, dict):
+        return args.get(field)
+    if isinstance(args, str) and args.lstrip().startswith("{"):
+        try:
+            parsed = json.loads(args)
+            if isinstance(parsed, dict):
+                return parsed.get(field)
+        except json.JSONDecodeError:
+            pass
+    return args
+
+
 def _subagent_action_arguments(self, action: str, args: Any) -> Any:
     """Translate legacy Action text once at the sub-agent boundary."""
     if not isinstance(args, str):
         return args
-    import shlex
     import json
     if args.lstrip().startswith("{"):
         try:
@@ -44,15 +64,20 @@ def _subagent_action_arguments(self, action: str, args: Any) -> Any:
             return value if isinstance(value, dict) else None
         except json.JSONDecodeError:
             return None
-    if action in {'git_diff','git_log','git_branch'}: return {'options': shlex.split(args)}
-    if action == 'git_add': return {'paths': shlex.split(args) or ['.']}
+    if action in {'git_diff','git_log','git_branch'}:
+        options = _split_arguments(args)
+        return {'options': options} if options is not None else None
+    if action == 'git_add':
+        paths = _split_arguments(args)
+        return {'paths': paths or ['.']} if paths is not None else None
     if action in {'git_push','git_pull','git_checkout','git_stash','git_reset','github_read','github_cli'}:
-        key = 'arguments' if action != 'git_stash' else 'arguments'
-        return {key: shlex.split(args)}
+        arguments = _split_arguments(args)
+        return {'arguments': arguments} if arguments is not None else None
     if action == 'git_commit': return {'message': args.strip().strip('"').strip("'")}
     if action == 'git_show': return {'reference': args}
     if action == 'git_remote':
-        parts = shlex.split(args)
+        parts = _split_arguments(args)
+        if parts is None: return None
         return {'operation': parts[0] if parts else 'list', **({'name':parts[1], 'url':parts[2]} if parts and parts[0]=='add' and len(parts)==3 else {'name':parts[1]} if parts and parts[0]=='remove' and len(parts)==2 else {})}
     if action in {'run_cmd','execute_terminal_command'}: return {'command': args}
     if action in {'search_web','search_memory','graph_query'}:
@@ -260,7 +285,8 @@ def _run_subagent_llm_result(self, profile: AgentProfile, task: str, context: li
                     for item in profile.metadata.get("artifacts", []) if isinstance(item, (str, dict))]
                 missing = [reference for reference in references if reference and not any(
                     item.get("success") and item.get("action") == ("read_webpage" if reference.startswith(("https://", "http://")) else "read_file")
-                    and item.get("args") == reference for item in tool_records)]
+                    and _receipt_argument(item.get("args"), "url" if reference.startswith(("https://", "http://")) else "path") == reference
+                    for item in tool_records)]
                 if verdict.get("verdict") == "verified" and missing:
                     inspection_repairs += 1
                     remember({"role": "assistant", "content": response})

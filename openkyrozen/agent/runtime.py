@@ -613,7 +613,10 @@ class AgentRuntime:
             existing_approve = self._approval_callback.get()
             user_approve = approve if approve is not None else existing_approve
             approval_token = self._approval_callback.set(user_approve)
-            surface_token = self._surface_capability_override.set(_surface_capability_bound)
+            previous_surface_bound = self._surface_capability_override.get()
+            surface_token = self._surface_capability_override.set(
+                _surface_capability_bound if _surface_capability_bound is not None else previous_surface_bound
+            )
             request_token = None
             spec_token = None
             started_at = utc_now()
