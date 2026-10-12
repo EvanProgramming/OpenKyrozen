@@ -32,9 +32,14 @@ def _redacted_approval_value(value):
     if isinstance(value, list):
         return [_redacted_approval_value(item) for item in value]
     if isinstance(value, str):
-        text = re.sub(r"(?i)(token|password|secret|api[_-]?key)\s*[:=]\s*\S+", r"\1=<redacted>", value)
-        return re.sub(r"\bsk-[A-Za-z0-9_-]+", "sk-<redacted>", text)
+        return _redacted_approval_text(value)
     return value
+
+
+def _redacted_approval_text(value):
+    text = re.sub(r"(?i)(token|password|secret|api[_-]?key)\s*[:=]\s*\S+", r"\1=<redacted>", value)
+    text = re.sub(r"(?i)(\bbearer\s+)[^\s,'\"}]+", r"\1<redacted>", text)
+    return re.sub(r"\bsk-[A-Za-z0-9_-]+", "sk-<redacted>", text)
 
 
 def _record_tool_approval(self, action: str, decision: str, args: str = "") -> None:
@@ -43,8 +48,7 @@ def _record_tool_approval(self, action: str, decision: str, args: str = "") -> N
     request = request.get() if request is not None else None
     if request is not None:
         args = json.dumps(_redacted_approval_value(request.arguments), ensure_ascii=False, sort_keys=True)
-    safe_args = re.sub(r"(?i)(token|password|secret|api[_-]?key)\s*[:=]\s*\S+", r"\1=<redacted>", str(args))
-    safe_args = re.sub(r"\bsk-[A-Za-z0-9_-]+", "sk-<redacted>", safe_args)
+    safe_args = _redacted_approval_text(str(args))
     safe_args = safe_args.replace("\n", " ")[:240]
     try:
         ts = datetime.datetime.now(self.UTC).isoformat(timespec="seconds")
@@ -187,8 +191,12 @@ def _call_approval_callback(self, callback, action, args, *, request=None):
         request = request_var.get() if request_var is not None else None
     try:
         signature = inspect.signature(callback)
-        signature.bind(request) if request is not None else signature.bind(action, str(args))
-        use_structured = request is not None
+        try:
+            signature.bind(action, str(args))
+            use_structured = False
+        except TypeError:
+            signature.bind(request)
+            use_structured = request is not None
     except (TypeError, ValueError):
         use_structured = False
     try:

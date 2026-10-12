@@ -77,14 +77,35 @@ class ApprovalRequestTests(unittest.TestCase):
         self.assertFalse(_call_approval_callback(SimpleNamespace(), lambda _value: (_ for _ in ()).throw(RuntimeError()),
                                                   "write_file", {}, request=request))
 
+    def test_optional_two_argument_approval_callback_uses_legacy_arguments(self):
+        from types import SimpleNamespace
+        from openkyrozen.security.permissions import _call_approval_callback
+        request = ApprovalRequest(
+            call_id="call-legacy", tool_name="write_file", arguments={"path": "a"},
+            workspace_id="w", session_id="s", tool_version="1", tool_source="builtin",
+            capability="write", risk="normal", side_effects="mutation",
+        )
+        seen = []
+
+        def legacy(action, details=None):
+            seen.append((action, details))
+            return True
+
+        self.assertTrue(_call_approval_callback(
+            SimpleNamespace(), legacy, "write_file", '{"path": "a"}', request=request,
+        ))
+        self.assertEqual(seen, [("write_file", '{"path": "a"}')])
+
     def test_approval_display_redacts_sensitive_keys_and_inline_secrets(self):
         from openkyrozen.security.permissions import _redacted_approval_value
         self.assertEqual(_redacted_approval_value({
             "api_key": "private", "nested": {"authorization": "Bearer private"},
             "note": "token=private",
+            "command": "curl -H 'Authorization: Bearer abc123' https://example.test",
         }), {
             "api_key": "<redacted>", "nested": {"authorization": "<redacted>"},
             "note": "token=<redacted>",
+            "command": "curl -H 'Authorization: Bearer <redacted>' https://example.test",
         })
 
     def test_runtime_requested_capabilities_cannot_widen_surface_token(self):
@@ -115,6 +136,40 @@ class ApprovalRequestTests(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_empty_execute_call_capabilities_deny_read_tool(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.providers.models import ToolCall
+        from openkyrozen.tools import ToolAdapters, ToolSpec
+        from openkyrozen.tools.models import ToolResult
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WEB_CAPABILITIES": "full"}
+        ):
+            app = build_application(
+                surface="web", memory=build_memory(Path(directory) / "state.sqlite3"),
+                tools=ToolAdapters(directory),
+            )
+            calls = []
+            try:
+                app.runtime.tool_registry.register_spec(ToolSpec(
+                    "empty_authority_probe", lambda _args: calls.append("ran") or ToolResult(text="ran"),
+                    description="Test deny-all requested capabilities.",
+                    input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+                    capability="read", side_effects="none",
+                ))
+                receipt = app.runtime.execute_call(
+                    app.runtime.current_session,
+                    ToolCall("empty-authority", "empty_authority_probe", {}),
+                    capabilities=set(),
+                )
+                self.assertFalse(receipt.success)
+                self.assertEqual(calls, [])
+            finally:
+                app.close()
+
     def test_explicit_mcp_surface_bound_preserves_configured_dangerous_opt_in(self):
         import tempfile
         from pathlib import Path
@@ -135,6 +190,7 @@ class ApprovalRequestTests(unittest.TestCase):
                     "test", {"read", "write", "shell", "network", "git", "browser", "destructive", "dynamic"},
                 )
                 self.assertNotIn("destructive", app.runtime._effective_execution_capabilities())
+                self.assertEqual(app.runtime._effective_execution_capabilities(set()), frozenset())
                 surface = app.runtime._surface_capability_override.set(
                     frozenset({"read", "write", "shell", "network", "git", "browser", "destructive", "dynamic"})
                 )

@@ -211,6 +211,10 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		}
 		m.approvalArgs = safeApprovalArgs(m.approvalArgs + stringValue(event, "text"))
 		m.setApprovalContent()
+	case "approval_detail_complete":
+		if stringValue(event, "request_id") == m.approvalID {
+			m.approvalDetailsComplete = true
+		}
 	case "error":
 		m.setError(firstNonEmpty(stringValue(event, "error"), "Backend error"))
 	case "exit":
@@ -476,6 +480,10 @@ func (m *model) handlePrompt(event backendEvent) {
 		m.approvalID = stringValue(event, "request_id")
 		m.approvalTool = stringValue(event, "action")
 		m.approvalArgs = stringValue(event, "args")
+		m.approvalDetailsComplete = true
+		if complete, ok := event["details_complete"].(bool); ok {
+			m.approvalDetailsComplete = complete
+		}
 		if chunks, ok := event["args_chunks"].([]any); ok {
 			var joined strings.Builder
 			for _, chunk := range chunks {
@@ -571,8 +579,7 @@ func (m *model) startTransition() {
 }
 
 func safeApprovalArgs(value string) string {
-	value = uiSensitiveArgRE.ReplaceAllString(value, "$1=<redacted>")
-	return strings.TrimSpace(value)
+	return uiSensitiveArgRE.ReplaceAllString(value, "$1=<redacted>")
 }
 
 func safeToolDetail(value string) string {
