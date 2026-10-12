@@ -1,13 +1,37 @@
 """Offline tests for schema-backed native provider requests and replay history."""
 import unittest
 import json
-from types import SimpleNamespace as NS
+import sys
+from contextlib import contextmanager, nullcontext
+from types import ModuleType, SimpleNamespace as NS
 from unittest.mock import Mock, patch
 
 from openkyrozen.providers.models import (
     FinishReason, ModelResponse, ProviderContinuation, ProviderContractError,
     ToolCall, ToolReply, validate_tool_history,
 )
+
+
+@contextmanager
+def _google_schema_sdk():
+    try:
+        import google.genai  # noqa: F401
+    except ImportError:
+        class Schema:
+            @staticmethod
+            def model_validate(value):
+                return value
+
+        package = ModuleType("google")
+        package.__path__ = []
+        genai = ModuleType("google.genai")
+        genai.types = NS(Schema=Schema)
+        package.genai = genai
+        with patch.dict(sys.modules, {"google": package, "google.genai": genai}):
+            yield
+    else:
+        with nullcontext():
+            yield
 
 
 class NativeHistoryTests(unittest.TestCase):
@@ -328,7 +352,8 @@ class NativeRequestTests(unittest.TestCase):
                     send = Mock(side_effect=[Response(first), Response(final)])
                     provider._requests = NS(post=send)
                     provider._base = "http://localhost:11434"
-                initial = provider.chat_response([{"role": "user", "content": "go"}], tools=tools)
+                with _google_schema_sdk() if transport == "google" else nullcontext():
+                    initial = provider.chat_response([{"role": "user", "content": "go"}], tools=tools)
                 self.assertEqual(initial.tool_calls, (call,))
                 request = send.call_args_list[0].kwargs
                 if transport == "chat":
@@ -345,7 +370,8 @@ class NativeRequestTests(unittest.TestCase):
                     self.assertEqual(request["toolConfig"]["tools"][0]["toolSpec"]["inputSchema"]["json"], schema)
                 elif transport == "ollama":
                     self.assertEqual(request["json"]["tools"][0]["function"]["parameters"], schema)
-                final_response = provider.chat_response([initial, reply], tools=tools)
+                with _google_schema_sdk() if transport == "google" else nullcontext():
+                    final_response = provider.chat_response([initial, reply], tools=tools)
                 self.assertEqual(final_response.text, "done")
                 kwargs = send.call_args_list[1].kwargs
                 if transport == "google":
@@ -385,7 +411,7 @@ class NativeRequestTests(unittest.TestCase):
         tools = [{"name": "lookup", "description": "Lookup", "parameters": {
             "type": "object", "properties": {"value": {"oneOf": [
                 {"type": "string"}, {"type": "integer"}]}}}}]
-        with self.assertRaises(ProviderContractError):
+        with _google_schema_sdk(), self.assertRaises(ProviderContractError):
             provider.chat_response([{"role": "user", "content": "go"}], tools=tools)
         send.assert_not_called()
 
