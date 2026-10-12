@@ -223,7 +223,9 @@ def acceptance(binary: Path):
                      'approval prompt')
                 send(b'y' if decision else b'n')
                 wait(lambda rows: response_count(rows) > count, 'approval result')
-                assert tracked.read_text() == ('committed\n' if decision else 'uncommitted\n')
+                expected = 'committed\n' if decision else 'uncommitted\n'
+                actual = tracked.read_text()
+                assert actual == expected, f"approval decision={decision}, expected={expected!r}, actual={actual!r}, recent_events={events()[-12:]}"
             submit('delegate audit')
             wait(lambda rows: sum(r.get('event') == 'subagent' and r.get('agent', {}).get('status') == 'succeeded' for r in rows) >= 2,
                  'live delegated worker and review updates')

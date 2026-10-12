@@ -201,7 +201,10 @@ class ToolSpec:
                 values.append(arguments[present])
         if self.name in {'find_files','git_clone'} and not values[-1]:
             values.pop()
-        return '|'.join(values)
+        encoded='|'.join(values)
+        if encoded.split('|',len(values)-1)!=values:
+            raise ValueError('arguments cannot be represented without changing the legacy operation')
+        return encoded
 
 
 class ToolMapping(MutableMapping):

@@ -115,6 +115,17 @@ Shared persistence models are allowed; concrete repositories belong at compositi
 storage without importing interfaces or coordinating agent execution. New dependencies
 must preserve these authority limits and avoid import-time cycles.
 
+Tool authority is the intersection of configured, surface, interaction-mode, parent,
+and request capabilities; a surface override or renewed token can only narrow that
+bound. `AgentRuntime.execute_call` resolves canonical names and creates an
+`ApprovalRequest` fingerprinted over call identity, arguments, workspace/session, and
+the registered tool policy before asking the interface for approval. The executor
+rechecks registration, scope, and authority after an approval wait, then crosses an
+explicit legacy argument adapter only for tools not yet migrated to object arguments.
+Approval is not plan acceptance or effect evidence. Delegated children may write only
+their assigned files through workspace file tools; shell, Git, browser, dynamic, and
+other unconfined mutation tools stay with the parent.
+
 `scripts/check_architecture.py` enforces the existing static import policy across
 `agent`, `tasks`, `memory` and `learning`: no legacy root implementation imports, no
 interface package-root or descendant imports, and no listed concrete adapters or

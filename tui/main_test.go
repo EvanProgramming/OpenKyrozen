@@ -89,6 +89,108 @@ func TestReducerProjectsStreamingResponseTasksAndApproval(t *testing.T) {
 	}
 }
 
+func TestApprovalModalKeepsStructuredArgumentsScrollable(t *testing.T) {
+	m := initialModel(".", false)
+	m.width, m.height = 100, 30
+	m.resize()
+	value := strings.Repeat("x", 1800)
+	m.handleBackendEvent(backendEvent{
+		"event": "prompt", "kind": "approval", "request_id": "approval-long", "action": "write_file",
+		"operation": map[string]any{"path": "src/long.txt", "content": value},
+	})
+	if !strings.Contains(m.approvalArgs, value) {
+		t.Fatal("structured approval arguments were truncated")
+	}
+	m.approvalView.ScrollDown(20)
+	if m.approvalView.YOffset() == 0 {
+		t.Fatal("long approval arguments cannot be scrolled")
+	}
+}
+
+func TestApprovalArgumentsRewrapAfterNarrowResize(t *testing.T) {
+	m := initialModel(".", false)
+	m.width, m.height = 120, 30
+	m.approvalArgs = strings.Repeat("word ", 80)
+	m.resize()
+	wideLines := m.approvalView.TotalLineCount()
+	m.width = 50
+	m.resize()
+	if m.approvalView.TotalLineCount() <= wideLines {
+		t.Fatalf("approval arguments did not rewrap after resize: wide=%d narrow=%d", wideLines, m.approvalView.TotalLineCount())
+	}
+}
+
+func TestApprovalModalReassemblesLongArgumentChunks(t *testing.T) {
+	m := initialModel(".", false)
+	m.width, m.height = 100, 30
+	m.resize()
+	first, middle, last := strings.Repeat("a", 8000), strings.Repeat("b", 8000), strings.Repeat("c", 8000)
+	m.handleBackendEvent(backendEvent{
+		"event": "prompt", "kind": "approval", "request_id": "approval-chunks", "action": "write_file",
+		"args": first, "args_chunks": []any{first, middle, last}, "args_truncated": true,
+	})
+	if m.approvalArgs != first+middle+last {
+		t.Fatal("approval view did not reassemble the complete argument")
+	}
+	m.approvalView.ScrollDown(20)
+	if m.approvalView.YOffset() == 0 {
+		t.Fatal("chunked approval arguments cannot be scrolled")
+	}
+}
+
+func TestApprovalDetailEventsAppendOnlyToMatchingRequest(t *testing.T) {
+	m := initialModel(".", false)
+	m.approvalID = "approval-1"
+	m.approvalArgs = "first"
+	m.handleBackendEvent(backendEvent{"event": "approval_detail", "request_id": "stale", "text": " ignored"})
+	if m.approvalArgs != "first" {
+		t.Fatal("stale approval detail changed the active request")
+	}
+	m.handleBackendEvent(backendEvent{"event": "approval_detail", "request_id": "approval-1", "text": " second"})
+	if m.approvalArgs != "first second" {
+		t.Fatalf("approval detail was not appended: %q", m.approvalArgs)
+	}
+}
+
+func TestApprovalChunksPreserveWhitespaceAndWaitForCompleteDetails(t *testing.T) {
+	m := initialModel(".", false)
+	m.width, m.height = 100, 30
+	m.resize()
+	first := "content:" + strings.Repeat(" ", 8000)
+	second := strings.Repeat(" ", 8000) + "tail"
+	m.handleBackendEvent(backendEvent{
+		"event": "prompt", "kind": "approval", "request_id": "approval-stream",
+		"action": "write_file", "args": first, "details_complete": false,
+	})
+	if m.approvalArgs != first || m.approvalDetailsComplete {
+		t.Fatal("incomplete approval prompt was altered or marked complete")
+	}
+	m.handleBackendEvent(backendEvent{
+		"event": "approval_detail", "request_id": "approval-stream", "text": second,
+	})
+	if m.approvalArgs != first+second || m.approvalDetailsComplete {
+		t.Fatal("approval detail chunks were not concatenated verbatim")
+	}
+	buffer := &bytes.Buffer{}
+	m.bridge = &bridge{stdin: bufio.NewWriter(buffer)}
+	_, quit := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if quit || buffer.Len() != 0 {
+		t.Fatal("TUI sent approval before receiving complete details")
+	}
+	m.handleBackendEvent(backendEvent{"event": "approval_detail_complete", "request_id": "approval-stream"})
+	if !m.approvalDetailsComplete {
+		t.Fatal("correlated completion event did not unlock approval")
+	}
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	var response map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buffer.Bytes()), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["command"] != "approval_response" || response["approved"] != true {
+		t.Fatalf("complete approval response was not sent: %#v", response)
+	}
+}
+
 func TestRestartEventQuitsForLauncherRelaunch(t *testing.T) {
 	m := initialModel(".", false)
 	updated, cmd := m.Update(backendLineMsg{event: backendEvent{"event": "restart"}})

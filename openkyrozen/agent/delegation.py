@@ -370,7 +370,9 @@ class Delegation:
                 self.futures[run_id].add_done_callback(lambda future: self._job_done())
 
     def _owned_paths(self, run):
-        return set() if self.profiles[run["profile"]].capabilities == "readonly" else set(run["assignment"]["scope"])
+        return set() if self.profiles[run["profile"]].capabilities == "readonly" else {
+            str(self.root / path) for path in run["assignment"]["scope"]
+        }
 
     def _job_done(self):
         with self.changed:
@@ -382,7 +384,7 @@ class Delegation:
 
     def _work(self, run_id):
         run = self.runs[run_id]
-        paths = {str((self.root / path).resolve()) for path in run["assignment"]["scope"]}
+        paths = {str(self.root / path) for path in run["assignment"]["scope"]}
         if self.profiles[run["profile"]].capabilities == "readonly":
             paths = set()
         try:

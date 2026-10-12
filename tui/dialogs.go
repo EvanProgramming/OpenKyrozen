@@ -75,7 +75,7 @@ func (m model) modal(_ string) string {
 			body = redStyle.Render("DELETE CONVERSATION") + "\n" + titleStyle.Render(m.pendingDeleteTitle) + "\n\n" + mutedStyle.Render("Saved conversation data and history snapshots will be removed. Workspace files will stay.") + "\n\n" + greenStyle.Render("Y / Enter  delete") + "    " + redStyle.Render("N / Esc  cancel")
 		}
 	case screenApproval:
-		body = amberStyle.Render("!  APPROVAL REQUIRED") + "\n" + titleStyle.Render("Confirm this action") + "\n\n" + softStyle.Render(m.approvalTool) + "\n" + softStyle.Render(m.approvalArgs) + "\n\n" + mutedStyle.Render("This may change local or remote state.") + "\n\n" + greenStyle.Render("Y / Enter  approve") + "    " + redStyle.Render("N / Esc  deny")
+		body = amberStyle.Render("!  APPROVAL REQUIRED") + "\n" + titleStyle.Render("Confirm this action") + "\n\n" + softStyle.Render(m.approvalTool) + "\n" + m.approvalView.View() + "\n" + mutedStyle.Render("↑↓ / PgUp PgDn  inspect all arguments") + "\n\n" + mutedStyle.Render("This may change local or remote state.") + "\n\n" + greenStyle.Render("Y / Enter  approve") + "    " + redStyle.Render("N / Esc  deny")
 	case screenSelfLearning:
 		if m.onboardingSelfLearning {
 			localCursor, localStyle := mutedStyle.Render("·"), softStyle

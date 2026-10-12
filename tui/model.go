@@ -108,6 +108,7 @@ type model struct {
 	width                     int
 	height                    int
 	view                      viewport.Model
+	approvalView              viewport.Model
 	input                     textarea.Model
 	apiInput                  textinput.Model
 	fastKeyInput              bool
@@ -187,6 +188,7 @@ type model struct {
 	approvalID                string
 	approvalTool              string
 	approvalArgs              string
+	approvalDetailsComplete   bool
 	errorText                 string
 	splashFrame               int
 	splashStarted             time.Time

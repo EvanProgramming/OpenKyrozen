@@ -123,3 +123,23 @@ def requires_ask_approval(action: str, args: object, tools=None) -> bool:
     if risk_category(action, args, tools):
         return True
     return tool_capability(action, tools) in {"write", "shell", "git", "browser", "destructive", "dynamic"}
+
+
+def git_read_arguments_allowed(action: str, args: object) -> bool:
+    """Reject output-writing and external-execution flags on read-labelled Git tools."""
+    if action not in {"git_diff", "git_show", "git_log", "git_status"}:
+        return True
+    try:
+        words = shlex.split(_arguments(args))
+    except ValueError:
+        return False
+    if any(
+        word in {"-o", "--output", "--ext-diff", "--textconv", "--external-diff", "--exec", "--upload-pack", "--receive-pack"}
+        or word.startswith(("--output=", "--exec=", "--upload-pack=", "--receive-pack="))
+        for word in words
+    ):
+        return False
+    if action == "git_show":
+        if any(word.startswith("-") for word in words):
+            return False
+    return True

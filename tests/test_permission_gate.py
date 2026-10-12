@@ -1,6 +1,6 @@
 import unittest
 
-from openkyrozen.security.permission_gate import requires_ask_approval, risk_category
+from openkyrozen.security.permission_gate import git_read_arguments_allowed, requires_ask_approval, risk_category
 
 
 class PermissionGateTests(unittest.TestCase):
@@ -47,6 +47,36 @@ class PermissionGateTests(unittest.TestCase):
             risk_category("run_cmd", long_executable_option),
             "opaque_or_high_impact_command",
         )
+
+    def test_read_only_git_tools_reject_output_and_external_execution_options(self):
+        for action, args in (
+            ("git_diff", "--output=patch.txt"), ("git_diff", "--ext-diff"),
+            ("git_log", "--output patch.txt"), ("git_log", "--textconv"),
+            ("git_show", "--output=patch.txt"), ("git_show", "--exec=helper"),
+        ):
+            with self.subTest(action=action, args=args):
+                self.assertFalse(git_read_arguments_allowed(action, args))
+        for args in ('"--output=patch.txt"', "'--ext-diff'", '"--textconv"', '"--exec=helper"'):
+            with self.subTest(args=args):
+                self.assertFalse(git_read_arguments_allowed("git_log", args))
+        self.assertFalse(git_read_arguments_allowed("git_log", '"unterminated'))
+        self.assertTrue(git_read_arguments_allowed("git_diff", "--cached HEAD~1"))
+        self.assertTrue(git_read_arguments_allowed("git_log", "--oneline -5"))
+
+    def test_read_only_git_executors_disable_external_diff_and_textconv(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from openkyrozen.tools.git import git_diff, git_log
+
+        tools = SimpleNamespace(_git_working_directory=lambda: "/tmp/workspace")
+        with patch("openkyrozen.tools.git.subprocess.run") as run:
+            run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+            git_diff(tools, "")
+            git_log(tools, "")
+        commands = [call.args[0] for call in run.call_args_list]
+        for command in commands:
+            self.assertIn("--no-textconv", command)
+            self.assertIn("--no-ext-diff", command)
 
 
 if __name__ == "__main__":

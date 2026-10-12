@@ -72,6 +72,58 @@ class DelegationTests(unittest.TestCase):
                 return json.dumps(answer), {"prompt_tokens": 10, "completion_tokens": 5}
         return Provider()
 
+    def test_child_mutations_are_confined_to_assigned_file_tools(self):
+        from openkyrozen.agent.turn import ExecutionContext
+        from types import SimpleNamespace
+
+        child_id = "scoped-child"
+        coordinator = SimpleNamespace(
+            access=WorkspaceAccess(), root=self.root.resolve(),
+            runs={child_id: {"assignment": brief()}},
+            cancelled={child_id: threading.Event()}, check_cancelled=lambda _run_id: None,
+        )
+        context_token = self.runtime._turn_context.set(ExecutionContext(child_run_id=child_id, coordinator=coordinator))
+        try:
+            with self.assertRaises(PermissionError):
+                with self.runtime._delegation_tool_access("run_cmd", "echo unsafe"):
+                    self.fail("arbitrary child shell execution must not run")
+            with self.assertRaises(PermissionError):
+                with self.runtime._delegation_tool_access("git_push", "origin main"):
+                    self.fail("child Git mutations must not run")
+            with self.runtime._delegation_tool_access("write_file", "marker.txt|assigned"):
+                pass
+            with self.assertRaises(ValueError):
+                with self.runtime._delegation_tool_access("write_file", "outside.txt|denied"):
+                    self.fail("child writes outside assigned files must not run")
+            (self.root / "other.txt").write_text("keep")
+            (self.root / "marker.txt").unlink()
+            (self.root / "marker.txt").symlink_to(self.root / "other.txt")
+            with self.assertRaises(ValueError):
+                with self.runtime._delegation_tool_access("write_file", "marker.txt|overwrite"):
+                    self.fail("a post-assignment symlink must not retarget a child write")
+            self.assertEqual((self.root / "other.txt").read_text(), "keep")
+        finally:
+            self.runtime._turn_context.reset(context_token)
+
+    def test_child_can_use_read_only_network_tools(self):
+        from openkyrozen.agent.turn import ExecutionContext
+        from types import SimpleNamespace
+
+        child_id = "scoped-network-reader"
+        coordinator = SimpleNamespace(
+            access=WorkspaceAccess(), root=self.root.resolve(),
+            runs={child_id: {"assignment": brief()}},
+            cancelled={child_id: threading.Event()}, check_cancelled=lambda _run_id: None,
+        )
+        context_token = self.runtime._turn_context.set(ExecutionContext(child_run_id=child_id, coordinator=coordinator))
+        try:
+            with self.runtime._delegation_tool_access("search_web", "specific research query"):
+                pass
+            with self.runtime._delegation_tool_access("read_webpage", "https://example.invalid"):
+                pass
+        finally:
+            self.runtime._turn_context.reset(context_token)
+
     def manager(self, invoke, concurrency=4):
         coordinator = Delegation(self.runtime.memory_bank, invoke,
             profiles=self.runtime.subagent_manager.profiles, root=self.root, concurrency=concurrency)

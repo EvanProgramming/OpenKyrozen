@@ -413,6 +413,159 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertFalse(result["approved"])
 
+    def test_legacy_approval_prompt_redacts_bearer_credentials(self):
+        result = {}
+        args = "curl -H 'Authorization: Bearer abc123' https://example.test"
+        thread = threading.Thread(
+            target=lambda: result.setdefault("approved", self.backend._approval("run_cmd", args))
+        )
+        thread.start()
+        deadline = time.monotonic() + 1
+        while "request_id" not in self.output.getvalue() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        prompt = json.loads(self.output.getvalue().splitlines()[0])
+        self.assertNotIn("abc123", self.output.getvalue())
+        self.assertIn("Bearer <redacted>", prompt["args"])
+        self.backend.approval_response({"request_id": prompt["request_id"], "approved": False})
+        thread.join(timeout=1)
+        self.assertFalse(thread.is_alive())
+
+    def test_approval_handshake_rejects_truthy_non_boolean_responses(self):
+        result = {}
+        thread = threading.Thread(target=lambda: result.setdefault("approved", self.backend._approval("git_push", "origin main")))
+        thread.start()
+        deadline = time.monotonic() + 1
+        while "request_id" not in self.output.getvalue() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        prompt = json.loads(self.output.getvalue().splitlines()[0])
+        self.backend.approval_response({"request_id": prompt["request_id"], "approved": "yes"})
+        thread.join(timeout=1)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(result["approved"])
+
+    def test_structured_approval_keeps_long_arguments_in_redacted_scroll_chunks(self):
+        from openkyrozen.security.approvals import ApprovalRequest
+
+        request = ApprovalRequest(
+            call_id="call-long", tool_name="write_file",
+            arguments={"content": "x" * 20000, "api_key": "never-display-this"},
+            workspace_id="workspace", session_id="session", tool_version="1",
+            tool_source="builtin", capability="write", risk="normal", side_effects="mutation",
+        )
+        result = {}
+        thread = threading.Thread(target=lambda: result.setdefault("approved", self.backend._approval(request)))
+        thread.start()
+        deadline = time.monotonic() + 1
+        while "request_id" not in self.output.getvalue() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        event = events[0]
+        self.assertEqual(event["request_id"], request.request_id)
+        encoded = event["args"] + "".join(item.get("text", "") for item in events[1:])
+        displayed = json.loads(encoded)
+        self.assertEqual(displayed["content"], "x" * 20000)
+        self.assertEqual(displayed["api_key"], "<redacted>")
+        self.assertTrue(event["args_truncated"])
+        self.backend.approval_response({"request_id": event["request_id"], "approved": True})
+        thread.join(timeout=1)
+        self.assertTrue(result["approved"])
+
+    def test_chunked_approval_ignores_response_until_details_are_complete(self):
+        from unittest.mock import patch
+        from openkyrozen.security.approvals import ApprovalRequest
+
+        request = ApprovalRequest(
+            call_id="call-chunked", tool_name="write_file", arguments={"content": "x" * 22000},
+            workspace_id="workspace", session_id="session", tool_version="1",
+            tool_source="builtin", capability="write", risk="normal", side_effects="mutation",
+        )
+        events = []
+        emit = self.backend.emit
+
+        def capture(name, request_id=None, **fields):
+            emit(name, request_id, **fields)
+            events.append((name, fields))
+            if name == "prompt":
+                self.backend.approval_response({"request_id": request_id, "approved": True})
+                pending = self.backend._pending_approvals[request_id]
+                self.assertFalse(pending[1]["approved"])
+            elif name == "approval_detail_complete":
+                self.backend.approval_response({"request_id": request_id, "approved": True})
+
+        with patch.object(self.backend, "emit", side_effect=capture), patch(
+            "openkyrozen.interfaces.tui.turns.APPROVAL_TIMEOUT_SECONDS", 0.1,
+        ):
+            self.assertTrue(self.backend._approval(request))
+
+        self.assertEqual(events[-1][0], "approval_detail_complete")
+
+    def test_chunked_approval_can_be_denied_before_details_complete(self):
+        waiter = threading.Event()
+        self.backend._pending_approvals["pending-details"] = (
+            waiter, {"approved": False, "details_complete": False},
+        )
+        self.backend.approval_response({"request_id": "pending-details", "approved": False})
+        self.assertTrue(waiter.is_set())
+
+    def test_structured_approval_event_redacts_operation_object(self):
+        from openkyrozen.security.approvals import ApprovalRequest
+
+        request = ApprovalRequest(
+            call_id="call-secret", tool_name="write_file",
+            arguments={"path": "config.json", "authorization": "Bearer top-secret"},
+            workspace_id="workspace", session_id="session", tool_version="1",
+            tool_source="builtin", capability="write", risk="normal", side_effects="mutation",
+        )
+        result = {}
+        thread = threading.Thread(target=lambda: result.setdefault("approved", self.backend._approval(request)))
+        thread.start()
+        deadline = time.monotonic() + 1
+        while "request_id" not in self.output.getvalue() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        event = json.loads(self.output.getvalue().splitlines()[0])
+        self.assertEqual(event["operation"]["authorization"], "<redacted>")
+        self.assertNotIn("top-secret", self.output.getvalue())
+        self.backend.approval_response({"request_id": request.request_id, "approved": False})
+        thread.join(timeout=1)
+        self.assertFalse(result["approved"])
+
+    def test_approval_details_are_split_into_protocol_sized_correlated_events(self):
+        from openkyrozen.security.approvals import ApprovalRequest
+
+        request = ApprovalRequest(
+            call_id="call-huge", tool_name="write_file",
+            arguments={"content": "界" * 50000}, workspace_id="workspace",
+            session_id="session", tool_version="1", tool_source="builtin",
+            capability="write", risk="normal", side_effects="mutation",
+        )
+        result = {}
+        thread = threading.Thread(target=lambda: result.setdefault("approved", self.backend._approval(request)))
+        thread.start()
+        deadline = time.monotonic() + 1
+        events = []
+        while time.monotonic() < deadline:
+            lines = self.output.getvalue().splitlines()
+            events = [json.loads(line) for line in lines]
+            if len(events) > 1 and len(events) >= events[1].get("total", len(events) + 1):
+                break
+            time.sleep(0.005)
+        lines = self.output.getvalue().splitlines()
+        events = [json.loads(line) for line in lines]
+        self.assertGreater(len(events), 1, "approval detail chunks were not emitted")
+        self.assertGreaterEqual(len(events), events[1]["total"], "approval detail chunks were incomplete")
+        self.assertGreater(len(lines), 1)
+        self.assertTrue(all(len(line.encode("utf-8")) <= tui_backend.MAX_LINE_BYTES for line in lines))
+        self.assertEqual(events[0]["event"], "prompt")
+        self.assertFalse(events[0]["details_complete"])
+        self.assertTrue(all(event["request_id"] == request.request_id for event in events))
+        self.assertTrue(all(event["event"] in {"approval_detail", "approval_detail_complete"} for event in events[1:]))
+        self.assertEqual(events[-1]["event"], "approval_detail_complete")
+        shown = events[0]["args"] + "".join(event.get("text", "") for event in events[1:])
+        self.assertEqual(json.loads(shown)["content"], "界" * 50000)
+        self.backend.approval_response({"request_id": request.request_id, "approved": True})
+        thread.join(timeout=1)
+        self.assertTrue(result["approved"])
+
     def test_stream_projection_preserves_event_order_and_redacts_receipts(self):
         callback = self.backend._stream_projection("turn-1")
         callback({"event": "content", "chunk": "Answer"})

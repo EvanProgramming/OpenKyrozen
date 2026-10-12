@@ -2,6 +2,7 @@ package main
 
 import (
 	"charm.land/bubbles/v2/textinput"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -204,6 +205,16 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		m.completeOnboarding()
 	case "prompt":
 		m.handlePrompt(event)
+	case "approval_detail":
+		if stringValue(event, "request_id") != m.approvalID {
+			break
+		}
+		m.approvalArgs = safeApprovalArgs(m.approvalArgs + stringValue(event, "text"))
+		m.setApprovalContent()
+	case "approval_detail_complete":
+		if stringValue(event, "request_id") == m.approvalID {
+			m.approvalDetailsComplete = true
+		}
 	case "error":
 		m.setError(firstNonEmpty(stringValue(event, "error"), "Backend error"))
 	case "exit":
@@ -468,7 +479,28 @@ func (m *model) handlePrompt(event backendEvent) {
 	case "approval":
 		m.approvalID = stringValue(event, "request_id")
 		m.approvalTool = stringValue(event, "action")
-		m.approvalArgs = safeApprovalArgs(stringValue(event, "args"))
+		m.approvalArgs = stringValue(event, "args")
+		m.approvalDetailsComplete = true
+		if complete, ok := event["details_complete"].(bool); ok {
+			m.approvalDetailsComplete = complete
+		}
+		if chunks, ok := event["args_chunks"].([]any); ok {
+			var joined strings.Builder
+			for _, chunk := range chunks {
+				if text, ok := chunk.(string); ok {
+					joined.WriteString(text)
+				}
+			}
+			m.approvalArgs = joined.String()
+		}
+		if operation, ok := event["operation"]; ok && operation != nil {
+			if encoded, err := json.MarshalIndent(operation, "", "  "); err == nil {
+				m.approvalArgs = string(encoded)
+			}
+		}
+		m.approvalArgs = safeApprovalArgs(m.approvalArgs)
+		m.setApprovalContent()
+		m.approvalView.GotoTop()
 		m.screen = screenApproval
 		m.startTransition()
 	case "self_learning":
@@ -547,8 +579,7 @@ func (m *model) startTransition() {
 }
 
 func safeApprovalArgs(value string) string {
-	value = uiSensitiveArgRE.ReplaceAllString(value, "$1=<redacted>")
-	return strings.TrimSpace(value)
+	return uiSensitiveArgRE.ReplaceAllString(value, "$1=<redacted>")
 }
 
 func safeToolDetail(value string) string {

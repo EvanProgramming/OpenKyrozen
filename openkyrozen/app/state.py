@@ -250,6 +250,8 @@ def initialise(self):
     self._stream_event_callback: ContextVar[Any] = ContextVar("stream_event_callback", default=None)
 
     self._approval_callback: ContextVar[Any] = ContextVar("approval_callback", default=None)
+    self._approval_request: ContextVar[Any] = ContextVar("approval_request", default=None)
+    self._approval_tool_spec: ContextVar[Any] = ContextVar("approval_tool_spec", default=None)
 
     self._active_interaction_mode: ContextVar[str] = ContextVar("active_interaction_mode", default="agent")
 

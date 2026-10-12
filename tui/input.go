@@ -36,9 +36,19 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return nil, false
 	}
 	if m.screen == screenApproval {
-		if key == "y" || key == "Y" || key == "enter" {
-			m.send("approval_response", map[string]any{"request_id": m.approvalID, "approved": true})
-			m.screen = screenChat
+		if key == "up" || key == "k" {
+			m.approvalView.ScrollUp(1)
+		} else if key == "down" || key == "j" {
+			m.approvalView.ScrollDown(1)
+		} else if key == "pgup" {
+			m.approvalView.PageUp()
+		} else if key == "pgdown" {
+			m.approvalView.PageDown()
+		} else if key == "y" || key == "Y" || key == "enter" {
+			if m.approvalDetailsComplete {
+				m.send("approval_response", map[string]any{"request_id": m.approvalID, "approved": true})
+				m.screen = screenChat
+			}
 		} else if key == "n" || key == "N" || key == "esc" {
 			m.send("approval_response", map[string]any{"request_id": m.approvalID, "approved": false})
 			m.screen = screenChat

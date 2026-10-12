@@ -283,6 +283,7 @@ class AgentRuntime:
         self._default_turn = ExecutionContext()
         self._turn_context = ContextVar("agent_turn", default=None)
         self._session_context = ContextVar("agent_session", default=None)
+        self._surface_capability_override = ContextVar("agent_surface_capabilities", default=None)
         self._sessions = {}
         self._workspaces = {workspace.root: workspace}
 
@@ -542,23 +543,147 @@ class AgentRuntime:
     def _last_completion_tokens(self, value):
         self.execution_context.last_completion_tokens = value
 
-    def execute(self, session, action, args, *, capabilities=None, operation_scope="", approve=None):
+    def execute(self, session, action, args, *, capabilities=None, operation_scope="", approve=None,
+                _surface_capability_bound=None):
         """All inbound tool surfaces share authorization, approvals and receipts."""
         from openkyrozen.security.capabilities import issue_capability_token
-        from openkyrozen.security.tool_policy import resolve_capabilities
+        from openkyrozen.app.config import AgentConfigError
         with self.use_session(session):
             context_token = self._turn_context.set(copy.copy(self.execution_context))
             approval_token = self._approval_callback.set(approve)
+            surface_token = self._surface_capability_override.set(_surface_capability_bound)
             try:
-                if capabilities is not None:
-                    self._execution_capability_token = issue_capability_token(
-                        f"surface:{self.surface}", resolve_capabilities(capabilities if isinstance(capabilities, str) else ",".join(capabilities), default="readonly"))
+                current = self._execution_capability_token
+                try:
+                    granted = self._effective_execution_capabilities(capabilities)
+                except AgentConfigError:
+                    granted = frozenset()
+                self._execution_capability_token = issue_capability_token(
+                    current.subject, granted,
+                )
                 receipt = self._run_tool(action, args, return_receipt=True, operation_scope=operation_scope)
                 self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
                     user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
                     session_id=self.memory_bank.session_id)
                 return receipt
             finally:
+                self._surface_capability_override.reset(surface_token)
+                self._approval_callback.reset(approval_token)
+                self._turn_context.reset(context_token)
+
+    def _effective_execution_capabilities(self, requested=None):
+        from openkyrozen.app.config import effective_capabilities, load_agent_config
+        from openkyrozen.agent.modes import mode_capabilities
+        from openkyrozen.security.tool_policy import resolve_capabilities
+
+        config = effective_capabilities(load_agent_config(self._get_workspace_root()))
+        default_surface = "full" if self._EXECUTION_SURFACE == "cli" else "workspace"
+        if self._EXECUTION_SURFACE == "tui" and self.permission_mode() in {"full_jev", "full"}:
+            default_surface = "full"
+        surface_bound = self._surface_capability_override.get()
+        surface_value = (surface_bound if surface_bound is not None else
+                         self._surface_capabilities or default_surface)
+        surface = (frozenset(surface_value) if not isinstance(surface_value, str)
+                   else resolve_capabilities(surface_value))
+        granted = self._execution_capability_token.capabilities & config & surface
+        granted = mode_capabilities(granted, self._active_interaction_mode.get())
+        if requested is not None:
+            requested = requested if isinstance(requested, str) else ",".join(requested)
+            granted &= resolve_capabilities(requested, default="readonly") if requested.strip() else frozenset()
+        return granted
+
+    def execute_call(self, session, call, *, capabilities=None, operation_scope="", approve=None):
+        """Authorize and execute one structured provider call at the shared boundary."""
+        from openkyrozen.providers.models import ToolCall
+        from openkyrozen.security.approvals import ApprovalRequest
+        from openkyrozen.security.capabilities import issue_capability_token
+        from openkyrozen.security.permissions import _call_approval_callback
+        from openkyrozen.app.config import AgentConfigError
+        from openkyrozen.persistence.models import utc_now
+
+        if not isinstance(call, ToolCall):
+            raise TypeError("execute_call requires a ToolCall")
+        call_arguments = copy.deepcopy(call.arguments)
+        with self.use_session(session):
+            context_token = self._turn_context.set(copy.copy(self.execution_context))
+            existing_approve = self._approval_callback.get()
+            user_approve = approve if approve is not None else existing_approve
+            approval_token = self._approval_callback.set(user_approve)
+            request_token = None
+            spec_token = None
+            started_at = utc_now()
+            try:
+                name = self.tool_registry.resolve_legacy_name(call.name)
+                try:
+                    spec = self.tool_registry.get_spec(name)
+                except KeyError:
+                    receipt = self._run_tool(name, call_arguments, return_receipt=True,
+                                             operation_scope=operation_scope)
+                    self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
+                        user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
+                        session_id=self.memory_bank.session_id)
+                    return receipt
+                request = ApprovalRequest(
+                    call_id=call.id, tool_name=name, arguments=call_arguments,
+                    workspace_id=self.memory_bank.workspace_id, session_id=session.session_id,
+                    tool_version=spec.version, tool_source=spec.source, capability=spec.capability,
+                    risk=spec.risk, side_effects=spec.side_effects,
+                )
+                request_token = self._approval_request.set(request)
+                spec_token = self._approval_tool_spec.set(spec)
+
+                def bound_approval(_action, _details):
+                    if not _call_approval_callback(self, user_approve, name, call_arguments, request=request):
+                        return False
+                    if call.arguments != call_arguments:
+                        return False
+                    current = self.tool_registry.specs.get(name)
+                    if current is not spec or session.session_id != request.session_id:
+                        return False
+                    if self.memory_bank.workspace_id != request.workspace_id:
+                        return False
+                    try:
+                        granted = self._effective_execution_capabilities()
+                    except AgentConfigError:
+                        return False
+                    if spec.capability not in granted:
+                        return False
+                    try:
+                        current_request = ApprovalRequest(
+                            call_id=call.id, tool_name=name, arguments=call_arguments,
+                            workspace_id=self.memory_bank.workspace_id, session_id=session.session_id,
+                            tool_version=current.version, tool_source=current.source,
+                            capability=current.capability, risk=current.risk,
+                            side_effects=current.side_effects,
+                        )
+                    except (TypeError, ValueError):
+                        return False
+                    if current_request.fingerprint != request.fingerprint:
+                        return False
+                    return True
+
+                approval_token2 = self._approval_callback.set(bound_approval if callable(user_approve) else None)
+                try:
+                    current = self._execution_capability_token
+                    try:
+                        granted = self._effective_execution_capabilities(capabilities)
+                    except AgentConfigError:
+                        granted = frozenset()
+                    self._execution_capability_token = issue_capability_token(current.subject, granted)
+                    receipt = self._run_tool(name, call_arguments, return_receipt=True,
+                                             operation_scope=operation_scope,
+                                             _typed_arguments=call_arguments, _expected_spec=spec)
+                    self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
+                        user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
+                        session_id=self.memory_bank.session_id)
+                    return receipt
+                finally:
+                    self._approval_callback.reset(approval_token2)
+            finally:
+                if request_token is not None:
+                    self._approval_request.reset(request_token)
+                if spec_token is not None:
+                    self._approval_tool_spec.reset(spec_token)
                 self._approval_callback.reset(approval_token)
                 self._turn_context.reset(context_token)
 

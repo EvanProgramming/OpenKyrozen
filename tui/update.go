@@ -58,6 +58,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.scrollPlan(3)
 			}
+		} else if m.screen == screenApproval {
+			if msg.Button == tea.MouseWheelUp {
+				m.approvalView.ScrollUp(mouseWheelScrollStep)
+			} else {
+				m.approvalView.ScrollDown(mouseWheelScrollStep)
+			}
 		} else if m.screen == screenChat {
 			switch msg.Button {
 			case tea.MouseWheelUp:

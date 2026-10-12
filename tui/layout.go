@@ -18,8 +18,16 @@ func (m *model) resize() {
 	m.apiInput.SetWidth(maxInt(1, minInt(68, m.width-14)))
 	m.view.SetWidth(mainWidth)
 	m.view.SetHeight(m.historyHeight())
+	m.setApprovalContent()
+	m.approvalView.SetHeight(maxInt(1, m.height-18))
 	m.planScroll = minInt(m.planScroll, m.planMaxScroll())
 	m.syncViewport()
+}
+
+func (m *model) setApprovalContent() {
+	width := maxInt(1, minInt(70, m.width-14))
+	m.approvalView.SetWidth(width)
+	m.approvalView.SetContent(lipgloss.Wrap(m.approvalArgs, width, ""))
 }
 
 func (m model) contentWidth() int {
