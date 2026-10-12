@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from typing import Any, Iterator
-from openkyrozen.providers.base import LLMProvider
+from openkyrozen.providers.base import LLMProvider, text_stream_projection
 from openkyrozen.providers.models import (received_response, ModelResponse, model_response, responses_output,
     ToolReply, ProviderContractError, validate_tool_definitions, validate_tool_history, provider_identity,
     validate_replied_tool_definitions, with_provider_continuation, _snapshot_from_sdk,
@@ -114,7 +114,8 @@ class PerplexityProvider(LLMProvider):
                 if item.get("role") == "system":
                     instructions.append(str(item.get("content", "")))
                 else:
-                    input_items.append({"role": "assistant" if item.get("role") == "assistant" else "user",
+                    input_items.append({"type": "message",
+                        "role": "assistant" if item.get("role") == "assistant" else "user",
                         "content": [{"type": "input_text", "text": str(item.get("content", ""))}]})
             elif isinstance(item, ModelResponse):
                 if item.continuation.protocol != "perplexity-responses":
@@ -188,6 +189,11 @@ class PerplexityProvider(LLMProvider):
                 finish_detail=getattr(getattr(final, "incomplete_details", None), "reason", None),
                 blocked=any(getattr(part, "type", None) == "refusal" for item in output
                     for part in getattr(item, "content", None) or ()))
+            if usage is None:
+                usage = {"prompt_tokens": sum(len(str(item.get("content", ""))) for item in messages
+                    if isinstance(item, dict)) // 4, "completion_tokens": len(text) // 4, "_estimated": 1}
+                result = ModelResponse(result.text, result.tool_calls, usage, result.finish_reason, result.metadata)
+                yield UsageUpdate(usage)
             result = with_provider_continuation(result, self, model, "perplexity-responses",
                 {"output": _snapshot_from_sdk(output)})
             usage_ledger._track_cost(self.config.provider, usage, model=model,
@@ -198,31 +204,4 @@ class PerplexityProvider(LLMProvider):
 
     @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
-        model = model or self.config.model_simple
-        prompt, instructions = self._prompt(messages)
-        started = time.monotonic()
-        kwargs: dict[str, Any] = {"model": model, "input": prompt, "stream": True}
-        if instructions:
-            kwargs["instructions"] = instructions
-        stream = _retry_with_backoff(lambda: self._client.responses.create(**kwargs, timeout=remaining_timeout()))
-        final_usage: dict[str, int | None] | None = None
-        completed = False
-        mark_response_received()
-        try:
-            for event in stream:
-                response = getattr(event, "response", None) or event
-                usage = self._usage(response)
-                if usage is not None:
-                    final_usage = usage
-                event_type = str(getattr(event, "type", ""))
-                delta = str(getattr(event, "delta", "") or "") if "delta" in event_type else ""
-                if not delta and event_type.endswith("text.delta"):
-                    delta = str(getattr(event, "text", "") or "")
-                if delta:
-                    yield delta
-            completed = True
-        finally:
-            close_stream(stream)
-            if completed:
-                usage_ledger._track_cost(self.config.provider, final_usage, model=model,
-                            latency_ms=round((time.monotonic() - started) * 1000))
+        yield from text_stream_projection(self.chat_response_stream(messages, model))

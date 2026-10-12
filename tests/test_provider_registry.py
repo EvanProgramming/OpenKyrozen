@@ -123,6 +123,10 @@ class ProviderRegistryTests(unittest.TestCase):
         events = [
             SimpleNamespace(type="response.output_text.delta", delta="to"),
             SimpleNamespace(type="response.output_text.delta", delta="ken"),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                id="stream-response", model="gpt-6-luna", status="completed", output_text="token",
+                output=[], usage=SimpleNamespace(input_tokens=4, output_tokens=5,
+                    output_tokens_details=SimpleNamespace(reasoning_tokens=2)), incomplete_details=None)),
         ]
         with patch("openai.OpenAI") as client_factory, patch("openkyrozen.providers.usage._track_cost"):
             client = client_factory.return_value

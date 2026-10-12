@@ -5,7 +5,7 @@ import json
 import sys
 import time
 from typing import Any, Iterator
-from openkyrozen.providers.base import LLMProvider
+from openkyrozen.providers.base import LLMProvider, text_stream_projection
 from openkyrozen.providers.models import (received_response, ModelResponse, model_response, responses_output,
     ProviderContractError, ModelResponse as ProviderModelResponse, ToolReply, validate_tool_history,
     validate_tool_definitions, validate_replied_tool_definitions, provider_identity,
@@ -134,6 +134,7 @@ class OpenAICompatProvider(LLMProvider):
         started = time.monotonic()
         stream = self._client.chat.completions.create(**kwargs)
         text_parts: list[str] = []
+        assistant_fields: dict[str, Any] = {}
         call_parts: dict[int, dict[str, str]] = {}
         usage = None
         finish = None
@@ -156,6 +157,16 @@ class OpenAICompatProvider(LLMProvider):
                         text_parts.append(text)
                         yield TextDelta(text)
                     blocked = blocked or bool(getattr(delta, "refusal", None))
+                    if delta is not None:
+                        for field in ("reasoning_content", "reasoning", "reasoning_details"):
+                            value = getattr(delta, field, None)
+                            if value is not None:
+                                if isinstance(value, str):
+                                    assistant_fields[field] = assistant_fields.get(field, "") + value
+                                elif isinstance(value, list):
+                                    assistant_fields.setdefault(field, []).extend(_snapshot_from_sdk(value))
+                                else:
+                                    assistant_fields[field] = _snapshot_from_sdk(value)
                     for call in getattr(delta, "tool_calls", None) or ():
                         index = getattr(call, "index", None)
                         if type(index) is not int or index < 0:
@@ -185,6 +196,7 @@ class OpenAICompatProvider(LLMProvider):
                 response = ModelResponse(response.text, response.tool_calls, usage, response.finish_reason, response.metadata)
                 yield UsageUpdate(usage)
             assistant = {"role": "assistant", "content": text or None}
+            assistant.update(assistant_fields)
             if response.tool_calls:
                 assistant["tool_calls"] = [{"id": call.id, "type": "function", "function": {
                     "name": call.name, "arguments": json.dumps(call.arguments, ensure_ascii=False)}}
@@ -198,48 +210,7 @@ class OpenAICompatProvider(LLMProvider):
 
     @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
-        model = model or self.config.model_simple
-        collected: list[str] = []
-        billed_model = model
-        started = time.monotonic()
-        final_usage: dict[str, int | None] | None = None
-        completed = False
-
-        def _call():
-            kwargs: dict[str, Any] = {"model": model, "messages": messages, "stream": True}
-            # Only APIs documented to accept OpenAI's stream_options receive it.
-            # Fireworks and several compatible providers include usage in their
-            # final chunk without this extension; the rest remain compatible.
-            if self.config.provider in {"deepseek", "openai", "ollama", "glm", "kimi"}:
-                kwargs["stream_options"] = {"include_usage": True}
-            return self._client.chat.completions.create(**kwargs, timeout=remaining_timeout())
-
-        stream = _retry_with_backoff(_call)
-        mark_response_received()
-        try:
-            for chunk in stream:
-                billed_model = getattr(chunk, "model", None) or billed_model
-                usage = _openai_usage_dict(getattr(chunk, "usage", None))
-                if usage is not None:
-                    final_usage = usage
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if delta and delta.content:
-                    collected.append(delta.content)
-                    yield delta.content
-            completed = True
-        finally:
-            close_stream(stream)
-            if completed:
-                if final_usage is None:
-                    final_usage = {
-                        "prompt_tokens": sum(len(str(message.get("content", ""))) for message in messages) // 4,
-                        "completion_tokens": len("".join(collected)) // 4,
-                        "_estimated": 1,
-                    }
-                usage_ledger._track_cost(
-                    self.config.provider, final_usage, model=billed_model,
-                    latency_ms=round((time.monotonic() - started) * 1000),
-                )
+        yield from text_stream_projection(self.chat_response_stream(messages, model))
 
 
 class OpenAIResponsesProvider(LLMProvider):
@@ -413,38 +384,4 @@ class OpenAIResponsesProvider(LLMProvider):
 
     @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
-        model = model or self.config.model_simple
-        started = time.monotonic()
-        collected: list[str] = []
-        final_usage: dict[str, int | None] | None = None
-        completed = False
-
-        stream = _retry_with_backoff(
-            lambda: self._client.responses.create(model=model, input=messages, stream=True, timeout=remaining_timeout()),
-        )
-        mark_response_received()
-        try:
-            for event in stream:
-                event_type = str(getattr(event, "type", ""))
-                usage = self._usage(getattr(event, "response", None) or event)
-                if usage is not None:
-                    final_usage = usage
-                if event_type in {"response.output_text.delta", "response.text.delta"}:
-                    delta = str(getattr(event, "delta", "") or "")
-                else:
-                    delta = str(getattr(event, "text", "") or "") if event_type.endswith("text.delta") else ""
-                if delta:
-                    collected.append(delta)
-                    yield delta
-            completed = True
-        finally:
-            close_stream(stream)
-            if completed:
-                if final_usage is None:
-                    final_usage = {
-                        "prompt_tokens": sum(len(str(item.get("content", ""))) for item in messages) // 4,
-                        "completion_tokens": len("".join(collected)) // 4,
-                        "_estimated": 1,
-                    }
-                usage_ledger._track_cost(self.config.provider, final_usage, model=model,
-                            latency_ms=round((time.monotonic() - started) * 1000))
+        yield from text_stream_projection(self.chat_response_stream(messages, model))

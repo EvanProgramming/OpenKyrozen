@@ -7,7 +7,7 @@ import os
 import sys
 import time
 from typing import Any, Iterator
-from openkyrozen.providers.base import LLMProvider
+from openkyrozen.providers.base import LLMProvider, text_stream_projection
 from openkyrozen.providers.models import (received_response, ModelResponse, model_response, ToolReply,
     ProviderContractError, validate_tool_definitions, validate_tool_history, provider_identity,
     validate_replied_tool_definitions, with_provider_continuation, _snapshot_from_sdk,
@@ -185,10 +185,12 @@ class BedrockProvider(LLMProvider):
                         elif "toolUse" in delta:
                             fragment = str(delta["toolUse"].get("input", ""))
                             tool = block.setdefault("toolUse", {"toolUseId": "", "name": "", "input": ""})
-                            tool["input"] += fragment
+                            tool["input"] = tool.get("input", "") + fragment
                             yield ToolCallDelta(call_index[block_number], arguments_delta=fragment)
                         elif "reasoningContent" in delta:
-                            block["reasoningContent"] = delta["reasoningContent"]
+                            content = block.setdefault("reasoningContent", {})
+                            for key, value in delta["reasoningContent"].items():
+                                content[key] = content.get(key, "") + value if key == "text" else value
                     elif "metadata" in event:
                         usage = self._usage(event["metadata"])
                         if usage is not None:
@@ -216,32 +218,4 @@ class BedrockProvider(LLMProvider):
 
     @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
-        with self._request_client() as client:
-            model = model or self.config.model_simple
-            conversation, system = self._request(messages, model, self)
-            started = time.monotonic()
-            kwargs: dict[str, Any] = {
-                "modelId": model,
-                "messages": conversation,
-                "inferenceConfig": {"maxTokens": 4096},
-            }
-            if system:
-                kwargs["system"] = system
-            response = _retry_with_backoff(lambda: client.converse_stream(**kwargs))
-            mark_response_received()
-            final_usage: dict[str, int | None] | None = None
-            completed = False
-            try:
-                for event in response.get("stream", []):
-                    if "contentBlockDelta" in event:
-                        delta = event["contentBlockDelta"].get("delta", {}).get("text", "")
-                        if delta:
-                            yield str(delta)
-                    if "metadata" in event:
-                        final_usage = self._usage(event["metadata"])
-                completed = True
-            finally:
-                close_stream(response.get("stream"))
-                if completed:
-                    usage_ledger._track_cost(self.config.provider, final_usage, model=model,
-                                latency_ms=round((time.monotonic() - started) * 1000))
+        yield from text_stream_projection(self.chat_response_stream(messages, model))

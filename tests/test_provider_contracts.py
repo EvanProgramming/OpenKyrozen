@@ -213,7 +213,7 @@ class AdapterContractTests(unittest.TestCase):
                     caps = provider.get_capabilities("quick")
                     self.assertFalse(caps.native_tools)
                     self.assertFalse(caps.streaming_tool_calls)
-                    self.assertEqual(caps.text_streaming, cls is not OllamaNativeProvider)
+                    self.assertTrue(caps.text_streaming)
 
     def test_missing_ids_and_malformed_args_across_transports(self):
         for cls, wire in self.wires():
@@ -289,6 +289,11 @@ class AdapterContractTests(unittest.TestCase):
         self.assertIs(wrapper.chat_response([], "p-slow"), result)
         self.assertEqual(fallback.models, ["f-slow"])
         self.assertEqual(wrapper.get_capabilities(), ProviderCapabilities(text_streaming=True))
+        primary.caps = fallback.caps = ProviderCapabilities(
+            native_tools=True, text_streaming=True, streaming_tool_calls=True)
+        self.assertTrue(wrapper.get_capabilities().native_tools)
+        self.assertTrue(wrapper.get_capabilities().text_streaming)
+        self.assertFalse(wrapper.get_capabilities().streaming_tool_calls)
         primary.response = result
         with self.assertRaises(ValueError):
             wrapper.chat([], "p-slow")

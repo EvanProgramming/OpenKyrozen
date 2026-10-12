@@ -5,7 +5,7 @@ import json
 import sys
 import time
 from typing import Any, Iterator
-from openkyrozen.providers.base import LLMProvider
+from openkyrozen.providers.base import LLMProvider, text_stream_projection
 from openkyrozen.providers.models import (received_response, ModelResponse, model_response, ToolReply,
     ProviderContractError, validate_tool_definitions, validate_tool_history, provider_identity,
     validate_replied_tool_definitions, with_provider_continuation, _snapshot_from_sdk,
@@ -194,39 +194,4 @@ class AnthropicProvider(LLMProvider):
 
     @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
-        model = model or self.config.model_simple
-        system_prompts, claude_messages = self._prepare_messages(messages, model)
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "max_tokens": 4096,
-            "messages": claude_messages,
-        }
-        if system_prompts:
-            kwargs["system"] = "\n\n".join(system_prompts)
-        started = time.monotonic()
-        collected: list[str] = []
-        final_usage: dict[str, int | None] | None = None
-        completed = False
-
-        def _call():
-            return self._client.messages.stream(**kwargs, timeout=remaining_timeout())
-
-        stream_context = _retry_with_backoff(_call)
-        try:
-            with stream_context as stream:
-                mark_response_received()
-                for delta in stream.text_stream:
-                    collected.append(delta)
-                    yield delta
-                final = stream.get_final_message()
-                usage = getattr(final, "usage", None)
-                if usage is not None:
-                    final_usage = {
-                        "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
-                        "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
-                    }
-            completed = True
-        finally:
-            if completed:
-                usage_ledger._track_cost(self.config.provider, final_usage, model=model,
-                            latency_ms=round((time.monotonic() - started) * 1000))
+        yield from text_stream_projection(self.chat_response_stream(messages, model))

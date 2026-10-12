@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from typing import Any, Iterator
-from openkyrozen.providers.base import LLMProvider
+from openkyrozen.providers.base import LLMProvider, text_stream_projection
 from openkyrozen.providers.models import (received_response, ModelResponse, model_response, ToolReply,
     ProviderContractError, validate_tool_definitions, validate_tool_history, provider_identity,
     validate_replied_tool_definitions, with_provider_continuation, _snapshot_from_sdk,
@@ -257,32 +257,7 @@ class GoogleProvider(LLMProvider):
 
     @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
-        model = model or self.config.model_simple
-        contents, system_instruction = self._contents(messages, model, self)
-        request_config: dict[str, Any] = {"http_options": self._http_options()}
-        if system_instruction:
-            request_config["system_instruction"] = system_instruction
-        started = time.monotonic()
-        final_usage: dict[str, int | None] | None = None
-        completed = False
-        stream = _retry_with_backoff(lambda: self._client.models.generate_content_stream(
-            model=model, contents=contents, config=request_config or None,
-        ))
-        try:
-            for chunk in stream:
-                mark_response_received()
-                usage = self._usage(chunk)
-                if usage is not None:
-                    final_usage = usage
-                delta = str(getattr(chunk, "text", "") or "")
-                if delta:
-                    yield delta
-            completed = True
-        finally:
-            close_stream(stream)
-            if completed:
-                usage_ledger._track_cost(self.config.provider, final_usage, model=model,
-                            latency_ms=round((time.monotonic() - started) * 1000))
+        yield from text_stream_projection(self.chat_response_stream(messages, model))
 
 
 class VertexProvider(GoogleProvider):
