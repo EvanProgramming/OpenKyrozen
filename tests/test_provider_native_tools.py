@@ -362,6 +362,9 @@ class NativeRequestTests(unittest.TestCase):
                 elif transport == "responses":
                     self.assertEqual(request["tools"][0]["parameters"], schema)
                     self.assertIs(request["tools"][0]["strict"], False)
+                    if cls is PerplexityProvider:
+                        self.assertEqual(request["input"][0], {"type": "message", "role": "user",
+                            "content": [{"type": "input_text", "text": "go"}]})
                 elif transport == "messages":
                     self.assertEqual(request["tools"][0]["input_schema"], schema)
                 elif transport == "google":

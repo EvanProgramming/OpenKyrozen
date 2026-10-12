@@ -67,7 +67,8 @@ class PerplexityProvider(LLMProvider):
                     instructions.append(str(item.get("content", "")))
                 else:
                     role = "assistant" if item.get("role") == "assistant" else "user"
-                    input_items.append({"role": role, "content": [{"type": "input_text", "text": str(item.get("content", ""))}]})
+                    input_items.append({"type": "message", "role": role,
+                        "content": [{"type": "input_text", "text": str(item.get("content", ""))}]})
             elif isinstance(item, ModelResponse):
                 if item.continuation.protocol != "perplexity-responses":
                     raise ProviderContractError("Continuation protocol does not match Perplexity Responses")
