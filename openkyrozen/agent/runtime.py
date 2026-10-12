@@ -592,7 +592,7 @@ class AgentRuntime:
         granted = mode_capabilities(granted, self._active_interaction_mode.get())
         if requested is not None:
             requested = requested if isinstance(requested, str) else ",".join(requested)
-            granted &= resolve_capabilities(requested, default="readonly")
+            granted &= resolve_capabilities(requested, default="readonly") if requested.strip() else frozenset()
         return granted
 
     def execute_call(self, session, call, *, capabilities=None, operation_scope="", approve=None,

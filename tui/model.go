@@ -188,6 +188,7 @@ type model struct {
 	approvalID                string
 	approvalTool              string
 	approvalArgs              string
+	approvalDetailsComplete   bool
 	errorText                 string
 	splashFrame               int
 	splashStarted             time.Time

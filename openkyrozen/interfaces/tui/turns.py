@@ -43,15 +43,19 @@ def _approval(self, action: str, args: str | None = None) -> bool:
     request = action if hasattr(action, "fingerprint") else None
     approval_id = request.request_id if request is not None else uuid.uuid4().hex
     waiter = threading.Event()
-    decision = {"approved": False}
+    decision = {"approved": False, "details_complete": False}
     with self._approval_lock:
         self._pending_approvals[approval_id] = (waiter, decision)
     if request is not None:
         action = request.tool_name
         from openkyrozen.security.permissions import _redacted_approval_value
         args = json.dumps(_redacted_approval_value(request.arguments), ensure_ascii=False, sort_keys=True)
+    else:
+        from openkyrozen.security.permissions import _redacted_approval_text
+        args = _redacted_approval_text(args or "")
     chunks = [args[index:index + 8000] for index in range(0, len(args or ""), 8000)]
     chunked = len((args or "").encode("utf-8")) > 20_000
+    decision["details_complete"] = not chunked
     inline_args = chunks[0] if chunked and chunks else (args or "")
     inline_chunks = [] if chunked else chunks
     self.emit(
@@ -59,6 +63,7 @@ def _approval(self, action: str, args: str | None = None) -> bool:
         masked=True, action=action, args=_redact(inline_args),
         args_chunks=inline_chunks,
         args_truncated=chunked or len(args or "") > MAX_TEXT_CHARS,
+        details_complete=not chunked,
         operation=_redacted_approval_value(request.arguments) if request is not None and not chunked and len(args or "") <= 3000 else None,
         fingerprint=request.fingerprint if request is not None else None,
         workspace_id=request.workspace_id if request is not None else None,
@@ -68,6 +73,9 @@ def _approval(self, action: str, args: str | None = None) -> bool:
     if chunked:
         for index, chunk in enumerate(chunks[1:], start=1):
             self.emit("approval_detail", approval_id, index=index, total=len(chunks), text=chunk)
+        with self._approval_lock:
+            decision["details_complete"] = True
+        self.emit("approval_detail_complete", approval_id)
     waiter.wait(timeout=APPROVAL_TIMEOUT_SECONDS)
     with self._approval_lock:
         self._pending_approvals.pop(approval_id, None)
@@ -80,10 +88,13 @@ def approval_response(self, payload: dict[str, Any]) -> None:
         return
     with self._approval_lock:
         pending = self._pending_approvals.get(approval_id)
-    if pending is None:
-        return
-    pending[1]["approved"] = payload.get("approved") is True
-    pending[0].set()
+        if pending is None:
+            return
+        approved = payload.get("approved") is True
+        if approved and not pending[1]["details_complete"]:
+            return
+        pending[1]["approved"] = approved
+        pending[0].set()
 
 
 def _stream_projection(self, request_id: str):

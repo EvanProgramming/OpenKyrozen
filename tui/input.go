@@ -45,8 +45,10 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		} else if key == "pgdown" {
 			m.approvalView.PageDown()
 		} else if key == "y" || key == "Y" || key == "enter" {
-			m.send("approval_response", map[string]any{"request_id": m.approvalID, "approved": true})
-			m.screen = screenChat
+			if m.approvalDetailsComplete {
+				m.send("approval_response", map[string]any{"request_id": m.approvalID, "approved": true})
+				m.screen = screenChat
+			}
 		} else if key == "n" || key == "N" || key == "esc" {
 			m.send("approval_response", map[string]any{"request_id": m.approvalID, "approved": false})
 			m.screen = screenChat

@@ -152,6 +152,45 @@ func TestApprovalDetailEventsAppendOnlyToMatchingRequest(t *testing.T) {
 	}
 }
 
+func TestApprovalChunksPreserveWhitespaceAndWaitForCompleteDetails(t *testing.T) {
+	m := initialModel(".", false)
+	m.width, m.height = 100, 30
+	m.resize()
+	first := "content:" + strings.Repeat(" ", 8000)
+	second := strings.Repeat(" ", 8000) + "tail"
+	m.handleBackendEvent(backendEvent{
+		"event": "prompt", "kind": "approval", "request_id": "approval-stream",
+		"action": "write_file", "args": first, "details_complete": false,
+	})
+	if m.approvalArgs != first || m.approvalDetailsComplete {
+		t.Fatal("incomplete approval prompt was altered or marked complete")
+	}
+	m.handleBackendEvent(backendEvent{
+		"event": "approval_detail", "request_id": "approval-stream", "text": second,
+	})
+	if m.approvalArgs != first+second || m.approvalDetailsComplete {
+		t.Fatal("approval detail chunks were not concatenated verbatim")
+	}
+	buffer := &bytes.Buffer{}
+	m.bridge = &bridge{stdin: bufio.NewWriter(buffer)}
+	_, quit := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if quit || buffer.Len() != 0 {
+		t.Fatal("TUI sent approval before receiving complete details")
+	}
+	m.handleBackendEvent(backendEvent{"event": "approval_detail_complete", "request_id": "approval-stream"})
+	if !m.approvalDetailsComplete {
+		t.Fatal("correlated completion event did not unlock approval")
+	}
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	var response map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buffer.Bytes()), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["command"] != "approval_response" || response["approved"] != true {
+		t.Fatalf("complete approval response was not sent: %#v", response)
+	}
+}
+
 func TestRestartEventQuitsForLauncherRelaunch(t *testing.T) {
 	m := initialModel(".", false)
 	updated, cmd := m.Update(backendLineMsg{event: backendEvent{"event": "restart"}})
