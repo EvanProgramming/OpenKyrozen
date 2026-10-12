@@ -9,9 +9,11 @@ from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
 from openkyrozen.providers.models import (received_response, ModelResponse, model_response, ToolReply,
     ProviderContractError, validate_tool_definitions, validate_tool_history, provider_identity,
-    validate_replied_tool_definitions, with_provider_continuation, _snapshot_from_sdk)
+    validate_replied_tool_definitions, with_provider_continuation, _snapshot_from_sdk,
+    TextDelta, ToolCallDelta, UsageUpdate, ResponseComplete)
 from openkyrozen.providers.config import ProviderConfig
-from openkyrozen.providers.retry import _retry_with_backoff, provider_call, provider_stream, remaining_timeout, close_stream, mark_response_received
+from openkyrozen.providers.retry import (_retry_with_backoff, provider_call, provider_stream,
+    provider_event_stream, remaining_timeout, close_stream, mark_response_received)
 
 
 class GoogleProvider(LLMProvider):
@@ -31,8 +33,8 @@ class GoogleProvider(LLMProvider):
 
     def get_capabilities(self, model: str | None = None):
         from openkyrozen.providers.models import ProviderCapabilities
-        return ProviderCapabilities(native_tools=self.config.provider in {"google", "vertex"},
-                                   text_streaming=True)
+        supported = self.config.provider in {"google", "vertex"}
+        return ProviderCapabilities(native_tools=supported, text_streaming=True, streaming_tool_calls=supported)
 
     def _http_options(self):
         options = {"timeout": max(1, int(remaining_timeout() * 1000))}
@@ -158,6 +160,100 @@ class GoogleProvider(LLMProvider):
                                     blocked=block_reason not in {None, "BLOCK_REASON_UNSPECIFIED", "BLOCKED_REASON_UNSPECIFIED"})
             return with_provider_continuation(result, self, model, "google-genai",
                                               {"parts": _snapshot_from_sdk(parts or [])})
+
+    @provider_event_stream
+    def chat_response_stream(self, messages: list[dict] | list, model: str | None = None, *, tools=None):
+        model = model or self.config.model_simple
+        tools = validate_tool_definitions(tools)
+        validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=tools is not None)
+        validate_replied_tool_definitions(messages, tools)
+        if tools:
+            from google.genai import types
+            supported = {"type", "properties", "required", "items", "enum", "description", "title", "default",
+                "examples", "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties",
+                "minimum", "maximum", "pattern", "additionalProperties", "anyOf", "format", "nullable"}
+            def check_schema(schema):
+                if set(schema) - supported:
+                    raise ProviderContractError("Gemini/Vertex cannot represent every field in this tool schema")
+                for nested in schema.get("properties", {}).values():
+                    check_schema(nested)
+                if "items" in schema:
+                    check_schema(schema["items"])
+                for nested in schema.get("anyOf", ()):
+                    check_schema(nested)
+            for tool in tools:
+                try:
+                    check_schema(tool["parameters"])
+                    types.Schema.model_validate(tool["parameters"])
+                except ProviderContractError:
+                    raise
+                except Exception as exc:
+                    raise ProviderContractError("Gemini/Vertex rejected the provider tool schema") from exc
+        contents, system_instruction = self._contents(messages, model, self)
+        config: dict[str, Any] = {"http_options": self._http_options()}
+        if system_instruction:
+            config["system_instruction"] = system_instruction
+        if tools:
+            config["tools"] = [{"function_declarations": [{"name": item["name"],
+                "description": item["description"], "parameters": item["parameters"]} for item in tools]}]
+        started = time.monotonic()
+        stream = self._client.models.generate_content_stream(model=model, contents=contents, config=config)
+        text_parts = []
+        continuation_parts = []
+        calls: dict[int, tuple[str | None, str, dict]] = {}
+        usage = None
+        finish = None
+        response_id = actual_model = None
+        blocked = False
+        try:
+            for chunk in stream:
+                mark_response_received()
+                response_id = getattr(chunk, "response_id", None) or response_id
+                actual_model = getattr(chunk, "model_version", None) or actual_model
+                usage = self._usage(chunk) or usage
+                if usage is not None:
+                    yield UsageUpdate(usage)
+                candidates = getattr(chunk, "candidates", None) or ()
+                candidate = candidates[0] if candidates else None
+                parts = getattr(getattr(candidate, "content", None), "parts", None) or ()
+                for part in parts:
+                    continuation_parts.append(_snapshot_from_sdk(part))
+                    text = getattr(part, "text", None)
+                    if text and not getattr(part, "thought", False):
+                        text_parts.append(str(text))
+                        yield TextDelta(str(text))
+                    function_call = getattr(part, "function_call", None)
+                    if function_call is not None:
+                        index = len(calls)
+                        name = str(getattr(function_call, "name", None) or "")
+                        call_id = getattr(function_call, "id", None)
+                        args = getattr(function_call, "args", None) or {}
+                        if not isinstance(args, dict):
+                            raise ProviderContractError("Gemini streamed tool arguments must be an object")
+                        if index not in calls:
+                            calls[index] = (call_id, name, args)
+                            yield ToolCallDelta(index, str(call_id or ""), name,
+                                json.dumps(args, ensure_ascii=False, separators=(",", ":")))
+                if candidate is not None:
+                    finish = getattr(candidate, "finish_reason", None) or finish
+                    blocked = blocked or getattr(candidate, "finish_reason", None) in {"SAFETY", "BLOCKLIST"}
+            if finish is None:
+                raise ProviderContractError("Gemini/Vertex stream ended without a finish reason")
+            response = model_response(provider=self.name, model=model, actual_model=actual_model,
+                text="".join(text_parts), usage=usage,
+                calls=[(item[0], item[1], item[2]) for item in calls.values()], response_id=response_id,
+                raw_finish_reason=finish, blocked=blocked)
+            if usage is None:
+                usage = {"prompt_tokens": sum(len(str(item.get("content", ""))) for item in messages if isinstance(item, dict)) // 4,
+                         "completion_tokens": len("".join(text_parts)) // 4, "_estimated": 1}
+                response = ModelResponse(response.text, response.tool_calls, usage, response.finish_reason, response.metadata)
+                yield UsageUpdate(usage)
+            response = with_provider_continuation(response, self, model, "google-genai", {"parts": continuation_parts})
+            usage_ledger._track_cost(self.config.provider, usage, model=actual_model or model,
+                latency_ms=round((time.monotonic() - started) * 1000))
+            yield ResponseComplete(response)
+        finally:
+            close_stream(stream)
 
     @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:

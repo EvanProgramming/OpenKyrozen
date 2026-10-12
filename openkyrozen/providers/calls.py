@@ -5,8 +5,8 @@ import math
 import sys
 from typing import Any
 from openkyrozen.providers.usage import usage_scope
-from openkyrozen.providers.base import get_model_response
-from openkyrozen.providers.models import ModelResponse
+from openkyrozen.providers.base import get_model_response, get_model_events
+from openkyrozen.providers.models import ModelResponse, ResponseComplete, ResponseError
 from openkyrozen.providers.retry import provider_request_scope, bounded_call, bounded_stream
 from openkyrozen.agent.types import ContextOverflowError, ProviderUnavailableError
 
@@ -32,6 +32,29 @@ def _bounded_provider_call(self, callback: Any) -> Any:
         return bounded_call(callback, request)
 
 
+def _bounded_provider_events(self, provider, messages, model, tools, on_event=None):
+    from openkyrozen.providers.retry import bounded_stream
+    with provider_request_scope(self._provider_timeout_seconds(), _child_cancellation(self)) as request:
+        response = None
+        events = bounded_stream(lambda: get_model_events(provider, messages, model, tools=tools), request)
+        try:
+            for event in events:
+                if on_event is not None:
+                    on_event(event)
+                if isinstance(event, ResponseError):
+                    raise event.error
+                if isinstance(event, ResponseComplete):
+                    response = event.response
+            if response is None:
+                raise RuntimeError("Provider stream ended without a complete response")
+            return response
+        except Exception as exc:
+            from openkyrozen.providers.errors import normalize_provider_error
+            if isinstance(exc, (ProviderUnavailableError, ContextOverflowError)):
+                raise
+            raise normalize_provider_error(exc, getattr(provider, "name", None), model)
+
+
 def _bounded_provider_stream(self, provider: Any, messages: list[dict[str, str]], model: str,
                              on_chunk: Any = None) -> str:
     with provider_request_scope(self._provider_timeout_seconds(), _child_cancellation(self)) as request:
@@ -50,7 +73,8 @@ def _bounded_provider_stream(self, provider: Any, messages: list[dict[str, str]]
         return "".join(chunks).strip()
 
 
-def _get_model_response(self, messages: list[dict], model: str | None = None, *, tool_names=None) -> ModelResponse:
+def _get_model_response(self, messages: list[dict], model: str | None = None, *, tool_names=None,
+                        stream: bool = False, on_event=None) -> ModelResponse:
     """Receive the full response under existing deadline, usage and context scopes."""
     provider = self.execution_context.provider or self.llm_provider
     if provider is None:
@@ -72,9 +96,13 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
     with usage_scope(store=self.memory_bank.store, user_id=self.memory_bank.user_id,
                      workspace_id=self.memory_bank.workspace_id, session_id=self.memory_bank.session_id,
                      run_id=self._active_usage_run_id.get(), surface=self._EXECUTION_SURFACE):
-        response = self._bounded_provider_call(
-            lambda: get_model_response(provider, messages, model or self.DEEPSEEK_MODEL, tools=tools)
-        )
+        selected_model = model or self.DEEPSEEK_MODEL
+        if stream:
+            response = _bounded_provider_events(self, provider, messages, selected_model, tools, on_event)
+        else:
+            response = self._bounded_provider_call(
+                lambda: get_model_response(provider, messages, selected_model, tools=tools)
+            )
     usage = response.usage or {}
     self._last_prompt_tokens = usage.get("prompt_tokens", 0) or 0
     self._last_completion_tokens = usage.get("completion_tokens", 0) or 0

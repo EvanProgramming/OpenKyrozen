@@ -287,6 +287,66 @@ def provider_stream(fn):
     return manages_provider_retry(stream)
 
 
+def provider_event_stream(fn):
+    """Bound structured streams and retry only until their first emitted event."""
+    from openkyrozen.providers.models import (ProviderContractError, ResponseComplete, ResponseError,
+        TextDelta, ToolCallDelta, UsageUpdate)
+
+    @wraps(fn)
+    def stream(self, messages, model=None, *, tools=None):
+        if not _in_worker.get():
+            existing = _request.get()
+            state = existing or ProviderRequest(time.monotonic() + 90.0)
+            try:
+                yield from bounded_stream(lambda: stream(self, messages, model, tools=tools), state)
+            finally:
+                if existing is None:
+                    state.cancelled.set()
+            return
+        state = _request.get()
+        iterator = None
+        terminal = False
+
+        def start():
+            nonlocal iterator
+            close_stream(iterator)
+            iterator = iter(fn(self, messages, model, tools=tools))
+            first = next(iterator, None)
+            if first is None:
+                raise ProviderContractError("Provider stream ended without a terminal event")
+            return first
+
+        try:
+            first = _retry_with_backoff(start, provider=self.name, model=model or self.config.model_simple)
+            for event in (first,):
+                if isinstance(event, (ResponseError, ResponseComplete)):
+                    terminal = True
+                elif not isinstance(event, (TextDelta, ToolCallDelta, UsageUpdate)):
+                    raise ProviderContractError("Provider emitted an unknown stream event")
+                yield event
+            if terminal:
+                return
+            for event in iterator:
+                state.check()
+                if isinstance(event, (ResponseError, ResponseComplete)):
+                    terminal = True
+                elif not isinstance(event, (TextDelta, ToolCallDelta, UsageUpdate)):
+                    raise ProviderContractError("Provider emitted an unknown stream event")
+                yield event
+                if terminal:
+                    return
+            yield ResponseError(ProviderContractError("Provider stream ended without a terminal event"))
+        except Exception as exc:
+            from openkyrozen.providers.errors import ProviderError
+            error = exc if isinstance(exc, (ProviderError, ProviderContractError)) else normalize_provider_error(
+                exc, self.name, model or self.config.model_simple)
+            yield ResponseError(error)
+        finally:
+            close_stream(iterator)
+
+    return manages_provider_retry(stream)
+
+
 def close_stream(stream):
     close = getattr(stream, "close", None)
     if close:

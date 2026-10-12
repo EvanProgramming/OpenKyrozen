@@ -268,6 +268,62 @@ class ModelResponse:
         return (self.text if self.metadata.get("legacy") else self.text.strip()), self.usage
 
 
+@dataclass(frozen=True)
+class TextDelta:
+    text: str
+
+    def __post_init__(self):
+        if not isinstance(self.text, str):
+            raise ProviderContractError("Text delta must be a string")
+
+
+@dataclass(frozen=True)
+class ToolCallDelta:
+    index: int
+    id_delta: str = ""
+    name_delta: str = ""
+    arguments_delta: str = ""
+
+    def __post_init__(self):
+        if type(self.index) is not int or self.index < 0:
+            raise ProviderContractError("Tool-call delta index must be a nonnegative integer")
+        if any(not isinstance(value, str) for value in (self.id_delta, self.name_delta, self.arguments_delta)):
+            raise ProviderContractError("Tool-call delta fields must be strings")
+
+
+@dataclass(frozen=True, init=False)
+class UsageUpdate:
+    _usage_json: str = field(repr=False)
+
+    def __init__(self, usage: dict[str, Any]):
+        if not isinstance(usage, dict):
+            raise ProviderContractError("Usage update must be an object")
+        object.__setattr__(self, "_usage_json", _json_snapshot(usage, "Usage update"))
+
+    @property
+    def usage(self) -> dict[str, Any]:
+        return json.loads(self._usage_json)
+
+
+@dataclass(frozen=True)
+class ResponseComplete:
+    response: ModelResponse
+
+    def __post_init__(self):
+        if not isinstance(self.response, ModelResponse):
+            raise ProviderContractError("Completion event requires ModelResponse")
+
+
+@dataclass(frozen=True)
+class ResponseError:
+    error: Exception
+
+    def __post_init__(self):
+        from openkyrozen.providers.errors import ProviderError
+        if not isinstance(self.error, (ProviderError, ProviderContractError)):
+            raise ProviderContractError("Stream error event requires a typed provider error")
+
+
 def validate_tool_history(messages, *, provider_id: str, model: str, native: bool = False):
     """Reject malformed native call/reply groups before an adapter sends a request."""
     pending: list[ToolCall] = []

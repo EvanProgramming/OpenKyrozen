@@ -10,9 +10,11 @@ from typing import Any, Iterator
 from openkyrozen.providers.base import LLMProvider
 from openkyrozen.providers.models import (received_response, ModelResponse, model_response, ToolReply,
     ProviderContractError, validate_tool_definitions, validate_tool_history, provider_identity,
-    validate_replied_tool_definitions, with_provider_continuation)
+    validate_replied_tool_definitions, with_provider_continuation, _snapshot_from_sdk,
+    TextDelta, ToolCallDelta, UsageUpdate, ResponseComplete)
 from openkyrozen.providers.config import ProviderConfig
-from openkyrozen.providers.retry import _retry_with_backoff, provider_call, provider_stream, remaining_timeout, close_stream, mark_response_received
+from openkyrozen.providers.retry import (_retry_with_backoff, provider_call, provider_stream,
+    provider_event_stream, remaining_timeout, close_stream, mark_response_received)
 
 
 class BedrockProvider(LLMProvider):
@@ -33,7 +35,8 @@ class BedrockProvider(LLMProvider):
 
     def get_capabilities(self, model: str | None = None):
         from openkyrozen.providers.models import ProviderCapabilities
-        return ProviderCapabilities(native_tools=self.config.provider == "bedrock", text_streaming=True)
+        supported = self.config.provider == "bedrock"
+        return ProviderCapabilities(native_tools=supported, text_streaming=True, streaming_tool_calls=supported)
 
     @contextmanager
     def _request_client(self):
@@ -131,6 +134,85 @@ class BedrockProvider(LLMProvider):
                                         raw_finish_reason=response.get("stopReason"))
                 return with_provider_continuation(result, self, model, "bedrock-converse",
                                                   {"content": response.get("output", {}).get("message", {}).get("content", [])})
+
+    @provider_event_stream
+    def chat_response_stream(self, messages: list, model: str | None = None, *, tools=None):
+        model = model or self.config.model_simple
+        tools = validate_tool_definitions(tools)
+        validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=tools is not None)
+        validate_replied_tool_definitions(messages, tools)
+        conversation, system = self._request(messages, model, self)
+        kwargs: dict[str, Any] = {"modelId": model, "messages": conversation,
+            "inferenceConfig": {"maxTokens": 4096}}
+        if system:
+            kwargs["system"] = system
+        if tools:
+            kwargs["toolConfig"] = {"tools": [{"toolSpec": {"name": item["name"],
+                "description": item["description"], "inputSchema": {"json": item["parameters"]}}}
+                for item in tools]}
+        started = time.monotonic()
+        blocks: dict[int, dict[str, Any]] = {}
+        call_index: dict[int, int] = {}
+        usage = None
+        stop_reason = None
+        stopped = False
+        with self._request_client() as client:
+            response = client.converse_stream(**kwargs)
+            stream = response.get("stream", [])
+            try:
+                for event in stream:
+                    mark_response_received()
+                    if "contentBlockStart" in event:
+                        item = event["contentBlockStart"]
+                        block_number = item["contentBlockIndex"]
+                        start = item.get("start", {})
+                        blocks[block_number] = _snapshot_from_sdk(start)
+                        tool = start.get("toolUse")
+                        if tool is not None:
+                            call_number = len(call_index)
+                            call_index[block_number] = call_number
+                            yield ToolCallDelta(call_number, str(tool.get("toolUseId", "")),
+                                                str(tool.get("name", "")))
+                    elif "contentBlockDelta" in event:
+                        item = event["contentBlockDelta"]
+                        block_number = item["contentBlockIndex"]
+                        delta = item.get("delta", {})
+                        block = blocks.setdefault(block_number, {})
+                        if "text" in delta:
+                            text = str(delta["text"])
+                            block["text"] = block.get("text", "") + text
+                            yield TextDelta(text)
+                        elif "toolUse" in delta:
+                            fragment = str(delta["toolUse"].get("input", ""))
+                            tool = block.setdefault("toolUse", {"toolUseId": "", "name": "", "input": ""})
+                            tool["input"] += fragment
+                            yield ToolCallDelta(call_index[block_number], arguments_delta=fragment)
+                        elif "reasoningContent" in delta:
+                            block["reasoningContent"] = delta["reasoningContent"]
+                    elif "metadata" in event:
+                        usage = self._usage(event["metadata"])
+                        if usage is not None:
+                            yield UsageUpdate(usage)
+                    elif "messageStop" in event:
+                        stopped = True
+                        stop_reason = event["messageStop"].get("stopReason")
+                if not stopped:
+                    raise ProviderContractError("Bedrock stream ended without messageStop")
+                content = [blocks[index] for index in sorted(blocks)]
+                calls = []
+                for block in content:
+                    tool = block.get("toolUse")
+                    if tool:
+                        calls.append((tool.get("toolUseId"), tool.get("name"), tool.get("input", "{}")))
+                text = "".join(block.get("text", "") for block in content if isinstance(block.get("text"), str))
+                result = model_response(provider=self.name, model=model, text=text, usage=usage,
+                    calls=calls, raw_finish_reason=stop_reason)
+                result = with_provider_continuation(result, self, model, "bedrock-converse", {"content": content})
+                usage_ledger._track_cost(self.config.provider, usage, model=model,
+                    latency_ms=round((time.monotonic() - started) * 1000))
+                yield ResponseComplete(result)
+            finally:
+                close_stream(stream)
 
     @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
