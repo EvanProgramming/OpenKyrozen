@@ -183,21 +183,20 @@ class PerplexityProvider(LLMProvider):
                 yield UsageUpdate(usage)
             text = str(getattr(final, "output_text", None) or "".join(text_parts))
             output = getattr(final, "output", None) or []
+            if usage is None:
+                usage = {"prompt_tokens": sum(len(str(item.get("content", ""))) for item in messages
+                    if isinstance(item, dict)) // 4, "completion_tokens": len(text) // 4, "_estimated": 1}
+                yield UsageUpdate(usage)
+            usage_ledger._track_cost(self.config.provider, usage, model=model,
+                latency_ms=round((time.monotonic() - started) * 1000))
             result = model_response(provider=self.name, model=model, actual_model=getattr(final, "model", None),
                 text=text, usage=usage, calls=responses_output(final), response_id=getattr(final, "id", None),
                 raw_finish_reason=getattr(final, "status", None),
                 finish_detail=getattr(getattr(final, "incomplete_details", None), "reason", None),
                 blocked=any(getattr(part, "type", None) == "refusal" for item in output
                     for part in getattr(item, "content", None) or ()))
-            if usage is None:
-                usage = {"prompt_tokens": sum(len(str(item.get("content", ""))) for item in messages
-                    if isinstance(item, dict)) // 4, "completion_tokens": len(text) // 4, "_estimated": 1}
-                result = ModelResponse(result.text, result.tool_calls, usage, result.finish_reason, result.metadata)
-                yield UsageUpdate(usage)
             result = with_provider_continuation(result, self, model, "perplexity-responses",
                 {"output": _snapshot_from_sdk(output)})
-            usage_ledger._track_cost(self.config.provider, usage, model=model,
-                latency_ms=round((time.monotonic() - started) * 1000))
             yield ResponseComplete(result)
         finally:
             close_stream(stream)

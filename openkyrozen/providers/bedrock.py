@@ -161,6 +161,17 @@ class BedrockProvider(LLMProvider):
             stream = response.get("stream", [])
             try:
                 for event in stream:
+                    error_event = next((key for key in ("throttlingException", "internalServerException",
+                        "modelStreamErrorException", "serviceUnavailableException", "validationException",
+                        "accessDeniedException", "modelTimeoutException") if key in event), None)
+                    if error_event:
+                        from openkyrozen.providers.errors import ProviderError, ProviderErrorKind
+                        kind = (ProviderErrorKind.RATE_LIMIT if error_event == "throttlingException" else
+                                ProviderErrorKind.AUTHENTICATION if error_event == "accessDeniedException" else
+                                ProviderErrorKind.INVALID_REQUEST if error_event == "validationException" else
+                                ProviderErrorKind.TIMEOUT if error_event == "modelTimeoutException" else
+                                ProviderErrorKind.SERVER)
+                        raise ProviderError(kind, provider=self.name, model=model, provider_code=error_event)
                     mark_response_received()
                     if "contentBlockStart" in event:
                         item = event["contentBlockStart"]
@@ -188,8 +199,10 @@ class BedrockProvider(LLMProvider):
                             tool["input"] = tool.get("input", "") + fragment
                             yield ToolCallDelta(call_index[block_number], arguments_delta=fragment)
                         elif "reasoningContent" in delta:
-                            content = block.setdefault("reasoningContent", {})
-                            for key, value in delta["reasoningContent"].items():
+                            incoming = delta["reasoningContent"]
+                            incoming = incoming.get("reasoningText", incoming)
+                            content = block.setdefault("reasoningContent", {}).setdefault("reasoningText", {})
+                            for key, value in incoming.items():
                                 content[key] = content.get(key, "") + value if key == "text" else value
                     elif "metadata" in event:
                         usage = self._usage(event["metadata"])
@@ -200,18 +213,30 @@ class BedrockProvider(LLMProvider):
                         stop_reason = event["messageStop"].get("stopReason")
                 if not stopped:
                     raise ProviderContractError("Bedrock stream ended without messageStop")
+                usage_ledger._track_cost(self.config.provider, usage, model=model,
+                    latency_ms=round((time.monotonic() - started) * 1000))
                 content = [blocks[index] for index in sorted(blocks)]
                 calls = []
                 for block in content:
                     tool = block.get("toolUse")
                     if tool:
+                        arguments = tool.get("input", "{}")
+                        if isinstance(arguments, str):
+                            try:
+                                arguments = json.loads(arguments)
+                            except (ValueError, RecursionError) as exc:
+                                raise ProviderContractError("Bedrock stream returned invalid tool arguments") from exc
+                        if not isinstance(arguments, dict):
+                            raise ProviderContractError("Bedrock streamed tool arguments must be an object")
+                        tool["input"] = arguments
                         calls.append((tool.get("toolUseId"), tool.get("name"), tool.get("input", "{}")))
+                    reasoning = block.get("reasoningContent")
+                    if isinstance(reasoning, dict) and "reasoningText" not in reasoning:
+                        block["reasoningContent"] = {"reasoningText": reasoning}
                 text = "".join(block.get("text", "") for block in content if isinstance(block.get("text"), str))
                 result = model_response(provider=self.name, model=model, text=text, usage=usage,
                     calls=calls, raw_finish_reason=stop_reason)
                 result = with_provider_continuation(result, self, model, "bedrock-converse", {"content": content})
-                usage_ledger._track_cost(self.config.provider, usage, model=model,
-                    latency_ms=round((time.monotonic() - started) * 1000))
                 yield ResponseComplete(result)
             finally:
                 close_stream(stream)

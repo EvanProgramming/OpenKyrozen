@@ -47,6 +47,40 @@ class StreamEventContractTests(unittest.TestCase):
         self.assertIsInstance(events[-1], ResponseError)
         self.assertIsInstance(events[-1].error, ProviderContractError)
 
+    def test_outer_stream_timeout_is_delivered_as_terminal_error_event(self):
+        from openkyrozen.providers.errors import ProviderError, ProviderErrorKind
+        from openkyrozen.providers.retry import provider_event_stream
+
+        class BoundedProvider:
+            name = "bounded"
+            config = SimpleNamespace(model_simple="m")
+
+            @provider_event_stream
+            def chat_response_stream(self, messages, model=None, *, tools=None):
+                yield ResponseComplete(ModelResponse(text="done"))
+
+        with patch("openkyrozen.providers.retry.bounded_stream",
+                   side_effect=ProviderError(ProviderErrorKind.TIMEOUT)):
+            events = list(BoundedProvider().chat_response_stream([], "m"))
+        self.assertEqual(len(events), 1)
+        self.assertIsInstance(events[0], ResponseError)
+        self.assertIsInstance(events[0].error, ProviderError)
+
+    def test_gemini_prompt_level_safety_block_is_a_blocked_completion(self):
+        from openkyrozen.providers.config import ProviderConfig
+        from openkyrozen.providers.google import GoogleProvider
+
+        chunk = SimpleNamespace(response_id="blocked", model_version="gemini", candidates=[],
+            prompt_feedback=SimpleNamespace(block_reason="SAFETY"), usage_metadata=None)
+        provider = GoogleProvider.__new__(GoogleProvider)
+        provider.config = ProviderConfig(provider="google", model_simple="gemini")
+        provider._continuation_id = "gemini-block"
+        provider._client = SimpleNamespace(models=SimpleNamespace(generate_content_stream=Mock(return_value=iter([chunk]))))
+        with patch("openkyrozen.providers.usage._track_cost"):
+            events = list(get_model_events(provider, [{"role": "user", "content": "blocked"}], "gemini"))
+        self.assertIsInstance(events[-1], ResponseComplete)
+        self.assertEqual(events[-1].response.finish_reason, FinishReason.BLOCKED)
+
     def test_final_response_remains_authoritative(self):
         response = ModelResponse(text="done", finish_reason=FinishReason.FINAL)
         self.assertEqual(ResponseComplete(response).response, response)
@@ -220,13 +254,16 @@ class StreamEventContractTests(unittest.TestCase):
                 SimpleNamespace(type="tool_use", id="tool-1", name="read_file", input={"path": "x"}),
                 SimpleNamespace(type="text", text="checking")])
         stream = MessageStream([
+            SimpleNamespace(type="message_start", message=SimpleNamespace(usage=SimpleNamespace(
+                input_tokens=5, output_tokens=0))),
             SimpleNamespace(type="content_block_start", index=0,
                 content_block=SimpleNamespace(type="tool_use", id="tool-1", name="read_file", input={})),
             SimpleNamespace(type="content_block_delta", index=0,
                 delta=SimpleNamespace(type="input_json_delta", partial_json='{"path":"x"}')),
             SimpleNamespace(type="content_block_delta", index=1,
                 delta=SimpleNamespace(type="text_delta", text="checking")),
-            SimpleNamespace(type="message_delta", usage=SimpleNamespace(input_tokens=5, output_tokens=3)),
+            SimpleNamespace(type="message_delta", usage=SimpleNamespace(output_tokens=3)),
+            SimpleNamespace(type="message_delta", usage=SimpleNamespace()),
             SimpleNamespace(type="message_stop")], final)
         provider = AnthropicProvider.__new__(AnthropicProvider)
         provider.config = ProviderConfig(provider="anthropic", model_simple="claude")
@@ -235,11 +272,17 @@ class StreamEventContractTests(unittest.TestCase):
         with patch("openkyrozen.providers.usage._track_cost"):
             events = list(get_model_events(provider, [{"role": "user", "content": "go"}], "claude",
                 tools=[{"name": "read_file", "description": "read", "parameters": {"type": "object"}}]))
-        self.assertEqual(events[0], ToolCallDelta(0, "tool-1", "read_file"))
+        self.assertIn(ToolCallDelta(0, "tool-1", "read_file"), events)
         self.assertIn(TextDelta("checking"), events)
         self.assertIsInstance(events[-1], ResponseComplete)
         self.assertEqual(events[-1].response.tool_calls[0].arguments, {"path": "x"})
         self.assertEqual(events[-1].response.usage["prompt_tokens"], 5)
+        self.assertTrue(any(isinstance(event, UsageUpdate) and event.usage["prompt_tokens"] == 5
+                            and event.usage["completion_tokens"] == 3 for event in events))
+        usage_updates = [event for event in events if isinstance(event, UsageUpdate)]
+        self.assertGreaterEqual(len(usage_updates), 2)
+        self.assertTrue(all(event.usage["prompt_tokens"] == 5 for event in usage_updates))
+        self.assertEqual(usage_updates[-1].usage["completion_tokens"], 3)
 
     def test_gemini_stream_preserves_empty_signature_parts_and_tool_arguments(self):
         from openkyrozen.providers.config import ProviderConfig
@@ -275,9 +318,9 @@ class StreamEventContractTests(unittest.TestCase):
                 "start": {"toolUse": {"toolUseId": "tool-1", "name": "read_file"}}}},
             {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"toolUse": {"input": '{"path":"x"}'}}}},
             {"contentBlockStart": {"contentBlockIndex": 1,
-                "start": {"reasoningContent": {"text": "thinking", "signature": "signed"}}}},
+                "start": {"reasoningContent": {"reasoningText": {"text": "thinking", "signature": "signed"}}}}},
             {"contentBlockDelta": {"contentBlockIndex": 1,
-                "delta": {"reasoningContent": {"text": " more", "signature": "signed-2"}}}},
+                "delta": {"reasoningContent": {"reasoningText": {"text": " more", "signature": "signed-2"}}}}},
             {"contentBlockStart": {"contentBlockIndex": 2, "start": {}}},
             {"contentBlockDelta": {"contentBlockIndex": 2, "delta": {"text": "hello"}}},
             {"metadata": {"usage": {"inputTokens": 4, "outputTokens": 3}}},
@@ -297,7 +340,46 @@ class StreamEventContractTests(unittest.TestCase):
         response = events[-1].response
         self.assertEqual(response.text, "hello")
         self.assertEqual(response.tool_calls[0].arguments, {"path": "x"})
-        self.assertEqual(response.continuation.payload["content"][1]["reasoningContent"]["signature"], "signed-2")
+        self.assertEqual(response.continuation.payload["content"][1]["reasoningContent"]["reasoningText"]["signature"], "signed-2")
+
+    def test_bedrock_throttling_event_is_classified_before_response_content(self):
+        from openkyrozen.providers.bedrock import BedrockProvider
+        from openkyrozen.providers.config import ProviderConfig
+        from openkyrozen.providers.errors import ProviderErrorKind
+
+        class Client:
+            def converse_stream(self, **kwargs):
+                return {"stream": iter([{"throttlingException": {"message": "retry"}}])}
+        provider = BedrockProvider.__new__(BedrockProvider)
+        provider.config = ProviderConfig(provider="bedrock", model_simple="m")
+        provider._continuation_id = "bedrock-error"
+        provider._client = Client()
+        events = list(get_model_events(provider, [{"role": "user", "content": "go"}], "m"))
+        self.assertIsInstance(events[-1], ResponseError)
+        self.assertEqual(events[-1].error.kind, ProviderErrorKind.RATE_LIMIT)
+
+    def test_openai_usage_is_charged_when_final_call_arguments_are_invalid(self):
+        from openkyrozen.providers.openai import OpenAICompatProvider
+
+        chunks = [
+            SimpleNamespace(id="r", model="m", choices=[SimpleNamespace(finish_reason=None, delta=SimpleNamespace(
+                content=None, tool_calls=[SimpleNamespace(index=0, id="c", function=SimpleNamespace(
+                    name="lookup", arguments='{"bad":'))]))], usage=None),
+            SimpleNamespace(id="r", model="m", choices=[SimpleNamespace(finish_reason="tool_calls", delta=SimpleNamespace(
+                content=None, tool_calls=None))], usage=None),
+            SimpleNamespace(id="r", model="m", choices=[], usage=SimpleNamespace(prompt_tokens=4, completion_tokens=2)),
+        ]
+        provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+        provider.config = SimpleNamespace(provider="openai", model_simple="m")
+        provider._continuation_id = "openai-invalid-args"
+        provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+            create=Mock(return_value=iter(chunks)))))
+        tracker = Mock()
+        with patch("openkyrozen.providers.usage._track_cost", tracker):
+            events = list(get_model_events(provider, [{"role": "user", "content": "go"}], "m",
+                tools=[{"name": "lookup", "description": "lookup", "parameters": {"type": "object"}}]))
+        self.assertIsInstance(events[-1], ResponseError)
+        tracker.assert_called_once()
 
     def test_responses_api_adapters_stream_fragmented_function_calls(self):
         from openkyrozen.providers.config import ProviderConfig

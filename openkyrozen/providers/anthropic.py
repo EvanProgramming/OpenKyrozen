@@ -130,13 +130,21 @@ class AnthropicProvider(LLMProvider):
         content_by_index: dict[int, dict[str, Any]] = {}
         final = None
         stopped = False
+        prompt_tokens = 0
+        completion_tokens = 0
         stream_context = self._client.messages.stream(**kwargs, timeout=remaining_timeout())
         try:
             with stream_context as stream:
                 for event in stream:
                     mark_response_received()
                     event_type = getattr(event, "type", "")
-                    if event_type == "content_block_start":
+                    if event_type == "message_start":
+                        usage = getattr(getattr(event, "message", None), "usage", None)
+                        if usage is not None:
+                            prompt_tokens = getattr(usage, "input_tokens", prompt_tokens) or prompt_tokens
+                            completion_tokens = getattr(usage, "output_tokens", completion_tokens) or completion_tokens
+                            yield UsageUpdate({"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens})
+                    elif event_type == "content_block_start":
                         block = getattr(event, "content_block", None)
                         index = getattr(event, "index", None)
                         if getattr(block, "type", None) == "tool_use":
@@ -165,8 +173,11 @@ class AnthropicProvider(LLMProvider):
                         if usage is not None:
                             input_tokens = getattr(usage, "input_tokens", None)
                             output_tokens = getattr(usage, "output_tokens", None)
-                            yield UsageUpdate({"prompt_tokens": input_tokens or 0,
-                                               "completion_tokens": output_tokens or 0})
+                            if input_tokens is not None:
+                                prompt_tokens = input_tokens
+                            if output_tokens is not None:
+                                completion_tokens = output_tokens
+                            yield UsageUpdate({"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens})
                     elif event_type == "message_stop":
                         stopped = True
                 final = stream.get_final_message()
@@ -176,6 +187,8 @@ class AnthropicProvider(LLMProvider):
             usage = None if usage_obj is None else {
                 "prompt_tokens": getattr(usage_obj, "input_tokens", 0) or 0,
                 "completion_tokens": getattr(usage_obj, "output_tokens", 0) or 0}
+            usage_ledger._track_cost(self.config.provider, usage, model=getattr(final, "model", None) or model,
+                latency_ms=round((time.monotonic() - started) * 1000))
             if usage is not None:
                 yield UsageUpdate(usage)
             text = "".join(str(block.text) for block in final.content if getattr(block, "type", None) == "text")
@@ -186,8 +199,6 @@ class AnthropicProvider(LLMProvider):
                 raw_finish_reason=getattr(final, "stop_reason", None))
             response = with_provider_continuation(response, self, model, "anthropic",
                 {"content": _snapshot_from_sdk(final.content)})
-            usage_ledger._track_cost(self.config.provider, usage, model=getattr(final, "model", None) or model,
-                latency_ms=round((time.monotonic() - started) * 1000))
             yield ResponseComplete(response)
         finally:
             close_stream(stream_context)

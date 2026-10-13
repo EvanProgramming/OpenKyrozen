@@ -298,7 +298,12 @@ def provider_event_stream(fn):
             existing = _request.get()
             state = existing or ProviderRequest(time.monotonic() + 90.0)
             try:
-                yield from bounded_stream(lambda: stream(self, messages, model, tools=tools), state)
+                try:
+                    yield from bounded_stream(lambda: stream(self, messages, model, tools=tools), state)
+                except Exception as exc:
+                    error = exc if isinstance(exc, (ProviderError, ProviderContractError)) else normalize_provider_error(
+                        exc, self.name, model or self.config.model_simple)
+                    yield ResponseError(error)
             finally:
                 if existing is None:
                     state.cancelled.set()
@@ -337,7 +342,6 @@ def provider_event_stream(fn):
                     return
             yield ResponseError(ProviderContractError("Provider stream ended without a terminal event"))
         except Exception as exc:
-            from openkyrozen.providers.errors import ProviderError
             error = exc if isinstance(exc, (ProviderError, ProviderContractError)) else normalize_provider_error(
                 exc, self.name, model or self.config.model_simple)
             yield ResponseError(error)

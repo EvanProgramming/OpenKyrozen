@@ -188,13 +188,14 @@ class OpenAICompatProvider(LLMProvider):
             calls = [(part["id"] or None, part["name"], part["arguments"])
                      for _, part in sorted(call_parts.items())]
             text = "".join(text_parts)
-            response = model_response(provider=self.name, model=model, actual_model=actual_model, text=text,
-                usage=usage, calls=calls, response_id=response_id, raw_finish_reason=finish, blocked=blocked)
             if usage is None:
                 usage = {"prompt_tokens": sum(len(str(message.get("content", ""))) for message in request_messages) // 4,
                          "completion_tokens": len(text) // 4, "_estimated": 1}
-                response = ModelResponse(response.text, response.tool_calls, usage, response.finish_reason, response.metadata)
                 yield UsageUpdate(usage)
+            usage_ledger._track_cost(self.config.provider, usage, model=actual_model,
+                latency_ms=round((time.monotonic() - started) * 1000))
+            response = model_response(provider=self.name, model=model, actual_model=actual_model, text=text,
+                usage=usage, calls=calls, response_id=response_id, raw_finish_reason=finish, blocked=blocked)
             assistant = {"role": "assistant", "content": text or None}
             assistant.update(assistant_fields)
             if response.tool_calls:
@@ -202,8 +203,6 @@ class OpenAICompatProvider(LLMProvider):
                     "name": call.name, "arguments": json.dumps(call.arguments, ensure_ascii=False)}}
                     for call in response.tool_calls]
             response = with_provider_continuation(response, self, model, "openai-chat", {"assistant": assistant})
-            usage_ledger._track_cost(self.config.provider, usage, model=actual_model,
-                latency_ms=round((time.monotonic() - started) * 1000))
             yield ResponseComplete(response)
         finally:
             close_stream(stream)
@@ -363,21 +362,20 @@ class OpenAIResponsesProvider(LLMProvider):
                 yield UsageUpdate(usage)
             text = str(getattr(final, "output_text", None) or "".join(text_parts))
             output = getattr(final, "output", None) or []
+            if usage is None:
+                usage = {"prompt_tokens": sum(len(str(item.get("content", ""))) for item in messages if isinstance(item, dict)) // 4,
+                         "completion_tokens": len(text) // 4, "_estimated": 1}
+                yield UsageUpdate(usage)
+            usage_ledger._track_cost(self.config.provider, usage, model=getattr(final, "model", None) or model,
+                latency_ms=round((time.monotonic() - started) * 1000))
             result = model_response(provider=self.name, model=model, actual_model=getattr(final, "model", None),
                 text=text, usage=usage, calls=responses_output(final), response_id=getattr(final, "id", None),
                 raw_finish_reason=getattr(final, "status", None),
                 finish_detail=getattr(getattr(final, "incomplete_details", None), "reason", None),
                 blocked=any(getattr(part, "type", None) == "refusal" for item in output
                     for part in getattr(item, "content", None) or ()))
-            if usage is None:
-                usage = {"prompt_tokens": sum(len(str(item.get("content", ""))) for item in messages if isinstance(item, dict)) // 4,
-                         "completion_tokens": len(text) // 4, "_estimated": 1}
-                result = ModelResponse(result.text, result.tool_calls, usage, result.finish_reason, result.metadata)
-                yield UsageUpdate(usage)
             result = with_provider_continuation(result, self, model, "openai-responses",
                 {"output": _snapshot_from_sdk(output)})
-            usage_ledger._track_cost(self.config.provider, usage, model=getattr(final, "model", None) or model,
-                latency_ms=round((time.monotonic() - started) * 1000))
             yield ResponseComplete(result)
         finally:
             close_stream(stream)

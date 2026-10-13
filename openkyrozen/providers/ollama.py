@@ -149,6 +149,8 @@ class OllamaNativeProvider(LLMProvider):
             if not terminal:
                 raise ProviderContractError("Ollama NDJSON stream ended without done=true")
             text = "".join(text_parts)
+            usage_ledger._track_cost("ollama", usage, model=model,
+                latency_ms=round((time.monotonic() - started) * 1000))
             result = model_response(provider=self.name, model=model, text=text, usage=usage,
                 calls=list(calls.values()), response_id=response_id, raw_finish_reason=finish)
             assistant = {"role": "assistant", "content": text}
@@ -156,8 +158,6 @@ class OllamaNativeProvider(LLMProvider):
                 assistant["tool_calls"] = [{"id": call.id, "function": {"name": call.name,
                     "arguments": call.arguments}} for call in result.tool_calls]
             result = with_provider_continuation(result, self, model, "ollama-chat", {"assistant": assistant})
-            usage_ledger._track_cost("ollama", usage, model=model,
-                latency_ms=round((time.monotonic() - started) * 1000))
             yield ResponseComplete(result)
         finally:
             close_stream(response)

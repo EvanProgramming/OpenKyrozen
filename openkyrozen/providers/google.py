@@ -205,11 +205,13 @@ class GoogleProvider(LLMProvider):
         finish = None
         response_id = actual_model = None
         blocked = False
+        prompt_block_reason = None
         try:
             for chunk in stream:
                 mark_response_received()
                 response_id = getattr(chunk, "response_id", None) or response_id
                 actual_model = getattr(chunk, "model_version", None) or actual_model
+                prompt_block_reason = getattr(getattr(chunk, "prompt_feedback", None), "block_reason", None) or prompt_block_reason
                 usage = self._usage(chunk) or usage
                 if usage is not None:
                     yield UsageUpdate(usage)
@@ -237,20 +239,23 @@ class GoogleProvider(LLMProvider):
                 if candidate is not None:
                     finish = getattr(candidate, "finish_reason", None) or finish
                     blocked = blocked or getattr(candidate, "finish_reason", None) in {"SAFETY", "BLOCKLIST"}
+            if finish is None and prompt_block_reason not in {None, "BLOCK_REASON_UNSPECIFIED", "BLOCKED_REASON_UNSPECIFIED"}:
+                finish = prompt_block_reason
+                blocked = True
             if finish is None:
                 raise ProviderContractError("Gemini/Vertex stream ended without a finish reason")
-            response = model_response(provider=self.name, model=model, actual_model=actual_model,
-                text="".join(text_parts), usage=usage,
-                calls=[(item[0], item[1], item[2]) for item in calls.values()], response_id=response_id,
-                raw_finish_reason=finish, blocked=blocked)
+            text = "".join(text_parts)
             if usage is None:
                 usage = {"prompt_tokens": sum(len(str(item.get("content", ""))) for item in messages if isinstance(item, dict)) // 4,
-                         "completion_tokens": len("".join(text_parts)) // 4, "_estimated": 1}
-                response = ModelResponse(response.text, response.tool_calls, usage, response.finish_reason, response.metadata)
+                         "completion_tokens": len(text) // 4, "_estimated": 1}
                 yield UsageUpdate(usage)
-            response = with_provider_continuation(response, self, model, "google-genai", {"parts": continuation_parts})
             usage_ledger._track_cost(self.config.provider, usage, model=actual_model or model,
                 latency_ms=round((time.monotonic() - started) * 1000))
+            response = model_response(provider=self.name, model=model, actual_model=actual_model,
+                text=text, usage=usage,
+                calls=[(item[0], item[1], item[2]) for item in calls.values()], response_id=response_id,
+                raw_finish_reason=finish, blocked=blocked)
+            response = with_provider_continuation(response, self, model, "google-genai", {"parts": continuation_parts})
             yield ResponseComplete(response)
         finally:
             close_stream(stream)
