@@ -6,12 +6,14 @@ import os
 import sys
 import time
 from typing import Any, Iterator
-from openkyrozen.providers.base import LLMProvider
+from openkyrozen.providers.base import LLMProvider, text_stream_projection
 from openkyrozen.providers.models import (received_response, ModelResponse, model_response, responses_output,
     ToolReply, ProviderContractError, validate_tool_definitions, validate_tool_history, provider_identity,
-    validate_replied_tool_definitions, with_provider_continuation, _snapshot_from_sdk)
+    validate_replied_tool_definitions, with_provider_continuation, _snapshot_from_sdk,
+    TextDelta, ToolCallDelta, UsageUpdate, ResponseComplete)
 from openkyrozen.providers.config import ProviderConfig
-from openkyrozen.providers.retry import _retry_with_backoff, provider_call, provider_stream, remaining_timeout, close_stream, mark_response_received
+from openkyrozen.providers.retry import (_retry_with_backoff, provider_call, provider_stream,
+    provider_event_stream, remaining_timeout, close_stream, mark_response_received)
 
 
 class PerplexityProvider(LLMProvider):
@@ -27,7 +29,8 @@ class PerplexityProvider(LLMProvider):
 
     def get_capabilities(self, model: str | None = None):
         from openkyrozen.providers.models import ProviderCapabilities
-        return ProviderCapabilities(native_tools=self.config.provider == "perplexity", text_streaming=True)
+        supported = self.config.provider == "perplexity"
+        return ProviderCapabilities(native_tools=supported, text_streaming=True, streaming_tool_calls=supported)
 
     @staticmethod
     def _prompt(messages: list[dict[str, str]]) -> tuple[str, str | None]:
@@ -99,33 +102,105 @@ class PerplexityProvider(LLMProvider):
             return with_provider_continuation(result, self, model, "perplexity-responses",
                                               {"output": _snapshot_from_sdk(getattr(response, "output", None) or [])})
 
-    @provider_stream
-    def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
+    @provider_event_stream
+    def chat_response_stream(self, messages: list | list[dict], model: str | None = None, *, tools=None):
         model = model or self.config.model_simple
-        prompt, instructions = self._prompt(messages)
-        started = time.monotonic()
-        kwargs: dict[str, Any] = {"model": model, "input": prompt, "stream": True}
+        tools = validate_tool_definitions(tools)
+        validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=tools is not None)
+        validate_replied_tool_definitions(messages, tools)
+        input_items, instructions = [], []
+        for item in messages:
+            if isinstance(item, dict):
+                if item.get("role") == "system":
+                    instructions.append(str(item.get("content", "")))
+                else:
+                    input_items.append({"type": "message",
+                        "role": "assistant" if item.get("role") == "assistant" else "user",
+                        "content": [{"type": "input_text", "text": str(item.get("content", ""))}]})
+            elif isinstance(item, ModelResponse):
+                if item.continuation.protocol != "perplexity-responses":
+                    raise ProviderContractError("Continuation protocol does not match Perplexity Responses")
+                input_items.extend(item.continuation.payload["output"])
+            else:
+                input_items.append({"type": "function_call_output", "call_id": item.call_id,
+                    "output": json.dumps({"is_error": item.is_error, "result": item.output}, ensure_ascii=False)})
+        kwargs: dict[str, Any] = {"model": model, "input": input_items or "Continue.", "stream": True,
+                                  "timeout": remaining_timeout()}
         if instructions:
-            kwargs["instructions"] = instructions
-        stream = _retry_with_backoff(lambda: self._client.responses.create(**kwargs, timeout=remaining_timeout()))
-        final_usage: dict[str, int | None] | None = None
-        completed = False
-        mark_response_received()
+            kwargs["instructions"] = "\n\n".join(instructions)
+        if tools:
+            kwargs["tools"] = [{"type": "function", "name": item["name"],
+                "description": item["description"], "parameters": item["parameters"], "strict": False}
+                for item in tools]
+        started = time.monotonic()
+        stream = self._client.responses.create(**kwargs)
+        text_parts, calls = [], {}
+        final = None
+        usage = None
+        terminal = False
         try:
             for event in stream:
-                response = getattr(event, "response", None) or event
-                usage = self._usage(response)
-                if usage is not None:
-                    final_usage = usage
                 event_type = str(getattr(event, "type", ""))
-                delta = str(getattr(event, "delta", "") or "") if "delta" in event_type else ""
-                if not delta and event_type.endswith("text.delta"):
-                    delta = str(getattr(event, "text", "") or "")
-                if delta:
-                    yield delta
-            completed = True
+                response = getattr(event, "response", None) or event
+                update = self._usage(response)
+                if update is not None:
+                    usage = update
+                    yield UsageUpdate(update)
+                if event_type in {"response.output_text.delta", "response.text.delta"}:
+                    delta = str(getattr(event, "delta", "") or "")
+                    text_parts.append(delta)
+                    yield TextDelta(delta)
+                elif event_type == "response.output_item.added":
+                    item = getattr(event, "item", None)
+                    if getattr(item, "type", None) == "function_call":
+                        index = getattr(event, "output_index", None)
+                        if type(index) is not int or index < 0:
+                            raise ProviderContractError("Perplexity stream function call has invalid index")
+                        calls[index] = {"id": getattr(item, "call_id", None),
+                            "name": getattr(item, "name", None), "arguments": ""}
+                        yield ToolCallDelta(index, str(calls[index]["id"] or ""), str(calls[index]["name"] or ""))
+                elif event_type == "response.function_call_arguments.delta":
+                    index = getattr(event, "output_index", None)
+                    call = calls.get(index)
+                    if call is None:
+                        raise ProviderContractError("Perplexity tool arguments arrived before function call item")
+                    delta = str(getattr(event, "delta", "") or "")
+                    call["arguments"] += delta
+                    yield ToolCallDelta(index, arguments_delta=delta)
+                elif event_type in {"response.completed", "response.incomplete"}:
+                    mark_response_received()
+                    final = response
+                    terminal = True
+                    break
+                elif event_type == "response.failed":
+                    from openkyrozen.providers.errors import ProviderError, ProviderErrorKind
+                    raise ProviderError(ProviderErrorKind.SERVER, provider=self.name, model=model, terminal=True)
+                mark_response_received()
+            if not terminal or final is None:
+                raise ProviderContractError("Perplexity stream ended without a terminal response event")
+            usage = self._usage(final) or usage
+            if usage is not None:
+                yield UsageUpdate(usage)
+            text = str(getattr(final, "output_text", None) or "".join(text_parts))
+            output = getattr(final, "output", None) or []
+            if usage is None:
+                usage = {"prompt_tokens": sum(len(str(item.get("content", ""))) for item in messages
+                    if isinstance(item, dict)) // 4, "completion_tokens": len(text) // 4, "_estimated": 1}
+                yield UsageUpdate(usage)
+            usage_ledger._track_cost(self.config.provider, usage, model=model,
+                latency_ms=round((time.monotonic() - started) * 1000))
+            result = model_response(provider=self.name, model=model, actual_model=getattr(final, "model", None),
+                text=text, usage=usage, calls=responses_output(final), response_id=getattr(final, "id", None),
+                raw_finish_reason=getattr(final, "status", None),
+                finish_detail=getattr(getattr(final, "incomplete_details", None), "reason", None),
+                blocked=any(getattr(part, "type", None) == "refusal" for item in output
+                    for part in getattr(item, "content", None) or ()))
+            result = with_provider_continuation(result, self, model, "perplexity-responses",
+                {"output": _snapshot_from_sdk(output)})
+            yield ResponseComplete(result)
         finally:
             close_stream(stream)
-            if completed:
-                usage_ledger._track_cost(self.config.provider, final_usage, model=model,
-                            latency_ms=round((time.monotonic() - started) * 1000))
+
+    @provider_stream
+    def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
+        yield from text_stream_projection(self.chat_response_stream(messages, model))

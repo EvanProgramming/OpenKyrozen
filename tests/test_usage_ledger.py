@@ -237,7 +237,9 @@ class UsageLedgerTests(unittest.TestCase):
 
     def test_stream_uses_returned_model_for_billing(self):
         from unittest.mock import patch
-        chunks = [SimpleNamespace(model="deepseek-flash", choices=[], usage=SimpleNamespace(
+        chunks = [SimpleNamespace(model="deepseek-flash", choices=[SimpleNamespace(
+            delta=SimpleNamespace(content=None, tool_calls=None), finish_reason="stop")], usage=None),
+            SimpleNamespace(model="deepseek-flash", choices=[], usage=SimpleNamespace(
             prompt_tokens=1, completion_tokens=2, prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=1,
         ))]
         provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
@@ -255,7 +257,7 @@ class UsageLedgerTests(unittest.TestCase):
         )
         chunks = [
             SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="STREAM"))], usage=None),
-            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="_OK"))], usage=None),
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="_OK"), finish_reason="stop")], usage=None),
             SimpleNamespace(choices=[], usage=final_usage),
         ]
         calls = []

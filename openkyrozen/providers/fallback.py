@@ -70,9 +70,17 @@ class FallbackProvider(LLMProvider):
         return requested
 
     def get_capabilities(self, model: str | None = None) -> ProviderCapabilities:
-        return ProviderCapabilities.intersection(
+        capabilities = ProviderCapabilities.intersection(
             provider.get_capabilities(self._model_for(provider, model))
             for provider in [self._primary] + self._fallbacks
+        )
+        # The fallback wrapper bridges structured events only after a full response.
+        return ProviderCapabilities(
+            native_tools=capabilities.native_tools,
+            strict_schemas=capabilities.strict_schemas,
+            parallel_calls=capabilities.parallel_calls,
+            text_streaming=capabilities.text_streaming,
+            reasoning_controls=capabilities.reasoning_controls,
         )
 
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:

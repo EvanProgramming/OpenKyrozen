@@ -4,7 +4,9 @@ from typing import Iterator
 from abc import ABC, abstractmethod
 from inspect import getattr_static
 import uuid
-from openkyrozen.providers.models import ModelResponse, ProviderCapabilities, ProviderContractError, validate_tool_definitions, validate_tool_history
+from openkyrozen.providers.models import (ModelResponse, ProviderCapabilities, ProviderContractError,
+    ResponseComplete, ResponseError, TextDelta, ToolCallDelta, UsageUpdate, validate_tool_definitions,
+    validate_tool_history)
 from openkyrozen.providers.config import ProviderConfig
 from openkyrozen.providers.retry import provider_call, provider_stream, provider_request_scope, _retry_with_backoff
 from openkyrozen.providers.errors import normalize_provider_error
@@ -34,11 +36,18 @@ class LLMProvider(ABC):
         """Only advertise features usable through the shipped adapter API."""
         return ProviderCapabilities(text_streaming=type(self).chat_stream is not LLMProvider.chat_stream)
 
+    def chat_response_stream(self, messages: list[dict] | list, model: str | None = None, *, tools=None):
+        """Compatibility bridge; native adapters override this with a real token stream."""
+        response = get_model_response(self, messages, model, tools=tools)
+        if response.text:
+            yield TextDelta(response.text)
+        if response.usage is not None:
+            yield UsageUpdate(response.usage)
+        yield ResponseComplete(response)
+
     @provider_stream
     def chat_stream(self, messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
-        """Stream response tokens. Default: fall back to non-streaming chat()."""
-        text, _ = self.chat(messages, model)
-        yield text
+        yield from text_stream_projection(self.chat_response_stream(messages, model))
 
     @property
     def name(self) -> str:
@@ -76,3 +85,61 @@ def get_model_response(provider, messages, model=None, *, tools=None) -> ModelRe
                 raise normalize_provider_error(exc, getattr(provider, "name", None), model)
         return _retry_with_backoff(lambda: _get_model_response(provider, messages, model, tools=tools),
                                    provider=getattr(provider, "name", None), model=model)
+
+
+def get_model_events(provider, messages, model=None, *, tools=None):
+    """Validate a provider stream and guarantee exactly one typed terminal event."""
+    from openkyrozen.providers.errors import ProviderError
+
+    stream_method = getattr(provider, "chat_response_stream", None)
+    if callable(stream_method):
+        stream = stream_method(messages, model, tools=tools)
+    else:
+        response = get_model_response(provider, messages, model, tools=tools)
+        pending = ([TextDelta(response.text)] if response.text else [])
+        if response.usage is not None:
+            pending.append(UsageUpdate(response.usage))
+        pending.append(ResponseComplete(response))
+        stream = iter(pending)
+    try:
+        for event in stream:
+            if isinstance(event, (ResponseComplete, ResponseError)):
+                yield event
+                return
+            if not isinstance(event, (TextDelta, ToolCallDelta, UsageUpdate)):
+                raise ProviderContractError("Provider emitted an unknown stream event")
+            yield event
+        yield ResponseError(ProviderContractError("Provider stream ended without a terminal event"))
+    except Exception as exc:
+        error = exc if isinstance(exc, (ProviderError, ProviderContractError)) else normalize_provider_error(
+            exc, getattr(provider, "name", None), model)
+        yield ResponseError(error)
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
+
+
+def text_stream_projection(events):
+    """Project typed stream events only when the completed response is lossless text."""
+    from openkyrozen.providers.models import ResponseComplete, ResponseError, TextDelta, ToolCallDelta, UsageUpdate
+    saw_terminal = False
+    saw_calls = False
+    for event in events:
+        if isinstance(event, TextDelta):
+            yield event.text
+        elif isinstance(event, ToolCallDelta):
+            saw_calls = True
+        elif isinstance(event, UsageUpdate):
+            continue
+        elif isinstance(event, ResponseError):
+            raise event.error
+        elif isinstance(event, ResponseComplete):
+            saw_terminal = True
+            if saw_calls or event.response.tool_calls:
+                raise ProviderContractError("Tool calls require chat_response_stream(); text conversion refused")
+            event.response.as_legacy_tuple()
+        else:
+            raise ProviderContractError("Provider emitted an unknown stream event")
+    if not saw_terminal:
+        raise ProviderContractError("Provider stream ended without a terminal response")

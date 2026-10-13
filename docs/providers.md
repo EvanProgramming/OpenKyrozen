@@ -82,20 +82,29 @@ Anthropic, Google/Vertex, Bedrock, Ollama and Perplexity adapters accept the
 provider-neutral `{name, description, parameters}` catalog and preserve native
 call/reply history. Unknown custom endpoints keep native tools unadvertised, but
 an explicit tool request still uses the endpoint's adapter wire format. Strict
-schema controls, parallel execution, streaming tool calls and reasoning controls
-remain unadvertised. Fallback capabilities are the conservative intersection of
-the configured, model-mapped candidates. Once a native call is returned, its
+schema controls, parallel execution and reasoning controls remain unadvertised.
+Fallback capabilities intersect configured, model-mapped candidates and clear
+`streaming_tool_calls` because the fallback wrapper buffers a complete response.
+Once a native call is returned, its
 continuation is pinned to the provider instance and request model that produced it;
 opaque replay payloads stay outside normal metadata and display text.
 
-The runtime's `_get_model_response` preserves this object under the existing
-bounded-call, usage and context scopes; `_get_llm_response` is the checked text
-compatibility boundary. The runtime sends only requested, capability-permitted
-registry schemas, and adapters never receive executors. Existing stream methods
-remain text-only until structured events land in
-[#230](https://github.com/EvanProgramming/OpenKyrozen/issues/230). Automatic
-foreground execution remains assigned to #238, and durable canonical history to
-#247. The custom Gemini continuation request shape has a redacted regression tied
+`chat_response_stream(messages, model=None, *, tools=None)` yields immutable
+`TextDelta`, `ToolCallDelta`, cumulative `UsageUpdate`, and exactly one terminal
+`ResponseComplete` or `ResponseError`. Only the completed `ModelResponse` is
+authoritative for finish state and charged usage; partial calls are never
+executable. Native adapters preserve provider-specific continuation and signature
+data, including reasoning fields that are not shown in text. Ollama streams its
+NDJSON endpoint and requires an explicit completion record. The shared
+`get_model_events()` boundary validates event ordering and terminal completion.
+Legacy `chat_stream()` remains a text projection and raises if calls or an
+unsuccessful completion would be lost.
+
+The runtime's `_get_model_response(..., stream=True, on_event=...)` preserves the
+full response under the existing bounded-call, usage and context scopes. The
+runtime sends only requested, capability-permitted registry schemas, and adapters
+never receive executors. Automatic foreground execution remains assigned to #238,
+and durable canonical history to #247. The custom Gemini continuation request shape has a redacted regression tied
 to [issue #225](https://github.com/EvanProgramming/OpenKyrozen/issues/225); the
 fixture does not establish live gateway acceptance.
 Offline fixtures and installed SDK types validate the contract; they do not establish
