@@ -67,7 +67,10 @@ class BedrockProvider(LLMProvider):
             if isinstance(item, ToolReply):
                 block = {"toolResult": {"toolUseId": item.call_id,
                     "content": [{"json": {"is_error": item.is_error, "result": item.output}}]}}
-                if item.is_error:
+                supported_error_status = any(marker in model.lower() for marker in (
+                    "amazon.nova-", "anthropic.claude-3", "anthropic.claude-4",
+                    "anthropic.claude-sonnet-4", "anthropic.claude-opus-4", "anthropic.claude-haiku-4"))
+                if item.is_error and supported_error_status:
                     block["toolResult"]["status"] = "error"
                 if conversation and conversation[-1]["role"] == "user" and all(
                         "toolResult" in old for old in conversation[-1]["content"]):

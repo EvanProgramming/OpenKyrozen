@@ -197,6 +197,8 @@ class NativeRequestTests(unittest.TestCase):
             adapters = ToolAdapters(str(workspace))
             app = build_application(memory=build_memory(workspace / "state.sqlite3"), tools=adapters)
             runtime = app.runtime
+            from openkyrozen.agent.compaction import ContextState
+            runtime._active_context_state.set(ContextState("gemini-3-flash"))
             runtime.current_session.workspace.adapters.set_workspace_root(str(workspace))
             provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
             provider.config = NS(provider="custom", model_simple="gemini-3-flash")
@@ -231,6 +233,85 @@ class NativeRequestTests(unittest.TestCase):
                 self.assertIn("native result | 雪", json.loads(sent[-1]["content"])["result"]["result"])
             finally:
                 app.close()
+
+    def test_legacy_openai_function_call_uses_function_reply_protocol(self):
+        from openkyrozen.providers.openai import OpenAICompatProvider
+        provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+        provider.config = NS(provider="custom", model_simple="model")
+        first = NS(id="r1", model="model", usage=None, choices=[NS(finish_reason="function_call",
+            message=NS(role="assistant", content=None, function_call=NS(name="lookup", arguments='{}')))])
+        final = NS(id="r2", model="model", usage=None,
+            choices=[NS(finish_reason="stop", message=NS(role="assistant", content="done"))])
+        send = Mock(side_effect=[first, final])
+        provider._client = NS(chat=NS(completions=NS(create=send)))
+        tools = [{"name": "lookup", "description": "Lookup", "parameters": {"type": "object"}}]
+        with patch("openkyrozen.providers.usage._track_cost"):
+            response = provider.chat_response([], tools=tools)
+            provider.chat_response([response, ToolReply(response.tool_calls[0].id, "lookup", {"ok": True})], tools=tools)
+        self.assertEqual(send.call_args_list[1].kwargs["messages"][-1], {
+            "role": "function", "name": "lookup", "content": '{"is_error": false, "result": {"ok": true}}'})
+
+    def test_openai_continuation_strips_output_only_message_fields(self):
+        from openkyrozen.providers.openai import OpenAICompatProvider
+        provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+        provider.config = NS(provider="custom", model_simple="model")
+        message = NS(role="assistant", content=None, annotations=[{"type": "url_citation"}],
+                   audio=NS(id="audio-id", data="not-replayable", transcript="spoken"),
+                   tool_calls=[NS(id="c", type="function", function=NS(name="lookup", arguments="{}"))])
+        first = NS(id="r1", model="model", usage=None,
+            choices=[NS(finish_reason="tool_calls", message=message)])
+        final = NS(id="r2", model="model", usage=None,
+            choices=[NS(finish_reason="stop", message=NS(role="assistant", content="done"))])
+        send = Mock(side_effect=[first, final])
+        provider._client = NS(chat=NS(completions=NS(create=send)))
+        tools = [{"name": "lookup", "description": "Lookup", "parameters": {"type": "object"}}]
+        with patch("openkyrozen.providers.usage._track_cost"):
+            response = provider.chat_response([], tools=tools)
+            provider.chat_response([response, ToolReply("c", "lookup", {"ok": True})], tools=tools)
+        replay = send.call_args_list[1].kwargs["messages"][0]
+        self.assertNotIn("annotations", replay)
+        self.assertEqual(replay["audio"], {"id": "audio-id"})
+
+    def test_bedrock_tool_error_status_is_limited_to_supported_model_families(self):
+        from openkyrozen.providers.bedrock import BedrockProvider
+        from openkyrozen.providers.models import with_provider_continuation
+        provider = BedrockProvider.__new__(BedrockProvider)
+        response = with_provider_continuation(ModelResponse(tool_calls=(ToolCall("c", "lookup", {}),),
+            finish_reason=FinishReason.TOOL_REQUEST), provider, "anthropic.claude-3-sonnet", "bedrock-converse",
+            {"content": [{"toolUse": {"toolUseId": "c", "name": "lookup", "input": {}}}]})
+        reply = ToolReply("c", "lookup", {"error": {"code": "execution_failed"}}, is_error=True)
+        for model, expected in (("anthropic.claude-3-sonnet", "error"),
+                                ("anthropic.claude-sonnet-4", "error"),
+                                ("account.custom-model", None)):
+            with self.subTest(model=model):
+                conversation, _ = BedrockProvider._request([response, reply], model, provider)
+                result = conversation[-1]["content"][0]["toolResult"]
+                self.assertEqual(result.get("status"), expected)
+
+    def test_context_accounting_accepts_typed_native_history(self):
+        from openkyrozen.agent.compaction import ContextState
+        from openkyrozen.providers.context import context_accounting_messages
+        response = ModelResponse(text="", tool_calls=(ToolCall("c", "read_file", {"path": "note.txt"}),),
+                                 finish_reason=FinishReason.TOOL_REQUEST)
+        messages = context_accounting_messages([
+            {"role": "user", "content": "read note.txt"}, response,
+            ToolReply("c", "read_file", {"data": "contents"}),
+        ])
+        state = ContextState("test-model")
+        state.note_provider_usage(messages, 42)
+        self.assertEqual(state.status["input_tokens"], 42)
+        self.assertEqual(len(state.status["breakdown"]), 5)
+
+    def test_google_omits_synthetic_call_id_from_function_response(self):
+        from openkyrozen.providers.google import GoogleProvider
+        from openkyrozen.providers.models import ProviderContinuation
+        response = ModelResponse(tool_calls=(ToolCall("synthetic", "lookup", {}),),
+            finish_reason=FinishReason.TOOL_REQUEST, metadata={"synthesized_call_ids": ["synthetic"]},
+            continuation=ProviderContinuation("p", "m", "google-genai", {"parts": [{"function_call": {"name": "lookup"}}]}))
+        contents, _ = GoogleProvider._contents([response, ToolReply("synthetic", "lookup", {"ok": True})], "m", None)
+        function_response = contents[-1]["parts"][0]["function_response"]
+        self.assertNotIn("id", function_response)
+        self.assertEqual(function_response["name"], "lookup")
 
     def test_native_history_mismatch_is_rejected_before_transport(self):
         from openkyrozen.providers.openai import OpenAICompatProvider
@@ -397,7 +478,7 @@ class NativeRequestTests(unittest.TestCase):
                 elif transport == "bedrock":
                     result = kwargs["messages"][-1]["content"][0]["toolResult"]
                     self.assertEqual(result["toolUseId"], call.id)
-                    self.assertEqual(result["status"], "error")
+                    self.assertNotIn("status", result)  # Unknown model IDs do not imply status support.
                 elif transport == "ollama":
                     result = kwargs["json"]["messages"][-1]
                     self.assertEqual(result["tool_call_id"], call.id)
