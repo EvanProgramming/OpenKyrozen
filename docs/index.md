@@ -33,6 +33,7 @@ This index covers the current product guides, developer references, and dated en
 - [V3 typed tool results plan](superpowers/plans/2026-10-11-v3-issue-235.md) records typed execution outcomes, error codes, observer propagation, and compatibility for issue #235.
 - [V3 security boundary plan](superpowers/plans/2026-10-11-v3-issue-261.md) records capability intersection, structured approvals, delegated scope, and verification for issue #261.
 - [V3 typed invocation plan](superpowers/plans/2026-10-11-v3-issue-233.md) records JSON-object executor contracts, schema enforcement, MCP routing, and compatibility for issue #233.
+- [V3 native provider tools plan](superpowers/plans/2026-10-12-v3-issue-229.md) records native tool requests, correlated replies, continuation pinning, and verification for issue #229.
 - [V3 plan index](superpowers/plans/index.md) links the issue-specific implementation plans and identifies their coverage.
 - Machine-readable audit receipts and benchmark inputs remain beside their corresponding reports under `docs/` and `docs/benchmarks/`.
 

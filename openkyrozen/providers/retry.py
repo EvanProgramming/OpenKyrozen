@@ -237,12 +237,12 @@ def backoff_delay(attempt, retry_after=0.0, base_delay=1.0):
 
 def provider_call(fn):
     @wraps(fn)
-    def call(self, messages, model=None):
+    def call(self, messages, model=None, **kwargs):
         if getattr(fn, "_provider_retry_managed", False) is True:
             with provider_request_scope() as state:
                 state.provider, state.model = self.name, model or self.config.model_simple
-                return bounded_call(lambda: fn(self, messages, model), state)
-        return _retry_with_backoff(lambda: fn(self, messages, model), provider=self.name,
+                return bounded_call(lambda: fn(self, messages, model, **kwargs), state)
+        return _retry_with_backoff(lambda: fn(self, messages, model, **kwargs), provider=self.name,
                                    model=model or self.config.model_simple)
     return manages_provider_retry(call)
 

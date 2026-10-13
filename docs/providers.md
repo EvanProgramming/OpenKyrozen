@@ -77,20 +77,27 @@ with unknown finish status and an explicit `legacy` marker.
 `get_capabilities(model=None)` reports flags for `native_tools`, `strict_schemas`,
 `parallel_calls`, `text_streaming`, `streaming_tool_calls` and `reasoning_controls`.
 These describe usable features of the shipped adapter API, not every feature an
-underlying model might support. Text streaming reflects the existing implementation;
-other flags remain false until the corresponding request paths are implemented.
-Fallback capabilities are the conservative intersection of the configured,
-model-mapped candidates. Structured responses retain the responding provider's
-metadata. A successful response rejected by text conversion does not cause another
-provider request.
+underlying model might support. The shipped OpenAI-compatible, Responses,
+Anthropic, Google/Vertex, Bedrock, Ollama and Perplexity adapters accept the
+provider-neutral `{name, description, parameters}` catalog and preserve native
+call/reply history. Unknown custom endpoints keep native tools unadvertised, but
+an explicit tool request still uses the endpoint's adapter wire format. Strict
+schema controls, parallel execution, streaming tool calls and reasoning controls
+remain unadvertised. Fallback capabilities are the conservative intersection of
+the configured, model-mapped candidates. Once a native call is returned, its
+continuation is pinned to the provider instance and request model that produced it;
+opaque replay payloads stay outside normal metadata and display text.
 
 The runtime's `_get_model_response` preserves this object under the existing
 bounded-call, usage and context scopes; `_get_llm_response` is the checked text
-compatibility boundary. Existing stream methods remain text-only. Tool request
-serialization, native history round trips and structured stream events belong to
-[#229](https://github.com/EvanProgramming/OpenKyrozen/issues/229) and
-[#230](https://github.com/EvanProgramming/OpenKyrozen/issues/230). This foundation
-also relates to [provider adapter issue #225](https://github.com/EvanProgramming/OpenKyrozen/issues/225).
+compatibility boundary. The runtime sends only requested, capability-permitted
+registry schemas, and adapters never receive executors. Existing stream methods
+remain text-only until structured events land in
+[#230](https://github.com/EvanProgramming/OpenKyrozen/issues/230). Automatic
+foreground execution remains assigned to #238, and durable canonical history to
+#247. The custom Gemini continuation request shape has a redacted regression tied
+to [issue #225](https://github.com/EvanProgramming/OpenKyrozen/issues/225); the
+fixture does not establish live gateway acceptance.
 Offline fixtures and installed SDK types validate the contract; they do not establish
 live provider interoperability.
 

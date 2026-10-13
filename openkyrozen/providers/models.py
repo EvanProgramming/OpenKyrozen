@@ -62,6 +62,130 @@ def _unique_object(pairs):
     return result
 
 
+def _json_snapshot(value, label):
+    try:
+        _validate_json(value)
+        return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ProviderContractError(f"{label} must be a finite JSON value") from exc
+
+
+def _snapshot_from_sdk(value):
+    """Convert the installed SDK's typed response items into the public JSON contract."""
+    if isinstance(value, dict):
+        return {str(key): _snapshot_from_sdk(item) for key, item in value.items() if item is not None}
+    if isinstance(value, (list, tuple)):
+        return [_snapshot_from_sdk(item) for item in value]
+    if value is None or isinstance(value, (str, int, bool, float)):
+        return value
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            return _snapshot_from_sdk(dump(mode="json", exclude_none=True))
+        except TypeError:
+            return _snapshot_from_sdk(dump(exclude_none=True))
+    attributes = getattr(value, "__dict__", None)
+    if isinstance(attributes, dict):
+        return _snapshot_from_sdk({key: item for key, item in attributes.items() if not key.startswith("_")})
+    raise ProviderContractError("Provider continuation contains an unsupported SDK value")
+
+
+@dataclass(frozen=True, init=False)
+class ToolReply:
+    """One correlated tool result; output is a defensive machine-readable JSON snapshot."""
+
+    call_id: str
+    name: str
+    is_error: bool
+    _output_json: str = field(repr=False)
+
+    def __init__(self, call_id: str, name: str, output: dict[str, Any], is_error: bool = False):
+        if not isinstance(call_id, str) or not call_id.strip():
+            raise ProviderContractError("Tool reply call_id must be nonempty")
+        if not isinstance(name, str) or not name.strip():
+            raise ProviderContractError("Tool reply name must be nonempty")
+        if type(is_error) is not bool:
+            raise ProviderContractError("Tool reply is_error must be a boolean")
+        if not isinstance(output, dict):
+            raise ProviderContractError("Tool reply output must be a JSON object")
+        object.__setattr__(self, "call_id", call_id)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "is_error", is_error)
+        object.__setattr__(self, "_output_json", _json_snapshot(output, "Tool reply output"))
+
+    @property
+    def output(self) -> dict[str, Any]:
+        return json.loads(self._output_json)
+
+
+@dataclass(frozen=True, init=False)
+class ProviderContinuation:
+    """Opaque, provider-bound JSON state required to replay a native response."""
+
+    provider_id: str
+    request_model: str
+    protocol: str
+    _payload_json: str = field(repr=False)
+
+    def __init__(self, provider_id: str, request_model: str, protocol: str, payload: dict[str, Any]):
+        for label, value in (("provider_id", provider_id), ("request_model", request_model), ("protocol", protocol)):
+            if not isinstance(value, str) or not value.strip():
+                raise ProviderContractError(f"Continuation {label} must be nonempty")
+        if not isinstance(payload, dict):
+            raise ProviderContractError("Continuation payload must be a JSON object")
+        object.__setattr__(self, "provider_id", provider_id)
+        object.__setattr__(self, "request_model", request_model)
+        object.__setattr__(self, "protocol", protocol)
+        object.__setattr__(self, "_payload_json", _json_snapshot(payload, "Continuation payload"))
+
+    @property
+    def payload(self) -> dict[str, Any]:
+        return json.loads(self._payload_json)
+
+
+def provider_continuation(provider, request_model: str, protocol: str, payload: dict[str, Any]):
+    return ProviderContinuation(provider_identity(provider), request_model, protocol, _snapshot_from_sdk(payload))
+
+
+def provider_identity(provider) -> str:
+    identity = getattr(provider, "_continuation_id", None)
+    return identity if isinstance(identity, str) else f"{getattr(provider, 'name', type(provider).__name__)}:{id(provider):x}"
+
+
+def with_provider_continuation(response, provider, request_model, protocol, payload):
+    from dataclasses import replace
+    return replace(response, continuation=provider_continuation(provider, request_model, protocol, payload))
+
+
+def validate_tool_definitions(tools):
+    if tools is None:
+        return None
+    if not isinstance(tools, (list, tuple)):
+        raise ProviderContractError("Provider tools must be a list of registry descriptors")
+    normalized, names = [], set()
+    for item in tools:
+        if not isinstance(item, dict) or set(item) != {"name", "description", "parameters"}:
+            raise ProviderContractError("Provider tool must contain name, description and parameters")
+        name, description, schema = item["name"], item["description"], item["parameters"]
+        if not isinstance(name, str) or not name.strip() or name in names:
+            raise ProviderContractError("Provider tool names must be nonempty and unique")
+        if not isinstance(description, str) or not isinstance(schema, dict):
+            raise ProviderContractError("Provider tool description and parameters are invalid")
+        _json_snapshot(schema, "Provider tool schema")
+        if schema.get("type") != "object":
+            raise ProviderContractError("Provider tool parameters must be an object schema")
+        names.add(name)
+        normalized.append({"name": name, "description": description, "parameters": copy.deepcopy(schema)})
+    return normalized
+
+
+def validate_replied_tool_definitions(messages, tools):
+    names = {item["name"] for item in tools or ()}
+    for message in messages:
+        if isinstance(message, ToolReply) and message.name not in names:
+            raise ProviderContractError("A tool reply requires its matching provider tool declaration")
+
+
 @dataclass(frozen=True)
 class ToolCall:
     id: str
@@ -109,6 +233,7 @@ class ModelResponse:
     usage: dict[str, Any] | None = None
     finish_reason: FinishReason = FinishReason.UNKNOWN
     metadata: dict[str, Any] = field(default_factory=dict)
+    continuation: ProviderContinuation | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         if not isinstance(self.text, str) or not isinstance(self.finish_reason, FinishReason):
@@ -126,6 +251,8 @@ class ModelResponse:
             raise ProviderContractError("Model response usage must be an object or None")
         if not isinstance(self.metadata, dict):
             raise ProviderContractError("Model response metadata must be an object")
+        if self.continuation is not None and not isinstance(self.continuation, ProviderContinuation):
+            raise ProviderContractError("Model response continuation must be ProviderContinuation or None")
         try:
             _validate_json(self.metadata)
         except RecursionError as exc:
@@ -139,6 +266,46 @@ class ModelResponse:
                 or unfinished):
             raise ProviderContractError(f"Structured response ({self.finish_reason}) requires chat_response(); text conversion refused")
         return (self.text if self.metadata.get("legacy") else self.text.strip()), self.usage
+
+
+def validate_tool_history(messages, *, provider_id: str, model: str, native: bool = False):
+    """Reject malformed native call/reply groups before an adapter sends a request."""
+    pending: list[ToolCall] = []
+    seen_ids: set[str] = set()
+    saw_typed = False
+    for message in messages:
+        if isinstance(message, ModelResponse):
+            saw_typed = True
+            if pending:
+                raise ProviderContractError("Tool call replies must immediately follow their assistant response")
+            continuation = message.continuation
+            if continuation is None:
+                raise ProviderContractError("Native assistant history is missing provider continuation state")
+            if continuation.provider_id != provider_id or continuation.request_model != model:
+                raise ProviderContractError("Provider continuation belongs to a different provider or model")
+            if message.tool_calls:
+                for call in message.tool_calls:
+                    if call.id in seen_ids:
+                        raise ProviderContractError("Duplicate tool call id in conversation history")
+                    seen_ids.add(call.id)
+                pending = list(message.tool_calls)
+        elif isinstance(message, ToolReply):
+            saw_typed = True
+            if not pending:
+                raise ProviderContractError("Orphaned tool reply in conversation history")
+            expected = pending.pop(0)
+            if (message.call_id, message.name) != (expected.id, expected.name):
+                raise ProviderContractError("Tool reply does not match the pending provider call")
+        elif isinstance(message, dict):
+            if pending:
+                raise ProviderContractError("Tool call replies must form a contiguous group")
+            if (native or saw_typed) and message.get("role") == "tool":
+                raise ProviderContractError("Native tool results must use correlated ToolReply values")
+        else:
+            raise ProviderContractError("Conversation entries must be messages, ModelResponse, or ToolReply")
+    if pending:
+        raise ProviderContractError("Conversation history is missing one or more tool replies")
+    return saw_typed
 
 
 def normalize_finish(reason, *, has_calls=False, detail=None) -> FinishReason:
