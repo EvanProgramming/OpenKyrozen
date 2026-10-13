@@ -47,15 +47,20 @@ class GoogleProvider(LLMProvider):
     def _contents(messages: list, model: str, provider) -> tuple[list[dict[str, Any]], str | None]:
         contents: list[dict[str, Any]] = []
         system: list[str] = []
+        synthesized_ids = set()
         for message in messages:
             if isinstance(message, ModelResponse):
                 if message.continuation.protocol != "google-genai":
                     raise ProviderContractError("Continuation protocol does not match Gemini/Vertex")
                 contents.append({"role": "model", "parts": message.continuation.payload["parts"]})
+                synthesized_ids.update(message.metadata.get("synthesized_call_ids", ()))
                 continue
             if isinstance(message, ToolReply):
-                part = {"function_response": {"id": message.call_id, "name": message.name,
-                        "response": {"is_error": message.is_error, "result": message.output}}}
+                function_response = {"name": message.name,
+                    "response": {"is_error": message.is_error, "result": message.output}}
+                if message.call_id not in synthesized_ids:
+                    function_response["id"] = message.call_id
+                part = {"function_response": function_response}
                 if contents and contents[-1]["role"] == "user" and all(
                         "function_response" in old for old in contents[-1]["parts"]):
                     contents[-1]["parts"].append(part)

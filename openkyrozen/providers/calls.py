@@ -6,7 +6,8 @@ import sys
 from typing import Any
 from openkyrozen.providers.usage import usage_scope
 from openkyrozen.providers.base import get_model_response, get_model_events
-from openkyrozen.providers.models import ModelResponse, ResponseComplete, ResponseError
+from openkyrozen.providers.models import ModelResponse, ToolReply, ResponseComplete, ResponseError
+from openkyrozen.providers.context import context_accounting_messages
 from openkyrozen.providers.retry import provider_request_scope, bounded_call, bounded_stream
 from openkyrozen.agent.types import ContextOverflowError, ProviderUnavailableError
 
@@ -114,11 +115,12 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
         raise normalize_provider_error(RuntimeError(response.text), getattr(provider, "name", None), model or self.DEEPSEEK_MODEL)
     state = self._active_context_state.get()
     if state is not None and not self._in_context_compaction.get():
+        context_messages = context_accounting_messages(messages)
         if usage and not usage.get("_estimated"):
-            state.note_provider_usage(messages, int(self._last_prompt_tokens))
-            self._cache_reported_context_tokens(messages, int(self._last_prompt_tokens))
+            state.note_provider_usage(context_messages, int(self._last_prompt_tokens))
+            self._cache_reported_context_tokens(context_messages, int(self._last_prompt_tokens))
         else:
-            state.update(messages)
+            state.update(context_messages)
         self._store_context_status(state)
     return response
 

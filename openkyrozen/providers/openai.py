@@ -52,17 +52,24 @@ class OpenAICompatProvider(LLMProvider):
         validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=tools is not None)
         validate_replied_tool_definitions(messages, tools)
         request_messages = []
+        legacy_call_ids = set()
         for item in messages:
             if isinstance(item, dict):
                 request_messages.append(item)
             elif isinstance(item, ProviderModelResponse):
                 if item.continuation.protocol != "openai-chat":
                     raise ProviderContractError("Continuation protocol does not match OpenAI Chat Completions")
-                request_messages.append(item.continuation.payload["assistant"])
+                payload = item.continuation.payload
+                request_messages.append(payload["assistant"])
+                if payload.get("legacy_function_call_id"):
+                    legacy_call_ids.add(payload["legacy_function_call_id"])
             elif isinstance(item, ToolReply):
                 result = {"is_error": item.is_error, "result": item.output}
-                request_messages.append({"role": "tool", "tool_call_id": item.call_id,
-                                         "content": json.dumps(result, ensure_ascii=False)})
+                content = json.dumps(result, ensure_ascii=False)
+                if item.call_id in legacy_call_ids:
+                    request_messages.append({"role": "function", "name": item.name, "content": content})
+                else:
+                    request_messages.append({"role": "tool", "tool_call_id": item.call_id, "content": content})
         started = time.monotonic()
 
         def _call():
@@ -101,9 +108,17 @@ class OpenAICompatProvider(LLMProvider):
                                   raw_finish_reason=getattr(response.choices[0], "finish_reason", None),
                                   blocked=bool(getattr(message, "refusal", None)))
             assistant = _snapshot_from_sdk(message)
+            assistant = {key: value for key, value in assistant.items()
+                         if key in {"role", "content", "name", "tool_calls", "function_call"}}
+            audio = _snapshot_from_sdk(getattr(message, "audio", None))
+            if isinstance(audio, dict) and isinstance(audio.get("id"), str):
+                assistant["audio"] = {"id": audio["id"]}
             if "role" not in assistant:
                 assistant["role"] = "assistant"
-            return with_provider_continuation(result, self, model, "openai-chat", {"assistant": assistant})
+            continuation = {"assistant": assistant}
+            if legacy_call is not None and result.tool_calls:
+                continuation["legacy_function_call_id"] = result.tool_calls[0].id
+            return with_provider_continuation(result, self, model, "openai-chat", continuation)
 
     @provider_event_stream
     def chat_response_stream(self, messages: list[dict] | list, model: str | None = None, *, tools=None):
