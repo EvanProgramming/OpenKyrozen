@@ -77,6 +77,16 @@ class ExecutionReceiptContractTests(unittest.TestCase):
         self.assertNotIn("secret-value", str(projected))
         self.assertEqual(receipt.arguments["token"], "secret-value")
 
+    def test_compatibility_args_projection_redacts_secret_like_object_fields(self):
+        arguments = {"path": "notes.txt", "access_token": "secret-value", "client_secret": "other-secret"}
+        receipt = self.receipt(
+            args=json.dumps(arguments), arguments=arguments,
+        )
+        projected = receipt.as_dict()
+        self.assertNotIn("secret-value", projected["args"])
+        self.assertNotIn("other-secret", projected["args"])
+        self.assertEqual(json.loads(projected["args"])["access_token"], "<redacted>")
+
     def test_historical_and_current_persisted_receipts_rehydrate(self):
         current = self.receipt().as_dict()
         restored = ExecutionReceipt.from_dict(current)
@@ -198,6 +208,28 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         self.assertEqual(self.app.runtime.tasks.tasks[0]["evidence"][0]["task_id"], task_id)
         self.assertEqual(self.app.runtime.tasks.tasks[0]["status"], "pending")
         self.assertEqual(self.app.runtime.tasks.working_plan.status, "active")
+
+    def test_unmatched_explicit_acceptance_cannot_complete_task(self):
+        from openkyrozen.providers.models import ToolCall
+
+        self.plan("write_file", {"path": "note.txt", "content": "requested content"})
+        task = self.app.runtime.tasks.tasks[0]
+        events = []
+        self.app.runtime._emit_stream_event = events.append
+        receipt = self.app.runtime.execute_call(
+            self.app.runtime.current_session,
+            ToolCall("wrong-operation", "run_cmd", {"command": "pytest --version"}),
+            task_id=task["id"],
+        )
+
+        self.assertTrue(receipt.success)
+        self.assertEqual(receipt.task_id, task["id"])
+        self.assertEqual(task["status"], "pending")
+        self.assertEqual(task["evidence"], [])
+        tool_receipt = next(event["tool_receipt"] for event in events if event.get("event") == "tool_receipt")
+        self.assertIsNone(tool_receipt["task_id"])
+        self.assertEqual(tool_receipt["requested_task_id"], task["id"])
+        self.assertIn("unmatched_reason", tool_receipt)
 
     def test_invalid_task_binding_is_rejected_before_executor(self):
         from openkyrozen.providers.models import ToolCall
@@ -335,8 +367,8 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         receipt = self.app.runtime.execute(
             self.app.runtime.current_session, "read_file", "note.txt", capabilities={"read"},
         )
-        self.assertTrue(receipt.call_id.startswith("legacy_"))
-        self.assertEqual(receipt.call_id_source, "legacy")
+        self.assertTrue(receipt.call_id.startswith("synthetic_"))
+        self.assertEqual(receipt.call_id_source, "synthetic")
 
     def test_task_binding_is_rechecked_after_approval_callback(self):
         from openkyrozen.providers.models import ToolCall

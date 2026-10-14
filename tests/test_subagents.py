@@ -24,6 +24,31 @@ from openkyrozen.agent.delegation import WorkspaceAccess
 
 
 class SubAgentTests(unittest.TestCase):
+    def test_structured_subagent_calls_keep_synthetic_identity_and_redacted_args(self):
+        from openkyrozen.agent.types import ExecutionReceipt
+        from openkyrozen.tools.models import ToolResult
+
+        arguments = {"path": "safe.txt", "access_token": "subagent-secret"}
+        receipt = ExecutionReceipt(
+            receipt_id="receipt-subagent", operation_id="operation-subagent", action="write_file",
+            args=json.dumps(arguments), authorized=True, started_at="start", completed_at="end",
+            success=True, result="saved", call_id="subagent_generated", call_id_source="synthetic",
+            arguments=arguments, tool_result=ToolResult(text="saved"),
+        )
+        previous_token = main._execution_capability_token
+        try:
+            with patch.object(main, "execute_call", return_value=receipt) as execute_call, \
+                    patch.object(main, "_subagent_tool_evidence", return_value=(None, False)):
+                result = main._run_subagent_tool(
+                    AgentProfile("coder", "test", "full"), "write_file", arguments, {"write_file"},
+                )
+        finally:
+            main._execution_capability_token = previous_token
+
+        self.assertEqual(execute_call.call_args.kwargs["_call_id_source"], "synthetic")
+        self.assertEqual(result["call_id_source"], "synthetic")
+        self.assertNotIn("subagent-secret", result["args"])
+
     def test_custom_provider_profile_is_used_for_explicit_subagent_assignment(self):
         with tempfile.TemporaryDirectory() as home:
             profile = {"name": "worker-gateway", "base_url": "https://workers.example/v1",

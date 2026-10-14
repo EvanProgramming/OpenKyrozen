@@ -569,7 +569,7 @@ class AgentRuntime:
                 )
                 receipt = self._run_tool(
                     action, args, return_receipt=True, operation_scope=operation_scope,
-                    _call_id=_call_id or f"legacy_{uuid.uuid4().hex}", _call_id_source="legacy",
+                    _call_id=_call_id or f"synthetic_{uuid.uuid4().hex}", _call_id_source="synthetic",
                 )
                 self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
                     user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
@@ -624,6 +624,7 @@ class AgentRuntime:
 
     def execute_call(self, session, call, *, capabilities=None, operation_scope="", approve=None,
                      task_id: str | None = None,
+                     _call_id_source: str = "native",
                      _surface_capability_bound=None):
         """Authorize and execute one structured provider call at the shared boundary."""
         from openkyrozen.providers.models import ToolCall
@@ -661,7 +662,7 @@ class AgentRuntime:
                     success=outcome.success, result=render_tool_result(outcome),
                     operation_scope=operation_scope, failure=outcome.error.code if outcome.error else None,
                     tool_error=outcome.error, result_data=outcome.data, tool_result=outcome,
-                    call_id=call.id, call_id_source="native", task_id=bound_task, expected_spec=spec,
+                    call_id=call.id, call_id_source=_call_id_source, task_id=bound_task, expected_spec=spec,
                 )
                 self._record_turn_receipt(receipt)
                 return receipt
@@ -680,7 +681,7 @@ class AgentRuntime:
                 except KeyError:
                     receipt = self._run_tool(name, call_arguments, return_receipt=True,
                                              operation_scope=operation_scope, _call_id=call.id,
-                                             _call_id_source="native", _task_id=bound_task_id,
+                                             _call_id_source=_call_id_source, _task_id=bound_task_id,
                                              _on_dispatch=mark_dispatched)
                     self._record_turn_receipt(receipt)
                     return receipt
@@ -743,7 +744,7 @@ class AgentRuntime:
                     receipt = self._run_tool(name, call_arguments, return_receipt=True,
                                              operation_scope=operation_scope,
                                              _typed_arguments=call_arguments, _expected_spec=spec,
-                                             _call_id=call.id, _call_id_source="native",
+                                             _call_id=call.id, _call_id_source=_call_id_source,
                                              _task_id=bound_task_id,
                                              _pre_execution_check=(
                                                  lambda: bound_task_id is None

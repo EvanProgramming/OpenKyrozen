@@ -119,6 +119,22 @@ def _bounded_redacted(value: Any, *, budget: int = 4000, depth: int = 0) -> Any:
     return clean(value, depth)
 
 
+def _receipt_args_projection(value: str, arguments: dict[str, Any] | None) -> str:
+    if arguments is not None:
+        return json.dumps(_bounded_redacted(arguments, budget=1000), ensure_ascii=False, sort_keys=True)
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        parsed = None
+    if isinstance(parsed, (dict, list)):
+        return json.dumps(_bounded_redacted(parsed, budget=1000), ensure_ascii=False, sort_keys=True)
+    value = re.sub(
+        r'(?i)((?:[\w.-]*(?:api[-_]?key|credential|password|secret|token|authorization)[\w.-]*|bearer)\s*[:=]\s*["\']?)[^,\s;"\'&]+',
+        r'\1<redacted>', value,
+    )
+    return value[:1000]
+
+
 @dataclass(frozen=True, init=False)
 class ExecutionReceipt:
     """Authoritative, bounded result of one tool attempt."""
@@ -167,8 +183,8 @@ class ExecutionReceipt:
                  side_effects: str = "unknown", verification: dict[str, Any] | None = None):
         if call_id is not None and (not isinstance(call_id, str) or not call_id.strip()):
             raise ValueError("Receipt call_id must be nonempty when present")
-        if call_id_source not in {"native", "legacy"}:
-            raise ValueError("Receipt call_id_source must be native or legacy")
+        if call_id_source not in {"native", "legacy", "synthetic"}:
+            raise ValueError("Receipt call_id_source must be native, legacy, or synthetic")
         if arguments is not None and not isinstance(arguments, dict):
             raise TypeError("Receipt arguments must be a JSON object")
         if tool_result is not None and not isinstance(tool_result, ToolResult):
@@ -244,7 +260,7 @@ class ExecutionReceipt:
             "receipt_id": self.receipt_id,
             "operation_id": self.operation_id,
             "action": self.action,
-            "args": self.args,
+            "args": _receipt_args_projection(self.args, self.arguments),
             "arguments": _bounded_redacted(self.arguments) if self.arguments is not None else None,
             "args_sha256": self.args_sha256,
             "authorized": self.authorized,

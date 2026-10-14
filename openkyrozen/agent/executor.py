@@ -327,7 +327,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
     """Execute one model action, refusing a duplicate successful mutation."""
     canonical = self._operation_action(action)
     started_at = utc_now()
-    call_id = f"legacy_{uuid.uuid4().hex}"
+    call_id = f"synthetic_{uuid.uuid4().hex}"
     if isinstance(args, dict):
         result = (
             f"Error: `{action}` requires a plain string as the `args` field.\n"
@@ -340,7 +340,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
         return self._make_execution_receipt(
             action=canonical, args=args, authorized=False, started_at=started_at, success=False,
             result=result, operation_scope=operation_scope, failure=outcome.error.code, tool_error=outcome.error,
-            tool_result=outcome, call_id=call_id, call_id_source="legacy",
+            tool_result=outcome, call_id=call_id, call_id_source="synthetic",
         )
     args = str(args)
     operation_id = self._operation_id(operation_scope, canonical, args)
@@ -355,7 +355,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                 action=canonical, args=args, authorized=False, started_at=started_at,
                 success=False, result=result, operation_scope=operation_scope,
                 failure=outcome.error.code, tool_error=outcome.error,
-                tool_result=outcome, call_id=call_id, call_id_source="legacy",
+                tool_result=outcome, call_id=call_id, call_id_source="synthetic",
             )
     if (canonical != "run_cmd" and self._is_state_changing_action(canonical, args)
             and operation_id in successful_operations):
@@ -365,10 +365,10 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
         return self._make_execution_receipt(
             action=canonical, args=args, authorized=True, started_at=started_at, success=False,
             result=result, operation_scope=operation_scope, failure=outcome.error.code, tool_error=outcome.error,
-            tool_result=outcome, call_id=call_id, call_id_source="legacy",
+            tool_result=outcome, call_id=call_id, call_id_source="synthetic",
         )
     receipt = self._run_tool(canonical, args, return_receipt=True, operation_scope=operation_scope,
-                             _call_id=call_id, _call_id_source="legacy")
+                             _call_id=call_id, _call_id_source="synthetic")
     assert isinstance(receipt, ExecutionReceipt)
     if (receipt.success and receipt.action != "run_cmd"
             and self._is_state_changing_action(receipt.action, args)):
@@ -376,19 +376,24 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
     return receipt
 
 
-def _record_turn_receipt(self, receipt: ExecutionReceipt) -> dict[str, Any]:
+def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_matching: bool = False) -> dict[str, Any]:
     """Persist a receipt and reconcile the current planned task from verified evidence."""
     from openkyrozen.agent.delegation import TOOLS
     active_task = self.tasks.active_working_task(receipt.task_id) if receipt.task_id else None
     explicit_task_id = receipt.task_id if active_task is not None else None
-    should_reconcile = bool(explicit_task_id) or receipt.call_id_source == "legacy"
+    should_reconcile = (
+        bool(explicit_task_id) or receipt.call_id_source == "legacy"
+        or (allow_legacy_task_matching and receipt.call_id_source == "synthetic")
+    )
     evidence = {} if receipt.action in TOOLS or not should_reconcile else self.tasks.record_evidence(
         task_id=explicit_task_id, action=receipt.action, args=receipt.args,
         args_fingerprint=receipt.args_sha256, result=receipt.result,
         success=receipt.success, acceptance=receipt.acceptance, receipt_id=receipt.receipt_id,
     )
-    task_id = evidence.get("task_id") or receipt.task_id
-    effective_acceptance = evidence.get("acceptance") or receipt.acceptance
+    task_id = evidence.get("task_id")
+    effective_acceptance = evidence.get("acceptance") or (
+        receipt.acceptance if receipt.task_id is None else None
+    )
     if task_id:
         task = next((item for item in self.tasks.tasks if item["id"] == task_id), None)
         if task and not (task.get("checkpoint") or {}).get("action"):
@@ -397,6 +402,8 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt) -> dict[str, Any]:
         index = next(index for index, task in enumerate(self.tasks.tasks) if task["id"] == task_id)
         self.tasks.set_status(index, "succeeded")
     receipt_payload = receipt.as_dict()
+    if receipt.task_id is not None and receipt.task_id != task_id:
+        receipt_payload["requested_task_id"] = receipt.task_id
     if effective_acceptance and not receipt_payload.get("acceptance"):
         receipt_payload["acceptance"] = effective_acceptance
     if evidence.get("unmatched_reason"):
@@ -410,7 +417,8 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt) -> dict[str, Any]:
         "call_id": receipt.call_id, "call_id_source": receipt.call_id_source,
         "action": receipt.action, "args": receipt.args, "result": receipt.result,
         "success": receipt.success, "authorized": receipt.authorized,
-        "acceptance": effective_acceptance, "failure": receipt.failure, "tool_error": receipt.tool_error, "task_id": task_id,
+        "acceptance": effective_acceptance, "failure": receipt.failure, "tool_error": receipt.tool_error,
+        "task_id": task_id, "requested_task_id": receipt.task_id,
         "result_data": receipt.result_data, "verification": receipt.verification,
     }
     if evidence.get("unmatched_reason"):
