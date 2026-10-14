@@ -194,7 +194,23 @@ class SQLiteMigrationTests(unittest.TestCase):
             with _sqlite(path) as db:
                 self.assertEqual(
                     [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
-                    [2, 3],
+                    [2, 3, 4],
+                )
+
+    def test_upgrade_accepts_prior_current_version_marker_without_backfilled_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy-history.sqlite3"
+            self._historical_database(path, 3)
+            with _sqlite(path) as db:
+                db.execute("DELETE FROM schema_migrations WHERE version < 3")
+
+            SQLiteDatabase(path)
+            SQLiteDatabase(path)
+
+            with _sqlite(path) as db:
+                self.assertEqual(
+                    [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
+                    [3, 4],
                 )
 
     def test_sparse_legacy_history_is_valid_when_declared_schema_is_complete(self):
@@ -209,7 +225,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             with _sqlite(path) as db:
                 self.assertEqual(
                     [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
-                    [1, 3],
+                    [1, 3, 4],
                 )
 
     def test_missing_task_columns_are_rejected_before_startup_succeeds(self):
