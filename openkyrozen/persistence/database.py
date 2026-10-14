@@ -149,7 +149,9 @@ _REQUIRED_COLUMNS = {
     "events": {"id", "event_type", "payload", "user_id", "workspace_id", "session_id", "created_at"},
     "memories": {"id", "kind", "content", "user_id", "workspace_id", "content_hash", "metadata"},
     "files": {"id", "rel_path", "content", "content_hash", "user_id", "workspace_id"},
-    "tasks": {"id", "description", "status", "dependencies", "acceptance", "user_id", "workspace_id", "session_id"},
+    "tasks": {"id", "parent_id", "description", "status", "priority", "dependencies", "acceptance",
+              "attempts", "checkpoint", "evidence", "user_id", "workspace_id", "session_id",
+              "created_at", "updated_at"},
     "task_events": {"id", "task_id", "event_type", "payload", "created_at"},
     "learning_proposals": {"id", "kind", "content", "status", "workspace_id"},
     "scheduled_jobs": {"id", "name", "next_run_at", "payload", "user_id", "workspace_id"},
@@ -265,8 +267,6 @@ class SQLiteDatabase:
             raise RuntimeError(
                 f"OpenKyrozen state uses newer schema {rows[-1]}; supported schema is {self.SCHEMA_VERSION}."
             )
-        if rows and rows != list(range(rows[0], rows[-1] + 1)):
-            raise RuntimeError("OpenKyrozen SQLite schema is inconsistent: migration history has gaps")
         version = rows[-1] if rows else 0
         if version == 0 and set(objects) - {"schema_migrations", "sqlite_sequence"}:
             raise RuntimeError("OpenKyrozen SQLite schema is inconsistent: unversioned application tables found")

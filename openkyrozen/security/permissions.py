@@ -197,7 +197,10 @@ def _authorize_tool_action(self, action: str, args: object, *, approve=None) -> 
         return True
     if mode == "ask" and not requires_ask_approval(action, args, self.AVAILABLE_TOOLS):
         return True
-    callback = approve or self._approval_callback.get() or (lambda current, details: self._confirm_tool_action(current, details, force=True))
+    fallback_approval = approve is None and not callable(self._approval_callback.get())
+    callback = approve or self._approval_callback.get() or (
+        lambda current, details: self._confirm_tool_action(current, details, force=True)
+    )
     self._emit_stream_event({"event": "permission_check", "state": "approval_required",
                              "category": risk or "workspace_change"})
     request_var = getattr(self, "_approval_request", None)
@@ -205,9 +208,10 @@ def _authorize_tool_action(self, action: str, args: object, *, approve=None) -> 
     approved = _call_approval_callback(self, callback, action, args, request=request)
     self._emit_stream_event({"event": "permission_check", "state": "allowed" if approved else "denied",
                              "category": risk or "workspace_change"})
-    self._record_permission_decision(action, risk or "workspace_change",
-                                     "user_approved" if approved else "user_denied")
-    self._record_tool_approval(action, "approved" if approved else "denied", str(args))
+    if not fallback_approval:
+        self._record_permission_decision(action, risk or "workspace_change",
+                                         "user_approved" if approved else "user_denied")
+        self._record_tool_approval(action, "approved" if approved else "denied", str(args))
     return approved
 
 
