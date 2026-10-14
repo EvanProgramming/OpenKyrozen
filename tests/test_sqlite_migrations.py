@@ -15,7 +15,7 @@ from openkyrozen.persistence.database import SQLiteDatabase
 from openkyrozen.persistence.store import EventStore
 from openkyrozen.persistence.tasks import TasksRepository
 from openkyrozen.security.approvals import ApprovalRequest
-from openkyrozen.security.permissions import _confirm_tool_action, _record_permission_decision
+from openkyrozen.security.permissions import _authorize_tool_action, _confirm_tool_action, _record_permission_decision
 
 
 # Version layouts mirror event_store.py at 91652a0, 4873ff1, and 3b4e3bd.
@@ -181,6 +181,50 @@ class SQLiteMigrationTests(unittest.TestCase):
                     [1, 2, 3, 4],
                 )
 
+    def test_compacted_prior_version_history_remains_valid_after_upgrade(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "compacted-history.sqlite3"
+            self._historical_database(path, 2)
+            with _sqlite(path) as db:
+                db.execute("DELETE FROM schema_migrations WHERE version < 2")
+
+            SQLiteDatabase(path)
+            SQLiteDatabase(path)
+
+            with _sqlite(path) as db:
+                self.assertEqual(
+                    [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
+                    [2, 3],
+                )
+
+    def test_sparse_legacy_history_is_valid_when_declared_schema_is_complete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sparse-history.sqlite3"
+            self._historical_database(path, 3)
+            with _sqlite(path) as db:
+                db.execute("DELETE FROM schema_migrations WHERE version = 2")
+
+            SQLiteDatabase(path)
+
+            with _sqlite(path) as db:
+                self.assertEqual(
+                    [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
+                    [1, 3],
+                )
+
+    def test_missing_task_columns_are_rejected_before_startup_succeeds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "missing-task-columns.sqlite3"
+            self._historical_database(path, 1)
+            with _sqlite(path) as db:
+                db.execute("ALTER TABLE tasks DROP COLUMN priority")
+            before = path.read_bytes()
+
+            with self.assertRaisesRegex(RuntimeError, "tasks is missing required columns"):
+                SQLiteDatabase(path)
+
+            self.assertEqual(path.read_bytes(), before)
+
     def test_future_version_is_rejected_without_modifying_database(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "future.sqlite3"
@@ -206,7 +250,7 @@ class SQLiteMigrationTests(unittest.TestCase):
                     db.executemany("INSERT INTO schema_migrations VALUES (?, 'historical')", [(v,) for v in versions])
                 before = path.read_bytes()
 
-                with self.assertRaisesRegex(RuntimeError, "migration"):
+                with self.assertRaisesRegex(RuntimeError, "inconsistent|migration"):
                     SQLiteDatabase(path)
 
                 self.assertEqual(path.read_bytes(), before)
@@ -398,6 +442,54 @@ class SQLiteMigrationTests(unittest.TestCase):
             )
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0]["payload"]["call_id"], "call-cli")
+
+    def test_fallback_tui_approval_records_one_permission_decision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+
+            class Runtime:
+                _EXECUTION_SURFACE = "tui"
+                AVAILABLE_TOOLS = {}
+                memory_bank = SimpleNamespace(
+                    store=store, user_id="alice", workspace_id="project", session_id="session",
+                )
+                _approval_request = ContextVar("fallback_approval_request", default=None)
+                _approval_callback = ContextVar("fallback_approval_callback", default=None)
+
+                @staticmethod
+                def permission_mode():
+                    return "ask"
+
+                @staticmethod
+                def interaction_workspace_id():
+                    return "project"
+
+                @staticmethod
+                def _record_permission_decision(action, category, outcome):
+                    _record_permission_decision(Runtime(), action, category, outcome)
+
+                @staticmethod
+                def _record_tool_approval(action, decision, args):
+                    pass
+
+                @staticmethod
+                def _confirm_tool_action(action, args, *, force=False):
+                    return _confirm_tool_action(Runtime(), action, args, force=force)
+
+                @staticmethod
+                def _emit_stream_event(event):
+                    pass
+
+            with patch("openkyrozen.security.tool_policy.tool_confirmation_required", return_value=True), \
+                    patch("openkyrozen.security.permission_gate.requires_ask_approval", return_value=True), \
+                    patch("openkyrozen.security.permissions.sys.stdin", SimpleNamespace(isatty=lambda: False)):
+                self.assertFalse(_authorize_tool_action(Runtime(), "write_file", {"path": "notes.txt"}))
+
+            events = store.list_events(
+                "permission.decision", workspace_id="project", session_id="session", user_id="alice",
+            )
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["payload"]["outcome"], "denied_noninteractive")
 
 
 if __name__ == "__main__":
