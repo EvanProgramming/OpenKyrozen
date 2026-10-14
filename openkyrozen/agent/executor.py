@@ -220,6 +220,11 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
             pass
     if isinstance(args, dict):
         receipt_args = args
+    self._publish_runtime_event(
+        "tool.call", {"tool_name": action,
+                      "argument_keys": sorted(receipt_args)[:64] if isinstance(receipt_args, dict) else []},
+        call_id=_call_id, task_id=_task_id,
+    )
     def finish(outcome: ToolResult, authorized: bool = False, raw_result: Any = None):
         text = render_tool_result(outcome)
         if return_receipt:
@@ -303,6 +308,9 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         with self._delegation_tool_access(action, execution_args):
             if callable(_on_dispatch):
                 _on_dispatch()
+            self._publish_runtime_event(
+                "tool.execution_started", {"tool_name": action}, call_id=_call_id, task_id=_task_id,
+            )
             if action in {"run_cmd", "execute_terminal_command"}:
                 raw_result = self.run_command(execution_args['command'] if isinstance(execution_args, dict) else execution_args)
                 outcome = command_tool_result(raw_result)

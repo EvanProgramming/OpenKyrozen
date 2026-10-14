@@ -221,9 +221,15 @@ def _authorize_tool_action(self, action: str, args: object, *, approve=None) -> 
 
 def _call_approval_callback(self, callback, action, args, *, request=None):
     """Call structured callbacks once, while adapting established two-argument callbacks."""
+    publish = getattr(self, "_publish_runtime_event", None)
     if request is None:
         request_var = getattr(self, "_approval_request", None)
         request = request_var.get() if request_var is not None else None
+    if request is not None and callable(publish):
+        publish("approval.requested", {
+            "request_id": request.request_id, "fingerprint": request.fingerprint,
+            "tool_name": request.tool_name,
+        }, call_id=request.call_id)
     try:
         signature = inspect.signature(callback)
         try:
@@ -237,5 +243,11 @@ def _call_approval_callback(self, callback, action, args, *, request=None):
     try:
         result = callback(request) if use_structured else callback(action, str(args))
     except Exception:
-        return False
-    return result is True
+        result = False
+    approved = result is True
+    if request is not None and callable(publish):
+        publish("approval.resolved", {
+            "request_id": request.request_id, "fingerprint": request.fingerprint,
+            "tool_name": request.tool_name, "outcome": "approved" if approved else "denied",
+        }, call_id=request.call_id)
+    return approved

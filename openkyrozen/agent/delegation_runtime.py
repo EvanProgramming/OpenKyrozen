@@ -278,6 +278,11 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
     turn_token = self._turn_context.set(context)
     state_token = self._active_context_state.set(ContextState(model, config.context_window_tokens))
     usage_token = self._active_usage_run_id.set(child_id)
+    parent_publisher = self._runtime_event_publisher.get()
+    event_token = None
+    if parent_publisher is not None:
+        child_publisher = parent_publisher.fork(session_id=child.memory.session_id)
+        event_token = self._runtime_event_publisher.set(child_publisher)
     started = time.monotonic()
     try:
         with self.use_session(child):
@@ -291,6 +296,8 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
         self._active_usage_run_id.reset(usage_token)
         self._active_context_state.reset(state_token)
         self._turn_context.reset(turn_token)
+        if event_token is not None:
+            self._runtime_event_publisher.reset(event_token)
 
 
 def _delegation_summary(self):

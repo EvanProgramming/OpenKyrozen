@@ -3,10 +3,13 @@ from __future__ import annotations
 import os
 import math
 import sys
+import uuid
 from typing import Any
 from openkyrozen.providers.usage import usage_scope
 from openkyrozen.providers.base import get_model_response, get_model_events
-from openkyrozen.providers.models import ModelResponse, ToolReply, ResponseComplete, ResponseError
+from openkyrozen.providers.models import (
+    ModelResponse, ToolReply, ResponseComplete, ResponseError, TextDelta, ToolCallDelta, UsageUpdate,
+)
 from openkyrozen.providers.context import context_accounting_messages
 from openkyrozen.providers.retry import provider_request_scope, bounded_call, bounded_stream
 from openkyrozen.agent.types import ContextOverflowError, ProviderUnavailableError
@@ -78,8 +81,6 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                         stream: bool = False, on_event=None) -> ModelResponse:
     """Receive the full response under existing deadline, usage and context scopes."""
     provider = self.execution_context.provider or self.llm_provider
-    if provider is None:
-        raise ProviderUnavailableError(self.PROVIDER_UNAVAILABLE_MESSAGE)
     tools = None
     if tool_names is not None:
         if isinstance(tool_names, str) or not isinstance(tool_names, (list, tuple, set, frozenset)):
@@ -94,16 +95,80 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
         tools = [item for item in registry.provider_schemas(names=names)
                  if registry.get_spec(item["name"]).capability in allowed]
     self._last_prompt_tokens = self._last_completion_tokens = 0
+    self._last_response_is_native.set(False)
+    self._turn_failed.set(False)
+    selected_model = model or self.DEEPSEEK_MODEL
+    request_id = f"model_{uuid.uuid4().hex}"
+    request_token = self._active_model_request_id.set(request_id)
+    self._last_model_request_id.set(request_id)
+    self._publish_runtime_event("model.requested", {"model": selected_model}, model_request_id=request_id)
+
+    def usage_snapshot(fallback=None):
+        try:
+            totals = self.memory_bank.store.usage_totals(
+                user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
+                session_id=self.memory_bank.session_id, run_id=self._active_usage_run_id.get(),
+            )
+            return {key: int(totals.get(key, 0) or 0) for key in (
+                "attempts", "authoritative_attempts", "estimated_attempts", "prompt_tokens",
+                "cache_hit_tokens", "cache_miss_tokens", "completion_tokens", "reasoning_tokens", "cost_picos",
+            )}
+        except Exception:
+            usage = fallback if isinstance(fallback, dict) else {}
+            return {key: int(usage.get(key, 0) or 0) for key in ("prompt_tokens", "completion_tokens")}
+
+    def observe(event):
+        if isinstance(event, TextDelta):
+            self._publish_runtime_event("model.text_delta", {"text": event.text}, model_request_id=request_id)
+        elif isinstance(event, ToolCallDelta):
+            self._publish_runtime_event("model.tool_call_delta", {
+                "index": event.index, "id_delta": event.id_delta,
+                "name_delta": event.name_delta, "arguments_delta": event.arguments_delta,
+            }, model_request_id=request_id)
+        elif isinstance(event, UsageUpdate):
+            self._publish_runtime_event("usage.updated", usage_snapshot(event.usage), model_request_id=request_id)
+        elif isinstance(event, ResponseComplete):
+            response = event.response
+            self._publish_runtime_event("usage.updated", usage_snapshot(response.usage), model_request_id=request_id)
+            self._publish_runtime_event("model.completed", {
+                "finish_reason": response.finish_reason.value,
+                "provider": response.metadata.get("provider"),
+                "model": response.metadata.get("model", selected_model),
+            }, model_request_id=request_id)
+        if callable(on_event):
+            try:
+                on_event(event)
+            except Exception:
+                pass
+
     with usage_scope(store=self.memory_bank.store, user_id=self.memory_bank.user_id,
                      workspace_id=self.memory_bank.workspace_id, session_id=self.memory_bank.session_id,
                      run_id=self._active_usage_run_id.get(), surface=self._EXECUTION_SURFACE):
-        selected_model = model or self.DEEPSEEK_MODEL
-        if stream:
-            response = _bounded_provider_events(self, provider, messages, selected_model, tools, on_event)
-        else:
-            response = self._bounded_provider_call(
-                lambda: get_model_response(provider, messages, selected_model, tools=tools)
-            )
+        try:
+            if provider is None:
+                raise ProviderUnavailableError(self.PROVIDER_UNAVAILABLE_MESSAGE)
+            if stream:
+                response = _bounded_provider_events(self, provider, messages, selected_model, tools, observe)
+            else:
+                response = self._bounded_provider_call(
+                    lambda: get_model_response(provider, messages, selected_model, tools=tools)
+                )
+                self._publish_runtime_event("usage.updated", usage_snapshot(response.usage), model_request_id=request_id)
+                self._publish_runtime_event("model.completed", {
+                    "finish_reason": response.finish_reason.value,
+                    "provider": response.metadata.get("provider"),
+                    "model": response.metadata.get("model", selected_model),
+                }, model_request_id=request_id)
+            self._last_response_is_native.set(not bool(response.metadata.get("legacy")))
+        except Exception as exc:
+            self._turn_failed.set(True)
+            self._publish_runtime_event("model.failed", {
+                "error_type": type(exc).__name__,
+                "error_kind": getattr(getattr(exc, "kind", None), "value", None),
+            }, model_request_id=request_id)
+            raise
+        finally:
+            self._active_model_request_id.reset(request_token)
     usage = response.usage or {}
     self._last_prompt_tokens = usage.get("prompt_tokens", 0) or 0
     self._last_completion_tokens = usage.get("completion_tokens", 0) or 0
@@ -127,53 +192,111 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
 
 def _get_llm_response(self, messages: list[dict[str, str]], model: str | None = None, stream: bool = False,
                       on_chunk: Any = None, on_stream_end: Any = None) -> str:
+    from openkyrozen.providers.base import LLMProvider
     provider = self.execution_context.provider or self.llm_provider
     if provider is None:
+        self._last_response_is_native.set(False)
+        self._turn_failed.set(True)
+        request_id = f"model_{uuid.uuid4().hex}"
+        request_token = self._active_model_request_id.set(request_id)
+        self._last_model_request_id.set(request_id)
+        try:
+            self._publish_runtime_event("model.requested", {"model": model or self.DEEPSEEK_MODEL},
+                                        model_request_id=request_id)
+            self._publish_runtime_event("model.failed", {"error_type": "ProviderUnavailableError"},
+                                        model_request_id=request_id)
+        finally:
+            self._active_model_request_id.reset(request_token)
         raise ProviderUnavailableError(self.PROVIDER_UNAVAILABLE_MESSAGE)
-    provider_reported_usage = False
-    self._last_prompt_tokens = 0
-    self._last_completion_tokens = 0
+    publisher = self._runtime_event_publisher.get()
+    self._last_prompt_tokens = self._last_completion_tokens = 0
+    stream_contract = getattr(type(provider), "chat_response_stream", None)
+    if stream and callable(stream_contract) and stream_contract is not LLMProvider.chat_response_stream:
+        def forward(event):
+            if (isinstance(event, TextDelta) and callable(on_chunk)
+                    and (publisher is None or not publisher.observes_events)):
+                on_chunk(event.text)
+            if (isinstance(event, ResponseComplete) and callable(on_stream_end)
+                    and (publisher is None or not publisher.observes_events)):
+                on_stream_end()
+
+        try:
+            result = self._get_model_response(messages, model, stream=True, on_event=forward).as_legacy_tuple()[0]
+            self._turn_failed.set(False)
+            return result
+        except TimeoutError as exc:
+            self._turn_failed.set(True)
+            return f"[LLM Error] {exc}"
+        except Exception as exc:
+            self._turn_failed.set(True)
+            if (self._active_context_state.get() is not None and not self._in_context_compaction.get()
+                    and self._is_context_overflow_error(exc)):
+                raise ContextOverflowError(str(exc)) from exc
+            return f"[LLM Error] {exc}"
+    if stream and hasattr(provider, "chat_stream"):
+        self._last_response_is_native.set(False)
+        self._turn_failed.set(False)
+        request_id = f"model_{uuid.uuid4().hex}"
+        request_token = self._active_model_request_id.set(request_id)
+        self._publish_runtime_event("model.requested", {"model": model or self.DEEPSEEK_MODEL},
+                                    model_request_id=request_id)
+        before = self.memory_bank.store.usage_totals(
+            user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
+            session_id=self.memory_bank.session_id, run_id=self._active_usage_run_id.get(),
+        )
+        try:
+            with usage_scope(
+                    store=self.memory_bank.store, user_id=self.memory_bank.user_id,
+                    workspace_id=self.memory_bank.workspace_id, session_id=self.memory_bank.session_id,
+                    run_id=self._active_usage_run_id.get(), surface=self._EXECUTION_SURFACE):
+                text = self._bounded_provider_stream(provider, messages, model or self.DEEPSEEK_MODEL, on_chunk)
+            after = self.memory_bank.store.usage_totals(
+                user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
+                session_id=self.memory_bank.session_id, run_id=self._active_usage_run_id.get(),
+            )
+            self._last_prompt_tokens = max(0, int(after["prompt_tokens"]) - int(before["prompt_tokens"]))
+            self._last_completion_tokens = max(0, int(after["completion_tokens"]) - int(before["completion_tokens"]))
+            if not self.execution_context.child_run_id:
+                self._total_prompt_tokens += self._last_prompt_tokens
+                self._total_completion_tokens += self._last_completion_tokens
+            snapshot = {key: int(after.get(key, 0) or 0) for key in (
+                "attempts", "authoritative_attempts", "estimated_attempts", "prompt_tokens",
+                "cache_hit_tokens", "cache_miss_tokens", "completion_tokens", "reasoning_tokens", "cost_picos",
+            )}
+            self._publish_runtime_event("usage.updated", snapshot, model_request_id=request_id)
+            self._publish_runtime_event("model.completed", {
+                "finish_reason": "unknown", "provider": getattr(provider, "name", None),
+                "model": model or self.DEEPSEEK_MODEL, "legacy_stream": True,
+            }, model_request_id=request_id)
+            self._turn_failed.set(False)
+            if callable(on_stream_end) and (publisher is None or not publisher.observes_events):
+                on_stream_end()
+        except Exception as exc:
+            self._turn_failed.set(True)
+            self._publish_runtime_event("model.failed", {
+                "error_type": type(exc).__name__,
+                "error_kind": getattr(getattr(exc, "kind", None), "value", None),
+            }, model_request_id=request_id)
+            if (self._active_context_state.get() is not None and not self._in_context_compaction.get()
+                    and self._is_context_overflow_error(exc)):
+                raise ContextOverflowError(str(exc)) from exc
+            return f"[LLM Error] {exc}"
+        finally:
+            self._active_model_request_id.reset(request_token)
+        state = self._active_context_state.get()
+        if state is not None and not self._in_context_compaction.get():
+            state.update(messages)
+            self._store_context_status(state)
+        return text
     try:
-        with usage_scope(
-                store=self.memory_bank.store, user_id=self.memory_bank.user_id,
-                workspace_id=self.memory_bank.workspace_id, session_id=self.memory_bank.session_id,
-                run_id=self._active_usage_run_id.get(), surface=self._EXECUTION_SURFACE):
-            if stream and hasattr(provider, 'chat_stream'):
-                before = self.memory_bank.store.usage_totals(
-                    user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
-                    session_id=self.memory_bank.session_id, run_id=self._active_usage_run_id.get(),
-                )
-                text = self._bounded_provider_stream(
-                    provider, messages, model or self.DEEPSEEK_MODEL, on_chunk,
-                )
-                if text.startswith("[Ollama Error]") and self._is_context_overflow_error(RuntimeError(text)):
-                    raise RuntimeError(text)
-                after = self.memory_bank.store.usage_totals(
-                    user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
-                    session_id=self.memory_bank.session_id, run_id=self._active_usage_run_id.get(),
-                )
-                self._last_prompt_tokens = max(0, int(after["prompt_tokens"]) - int(before["prompt_tokens"]))
-                self._last_completion_tokens = max(0, int(after["completion_tokens"]) - int(before["completion_tokens"]))
-                if not self.execution_context.child_run_id:
-                    self._total_prompt_tokens += self._last_prompt_tokens
-                    self._total_completion_tokens += self._last_completion_tokens
-                if on_stream_end:
-                    on_stream_end()
-            else:
-                return self._get_model_response(messages, model).as_legacy_tuple()[0]
+        result = self._get_model_response(messages, model).as_legacy_tuple()[0]
+        self._turn_failed.set(False)
+        return result
     except TimeoutError as exc:
         return f"[LLM Error] {exc}"
     except Exception as exc:
+        self._turn_failed.set(True)
         if (self._active_context_state.get() is not None and not self._in_context_compaction.get()
                 and self._is_context_overflow_error(exc)):
             raise ContextOverflowError(str(exc)) from exc
         return f"[LLM Error] {exc}"
-    state = self._active_context_state.get()
-    if state is not None and not self._in_context_compaction.get():
-        if provider_reported_usage:
-            state.note_provider_usage(messages, int(self._last_prompt_tokens or 0))
-            self._cache_reported_context_tokens(messages, int(self._last_prompt_tokens or 0))
-        else:
-            state.update(messages)
-        self._store_context_status(state)
-    return text

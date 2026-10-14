@@ -271,6 +271,8 @@ def _clean_final_response(self, text: str) -> str:
     are useful in the next model prompt, but must never become the final
     answer merely because the turn stopped after a tool call.
     """
+    if self._last_response_is_native.get():
+        return str(text or "").strip()
     cleaned = DeepSeekDSMLFilter().feed(str(text or ""), final=True).strip()
     if not cleaned:
         return ""
@@ -426,6 +428,14 @@ def _legacy_plan_value(self, text: str, *, allow_unheaded: bool = False) -> dict
 def _parse_model_response(self, text: str) -> dict[str, Any]:
     """Parse one model response exactly once for the turn state machine."""
     raw = str(text or "").strip()
+    if self._last_response_is_native.get():
+        return {
+            "raw": raw, "clean": raw, "has_plan": False, "has_tasklist": False,
+            "tool_calls": [], "question": None, "plan_proposal": None,
+            "unknown_action": None, "unsupported_action_protocol": False,
+            "protocol_error": None, "define_tool_present": False,
+            "define_tool_registered": False,
+        }
     _unwrapped_calls, malformed_unwrapped = self._collect_unwrapped_tool_calls(raw)
     tool_calls = [] if malformed_unwrapped else self._collect_tool_calls(raw)
     question = None
@@ -500,6 +510,8 @@ def _parse_model_response(self, text: str) -> dict[str, Any]:
 
 def _observe_model_response(self, text: str) -> dict[str, Any]:
     """Parse a response once and merge its durable task signals once."""
+    if self._last_response_is_native.get():
+        return self._parse_model_response(text)
     define_tool_present = bool(re.search(r"^[ \t]*DefineTool\s*:", str(text or ""),
                                          re.IGNORECASE | re.MULTILINE))
     parsed = self._parse_model_response(text)

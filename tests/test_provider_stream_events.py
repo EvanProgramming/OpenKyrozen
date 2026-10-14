@@ -191,10 +191,24 @@ class StreamEventContractTests(unittest.TestCase):
             try:
                 app.runtime.llm_provider = StreamingProvider(ProviderConfig(provider="custom", model_simple="m"))
                 observed = []
-                response = app.runtime._get_model_response([], "m", stream=True, on_event=observed.append)
+                from openkyrozen.agent.events import RuntimeEventPublisher
+                runtime_events = []
+                token = app.runtime._runtime_event_publisher.set(RuntimeEventPublisher(
+                    user_id="local", workspace_id="default", session_id="test",
+                    on_runtime_event=runtime_events.append,
+                ))
+                try:
+                    response = app.runtime._get_model_response([], "m", stream=True, on_event=observed.append)
+                finally:
+                    app.runtime._runtime_event_publisher.reset(token)
                 self.assertEqual(response.text, "live")
+                self.assertTrue(app.runtime._last_response_is_native.get())
                 self.assertEqual(observed[0], TextDelta("live"))
                 self.assertIsInstance(observed[-1], ResponseComplete)
+                self.assertEqual([event.kind for event in runtime_events], [
+                    "model.requested", "model.text_delta", "usage.updated", "model.completed",
+                ])
+                self.assertEqual(len({event.model_request_id for event in runtime_events}), 1)
             finally:
                 app.close()
 

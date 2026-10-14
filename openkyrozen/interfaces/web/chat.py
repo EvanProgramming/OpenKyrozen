@@ -6,6 +6,7 @@ import time
 import threading
 import uuid
 import re
+from openkyrozen.agent.events import RuntimeEvent, runtime_event_as_legacy
 import asyncio
 import subprocess
 import queue
@@ -270,7 +271,7 @@ def _apply_chat_controls(self, session: dict[str, Any], body: dict[str, Any], me
     return message, None
 
 
-def _run_session_chat(self, session: dict[str, Any], message: str) -> str:
+def _run_session_chat(self, session: dict[str, Any], message: str, *, on_runtime_event=None) -> str:
     """Run a session without swapping process-global agent state."""
     with self._chat_lock:
         self._initialise_session_defaults(session)
@@ -283,7 +284,11 @@ def _run_session_chat(self, session: dict[str, Any], message: str) -> str:
         with runtime.use_session(bound):
             recalls = runtime.memory_bank.store.list_events("memory.recalled", limit=1, workspace_id=runtime.memory_bank.workspace_id, session_id=bound.session_id, user_id=self._SERVER_ACTOR_ID)
             previous_recall_id = recalls[0]["id"] if recalls else None
-            reply = runtime.chat(bound, message, clear_tasks=True, profile=session.get("profile", "auto"), memory_context={key: session.get(key) for key in ("speaker", "audience", "channel", "authorized_speakers")}, on_event=runtime._stream_event_callback.get())
+            reply = runtime.chat(
+                bound, message, clear_tasks=True, profile=session.get("profile", "auto"),
+                memory_context={key: session.get(key) for key in ("speaker", "audience", "channel", "authorized_speakers")},
+                on_runtime_event=on_runtime_event,
+            )
             reply = runtime._clean_final_response(reply)
             session["last_learning_run"] = bound.last_learning_run
             bound.messages.extend([{"role": "user", "content": message}, {"role": "assistant", "content": reply}])
@@ -442,7 +447,16 @@ async def api_chat_stream(self, request: Request):
                 self.sink({"event": "content", "chunk": service._agent._clean_stream_buffer(self.buffer)})
                 self.buffer = ""
 
-        def __call__(self, event: dict[str, Any]) -> None:
+        def __call__(self, event: dict[str, Any] | RuntimeEvent) -> None:
+            if isinstance(event, RuntimeEvent):
+                if event.kind == "model.text_delta" and not event.payload.get("legacy_protocol"):
+                    self.sink({"event": "content", "chunk": str(event.payload.get("text", ""))})
+                    return
+                projected = runtime_event_as_legacy(event)
+                if projected is None:
+                    self.sink({"event": "runtime_event", "runtime_event": event.as_dict()})
+                    return
+                event = projected
             kind = event.get("event")
             if kind == "content":
                 self._emit_content(self.dsml.feed(str(event.get("chunk", ""))))
@@ -471,9 +485,10 @@ async def api_chat_stream(self, request: Request):
     projection = StreamProjection(events.put)
 
     def run_streaming_turn() -> None:
-        callback_token = service._agent._stream_event_callback.set(projection)
         try:
-            reply = immediate_reply if immediate_reply is not None else service._run_session_chat(session, msg)
+            reply = immediate_reply if immediate_reply is not None else service._run_session_chat(
+                session, msg, on_runtime_event=projection,
+            )
             if str(reply).startswith("[LLM Error]"):
                 events.put({"event": "error", "error": str(reply)})
             else:
@@ -486,8 +501,6 @@ async def api_chat_stream(self, request: Request):
             })
         except Exception as exc:
             events.put({"event": "error", "error": str(exc)})
-        finally:
-            service._agent._stream_event_callback.reset(callback_token)
 
     async def generate():
         # The synchronous agent runs in a dedicated worker and safely drains if
@@ -503,6 +516,8 @@ async def api_chat_stream(self, request: Request):
             elif kind == "tasks":
                 yield f"data: {json.dumps({'event': 'tasks', 'tasks': event.get('tasks', [])}, ensure_ascii=False)}\n\n"
             elif kind == "subagent":
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            elif kind == "runtime_event":
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             elif kind == "interaction":
                 yield f"data: {json.dumps({'event': 'interaction', 'interaction': event.get('interaction', {})}, ensure_ascii=False)}\n\n"

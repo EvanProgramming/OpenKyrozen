@@ -249,6 +249,16 @@ def initialise(self):
 
     self._stream_event_callback: ContextVar[Any] = ContextVar("stream_event_callback", default=None)
 
+    self._runtime_event_publisher: ContextVar[Any] = ContextVar("runtime_event_publisher", default=None)
+
+    self._active_model_request_id: ContextVar[str | None] = ContextVar("active_model_request_id", default=None)
+
+    self._last_model_request_id: ContextVar[str | None] = ContextVar("last_model_request_id", default=None)
+
+    self._last_response_is_native: ContextVar[bool] = ContextVar("last_response_is_native", default=False)
+
+    self._turn_failed: ContextVar[bool] = ContextVar("turn_failed", default=False)
+
     self._approval_callback: ContextVar[Any] = ContextVar("approval_callback", default=None)
     self._approval_request: ContextVar[Any] = ContextVar("approval_request", default=None)
     self._approval_tool_spec: ContextVar[Any] = ContextVar("approval_tool_spec", default=None)

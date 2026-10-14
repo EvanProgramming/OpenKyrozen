@@ -4,6 +4,7 @@ import json
 import hashlib
 import re
 import uuid
+from contextvars import ContextVar
 from typing import Any
 from openkyrozen.persistence.models import utc_now
 
@@ -23,12 +24,19 @@ class TaskManager:
         self._pending_completions: set[int] = set()
         self._evidence: list[dict[str, Any]] = []
         self.working_plan: WorkingPlan | None = None
+        self._runtime_event_callback: ContextVar[Any] = ContextVar("task_runtime_event_callback", default=None)
 
     def _persist(self, task: dict[str, Any]) -> None:
         self.store.write_task(task, user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id)
     def _event(self, task: dict[str, Any], event_type: str, payload: Any) -> None:
         self.store.append_event(event_type, payload, user_id=self.user_id, workspace_id=self.workspace_id,
                                 session_id=self.session_id, task_id=task["id"])
+        callback = self._runtime_event_callback.get()
+        if callable(callback):
+            try:
+                callback(event_type, payload, task["id"])
+            except Exception:
+                pass
 
     def add_task(self, description: str, *, dependencies: list[str] | None = None,
                  acceptance: list[dict[str, Any]] | None = None, priority: int = 0,
