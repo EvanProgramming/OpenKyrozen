@@ -52,6 +52,7 @@ def start(self, payload: dict[str, Any], request_id: str) -> None:
             self.graph_state(request_id)
         if configured and not self._quiet_call(runtime._ensure_detached_learning_worker):
             threading.Thread(target=runtime._background_learning_loop, daemon=True).start()
+        backup_path = runtime.memory_bank.store.database.last_backup_path
         self.emit("tasks", request_id, tasks=[
             {"id": item["id"], "description": item["description"], "status": item["status"]}
             for item in runtime.tasks.tasks
@@ -65,6 +66,7 @@ def start(self, payload: dict[str, Any], request_id: str) -> None:
             mode="global" if context.is_global else "project",
             recovered=len(task_results or []),
             session_id=self._active_session_id,
+            backup_path=str(backup_path) if backup_path else "",
         )
         self.navigation(request_id)
         self.usage(request_id)

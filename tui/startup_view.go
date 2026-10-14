@@ -104,6 +104,9 @@ func (m model) splash() string {
 	}
 	lines := append(logo, "")
 	lines = append(lines, startupMilestones(m)...)
+	if m.startupBackup != "" {
+		lines = append(lines, mutedStyle.Render("SQLite backup: "+m.startupBackup))
+	}
 	lines = append(lines, "", splashStatus(m))
 	content := strings.Join(lines, "\n")
 	return lipgloss.NewStyle().Width(maxInt(1, m.width)).Height(maxInt(1, m.height)).Align(lipgloss.Center, lipgloss.Center).Render(content)

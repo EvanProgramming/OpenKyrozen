@@ -169,6 +169,29 @@ class SQLiteMigrationTests(unittest.TestCase):
                 self.assertIsNone(second_open.last_backup_path)
                 self.assertEqual(len(list(Path(directory).glob("*.backup.*"))), 1 if version < 3 else 0)
 
+    def test_incompatible_existing_table_rolls_back_migration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            self._historical_database(path, 2)
+            with _sqlite(path) as db:
+                db.execute(
+                    "CREATE TABLE history_nodes(id TEXT PRIMARY KEY, parent_id TEXT, user_id TEXT, "
+                    "workspace_id TEXT, session_id TEXT, created_at TEXT)"
+                )
+
+            with self.assertRaisesRegex(RuntimeError, "history_nodes is missing required columns"):
+                SQLiteDatabase(path)
+
+            with _sqlite(path) as db:
+                self.assertEqual(
+                    [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
+                    [1, 2],
+                )
+                self.assertEqual(
+                    {row[1] for row in db.execute("PRAGMA table_info(history_nodes)")},
+                    {"id", "parent_id", "user_id", "workspace_id", "session_id", "created_at"},
+                )
+
     def test_fresh_database_records_each_ordered_migration(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "fresh.sqlite3"
@@ -473,8 +496,8 @@ class SQLiteMigrationTests(unittest.TestCase):
                     pass
 
                 @staticmethod
-                def _confirm_tool_action(action, args, *, force=False):
-                    return _confirm_tool_action(Runtime(), action, args, force=force)
+                def _confirm_tool_action(action, args, *, force=False, category="high_impact"):
+                    return _confirm_tool_action(Runtime(), action, args, force=force, category=category)
 
                 @staticmethod
                 def _emit_stream_event(event):
@@ -490,6 +513,31 @@ class SQLiteMigrationTests(unittest.TestCase):
             )
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0]["payload"]["outcome"], "denied_noninteractive")
+            self.assertEqual(events[0]["payload"]["category"], "workspace_change")
+
+    def test_task_replace_preserves_original_error_when_rollback_fails(self):
+        class Connection:
+            def execute(self, query, params=None):
+                return None
+
+            def rollback(self):
+                raise OSError("rollback failed")
+
+        class Database:
+            _lock = threading.RLock()
+
+            @contextmanager
+            def connection(self):
+                yield Connection()
+
+            @staticmethod
+            def _json(value):
+                return value
+
+        with patch("logging.Logger.exception"):
+            with self.assertRaises(KeyError) as raised:
+                TasksRepository(Database()).replace_tasks([{}])
+        self.assertEqual(raised.exception.args, ("id",))
 
 
 if __name__ == "__main__":

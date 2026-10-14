@@ -229,6 +229,7 @@ class SQLiteDatabase:
                         )
                 if version == self.SCHEMA_VERSION:
                     self._execute_script(db, _MIGRATIONS[-1][1])
+                self._validate_schema(db, self.SCHEMA_VERSION)
                 db.commit()
             except Exception:
                 db.rollback()

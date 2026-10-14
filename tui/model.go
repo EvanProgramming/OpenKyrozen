@@ -131,6 +131,7 @@ type model struct {
 	modelPromptMessage        string
 	modelPromptReturn         screen
 	workspace                 string
+	startupBackup             string
 	activeSessionID           string
 	activeScopeID             string
 	navigation                []navigationGroup

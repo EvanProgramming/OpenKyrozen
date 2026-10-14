@@ -651,6 +651,8 @@ class TUIProtocolTests(unittest.TestCase):
             "model_simple": "deepseek-v4-flash",
         })()
         plugin = type("Plugin", (), {"load_once": lambda self: None})()
+        backup_path = Path("/tmp/openkyrozen.sqlite3.backup.test")
+        self.backend.agent.memory_bank.store.database.last_backup_path = backup_path
         with patch.object(self.backend.agent, "configure_launch_context", return_value=context), \
                 patch.object(self.backend.agent, "detect_provider", return_value=config), \
                 patch.object(self.backend.agent, "_prompt_and_init_deepseek", return_value=True), \
@@ -667,6 +669,8 @@ class TUIProtocolTests(unittest.TestCase):
         update_thread.return_value.start.assert_called_once_with()
         self.assertIsNone(register_chat.call_args.kwargs["title"])
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        ready = next(event for event in events if event["event"] == "ready")
+        self.assertEqual(ready["backup_path"], str(backup_path))
         self.assertEqual(events[-1]["event"], "status")
         self.assertEqual(events[-1]["state"], "ready")
 
