@@ -311,7 +311,7 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         self.app.runtime._emit_stream_event = events.append
         receipt = self.app.runtime.execute_call(
             self.app.runtime.current_session,
-            ToolCall("wrong-operation", "run_cmd", {"command": "pytest --version"}),
+            ToolCall("wrong-operation", "run_cmd", {"command": "python -m unittest --help"}),
             task_id=task["id"],
         )
 
@@ -327,11 +327,11 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
     def test_generic_test_command_does_not_satisfy_unrelated_acceptance(self):
         from openkyrozen.providers.models import ToolCall
 
-        self.plan("run_cmd", {"command": "pytest --version"})
+        self.plan("run_cmd", {"command": "python -m unittest --help"})
         task = self.app.runtime.tasks.tasks[0]
         receipt = self.app.runtime.execute_call(
             self.app.runtime.current_session,
-            ToolCall("test-version", "run_cmd", {"command": "pytest --version"}),
+            ToolCall("test-version", "run_cmd", {"command": "python -m unittest --help"}),
             task_id=task["id"],
         )
         self.assertTrue(receipt.success)
@@ -343,13 +343,13 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
 
         self.app.runtime.tasks.update_plan(complexity="complex", tasks=[{
             "description": "Verify and review the changed files",
-            "acceptance": ["run pytest --version and independently review the changed files"],
-            "execution": {"action": "run_cmd", "arguments": {"command": "pytest --version"}},
+            "acceptance": ["run python -m unittest --help and independently review the changed files"],
+            "execution": {"action": "run_cmd", "arguments": {"command": "python -m unittest --help"}},
         }])
         task = self.app.runtime.tasks.tasks[0]
         receipt = self.app.runtime.execute_call(
             self.app.runtime.current_session,
-            ToolCall("partial-acceptance", "run_cmd", {"command": "pytest --version"}),
+            ToolCall("partial-acceptance", "run_cmd", {"command": "python -m unittest --help"}),
             task_id=task["id"],
         )
         self.assertTrue(receipt.success)
