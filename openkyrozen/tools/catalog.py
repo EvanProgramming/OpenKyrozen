@@ -4,6 +4,7 @@ import copy
 
 # name, capability, side effects, owner, risk, parallel safety, aliases, conversion fields, argument aliases, confirmation surfaces
 _ROWS = (
+    ('update_plan', 'write', 'internal_write', 'runtime', 'normal', False, (), (), (), ()),
     ('spawn_agents', 'read', 'orchestration', 'orchestration', 'normal', False, (), (), (), ()),
     ('send_subagent', 'read', 'orchestration', 'orchestration', 'normal', False, (), (), (), ()),
     ('list_subagents', 'read', 'orchestration', 'orchestration', 'normal', False, (), (), (), ()),
@@ -116,6 +117,12 @@ _SCHEMAS = {'read_file': {'properties': {'path': {'type': 'string'}},
                    'additionalProperties': False}}
 
 _OBJECT_FIELDS = {
+    'update_plan': {'complexity': {'type':'string','enum':['simple','medium','complex']},
+                    'tasks': {'type':'array','minItems':1,'items':{'type':'object','properties':{
+                        'id': {'type':'string','minLength':1},
+                        'description': {'type':'string','minLength':1},
+                        'acceptance': {'type':'array','items':{'type':'string','minLength':1}},
+                    },'required':['description','acceptance'],'additionalProperties':False}}},
     'spawn_agents': {'assignments': {'type':'array','items':{'type':'object','properties':{},'additionalProperties':True}}},
     'send_subagent': {'run_id': {'type':'string'}, 'assignment': {'type':'object','properties':{},'additionalProperties':True}},
     'list_subagents': {'run_id': {'type':'string'}}, 'wait_subagents': {'run_ids': {'type':'array','items':{'type':'string'}}, 'timeout': {'type':'number','minimum':0,'maximum':60}},
@@ -148,6 +155,7 @@ _OBJECT_FIELDS = {
 }
 for _name, _properties in _OBJECT_FIELDS.items():
     _required = {
+        'update_plan': ['complexity', 'tasks'],
         'read_file': ['path'], 'find_files': ['pattern'], 'write_file': ['path', 'content'],
         'run_cmd': ['command'], 'execute_terminal_command': ['command'], 'search_web': ['query'],
         'search_files': ['query'],

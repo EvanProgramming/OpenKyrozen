@@ -172,6 +172,8 @@ class AgentRuntime:
         _run_subagent_llm,
         _subagent_provider_model,
     )
+
+    from openkyrozen.agent.plan_tools import _update_plan
     from openkyrozen.agent.delegation_runtime import (
         _plan_delegation,
         delegation, _invoke_delegated, spawn_agents, send_subagent, list_subagents,

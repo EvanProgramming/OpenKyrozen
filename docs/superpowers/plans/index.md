@@ -9,5 +9,6 @@
 - [V3 #229 — Native provider tools](2026-10-12-v3-issue-229.md)
 - [V3 #230 — Structured provider streaming](2026-10-12-v3-issue-230.md)
 - [V3 #264 — Version SQLite state and migrate safely](2026-10-14-v3-issue-264.md)
+- [V3 #241 — Working Plans and task lifecycle](2026-10-14-v3-issue-241.md)
 
 Add a linked issue-specific plan here before coding any later V3 issue.

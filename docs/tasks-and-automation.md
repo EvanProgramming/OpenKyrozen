@@ -11,6 +11,8 @@ This guide describes resumable work recorded by the local runtime. A normal chat
 
 Task IDs and records are actor/workspace/session scoped. The web task API exposes list/create/resume operations; the [runtime inventory](tool-inventory.md) gives exact routes. In the TUI use `/tasks` to inspect progress and `/agents` for delegated jobs. Cancellation stops subsequent sub-agent tools between tool calls; it cannot undo an external effect that already occurred.
 
+Simple work does not require a plan, and a plan is optional for medium work. Complex direct work uses a durable Working Plan with runtime-owned stable IDs and explicit acceptance criteria. The model proposes task changes through the typed `update_plan` boundary; identified tasks are revised, new tasks are added, and omitted tasks remain. Changing a task's description or acceptance criteria resets its status and stale evidence. A plan completes only when every task succeeds with acceptance evidence; recovery also reconciles a crash between the final task write and the plan status write. Clearing an active plan cancels its unfinished steps. The existing foreground text protocol continues to use Plan/TaskList compatibility until the native foreground loop is migrated.
+
 ## Sub-agents
 
 For a suitable multi-part request, the coordinator can assign independent work to specialist sessions, preserve parent scope, collect structured results, and conduct a read-only peer review. Concurrency is a number of parallel execution slots: the default is four; additional assignments queue. Per-role provider and model overrides do not inherit the main provider's generic key. Provider setup, authorization and failure handling are described in [sub-agents](subagents.md).

@@ -154,7 +154,7 @@ class SQLiteMigrationTests(unittest.TestCase):
                 with _sqlite(path) as db:
                     self.assertEqual(
                         [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
-                        [1, 2, 3],
+                        [1, 2, 3, 4],
                     )
                     self.assertEqual(
                         db.execute("SELECT description FROM tasks WHERE id='legacy-task'").fetchone()[0],
@@ -167,7 +167,7 @@ class SQLiteMigrationTests(unittest.TestCase):
                         self.assertEqual(db.execute("SELECT head_id FROM history_heads").fetchone()[0], "history-1")
                 second_open = SQLiteDatabase(path)
                 self.assertIsNone(second_open.last_backup_path)
-                self.assertEqual(len(list(Path(directory).glob("*.backup.*"))), 1 if version < 3 else 0)
+                self.assertEqual(len(list(Path(directory).glob("*.backup.*"))), 1 if version < 4 else 0)
 
     def test_fresh_database_records_each_ordered_migration(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -178,7 +178,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             with _sqlite(path) as db:
                 self.assertEqual(
                     [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
-                    [1, 2, 3],
+                    [1, 2, 3, 4],
                 )
 
     def test_future_version_is_rejected_without_modifying_database(self):
@@ -269,7 +269,7 @@ class SQLiteMigrationTests(unittest.TestCase):
 
             with _sqlite(path) as db:
                 self.assertIsNotNone(db.execute("SELECT name FROM sqlite_master WHERE name='learning_runtime'").fetchone())
-                self.assertEqual(db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 3)
+                self.assertEqual(db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 4)
             self.assertTrue(database.last_backup_path and database.last_backup_path.exists())
 
     def test_concurrent_initializers_apply_legacy_migrations_once(self):
@@ -298,7 +298,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             with _sqlite(path) as db:
                 self.assertEqual(
                     [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
-                    [1, 2, 3],
+                    [1, 2, 3, 4],
                 )
 
     def test_task_replacement_rolls_back_if_any_new_row_is_invalid(self):

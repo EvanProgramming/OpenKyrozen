@@ -30,6 +30,8 @@ def _compose_skills(self, task_description: str) -> str | None:
 def _build_tools_list(self, capabilities: frozenset[str] | None = None) -> str:
     lines = []
     for name, fn in self.AVAILABLE_TOOLS.items():
+        if name == "update_plan":  # Structured-only until the foreground loop uses native calls.
+            continue
         if self.tool_registry.get_spec(name).visibility != 'public':
             continue
         if capabilities is not None and tool_capability(name,self.AVAILABLE_TOOLS) not in capabilities:
@@ -82,7 +84,7 @@ def _discover_tools(self, args: str) -> str:
 
 def _agent_prompt_tools_list(self, agent_config: dict[str, Any]) -> str:
     """Build the inventory within config, active token and interaction bounds."""
-    permitted = self._permitted_tool_names(agent_config)
+    permitted = self._permitted_tool_names(agent_config) - {"update_plan"}
     detailed = permitted
     if self._prompt_profile() == "compact":
         detailed = permitted & ({"list_dir", "find_files", "search_files", "read_file", "write_file", "edit_file", "run_cmd", "discover_tools"}
