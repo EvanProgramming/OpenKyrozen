@@ -69,7 +69,8 @@ def _is_state_changing_action(self, action: str, args: str) -> bool:
 
 def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, started_at: str,
                             success: bool, result: Any, operation_scope: str,
-                            failure: str | None = None, raw_result: Any = None, tool_error: ToolError | None = None) -> ExecutionReceipt:
+                            failure: str | None = None, raw_result: Any = None,
+                            tool_error: ToolError | None = None, result_data: Any = None) -> ExecutionReceipt:
     canonical = self._operation_action(action)
     from openkyrozen.agent.delegation import TOOLS
     result_text = self._fix_safe_text(result, max(2000, len(str(result))) if canonical in TOOLS else 200000 if canonical in {"read_file", "read_webpage", "git_diff", "git_show", "graph_query"} else 2000, preserve_lines=True)
@@ -131,6 +132,7 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         acceptance=acceptance if success and (accepted or effect_verified) else None,
         tool_error=({"code": tool_error.code, "message": self._fix_safe_text(tool_error.message, 1000),
                      "retriable": tool_error.retriable, "metadata": safe_metadata(tool_error.metadata)} if tool_error else None),
+        result_data=result_data,
     )
 
 
@@ -177,7 +179,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                 action=action, args=receipt_args, authorized=authorized, started_at=started_at,
                 success=outcome.success, result=text, operation_scope=operation_scope,
                 failure=outcome.error.code if outcome.error else None, raw_result=raw_result,
-                tool_error=outcome.error,
+                tool_error=outcome.error, result_data=outcome.data,
             )
         return (text, outcome.success) if return_success else text
     if action not in self.AVAILABLE_TOOLS:
@@ -343,6 +345,7 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt) -> dict[str, Any]:
         "action": receipt.action, "args": receipt.args, "result": receipt.result,
         "success": receipt.success, "authorized": receipt.authorized,
         "acceptance": effective_acceptance, "failure": receipt.failure, "tool_error": receipt.tool_error, "task_id": task_id,
+        "result_data": receipt.result_data,
     }
     if evidence.get("unmatched_reason"):
         result["unmatched_reason"] = evidence["unmatched_reason"]

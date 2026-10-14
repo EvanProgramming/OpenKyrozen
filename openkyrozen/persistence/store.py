@@ -158,6 +158,24 @@ class EventStore:
     def write_task(self, task, *, user_id, workspace_id, session_id):
         return self.tasks.write_task(task, user_id=user_id, workspace_id=workspace_id, session_id=session_id)
 
+    def get_working_plan(self, *, user_id, workspace_id, session_id):
+        return self.tasks.get_working_plan(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
+
+    def set_working_plan_status(self, plan_id, status, *, user_id, workspace_id, session_id):
+        return self.tasks.set_working_plan_status(
+            plan_id, status, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+        )
+
+    def list_working_plan_tasks(self, plan_id, *, user_id, workspace_id, session_id):
+        return self.tasks.list_working_plan_tasks(
+            plan_id, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+        )
+
+    def write_working_plan(self, plan, tasks, *, user_id, workspace_id, session_id):
+        return self.tasks.write_working_plan(
+            plan, tasks, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+        )
+
     def claim_task(self, *, user_id, workspace_id, session_id):
         return self.tasks.claim_task(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
 

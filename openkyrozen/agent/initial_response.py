@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import re
 from openkyrozen.app.config import load_agent_config
+from openkyrozen.tasks.models import requires_working_plan
 
 def _initial_turn_response(self, turn):
     from openkyrozen.agent.delegation import TOOLS
@@ -89,7 +90,7 @@ def _initial_turn_response(self, turn):
                 turn.turn_prompt_total + turn.turn_completion_total, turn.turn_start,
             )
 
-    # ---- Plan enforcement: MEDIUM and COMPLEX only ----
+    # ---- Plan enforcement: complex direct work only ----
     _llm_has_plan = response_meta["has_plan"]
     def has_delegation():
         return any(call.get("action") in TOOLS for call in turn.tool_calls) or bool(
@@ -97,9 +98,13 @@ def _initial_turn_response(self, turn):
                 r"\b(?:spawn_agents|send_subagent|wait_subagents)\b|\b(?:spawn|delegate)\b[^\n]*\b(?:agents?|specialists?|assignments?|workers?)\b",
                 turn.response_text, re.IGNORECASE))
     delegated = has_delegation()
-    if turn.interaction_mode == "agent" and turn.complexity in ("medium", "complex") and not delegated:
+    if turn.interaction_mode == "agent" and requires_working_plan(turn.complexity) and not delegated:
+        if self.tasks.working_plan is None:
+            self.tasks.recover()
         plan_attempts = 0
-        while not _llm_has_plan and turn.tool_calls and not delegated and plan_attempts < 2:
+        while (self.tasks.working_plan is None and not _llm_has_plan
+               and not response_meta["has_tasklist"] and turn.tool_calls
+               and not delegated and plan_attempts < 2):
             plan_attempts += 1
             plan_hint = (
                 "System: This is a {0} task. Output a Plan block first:\n"
@@ -127,7 +132,7 @@ def _initial_turn_response(self, turn):
             # Don't inject — just let it proceed without plan this time
 
     # ---- TaskList enforcement: COMPLEX only ----
-    _llm_has_tasklist = response_meta["has_tasklist"]
+    _llm_has_tasklist = response_meta["has_tasklist"] or self.tasks.working_plan is not None
     if turn.interaction_mode == "agent" and turn.complexity == "complex" and turn.tool_calls and not delegated:
         if not _llm_has_tasklist and _llm_has_plan:
             self._tasks_from_plan(turn.response_text)
@@ -146,6 +151,8 @@ def _initial_turn_response(self, turn):
                     self.tasks.add_task(f"Execute {tc.get('action','?')}: {safe_args}")
             if self.tasks.tasks:
                 self._update_tasks_panel()
+        if self.tasks.tasks and self.tasks.working_plan is None:
+            self.tasks.adopt_legacy_plan(complexity=turn.complexity)
 
     if not turn.tool_calls:
         if (turn.interaction_mode == "agent" and (self._requires_tool_action(turn.user_input) or _llm_has_plan or _llm_has_tasklist

@@ -70,6 +70,102 @@ class TasksRepository:
             result.append(item)
         return result
 
+    def get_working_plan(self, *, user_id: str, workspace_id: str, session_id: str) -> dict[str, Any] | None:
+        with self.database.connection() as db:
+            row = db.execute(
+                "SELECT * FROM working_plans WHERE user_id=? AND workspace_id=? AND session_id=? AND status='active' "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (user_id, workspace_id, session_id),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def set_working_plan_status(self, plan_id: str, status: str, *, user_id: str,
+                                workspace_id: str, session_id: str | None) -> bool:
+        if status not in {"completed", "cancelled"}:
+            raise ValueError("Working Plan terminal status must be completed or cancelled")
+        with self.database._lock, self.database.connection() as db:
+            cursor = db.execute(
+                "UPDATE working_plans SET status=?,updated_at=? WHERE id=? AND user_id=? "
+                "AND workspace_id=? AND session_id=? AND status='active'",
+                (status, utc_now(), plan_id, user_id, workspace_id, session_id or ""),
+            )
+        return cursor.rowcount == 1
+
+    def list_working_plan_tasks(self, plan_id: str, *, user_id: str, workspace_id: str,
+                                session_id: str) -> list[dict[str, Any]]:
+        with self.database.connection() as db:
+            rows = db.execute(
+                "SELECT tasks.*, working_plan_tasks.plan_id AS plan_id, working_plan_tasks.position AS plan_position "
+                "FROM working_plan_tasks JOIN tasks ON tasks.id=working_plan_tasks.task_id "
+                "WHERE working_plan_tasks.plan_id=? AND tasks.user_id=? AND tasks.workspace_id=? "
+                "AND tasks.session_id IS ? ORDER BY working_plan_tasks.position",
+                (plan_id, user_id, workspace_id, session_id or None),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            if item["status"] == "done":
+                item["status"] = "succeeded"
+            for key in ("dependencies", "acceptance", "checkpoint", "evidence"):
+                item[key] = self.database._loads(item[key], {} if key == "checkpoint" else [])
+            result.append(item)
+        return result
+
+    def write_working_plan(self, plan: dict[str, Any], tasks: list[dict[str, Any]], *,
+                           user_id: str, workspace_id: str, session_id: str | None) -> None:
+        scoped_session = session_id or ""
+        with self.database._lock, self.database.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                existing = db.execute(
+                    "SELECT id FROM working_plans WHERE user_id=? AND workspace_id=? AND session_id=? "
+                    "AND status='active'",
+                    (user_id, workspace_id, scoped_session),
+                ).fetchone()
+                if existing is not None and existing["id"] != plan["id"]:
+                    raise ValueError("A different Working Plan already owns this session")
+                db.execute(
+                    "INSERT INTO working_plans(id,user_id,workspace_id,session_id,complexity,status,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                    "complexity=excluded.complexity,status=excluded.status,updated_at=excluded.updated_at "
+                    "WHERE working_plans.user_id=excluded.user_id AND working_plans.workspace_id=excluded.workspace_id "
+                    "AND working_plans.session_id=excluded.session_id",
+                    (plan["id"], user_id, workspace_id, scoped_session, plan["complexity"],
+                     plan["status"], plan["created_at"], plan["updated_at"]),
+                )
+                for position, task in enumerate(tasks):
+                    row = db.execute(
+                        "SELECT id FROM tasks WHERE id=? AND user_id=? AND workspace_id=? AND session_id IS ?",
+                        (task["id"], user_id, workspace_id, session_id),
+                    ).fetchone()
+                    values = (
+                        task["id"], task.get("parent_id"), task["description"], task["status"],
+                        int(task.get("priority", 0)), self.database._json(task.get("dependencies", [])),
+                        self.database._json(task.get("acceptance", [])), int(task.get("attempts", 0)),
+                        self.database._json(task.get("checkpoint", {})), self.database._json(task.get("evidence", [])),
+                        user_id, workspace_id, session_id, task.get("created_at", plan["created_at"]), task["updated_at"],
+                    )
+                    if row:
+                        db.execute(
+                            "UPDATE tasks SET parent_id=?,description=?,status=?,priority=?,dependencies=?,acceptance=?,attempts=?,checkpoint=?,evidence=?,updated_at=? "
+                            "WHERE id=? AND user_id=? AND workspace_id=? AND session_id IS ?",
+                            values[1:10] + (task["updated_at"], task["id"], user_id, workspace_id, session_id),
+                        )
+                    else:
+                        db.execute(
+                            "INSERT INTO tasks(id,parent_id,description,status,priority,dependencies,acceptance,attempts,checkpoint,evidence,user_id,workspace_id,session_id,created_at,updated_at) "
+                            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", values,
+                        )
+                    db.execute(
+                        "INSERT INTO working_plan_tasks(plan_id,task_id,position) VALUES(?,?,?) "
+                        "ON CONFLICT(plan_id,task_id) DO NOTHING",
+                        (plan["id"], task["id"], position),
+                    )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
 
 
     def write_task(self, task: dict[str, Any], *, user_id: str, workspace_id: str, session_id: str | None) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import dataclass
 from typing import Any
 
 VALID_STATUSES = {"pending", "running", "succeeded", "done", "failed", "blocked", "cancelled"}
@@ -11,6 +12,39 @@ CANONICAL_STATUSES = {"pending", "running", "succeeded", "failed", "blocked", "c
 
 
 TERMINAL_STATUSES = {"succeeded", "failed", "blocked", "cancelled"}
+
+_TASK_TRANSITIONS = {
+    "pending": {"running", "succeeded", "failed", "blocked", "cancelled"},
+    "running": {"pending", "succeeded", "failed", "blocked", "cancelled"},
+    "failed": {"pending", "cancelled"},
+    "blocked": {"pending", "cancelled"},
+    "succeeded": set(),
+    "cancelled": set(),
+}
+
+
+def valid_task_transition(current: str, target: str) -> bool:
+    return canonical_status(target) == canonical_status(current) or canonical_status(target) in _TASK_TRANSITIONS[canonical_status(current)]
+
+
+@dataclass(frozen=True)
+class WorkingPlan:
+    """Runtime-owned durable identity and lifecycle for one mutable task plan."""
+
+    id: str
+    complexity: str
+    status: str
+    task_ids: tuple[str, ...]
+    created_at: str
+    updated_at: str
+
+
+def requires_working_plan(complexity: str) -> bool:
+    """Only substantial complex work requires a Working Plan."""
+    value = str(complexity or "").strip().lower()
+    if value not in {"simple", "medium", "complex"}:
+        raise ValueError(f"Unknown task complexity: {complexity}")
+    return value == "complex"
 
 
 def _task_key(description: str) -> str:

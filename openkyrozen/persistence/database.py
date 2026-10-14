@@ -142,6 +142,24 @@ _MIGRATIONS = (
             PRIMARY KEY(user_id, workspace_id, session_id)
         );
     """),
+    (4, """
+        CREATE TABLE IF NOT EXISTS working_plans (
+            id TEXT PRIMARY KEY, user_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
+            session_id TEXT NOT NULL, complexity TEXT NOT NULL CHECK(complexity IN ('simple','medium','complex')),
+            status TEXT NOT NULL CHECK(status IN ('active','completed','cancelled')),
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS working_plan_tasks (
+            plan_id TEXT NOT NULL REFERENCES working_plans(id) ON DELETE CASCADE,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL CHECK(position >= 0),
+            PRIMARY KEY(plan_id, task_id), UNIQUE(plan_id, position)
+        );
+        CREATE INDEX IF NOT EXISTS idx_working_plans_scope
+            ON working_plans(user_id, workspace_id, session_id, status, updated_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_working_plans_active_scope
+            ON working_plans(user_id, workspace_id, session_id) WHERE status='active';
+    """),
 )
 
 _REQUIRED_COLUMNS = {
@@ -163,6 +181,8 @@ _REQUIRED_COLUMNS = {
     "learning_feature_flags": {"name", "user_id", "workspace_id", "enabled", "updated_at"},
     "learning_policies": {"user_id", "workspace_id", "mode", "updated_at"},
     "learning_runtime": {"user_id", "workspace_id", "mode", "status", "updated_at"},
+    "working_plans": {"id", "user_id", "workspace_id", "session_id", "complexity", "status", "created_at", "updated_at"},
+    "working_plan_tasks": {"plan_id", "task_id", "position"},
 }
 
 class SQLiteDatabase:
@@ -229,6 +249,8 @@ class SQLiteDatabase:
                         )
                 if version == self.SCHEMA_VERSION:
                     self._execute_script(db, _MIGRATIONS[-1][1])
+                if self._needs_upgrade(db, self.SCHEMA_VERSION):
+                    self._execute_script(db, _MIGRATIONS[2][1])
                 self._validate_schema(db, self.SCHEMA_VERSION)
                 db.commit()
             except Exception:
@@ -278,7 +300,8 @@ class SQLiteDatabase:
             return
         required = {1: ("events", "memories", "files", "tasks", "task_events", "learning_proposals"),
                     2: ("scheduled_jobs", "skills", "usage_attempts", "usage_resets"),
-                    3: ("history_nodes", "history_heads")}
+                    3: ("history_nodes", "history_heads"),
+                    4: ("working_plans", "working_plan_tasks")}
         tables = {row["name"] for row in db.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )}

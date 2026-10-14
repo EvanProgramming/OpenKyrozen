@@ -92,6 +92,7 @@ class ExecutionReceipt:
     acceptance: str | None = None
     args_sha256: str | None = None
     tool_error: dict[str, Any] | None = None
+    result_data: Any = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -110,6 +111,7 @@ class ExecutionReceipt:
             "verified_effect": self.verified_effect,
             "acceptance": self.acceptance,
             "tool_error": self.tool_error,
+            "result_data": json.loads(json.dumps(self.result_data, ensure_ascii=False, allow_nan=False)),
         }
 
 

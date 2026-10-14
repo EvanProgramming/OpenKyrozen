@@ -7,7 +7,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 
 ## Runtime tools
 
-- Built-in runtime tools: **48**
+- Built-in runtime tools: **49**
 - Names with the `git_` prefix: **14**
 - The CLI Action contract is a plain string in the `args` field.
 - Web and MCP exposure is filtered by the configured capability profile.
@@ -60,6 +60,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `search_web` | `network` | `external` | false | Search the internet for real-time information. | `query`: string; required: `query` |
 | `send_subagent` | `read` | `orchestration` | false | Reuse a finished sub-agent; args JSON contains run_id and a complete assignment. | `assignment`: object, `run_id`: string; required: `run_id`, `assignment` |
 | `spawn_agents` | `read` | `orchestration` | false | Automatically start parallel specialist assignments; args is a JSON assignment batch. | `assignments`: array |
+| `update_plan` | `write` | `internal_write` | false | Create a plan or add/edit identified steps; omitted existing steps remain. | `complexity`: string, `tasks`: array; required: `complexity`, `tasks` |
 | `wait_subagents` | `read` | `orchestration` | false | Wait up to 60 seconds for delegated work and its mandatory reviews; args is JSON. | `run_ids`: array, `timeout`: number |
 | `write_file` | `write` | `mutation` | false | Write content to a file. Args format: "path\|content". | `content`: string, `path`: string; required: `path`, `content` |
 

@@ -172,6 +172,8 @@ class AgentRuntime:
         _run_subagent_llm,
         _subagent_provider_model,
     )
+
+    from openkyrozen.agent.plan_tools import _update_plan
     from openkyrozen.agent.delegation_runtime import (
         _plan_delegation,
         delegation, _invoke_delegated, spawn_agents, send_subagent, list_subagents,
@@ -627,9 +629,7 @@ class AgentRuntime:
                 except KeyError:
                     receipt = self._run_tool(name, call_arguments, return_receipt=True,
                                              operation_scope=operation_scope)
-                    self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
-                        user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
-                        session_id=self.memory_bank.session_id)
+                    self._record_turn_receipt(receipt)
                     return receipt
                 validation_error = self.tool_registry._argument_error(spec.input_schema, call_arguments)
                 if spec.source == 'legacy':
@@ -644,9 +644,7 @@ class AgentRuntime:
                         success=False, result=render_tool_result(outcome), operation_scope=operation_scope,
                         failure=outcome.error.code, tool_error=outcome.error,
                     )
-                    self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
-                        user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
-                        session_id=self.memory_bank.session_id)
+                    self._record_turn_receipt(receipt)
                     return receipt
                 request = ApprovalRequest(
                     call_id=call.id, tool_name=name, arguments=call_arguments,
@@ -698,9 +696,7 @@ class AgentRuntime:
                     receipt = self._run_tool(name, call_arguments, return_receipt=True,
                                              operation_scope=operation_scope,
                                              _typed_arguments=call_arguments, _expected_spec=spec)
-                    self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
-                        user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
-                        session_id=self.memory_bank.session_id)
+                    self._record_turn_receipt(receipt)
                     return receipt
                 finally:
                     self._approval_callback.reset(approval_token2)
