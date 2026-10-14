@@ -28,7 +28,11 @@ Model providers receive the context sent for a request. Local storage does not i
 
 Stop the running process before taking a simple file copy of the SQLite database. Preserve the database and its adjacent SQLite WAL/SHM files together if present; an application-level SQLite backup API or a clean shutdown is preferable to copying an actively written database file. Keep credentials, workspace files, browser data, vector indexes, and history snapshots in a backup only when your retention policy requires them, and store the backup privately.
 
-To restore, stop OpenKyrozen, restore the database to a private location, set `KYROZEN_DB_PATH` to that file, and launch with the intended workspace. Verify the expected sessions and claims before removing the prior copy. Do not merge two live database files with a filesystem copy.
+On startup, OpenKyrozen applies recognized SQLite schema migrations in order and creates an adjacent `*.backup.<timestamp>` file before changing an existing database. The backup uses SQLite's backup API, includes committed WAL data, and is created with owner-only permissions. Startup reports its path without printing database contents. Unknown future versions and inconsistent core tables stop startup before the database is changed. Keep the reported backup until the upgraded application has been verified.
+
+Permission decisions are stored as versioned, workspace/session-scoped audit history with operation fingerprints and a summary of argument names. They do not contain argument values or credentials, and no approval grant or permission mode is restored from these events.
+
+To restore or downgrade, stop OpenKyrozen, copy the reported backup to a private location, set `KYROZEN_DB_PATH` to that file, and run a version that supports its schema. The application never runs a downgrade automatically. Verify the expected sessions and claims before removing the prior copy. Do not merge two live database files with a filesystem copy.
 
 ## Rebuild a derived index
 

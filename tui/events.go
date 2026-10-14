@@ -102,6 +102,7 @@ func (m *model) handleBackendEvent(event backendEvent) {
 		m.modelName = stringValue(event, "model")
 		m.mainModel = stringValue(event, "main_model")
 		m.workspace = stringValue(event, "workspace")
+		m.startupBackup = stringValue(event, "backup_path")
 		m.activeSessionID = firstNonEmpty(stringValue(event, "session_id"), m.activeSessionID)
 		m.status = "Ready"
 		m.busy = false

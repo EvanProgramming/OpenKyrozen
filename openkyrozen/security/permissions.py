@@ -61,13 +61,15 @@ def _record_tool_approval(self, action: str, decision: str, args: str = "") -> N
         pass
 
 
-def _confirm_tool_action(self, action: str, args: str = "", *, force: bool = False) -> bool:
+def _confirm_tool_action(self, action: str, args: str = "", *, force: bool = False,
+                         category: str = "high_impact") -> bool:
     """Confirm high-impact local CLI actions while keeping normal tools frictionless."""
     from openkyrozen.security.tool_policy import tool_confirmation_required
     if (not force and not tool_confirmation_required(action,self._EXECUTION_SURFACE,self.AVAILABLE_TOOLS)) or self._EXECUTION_SURFACE not in {"cli", "tui"}:
         return True
     mode = os.environ.get("KYROZEN_APPROVAL_MODE", "dangerous").strip().lower()
     if not force and mode in {"never", "none", "off"}:
+        self._record_permission_decision(action, category, "automatic_approval")
         self._record_tool_approval(action, "approved", args)
         return True
     callback = self._approval_callback.get()
@@ -76,9 +78,11 @@ def _confirm_tool_action(self, action: str, args: str = "", *, force: bool = Fal
             approved = _call_approval_callback(self, callback, action, args)
         except Exception:
             approved = False
+        self._record_permission_decision(action, category, "user_approved" if approved else "user_denied")
         self._record_tool_approval(action, "approved" if approved else "denied", args)
         return approved
     if not sys.stdin.isatty():
+        self._record_permission_decision(action, category, "denied_noninteractive")
         self._record_tool_approval(action, "denied_noninteractive", args)
         return False
     request_var = getattr(self, "_approval_request", None)
@@ -92,6 +96,7 @@ def _confirm_tool_action(self, action: str, args: str = "", *, force: bool = Fal
         approved = self.console.input(prompt).strip().lower() in {"y", "yes"}
     except (EOFError, KeyboardInterrupt):
         approved = False
+    self._record_permission_decision(action, category, "user_approved" if approved else "user_denied")
     self._record_tool_approval(action, "approved" if approved else "denied", args)
     return approved
 
@@ -142,11 +147,34 @@ def _record_permission_decision(self, action: str, category: str, outcome: str) 
     try:
         request_var = getattr(self, "_approval_request", None)
         request = request_var.get() if request_var is not None else None
+        payload = {
+            "payload_version": 1,
+            "action": action[:64],
+            "category": category[:64],
+            "mode": self.permission_mode(),
+            "outcome": outcome,
+            "approval_fingerprint": request.fingerprint if request is not None else None,
+        }
+        workspace_id = self.interaction_workspace_id()
+        session_id = self.memory_bank.session_id
+        if request is not None:
+            payload.update({
+                "request_id": request.request_id,
+                "call_id": request.call_id,
+                "tool_name": request.tool_name,
+                "tool_version": request.tool_version,
+                "tool_source": request.tool_source,
+                "capability": request.capability,
+                "risk": request.risk,
+                "side_effects": request.side_effects,
+                "argument_keys": sorted(request.arguments)[:64],
+                "argument_key_count": len(request.arguments),
+            })
+            workspace_id = request.workspace_id
+            session_id = request.session_id
         self.memory_bank.store.append_event(
-            "permission.decision", {"action": action[:64], "category": category[:64],
-                                    "mode": self.permission_mode(), "outcome": outcome,
-                                    "approval_fingerprint": request.fingerprint if request is not None else None},
-            user_id=self.memory_bank.user_id, workspace_id=self.interaction_workspace_id(),
+            "permission.decision", payload, user_id=self.memory_bank.user_id,
+            workspace_id=workspace_id, session_id=session_id,
         )
     except Exception:
         pass
@@ -170,7 +198,13 @@ def _authorize_tool_action(self, action: str, args: object, *, approve=None) -> 
         return True
     if mode == "ask" and not requires_ask_approval(action, args, self.AVAILABLE_TOOLS):
         return True
-    callback = approve or self._approval_callback.get() or (lambda current, details: self._confirm_tool_action(current, details, force=True))
+    fallback_approval = approve is None and not callable(self._approval_callback.get())
+    category = risk or "workspace_change"
+    callback = approve or self._approval_callback.get() or (
+        lambda current, details: self._confirm_tool_action(
+            current, details, force=True, category=category,
+        )
+    )
     self._emit_stream_event({"event": "permission_check", "state": "approval_required",
                              "category": risk or "workspace_change"})
     request_var = getattr(self, "_approval_request", None)
@@ -178,9 +212,10 @@ def _authorize_tool_action(self, action: str, args: object, *, approve=None) -> 
     approved = _call_approval_callback(self, callback, action, args, request=request)
     self._emit_stream_event({"event": "permission_check", "state": "allowed" if approved else "denied",
                              "category": risk or "workspace_change"})
-    self._record_permission_decision(action, risk or "workspace_change",
-                                     "user_approved" if approved else "user_denied")
-    self._record_tool_approval(action, "approved" if approved else "denied", str(args))
+    if not fallback_approval:
+        self._record_permission_decision(action, risk or "workspace_change",
+                                         "user_approved" if approved else "user_denied")
+        self._record_tool_approval(action, "approved" if approved else "denied", str(args))
     return approved
 
 

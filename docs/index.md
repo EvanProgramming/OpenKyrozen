@@ -35,6 +35,7 @@ This index covers the current product guides, developer references, and dated en
 - [V3 typed invocation plan](superpowers/plans/2026-10-11-v3-issue-233.md) records JSON-object executor contracts, schema enforcement, MCP routing, and compatibility for issue #233.
 - [V3 native provider tools plan](superpowers/plans/2026-10-12-v3-issue-229.md) records native tool requests, correlated replies, continuation pinning, and verification for issue #229.
 - [V3 structured provider streaming plan](superpowers/plans/2026-10-12-v3-issue-230.md) records typed stream events, adapter integration, terminal-state guarantees, and validation for issue #230.
+- [V3 SQLite migration plan](superpowers/plans/2026-10-14-v3-issue-264.md) records ordered schema migrations, backups, persisted approval history, and verification for issue #264.
 - [V3 plan index](superpowers/plans/index.md) links the issue-specific implementation plans and identifies their coverage.
 - Machine-readable audit receipts and benchmark inputs remain beside their corresponding reports under `docs/` and `docs/benchmarks/`.
 

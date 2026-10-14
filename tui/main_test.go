@@ -65,9 +65,13 @@ func TestReducerProjectsStreamingResponseTasksAndApproval(t *testing.T) {
 	m.resize()
 	m.handleBackendEvent(backendEvent{
 		"event": "ready", "provider": "ollama", "model": "llama3.2", "workspace": "/tmp/workspace",
+		"backup_path": "/tmp/openkyrozen.sqlite3.backup.1",
 	})
 	if m.provider != "ollama" || m.modelName != "llama3.2" || m.workspace != "/tmp/workspace" {
 		t.Fatalf("ready event was not reduced: %#v", m)
+	}
+	if m.startupBackup != "/tmp/openkyrozen.sqlite3.backup.1" || !strings.Contains(m.splash(), m.startupBackup) {
+		t.Fatalf("migration backup was not shown during startup: %#v", m)
 	}
 	m.messages = append(m.messages, chatMessage{role: "assistant", streaming: true})
 	m.handleBackendEvent(backendEvent{"event": "stream_delta", "text": "partial"})
