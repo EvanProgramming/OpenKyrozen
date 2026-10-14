@@ -14,7 +14,6 @@ from openkyrozen.tools.models import (CommandResult, ToolError, ToolResult, comm
                                       render_tool_result, tool_failure)
 from openkyrozen.security.tool_policy import tool_capability
 from openkyrozen.agent.types import ExecutionReceipt
-from openkyrozen.tasks.models import _receipt_args
 
 
 def _notify_tool_execute(self, action: str, args: Any, result: ToolResult) -> None:
@@ -46,7 +45,11 @@ def _operation_args(self, action: str, args: Any) -> str:
 
 def _operation_id(self, scope: str, action: str, args: Any) -> str:
     canonical = self._operation_action(action)
-    return stable_hash(f"{scope}\0{canonical}\0{self._operation_args(canonical, args)}")[:32]
+    memory = getattr(self, "memory_bank", None)
+    identity = "\0".join(str(getattr(memory, name, "") or "") for name in (
+        "user_id", "workspace_id", "session_id",
+    ))
+    return stable_hash(f"{identity}\0{scope}\0{canonical}\0{self._operation_args(canonical, args)}")[:32]
 
 
 def _is_state_changing_action(self, action: str, args: str) -> bool:
@@ -70,11 +73,17 @@ def _is_state_changing_action(self, action: str, args: str) -> bool:
 def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, started_at: str,
                             success: bool, result: Any, operation_scope: str,
                             failure: str | None = None, raw_result: Any = None,
-                            tool_error: ToolError | None = None, result_data: Any = None) -> ExecutionReceipt:
+                            tool_error: ToolError | None = None, result_data: Any = None,
+                            tool_result: ToolResult | None = None, call_id: str | None = None,
+                            call_id_source: str = "native", task_id: str | None = None,
+                            expected_spec=None) -> ExecutionReceipt:
     canonical = self._operation_action(action)
     from openkyrozen.agent.delegation import TOOLS
     result_text = self._fix_safe_text(result, max(2000, len(str(result))) if canonical in TOOLS else 200000 if canonical in {"read_file", "read_webpage", "git_diff", "git_show", "graph_query"} else 2000, preserve_lines=True)
     command = raw_result if isinstance(raw_result, CommandResult) else None
+    if tool_result is None and isinstance(result, ToolResult):
+        tool_result = result
+        result = render_tool_result(tool_result)
     effect, effect_verified = self._subagent_tool_evidence(canonical, args, result_text, success=success)
     acceptance, accepted = self._acceptance_for_tool(canonical, args, result_text, success=success)
     if not accepted and effect_verified:
@@ -118,13 +127,11 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         operation_id=self._operation_id(operation_scope, canonical, args),
         action=canonical,
         args=self._fix_safe_text(self._operation_args(canonical, args), 1000),
-        args_sha256=hashlib.sha256(
-            _receipt_args(self._operation_args(canonical, args)).encode("utf-8")
-        ).hexdigest(),
+        args_sha256=hashlib.sha256(self._operation_args(canonical, args).encode("utf-8")).hexdigest(),
         authorized=authorized,
         started_at=started_at,
         completed_at=utc_now(),
-        success=bool(success),
+        success=tool_result.success if tool_result is not None else bool(success),
         result=result_text,
         failure=failure if not success else None,
         exit_code=command.exit_code if command is not None else None,
@@ -133,6 +140,19 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         tool_error=({"code": tool_error.code, "message": self._fix_safe_text(tool_error.message, 1000),
                      "retriable": tool_error.retriable, "metadata": safe_metadata(tool_error.metadata)} if tool_error else None),
         result_data=result_data,
+        call_id=call_id,
+        call_id_source=call_id_source,
+        arguments=args if isinstance(args, dict) else None,
+        tool_result=tool_result,
+        user_id=getattr(getattr(self, "memory_bank", None), "user_id", None),
+        workspace_id=getattr(getattr(self, "memory_bank", None), "workspace_id", None),
+        session_id=getattr(getattr(self, "memory_bank", None), "session_id", None),
+        plan_id=getattr(getattr(getattr(self, "tasks", None), "working_plan", None), "id", None),
+        task_id=task_id,
+        tool_version=getattr(expected_spec, "version", None),
+        tool_source=getattr(expected_spec, "source", None),
+        side_effects=getattr(expected_spec, "side_effects", "unknown"),
+        verification={"status": "unavailable", "method": "none", "observed": None},
     )
 
 
@@ -179,7 +199,8 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                 action=action, args=receipt_args, authorized=authorized, started_at=started_at,
                 success=outcome.success, result=text, operation_scope=operation_scope,
                 failure=outcome.error.code if outcome.error else None, raw_result=raw_result,
-                tool_error=outcome.error, result_data=outcome.data,
+                tool_error=outcome.error, result_data=outcome.data, tool_result=outcome,
+                expected_spec=approved_spec,
             )
         return (text, outcome.success) if return_success else text
     if action not in self.AVAILABLE_TOOLS:

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
 from openkyrozen.tools.catalog import builtin_aliases, builtin_names
+from openkyrozen.tools.models import ToolError, ToolResult
 TOOL_ALIASES = builtin_aliases()
 _ACTION_MARKER_NAMES = tuple(sorted(set(builtin_names()) | set(TOOL_ALIASES), key=len, reverse=True))
 _ACTION_MARKER_RE = re.compile(
@@ -73,7 +75,51 @@ class ContextTooLargeError(RuntimeError):
     """Fixed instructions plus protected current work cannot fit the model."""
 
 
-@dataclass(frozen=True)
+def _json_snapshot(value: Any, label: str) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise TypeError(f"{label} must contain only JSON-safe values") from exc
+
+
+def _bounded_redacted(value: Any, *, budget: int = 4000, depth: int = 0) -> Any:
+    remaining = [budget]
+
+    def clean(item: Any, level: int) -> Any:
+        if remaining[0] <= 0:
+            return "<truncated>"
+        if isinstance(item, dict):
+            result = {}
+            for key, nested in list(item.items())[:40]:
+                key = str(key)[:100]
+                remaining[0] -= len(key)
+                if re.search(r"(?i)(api.?key|credential|password|secret|token|authorization|request.?body|^body$)", key):
+                    result[key] = "<redacted>"
+                    remaining[0] -= 10
+                else:
+                    result[key] = "<truncated>" if level >= 5 else clean(nested, level + 1)
+            return result
+        if isinstance(item, (list, tuple)):
+            result = []
+            for nested in item[:40]:
+                result.append(clean(nested, level + 1))
+                if remaining[0] <= 0:
+                    break
+            return result
+        if isinstance(item, str):
+            size = min(1000, remaining[0])
+            result = item[:size]
+            remaining[0] -= len(result)
+            return result + ("<truncated>" if len(item) > size else "")
+        if item is None or type(item) in {bool, int} or type(item) is float and math.isfinite(item):
+            remaining[0] -= 16
+            return item
+        return f"<{type(item).__name__}>"
+
+    return clean(value, depth)
+
+
+@dataclass(frozen=True, init=False)
 class ExecutionReceipt:
     """Authoritative, bounded result of one tool attempt."""
 
@@ -86,13 +132,112 @@ class ExecutionReceipt:
     completed_at: str
     success: bool
     result: str
+    call_id: str | None
+    call_id_source: str
+    _arguments_json: str | None = field(repr=False)
+    _tool_result: ToolResult | None = field(repr=False)
+    user_id: str | None
+    workspace_id: str | None
+    session_id: str | None
+    plan_id: str | None
+    task_id: str | None
+    tool_version: str | None
+    tool_source: str | None
+    side_effects: str
+    _verification_json: str = field(repr=False)
     failure: str | None = None
     exit_code: int | None = None
     verified_effect: str | None = None
     acceptance: str | None = None
     args_sha256: str | None = None
-    tool_error: dict[str, Any] | None = None
-    result_data: Any = None
+    _tool_error_json: str | None = field(repr=False)
+    _result_data_json: str = field(repr=False)
+
+    def __init__(self, receipt_id: str, operation_id: str, action: str, args: str,
+                 authorized: bool, started_at: str, completed_at: str, success: bool,
+                 result: str, failure: str | None = None, exit_code: int | None = None,
+                 verified_effect: str | None = None, acceptance: str | None = None,
+                 args_sha256: str | None = None, tool_error: dict[str, Any] | None = None,
+                 result_data: Any = None, *, call_id: str | None = None,
+                 call_id_source: str = "native", arguments: dict[str, Any] | None = None,
+                 tool_result: ToolResult | None = None, user_id: str | None = None,
+                 workspace_id: str | None = None, session_id: str | None = None,
+                 plan_id: str | None = None, task_id: str | None = None,
+                 tool_version: str | None = None, tool_source: str | None = None,
+                 side_effects: str = "unknown", verification: dict[str, Any] | None = None):
+        if call_id is not None and (not isinstance(call_id, str) or not call_id.strip()):
+            raise ValueError("Receipt call_id must be nonempty when present")
+        if call_id_source not in {"native", "legacy"}:
+            raise ValueError("Receipt call_id_source must be native or legacy")
+        if arguments is not None and not isinstance(arguments, dict):
+            raise TypeError("Receipt arguments must be a JSON object")
+        if tool_result is not None and not isinstance(tool_result, ToolResult):
+            raise TypeError("Receipt tool_result must be ToolResult or None")
+        if verification is None:
+            verification = {"status": "unavailable", "method": "none", "observed": None}
+        if not isinstance(verification, dict):
+            raise TypeError("Receipt verification must be a JSON object")
+        verification_status = verification.get("status")
+        if verification_status not in {"verified", "failed", "unavailable", "not_applicable"}:
+            raise ValueError("Receipt verification status is invalid")
+        if tool_result is None:
+            if tool_error is not None:
+                error = ToolError(
+                    str(tool_error.get("code", "execution_failed")),
+                    str(tool_error.get("message", result or "Tool execution failed")),
+                    bool(tool_error.get("retriable", False)),
+                    tool_error.get("metadata") if isinstance(tool_error.get("metadata"), dict) else {},
+                )
+                tool_result = ToolResult(data=result_data, text=result, error=error)
+        object.__setattr__(self, "receipt_id", receipt_id)
+        object.__setattr__(self, "operation_id", operation_id)
+        object.__setattr__(self, "action", action)
+        object.__setattr__(self, "args", args)
+        object.__setattr__(self, "authorized", bool(authorized))
+        object.__setattr__(self, "started_at", started_at)
+        object.__setattr__(self, "completed_at", completed_at)
+        object.__setattr__(self, "result", result)
+        object.__setattr__(self, "success", tool_result.success if tool_result is not None else bool(success))
+        object.__setattr__(self, "call_id", call_id)
+        object.__setattr__(self, "call_id_source", call_id_source)
+        object.__setattr__(self, "_arguments_json", _json_snapshot(arguments, "Receipt arguments") if arguments is not None else None)
+        object.__setattr__(self, "_tool_result", tool_result)
+        for name, value in (("user_id", user_id), ("workspace_id", workspace_id), ("session_id", session_id),
+                            ("plan_id", plan_id), ("task_id", task_id), ("tool_version", tool_version),
+                            ("tool_source", tool_source), ("side_effects", side_effects),
+                            ("failure", tool_result.error.code if tool_result is not None and tool_result.error else failure),
+                            ("exit_code", exit_code), ("verified_effect", verified_effect),
+                            ("acceptance", acceptance), ("args_sha256", args_sha256)):
+            object.__setattr__(self, name, value)
+        object.__setattr__(self, "_verification_json", _json_snapshot(verification, "Receipt verification"))
+        error_projection = tool_error
+        if error_projection is None and tool_result is not None and tool_result.error is not None:
+            error_projection = {"code": tool_result.error.code, "message": tool_result.error.message,
+                                "retriable": tool_result.error.retriable,
+                                "metadata": tool_result.error.metadata}
+        object.__setattr__(self, "_tool_error_json", _json_snapshot(error_projection, "Receipt tool_error")
+                           if error_projection is not None else None)
+        object.__setattr__(self, "_result_data_json", _json_snapshot(tool_result.data if tool_result is not None else result_data, "Receipt result_data"))
+
+    @property
+    def arguments(self) -> dict[str, Any] | None:
+        return json.loads(self._arguments_json) if self._arguments_json is not None else None
+
+    @property
+    def tool_result(self) -> ToolResult | None:
+        return self._tool_result
+
+    @property
+    def verification(self) -> dict[str, Any]:
+        return json.loads(self._verification_json)
+
+    @property
+    def tool_error(self) -> dict[str, Any] | None:
+        return json.loads(self._tool_error_json) if self._tool_error_json is not None else None
+
+    @property
+    def result_data(self) -> Any:
+        return json.loads(self._result_data_json)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -100,8 +245,19 @@ class ExecutionReceipt:
             "operation_id": self.operation_id,
             "action": self.action,
             "args": self.args,
+            "arguments": _bounded_redacted(self.arguments) if self.arguments is not None else None,
             "args_sha256": self.args_sha256,
             "authorized": self.authorized,
+            "call_id": self.call_id,
+            "call_id_source": self.call_id_source,
+            "user_id": self.user_id,
+            "workspace_id": self.workspace_id,
+            "session_id": self.session_id,
+            "plan_id": self.plan_id,
+            "task_id": self.task_id,
+            "tool_version": self.tool_version,
+            "tool_source": self.tool_source,
+            "side_effects": self.side_effects,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "success": self.success,
@@ -109,9 +265,20 @@ class ExecutionReceipt:
             "failure": self.failure,
             "exit_code": self.exit_code,
             "verified_effect": self.verified_effect,
+            "verification": _bounded_redacted(self.verification),
             "acceptance": self.acceptance,
-            "tool_error": self.tool_error,
-            "result_data": json.loads(json.dumps(self.result_data, ensure_ascii=False, allow_nan=False)),
+            "tool_error": _bounded_redacted(self.tool_error) if self.tool_error is not None else None,
+            "result_data": _bounded_redacted(self.result_data),
+            "tool_result": _bounded_redacted({
+                "data": self.tool_result.data,
+                "text": self.tool_result.text,
+                "error": ({"code": self.tool_result.error.code,
+                           "message": self.tool_result.error.message,
+                           "retriable": self.tool_result.error.retriable,
+                           "metadata": self.tool_result.error.metadata}
+                          if self.tool_result.error else None),
+                "metadata": self.tool_result.metadata,
+            }) if self.tool_result is not None else None,
         }
 
 
