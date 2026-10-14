@@ -87,6 +87,16 @@ class ExecutionReceiptContractTests(unittest.TestCase):
         self.assertNotIn("other-secret", projected["args"])
         self.assertEqual(json.loads(projected["args"])["access_token"], "<redacted>")
 
+    def test_compatibility_projection_redacts_secrets_in_result_text(self):
+        receipt = self.receipt(
+            result='{"access_token":"result-secret","client_secret":"client-secret"}',
+            tool_result=ToolResult(text='{"access_token":"text-secret"}'),
+        )
+        projected = receipt.as_dict()
+        self.assertNotIn("result-secret", str(projected))
+        self.assertNotIn("client-secret", str(projected))
+        self.assertNotIn("text-secret", str(projected))
+
     def test_historical_and_current_persisted_receipts_rehydrate(self):
         current = self.receipt().as_dict()
         restored = ExecutionReceipt.from_dict(current)
@@ -159,6 +169,7 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
             "KYROZEN_DISABLE_VECTOR_INDEX": "1",
             "KYROZEN_CLI_CAPABILITIES": "full",
             "KYROZEN_APPROVAL_MODE": "never",
+            "KYROZEN_WORKSPACE_ROOT": self._temporary.name,
         })
         self._environment.start()
         self.addCleanup(self._environment.stop)
@@ -230,6 +241,62 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         self.assertIsNone(tool_receipt["task_id"])
         self.assertEqual(tool_receipt["requested_task_id"], task["id"])
         self.assertIn("unmatched_reason", tool_receipt)
+
+    def test_generic_test_command_does_not_satisfy_unrelated_acceptance(self):
+        from openkyrozen.providers.models import ToolCall
+
+        self.plan("run_cmd", {"command": "pytest --version"})
+        task = self.app.runtime.tasks.tasks[0]
+        receipt = self.app.runtime.execute_call(
+            self.app.runtime.current_session,
+            ToolCall("test-version", "run_cmd", {"command": "pytest --version"}),
+            task_id=task["id"],
+        )
+        self.assertTrue(receipt.success)
+        self.assertEqual(task["status"], "pending")
+        self.assertFalse(any(item.get("acceptance") for item in task["evidence"]))
+
+    def test_receipt_task_evidence_redacts_persisted_arguments_and_result(self):
+        from openkyrozen.providers.models import ToolCall
+
+        secret = "top-secret-value"
+        self.plan("run_cmd", {"command": f"printf access_token={secret}"})
+        task = self.app.runtime.tasks.tasks[0]
+        stream_events = []
+        self.app.runtime._emit_stream_event = stream_events.append
+        receipt = self.app.runtime.execute_call(
+            self.app.runtime.current_session,
+            ToolCall("secret-output", "run_cmd", {"command": f"printf access_token={secret}"}),
+            task_id=task["id"],
+        )
+        self.assertTrue(receipt.success)
+        event = self.app.runtime.tasks.store.list_events(
+            "execution.receipt", user_id="alice", workspace_id=self.app.runtime.tasks.workspace_id,
+            session_id=self.app.runtime.tasks.session_id,
+        )
+        evidence = task["evidence"][-1]
+        self.assertNotIn(secret, json.dumps(evidence))
+        self.assertNotIn(secret, json.dumps(event[0]["payload"]))
+        self.assertNotIn(secret, json.dumps(stream_events))
+
+    def test_inferred_receipt_persists_only_projected_arguments(self):
+        import hashlib
+
+        manager = self.app.runtime.tasks
+        raw = '{"command":"printf access_token=private-value"}'
+        safe = '{"command": "printf access_token=<redacted>"}'
+        index = manager.add_task("Run the requested command", acceptance=[{
+            "action": "run_cmd", "args": raw,
+        }])
+        manager.record_evidence(
+            action="run_cmd", args=raw, args_projection=safe,
+            args_fingerprint=hashlib.sha256(raw.encode()).hexdigest(),
+            result="done", success=True,
+        )
+        task = manager.tasks[index]
+        self.assertNotIn("private-value", json.dumps(task["evidence"]))
+        self.assertNotIn("private-value", json.dumps(task["checkpoint"]))
+        self.assertEqual(task["checkpoint"]["args"], safe)
 
     def test_invalid_task_binding_is_rejected_before_executor(self):
         from openkyrozen.providers.models import ToolCall

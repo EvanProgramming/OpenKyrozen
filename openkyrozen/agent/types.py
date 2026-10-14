@@ -82,6 +82,13 @@ def _json_snapshot(value: Any, label: str) -> str:
         raise TypeError(f"{label} must contain only JSON-safe values") from exc
 
 
+def _redact_secret_text(value: str) -> str:
+    return re.sub(
+        r'(?i)((?:[\w.-]*(?:api[-_]?key|credential|password|secret|token|authorization)[\w.-]*|bearer)\s*[:=]\s*["\']?)[^,\s;"\'&}]+',
+        r'\1<redacted>', value,
+    )
+
+
 def _bounded_redacted(value: Any, *, budget: int = 4000, depth: int = 0) -> Any:
     remaining = [budget]
 
@@ -108,7 +115,7 @@ def _bounded_redacted(value: Any, *, budget: int = 4000, depth: int = 0) -> Any:
             return result
         if isinstance(item, str):
             size = min(1000, remaining[0])
-            result = item[:size]
+            result = _redact_secret_text(item[:size])
             remaining[0] -= len(result)
             return result + ("<truncated>" if len(item) > size else "")
         if item is None or type(item) in {bool, int} or type(item) is float and math.isfinite(item):
@@ -128,11 +135,17 @@ def _receipt_args_projection(value: str, arguments: dict[str, Any] | None) -> st
         parsed = None
     if isinstance(parsed, (dict, list)):
         return json.dumps(_bounded_redacted(parsed, budget=1000), ensure_ascii=False, sort_keys=True)
-    value = re.sub(
-        r'(?i)((?:[\w.-]*(?:api[-_]?key|credential|password|secret|token|authorization)[\w.-]*|bearer)\s*[:=]\s*["\']?)[^,\s;"\'&]+',
-        r'\1<redacted>', value,
-    )
-    return value[:1000]
+    return _redact_secret_text(value)[:1000]
+
+
+def _receipt_text_projection(value: str) -> str:
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return _redact_secret_text(str(value))
+    if isinstance(parsed, (dict, list)):
+        return json.dumps(_bounded_redacted(parsed), ensure_ascii=False, sort_keys=True)
+    return str(value)
 
 
 @dataclass(frozen=True, init=False)
@@ -277,19 +290,21 @@ class ExecutionReceipt:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "success": self.success,
-            "result": self.result,
+            "result": _receipt_text_projection(self.result),
             "failure": self.failure,
             "exit_code": self.exit_code,
             "verified_effect": self.verified_effect,
             "verification": _bounded_redacted(self.verification),
-            "acceptance": self.acceptance,
-            "tool_error": _bounded_redacted(self.tool_error) if self.tool_error is not None else None,
+            "acceptance": _receipt_text_projection(self.acceptance) if self.acceptance is not None else None,
+            "tool_error": ({**_bounded_redacted(self.tool_error),
+                            "message": _receipt_text_projection(self.tool_error["message"])}
+                           if self.tool_error is not None else None),
             "result_data": _bounded_redacted(self.result_data),
             "tool_result": _bounded_redacted({
                 "data": self.tool_result.data,
-                "text": self.tool_result.text,
+                "text": _receipt_text_projection(self.tool_result.text),
                 "error": ({"code": self.tool_result.error.code,
-                           "message": self.tool_result.error.message,
+                           "message": _receipt_text_projection(self.tool_result.error.message),
                            "retriable": self.tool_result.error.retriable,
                            "metadata": self.tool_result.error.metadata}
                           if self.tool_result.error else None),

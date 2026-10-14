@@ -381,27 +381,40 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
     from openkyrozen.agent.delegation import TOOLS
     active_task = self.tasks.active_working_task(receipt.task_id) if receipt.task_id else None
     explicit_task_id = receipt.task_id if active_task is not None else None
+    receipt_projection = receipt.as_dict()
+    task_acceptance = receipt.acceptance
+    if explicit_task_id and receipt.action == "run_cmd" and task_acceptance:
+        command = (receipt.arguments or {}).get("command", "")
+        criteria = next((item.get("acceptance", []) for item in self.tasks.tasks
+                         if item.get("id") == explicit_task_id), [])
+        if not command or not any(
+            isinstance(item, str) and command.casefold() in item.casefold() for item in criteria
+        ):
+            task_acceptance = None
+        else:
+            task_acceptance = receipt_projection["acceptance"]
     should_reconcile = (
         bool(explicit_task_id) or receipt.call_id_source == "legacy"
         or (allow_legacy_task_matching and receipt.call_id_source == "synthetic")
     )
     evidence = {} if receipt.action in TOOLS or not should_reconcile else self.tasks.record_evidence(
         task_id=explicit_task_id, action=receipt.action, args=receipt.args,
-        args_fingerprint=receipt.args_sha256, result=receipt.result,
-        success=receipt.success, acceptance=receipt.acceptance, receipt_id=receipt.receipt_id,
+        args_projection=receipt_projection["args"], args_fingerprint=receipt.args_sha256,
+        result=receipt_projection["result"], success=receipt.success,
+        acceptance=task_acceptance, receipt_id=receipt.receipt_id,
     )
     task_id = evidence.get("task_id")
     effective_acceptance = evidence.get("acceptance") or (
-        receipt.acceptance if receipt.task_id is None else None
+        receipt_projection["acceptance"] if receipt.task_id is None else None
     )
     if task_id:
         task = next((item for item in self.tasks.tasks if item["id"] == task_id), None)
         if task and not (task.get("checkpoint") or {}).get("action"):
-            self.tasks.update_checkpoint(task_id, {"action": receipt.action, "args": receipt.args})
+            self.tasks.update_checkpoint(task_id, {"action": receipt.action, "args": receipt_projection["args"]})
     if task_id and receipt.success and effective_acceptance:
         index = next(index for index, task in enumerate(self.tasks.tasks) if task["id"] == task_id)
         self.tasks.set_status(index, "succeeded")
-    receipt_payload = receipt.as_dict()
+    receipt_payload = receipt_projection
     if receipt.task_id is not None and receipt.task_id != task_id:
         receipt_payload["requested_task_id"] = receipt.task_id
     if effective_acceptance and not receipt_payload.get("acceptance"):
@@ -415,11 +428,12 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
     result = {
         "receipt_id": receipt.receipt_id, "operation_id": receipt.operation_id,
         "call_id": receipt.call_id, "call_id_source": receipt.call_id_source,
-        "action": receipt.action, "args": receipt.args, "result": receipt.result,
+        "action": receipt.action, "args": receipt_projection["args"], "result": receipt_projection["result"],
         "success": receipt.success, "authorized": receipt.authorized,
-        "acceptance": effective_acceptance, "failure": receipt.failure, "tool_error": receipt.tool_error,
+        "acceptance": effective_acceptance, "failure": receipt_projection["failure"],
+        "tool_error": receipt_projection["tool_error"],
         "task_id": task_id, "requested_task_id": receipt.task_id,
-        "result_data": receipt.result_data, "verification": receipt.verification,
+        "result_data": receipt_projection["result_data"], "verification": receipt_projection["verification"],
     }
     if evidence.get("unmatched_reason"):
         result["unmatched_reason"] = evidence["unmatched_reason"]
