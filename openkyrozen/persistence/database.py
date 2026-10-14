@@ -247,8 +247,11 @@ class SQLiteDatabase:
                             "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                             (migration_version, utc_now()),
                         )
-                for _, script in _MIGRATIONS:
-                    self._execute_script(db, script)
+                if version == self.SCHEMA_VERSION:
+                    self._execute_script(db, _MIGRATIONS[-1][1])
+                if self._needs_upgrade(db, self.SCHEMA_VERSION):
+                    self._execute_script(db, _MIGRATIONS[2][1])
+                self._validate_schema(db, self.SCHEMA_VERSION)
                 db.commit()
             except Exception:
                 db.rollback()

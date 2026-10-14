@@ -61,14 +61,15 @@ def _record_tool_approval(self, action: str, decision: str, args: str = "") -> N
         pass
 
 
-def _confirm_tool_action(self, action: str, args: str = "", *, force: bool = False) -> bool:
+def _confirm_tool_action(self, action: str, args: str = "", *, force: bool = False,
+                         category: str = "high_impact") -> bool:
     """Confirm high-impact local CLI actions while keeping normal tools frictionless."""
     from openkyrozen.security.tool_policy import tool_confirmation_required
     if (not force and not tool_confirmation_required(action,self._EXECUTION_SURFACE,self.AVAILABLE_TOOLS)) or self._EXECUTION_SURFACE not in {"cli", "tui"}:
         return True
     mode = os.environ.get("KYROZEN_APPROVAL_MODE", "dangerous").strip().lower()
     if not force and mode in {"never", "none", "off"}:
-        self._record_permission_decision(action, "high_impact", "automatic_approval")
+        self._record_permission_decision(action, category, "automatic_approval")
         self._record_tool_approval(action, "approved", args)
         return True
     callback = self._approval_callback.get()
@@ -77,11 +78,11 @@ def _confirm_tool_action(self, action: str, args: str = "", *, force: bool = Fal
             approved = _call_approval_callback(self, callback, action, args)
         except Exception:
             approved = False
-        self._record_permission_decision(action, "high_impact", "user_approved" if approved else "user_denied")
+        self._record_permission_decision(action, category, "user_approved" if approved else "user_denied")
         self._record_tool_approval(action, "approved" if approved else "denied", args)
         return approved
     if not sys.stdin.isatty():
-        self._record_permission_decision(action, "high_impact", "denied_noninteractive")
+        self._record_permission_decision(action, category, "denied_noninteractive")
         self._record_tool_approval(action, "denied_noninteractive", args)
         return False
     request_var = getattr(self, "_approval_request", None)
@@ -95,7 +96,7 @@ def _confirm_tool_action(self, action: str, args: str = "", *, force: bool = Fal
         approved = self.console.input(prompt).strip().lower() in {"y", "yes"}
     except (EOFError, KeyboardInterrupt):
         approved = False
-    self._record_permission_decision(action, "high_impact", "user_approved" if approved else "user_denied")
+    self._record_permission_decision(action, category, "user_approved" if approved else "user_denied")
     self._record_tool_approval(action, "approved" if approved else "denied", args)
     return approved
 
@@ -198,8 +199,11 @@ def _authorize_tool_action(self, action: str, args: object, *, approve=None) -> 
     if mode == "ask" and not requires_ask_approval(action, args, self.AVAILABLE_TOOLS):
         return True
     fallback_approval = approve is None and not callable(self._approval_callback.get())
+    category = risk or "workspace_change"
     callback = approve or self._approval_callback.get() or (
-        lambda current, details: self._confirm_tool_action(current, details, force=True)
+        lambda current, details: self._confirm_tool_action(
+            current, details, force=True, category=category,
+        )
     )
     self._emit_stream_event({"event": "permission_check", "state": "approval_required",
                              "category": risk or "workspace_change"})

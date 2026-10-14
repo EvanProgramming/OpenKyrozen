@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .models import utc_now, stable_hash
@@ -29,7 +30,10 @@ class TasksRepository:
                     )
                 db.commit()
             except Exception:
-                db.rollback()
+                try:
+                    db.rollback()
+                except Exception:
+                    logging.getLogger(__name__).exception("Rollback failed while replacing tasks")
                 raise
 
 
