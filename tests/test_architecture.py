@@ -111,7 +111,10 @@ print('imports are inert')
                 self.assertTrue(all(r.success and r.authorized for r in receipts))
                 self.assertEqual(runtime.DEEPSEEK_MODEL, original_model)
                 for session in sessions:
-                    events = runtime.memory_bank.store.list_events("execution.receipt", session_id=session.session_id)
+                    events = runtime.memory_bank.store.list_events(
+                        "execution.receipt", workspace_id=session.tasks.workspace_id,
+                        session_id=session.session_id,
+                    )
                     self.assertEqual(len(events), 1)
             finally:
                 application.close()

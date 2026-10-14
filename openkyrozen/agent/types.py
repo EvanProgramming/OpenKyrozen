@@ -342,7 +342,11 @@ class ExecutionReceipt:
         projection = value.get("tool_result")
         typed_result = None
         if isinstance(projection, dict):
-            raw_error = projection.get("error")
+            raw_error = next((candidate for candidate in (
+                projection.get("error"), value.get("tool_error"),
+            ) if isinstance(candidate, dict) and candidate.get("code") and candidate.get("message")), None)
+            if raw_error is None and value.get("failure"):
+                raw_error = {"code": str(value["failure"]), "message": str(value["failure"])}
             error = ToolError(
                 raw_error["code"], raw_error["message"], raw_error.get("retriable", False),
                 raw_error.get("metadata", {}),

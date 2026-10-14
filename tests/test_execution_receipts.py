@@ -143,6 +143,34 @@ class ExecutionReceiptContractTests(unittest.TestCase):
         self.assertEqual(restored_legacy.call_id_source, "legacy")
         self.assertEqual(restored_legacy.failure, "permission_denied")
 
+    def test_rehydrating_truncated_failed_result_preserves_failure(self):
+        receipt = self.receipt(
+            success=False,
+            tool_error={"code": "execution_error", "message": "command failed"},
+            tool_result=ToolResult(
+                data={f"field{index}": "x" * 300 for index in range(20)},
+                error=ToolError("execution_error", "command failed"),
+            ),
+        )
+        restored = ExecutionReceipt.from_dict(receipt.as_dict())
+        self.assertFalse(restored.success)
+        self.assertEqual(restored.tool_result.error.code, "execution_error")
+
+    def test_rehydrating_large_failed_result_uses_compatibility_failure(self):
+        error = ToolError(
+            "execution_error", "command failed",
+            metadata={f"field{index}": "x" * 1000 for index in range(40)},
+        )
+        receipt = self.receipt(
+            success=False, failure="execution_error", tool_error={
+                "code": "execution_error", "message": "command failed",
+                "metadata": {f"field{index}": "x" * 1000 for index in range(40)},
+            }, tool_result=ToolResult(error=error),
+        )
+        restored = ExecutionReceipt.from_dict(receipt.as_dict())
+        self.assertFalse(restored.success)
+        self.assertEqual(restored.tool_result.error.code, "execution_error")
+
     def test_operation_identity_ignores_call_id_but_is_session_scoped(self):
         from openkyrozen.agent.executor import _operation_id
 
@@ -176,7 +204,7 @@ class ExecutionReceiptContractTests(unittest.TestCase):
         expected = {
             "read_file": "read_only", "write_file": "filesystem", "run_cmd": "process",
             "search_web": "remote", "git_push": "remote", "git_reset": "destructive",
-            "graph_refresh": "internal", "calculate": "read_only",
+            "browser_snapshot": "remote", "graph_refresh": "internal", "calculate": "read_only",
         }
         for name, side_effects in expected.items():
             with self.subTest(name=name):
@@ -235,6 +263,29 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         self.assertIsNone(receipt.task_id)
         self.assertEqual(task["evidence"], [])
         self.assertEqual(task["status"], "pending")
+
+    def test_receipt_workspace_uses_project_task_scope(self):
+        runtime = self.app.runtime
+        runtime.memory_bank.workspace_id = "global-memory"
+        runtime.tasks.workspace_id = "project-workspace"
+        receipt = runtime._make_execution_receipt(
+            action="calculate", args={"expression": "1+1"}, authorized=True,
+            started_at="start", success=True, result="2", operation_scope="test",
+            tool_result=ToolResult(data=2, text="2"),
+        )
+        self.assertEqual(receipt.workspace_id, "project-workspace")
+
+    def test_legacy_execute_persists_receipt_in_project_scope(self):
+        runtime = self.app.runtime
+        session = runtime.current_session
+        session.tasks.workspace_id = "project-workspace"
+        receipt = runtime.execute(session, "calculate", "1+1")
+        self.assertEqual(receipt.workspace_id, "project-workspace")
+        events = runtime.memory_bank.store.list_events(
+            "execution.receipt", workspace_id="project-workspace",
+            session_id=session.session_id,
+        )
+        self.assertEqual(len(events), 1)
 
     def test_explicit_task_association_records_evidence_without_completing_task(self):
         from openkyrozen.providers.models import ToolCall

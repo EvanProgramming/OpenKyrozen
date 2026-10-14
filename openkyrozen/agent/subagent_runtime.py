@@ -145,10 +145,10 @@ def _run_subagent_tool(self, profile: AgentProfile, action: str, args: Any, tool
             task_id=task_id,
         )
         self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
-            user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
-            session_id=self.memory_bank.session_id)
+            user_id=receipt.user_id, workspace_id=receipt.workspace_id,
+            session_id=receipt.session_id)
         self._notify_tool_execute(canonical, args, tool_failure("invalid_arguments" if authorized else "permission_denied", rejection))
-        return {**receipt.as_dict(), "receipt_id": receipt_id, "action": canonical,
+        return {**receipt.as_dict(), "receipt_id": receipt.receipt_id, "action": canonical,
                 "result": rejection, "success": False, "authorized": authorized}
     normalized_args = self._subagent_action_arguments(canonical, args)
     if isinstance(normalized_args, str):
@@ -164,9 +164,9 @@ def _run_subagent_tool(self, profile: AgentProfile, action: str, args: Any, tool
             task_id=task_id,
         )
         self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
-            user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
-            session_id=self.memory_bank.session_id)
-        return {**receipt.as_dict(), "receipt_id": receipt_id, "action": canonical,
+            user_id=receipt.user_id, workspace_id=receipt.workspace_id,
+            session_id=receipt.session_id)
+        return {**receipt.as_dict(), "receipt_id": receipt.receipt_id, "action": canonical,
                 "result": rejection, "success": False, "authorized": True}
     previous_token = self._execution_capability_token
     self._execution_capability_token = issue_capability_token(

@@ -47,8 +47,13 @@ def _operation_args(self, action: str, args: Any) -> str:
 def _operation_id(self, scope: str, action: str, args: Any) -> str:
     canonical = self._operation_action(action)
     memory = getattr(self, "memory_bank", None)
-    identity = "\0".join(str(getattr(memory, name, "") or "") for name in (
-        "user_id", "workspace_id", "session_id",
+    current_session = getattr(self, "current_session", None)
+    task_owner = getattr(current_session, "_delegation_parent", None) or self
+    tasks = getattr(task_owner, "tasks", None)
+    identity = "\0".join(str(value or "") for value in (
+        getattr(memory, "user_id", None),
+        getattr(tasks, "workspace_id", None) or getattr(memory, "workspace_id", None),
+        getattr(tasks, "session_id", None) or getattr(memory, "session_id", None),
     ))
     return stable_hash(f"{identity}\0{scope}\0{canonical}\0{self._operation_args(canonical, args)}")[:32]
 
@@ -163,9 +168,9 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         call_id_source=call_id_source,
         arguments=args if isinstance(args, dict) else None,
         tool_result=tool_result,
-        user_id=getattr(getattr(self, "memory_bank", None), "user_id", None),
-        workspace_id=getattr(getattr(self, "memory_bank", None), "workspace_id", None),
-        session_id=getattr(getattr(self, "memory_bank", None), "session_id", None),
+        user_id=getattr(task_manager, "user_id", None) or getattr(getattr(self, "memory_bank", None), "user_id", None),
+        workspace_id=getattr(task_manager, "workspace_id", None) or getattr(getattr(self, "memory_bank", None), "workspace_id", None),
+        session_id=getattr(task_manager, "session_id", None) or getattr(getattr(self, "memory_bank", None), "session_id", None),
         plan_id=getattr(getattr(task_manager, "working_plan", None), "id", None),
         task_id=task_id,
         tool_version=getattr(expected_spec, "version", None),
@@ -328,6 +333,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
     canonical = self._operation_action(action)
     started_at = utc_now()
     call_id = f"synthetic_{uuid.uuid4().hex}"
+    expected_spec = self.tool_registry.specs.get(canonical)
     if isinstance(args, dict):
         result = (
             f"Error: `{action}` requires a plain string as the `args` field.\n"
@@ -341,6 +347,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             action=canonical, args=args, authorized=False, started_at=started_at, success=False,
             result=result, operation_scope=operation_scope, failure=outcome.error.code, tool_error=outcome.error,
             tool_result=outcome, call_id=call_id, call_id_source="synthetic",
+            expected_spec=expected_spec,
         )
     args = str(args)
     operation_id = self._operation_id(operation_scope, canonical, args)
@@ -356,6 +363,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                 success=False, result=result, operation_scope=operation_scope,
                 failure=outcome.error.code, tool_error=outcome.error,
                 tool_result=outcome, call_id=call_id, call_id_source="synthetic",
+                expected_spec=expected_spec,
             )
     if (canonical != "run_cmd" and self._is_state_changing_action(canonical, args)
             and operation_id in successful_operations):
@@ -366,6 +374,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             action=canonical, args=args, authorized=True, started_at=started_at, success=False,
             result=result, operation_scope=operation_scope, failure=outcome.error.code, tool_error=outcome.error,
             tool_result=outcome, call_id=call_id, call_id_source="synthetic",
+            expected_spec=expected_spec,
         )
     receipt = self._run_tool(canonical, args, return_receipt=True, operation_scope=operation_scope,
                              _call_id=call_id, _call_id_source="synthetic")

@@ -192,7 +192,7 @@ def builtin_metadata(name):
         elif name in {'write_file', 'edit_file', 'git_add', 'git_commit', 'git_checkout', 'git_stash', 'git_branch', 'git_remote'}:
             effects = 'filesystem'
         elif name in {'git_clone', 'git_push', 'git_pull', 'github_cli', 'search_web', 'read_webpage',
-                      'analyze_remote_repo', 'browser_open', 'browser_click', 'browser_type', 'browser_close',
+                      'analyze_remote_repo', 'browser_open', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_close',
                       'github_status', 'github_read'}:
             effects = 'remote'
         elif name in {'update_plan', 'graph_refresh', 'spawn_agents', 'send_subagent', 'list_subagents',

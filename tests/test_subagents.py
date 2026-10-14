@@ -24,6 +24,20 @@ from openkyrozen.agent.delegation import WorkspaceAccess
 
 
 class SubAgentTests(unittest.TestCase):
+    def test_rejected_subagent_record_uses_persisted_receipt_id(self):
+        profile = AgentProfile("coder", "test", "full")
+        for args, tools in [({"path": "safe.txt"}, set()), ("path-only", {"write_file"})]:
+            with self.subTest(args=args, tools=tools):
+                persisted = []
+                with patch.object(main.tasks, "workspace_id", "project-workspace"), \
+                        patch.object(main.memory_bank.store, "append_event",
+                                     side_effect=lambda _kind, payload, **kwargs: persisted.append((payload, kwargs))), \
+                        patch.object(main, "_notify_tool_execute"):
+                    result = main._run_subagent_tool(profile, "write_file", args, tools)
+                payload, scope = persisted[-1]
+                self.assertEqual(result["receipt_id"], payload["receipt_id"])
+                self.assertEqual(scope["workspace_id"], payload["workspace_id"])
+
     def test_structured_subagent_calls_keep_synthetic_identity_and_redacted_args(self):
         from openkyrozen.agent.types import ExecutionReceipt
         from openkyrozen.tools.models import ToolResult

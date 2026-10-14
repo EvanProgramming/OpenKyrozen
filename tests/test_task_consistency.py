@@ -1027,6 +1027,16 @@ class TaskConsistencyTests(unittest.TestCase):
         self.assertIn("Provider timed out", response)
         self.assertEqual(chunks, [])
 
+    def test_pre_dispatch_legacy_receipt_retains_tool_spec_policy(self):
+        spec = main.tool_registry.get_spec("git_reset")
+        receipt = main._execute_turn_action(
+            "git_reset", {}, operation_scope="pre-dispatch-policy", successful_operations=set(),
+        )
+        self.assertFalse(receipt.success)
+        self.assertEqual(receipt.tool_version, spec.version)
+        self.assertEqual(receipt.tool_source, spec.source)
+        self.assertEqual(receipt.side_effects, "destructive")
+
     def test_successful_shell_command_can_be_repeated_after_workspace_changes(self):
         operations: set[str] = set()
         original_root = main._get_workspace_root()

@@ -572,8 +572,8 @@ class AgentRuntime:
                     _call_id=_call_id or f"synthetic_{uuid.uuid4().hex}", _call_id_source="synthetic",
                 )
                 self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
-                    user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
-                    session_id=self.memory_bank.session_id)
+                    user_id=receipt.user_id, workspace_id=receipt.workspace_id,
+                    session_id=receipt.session_id)
                 return receipt
             finally:
                 self._surface_capability_override.reset(surface_token)

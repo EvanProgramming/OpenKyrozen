@@ -18,7 +18,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `browser_click` | `browser` | `remote` | false | Click a selector. Args format: session_id\|CSS selector. | `selector`: string, `session_id`: string; required: `session_id`, `selector` |
 | `browser_close` | `browser` | `remote` | false | Close an isolated browser session. Args: browser session ID. | `session_id`: string; required: `session_id` |
 | `browser_open` | `browser` | `remote` | false | Open a URL in an isolated headless browser profile. Args: URL. | `url`: string; required: `url` |
-| `browser_snapshot` | `browser` | `read_only` | false | Read the current page text. Args: browser session ID. | `session_id`: string; required: `session_id` |
+| `browser_snapshot` | `browser` | `remote` | false | Read the current page text. Args: browser session ID. | `session_id`: string; required: `session_id` |
 | `browser_type` | `browser` | `remote` | false | Fill a selector. Args format: session_id\|CSS selector\|text. | `selector`: string, `session_id`: string, `text`: string; required: `session_id`, `selector`, `text` |
 | `calculate` | `read` | `read_only` | true | Check a bounded arithmetic expression, e.g. sum([Decimal('1.00'), Decimal('2.00')]); no workspace code runs. | `expression`: string; required: `expression` |
 | `cancel_subagent` | `read` | `internal` | false | Cancel a scoped sub-agent and prevent subsequent tool execution; args JSON contains run_id. | `run_id`: string; required: `run_id` |
