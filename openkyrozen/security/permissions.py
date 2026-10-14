@@ -68,6 +68,7 @@ def _confirm_tool_action(self, action: str, args: str = "", *, force: bool = Fal
         return True
     mode = os.environ.get("KYROZEN_APPROVAL_MODE", "dangerous").strip().lower()
     if not force and mode in {"never", "none", "off"}:
+        self._record_permission_decision(action, "high_impact", "automatic_approval")
         self._record_tool_approval(action, "approved", args)
         return True
     callback = self._approval_callback.get()
@@ -76,9 +77,11 @@ def _confirm_tool_action(self, action: str, args: str = "", *, force: bool = Fal
             approved = _call_approval_callback(self, callback, action, args)
         except Exception:
             approved = False
+        self._record_permission_decision(action, "high_impact", "user_approved" if approved else "user_denied")
         self._record_tool_approval(action, "approved" if approved else "denied", args)
         return approved
     if not sys.stdin.isatty():
+        self._record_permission_decision(action, "high_impact", "denied_noninteractive")
         self._record_tool_approval(action, "denied_noninteractive", args)
         return False
     request_var = getattr(self, "_approval_request", None)
@@ -92,6 +95,7 @@ def _confirm_tool_action(self, action: str, args: str = "", *, force: bool = Fal
         approved = self.console.input(prompt).strip().lower() in {"y", "yes"}
     except (EOFError, KeyboardInterrupt):
         approved = False
+    self._record_permission_decision(action, "high_impact", "user_approved" if approved else "user_denied")
     self._record_tool_approval(action, "approved" if approved else "denied", args)
     return approved
 
@@ -142,11 +146,34 @@ def _record_permission_decision(self, action: str, category: str, outcome: str) 
     try:
         request_var = getattr(self, "_approval_request", None)
         request = request_var.get() if request_var is not None else None
+        payload = {
+            "payload_version": 1,
+            "action": action[:64],
+            "category": category[:64],
+            "mode": self.permission_mode(),
+            "outcome": outcome,
+            "approval_fingerprint": request.fingerprint if request is not None else None,
+        }
+        workspace_id = self.interaction_workspace_id()
+        session_id = self.memory_bank.session_id
+        if request is not None:
+            payload.update({
+                "request_id": request.request_id,
+                "call_id": request.call_id,
+                "tool_name": request.tool_name,
+                "tool_version": request.tool_version,
+                "tool_source": request.tool_source,
+                "capability": request.capability,
+                "risk": request.risk,
+                "side_effects": request.side_effects,
+                "argument_keys": sorted(request.arguments)[:64],
+                "argument_key_count": len(request.arguments),
+            })
+            workspace_id = request.workspace_id
+            session_id = request.session_id
         self.memory_bank.store.append_event(
-            "permission.decision", {"action": action[:64], "category": category[:64],
-                                    "mode": self.permission_mode(), "outcome": outcome,
-                                    "approval_fingerprint": request.fingerprint if request is not None else None},
-            user_id=self.memory_bank.user_id, workspace_id=self.interaction_workspace_id(),
+            "permission.decision", payload, user_id=self.memory_bank.user_id,
+            workspace_id=workspace_id, session_id=session_id,
         )
     except Exception:
         pass

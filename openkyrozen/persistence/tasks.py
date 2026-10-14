@@ -11,20 +11,26 @@ class TasksRepository:
     def replace_tasks(self, tasks: list[dict[str, Any]], *, user_id: str = "local",
                       workspace_id: str = "default", session_id: str | None = None) -> None:
         with self.database._lock, self.database.connection() as db:
-            clauses = ["user_id=?", "workspace_id=?", "session_id IS ?"]
-            params: list[Any] = [user_id, workspace_id, session_id]
-            db.execute(f"DELETE FROM tasks WHERE {' AND '.join(clauses)}", params)
-            for task in tasks:
-                now = task.get("updated_at") or utc_now()
-                db.execute(
-                    "INSERT INTO tasks(id,parent_id,description,status,priority,dependencies,acceptance,attempts,checkpoint,evidence,"
-                    "user_id,workspace_id,session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (task["id"], task.get("parent_id"), task.get("description", ""), task.get("status", "pending"),
-                     int(task.get("priority", 0)), self.database._json(task.get("dependencies", [])),
-                     self.database._json(task.get("acceptance", [])), int(task.get("attempts", 0)),
-                     self.database._json(task.get("checkpoint", {})), self.database._json(task.get("evidence", [])),
-                     user_id, workspace_id, session_id, task.get("created_at", now), now),
-                )
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                clauses = ["user_id=?", "workspace_id=?", "session_id IS ?"]
+                params: list[Any] = [user_id, workspace_id, session_id]
+                db.execute(f"DELETE FROM tasks WHERE {' AND '.join(clauses)}", params)
+                for task in tasks:
+                    now = task.get("updated_at") or utc_now()
+                    db.execute(
+                        "INSERT INTO tasks(id,parent_id,description,status,priority,dependencies,acceptance,attempts,checkpoint,evidence,"
+                        "user_id,workspace_id,session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (task["id"], task.get("parent_id"), task.get("description", ""), task.get("status", "pending"),
+                         int(task.get("priority", 0)), self.database._json(task.get("dependencies", [])),
+                         self.database._json(task.get("acceptance", [])), int(task.get("attempts", 0)),
+                         self.database._json(task.get("checkpoint", {})), self.database._json(task.get("evidence", [])),
+                         user_id, workspace_id, session_id, task.get("created_at", now), now),
+                    )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
 
 
     def list_tasks(self, *, workspace_id: str = "default", session_id: str | None = None,
