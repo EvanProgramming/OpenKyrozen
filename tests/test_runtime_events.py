@@ -164,6 +164,31 @@ class RuntimeEventChatTests(unittest.TestCase):
         tool_call = next(event for event in events if event.kind == "tool.call")
         self.assertEqual(tool_call.model_request_id, "model-request-1")
 
+    def test_legacy_stream_request_identity_is_retained_for_tool_events(self):
+        runtime = self.app.runtime
+        events = []
+
+        class LegacyStreamProvider:
+            name = "legacy"
+
+            def chat_stream(self, _messages, _model=None):
+                yield "reply"
+
+        runtime.llm_provider = LegacyStreamProvider()
+        token = runtime._runtime_event_publisher.set(RuntimeEventPublisher(
+            user_id="alice", workspace_id="workspace", session_id="session",
+            on_runtime_event=events.append,
+        ))
+        try:
+            runtime._get_llm_response([{"role": "user", "content": "hi"}], stream=True,
+                                     on_chunk=lambda _chunk: None)
+            runtime._publish_runtime_event("tool.call", {"tool_name": "read_file"}, call_id="call-1")
+        finally:
+            runtime._runtime_event_publisher.reset(token)
+        requested = next(event for event in events if event.kind == "model.requested")
+        tool_call = next(event for event in events if event.kind == "tool.call")
+        self.assertEqual(tool_call.model_request_id, requested.model_request_id)
+
     def test_chat_emits_one_failed_terminal_event_when_execution_raises(self):
         runtime = self.app.runtime
         events = []
