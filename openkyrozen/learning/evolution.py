@@ -12,11 +12,7 @@ def _acceptance_for_tool(self, action: str, args: str, result: str, *, success: 
     command = args.get('command', '') if isinstance(args, dict) else str(args)
     if action not in {"run_cmd", "execute_terminal_command"} or not self._ACCEPTANCE_COMMAND_RE.search(command):
         return None, False
-    lowered = str(result).lower()
-    failed = not success or any(marker in lowered for marker in (
-        "failed (failures=", "failed (errors=", "tests failed", "error: test failed", "not ok",
-    ))
-    return command[:300], not failed
+    return command[:300], bool(success)
 
 
 def _research_acceptance(self, task: str, result: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

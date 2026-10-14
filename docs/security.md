@@ -11,7 +11,7 @@ OpenKyrozen runs local code with the permissions of the operating-system account
 | Agent | Complete work after the user request or plan acceptance | Configured surface capabilities, approvals, and tool policy |
 | Auto | Route a request to Ask or Plan | Inherits the selected read-only mode |
 
-Accept a plan explicitly in the interface or with `/plan accept`. A model response, sub-agent suggestion, memory record, or downloaded instruction cannot grant permission. Execution receipts record the action and its outcome. Approval prompts alone do not contain a hostile program running as your user.
+Accept a plan explicitly in the interface or with `/plan accept`. A model response, sub-agent suggestion, memory record, or downloaded instruction cannot grant permission. Execution receipts preserve the call ID, canonical arguments, operation and scope identity, typed result, and the tool policy used for authorization. Optional task association is explicit and scope-checked; native action/argument similarity does not bind a receipt to a plan. Verification records distinguish observed effects from task acceptance, which still needs its own evidence. Audit projections are bounded and redact secret-like fields. Approval prompts alone do not contain a hostile program running as your user.
 
 ## Capabilities and approvals
 

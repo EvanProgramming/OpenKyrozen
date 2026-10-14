@@ -93,10 +93,20 @@ def delegation(self):
                 def reconcile(run):
                     from openkyrozen.agent.types import ExecutionReceipt
                     with self._delegation_lock:
-                        return [self._record_turn_receipt(ExecutionReceipt(**{
-                            key: record[key] for key in ExecutionReceipt.__dataclass_fields__ if key in record}))
-                            for record in run.get("result", {}).get("tool_records", [])
-                            if record.get("success") and record.get("started_at")]
+                        task_id = run.get("assignment", {}).get("task_id")
+                        review = (run.get("reviews") or [{}])[-1]
+                        acceptance = None
+                        if task_id and self.tasks.active_working_task(task_id):
+                            if review.get("verdict") == "verified" and review.get("evidence"):
+                                acceptance = "Independent review verified: " + str(review.get("summary", "assignment"))[:300]
+                        receipts = []
+                        for record in run.get("result", {}).get("tool_records", []):
+                            if not record.get("success") or not record.get("started_at"):
+                                continue
+                            if acceptance and record.get("task_id") == task_id:
+                                record = {**record, "acceptance": acceptance}
+                            receipts.append(self._record_turn_receipt(ExecutionReceipt.from_dict(record)))
+                        return receipts
                 manager.coordinator = Delegation(manager.memory, self._invoke_delegated,
                     profiles=manager.profiles, root=key, concurrency=config["concurrency"],
                     emit=self._emit_stream_event, access=access, capture_context=capture_context,
@@ -128,7 +138,13 @@ def spawn_agents(self, args):
     value, error = _typed_json_args(args)
     if error:
         return error
-    data = {"agents": self.delegation().spawn(value.get("assignments"))}
+    assignments = value.get("assignments")
+    if isinstance(assignments, list):
+        for assignment in assignments:
+            task_id = assignment.get("task_id") if isinstance(assignment, dict) else None
+            if task_id is not None and not self._valid_receipt_task_binding(self.current_session, task_id):
+                return tool_failure("invalid_arguments", "Error: assignment task_id must identify a pending task in the active Working Plan.")
+    data = {"agents": self.delegation().spawn(assignments)}
     return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
 
 
@@ -138,7 +154,11 @@ def send_subagent(self, args):
     value, error = _typed_json_args(args)
     if error:
         return error
-    data = self.delegation().send(value.get("run_id"), value.get("assignment"))
+    assignment = value.get("assignment")
+    task_id = assignment.get("task_id") if isinstance(assignment, dict) else None
+    if task_id is not None and not self._valid_receipt_task_binding(self.current_session, task_id):
+        return tool_failure("invalid_arguments", "Error: assignment task_id must identify a pending task in the active Working Plan.")
+    data = self.delegation().send(value.get("run_id"), assignment)
     return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
 
 
@@ -236,6 +256,7 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
         capabilities &= resolve_capabilities("readonly")
     tools = allowed_tool_names(adapters.AVAILABLE_TOOLS, ",".join(capabilities)) - set(TOOLS)
     child._delegation_parent = parent
+    child._delegation_task_id = brief.get("task_id") if not review else None
     profile = replace(profile, metadata={**profile.metadata, "structured": True, "review": review,
         "display_name": run["reviewer"] if review else run["name"], "assignment": brief,
         "artifacts": copy.deepcopy(run.get("report", {}).get("artifacts", [])) if review else []})
@@ -319,10 +340,12 @@ def _delegation_tool_access(self, action, args):
             policy.get("side_effects", "unknown") if isinstance(policy, dict)
             else getattr(policy, "side_effects", "unknown")
         )
-        read_only_network = capability == "network" and effects == "external"
+        read_only_network = capability == "network" and action in {
+            "search_web", "read_webpage", "analyze_remote_repo", "github_status", "github_read",
+        }
         if action not in {"write_file", "edit_file"} and not read_only_network and (
             capability in {"write", "shell", "git", "browser", "destructive", "dynamic"}
-            or effects not in {"none", "read"}
+            or effects not in {"none", "read", "read_only"}
         ):
             raise PermissionError(f"Sub-agent capability '{capability}' is not confined to assigned files")
         if action in {"write_file", "edit_file"}:

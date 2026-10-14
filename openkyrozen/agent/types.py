@@ -159,7 +159,7 @@ class ExecutionReceipt:
                  verified_effect: str | None = None, acceptance: str | None = None,
                  args_sha256: str | None = None, tool_error: dict[str, Any] | None = None,
                  result_data: Any = None, *, call_id: str | None = None,
-                 call_id_source: str = "native", arguments: dict[str, Any] | None = None,
+                 call_id_source: str = "legacy", arguments: dict[str, Any] | None = None,
                  tool_result: ToolResult | None = None, user_id: str | None = None,
                  workspace_id: str | None = None, session_id: str | None = None,
                  plan_id: str | None = None, task_id: str | None = None,
@@ -280,6 +280,42 @@ class ExecutionReceipt:
                 "metadata": self.tool_result.metadata,
             }) if self.tool_result is not None else None,
         }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ExecutionReceipt":
+        """Read current or historical persisted receipt projections."""
+        if not isinstance(value, dict):
+            raise TypeError("Receipt payload must be an object")
+        projection = value.get("tool_result")
+        typed_result = None
+        if isinstance(projection, dict):
+            raw_error = projection.get("error")
+            error = ToolError(
+                raw_error["code"], raw_error["message"], raw_error.get("retriable", False),
+                raw_error.get("metadata", {}),
+            ) if isinstance(raw_error, dict) else None
+            typed_result = ToolResult(
+                data=projection.get("data"), text=projection.get("text", ""),
+                error=error, metadata=projection.get("metadata", {}),
+            )
+        return cls(
+            receipt_id=value["receipt_id"], operation_id=value["operation_id"],
+            action=value["action"], args=value.get("args", ""),
+            authorized=value.get("authorized", False), started_at=value.get("started_at", ""),
+            completed_at=value.get("completed_at", ""), success=value.get("success", False),
+            result=value.get("result", ""), failure=value.get("failure"),
+            exit_code=value.get("exit_code"), verified_effect=value.get("verified_effect"),
+            acceptance=value.get("acceptance"), args_sha256=value.get("args_sha256"),
+            tool_error=value.get("tool_error"), result_data=value.get("result_data"),
+            call_id=value.get("call_id"), call_id_source=value.get("call_id_source", "legacy"),
+            arguments=value.get("arguments") if isinstance(value.get("arguments"), dict) else None,
+            tool_result=typed_result, user_id=value.get("user_id"),
+            workspace_id=value.get("workspace_id"), session_id=value.get("session_id"),
+            plan_id=value.get("plan_id"), task_id=value.get("task_id"),
+            tool_version=value.get("tool_version"), tool_source=value.get("tool_source"),
+            side_effects=value.get("side_effects", "unknown"),
+            verification=value.get("verification"),
+        )
 
 
 class DeepSeekDSMLFilter:

@@ -274,11 +274,12 @@ class WorkingPlanModelTests(unittest.TestCase):
                 action_receipt = app.runtime.execute_call(
                     app.runtime.current_session,
                     ToolCall("calc-call", "calculate", {"expression": "2+2"}),
+                    task_id=task["id"],
                 )
                 self.assertTrue(action_receipt.success)
                 self.assertEqual(app.runtime.tasks.tasks[0]["evidence"][0]["task_id"], task["id"])
-                self.assertEqual(app.runtime.tasks.tasks[0]["status"], "succeeded")
-                self.assertEqual(app.runtime.tasks.working_plan.status, "completed")
+                self.assertEqual(app.runtime.tasks.tasks[0]["status"], "pending")
+                self.assertEqual(app.runtime.tasks.working_plan.status, "active")
             finally:
                 app.close()
 

@@ -119,11 +119,12 @@ class ToolSpec:
             raise ValueError("ToolSpec requires an identifier and callable executor")
         if capability not in {"read","write","shell","network","git","browser","destructive","dynamic"}:
             raise ValueError("Unknown tool capability")
-        if side_effects not in {"none","read","mutation","external","stateful","internal_write","orchestration","unknown"}:
+        if side_effects not in {"none","read","mutation","external","stateful","internal_write","orchestration","unknown",
+                                "filesystem","process","remote","destructive","read_only","internal"}:
             raise ValueError("Unknown tool side-effect class")
         if type(parallel_safe) is not bool or visibility not in {"public","hidden"} or risk not in {"normal","high"}:
             raise ValueError("Invalid tool policy metadata")
-        if parallel_safe and side_effects not in {"none","read"}:
+        if parallel_safe and side_effects not in {"none","read","read_only"}:
             raise ValueError("Stateful tools cannot declare parallel safety")
         try:
             _json_value(input_schema)

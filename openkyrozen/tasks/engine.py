@@ -442,6 +442,17 @@ class TaskManager:
                 return task["id"]
         return None
 
+    def active_working_task(self, task_id: str) -> dict[str, Any] | None:
+        """Return a task only when it is pending in this active durable plan."""
+        plan = self.working_plan
+        if plan is None or plan.status != "active" or task_id not in plan.task_ids:
+            return None
+        task = next((item for item in self.tasks if item.get("id") == task_id), None)
+        if (task is None or task.get("plan_id") != plan.id
+                or canonical_status(task.get("status", "pending")) not in {"pending", "running"}):
+            return None
+        return task
+
     def _replace_task(self, task: dict[str, Any]) -> int:
         for index, existing in enumerate(self.tasks):
             if existing["id"] == task["id"]:

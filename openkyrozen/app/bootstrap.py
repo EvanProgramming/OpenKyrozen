@@ -35,7 +35,10 @@ def build_application(*, surface="cli", memory=None, tools=None, user_id="local"
     memory.decisions = system_one
     adapters = tools if tools is not None else ToolAdapters()
     workspace = WorkspaceState(str(adapters._WORKSPACE_ROOT), adapters)
-    tasks = TaskManager(memory.store, user_id=user_id)
+    tasks = TaskManager(
+        memory.store, user_id=user_id, workspace_id=memory.workspace_id,
+        session_id=memory.session_id,
+    )
     interaction = InteractionController(memory.store, user_id=user_id, workspace_id=memory.workspace_id, session_id=memory.session_id)
     runtime = AgentRuntime(memory, tasks, interaction, workspace)
     bind_services(runtime)
