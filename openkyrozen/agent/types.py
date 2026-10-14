@@ -145,6 +145,8 @@ def _receipt_text_projection(value: str) -> str:
         return _redact_secret_text(str(value))
     if isinstance(parsed, (dict, list)):
         return json.dumps(_bounded_redacted(parsed), ensure_ascii=False, sort_keys=True)
+    if isinstance(parsed, str):
+        return json.dumps(_redact_secret_text(parsed), ensure_ascii=False)
     return str(value)
 
 

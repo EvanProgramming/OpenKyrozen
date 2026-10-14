@@ -97,6 +97,15 @@ class ExecutionReceiptContractTests(unittest.TestCase):
         self.assertNotIn("client-secret", str(projected))
         self.assertNotIn("text-secret", str(projected))
 
+    def test_compatibility_projection_redacts_json_string_results(self):
+        receipt = self.receipt(
+            result='"access_token=scalar-result"',
+            tool_result=ToolResult(text='"access_token=scalar-text"'),
+        )
+        projected = receipt.as_dict()
+        self.assertNotIn("scalar-result", str(projected))
+        self.assertNotIn("scalar-text", str(projected))
+
     def test_historical_and_current_persisted_receipts_rehydrate(self):
         current = self.receipt().as_dict()
         restored = ExecutionReceipt.from_dict(current)
@@ -250,6 +259,24 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         receipt = self.app.runtime.execute_call(
             self.app.runtime.current_session,
             ToolCall("test-version", "run_cmd", {"command": "pytest --version"}),
+            task_id=task["id"],
+        )
+        self.assertTrue(receipt.success)
+        self.assertEqual(task["status"], "pending")
+        self.assertFalse(any(item.get("acceptance") for item in task["evidence"]))
+
+    def test_partial_command_match_does_not_satisfy_multi_part_acceptance(self):
+        from openkyrozen.providers.models import ToolCall
+
+        self.app.runtime.tasks.update_plan(complexity="complex", tasks=[{
+            "description": "Verify and review the changed files",
+            "acceptance": ["run pytest --version and independently review the changed files"],
+            "execution": {"action": "run_cmd", "arguments": {"command": "pytest --version"}},
+        }])
+        task = self.app.runtime.tasks.tasks[0]
+        receipt = self.app.runtime.execute_call(
+            self.app.runtime.current_session,
+            ToolCall("partial-acceptance", "run_cmd", {"command": "pytest --version"}),
             task_id=task["id"],
         )
         self.assertTrue(receipt.success)

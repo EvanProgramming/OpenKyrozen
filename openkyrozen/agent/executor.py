@@ -387,9 +387,8 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
         command = (receipt.arguments or {}).get("command", "")
         criteria = next((item.get("acceptance", []) for item in self.tasks.tasks
                          if item.get("id") == explicit_task_id), [])
-        if not command or not any(
-            isinstance(item, str) and command.casefold() in item.casefold() for item in criteria
-        ):
+        declared = [" ".join(item.split()).casefold() for item in criteria if isinstance(item, str)]
+        if not command or len(declared) != 1 or " ".join(command.split()).casefold() != declared[0]:
             task_acceptance = None
         else:
             task_acceptance = receipt_projection["acceptance"]
