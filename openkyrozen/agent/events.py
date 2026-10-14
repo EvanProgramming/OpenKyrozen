@@ -196,7 +196,9 @@ class RuntimeEventPublisher:
         elif name == "model_complete":
             payload = {"legacy_protocol": True}
         elif name == "tool_receipt":
-            payload = dict(fields.get("tool_receipt") or {})
+            from .types import _bounded_redacted
+            payload = _bounded_redacted(dict(fields.get("tool_receipt") or {}), budget=12_000)
+            legacy_event = {"event": "tool_receipt", "tool_receipt": payload}
         call_id = payload.get("call_id") if isinstance(payload.get("call_id"), str) else None
         task_id = payload.get("task_id") if isinstance(payload.get("task_id"), str) else None
         event = self.publish(kind_map.get(name, f"legacy.{name}"), payload,

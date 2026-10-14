@@ -123,7 +123,9 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
         elif isinstance(event, ToolCallDelta):
             self._publish_runtime_event("model.tool_call_delta", {
                 "index": event.index, "id_delta": event.id_delta,
-                "name_delta": event.name_delta, "arguments_delta": event.arguments_delta,
+                "name_delta": event.name_delta,
+                "arguments_delta": "<redacted>" if event.arguments_delta else "",
+                "arguments_length": len(event.arguments_delta),
             }, model_request_id=request_id)
         elif isinstance(event, UsageUpdate):
             self._publish_runtime_event("usage.updated", usage_snapshot(event.usage), model_request_id=request_id)
@@ -159,7 +161,7 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     "provider": response.metadata.get("provider"),
                     "model": response.metadata.get("model", selected_model),
                 }, model_request_id=request_id)
-            self._last_response_is_native.set(not bool(response.metadata.get("legacy")))
+            self._last_response_is_native.set(bool(tools) and not bool(response.metadata.get("legacy")))
         except Exception as exc:
             self._turn_failed.set(True)
             self._publish_runtime_event("model.failed", {
@@ -238,6 +240,7 @@ def _get_llm_response(self, messages: list[dict[str, str]], model: str | None = 
         self._turn_failed.set(False)
         request_id = f"model_{uuid.uuid4().hex}"
         request_token = self._active_model_request_id.set(request_id)
+        self._last_model_request_id.set(request_id)
         self._publish_runtime_event("model.requested", {"model": model or self.DEEPSEEK_MODEL},
                                     model_request_id=request_id)
         before = self.memory_bank.store.usage_totals(
@@ -250,6 +253,8 @@ def _get_llm_response(self, messages: list[dict[str, str]], model: str | None = 
                     workspace_id=self.memory_bank.workspace_id, session_id=self.memory_bank.session_id,
                     run_id=self._active_usage_run_id.get(), surface=self._EXECUTION_SURFACE):
                 text = self._bounded_provider_stream(provider, messages, model or self.DEEPSEEK_MODEL, on_chunk)
+            if text.startswith(("[Ollama Error]", "[LLM Error]")) and self._is_context_overflow_error(RuntimeError(text)):
+                raise ContextOverflowError(text)
             after = self.memory_bank.store.usage_totals(
                 user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
                 session_id=self.memory_bank.session_id, run_id=self._active_usage_run_id.get(),

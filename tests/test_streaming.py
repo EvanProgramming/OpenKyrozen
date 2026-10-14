@@ -291,6 +291,8 @@ class StreamingEndpointTests(unittest.TestCase):
             self.assertEqual(assistant_messages[-1]["content"], content)
             event_names = [item.get("event") for item in payloads]
             self.assertLess(event_names.index("usage"), event_names.index("completion"))
+            completion = next(item for item in payloads if item.get("event") == "completion")
+            self.assertEqual(completion["reply"], content)
         self.assertEqual(done, 1)
 
     def test_inline_controls_are_filtered_before_sse_and_persistence(self):

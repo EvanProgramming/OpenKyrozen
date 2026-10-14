@@ -225,7 +225,8 @@ def _call_approval_callback(self, callback, action, args, *, request=None):
     if request is None:
         request_var = getattr(self, "_approval_request", None)
         request = request_var.get() if request_var is not None else None
-    if request is not None and callable(publish):
+    emit_approval_events = not getattr(callback, "_runtime_approval_wrapper", False)
+    if request is not None and callable(publish) and emit_approval_events:
         publish("approval.requested", {
             "request_id": request.request_id, "fingerprint": request.fingerprint,
             "tool_name": request.tool_name,
@@ -245,7 +246,7 @@ def _call_approval_callback(self, callback, action, args, *, request=None):
     except Exception:
         result = False
     approved = result is True
-    if request is not None and callable(publish):
+    if request is not None and callable(publish) and emit_approval_events:
         publish("approval.resolved", {
             "request_id": request.request_id, "fingerprint": request.fingerprint,
             "tool_name": request.tool_name, "outcome": "approved" if approved else "denied",

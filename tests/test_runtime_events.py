@@ -134,6 +134,21 @@ class RuntimeEventChatTests(unittest.TestCase):
         self.assertEqual(events[1].payload, {"text": "literal Action: text", "legacy_protocol": True})
         self.assertEqual(legacy, [{"event": "content", "chunk": "literal Action: text"}])
         self.assertEqual(len({item.turn_id for item in events}), 1)
+        self.assertTrue(all(item.session_id == runtime.current_session.session_id for item in events))
+
+    def test_legacy_receipt_projection_is_bounded_before_publication(self):
+        events, legacy = [], []
+        publisher = RuntimeEventPublisher(
+            user_id="alice", workspace_id="workspace", session_id="session",
+            on_runtime_event=events.append, on_legacy_event=legacy.append,
+        )
+        event = publisher.publish_legacy({"event": "tool_receipt", "tool_receipt": {
+            "call_id": "large-result", "result": "x" * 200_000,
+        }})
+        self.assertEqual(event.kind, "tool.result")
+        self.assertLess(len(str(event.payload).encode()), 128_000)
+        self.assertEqual(legacy[0]["event"], "tool_receipt")
+        self.assertIn("<truncated>", legacy[0]["tool_receipt"]["result"])
 
     def test_tool_events_inherit_the_model_request_identity(self):
         runtime = self.app.runtime
@@ -250,9 +265,16 @@ class RuntimeEventChatTests(unittest.TestCase):
         )
         try:
             self.assertTrue(_call_approval_callback(runtime, lambda _request: True, "write_file", {}, request=request))
+            nested = lambda *_args: _call_approval_callback(
+                runtime, lambda _request: True, "write_file", {}, request=request,
+            )
+            nested._runtime_approval_wrapper = True
+            self.assertTrue(_call_approval_callback(runtime, nested, "write_file", {}, request=request))
         finally:
             runtime._runtime_event_publisher.reset(token)
-        self.assertEqual([event.kind for event in events], ["approval.requested", "approval.resolved"])
+        self.assertEqual([event.kind for event in events], [
+            "approval.requested", "approval.resolved", "approval.requested", "approval.resolved",
+        ])
         self.assertTrue(all(event.call_id == "call-approval" for event in events))
         self.assertEqual(events[-1].payload["outcome"], "approved")
         self.assertNotIn("secret.txt", str([event.payload for event in events]))

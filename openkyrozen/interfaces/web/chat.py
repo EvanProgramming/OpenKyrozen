@@ -536,7 +536,7 @@ async def api_chat_stream(self, request: Request):
                 yield f"data: {json.dumps({'event': 'context', 'context': session.get('context')}, ensure_ascii=False)}\n\n"
                 if session.get("last_memory_receipt"):
                     yield f"data: {json.dumps({'event': 'memory_receipt', 'memory_receipt': session['last_memory_receipt']}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'event': 'completion', 'status': 'completed'})}\n\n"
+                yield f"data: {json.dumps({'event': 'completion', 'status': 'completed', 'reply': reply}, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
                 service._emit_chat_completed(session, reply, streamed=True)
                 service._audit("REPLY_STREAM", f"len={len(reply)}", session["user_id"])

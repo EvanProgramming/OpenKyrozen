@@ -358,7 +358,7 @@ class AgentRuntime:
             publisher = RuntimeEventPublisher(
                 user_id=str(getattr(memory, "user_id", getattr(session, "user_id", "local")) or "local"),
                 workspace_id=str(getattr(memory, "workspace_id", "default") or "default"),
-                session_id=str(getattr(memory, "session_id", getattr(session, "session_id", "default")) or "default"),
+                session_id=str(getattr(memory, "session_id", None) or getattr(session, "session_id", None) or "default"),
                 on_runtime_event=on_runtime_event,
                 on_legacy_event=on_event,
             )
@@ -797,6 +797,8 @@ class AgentRuntime:
                     if current_request.fingerprint != request.fingerprint:
                         return False
                     return True
+
+                bound_approval._runtime_approval_wrapper = True
 
                 approval_token2 = self._approval_callback.set(bound_approval if callable(user_approve) else None)
                 try:

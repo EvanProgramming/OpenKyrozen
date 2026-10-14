@@ -342,7 +342,15 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
     started_at = utc_now()
     call_id = f"synthetic_{uuid.uuid4().hex}"
     expected_spec = self.tool_registry.specs.get(canonical)
+    def emit_rejected_call():
+        self._publish_runtime_event(
+            "tool.call", {"tool_name": canonical,
+                          "argument_keys": sorted(args)[:64] if isinstance(args, dict) else []},
+            call_id=call_id,
+        )
+
     if isinstance(args, dict):
+        emit_rejected_call()
         result = (
             f"Error: `{action}` requires a plain string as the `args` field.\n"
             "You passed a JSON object. Convert to a plain string.\n"
@@ -363,6 +371,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             and self._interaction_controller.state().get("executing_plan")):
         allowed, reason = self.tasks.mutation_matches_current_task(canonical, args)
         if not allowed:
+            emit_rejected_call()
             result = f"Error: action does not match the accepted plan; {reason}."
             outcome = tool_failure("permission_denied", result)
             self._notify_tool_execute(canonical, args, outcome)
@@ -375,6 +384,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             )
     if (canonical != "run_cmd" and self._is_state_changing_action(canonical, args)
             and operation_id in successful_operations):
+        emit_rejected_call()
         outcome = tool_failure("conflict", "Error: duplicate successful state-changing action refused for this turn.")
         result = render_tool_result(outcome)
         self._notify_tool_execute(canonical, args, outcome)

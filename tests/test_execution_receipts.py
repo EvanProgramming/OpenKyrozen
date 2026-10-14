@@ -264,6 +264,30 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         self.assertEqual(task["evidence"], [])
         self.assertEqual(task["status"], "pending")
 
+    def test_early_legacy_rejection_publishes_correlated_tool_call(self):
+        from openkyrozen.agent.events import RuntimeEventPublisher
+
+        runtime = self.app.runtime
+        events = []
+        token = runtime._runtime_event_publisher.set(RuntimeEventPublisher(
+            user_id="alice", workspace_id="workspace", session_id="session",
+            on_runtime_event=events.append,
+        ))
+        try:
+            receipt = runtime._execute_turn_action(
+                "write_file", {"path": "note.txt", "content": "x"},
+                operation_scope="test", successful_operations=set(),
+            )
+            runtime._record_turn_receipt(receipt)
+        finally:
+            runtime._runtime_event_publisher.reset(token)
+
+        self.assertFalse(receipt.success)
+        call = next(event for event in events if event.kind == "tool.call")
+        result = next(event for event in events if event.kind == "tool.result")
+        self.assertEqual(call.call_id, receipt.call_id)
+        self.assertEqual(result.call_id, receipt.call_id)
+
     def test_receipt_workspace_uses_project_task_scope(self):
         runtime = self.app.runtime
         runtime.memory_bank.workspace_id = "global-memory"
