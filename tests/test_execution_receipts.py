@@ -106,6 +106,28 @@ class ExecutionReceiptContractTests(unittest.TestCase):
         self.assertNotIn("scalar-result", str(projected))
         self.assertNotIn("scalar-text", str(projected))
 
+    def test_compatibility_projection_redacts_json_objects_encoded_as_result_data(self):
+        import json
+
+        nested = '{"api_key":"deep-data-secret"}'
+        for _ in range(5):
+            nested = json.dumps(nested)
+        receipt = self.receipt(
+            result_data='{"api_key":"result-data-secret"}',
+            tool_result=ToolResult(data='{"client_secret":"tool-data-secret","padding":"' + ("x" * 1200) + '"}'),
+        )
+        projected = receipt.as_dict()
+        self.assertNotIn("result-data-secret", str(projected))
+        self.assertNotIn("tool-data-secret", str(projected))
+        nested_projection = self.receipt(tool_result=ToolResult(data=nested)).as_dict()
+        self.assertNotIn("deep-data-secret", str(nested_projection))
+
+    def test_compatibility_argument_projection_respects_size_budget(self):
+        arguments = {("k" * 80) + str(index): "x" * 50 for index in range(40)}
+        projected = self.receipt(arguments=arguments).as_dict()
+        self.assertLessEqual(len(projected["args"]), 1000)
+        self.assertLessEqual(len(json.dumps(projected["arguments"], ensure_ascii=False)), 4000)
+
     def test_historical_and_current_persisted_receipts_rehydrate(self):
         current = self.receipt().as_dict()
         restored = ExecutionReceipt.from_dict(current)

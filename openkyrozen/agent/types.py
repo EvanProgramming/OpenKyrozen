@@ -98,8 +98,10 @@ def _bounded_redacted(value: Any, *, budget: int = 4000, depth: int = 0) -> Any:
         if isinstance(item, dict):
             result = {}
             for key, nested in list(item.items())[:40]:
+                if remaining[0] <= 0:
+                    break
                 key = str(key)[:100]
-                remaining[0] -= len(key)
+                remaining[0] -= len(key) + 4
                 if re.search(r"(?i)(api.?key|credential|password|secret|token|authorization|request.?body|^body$)", key):
                     result[key] = "<redacted>"
                     remaining[0] -= 10
@@ -115,7 +117,20 @@ def _bounded_redacted(value: Any, *, budget: int = 4000, depth: int = 0) -> Any:
             return result
         if isinstance(item, str):
             size = min(1000, remaining[0])
-            result = _redact_secret_text(item[:size])
+            raw = item[:size]
+            if len(item) > size or level >= 5:
+                result = "<redacted>" if item.lstrip().startswith(("{", "[", '"')) else _redact_secret_text(raw)
+            else:
+                try:
+                    parsed = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    parsed = None
+                if isinstance(parsed, (dict, list)):
+                    result = json.dumps(clean(parsed, level + 1), ensure_ascii=False, sort_keys=True)
+                elif isinstance(parsed, str):
+                    result = json.dumps(clean(parsed, level + 1), ensure_ascii=False)
+                else:
+                    result = _redact_secret_text(raw)
             remaining[0] -= len(result)
             return result + ("<truncated>" if len(item) > size else "")
         if item is None or type(item) in {bool, int} or type(item) is float and math.isfinite(item):
@@ -123,7 +138,12 @@ def _bounded_redacted(value: Any, *, budget: int = 4000, depth: int = 0) -> Any:
             return item
         return f"<{type(item).__name__}>"
 
-    return clean(value, depth)
+    cleaned = clean(value, depth)
+    try:
+        encoded = json.dumps(cleaned, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError, RecursionError):
+        return "<truncated>"
+    return cleaned if len(encoded) <= budget else {"_truncated": True}
 
 
 def _receipt_args_projection(value: str, arguments: dict[str, Any] | None) -> str:
