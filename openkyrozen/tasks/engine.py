@@ -115,6 +115,8 @@ class TaskManager:
             self.recover()
 
         previous = self.working_plan
+        if previous is not None and previous.status != "active":
+            previous = None
         current_plan_tasks = (
             self.store.list_working_plan_tasks(
                 previous.id, user_id=self.user_id, workspace_id=self.workspace_id,
@@ -131,10 +133,21 @@ class TaskManager:
                 raise ValueError("each plan task requires a description")
             description = item["description"].strip()
             acceptance = item.get("acceptance")
+            execution = item.get("execution")
             if not description or not isinstance(acceptance, list) or any(
                 not isinstance(value, str) or not value.strip() for value in acceptance
             ):
                 raise ValueError("each plan task requires a description and explicit string acceptance criteria")
+            checkpoint = {}
+            if execution is not None:
+                if (not isinstance(execution, dict) or not isinstance(execution.get("action"), str)
+                        or not execution["action"].strip() or not isinstance(execution.get("arguments"), dict)):
+                    raise ValueError("execution must contain a tool action and object arguments")
+                checkpoint = {
+                    "action": execution["action"].strip(),
+                    "args": json.dumps(execution["arguments"], ensure_ascii=False, allow_nan=False,
+                                       sort_keys=True, separators=(",", ":")),
+                }
             task_id = item.get("id")
             if task_id is not None:
                 if not isinstance(task_id, str) or task_id not in by_id:
@@ -142,18 +155,18 @@ class TaskManager:
                 if task_id in seen:
                     raise ValueError("a task id may appear only once in a plan update")
                 task = dict(by_id[task_id])
-                if task["description"] != description or task.get("acceptance", []) != acceptance:
+                if (task["description"] != description or task.get("acceptance", []) != acceptance
+                        or task.get("checkpoint", {}) != checkpoint):
                     task["status"] = "pending"
                     task["evidence"] = []
-                    task["checkpoint"] = {}
-                task.update(description=description, acceptance=list(acceptance), updated_at=now)
+                task.update(description=description, acceptance=list(acceptance), checkpoint=checkpoint, updated_at=now)
                 seen.add(task_id)
             else:
                 task_id = f"task_{scope_key}_{uuid.uuid4().hex}"
                 task = {
                     "id": task_id, "description": description, "status": "pending", "priority": 0,
                     "dependencies": [], "acceptance": list(acceptance), "attempts": 0,
-                    "checkpoint": {}, "evidence": [], "created_at": now, "updated_at": now,
+                    "checkpoint": checkpoint, "evidence": [], "created_at": now, "updated_at": now,
                     "plan_id": previous.id if previous else None,
                 }
                 seen.add(task_id)
@@ -512,7 +525,7 @@ class TaskManager:
             plan = self.working_plan
             plan_ids = set(plan.task_ids)
             for index, task in enumerate(self.tasks):
-                if task["id"] in plan_ids and task["status"] in {"pending", "running"}:
+                if task["id"] in plan_ids and task["status"] not in {"succeeded", "cancelled"}:
                     self.set_status(index, "cancelled")
             if self.working_plan.status == "active" and self.store.set_working_plan_status(
                 plan.id, "cancelled", user_id=self.user_id, workspace_id=self.workspace_id,

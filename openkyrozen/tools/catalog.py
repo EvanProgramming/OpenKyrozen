@@ -122,6 +122,10 @@ _OBJECT_FIELDS = {
                         'id': {'type':'string','minLength':1},
                         'description': {'type':'string','minLength':1},
                         'acceptance': {'type':'array','items':{'type':'string','minLength':1}},
+                        'execution': {'type':'object','properties':{
+                            'action': {'type':'string','minLength':1},
+                            'arguments': {'type':'object','properties':{},'additionalProperties':True},
+                        },'required':['action','arguments'],'additionalProperties':False},
                     },'required':['description','acceptance'],'additionalProperties':False}}},
     'spawn_agents': {'assignments': {'type':'array','items':{'type':'object','properties':{},'additionalProperties':True}}},
     'send_subagent': {'run_id': {'type':'string'}, 'assignment': {'type':'object','properties':{},'additionalProperties':True}},

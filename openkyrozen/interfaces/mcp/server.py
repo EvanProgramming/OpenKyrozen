@@ -114,6 +114,7 @@ async def mcp_endpoint(self, request: Request):
             # Leave conflicting aliases intact so the canonical schema rejects the call.
             pass
         try:
+            result_data = None
             def execute():
                 runtime = service._agent
                 session_id = service._normalise_session_id(params.get("session_id") or "surface:mcp")
@@ -126,13 +127,17 @@ async def mcp_endpoint(self, request: Request):
             receipt = await asyncio.to_thread(execute)
             result_text = receipt.result
             is_error = not receipt.success
+            result_data = receipt.result_data
         except Exception as e:
             result_text = f"Error: {e}"
             is_error = True
-        return service._mcp_response(request_id, result={
+        mcp_result = {
             "content": [{"type": "text", "text": result_text}],
             "isError": is_error,
-        })
+        }
+        if isinstance(result_data, dict):
+            mcp_result["structuredContent"] = result_data
+        return service._mcp_response(request_id, result=mcp_result)
     if method == "chat/send":
         try:
             msg = service._validate_message(service._sanitize_api_message(str(params.get("message", "")).strip()))

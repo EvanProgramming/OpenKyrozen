@@ -24,6 +24,14 @@ class DeletionPersistenceTests(unittest.TestCase):
         }, set_head=True)
 
     def test_delete_session_removes_only_session_owned_records(self):
+        from openkyrozen.tasks.engine import TaskManager
+        manager = TaskManager(self.store, workspace_id="project-a", session_id="chat-a")
+        session_plan = manager.update_plan(complexity="complex", tasks=[
+            {"description": "session plan", "acceptance": ["done"]},
+        ])
+        other_plan = TaskManager(self.store, workspace_id="project-a", session_id="chat-b").update_plan(
+            complexity="complex", tasks=[{"description": "keep plan", "acceptance": ["done"]}],
+        )
         self.store.append_event("session.message", {"content": "remove"}, user_id="local",
                                 workspace_id="project-a", session_id="chat-a")
         self.store.append_event("session.message", {"content": "keep"}, user_id="local",
@@ -46,8 +54,8 @@ class DeletionPersistenceTests(unittest.TestCase):
         self.store.delete_session_data(user_id="local", workspace_id="project-a", session_id="chat-a")
 
         self.assertEqual(self.store.list_events(workspace_id="project-a", session_id="chat-a"), [])
-        self.assertEqual(len(self.store.list_events(workspace_id="project-a", session_id="chat-b")), 1)
-        self.assertEqual(len(self.store.list_events(workspace_id="project-a")), 2)
+        self.assertEqual(len(self.store.list_events("session.message", workspace_id="project-a", session_id="chat-b")), 1)
+        self.assertEqual(len(self.store.list_events("session.message", workspace_id="project-a")), 1)
         self.assertEqual(self.store.list_tasks(user_id="local", workspace_id="project-a", session_id="chat-a"), [])
         self.assertFalse(any(item["session_id"] == "chat-a" for item in
                              self.store.list_memories(user_id="local", workspace_id="project-a")))
@@ -56,8 +64,15 @@ class DeletionPersistenceTests(unittest.TestCase):
         self.assertEqual(self.store.list_usage_attempts(user_id="local", workspace_id="project-a", session_id="chat-a"), [])
         self.assertIsNone(self.store.history_head(user_id="local", workspace_id="project-a", session_id="chat-a"))
         self.assertIsNotNone(self.store.history_head(user_id="local", workspace_id="project-a", session_id="chat-b"))
+        with self.store.database.connection() as db:
+            self.assertIsNone(db.execute("SELECT id FROM working_plans WHERE id=?", (session_plan.id,)).fetchone())
+            self.assertIsNotNone(db.execute("SELECT id FROM working_plans WHERE id=?", (other_plan.id,)).fetchone())
 
     def test_delete_project_scope_removes_project_data_and_registry_only(self):
+        from openkyrozen.tasks.engine import TaskManager
+        plan = TaskManager(self.store, workspace_id="project-a", session_id="chat-a").update_plan(
+            complexity="complex", tasks=[{"description": "remove plan", "acceptance": ["done"]}],
+        )
         self.store.append_event("session.message", {"content": "remove"}, user_id="local",
                                 workspace_id="project-a", session_id="chat-a")
         self.store.append_event("session.message", {"content": "keep"}, user_id="local",
@@ -87,6 +102,8 @@ class DeletionPersistenceTests(unittest.TestCase):
                          ["project-b"])
         self.assertEqual(self.store.list_memories(user_id="local", workspace_id="project-a"), [])
         self.assertEqual(len(self.store.list_memories(user_id="local", workspace_id="project-b")), 1)
+        with self.store.database.connection() as db:
+            self.assertIsNone(db.execute("SELECT id FROM working_plans WHERE id=?", (plan.id,)).fetchone())
 
     def test_delete_global_workspace_scope_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "global workspace"):

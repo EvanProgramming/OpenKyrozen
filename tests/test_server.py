@@ -51,6 +51,26 @@ class ServerBoundaryTests(unittest.TestCase):
         self.assertIn("MCP alias content", aliased["result"]["content"][0]["text"])
         self.assertTrue(conflict["result"]["isError"])
 
+    def test_mcp_preserves_structured_working_plan_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with patch.dict(os.environ, {
+                "KYROZEN_DB_PATH": str(root / "state.sqlite3"),
+                "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_MCP_CAPABILITIES": "workspace",
+            }):
+                service = WebService(None)
+                client = TestClient(service.app)
+                result = client.post("/mcp", json={
+                    "jsonrpc": "2.0", "id": 812, "method": "tools/call",
+                    "params": {"name": "update_plan", "arguments": {
+                        "complexity": "complex",
+                        "tasks": [{"description": "inspect", "acceptance": ["files found"]}],
+                    }},
+                }).json()["result"]
+        self.assertFalse(result["isError"])
+        self.assertTrue(result["structuredContent"]["plan_id"].startswith("plan_"))
+        self.assertEqual(len(result["structuredContent"]["task_ids"]), 1)
+
     def test_history_api_lists_tree_rejects_stale_or_unconfirmed_rollbacks_and_restores(self):
         client = TestClient(server.app)
         with tempfile.TemporaryDirectory() as directory:

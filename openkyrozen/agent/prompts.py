@@ -54,7 +54,7 @@ def _permitted_tool_names(self, agent_config: dict[str, Any] | None = None) -> s
     active = getattr(self, "_execution_capability_token", None)
     capabilities = configured & active.capabilities if active else configured
     capabilities = mode_capabilities(capabilities, self._active_interaction_mode.get())
-    return {name for name in self.AVAILABLE_TOOLS if self.tool_registry.get_spec(name).visibility == 'public' and tool_capability(name,self.AVAILABLE_TOOLS) in capabilities}
+    return {name for name in self.AVAILABLE_TOOLS if name != "update_plan" and self.tool_registry.get_spec(name).visibility == 'public' and tool_capability(name,self.AVAILABLE_TOOLS) in capabilities}
 
 
 @legacy_text_api

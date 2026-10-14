@@ -117,6 +117,41 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(recovered.working_plan, revised)
             self.assertEqual(recovered.tasks[0]["id"], first_task_id)
 
+    def test_update_after_terminal_plan_creates_new_plan_instead_of_reopening_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="terminal-update")
+            first = manager.update_plan(complexity="complex", tasks=[
+                {"description": "first", "acceptance": ["first done"]},
+            ])
+            manager.set_status(0, "succeeded", evidence={"success": True, "acceptance": "first done"})
+
+            second = manager.update_plan(complexity="complex", tasks=[
+                {"description": "second", "acceptance": ["second done"]},
+            ])
+
+            self.assertNotEqual(first.id, second.id)
+            self.assertEqual(second.status, "active")
+            with store.database.connection() as db:
+                self.assertEqual(db.execute("SELECT status FROM working_plans WHERE id=?", (first.id,)).fetchone()["status"], "completed")
+
+    def test_clear_cancels_failed_and_blocked_tasks_in_the_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="clear-terminal-tasks")
+            manager.update_plan(complexity="complex", tasks=[
+                {"description": "failed", "acceptance": ["recover or cancel"]},
+                {"description": "blocked", "acceptance": ["recover or cancel"]},
+            ])
+            manager.set_status(0, "failed")
+            manager.set_status(1, "blocked")
+
+            manager.clear()
+
+            self.assertEqual([task["status"] for task in store.list_tasks(
+                user_id="local", workspace_id="project", session_id="clear-terminal-tasks",
+            )], ["cancelled", "cancelled"])
+
     def test_working_plan_isolated_by_user_workspace_and_session(self):
         with tempfile.TemporaryDirectory() as directory:
             store = EventStore(Path(directory) / "state.sqlite3")
@@ -215,14 +250,35 @@ class WorkingPlanModelTests(unittest.TestCase):
                     app.runtime.current_session,
                     ToolCall("plan-call", "update_plan", {
                         "complexity": "complex",
-                        "tasks": [{"description": "Inspect the repository", "acceptance": ["find relevant files"]}],
+                        "tasks": [{"description": "Inspect the repository", "acceptance": ["calculate the answer"],
+                                   "execution": {"action": "calculate", "arguments": {"expression": "2+2"}}}],
                     }),
                 )
                 self.assertTrue(receipt.success)
+                self.assertEqual(receipt.result_data["plan_id"], app.runtime.tasks.working_plan.id)
+                self.assertEqual(receipt.result_data["task_ids"], list(app.runtime.tasks.working_plan.task_ids))
+                self.assertEqual(receipt.as_dict()["result_data"], receipt.result_data)
                 self.assertIsNotNone(app.runtime.tasks.working_plan)
                 self.assertEqual(app.runtime.tasks.working_plan.task_ids, tuple(
                     task["id"] for task in app.runtime.tasks.tasks
                 ))
+                task = app.runtime.tasks.tasks[0]
+                self.assertEqual(task["checkpoint"]["action"], "calculate")
+                mismatched = app.runtime.execute_call(
+                    app.runtime.current_session,
+                    ToolCall("wrong-calc", "calculate", {"expression": "2+3"}),
+                )
+                self.assertTrue(mismatched.success)
+                self.assertEqual(app.runtime.tasks.tasks[0]["status"], "pending")
+                self.assertEqual(app.runtime.tasks.tasks[0]["evidence"], [])
+                action_receipt = app.runtime.execute_call(
+                    app.runtime.current_session,
+                    ToolCall("calc-call", "calculate", {"expression": "2+2"}),
+                )
+                self.assertTrue(action_receipt.success)
+                self.assertEqual(app.runtime.tasks.tasks[0]["evidence"][0]["task_id"], task["id"])
+                self.assertEqual(app.runtime.tasks.tasks[0]["status"], "succeeded")
+                self.assertEqual(app.runtime.tasks.working_plan.status, "completed")
             finally:
                 app.close()
 
@@ -234,6 +290,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             try:
                 prompt_tools = app.runtime._agent_prompt_tools_list({"capabilities": ["read", "write"]})
                 self.assertNotIn("update_plan", prompt_tools)
+                self.assertNotIn("update_plan", app.runtime._permitted_tool_names({"capabilities": ["read", "write"]}))
+                self.assertTrue(app.runtime._discover_tools("update_plan").startswith("Error:"))
                 self.assertIn("update_plan", app.runtime.tool_registry.specs)
             finally:
                 app.close()
