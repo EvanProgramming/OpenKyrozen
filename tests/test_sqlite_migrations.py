@@ -181,6 +181,22 @@ class SQLiteMigrationTests(unittest.TestCase):
                     [1, 2, 3],
                 )
 
+    def test_compacted_prior_version_history_remains_valid_after_upgrade(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "compacted-history.sqlite3"
+            self._historical_database(path, 2)
+            with _sqlite(path) as db:
+                db.execute("DELETE FROM schema_migrations WHERE version < 2")
+
+            SQLiteDatabase(path)
+            SQLiteDatabase(path)
+
+            with _sqlite(path) as db:
+                self.assertEqual(
+                    [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
+                    [2, 3],
+                )
+
     def test_future_version_is_rejected_without_modifying_database(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "future.sqlite3"

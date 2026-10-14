@@ -265,7 +265,7 @@ class SQLiteDatabase:
             raise RuntimeError(
                 f"OpenKyrozen state uses newer schema {rows[-1]}; supported schema is {self.SCHEMA_VERSION}."
             )
-        if rows and rows not in (list(range(1, rows[-1] + 1)), [rows[-1]]):
+        if rows and rows != list(range(rows[0], rows[-1] + 1)):
             raise RuntimeError("OpenKyrozen SQLite schema is inconsistent: migration history has gaps")
         version = rows[-1] if rows else 0
         if version == 0 and set(objects) - {"schema_migrations", "sqlite_sequence"}:
