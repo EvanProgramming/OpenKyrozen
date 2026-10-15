@@ -606,7 +606,8 @@ class ServerBoundaryTests(unittest.TestCase):
             self.assertEqual(server._run_session_chat(session, "hello"), "reply:hello")
             self.assertEqual(server._run_session_chat(session, "again"), "reply:again")
 
-        self.assertEqual(seen, [[], ["hello", "reply:hello"]])
+        # The stub bypasses the runtime turn recorder, so no transcript is synthesized by Web.
+        self.assertEqual(seen, [[], []])
         self.assertIs(server._agent.short_term_memory, original_messages)
         self.assertIs(server._agent.tasks.tasks, original_tasks)
 

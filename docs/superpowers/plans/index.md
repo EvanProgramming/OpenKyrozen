@@ -12,5 +12,6 @@
 - [V3 #241 — Working Plans and task lifecycle](2026-10-14-v3-issue-241.md)
 - [V3 #236 — Execution receipts and task association](2026-10-14-v3-issue-236.md)
 - [V3 #255 — Shared typed runtime events](2026-10-14-v3-issue-255.md)
+- [V3 #247 — Canonical conversation history](2026-10-15-v3-issue-247.md)
 
 Add a linked issue-specific plan here before coding any later V3 issue.

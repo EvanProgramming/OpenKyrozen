@@ -19,6 +19,13 @@ def context_usage(self) -> dict[str, Any] | None:
 def _store_context_status(self, state: ContextState) -> None:
     if not state.status:
         return
+    state.status.update({
+        "component_estimates": dict(state.status.get("breakdown", {})),
+        "component_attribution_source": "estimated",
+        "stable_prefix_fingerprint": self._stable_prefix_info.get().get("fingerprint"),
+        "stable_prefix_tokens": self._stable_prefix_info.get().get("estimated_tokens", 0),
+        **self._context_history_metrics.get(),
+    })
     with self._context_status_lock:
         self._context_status_by_scope[self._context_scope()] = dict(state.status)
 
@@ -104,6 +111,7 @@ def _prepare_context_for_call(self, messages: list[dict], model: str | None = No
         retained_ids = {id(item) for item in messages}
         retained_history = [item for item in self.short_term_memory if id(item) in retained_ids]
         self.short_term_memory = retain_context_digests([result.history_digest] + retained_history, self.SHORT_TERM_CAP * 2)
+        self.current_session.messages_compacted = True
         state.history_message_ids = {id(item) for item in self.short_term_memory}
         self._save_learning_context_digest(result.history_digest)
     self._store_context_status(state)
@@ -130,6 +138,7 @@ def _recover_context_after_overflow(self, messages: list[dict], model: str | Non
         retained_ids = {id(item) for item in messages}
         retained_history = [item for item in self.short_term_memory if id(item) in retained_ids]
         self.short_term_memory = retain_context_digests([result.history_digest] + retained_history, self.SHORT_TERM_CAP * 2)
+        self.current_session.messages_compacted = True
         state.history_message_ids = {id(item) for item in self.short_term_memory}
         self._save_learning_context_digest(result.history_digest)
     self._store_context_status(state)

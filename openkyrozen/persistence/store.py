@@ -14,6 +14,8 @@ from .learning import LearningRepository
 from .catalogs import CatalogsRepository
 from .deletion import DeletionRepository
 
+_UNSET = object()
+
 class EventStore:
     def __init__(self, path=None):
         self.database = SQLiteDatabase(path)
@@ -33,6 +35,19 @@ class EventStore:
 
     def append_event(self, event_type: str, payload: Any, *, user_id: str='local', workspace_id: str='default', session_id: str | None=None, task_id: str | None=None):
         return self.events.append_event(event_type, payload, user_id=user_id, workspace_id=workspace_id, session_id=session_id, task_id=task_id)
+
+    def conversation_head(self, *, user_id: str, workspace_id: str, session_id: str):
+        return self.events.conversation_head(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
+
+    def append_conversation_entry(self, entry, *, expected_head=...):
+        return self.events.append_conversation_entry(entry, expected_head=expected_head)
+
+    def list_conversation_entries(self, *, user_id: str, workspace_id: str, session_id: str):
+        return self.events.list_conversation_entries(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
+
+    def conversation_checkpoint(self, node_id: str, *, user_id: str, workspace_id: str, session_id: str):
+        return self.events.conversation_checkpoint(node_id, user_id=user_id, workspace_id=workspace_id,
+                                                   session_id=session_id)
 
     def delete_session_data(self, *, user_id: str, workspace_id: str, session_id: str):
         return self.deletion.delete_session(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
@@ -59,7 +74,10 @@ class EventStore:
     def list_history_sessions(self, *, user_id: str='local', workspace_id: str='default', limit: int=100):
         return self.history.list_history_sessions(user_id=user_id, workspace_id=workspace_id, limit=limit)
 
-    def insert_history_node(self, node: dict[str, Any], *, set_head: bool=False, expected_head: str | None=None):
+    def insert_history_node(self, node: dict[str, Any], *, set_head: bool=False, expected_head: str | None=None,
+                            journal_head=_UNSET):
+        if journal_head is not _UNSET:
+            node = {**node, "journal_head": journal_head}
         return self.history.insert_history_node(node, set_head=set_head, expected_head=expected_head)
 
     def set_history_head(self, node_id: str, *, user_id: str='local', workspace_id: str='default', session_id: str, expected_head: str | None=None):

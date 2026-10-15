@@ -28,6 +28,12 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
     previous_capability_token = self._execution_capability_token
     original_user_input = user_input
     history_token: TurnToken | None = None
+    conversation = self.conversation_history
+    if conversation.head is None:
+        conversation.import_legacy(list(self.short_term_memory))
+    elif not getattr(self.current_session, "messages_compacted", False):
+        conversation.reconcile_legacy(list(self.short_term_memory))
+    self._conversation_expected_head.set(conversation.head)
     try:
         history_token = self.history_manager().begin_turn(
             conversation=list(self.short_term_memory), interaction=self._interaction_controller.state(user_input),
@@ -39,6 +45,7 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
             user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
             session_id=self.memory_bank.session_id,
         )
+    self._record_conversation_entry("user.input", {"text": original_user_input})
     accepted_plan: dict[str, Any] | None = None
     mode_override = self._interaction_mode_override.get()
     state = self._interaction_controller.state(user_input)
@@ -58,8 +65,10 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
         try:
             accepted_plan, created = self._interaction_controller.accept_plan(self.tasks)
         except InteractionError:
+            self._record_conversation_entry("turn.outcome", {"status": "completed", "text": "There is no pending plan to accept."})
             return "There is no pending plan to accept."
         if not created and not self._interaction_controller.state().get("executing_plan"):
+            self._record_conversation_entry("turn.outcome", {"status": "completed", "text": "Plan was already accepted."})
             return "Plan was already accepted."
         user_input = (
             "Execute the accepted plan below in Agent mode. Complete each durable task with evidence.\n\n"
@@ -101,6 +110,9 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
             if backend := self._fast_used_backend.get():
                 reply = f"Made a decision with {'Jev' if backend == 'jev' else 'Kev'}.\n\n{reply}"
         except Exception as exc:
+            self._record_conversation_entry("turn.outcome", {
+                "status": "failed", "error_type": type(exc).__name__,
+            })
             if active_plan:
                 self._interaction_controller.complete_plan(active_plan, status="failed")
             self._track_fix_outcome(original_user_input, f"Turn failed: {type(exc).__name__}: {exc}")
@@ -115,14 +127,31 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
             self._emit_stream_event({"event": "interaction", "interaction": self.interaction_envelope()})
         self._track_fix_outcome(original_user_input, reply)
         runtime.turn_end(reply=reply, success=True, **context)
+        interaction = self._interaction_controller.state()
+        self._record_conversation_entry("interaction.reference", {
+            "interaction": interaction,
+            "plan_id": interaction.get("pending_plan", {}).get("plan_id")
+                        if isinstance(interaction.get("pending_plan"), dict) else None,
+            "task_ids": [item.get("id") for item in self.tasks.tasks if item.get("id")],
+        })
+        self._record_conversation_entry("turn.outcome", {
+            "status": "failed" if self._turn_failed.get() else "completed",
+            "text": self._clean_final_response(reply),
+        })
+        from openkyrozen.agent.compaction import is_context_digest, retain_context_digests
+        digest = next((item for item in reversed(self.short_term_memory) if is_context_digest(item)), None)
+        display = conversation.display_messages()
+        self.short_term_memory = retain_context_digests(
+            ([digest] if digest else []) + display, self.SHORT_TERM_CAP * 2,
+        )
+        self.current_session.messages_compacted = bool(digest)
         if history_token is not None:
             try:
                 self.history_manager().commit_turn(
                     history_token, user_message=original_user_input, assistant_message=reply,
-                    conversation=list(self.short_term_memory) + [
-                        {"role": "user", "content": original_user_input},
-                        {"role": "assistant", "content": self._clean_final_response(reply)},
-                    ], interaction=self._interaction_controller.state(), tasks=list(self.tasks.tasks),
+                    conversation=conversation.display_messages(),
+                    interaction=self._interaction_controller.state(), tasks=list(self.tasks.tasks),
+                    journal_head=conversation.head,
                 )
             except Exception as exc:
                 self.memory_bank.store.append_event(

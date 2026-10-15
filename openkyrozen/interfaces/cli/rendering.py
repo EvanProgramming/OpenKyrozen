@@ -244,13 +244,36 @@ def _call_llm_with_spinner(self, messages: list[dict], model: str | None = None,
         return f"[LLM Error] {exc}"
 
     def call_once() -> str:
-        if streaming:
-            return self._get_llm_response(
-                messages, model=model, stream=True,
-                on_chunk=lambda chunk: self._emit_stream_event({"event": "content", "chunk": str(chunk)}),
-                on_stream_end=lambda: self._emit_stream_event({"event": "model_complete"}),
-            )
-        return self._get_llm_response(messages, model=model)
+        record_token = self._record_foreground_model.set(
+            not private and self._conversation_turn_id.get() is not None
+        )
+        self._last_model_response.set(None)
+        try:
+            if streaming:
+                result = self._get_llm_response(
+                    messages, model=model, stream=True,
+                    on_chunk=lambda chunk: self._emit_stream_event({"event": "content", "chunk": str(chunk)}),
+                    on_stream_end=lambda: self._emit_stream_event({"event": "model_complete"}),
+                )
+            else:
+                result = self._get_llm_response(messages, model=model)
+            if not private and self._conversation_turn_id.get() is not None:
+                if self._last_model_response.get() is None and not self._turn_failed.get():
+                    from openkyrozen.providers.models import FinishReason, ModelResponse
+                    response = ModelResponse(text=result, finish_reason=FinishReason.UNKNOWN,
+                                             metadata={"legacy": True})
+                    self._last_model_response.set(response)
+                    from openkyrozen.agent.conversation import model_response_to_dict
+                    self._record_conversation_entry("model.response", {
+                        "response": model_response_to_dict(response),
+                    }, request_id=self._last_model_request_id.get())
+                elif self._turn_failed.get():
+                    self._record_conversation_entry("model.failure", {
+                        "error_type": "provider_or_context_failure",
+                    }, request_id=self._last_model_request_id.get())
+            return result
+        finally:
+            self._record_foreground_model.reset(record_token)
 
     def call_with_one_overflow_recovery() -> str:
         try:

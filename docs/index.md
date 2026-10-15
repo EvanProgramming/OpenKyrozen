@@ -40,6 +40,7 @@ This index covers the current product guides, developer references, and dated en
 - [V3 plan index](superpowers/plans/index.md) links the issue-specific implementation plans and identifies their coverage.
 - [V3 execution receipt implementation plan](superpowers/plans/2026-10-14-v3-issue-236.md) records receipt identity, explicit task binding, structured effect verification, compatibility, and validation for issue #236.
 - [V3 runtime events implementation plan](superpowers/plans/2026-10-14-v3-issue-255.md) records the canonical event contract, correlation, interface adapters, and validation for issue #255.
+- [V3 canonical conversation history plan](superpowers/plans/2026-10-15-v3-issue-247.md) records the private journal, runtime integration, history checkpoints, context accounting, and validation for issue #247.
 - Machine-readable audit receipts and benchmark inputs remain beside their corresponding reports under `docs/` and `docs/benchmarks/`.
 
 The repository's [English overview](../README.md) links here. Technical guides are maintained in English; README translations provide localized entry points.

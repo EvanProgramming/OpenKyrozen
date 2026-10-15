@@ -19,6 +19,8 @@ class AgentSession:
     interaction: Any
     workspace: WorkspaceState
     messages: list = field(default_factory=list)
+    history_loaded: bool = False
+    messages_compacted: bool = False
     learning: Any = None
     subagents: Any = None
     last_learning_run: Any = None

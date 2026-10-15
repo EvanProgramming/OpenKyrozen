@@ -208,7 +208,12 @@ class HistoryManager:
                 file_summary={**summary, "changes": {"added": 0, "changed": 0, "deleted": 0, "total": 0},
                               "manifest_digest": hashlib.sha256(_json(manifest).encode()).hexdigest()},
             )
-            self.store.insert_history_node(node, set_head=True)
+            self.store.insert_history_node(
+                node, set_head=True,
+                journal_head=self.store.conversation_head(
+                    user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
+                ),
+            )
             return node
 
     def begin_turn(self, *, conversation: list[dict[str, Any]], interaction: dict[str, Any],
@@ -218,7 +223,7 @@ class HistoryManager:
 
     def commit_turn(self, token: TurnToken, *, user_message: str, assistant_message: str,
                     conversation: list[dict[str, Any]], interaction: dict[str, Any],
-                    tasks: list[dict[str, Any]]) -> dict[str, Any]:
+                    tasks: list[dict[str, Any]], journal_head: str | None = None) -> dict[str, Any]:
         with self._lock:
             parent = self.store.history_node(token.parent_id, user_id=self.user_id,
                                              workspace_id=self.workspace_id, session_id=self.session_id)
@@ -236,7 +241,8 @@ class HistoryManager:
                 file_summary={**summary, "changes": self._changes(parent_manifest, manifest),
                               "manifest_digest": hashlib.sha256(_json(manifest).encode()).hexdigest()},
             )
-            if not self.store.insert_history_node(node, set_head=True, expected_head=token.parent_id):
+            if not self.store.insert_history_node(node, set_head=True, expected_head=token.parent_id,
+                                                  journal_head=journal_head):
                 shutil.rmtree(self._node_path(node_id), ignore_errors=True)
                 raise HistoryError("history head changed while recording the turn")
             return node
@@ -363,7 +369,12 @@ class HistoryManager:
                 snapshot_relpath=recovery_snapshot, file_summary={**recovery_summary,
                     "changes": self._changes(self._manifest(current), recovery_manifest)},
             )
-            self.store.insert_history_node(recovery)
+            self.store.insert_history_node(
+                recovery,
+                journal_head=self.store.conversation_head(
+                    user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
+                ),
+            )
             head_switched = False
             try:
                 self._restore(target)
@@ -381,6 +392,25 @@ class HistoryManager:
                     "history.restored", {"node_id": target["id"], "interaction": target["interaction"]},
                     user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
                 )
+                target_checkpoint = self.store.conversation_checkpoint(
+                    target["id"], user_id=self.user_id,
+                    workspace_id=self.workspace_id, session_id=self.session_id,
+                )
+                journal_head = self.store.conversation_head(
+                    user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
+                )
+                if journal_head:
+                    from openkyrozen.agent.conversation import ConversationEntry
+                    branch = ConversationEntry(
+                        id=f"conv_{uuid.uuid4().hex}", kind="branch.selection",
+                        payload={"target_node_id": target["id"],
+                                 "target_journal_head": target_checkpoint.get("journal_head")
+                                 if target_checkpoint else None,
+                                 "recovery_node_id": recovery_id},
+                        parent_id=journal_head, user_id=self.user_id,
+                        workspace_id=self.workspace_id, session_id=self.session_id,
+                    )
+                    self.store.append_conversation_entry(branch.as_dict(), expected_head=journal_head)
             except Exception:
                 try:
                     self._restore(recovery)

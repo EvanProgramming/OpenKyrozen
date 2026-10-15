@@ -94,19 +94,23 @@ def _get_or_create_session(self, session_id: str, user_id: str = "anonymous") ->
     user_id = service._SERVER_ACTOR_ID
     with service._chat_lock:
         if session_id not in service._sessions:
-            persisted = service._agent.memory_bank.store.list_events(
-                event_type="session.message", limit=service._MAX_SESSION_MESSAGES,
-                workspace_id=service._agent.memory_bank.workspace_id, session_id=session_id,
-                user_id=user_id,
-            )
-            messages = []
-            for event in reversed(persisted):
-                payload = event.get("payload", {})
-                if payload.get("role") in {"user", "assistant"} and payload.get("content"):
-                    messages.append({"role": payload["role"], "content": payload["content"]})
+            runtime = service._agent
+            bound = runtime.open_session(session_id, user_id=user_id)
+            with runtime.use_session(bound):
+                messages = runtime.conversation_history.display_messages()
+            if not messages:
+                persisted = runtime.memory_bank.store.list_events(
+                    event_type="session.message", limit=service._MAX_SESSION_MESSAGES,
+                    workspace_id=runtime.memory_bank.workspace_id, session_id=session_id,
+                    user_id=user_id,
+                )
+                for event in reversed(persisted):
+                    payload = event.get("payload", {})
+                    if payload.get("role") in {"user", "assistant"} and payload.get("content"):
+                        messages.append({"role": payload["role"], "content": payload["content"]})
             context_events = service._agent.memory_bank.store.list_events(
                 event_type="context.status", limit=1,
-                workspace_id=service._agent.memory_bank.workspace_id, session_id=session_id,
+                workspace_id=runtime.memory_bank.workspace_id, session_id=session_id,
                 user_id=user_id,
             )
             service._sessions[session_id] = {
@@ -277,11 +281,17 @@ def _run_session_chat(self, session: dict[str, Any], message: str, *, on_runtime
         self._initialise_session_defaults(session)
         runtime = self._agent
         bound = runtime.open_session(session["session_id"], user_id=self._SERVER_ACTOR_ID)
-        bound.messages = list(session["messages"])
         bound.tasks.recover()
         bound.last_learning_run = session.get("last_learning_run")
         bound.learning_notices = []
         with runtime.use_session(bound):
+            history = runtime.conversation_history
+            legacy_messages = session.get("messages") or []
+            if (history.head and legacy_messages
+                    and legacy_messages != retain_context_digests(bound.messages, self._MAX_SESSION_MESSAGES)):
+                runtime.reconcile_conversation_messages(legacy_messages)
+            elif history.head is None and legacy_messages:
+                bound.messages = list(legacy_messages)
             recalls = runtime.memory_bank.store.list_events("memory.recalled", limit=1, workspace_id=runtime.memory_bank.workspace_id, session_id=bound.session_id, user_id=self._SERVER_ACTOR_ID)
             previous_recall_id = recalls[0]["id"] if recalls else None
             reply = runtime.chat(
@@ -291,15 +301,14 @@ def _run_session_chat(self, session: dict[str, Any], message: str, *, on_runtime
             )
             reply = runtime._clean_final_response(reply)
             session["last_learning_run"] = bound.last_learning_run
-            bound.messages.extend([{"role": "user", "content": message}, {"role": "assistant", "content": reply}])
-            session["messages"] = retain_context_digests(bound.messages, self._MAX_SESSION_MESSAGES)
+            session["messages"] = retain_context_digests(
+                runtime.conversation_history.display_messages(), self._MAX_SESSION_MESSAGES,
+            )
             session["interaction"] = runtime.interaction_envelope()
             session["updated"] = time.time()
             session["context"] = runtime.context_usage()
             recalls = runtime.memory_bank.store.list_events("memory.recalled", limit=1, workspace_id=runtime.memory_bank.workspace_id, session_id=bound.session_id, user_id=self._SERVER_ACTOR_ID)
             session["last_memory_receipt"] = recalls[0]["payload"] if recalls and recalls[0]["id"] != previous_recall_id else None
-            for role, content in (("user", message), ("assistant", reply)):
-                runtime.memory_bank.store.append_event("session.message", {"role": role, "content": content}, user_id=self._SERVER_ACTOR_ID, workspace_id=runtime.memory_bank.workspace_id, session_id=bound.session_id)
             # Single-user web sessions feed the same evidence stream as CLI/TUI.
             # Attributed or audience-scoped sessions stay out of global learning.
             if (session.get("speaker") == self._SERVER_ACTOR_ID

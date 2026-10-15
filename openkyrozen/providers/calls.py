@@ -96,6 +96,7 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                  if registry.get_spec(item["name"]).capability in allowed]
     self._last_prompt_tokens = self._last_completion_tokens = 0
     self._last_response_is_native.set(False)
+    self._last_model_response.set(None)
     self._turn_failed.set(False)
     selected_model = model or self.DEEPSEEK_MODEL
     request_id = f"model_{uuid.uuid4().hex}"
@@ -162,6 +163,12 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     "model": response.metadata.get("model", selected_model),
                 }, model_request_id=request_id)
             self._last_response_is_native.set(bool(tools) and not bool(response.metadata.get("legacy")))
+            self._last_model_response.set(response)
+            if self._record_foreground_model.get() and self._conversation_turn_id.get():
+                from openkyrozen.agent.conversation import model_response_to_dict
+                self._record_conversation_entry("model.response", {
+                    "response": model_response_to_dict(response),
+                }, request_id=request_id)
         except Exception as exc:
             self._turn_failed.set(True)
             self._publish_runtime_event("model.failed", {

@@ -81,6 +81,7 @@ class HistoryRepository:
             node.get("workspace_id", "default"), node["session_id"], node["created_at"],
         )
         with self.database._lock, self.database.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
             if set_head:
                 current = db.execute(
                     "SELECT head_id FROM history_heads WHERE user_id=? AND workspace_id=? AND session_id=?",
@@ -88,6 +89,7 @@ class HistoryRepository:
                 ).fetchone()
                 current_id = current["head_id"] if current else None
                 if expected_head is not None and current_id != expected_head:
+                    db.rollback()
                     return False
             db.execute(
                 "INSERT INTO history_nodes(id,parent_id,kind,summary,user_message,assistant_message,conversation,"
@@ -101,6 +103,18 @@ class HistoryRepository:
                     (node.get("user_id", "local"), node.get("workspace_id", "default"), node["session_id"],
                      node["id"], node["created_at"]),
                 )
+            if "journal_head" in node:
+                from .models import utc_now
+                checkpoint_id = f"checkpoint_{node['id']}"
+                db.execute(
+                    "INSERT INTO events(id,event_type,payload,user_id,workspace_id,session_id,task_id,created_at) "
+                    "VALUES(?,'conversation.checkpoint',?,?,?,?,?,?)",
+                    (checkpoint_id, self.database._json({"node_id": node["id"],
+                                                          "journal_head": node["journal_head"]}),
+                     node.get("user_id", "local"), node.get("workspace_id", "default"),
+                     node["session_id"], None, utc_now()),
+                )
+            db.commit()
         return True
 
 

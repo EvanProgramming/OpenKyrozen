@@ -301,10 +301,6 @@ def _run_submit(self, text: str, request_id: str) -> None:
             self.emit("error", request_id, code="empty_response", error="The provider returned no answer.")
             return
         self._staged_attachments.clear()
-        runtime.short_term_memory.extend([
-            {"role": "user", "content": text},
-            {"role": "assistant", "content": reply},
-        ])
         self._quiet_call(runtime.memory_bank.add_log, f"User: {text}\nAssistant: {reply}")
         thinking, answer = runtime._split_reply(reply)
         if thinking:

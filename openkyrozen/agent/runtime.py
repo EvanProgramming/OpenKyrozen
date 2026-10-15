@@ -288,6 +288,13 @@ class AgentRuntime:
         self._turn_context = ContextVar("agent_turn", default=None)
         self._session_context = ContextVar("agent_session", default=None)
         self._surface_capability_override = ContextVar("agent_surface_capabilities", default=None)
+        self._conversation_turn_id = ContextVar("conversation_turn_id", default=None)
+        self._last_model_response = ContextVar("last_model_response", default=None)
+        self._record_foreground_model = ContextVar("record_foreground_model", default=False)
+        self._stable_prefix_info = ContextVar("stable_prefix_info", default={})
+        self._context_history_metrics = ContextVar("context_history_metrics", default={})
+        self._context_history_seen = ContextVar("context_history_seen", default=None)
+        self._conversation_expected_head = ContextVar("conversation_expected_head", default=None)
         self._sessions = {}
         self._workspaces = {workspace.root: workspace}
 
@@ -308,6 +315,12 @@ class AgentRuntime:
         tasks = self.TaskManager(memory.store, workspace_id=interaction_scope, session_id=session_id, user_id=owner)
         interaction = self.InteractionController(memory.store, user_id=owner, workspace_id=interaction_scope, session_id=session_id)
         session = AgentSession(session_id, memory, tasks, interaction, workspace)
+        from openkyrozen.agent.conversation import ConversationHistory
+        history = ConversationHistory(memory.store, user_id=owner, workspace_id=interaction_scope,
+                                     session_id=str(session_id))
+        if history.head:
+            session.messages = history.display_messages()
+            session.history_loaded = True
         session.skills = copy.copy(self.skill_registry)
         session.skills.disabled_builtins = set(self.skill_registry.disabled_builtins)
         session.preferences = {key: False if isinstance(value, bool) else "" for key, value in self._user_preferences.items()}
@@ -353,6 +366,11 @@ class AgentRuntime:
              on_event: EventSink | None = None, on_runtime_event: RuntimeEventSink | None = None,
              approve: Approval | None = None) -> str:
         with self.use_session(session):
+            if not getattr(session, "history_loaded", False):
+                history = self.conversation_history
+                if history.head:
+                    session.messages = history.display_messages()
+                session.history_loaded = True
             from .events import RuntimeEventPublisher
             memory = self.memory_bank
             publisher = RuntimeEventPublisher(
@@ -363,6 +381,10 @@ class AgentRuntime:
                 on_legacy_event=on_event,
             )
             runtime_events = self._runtime_event_publisher.set(publisher)
+            conversation_turn = self._conversation_turn_id.set(f"turn_{uuid.uuid4().hex}")
+            conversation_head = self._conversation_expected_head.set(None)
+            self._last_model_response.set(None)
+            history_seen = self._context_history_seen.set(set())
             events = self._stream_event_callback.set(on_event)
             native_response = self._last_response_is_native.set(False)
             turn_failed = self._turn_failed.set(False)
@@ -404,6 +426,42 @@ class AgentRuntime:
                 if task_event is not None:
                     task_event_context.reset(task_event)
                 self._runtime_event_publisher.reset(runtime_events)
+                self._conversation_turn_id.reset(conversation_turn)
+                self._conversation_expected_head.reset(conversation_head)
+                self._context_history_seen.reset(history_seen)
+
+    @property
+    def conversation_history(self):
+        from openkyrozen.agent.conversation import ConversationHistory
+        memory = self.memory_bank
+        return ConversationHistory(
+            memory.store, user_id=memory.user_id,
+            workspace_id=self.interaction_workspace_id(),
+            session_id=str(self.current_session.session_id),
+        )
+
+    def _record_conversation_entry(self, kind, payload, *, call_id=None, task_id=None, request_id=None):
+        history = self.conversation_history
+        active_turn = self._conversation_turn_id.get()
+        parent = self._conversation_expected_head.get() if active_turn else history.head
+        entry = history.entry(
+            kind, payload, parent_id=parent, turn_id=self._conversation_turn_id.get(),
+            request_id=request_id or self._last_model_request_id.get(),
+            call_id=call_id, task_id=task_id,
+        )
+        history.append(entry, expected_head=parent)
+        if active_turn:
+            self._conversation_expected_head.set(entry.id)
+        return entry
+
+    def reconcile_conversation_messages(self, messages):
+        """Explicit adapter for callers that still supply a replacement message list."""
+        history = self.conversation_history
+        if history.head is None:
+            history.import_legacy(messages)
+        else:
+            history.reconcile_legacy(messages)
+        self.short_term_memory = history.display_messages()
 
     @property
     def tool_registry(self):
@@ -489,6 +547,7 @@ class AgentRuntime:
     @short_term_memory.setter
     def short_term_memory(self, value):
         self.current_session.messages = value
+        self.current_session.messages_compacted = False
 
     @property
     def learning_engine(self):

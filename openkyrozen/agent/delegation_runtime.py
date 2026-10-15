@@ -283,14 +283,33 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
     if parent_publisher is not None:
         child_publisher = parent_publisher.fork(session_id=child.memory.session_id)
         event_token = self._runtime_event_publisher.set(child_publisher)
+    conversation_token = self._conversation_turn_id.set(f"turn_{child_id}_{uuid.uuid4().hex}")
+    record_token = self._record_foreground_model.set(True)
+    conversation_head_token = None
     started = time.monotonic()
     try:
         with self.use_session(child):
-            result = self._run_subagent_llm_result(profile, task, [], tools)
+            conversation = self.conversation_history
+            conversation_head_token = self._conversation_expected_head.set(conversation.head)
+            self._record_conversation_entry("user.input", {"text": task})
+            try:
+                result = self._run_subagent_llm_result(profile, task, [], tools)
+            except Exception as exc:
+                self._record_conversation_entry("turn.outcome", {
+                    "status": "failed", "error_type": type(exc).__name__,
+                })
+                raise
             result["session_id"] = child_id
             result["metrics"] = self._subagent_usage_metrics(child_id, result.pop("started"))
+            self._record_conversation_entry("turn.outcome", {
+                "status": "completed", "text": result.get("result", ""),
+            })
             return result
     finally:
+        if conversation_head_token is not None:
+            self._conversation_expected_head.reset(conversation_head_token)
+        self._record_foreground_model.reset(record_token)
+        self._conversation_turn_id.reset(conversation_token)
         with coordinator.lock:
             run.setdefault("usage", {})[child_id] = self._subagent_usage_metrics(child_id, started)
         self._active_usage_run_id.reset(usage_token)
