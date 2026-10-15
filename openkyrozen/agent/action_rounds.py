@@ -16,7 +16,7 @@ def _execute_action_rounds(self, turn):
             tc.get("action", ""), tc.get("args", ""), operation_scope=operation_scope,
             successful_operations=successful_operations,
         )
-        turn.tool_records.append(self._record_turn_receipt(receipt))
+        turn.tool_records.append(self._record_turn_receipt(receipt, allow_legacy_task_matching=True))
         prompt_result = self._tool_result_for_prompt(receipt)
         self._render_tool_result(receipt.action, prompt_result)
         results.append(f"- `{receipt.action}({receipt.args!r})` returned:\n{self._safe_fstring(prompt_result)}")
@@ -408,7 +408,7 @@ def _execute_action_rounds(self, turn):
                 tc2.get("action", ""), tc2.get("args", ""), operation_scope=operation_scope,
                 successful_operations=successful_operations,
             )
-            turn.tool_records.append(self._record_turn_receipt(receipt))
+            turn.tool_records.append(self._record_turn_receipt(receipt, allow_legacy_task_matching=True))
             prompt_result = self._tool_result_for_prompt(receipt)
             self._render_tool_result(receipt.action, prompt_result)
             next_results.append(f"- `{receipt.action}({receipt.args!r})` returned:\n{self._safe_fstring(prompt_result)}")

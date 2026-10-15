@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from .models import AgentSession, WorkspaceState
@@ -546,7 +547,7 @@ class AgentRuntime:
         self.execution_context.last_completion_tokens = value
 
     def execute(self, session, action, args, *, capabilities=None, operation_scope="", approve=None,
-                _surface_capability_bound=None):
+                _surface_capability_bound=None, _call_id=None):
         """All inbound tool surfaces share authorization, approvals and receipts."""
         from openkyrozen.security.capabilities import issue_capability_token
         from openkyrozen.app.config import AgentConfigError
@@ -566,10 +567,13 @@ class AgentRuntime:
                 self._execution_capability_token = issue_capability_token(
                     current.subject, granted,
                 )
-                receipt = self._run_tool(action, args, return_receipt=True, operation_scope=operation_scope)
+                receipt = self._run_tool(
+                    action, args, return_receipt=True, operation_scope=operation_scope,
+                    _call_id=_call_id or f"synthetic_{uuid.uuid4().hex}", _call_id_source="synthetic",
+                )
                 self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
-                    user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
-                    session_id=self.memory_bank.session_id)
+                    user_id=receipt.user_id, workspace_id=receipt.workspace_id,
+                    session_id=receipt.session_id)
                 return receipt
             finally:
                 self._surface_capability_override.reset(surface_token)
@@ -597,7 +601,30 @@ class AgentRuntime:
             granted &= resolve_capabilities(requested, default="readonly") if requested.strip() else frozenset()
         return granted
 
+    def _valid_receipt_task_binding(self, session, task_id):
+        if not isinstance(task_id, str) or not task_id.strip():
+            return False
+        parent = getattr(session, "_delegation_parent", None)
+        if parent is not None:
+            if getattr(session, "_delegation_task_id", None) != task_id:
+                return False
+            tasks = parent.tasks
+            owner_session = parent
+            memory = parent.memory
+        else:
+            tasks = session.tasks
+            owner_session = session
+            memory = session.memory
+        return (
+            tasks.user_id == memory.user_id == owner_session.interaction.user_id
+            and tasks.workspace_id == owner_session.interaction.workspace_id
+            and tasks.session_id == owner_session.session_id == owner_session.interaction.session_id
+            and tasks.active_working_task(task_id) is not None
+        )
+
     def execute_call(self, session, call, *, capabilities=None, operation_scope="", approve=None,
+                     task_id: str | None = None,
+                     _call_id_source: str = "native",
                      _surface_capability_bound=None):
         """Authorize and execute one structured provider call at the shared boundary."""
         from openkyrozen.providers.models import ToolCall
@@ -606,6 +633,7 @@ class AgentRuntime:
         from openkyrozen.security.permissions import _call_approval_callback
         from openkyrozen.app.config import AgentConfigError
         from openkyrozen.persistence.models import utc_now
+        from openkyrozen.tools.models import render_tool_result, tool_failure
 
         if not isinstance(call, ToolCall):
             raise TypeError("execute_call requires a ToolCall")
@@ -622,30 +650,48 @@ class AgentRuntime:
             request_token = None
             spec_token = None
             started_at = utc_now()
+            name = call.name
+            spec = None
+            bound_task_id = task_id
+            execution_dispatched = False
+
+            def reject(outcome, *, authorized=False, bound_task=None):
+                self._notify_tool_execute(name, call_arguments, outcome)
+                receipt = self._make_execution_receipt(
+                    action=name, args=call_arguments, authorized=authorized, started_at=started_at,
+                    success=outcome.success, result=render_tool_result(outcome),
+                    operation_scope=operation_scope, failure=outcome.error.code if outcome.error else None,
+                    tool_error=outcome.error, result_data=outcome.data, tool_result=outcome,
+                    call_id=call.id, call_id_source=_call_id_source, task_id=bound_task, expected_spec=spec,
+                )
+                self._record_turn_receipt(receipt)
+                return receipt
+
+            def mark_dispatched():
+                nonlocal execution_dispatched
+                execution_dispatched = True
+
             try:
                 name = self.tool_registry.resolve_legacy_name(call.name)
+                if task_id is not None and not self._valid_receipt_task_binding(session, task_id):
+                    bound_task_id = None
+                    return reject(tool_failure("invalid_arguments", "Error: task_id must identify a pending task in the active Working Plan."))
                 try:
                     spec = self.tool_registry.get_spec(name)
                 except KeyError:
                     receipt = self._run_tool(name, call_arguments, return_receipt=True,
-                                             operation_scope=operation_scope)
+                                             operation_scope=operation_scope, _call_id=call.id,
+                                             _call_id_source=_call_id_source, _task_id=bound_task_id,
+                                             _on_dispatch=mark_dispatched)
                     self._record_turn_receipt(receipt)
                     return receipt
                 validation_error = self.tool_registry._argument_error(spec.input_schema, call_arguments)
                 if spec.source == 'legacy':
                     validation_error = 'native calls require a ToolSpec with a declared object executor contract'
                 if validation_error:
-                    from openkyrozen.tools.models import tool_failure, render_tool_result
                     code = 'contract_error' if spec.source == 'legacy' else 'invalid_arguments'
                     outcome = tool_failure(code, f"Error: {validation_error}")
-                    self._notify_tool_execute(name, call_arguments, outcome)
-                    receipt = self._make_execution_receipt(
-                        action=name, args=call_arguments, authorized=False, started_at=started_at,
-                        success=False, result=render_tool_result(outcome), operation_scope=operation_scope,
-                        failure=outcome.error.code, tool_error=outcome.error,
-                    )
-                    self._record_turn_receipt(receipt)
-                    return receipt
+                    return reject(outcome, bound_task=bound_task_id)
                 request = ApprovalRequest(
                     call_id=call.id, tool_name=name, arguments=call_arguments,
                     workspace_id=self.memory_bank.workspace_id, session_id=session.session_id,
@@ -664,6 +710,8 @@ class AgentRuntime:
                     if current is not spec or session.session_id != request.session_id:
                         return False
                     if self.memory_bank.workspace_id != request.workspace_id:
+                        return False
+                    if bound_task_id is not None and not self._valid_receipt_task_binding(session, bound_task_id):
                         return False
                     try:
                         granted = self._effective_execution_capabilities()
@@ -695,11 +743,27 @@ class AgentRuntime:
                     self._execution_capability_token = issue_capability_token(current.subject, granted)
                     receipt = self._run_tool(name, call_arguments, return_receipt=True,
                                              operation_scope=operation_scope,
-                                             _typed_arguments=call_arguments, _expected_spec=spec)
+                                             _typed_arguments=call_arguments, _expected_spec=spec,
+                                             _call_id=call.id, _call_id_source=_call_id_source,
+                                             _task_id=bound_task_id,
+                                             _pre_execution_check=(
+                                                 lambda: bound_task_id is None
+                                                 or self._valid_receipt_task_binding(session, bound_task_id)
+                                             ), _on_dispatch=mark_dispatched)
                     self._record_turn_receipt(receipt)
                     return receipt
                 finally:
                     self._approval_callback.reset(approval_token2)
+            except KeyboardInterrupt:
+                if execution_dispatched:
+                    raise
+                bound_task_id = bound_task_id if self._valid_receipt_task_binding(session, bound_task_id) else None
+                return reject(tool_failure("cancelled", "Tool call was cancelled."), bound_task=bound_task_id)
+            except Exception as exc:
+                if execution_dispatched:
+                    raise
+                bound_task_id = bound_task_id if bound_task_id and self._valid_receipt_task_binding(session, bound_task_id) else None
+                return reject(tool_failure("execution_error", f"Error: {type(exc).__name__}: {exc}"), bound_task=bound_task_id)
             finally:
                 self._surface_capability_override.reset(surface_token)
                 if request_token is not None:

@@ -885,7 +885,7 @@ class DelegationTests(unittest.TestCase):
         names = {tool["name"] for tool in listing["result"]["tools"]}
         self.assertTrue({"spawn_agents", "send_subagent", "list_subagents", "wait_subagents", "cancel_subagent"} <= names)
 
-    def test_accepted_plan_workers_reconcile_before_dependent_mutations(self):
+    def test_delegated_receipts_do_not_infer_strategic_plan_task_association(self):
         runtime = self.runtime
         proposal = runtime.current_session.interaction.propose_plan({"title":"Create two files",
             "summary":"Write only first.txt and second.txt", "assumptions":[], "steps":[
@@ -919,9 +919,36 @@ class DelegationTests(unittest.TestCase):
             finished = coordinator.wait([run["run_id"] for run in agents],5)
         finally:
             runtime._active_interaction_mode.reset(token)
-        self.assertEqual([run["status"] for run in finished], ["succeeded", "succeeded"], finished)
-        self.assertTrue(all(task["status"] == "succeeded" for task in runtime.tasks.tasks))
-        self.assertEqual((self.root/"second.txt").read_text(), "ok")
+        self.assertEqual([run["status"] for run in finished], ["succeeded", "blocked"], finished)
+        self.assertFalse((self.root/"second.txt").exists())
+
+    def test_explicit_working_plan_task_id_reconciles_only_after_independent_review(self):
+        runtime = self.runtime
+        plan = runtime.tasks.update_plan(complexity="complex", tasks=[{
+            "description": "Write first.txt with ok",
+            "acceptance": ["The assigned file is independently verified"],
+            "execution": {"action": "write_file", "arguments": {"path": "first.txt", "content": "ok"}},
+        }])
+        task_id = runtime.tasks.tasks[0]["id"]
+
+        class Provider:
+            def chat(inner, messages, model):
+                reviewing = "Independently verify" in messages[1]["content"]
+                if len(messages) == 2:
+                    action = {"action": "read_file", "args": {"path": "marker.txt"}} if reviewing else {
+                        "action": "write_file", "args": {"path": "first.txt", "content": "ok"}}
+                    return "Action: " + json.dumps(action), None
+                return json.dumps(reviewed() if reviewing else result()), None
+
+        runtime.get_provider = lambda _: Provider()
+        assignment = brief(0, profile="coder", scope=["first.txt"], task_id=task_id)
+        agent = runtime.delegation().spawn([assignment])[0]
+        finished = runtime.delegation().wait([agent["run_id"]], timeout=5)[0]
+        self.assertEqual(finished["status"], "succeeded", finished)
+        self.assertEqual(runtime.tasks.tasks[0]["status"], "succeeded", runtime.tasks.tasks[0])
+        receipt = finished["result"]["tool_records"][0]
+        self.assertEqual(receipt["task_id"], task_id)
+        self.assertEqual(receipt["plan_id"], plan.id)
 
     def test_real_writes_overlap_only_with_disjoint_ownership_and_main_waits(self):
         access = self.runtime.delegation().access

@@ -364,13 +364,15 @@ class TaskManager:
 
     def record_evidence(self, *, task_id: str | None = None, action: str, result: str, success: bool,
                         acceptance: str | None = None, args: str | None = None,
+                        args_projection: str | None = None,
                         args_fingerprint: str | None = None, receipt_id: str | None = None) -> dict[str, Any]:
         canonical = _receipt_action(action)
         normalized_args = _receipt_args(args)
+        persisted_args = _receipt_args(args_projection) if args_projection is not None else normalized_args
         item = {"action": canonical, "result": str(result)[:2000], "success": bool(success)}
         requested_task_id = str(task_id) if task_id else None
         if args:
-            item["args"] = normalized_args[:1000]
+            item["args"] = persisted_args[:1000]
         if args_fingerprint:
             item["args_sha256"] = args_fingerprint
         if receipt_id:
@@ -409,12 +411,12 @@ class TaskManager:
                     item["ordered_plan"] = marker
                 task["checkpoint"] = {
                     **(task.get("checkpoint") or {}), "action": canonical,
-                    "args": normalized_args, "ordered_receipt": True,
+                    "args": persisted_args, "ordered_receipt": True,
                     **({"args_sha256": args_fingerprint} if args_fingerprint else {}),
                 }
             elif inferred and not (task.get("checkpoint") or {}).get("action"):
                 task["checkpoint"] = {
-                    "action": canonical, "args": normalized_args,
+                    "action": canonical, "args": persisted_args,
                     **({"args_sha256": args_fingerprint} if args_fingerprint else {}),
                 }
             task.setdefault("evidence", []).append(item)
@@ -441,6 +443,17 @@ class TaskManager:
             if task.get("status") in {"pending", "running"}:
                 return task["id"]
         return None
+
+    def active_working_task(self, task_id: str) -> dict[str, Any] | None:
+        """Return a task only when it is pending in this active durable plan."""
+        plan = self.working_plan
+        if plan is None or plan.status != "active" or task_id not in plan.task_ids:
+            return None
+        task = next((item for item in self.tasks if item.get("id") == task_id), None)
+        if (task is None or task.get("plan_id") != plan.id
+                or canonical_status(task.get("status", "pending")) not in {"pending", "running"}):
+            return None
+        return task
 
     def _replace_task(self, task: dict[str, Any]) -> int:
         for index, existing in enumerate(self.tasks):

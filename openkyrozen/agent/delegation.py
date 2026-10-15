@@ -282,6 +282,8 @@ class Delegation:
         for key in ("provider", "model", "custom_profile", "id"):
             if key in brief and (not isinstance(brief[key], str) or not brief[key].strip()):
                 raise ValueError(key + " must be nonempty text")
+        if "task_id" in brief and (not isinstance(brief["task_id"], str) or not brief["task_id"].strip()):
+            raise ValueError("task_id must be nonempty text")
         brief = copy.deepcopy(brief)
         paths = []
         for path in brief["scope"]:

@@ -95,11 +95,17 @@ def _subagent_action_arguments(self, action: str, args: Any) -> Any:
 
 
 def _subagent_tool_evidence(self, action: str, args: Any, result: str, *, success: bool) -> tuple[str | None, bool]:
-    """Verify the observable effect of the small set of artifact-producing tools."""
+    """Verify the requested file bytes, independent of the executor's display text."""
     if action != "write_file" or not success:
         return None, False
-    raw_path = args.get('path', '') if isinstance(args, dict) else str(args).split("|", 1)[0].strip()
-    if not raw_path:
+    if isinstance(args, dict):
+        raw_path, expected = args.get('path', ''), args.get('content')
+    else:
+        raw_path, separator, expected = str(args).partition("|")
+        raw_path = raw_path.strip()
+        if not separator:
+            return None, False
+    if not isinstance(raw_path, str) or not raw_path or not isinstance(expected, str):
         return None, False
     try:
         path = Path(raw_path).expanduser()
@@ -107,8 +113,9 @@ def _subagent_tool_evidence(self, action: str, args: Any, result: str, *, succes
             path = self._get_workspace_root() / path
         if not self._is_path_safe(str(path)):
             return None, False
-        if path.resolve().is_file():
-            return f"file exists after write: {path.resolve()}", True
+        if path.resolve().is_file() and path.read_text(encoding="utf-8") == expected:
+            return f"file content verified: {path.resolve()}", True
+        return f"file content did not match requested content: {path.resolve()}", False
     except (OSError, ValueError):
         pass
     return None, False
@@ -119,6 +126,9 @@ def _run_subagent_tool(self, profile: AgentProfile, action: str, args: Any, tool
         self.execution_context.coordinator.check_cancelled(self.execution_context.child_run_id)
     canonical = self.TOOL_ALIASES.get(str(action).strip(), str(action).strip())
     receipt_id = f"subagent_receipt_{uuid.uuid4().hex}"
+    call_id = f"subagent_{uuid.uuid4().hex}"
+    assignment = profile.metadata.get("assignment", {})
+    task_id = assignment.get("task_id") if isinstance(assignment, dict) and not profile.metadata.get("review") else None
     rejection = None
     if canonical not in tools:
         rejection = f"Error: tool '{canonical}' is not authorized for the '{profile.name}' profile."
@@ -131,13 +141,14 @@ def _run_subagent_tool(self, profile: AgentProfile, action: str, args: Any, tool
             action=canonical, args=args, authorized=authorized, started_at=utc_now(),
             success=False, result=rejection, operation_scope=f"subagent:{profile.name}",
             failure=outcome.error.code, tool_error=outcome.error,
+            tool_result=outcome, call_id=call_id, call_id_source="synthetic",
+            task_id=task_id,
         )
         self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
-            user_id=self.memory_bank.user_id, workspace_id=self.memory_bank.workspace_id,
-            session_id=self.memory_bank.session_id)
+            user_id=receipt.user_id, workspace_id=receipt.workspace_id,
+            session_id=receipt.session_id)
         self._notify_tool_execute(canonical, args, tool_failure("invalid_arguments" if authorized else "permission_denied", rejection))
-        display_args = json.dumps(args, ensure_ascii=False, sort_keys=True) if isinstance(args, dict) else str(args)
-        return {"receipt_id": receipt_id, "action": canonical, "args": display_args[:500],
+        return {**receipt.as_dict(), "receipt_id": receipt.receipt_id, "action": canonical,
                 "result": rejection, "success": False, "authorized": authorized}
     normalized_args = self._subagent_action_arguments(canonical, args)
     if isinstance(normalized_args, str):
@@ -146,7 +157,16 @@ def _run_subagent_tool(self, profile: AgentProfile, action: str, args: Any, tool
         rejection = "Error: Action arguments could not be converted to the tool's declared object schema."
         outcome = tool_failure('invalid_arguments', rejection)
         self._notify_tool_execute(canonical, args, outcome)
-        return {"receipt_id": receipt_id, "action": canonical, "args": str(args)[:500],
+        receipt = self._make_execution_receipt(
+            action=canonical, args=args, authorized=True, started_at=utc_now(), success=False,
+            result=rejection, operation_scope=f"subagent:{profile.name}", failure=outcome.error.code,
+            tool_error=outcome.error, tool_result=outcome, call_id=call_id, call_id_source="synthetic",
+            task_id=task_id,
+        )
+        self.memory_bank.store.append_event("execution.receipt", receipt.as_dict(),
+            user_id=receipt.user_id, workspace_id=receipt.workspace_id,
+            session_id=receipt.session_id)
+        return {**receipt.as_dict(), "receipt_id": receipt.receipt_id, "action": canonical,
                 "result": rejection, "success": False, "authorized": True}
     previous_token = self._execution_capability_token
     self._execution_capability_token = issue_capability_token(
@@ -159,12 +179,14 @@ def _run_subagent_tool(self, profile: AgentProfile, action: str, args: Any, tool
             if isinstance(normalized_args, dict):
                 from openkyrozen.providers.models import ToolCall
                 receipt = self.execute_call(self.current_session,
-                    ToolCall(f"subagent_{uuid.uuid4().hex}", canonical, normalized_args),
+                    ToolCall(call_id, canonical, normalized_args),
                     capabilities=profile.capabilities, operation_scope=f"subagent:{profile.name}",
-                    approve=self._approval_callback.get())
+                    approve=self._approval_callback.get(), task_id=task_id,
+                    _call_id_source="synthetic")
             else:
                 receipt = self.execute(self.current_session, canonical, normalized_args,
-                    operation_scope=f"subagent:{profile.name}", approve=self._approval_callback.get())
+                    operation_scope=f"subagent:{profile.name}", approve=self._approval_callback.get(),
+                    _call_id=call_id)
             result = receipt.result
         except Exception as exc:
             outcome = tool_failure("execution_error", f"Error: {type(exc).__name__}")
@@ -173,6 +195,8 @@ def _run_subagent_tool(self, profile: AgentProfile, action: str, args: Any, tool
                 action=canonical, args=normalized_args, authorized=True, started_at=utc_now(),
                 success=False, result=result, operation_scope=f"subagent:{profile.name}",
                 failure=outcome.error.code, tool_error=outcome.error,
+                tool_result=outcome, call_id=call_id, call_id_source="synthetic",
+                task_id=task_id,
             )
     finally:
         self._execution_capability_token = previous_token
@@ -183,10 +207,9 @@ def _run_subagent_tool(self, profile: AgentProfile, action: str, args: Any, tool
     acceptance, accepted = self._acceptance_for_tool(canonical, normalized_args, result, success=execution_success)
     effect, effect_verified = self._subagent_tool_evidence(canonical, normalized_args, result, success=execution_success)
     success = execution_success
-    display_args = json.dumps(normalized_args, ensure_ascii=False, sort_keys=True) if isinstance(normalized_args, dict) else str(normalized_args)
     return {
         **(receipt.as_dict() if receipt else {}),
-        "receipt_id": receipt.receipt_id if receipt else receipt_id, "action": canonical, "args": display_args[:1000],
+        "receipt_id": receipt.receipt_id if receipt else receipt_id, "action": canonical,
         "result": result, "success": success, "authorized": bool(receipt and receipt.authorized),
         "acceptance": acceptance if accepted else None,
         "evidence": effect or (acceptance if accepted else None),
