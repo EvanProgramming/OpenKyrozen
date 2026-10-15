@@ -150,6 +150,7 @@ class ConversationHistory:
     def provider_messages(self, *, provider_id: str, model: str, native: bool = True) -> list[Any]:
         from openkyrozen.providers.models import ToolReply, validate_tool_history
         messages = []
+        pending_calls = []
         for entry in self.active_entries():
             payload = entry.payload
             if entry.kind == "user.input":
@@ -160,11 +161,15 @@ class ConversationHistory:
                     messages.append({"role": "assistant", "content": response.text})
                 else:
                     messages.append(response)
+                    pending_calls.extend(response.tool_calls)
             elif entry.kind == "tool.result":
-                if native:
+                call_id = payload.get("call_id")
+                if native and pending_calls:
                     messages.append(ToolReply(
-                        payload["call_id"], payload["name"], payload["output"], payload.get("is_error", False),
+                        call_id, payload["name"], payload["output"], payload.get("is_error", False),
                     ))
+                    if pending_calls[0].id == call_id:
+                        pending_calls.pop(0)
                 else:
                     output = payload.get("output", {})
                     messages.append({"role": "user", "content": (

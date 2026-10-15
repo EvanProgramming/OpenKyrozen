@@ -56,6 +56,21 @@ class ConversationHistoryTests(unittest.TestCase):
         with self.assertRaises(ProviderContractError):
             self.history.provider_messages(provider_id="fixture", model="m1")
 
+    def test_legacy_action_result_stays_textual_in_native_projection(self):
+        from openkyrozen.agent.conversation import model_response_to_dict, tool_result_to_dict
+
+        self.history.append(self.history.entry("model.response", {
+            "response": model_response_to_dict(ModelResponse(text="Action: read_file README.md")),
+        }))
+        self.history.append(self.history.entry("tool.result", {
+            "call_id": "legacy-action-1", "name": "read_file",
+            "output": tool_result_to_dict(ToolResult(text="README contents")), "is_error": False,
+        }))
+        projected = self.history.provider_messages(provider_id="stub", model="m1")
+        self.assertEqual(projected[-1], {
+            "role": "user", "content": "Tool result (read_file): README contents",
+        })
+
     def test_entries_are_defensive_and_scope_isolated(self):
         payload = {"nested": {"value": 1}}
         entry = self.history.entry("user.input", payload, entry_id="entry-a")
