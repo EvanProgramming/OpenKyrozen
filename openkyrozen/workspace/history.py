@@ -384,14 +384,6 @@ class HistoryManager:
                 head_switched = True
                 self.store.replace_tasks(target["tasks"], user_id=self.user_id, workspace_id=self.workspace_id,
                                          session_id=self.session_id)
-                self.store.append_event(
-                    "history.rollback", {"target_id": target["id"], "recovery_id": recovery_id},
-                    user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
-                )
-                self.store.append_event(
-                    "history.restored", {"node_id": target["id"], "interaction": target["interaction"]},
-                    user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
-                )
                 target_checkpoint = self.store.conversation_checkpoint(
                     target["id"], user_id=self.user_id,
                     workspace_id=self.workspace_id, session_id=self.session_id,
@@ -399,18 +391,46 @@ class HistoryManager:
                 journal_head = self.store.conversation_head(
                     user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
                 )
-                if journal_head:
-                    from openkyrozen.agent.conversation import ConversationEntry
-                    branch = ConversationEntry(
-                        id=f"conv_{uuid.uuid4().hex}", kind="branch.selection",
-                        payload={"target_node_id": target["id"],
-                                 "target_journal_head": target_checkpoint.get("journal_head")
-                                 if target_checkpoint else None,
-                                 "recovery_node_id": recovery_id},
-                        parent_id=journal_head, user_id=self.user_id,
-                        workspace_id=self.workspace_id, session_id=self.session_id,
-                    )
-                    self.store.append_conversation_entry(branch.as_dict(), expected_head=journal_head)
+                from openkyrozen.agent.conversation import ConversationEntry
+                imported = []
+                target_journal_head = target_checkpoint.get("journal_head") if target_checkpoint else None
+                backfill_checkpoint = None
+                if target_journal_head is None and target.get("conversation"):
+                    parent = journal_head
+                    for index, message in enumerate(target["conversation"]):
+                        if (not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}
+                                or not isinstance(message.get("content"), str)):
+                            continue
+                        item = ConversationEntry(
+                            id=f"conv_{uuid.uuid4().hex}",
+                            kind="user.input" if message["role"] == "user" else "legacy.assistant",
+                            payload={"text": message["content"], "provenance": "legacy_history_node",
+                                     "node_id": target["id"], "index": index, "legacy_index": len(imported)},
+                            parent_id=parent, user_id=self.user_id,
+                            workspace_id=self.workspace_id, session_id=self.session_id,
+                        )
+                        imported.append(item.as_dict())
+                        parent = item.id
+                    target_journal_head = parent
+                    backfill_checkpoint = {"node_id": target["id"], "journal_head": target_journal_head}
+                branch = ConversationEntry(
+                    id=f"conv_{uuid.uuid4().hex}", kind="branch.selection",
+                    payload={"target_node_id": target["id"],
+                             "target_journal_head": target_journal_head,
+                             "recovery_node_id": recovery_id},
+                    parent_id=imported[-1]["id"] if imported else journal_head,
+                    user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
+                )
+                self.store.append_history_rollback(
+                    [*imported, branch.as_dict()], [
+                        {"event_type": "history.rollback",
+                         "payload": {"target_id": target["id"], "recovery_id": recovery_id}},
+                        {"event_type": "history.restored",
+                         "payload": {"node_id": target["id"], "interaction": target["interaction"]}},
+                    ], user_id=self.user_id, workspace_id=self.workspace_id,
+                    session_id=self.session_id, expected_head=journal_head,
+                    checkpoint=backfill_checkpoint,
+                )
             except Exception:
                 try:
                     self._restore(recovery)

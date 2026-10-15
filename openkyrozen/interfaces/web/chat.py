@@ -287,9 +287,9 @@ def _run_session_chat(self, session: dict[str, Any], message: str, *, on_runtime
         with runtime.use_session(bound):
             history = runtime.conversation_history
             legacy_messages = session.get("messages") or []
-            if (history.head and legacy_messages
-                    and legacy_messages != retain_context_digests(bound.messages, self._MAX_SESSION_MESSAGES)):
-                runtime.reconcile_conversation_messages(legacy_messages)
+            if history.head:
+                bound.messages = history.display_messages()
+                bound.messages_compacted = False
             elif history.head is None and legacy_messages:
                 bound.messages = list(legacy_messages)
             recalls = runtime.memory_bank.store.list_events("memory.recalled", limit=1, workspace_id=runtime.memory_bank.workspace_id, session_id=bound.session_id, user_id=self._SERVER_ACTOR_ID)

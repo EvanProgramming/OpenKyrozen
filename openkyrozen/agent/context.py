@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import json
 from openkyrozen.agent.compaction import ContextState, compact_for_pressure, is_context_digest, message_fingerprint, retain_context_digests
 from openkyrozen.agent.types import ContextTooLargeError
 
@@ -28,6 +29,62 @@ def _store_context_status(self, state: ContextState) -> None:
     })
     with self._context_status_lock:
         self._context_status_by_scope[self._context_scope()] = dict(state.status)
+
+
+def _record_context_history_metrics(self, messages: list[dict[str, Any]]) -> None:
+    from openkyrozen.agent.conversation import model_response_to_dict
+    from openkyrozen.providers.models import ModelResponse, ToolReply
+
+    entries = self.conversation_history.active_entries()
+    visible: dict[tuple[str, str], int] = {}
+    for message in messages:
+        if isinstance(message, dict) and message.get("role") in {"user", "assistant"} and isinstance(message.get("content"), str):
+            key = (message["role"], message["content"])
+            visible[key] = visible.get(key, 0) + 1
+        elif isinstance(message, ModelResponse):
+            key = ("model.response", json.dumps(model_response_to_dict(message), sort_keys=True, ensure_ascii=False))
+            visible[key] = visible.get(key, 0) + 1
+        elif isinstance(message, ToolReply):
+            key = ("tool.result", json.dumps({"call_id": message.call_id, "name": message.name,
+                                               "output": message.output, "is_error": message.is_error},
+                                              sort_keys=True, ensure_ascii=False))
+            visible[key] = visible.get(key, 0) + 1
+    history_entries = []
+    active_turn_id = self._conversation_turn_id.get()
+    for entry in entries:
+        if active_turn_id is not None and entry.turn_id == active_turn_id:
+            continue
+        payload = entry.payload
+        if entry.kind == "user.input":
+            key = ("user", payload.get("text", ""))
+        elif entry.kind in {"turn.outcome", "legacy.assistant"}:
+            key = ("assistant", payload.get("text", ""))
+        elif entry.kind == "model.response":
+            key = ("model.response", json.dumps(payload["response"], sort_keys=True, ensure_ascii=False))
+        elif entry.kind == "tool.result":
+            key = ("tool.result", json.dumps({"call_id": payload.get("call_id"), "name": payload.get("name"),
+                                               "output": payload.get("output"), "is_error": payload.get("is_error", False)},
+                                              sort_keys=True, ensure_ascii=False))
+        else:
+            continue
+        if visible.get(key, 0):
+            history_entries.append(entry)
+            visible[key] -= 1
+    seen = self._context_history_seen.get()
+    if seen is None:
+        seen = set()
+        self._context_history_seen.set(seen)
+    history_ids = [entry.id for entry in history_entries]
+    entry_tokens = {entry.id: max(1, (len(json.dumps(entry.payload, ensure_ascii=False)) + 3) // 4)
+                    for entry in history_entries}
+    self._context_history_metrics.set({
+        "new_entry_count": sum(entry_id not in seen for entry_id in history_ids),
+        "retransmitted_entry_count": sum(entry_id in seen for entry_id in history_ids),
+        "duplicate_entry_count": len(history_ids) - len(set(history_ids)),
+        "new_context_tokens": sum(entry_tokens[item] for item in history_ids if item not in seen),
+        "retransmitted_history_tokens": sum(entry_tokens[item] for item in history_ids if item in seen),
+    })
+    seen.update(history_ids)
 
 
 def _save_learning_context_digest(self, digest: dict[str, Any] | None) -> None:

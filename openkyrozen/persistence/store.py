@@ -42,6 +42,9 @@ class EventStore:
     def append_conversation_entry(self, entry, *, expected_head=...):
         return self.events.append_conversation_entry(entry, expected_head=expected_head)
 
+    def append_history_rollback(self, entries, events, **scope):
+        return self.events.append_history_rollback(entries, events, **scope)
+
     def list_conversation_entries(self, *, user_id: str, workspace_id: str, session_id: str):
         return self.events.list_conversation_entries(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
 

@@ -129,6 +129,27 @@ class ServerBoundaryTests(unittest.TestCase):
             finally:
                 server._sessions = original_sessions
 
+    def test_web_chat_does_not_reconcile_stale_snapshot_over_journal(self):
+        from openkyrozen.agent.conversation import ConversationHistory
+
+        session_id = "web-journal-authority"
+        session = server._get_or_create_session(session_id, server._SERVER_ACTOR_ID)
+        bound = server._agent.open_session(session_id, user_id=server._SERVER_ACTOR_ID)
+        with server._agent.use_session(bound):
+            history = server._agent.conversation_history
+            history.append(history.entry("user.input", {"text": "durable request"}))
+            history.append(history.entry("turn.outcome", {"status": "completed", "text": "durable answer"}))
+        session["messages"] = [{"role": "user", "content": "stale snapshot"}]
+        with patch.object(server._agent, "chat", return_value="next answer"), \
+                patch.object(server._agent, "_clean_final_response", side_effect=lambda text: text), \
+                patch.object(server._agent, "reconcile_conversation_messages") as reconcile:
+            server._run_session_chat(session, "next request")
+        reconcile.assert_not_called()
+        self.assertEqual(session["messages"][:2], [
+            {"role": "user", "content": "durable request"},
+            {"role": "assistant", "content": "durable answer"},
+        ])
+
     def test_chat_interaction_controls_persist_and_restore_without_new_endpoint(self):
         client = TestClient(server.app)
         with tempfile.TemporaryDirectory() as directory:

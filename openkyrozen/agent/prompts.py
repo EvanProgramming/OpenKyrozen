@@ -427,7 +427,6 @@ def _build_messages(self, user_input: str, learned_context: str = "",
     if learned_context and self._active_interaction_mode.get() == "agent":
         messages.append({"role": "system", "content": learned_context})
 
-    journal = self.conversation_history
     history = retain_context_digests(
         self.short_term_memory, self.SHORT_TERM_CAP * 2,
     )
@@ -455,41 +454,4 @@ def _build_messages(self, user_input: str, learned_context: str = "",
         "fingerprint": prefix_fingerprint,
         "estimated_tokens": max(1, (len(stable_text) + 3) // 4),
     })
-    entries = journal.active_entries() if journal.head else ()
-    visible = {}
-    for item in history:
-        visible[(item.get("role"), item.get("content"))] = visible.get((item.get("role"), item.get("content")), 0) + 1
-    history_entries = []
-    active_turn_id = self._conversation_turn_id.get()
-    for entry in entries:
-        if active_turn_id is not None and entry.turn_id == active_turn_id:
-            continue
-        payload = entry.payload
-        if entry.kind == "user.input":
-            key = ("user", payload.get("text", ""))
-        elif entry.kind == "turn.outcome":
-            key = ("assistant", payload.get("text", ""))
-        elif entry.kind == "legacy.assistant":
-            key = ("assistant", payload.get("text", ""))
-        else:
-            continue
-        if visible.get(key, 0):
-            history_entries.append(entry)
-            visible[key] -= 1
-    seen = self._context_history_seen.get()
-    if seen is None:
-        seen = set()
-        self._context_history_seen.set(seen)
-    history_ids = [entry.id for entry in history_entries]
-    entry_tokens = {entry.id: max(1, (len(json.dumps(entry.payload, ensure_ascii=False)) + 3) // 4)
-                    for entry in history_entries}
-    self._context_history_metrics.set({
-        "new_entry_count": sum(entry_id not in seen for entry_id in history_ids),
-        "retransmitted_entry_count": sum(entry_id in seen for entry_id in history_ids),
-        "duplicate_entry_count": len(history_ids) - len(set(history_ids)),
-        "new_context_tokens": sum(entry_tokens[item] for item in history_ids if item not in seen),
-        "retransmitted_history_tokens": sum(entry_tokens[item] for item in history_ids if item in seen),
-    })
-    seen.update(history_ids)
-
     return messages

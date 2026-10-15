@@ -64,6 +64,7 @@ class AgentRuntime:
         _context_scope,
         context_usage,
         _store_context_status,
+        _record_context_history_metrics,
         _save_learning_context_digest,
         _restore_learning_context_digest,
         _load_reported_context_tokens,

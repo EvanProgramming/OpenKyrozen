@@ -99,6 +99,8 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
     self._last_model_response.set(None)
     self._turn_failed.set(False)
     selected_model = model or self.DEEPSEEK_MODEL
+    if self._active_context_state.get() is not None and not self._in_context_compaction.get():
+        self._record_context_history_metrics(messages)
     request_id = f"model_{uuid.uuid4().hex}"
     request_token = self._active_model_request_id.set(request_id)
     self._last_model_request_id.set(request_id)

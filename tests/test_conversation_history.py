@@ -135,6 +135,20 @@ class ConversationHistoryTests(unittest.TestCase):
                           if item.kind == "user.input"], ["base"])
         self.assertIn(later.id, [item.id for item in self.history.entries()])
 
+    def test_nested_branch_selections_do_not_resurrect_abandoned_entries(self):
+        first = self.history.entry("user.input", {"text": "A"})
+        self.history.append(first)
+        abandoned = self.history.entry("user.input", {"text": "B"})
+        self.history.append(abandoned)
+        selection = self.history.entry("branch.selection", {"target_journal_head": first.id})
+        self.history.append(selection)
+        retained = self.history.entry("user.input", {"text": "C"})
+        self.history.append(retained)
+        self.history.append(self.history.entry("user.input", {"text": "D"}))
+        self.history.append(self.history.entry("branch.selection", {"target_journal_head": retained.id}))
+        self.assertEqual([item.payload["text"] for item in self.history.active_entries()
+                          if item.kind == "user.input"], ["A", "C"])
+
 
 class ConversationRuntimeTests(unittest.TestCase):
     def test_provider_error_is_not_journaled_as_a_completed_turn(self):
@@ -316,14 +330,65 @@ class ConversationRuntimeTests(unittest.TestCase):
                 with patch.object(runtime, "_project_graph_context", side_effect=AssertionError("graph was injected")):
                     first = runtime._build_messages("fresh one")
                     fingerprint = runtime._stable_prefix_info.get()["fingerprint"]
+                    runtime._record_context_history_metrics(first)
                     self.assertEqual(runtime._context_history_metrics.get()["new_entry_count"], 2)
                     second = runtime._build_messages("fresh two")
                     self.assertEqual(runtime._stable_prefix_info.get()["fingerprint"], fingerprint)
+                    runtime._record_context_history_metrics(second)
                     metrics = runtime._context_history_metrics.get()
                     self.assertEqual(metrics["retransmitted_entry_count"], 2)
                     self.assertEqual(metrics["duplicate_entry_count"], 0)
                 self.assertEqual(sum(item["role"] == "user" and item["content"] == "fresh one" for item in first), 1)
                 self.assertEqual(sum(item["role"] == "user" and item["content"] == "fresh two" for item in second), 1)
+            finally:
+                app.close()
+
+    def test_context_history_metrics_update_for_each_provider_dispatch(self):
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.agent.compaction import ContextState
+        from openkyrozen.providers.models import ModelResponse
+        from openkyrozen.tools import ToolAdapters
+
+        class Provider:
+            name = "fixture"
+
+            def chat_response(self, _messages, model=None):
+                return ModelResponse(text="ok", metadata={"provider": self.name, "model": model})
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
+            "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
+        }):
+            root = Path(temp)
+            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+                                    tools=ToolAdapters(root), user_id="alice")
+            try:
+                runtime = app.runtime
+                runtime.llm_provider = Provider()
+                history = runtime.conversation_history
+                history.append(history.entry("user.input", {"text": "old"}))
+                history.append(history.entry("turn.outcome", {"status": "completed", "text": "old answer"}))
+                context = runtime._active_context_state.set(ContextState("fixture"))
+                seen = runtime._context_history_seen.set(set())
+                try:
+                    first_messages = [
+                        {"role": "user", "content": "old"},
+                        {"role": "assistant", "content": "old answer"},
+                    ]
+                    runtime._get_model_response(first_messages, "fixture")
+                    first = runtime._context_history_metrics.get()
+                    self.assertEqual((first["new_entry_count"], first["retransmitted_entry_count"]), (2, 0))
+                    history.append(history.entry("user.input", {"text": "new"}))
+                    history.append(history.entry("turn.outcome", {"status": "completed", "text": "new answer"}))
+                    second_messages = first_messages + [
+                        {"role": "user", "content": "new"},
+                        {"role": "assistant", "content": "new answer"},
+                    ]
+                    runtime._get_model_response(second_messages, "fixture")
+                    second = runtime._context_history_metrics.get()
+                    self.assertEqual((second["new_entry_count"], second["retransmitted_entry_count"]), (2, 2))
+                finally:
+                    runtime._context_history_seen.reset(seen)
+                    runtime._active_context_state.reset(context)
             finally:
                 app.close()
 

@@ -185,6 +185,47 @@ class InteractionTests(unittest.TestCase):
             self.agent.bind_interaction_scope("chat-empty")
         self.assertEqual(self.agent.short_term_memory, [])
 
+    def test_early_plan_acceptance_reply_is_saved_to_session_and_history(self):
+        session = self.agent.open_session("early-plan-acceptance")
+        reply = self.agent.chat(session, "accept plan")
+        self.assertEqual(reply, "There is no pending plan to accept.")
+        self.assertEqual(session.messages, [
+            {"role": "user", "content": "accept plan"},
+            {"role": "assistant", "content": "There is no pending plan to accept."},
+        ])
+        nodes = self.agent.history_manager(session.session_id).list()
+        self.assertEqual(nodes[-1]["user_message"], "accept plan")
+        self.assertEqual(nodes[-1]["assistant_message"], reply)
+
+    def test_restore_history_refreshes_active_session_transcript(self):
+        from openkyrozen.agent.conversation import ConversationHistory
+        from types import SimpleNamespace
+
+        session_id = "rollback-cache-refresh"
+        session = self.agent.open_session(session_id)
+        self.agent.bind_interaction_scope(session_id)
+        history = ConversationHistory(
+            session.memory.store, user_id=session.memory.user_id,
+            workspace_id=self.agent.interaction_workspace_id(), session_id=session_id,
+        )
+        history.append(history.entry("user.input", {"text": "retained request"}))
+        history.append(history.entry("turn.outcome", {"status": "completed", "text": "retained answer"}))
+        session.messages = [{"role": "user", "content": "stale transcript"}]
+
+        class Manager:
+            def __init__(self, identifier):
+                self.session_id = identifier
+
+            def current(self):
+                return {"id": "current"}
+
+            def rollback(self, *_args, **_kwargs):
+                return {"id": "target"}, {"id": "recovery"}
+
+        with patch.object(self.agent, "history_manager", return_value=Manager(session_id)):
+            self.agent.restore_history("target", confirm="rollback", expected_head="current")
+        self.assertEqual(session.messages, history.display_messages())
+
     def test_question_bounds_and_event_reconstruction(self):
         question = self.controller.request_question({"questions": [{
             "id": "scope", "header": "Scope", "prompt": "Which package?",

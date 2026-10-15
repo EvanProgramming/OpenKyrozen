@@ -117,21 +117,28 @@ class ConversationHistory:
 
     def active_entries(self) -> tuple[ConversationEntry, ...]:
         entries = self.entries()
-        branch_index = next((i for i in range(len(entries) - 1, -1, -1)
-                             if entries[i].kind == "branch.selection"), None)
-        if branch_index is None:
-            return tuple(item for item in entries if item.kind != "branch.selection")
-        branch = entries[branch_index]
-        target = branch.payload.get("target_journal_head")
-        by_id = {item.id: item for item in entries}
-        prefix, cursor = [], target
-        while cursor and cursor in by_id:
-            item = by_id[cursor]
-            if item.kind != "branch.selection":
-                prefix.append(item)
-            cursor = item.parent_id
-        prefix.reverse()
-        return tuple(prefix + [item for item in entries[branch_index + 1:] if item.kind != "branch.selection"])
+        targets = {item.payload.get("target_journal_head") for item in entries
+                   if item.kind == "branch.selection" and item.payload.get("target_journal_head")}
+        active_at = {}
+        active = None
+        for item in entries:
+            if item.kind == "branch.selection":
+                target = item.payload.get("target_journal_head")
+                if target is not None and target not in active_at:
+                    raise ConversationHistoryError("Branch selection references an unknown journal entry")
+                active = active_at.get(target)
+            else:
+                if item.payload.get("provenance") == "legacy_history_node" and item.payload.get("legacy_index") == 0:
+                    active = None
+                active = (item, active)
+            if item.id in targets:
+                active_at[item.id] = active
+        result = []
+        while active:
+            item, active = active
+            result.append(item)
+        result.reverse()
+        return tuple(result)
 
     def display_messages(self, *, exclude_turn_id: str | None = None) -> list[dict[str, Any]]:
         messages = []

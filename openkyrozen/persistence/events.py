@@ -87,6 +87,56 @@ class EventsRepository:
             ).fetchone()
         return self.database._loads(row["payload"], {}) if row else None
 
+    def append_history_rollback(self, entries: list[dict[str, Any]], events: list[dict[str, Any]], *,
+                               user_id: str, workspace_id: str, session_id: str,
+                               expected_head: str | None, checkpoint: dict[str, Any] | None = None) -> None:
+        """Commit branch selection and its interaction events as one visible state change."""
+        scope = (user_id, workspace_id, session_id)
+        with self.database._lock, self.database.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT id FROM events WHERE event_type='conversation.entry' AND user_id=? "
+                "AND workspace_id=? AND session_id=? ORDER BY rowid DESC LIMIT 1", scope,
+            ).fetchone()
+            head = row["id"] if row else None
+            if head != expected_head:
+                db.rollback()
+                from openkyrozen.agent.conversation import ConversationHistoryError
+                raise ConversationHistoryError("Conversation history head changed")
+            try:
+                for entry in entries:
+                    if (entry["user_id"], entry["workspace_id"], entry["session_id"]) != scope or entry.get("parent_id") != head:
+                        from openkyrozen.agent.conversation import ConversationHistoryError
+                        raise ConversationHistoryError("Conversation entry scope or parent is stale")
+                    db.execute(
+                        "INSERT INTO events(id,event_type,payload,user_id,workspace_id,session_id,task_id,created_at) "
+                        "VALUES(?,'conversation.entry',?,?,?,?,?,?)",
+                        (entry["id"], self.database._json(entry), *scope, entry.get("task_id"),
+                         entry.get("created_at") or utc_now()),
+                    )
+                    head = entry["id"]
+                if checkpoint is not None:
+                    checkpoint_id = f"checkpoint_{checkpoint['node_id']}"
+                    db.execute(
+                        "INSERT INTO events(id,event_type,payload,user_id,workspace_id,session_id,task_id,created_at) "
+                        "VALUES(?,'conversation.checkpoint',?,?,?,?,?,?) "
+                        "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload "
+                        "WHERE events.event_type='conversation.checkpoint' AND events.user_id=excluded.user_id "
+                        "AND events.workspace_id=excluded.workspace_id AND events.session_id=excluded.session_id",
+                        (checkpoint_id, self.database._json(checkpoint), *scope, None, utc_now()),
+                    )
+                for event in events:
+                    db.execute(
+                        "INSERT INTO events(id,event_type,payload,user_id,workspace_id,session_id,task_id,created_at) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
+                        (f"evt_{uuid.uuid4().hex}", event["event_type"], self.database._json(event["payload"]),
+                         *scope, None, utc_now()),
+                    )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
 
     def list_events(self, event_type: str | None = None, *, limit: int | None = 100,
                     workspace_id: str = "default", session_id: str | None = None,

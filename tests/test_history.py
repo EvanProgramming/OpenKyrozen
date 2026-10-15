@@ -176,6 +176,66 @@ class HistoryManagerTests(unittest.TestCase):
         self.assertEqual(self.manager.current()["id"], current["id"])
         self.assertEqual((self.root / "file.txt").read_text(encoding="utf-8"), "current")
 
+    def test_rollback_to_legacy_node_restores_its_text_snapshot_in_journal(self):
+        from openkyrozen.agent.conversation import ConversationHistory
+
+        legacy = self.manager.ensure_root(conversation=[
+            {"role": "user", "content": "legacy prompt"},
+            {"role": "assistant", "content": "legacy answer"},
+        ])
+        with self.store.database.connection() as db:
+            db.execute("DELETE FROM events WHERE id=?", (f"checkpoint_{legacy['id']}",))
+            db.commit()
+        history = ConversationHistory(self.store, user_id="alice", workspace_id="project", session_id="conversation")
+        history.append(history.entry("user.input", {"text": "new prompt"}))
+        current = self.manager.commit_turn(
+            self.manager.begin_turn(conversation=[], interaction={}, tasks=[]),
+            user_message="new prompt", assistant_message="new answer", conversation=[], interaction={}, tasks=[],
+            journal_head=history.head,
+        )
+        self.manager.rollback(legacy["id"], confirm="rollback", expected_head=current["id"])
+        self.assertEqual(history.display_messages(), [
+            {"role": "user", "content": "legacy prompt"},
+            {"role": "assistant", "content": "legacy answer"},
+        ])
+        checkpoint = self.store.conversation_checkpoint(
+            legacy["id"], user_id="alice", workspace_id="project", session_id="conversation",
+        )
+        self.assertIsNotNone(checkpoint["journal_head"])
+        later = history.entry("user.input", {"text": "later"})
+        history.append(later)
+        current = self.manager.commit_turn(
+            self.manager.begin_turn(conversation=[], interaction={}, tasks=[]),
+            user_message="later", assistant_message="answer", conversation=[], interaction={}, tasks=[],
+            journal_head=later.id,
+        )
+        self.manager.rollback(legacy["id"], confirm="rollback", expected_head=current["id"])
+        self.assertEqual(history.display_messages(), [
+            {"role": "user", "content": "legacy prompt"},
+            {"role": "assistant", "content": "legacy answer"},
+        ])
+        self.assertEqual(sum(item.payload.get("provenance") == "legacy_history_node"
+                             for item in history.entries()), 2)
+
+    def test_failed_journal_branch_append_does_not_publish_restore_event(self):
+        from openkyrozen.agent.conversation import ConversationHistory
+
+        baseline = self.manager.ensure_root(interaction={"pending_question": {"id": "q-old"}})
+        history = ConversationHistory(self.store, user_id="alice", workspace_id="project", session_id="conversation")
+        history.append(history.entry("user.input", {"text": "current"}))
+        current = self.manager.commit_turn(
+            self.manager.begin_turn(conversation=[], interaction={}, tasks=[]),
+            user_message="current", assistant_message="answer", conversation=[], interaction={}, tasks=[],
+            journal_head=history.head,
+        )
+        with patch.object(self.store, "append_history_rollback", side_effect=OSError("database unavailable"), create=True):
+            with self.assertRaises(OSError):
+                self.manager.rollback(baseline["id"], confirm="rollback", expected_head=current["id"])
+        restored = self.store.list_events("history.restored", user_id="alice", workspace_id="project",
+                                         session_id="conversation")
+        self.assertEqual(restored, [])
+        self.assertEqual(self.manager.current()["id"], current["id"])
+
     def test_invalid_source_scope_cannot_escape_snapshot_root(self):
         with self.assertRaises(HistoryError):
             HistoryManager(self.store, self.root, self.state, source_scope_id=str(self.root), session_id="x")

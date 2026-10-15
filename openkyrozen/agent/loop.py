@@ -52,6 +52,7 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
     executing_plan = state.get("executing_plan") if mode_override is None else None
     pending_question = state.get("pending_question") if mode_override is None else None
     pending_plan = state.get("pending_plan") if mode_override is None else None
+    early_reply = None
     if mode_override is None and pending_question:
         resolved = self._interaction_controller.resolve_question(
             pending_question["request_id"], user_input, action="answer",
@@ -62,23 +63,23 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
         )
         clear_tasks = False
     elif mode_override is None and is_plan_acceptance(user_input):
+        created = None
         try:
             accepted_plan, created = self._interaction_controller.accept_plan(self.tasks)
         except InteractionError:
-            self._record_conversation_entry("turn.outcome", {"status": "completed", "text": "There is no pending plan to accept."})
-            return "There is no pending plan to accept."
-        if not created and not self._interaction_controller.state().get("executing_plan"):
-            self._record_conversation_entry("turn.outcome", {"status": "completed", "text": "Plan was already accepted."})
-            return "Plan was already accepted."
-        user_input = (
-            "Execute the accepted plan below in Agent mode. Complete each durable task with evidence.\n\n"
-            + json.dumps(accepted_plan, ensure_ascii=False)
-        )
-        self._emit_stream_event({
-            "event": "interaction",
-            "interaction": self._interaction_controller.envelope(user_input),
-        })
-        clear_tasks = False
+            early_reply = "There is no pending plan to accept."
+        if created is False and not self._interaction_controller.state().get("executing_plan"):
+            early_reply = "Plan was already accepted."
+        if early_reply is None:
+            user_input = (
+                "Execute the accepted plan below in Agent mode. Complete each durable task with evidence.\n\n"
+                + json.dumps(accepted_plan, ensure_ascii=False)
+            )
+            self._emit_stream_event({
+                "event": "interaction",
+                "interaction": self._interaction_controller.envelope(user_input),
+            })
+            clear_tasks = False
     elif mode_override is None and pending_plan:
         user_input = (
             f"Original request:\n{pending_plan.get('original_input', '')}\n\n"
@@ -102,11 +103,15 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
         }
         runtime.turn_start(user_input=original_user_input, **context)
         try:
-            reply = self._chat_turn_impl(
-                user_input, clear_tasks=clear_tasks, profile=profile,
-                memory_context=memory_context,
-                inspection_complete=bool(pending_question or pending_plan),
-            )
+            if early_reply is not None:
+                self._turn_failed.set(False)
+                reply = early_reply
+            else:
+                reply = self._chat_turn_impl(
+                    user_input, clear_tasks=clear_tasks, profile=profile,
+                    memory_context=memory_context,
+                    inspection_complete=bool(pending_question or pending_plan),
+                )
             if backend := self._fast_used_backend.get():
                 reply = f"Made a decision with {'Jev' if backend == 'jev' else 'Kev'}.\n\n{reply}"
         except Exception as exc:
