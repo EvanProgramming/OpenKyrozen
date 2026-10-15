@@ -578,6 +578,13 @@ async function sendMessage() {
       }
       try {
         const parsed = JSON.parse(data);
+        if (parsed.event === 'completion' && Object.prototype.hasOwnProperty.call(parsed, 'reply')) {
+          const finalReply = String(parsed.reply);
+          if (full !== finalReply) {
+            full = finalReply;
+            contentDiv.textContent = full;
+          }
+        }
         if (Object.prototype.hasOwnProperty.call(parsed, 'chunk')) {
           full += String(parsed.chunk);
           contentDiv.textContent = full;

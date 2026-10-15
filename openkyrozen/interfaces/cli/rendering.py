@@ -234,10 +234,13 @@ def _spinner_worker(self, stop_event: threading.Event) -> None:
 
 
 def _call_llm_with_spinner(self, messages: list[dict], model: str | None = None, *, private: bool = False) -> str:
-    streaming = callable(self._stream_event_callback.get()) and not private
+    publisher = self._runtime_event_publisher.get()
+    streaming = (callable(self._stream_event_callback.get())
+                 or bool(publisher is not None and publisher.observes_events)) and not private
     try:
         self._prepare_context_for_call(messages, model)
     except ContextTooLargeError as exc:
+        self._turn_failed.set(True)
         return f"[LLM Error] {exc}"
 
     def call_once() -> str:
@@ -254,10 +257,12 @@ def _call_llm_with_spinner(self, messages: list[dict], model: str | None = None,
             return call_once()
         except ContextOverflowError as exc:
             if not self._recover_context_after_overflow(messages, model):
+                self._turn_failed.set(True)
                 return f"[LLM Error] {exc}"
             try:
                 return call_once()
             except ContextOverflowError as retry_exc:
+                self._turn_failed.set(True)
                 return f"[LLM Error] {retry_exc}"
 
     if streaming or private:

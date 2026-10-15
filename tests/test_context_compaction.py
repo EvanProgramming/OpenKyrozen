@@ -226,7 +226,7 @@ class ContextApiTests(unittest.TestCase):
         self.assertIn('id="context-breakdown"', server.CHAT_HTML)
         self.assertIn("function renderContext", server.CHAT_HTML)
 
-        def run(session, _message):
+        def run(session, _message, **_kwargs):
             session["context"] = dict(self.context)
             return "ok"
 

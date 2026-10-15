@@ -99,6 +99,7 @@ def approval_response(self, payload: dict[str, Any]) -> None:
 
 def _stream_projection(self, request_id: str):
     runtime = self.agent
+    from openkyrozen.agent.events import RuntimeEvent, runtime_event_as_legacy
     dsml = runtime.DeepSeekDSMLFilter()
     buffer = ""
     prefixes = ("action:", "tasklist:", "taskdone:", "thought:", "plan:", "definetool:",
@@ -117,8 +118,19 @@ def _stream_projection(self, request_id: str):
         self.emit("stream_delta", request_id, text=_redact(runtime._clean_stream_buffer(buffer)))
         buffer = ""
 
-    def callback(event: dict[str, Any]) -> None:
+    def callback(event: dict[str, Any] | RuntimeEvent) -> None:
         nonlocal buffer
+        if isinstance(event, RuntimeEvent):
+            if event.kind == "model.text_delta" and not event.payload.get("legacy_protocol"):
+                text = str(event.payload.get("text", ""))
+                if text:
+                    self.emit("stream_delta", request_id, text=_redact(text))
+                return
+            projected = runtime_event_as_legacy(event)
+            if projected is None:
+                self.emit("runtime_event", request_id, runtime_event=event.as_dict())
+                return
+            event = projected
         kind = event.get("event")
         if kind == "content":
             emit_text(dsml.feed(str(event.get("chunk", ""))))
@@ -239,7 +251,6 @@ def _attachment_prompt(self, text: str) -> str:
 
 def _run_submit(self, text: str, request_id: str) -> None:
     runtime = self.agent
-    stream_token = runtime._stream_event_callback.set(self._stream_projection(request_id))
     approval_token = runtime._approval_callback.set(self._approval)
     try:
         inline = runtime.split_inline_command(text)
@@ -281,7 +292,7 @@ def _run_submit(self, text: str, request_id: str) -> None:
         self.status("thinking", "Thinking…", request_id)
         reply = self._quiet_call(
             runtime.chat, runtime.current_session, self._attachment_prompt(sanitized),
-            on_event=runtime._stream_event_callback.get(), approve=self._approval,
+            on_runtime_event=self._stream_projection(request_id), approve=self._approval,
             clear_tasks=not bool(state["pending_question"] or state["pending_plan"]
                                  or runtime.is_plan_acceptance(sanitized)),
         )
@@ -315,7 +326,6 @@ def _run_submit(self, text: str, request_id: str) -> None:
                   error=f"{type(exc).__name__}: {_redact(exc)}")
     finally:
         runtime._approval_callback.reset(approval_token)
-        runtime._stream_event_callback.reset(stream_token)
         with self._state_lock:
             self._busy = False
             self._workers.discard(threading.current_thread())

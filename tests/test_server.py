@@ -6,6 +6,7 @@ import sys
 import threading
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -392,9 +393,9 @@ class ServerBoundaryTests(unittest.TestCase):
     def test_missing_provider_fails_honestly_across_rest_stream_and_mcp(self):
         client = TestClient(server.app)
         sessions = {
-            "rest": "missing-provider-rest",
-            "stream": "missing-provider-stream",
-            "mcp": "missing-provider-mcp",
+            "rest": f"missing-provider-rest-{uuid.uuid4().hex}",
+            "stream": f"missing-provider-stream-{uuid.uuid4().hex}",
+            "mcp": f"missing-provider-mcp-{uuid.uuid4().hex}",
         }
         original_provider = server._agent.llm_provider
         try:

@@ -183,6 +183,7 @@ class StreamEventContractTests(unittest.TestCase):
 
             def chat_response_stream(self, messages, model=None, *, tools=None):
                 yield TextDelta("live")
+                yield ToolCallDelta(0, id_delta="call", name_delta="search", arguments_delta='{"token":"stream-secret"}')
                 yield ResponseComplete(ModelResponse(text="live", finish_reason=FinishReason.FINAL,
                     usage={"prompt_tokens": 2, "completion_tokens": 1}))
 
@@ -191,10 +192,56 @@ class StreamEventContractTests(unittest.TestCase):
             try:
                 app.runtime.llm_provider = StreamingProvider(ProviderConfig(provider="custom", model_simple="m"))
                 observed = []
-                response = app.runtime._get_model_response([], "m", stream=True, on_event=observed.append)
+                from openkyrozen.agent.events import RuntimeEventPublisher
+                runtime_events = []
+                token = app.runtime._runtime_event_publisher.set(RuntimeEventPublisher(
+                    user_id="local", workspace_id="default", session_id="test",
+                    on_runtime_event=runtime_events.append,
+                ))
+                try:
+                    response = app.runtime._get_model_response([], "m", stream=True, on_event=observed.append)
+                finally:
+                    app.runtime._runtime_event_publisher.reset(token)
                 self.assertEqual(response.text, "live")
+                self.assertFalse(app.runtime._last_response_is_native.get())
                 self.assertEqual(observed[0], TextDelta("live"))
                 self.assertIsInstance(observed[-1], ResponseComplete)
+                self.assertEqual([event.kind for event in runtime_events], [
+                    "model.requested", "model.text_delta", "model.tool_call_delta",
+                    "usage.updated", "model.completed",
+                ])
+                self.assertEqual(len({event.model_request_id for event in runtime_events}), 1)
+                delta = next(event for event in runtime_events if event.kind == "model.tool_call_delta")
+                self.assertNotIn("stream-secret", str(delta.payload))
+                self.assertEqual(delta.payload["arguments_delta"], "<redacted>")
+                self.assertEqual(delta.payload["arguments_length"], len('{"token":"stream-secret"}'))
+                response = app.runtime._get_model_response([], "m", stream=True, tool_names=["read_file"])
+                self.assertTrue(app.runtime._last_response_is_native.get())
+            finally:
+                app.close()
+
+    def test_legacy_stream_error_text_preserves_context_overflow_recovery(self):
+        import tempfile
+        from pathlib import Path
+        from openkyrozen.agent.types import ContextOverflowError
+        from openkyrozen.app.bootstrap import build_application, build_memory
+
+        class LegacyStreamProvider:
+            name = "ollama"
+
+            def chat_stream(self, messages, model=None):
+                yield "[Ollama Error] context length exceeded"
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
+            app = build_application(memory=build_memory(Path(directory) / "state.sqlite3"))
+            try:
+                app.runtime.llm_provider = LegacyStreamProvider()
+                context_token = app.runtime._active_context_state.set(object())
+                try:
+                    with self.assertRaises(ContextOverflowError):
+                        app.runtime._get_llm_response([], stream=True, on_chunk=lambda _chunk: None)
+                finally:
+                    app.runtime._active_context_state.reset(context_token)
             finally:
                 app.close()
 

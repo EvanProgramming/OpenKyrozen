@@ -21,7 +21,18 @@ def _retrieve_failure(self, query: str, n: int = 3) -> list[str]:
 
 
 def _emit_stream_event(self, event: dict[str, Any]) -> None:
-    """Forward typed stream progress without letting a client affect the turn."""
+    """Publish runtime events and preserve legacy dictionaries at the boundary."""
+    publisher_var = getattr(self, "_runtime_event_publisher", None)
+    publisher = publisher_var.get() if publisher_var is not None else None
+    if publisher is not None:
+        try:
+            model_request_var = getattr(self, "_active_model_request_id", None)
+            publisher.publish_legacy(
+                event, model_request_id=model_request_var.get() if model_request_var is not None else None,
+            )
+        except Exception:
+            pass
+        return
     callback = self._stream_event_callback.get()
     if not callable(callback):
         return

@@ -104,6 +104,18 @@ Interfaces call the runtime/service contracts; feature code emits events through
 interface implementations. Concrete provider, tool, SQLite, vector and routing
 transports remain behind the injected boundaries.
 
+Runtime observers receive immutable `agent.events.RuntimeEvent` records with
+per-turn sequence numbers and user/workspace/session plus request/call/task
+correlation IDs. The legacy `on_event` callback is a compatibility projection;
+it cannot mutate canonical payloads or change authorization, execution, usage,
+or task status. CLI/TUI/Web adapters preserve their established wire fields.
+Text bypasses legacy control parsing only when the request used native tool
+schemas; the foreground loop's no-tools textual protocol remains on its
+compatibility path until AgentEngine migration. Tool-call delta events expose
+call identity and fragment length but redact argument text because observers
+include remote UI surfaces; those deltas are progress metadata, not replayable
+invocation input.
+
 Permitted feature dependencies follow the responsibilities above: `agent` coordinates
 `tasks`, `tools` catalog/model contracts, `security`, provider contracts, `routing`,
 `memory` and `learning`; `tasks` owns its models/storage ports; `memory` owns memory

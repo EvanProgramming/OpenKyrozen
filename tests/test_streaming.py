@@ -127,6 +127,43 @@ class _SplitGenericInvokeProvider:
 
 
 class StreamingEndpointTests(unittest.TestCase):
+    def test_native_control_words_pass_through_sse_without_legacy_parsing(self):
+        session_id = f"native-event-{time.time_ns()}"
+        native_text = "Action: and TaskList: are ordinary prose here."
+
+        async def exercise():
+            response = await server.api_chat_stream(_Request({
+                "message": "hello", "session_id": session_id,
+            }))
+            frames = []
+            async for frame in response.body_iterator:
+                frames.append(frame.decode() if isinstance(frame, bytes) else frame)
+            return frames
+
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-native-events-") as directory:
+            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="native-events")
+            original_sessions = server._sessions
+            server._sessions = {}
+            def emit_native_text(*_args, **_kwargs):
+                server._agent._publish_runtime_event("model.text_delta", {"text": native_text})
+                return native_text
+
+            try:
+                with (patch.object(server._agent.current_session, "memory", memory),
+                      patch.object(server._agent, "_chat_turn", side_effect=emit_native_text),
+                      patch.object(server._agent, "_clean_final_response", side_effect=lambda text: text),
+                      patch.object(server._agent, "_collect_tool_calls", side_effect=AssertionError("legacy parser used")),
+                      patch.object(server._agent, "_stream_buffer_has_tool_prefix", side_effect=AssertionError("legacy parser used")),
+                      patch.object(server._agent, "normalize_provider_control", side_effect=AssertionError("legacy parser used"))):
+                    frames = asyncio.run(exercise())
+            finally:
+                server._sessions = original_sessions
+
+        payloads = [json.loads(frame.split("data: ", 1)[1].splitlines()[0])
+                    for frame in frames if frame.startswith("data: ") and frame != "data: [DONE]\n\n"]
+        content = [item for item in payloads if item.get("event") == "content"]
+        self.assertEqual(content, [{"event": "content", "chunk": native_text}])
+
     def test_reasoning_and_tool_use_tags_are_filtered_at_every_boundary(self):
         marker = (
             "<notes><thought>private</thought>"
@@ -149,7 +186,13 @@ class StreamingEndpointTests(unittest.TestCase):
             }))
             iterator = response.body_iterator.__aiter__()
             started = time.monotonic()
-            first = await asyncio.wait_for(anext(iterator), timeout=1)
+            leading = []
+            while True:
+                first = await asyncio.wait_for(anext(iterator), timeout=1)
+                first_text = first.decode() if isinstance(first, bytes) else first
+                if '"event": "content"' in first_text:
+                    break
+                leading.append(first)
             first_elapsed = time.monotonic() - started
             provider_complete_before_release = provider.completed.is_set()
             provider.release.set()
@@ -159,7 +202,7 @@ class StreamingEndpointTests(unittest.TestCase):
                     remaining.append(await asyncio.wait_for(anext(iterator), timeout=2))
             except StopAsyncIteration:
                 pass
-            return first, first_elapsed, provider_complete_before_release, remaining
+            return leading, first, first_elapsed, provider_complete_before_release, remaining
 
         with tempfile.TemporaryDirectory(prefix="openkyrozen-stream-") as directory:
             memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="stream-test")
@@ -172,7 +215,7 @@ class StreamingEndpointTests(unittest.TestCase):
                       patch.object(server._agent, "_chat_turn", side_effect=lambda message, **_: (
                           main._call_llm_with_spinner([{"role": "user", "content": message}])
                       ))):
-                    first, elapsed, provider_complete_before_release, remaining = asyncio.run(exercise())
+                    leading, first, elapsed, provider_complete_before_release, remaining = asyncio.run(exercise())
             finally:
                 server._sessions = original_sessions
 
@@ -186,10 +229,11 @@ class StreamingEndpointTests(unittest.TestCase):
         self.assertLess(elapsed, 1)
         self.assertFalse(provider_complete_before_release)
         self.assertEqual(first_payload, {"event": "content", "chunk": "FIRST"})
-        self.assertEqual([item.get("event") for item in payloads[:5]],
+        compatibility = [item for item in payloads if item.get("event") != "runtime_event"]
+        self.assertEqual([item.get("event") for item in compatibility[:5]],
                          ["content", "interaction", "usage", "context", "completion"])
-        self.assertEqual(payloads[0]["chunk"], " SECOND")
-        self.assertEqual(payloads[1]["interaction"]["preference_mode"], "auto")
+        self.assertEqual(compatibility[0]["chunk"], " SECOND")
+        self.assertEqual(compatibility[1]["interaction"]["preference_mode"], "auto")
         self.assertEqual(sum(text(item) == "data: [DONE]\n\n" for item in remaining), 1)
         self.assertTrue(provider.completed.is_set())
 
@@ -247,6 +291,8 @@ class StreamingEndpointTests(unittest.TestCase):
             self.assertEqual(assistant_messages[-1]["content"], content)
             event_names = [item.get("event") for item in payloads]
             self.assertLess(event_names.index("usage"), event_names.index("completion"))
+            completion = next(item for item in payloads if item.get("event") == "completion")
+            self.assertEqual(completion["reply"], content)
         self.assertEqual(done, 1)
 
     def test_inline_controls_are_filtered_before_sse_and_persistence(self):

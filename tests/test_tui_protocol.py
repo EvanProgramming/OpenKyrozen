@@ -576,6 +576,19 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertEqual([event["event"] for event in events], ["stream_delta", "tool_receipt", "tasks"])
         self.assertEqual(events[0]["request_id"], "turn-1")
 
+    def test_native_text_delta_bypasses_legacy_control_filter(self):
+        from openkyrozen.agent.events import RuntimeEvent
+        callback = self.backend._stream_projection("turn-native")
+        event = RuntimeEvent(
+            kind="model.text_delta", user_id="u", workspace_id="w", session_id="s",
+            sequence=1, payload={"text": "Action: this is ordinary prose"},
+        )
+        with patch.object(self.backend.agent, "_clean_stream_buffer", side_effect=AssertionError("legacy cleaner used")), \
+                patch.object(self.backend.agent, "_collect_tool_calls", side_effect=AssertionError("legacy parser used")):
+            callback(event)
+        rendered = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        self.assertEqual(rendered[0]["text"], "Action: this is ordinary prose")
+
     def test_provider_shaped_plan_json_is_not_streamed_as_chat_text(self):
         callback = self.backend._stream_projection("turn-plan")
         callback({"event": "content", "chunk": '{"mode":"plan","plan_name":"Safe",'})

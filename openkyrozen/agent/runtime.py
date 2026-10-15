@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import copy
+import asyncio
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from .models import AgentSession, WorkspaceState
 from .turn import ExecutionContext
-from .ports import EventSink, Approval
+from .ports import EventSink, RuntimeEventSink, Approval
 
 
 class AgentRuntime:
@@ -335,15 +336,74 @@ class AgentRuntime:
         finally:
             self._session_context.reset(token)
 
-    def chat(self, session, message, *, clear_tasks=False, profile=None, memory_context=None, on_event: EventSink | None = None, approve: Approval | None = None) -> str:
+    def _publish_runtime_event(self, kind, payload, *, model_request_id=None, call_id=None, task_id=None):
+        publisher = self._runtime_event_publisher.get()
+        if publisher is None:
+            return None
+        if model_request_id is None:
+            model_request_id = self._active_model_request_id.get() or self._last_model_request_id.get()
+        try:
+            return publisher.publish(
+                kind, payload, model_request_id=model_request_id, call_id=call_id, task_id=task_id,
+            )
+        except Exception:
+            return None
+
+    def chat(self, session, message, *, clear_tasks=False, profile=None, memory_context=None,
+             on_event: EventSink | None = None, on_runtime_event: RuntimeEventSink | None = None,
+             approve: Approval | None = None) -> str:
         with self.use_session(session):
+            from .events import RuntimeEventPublisher
+            memory = self.memory_bank
+            publisher = RuntimeEventPublisher(
+                user_id=str(getattr(memory, "user_id", getattr(session, "user_id", "local")) or "local"),
+                workspace_id=str(getattr(memory, "workspace_id", "default") or "default"),
+                session_id=str(getattr(memory, "session_id", None) or getattr(session, "session_id", None) or "default"),
+                on_runtime_event=on_runtime_event,
+                on_legacy_event=on_event,
+            )
+            runtime_events = self._runtime_event_publisher.set(publisher)
             events = self._stream_event_callback.set(on_event)
+            native_response = self._last_response_is_native.set(False)
+            turn_failed = self._turn_failed.set(False)
+            last_model_request = self._last_model_request_id.set(None)
             approval = self._approval_callback.set(approve)
+            task_event_context = getattr(getattr(session, "tasks", None), "_runtime_event_callback", None)
+            task_event = task_event_context.set(
+                lambda kind, payload, task_id: self._publish_runtime_event(
+                    kind, payload if isinstance(payload, dict) else {"data": payload}, task_id=task_id,
+                )
+            ) if task_event_context is not None else None
             try:
-                return self._chat_turn(message, clear_tasks=clear_tasks, profile=profile, memory_context=memory_context)
+                publisher.publish("turn.started", {})
+                try:
+                    reply = self._chat_turn(
+                        message, clear_tasks=clear_tasks, profile=profile, memory_context=memory_context,
+                    )
+                except BaseException as exc:
+                    from openkyrozen.providers.errors import ProviderError, ProviderErrorKind
+                    cancelled = isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError)) or (
+                        isinstance(exc, ProviderError) and exc.kind == ProviderErrorKind.CANCELLED
+                    )
+                    publisher.publish(
+                        "turn.cancelled" if cancelled else "turn.failed",
+                        {"error_type": type(exc).__name__},
+                    )
+                    raise
+                if publisher.last_model_failed or self._turn_failed.get():
+                    publisher.publish("turn.failed", {"error_type": "provider_error"})
+                else:
+                    publisher.publish("turn.completed", {"status": "completed"})
+                return reply
             finally:
                 self._stream_event_callback.reset(events)
+                self._last_response_is_native.reset(native_response)
+                self._turn_failed.reset(turn_failed)
+                self._last_model_request_id.reset(last_model_request)
                 self._approval_callback.reset(approval)
+                if task_event is not None:
+                    task_event_context.reset(task_event)
+                self._runtime_event_publisher.reset(runtime_events)
 
     @property
     def tool_registry(self):
@@ -656,6 +716,11 @@ class AgentRuntime:
             execution_dispatched = False
 
             def reject(outcome, *, authorized=False, bound_task=None):
+                self._publish_runtime_event(
+                    "tool.call", {"tool_name": name,
+                                  "argument_keys": sorted(call_arguments)[:64]},
+                    call_id=call.id, task_id=bound_task,
+                )
                 self._notify_tool_execute(name, call_arguments, outcome)
                 receipt = self._make_execution_receipt(
                     action=name, args=call_arguments, authorized=authorized, started_at=started_at,
@@ -732,6 +797,8 @@ class AgentRuntime:
                     if current_request.fingerprint != request.fingerprint:
                         return False
                     return True
+
+                bound_approval._runtime_approval_wrapper = True
 
                 approval_token2 = self._approval_callback.set(bound_approval if callable(user_approve) else None)
                 try:
