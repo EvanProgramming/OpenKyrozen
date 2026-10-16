@@ -1102,6 +1102,45 @@ class InteractionTests(unittest.TestCase):
             self.agent.tasks = previous_tasks
             self.agent._set_workspace_root(previous_root)
 
+    def test_structured_legacy_arguments_match_the_accepted_action_contract(self):
+        from openkyrozen.agent.types import ExecutionReceipt
+        previous = self.agent._interaction_controller
+        previous_tasks = self.agent.tasks
+        previous_root = self.agent._get_workspace_root()
+        manager = TaskManager(self.store, workspace_id="workspace", session_id="session")
+        controller = InteractionController(self.store, workspace_id="workspace", session_id="session")
+        arguments = {"path": "src/file.py", "old_text": "draft", "new_text": "verified",
+                     "expected_sha256": "a" * 64}
+        proposal = controller.propose_plan({
+            "title": "Update source", "summary": "Update the source file.", "bounds": {
+                "workspace_paths": ["src"], "capabilities": ["write"],
+                "effects": ["filesystem"], "risk_ceiling": "normal",
+            }, "steps": [{"id": "edit", "title": "Update source", "description": "Update the source file.",
+                         "acceptance": [{"criterion": "Source is updated", "verification": {
+                             "action": "edit_file", "arguments": arguments,
+                         }}]}],
+        })
+        controller.accept_plan(manager, plan_id=proposal["plan_id"], version=proposal["version"])
+        self.agent.tasks = manager
+        self.agent._interaction_controller = controller
+        self.agent._set_workspace_root(Path(self.directory.name))
+        receipt = ExecutionReceipt(
+            "receipt", "operation", "edit_file", json.dumps(arguments), True,
+            "start", "end", True, "edited", call_id="call", call_id_source="synthetic",
+            arguments=arguments, tool_result=ToolResult(text="edited"),
+        )
+        try:
+            with patch.object(self.agent, "_run_tool", return_value=receipt) as run_tool:
+                result = self.agent._execute_turn_action(
+                    "edit_file", json.dumps(arguments), operation_scope="test", successful_operations=set(),
+                )
+            self.assertTrue(result.success, result.result)
+            run_tool.assert_called_once()
+        finally:
+            self.agent._interaction_controller = previous
+            self.agent.tasks = previous_tasks
+            self.agent._set_workspace_root(previous_root)
+
     def test_plan_requires_inspection_and_normalizes_structured_prose(self):
         class LearningStub:
             def feedback_signal(self, _text): return None

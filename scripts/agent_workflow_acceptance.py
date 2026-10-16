@@ -7,6 +7,7 @@ import json
 import hashlib
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -113,11 +114,9 @@ if __name__ == "__main__":
                  "action": "write_file", "arguments": {"path": "test_deploy.py", "content": deployment_test},
              }}]},
             {"step_id": "verify", "title": "Verify local deployment",
-             "details": "Run python -m unittest test_deploy.py -v.",
+             "details": "Read the deployment test; the acceptance harness runs it after the plan finishes.",
              "acceptance_criteria": [{"criterion": "unittest exits successfully", "verification": {
-                 "action": "run_cmd", "arguments": {
-                     "command": f"{sys.executable} -m unittest test_deploy.py -v",
-                 },
+                 "action": "read_file", "arguments": {"path": "test_deploy.py"},
              }}]},
         ],
     }
@@ -135,7 +134,7 @@ if __name__ == "__main__":
             {"action": "write_file", "args": f"test_deploy.py|{deployment_test}"}
         ),
         "TaskDone: 2\nAction: " + json.dumps(
-            {"action": "run_cmd", "args": f"{sys.executable} -m unittest test_deploy.py -v"}
+            {"action": "read_file", "args": "test_deploy.py"}
         ),
         "TaskDone: 3\nDeployment verified.",
     ]
@@ -178,11 +177,15 @@ if __name__ == "__main__":
 
             assert "Deployment verified" in reply, reply
             assert [task["status"] for task in main.tasks.tasks] == ["succeeded"] * 4
+            subprocess.run(
+                [sys.executable, "-m", "unittest", "test_deploy.py", "-v"],
+                cwd=root, check=True, capture_output=True, text=True,
+            )
             receipts = store.list_events(
                 "execution.receipt", workspace_id="acceptance", session_id="release",
             )
             assert [event["payload"]["action"] for event in reversed(receipts)] == [
-                "list_dir", "write_file", "edit_file", "write_file", "run_cmd",
+                "list_dir", "write_file", "edit_file", "write_file", "read_file",
             ]
             state = main._interaction_controller.state()
             assert state["executing_plan"] is None

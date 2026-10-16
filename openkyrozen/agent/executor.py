@@ -503,9 +503,17 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
     operation_id = self._operation_id(operation_scope, canonical, args)
     active_plan = self._interaction_controller.state().get("executing_plan")
     if self._is_state_changing_action(canonical, args) and active_plan:
-        structured = _legacy_object_arguments(args, expected_spec)
+        structured = None
+        if args.lstrip().startswith("{"):
+            try:
+                parsed = json.loads(args)
+            except (json.JSONDecodeError, TypeError):
+                parsed = None
+            structured = parsed if isinstance(parsed, dict) else None
+        if structured is None:
+            structured = _legacy_object_arguments(args, expected_spec)
         match_args = (json.dumps(structured, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-                      if structured else args)
+                      if isinstance(structured, dict) and structured else args)
         scoped_file_mutation = (
             canonical in {"write_file", "edit_file"}
             and _file_mutation_matches_objective(next((task for task in self.tasks.tasks
