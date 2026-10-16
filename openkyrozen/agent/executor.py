@@ -500,18 +500,19 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             expected_spec=expected_spec,
         )
     args = str(args)
-    operation_id = self._operation_id(operation_scope, canonical, args)
+    structured = None
+    if args.lstrip().startswith("{"):
+        try:
+            parsed = json.loads(args)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        structured = parsed if isinstance(parsed, dict) else None
+    if structured is None:
+        structured = _legacy_object_arguments(args, expected_spec)
+    operation_arguments = structured if isinstance(structured, dict) and structured else args
+    operation_id = self._operation_id(operation_scope, canonical, operation_arguments)
     active_plan = self._interaction_controller.state().get("executing_plan")
     if self._is_state_changing_action(canonical, args) and active_plan:
-        structured = None
-        if args.lstrip().startswith("{"):
-            try:
-                parsed = json.loads(args)
-            except (json.JSONDecodeError, TypeError):
-                parsed = None
-            structured = parsed if isinstance(parsed, dict) else None
-        if structured is None:
-            structured = _legacy_object_arguments(args, expected_spec)
         match_args = (json.dumps(structured, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                       if isinstance(structured, dict) and structured else args)
         scoped_file_mutation = (
@@ -531,7 +532,9 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             outcome = tool_failure("permission_denied", result)
             self._notify_tool_execute(canonical, args, outcome)
             return self._make_execution_receipt(
-                action=canonical, args=args, authorized=False, started_at=started_at,
+                action=canonical, args=args,
+                receipt_arguments=operation_arguments if isinstance(operation_arguments, dict) else None,
+                authorized=False, started_at=started_at,
                 success=False, result=result, operation_scope=operation_scope,
                 failure=outcome.error.code, tool_error=outcome.error,
                 tool_result=outcome, call_id=call_id, call_id_source="synthetic",
@@ -544,7 +547,9 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
         result = render_tool_result(outcome)
         self._notify_tool_execute(canonical, args, outcome)
         return self._make_execution_receipt(
-            action=canonical, args=args, authorized=True, started_at=started_at, success=False,
+            action=canonical, args=args,
+            receipt_arguments=operation_arguments if isinstance(operation_arguments, dict) else None,
+            authorized=True, started_at=started_at, success=False,
             result=result, operation_scope=operation_scope, failure=outcome.error.code, tool_error=outcome.error,
             tool_result=outcome, call_id=call_id, call_id_source="synthetic",
             expected_spec=expected_spec,
@@ -578,12 +583,22 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
         bool(explicit_task_id) or receipt.call_id_source == "legacy"
         or (allow_legacy_task_matching and receipt.call_id_source == "synthetic")
     )
-    matching_args = (json.dumps(receipt.arguments, ensure_ascii=False, allow_nan=False,
-                                 sort_keys=True, separators=(",", ":"))
+    legacy_contract = any(
+        task.get("status") in {"pending", "running"}
+        and self.tasks._dependencies_succeeded(task, self.tasks.tasks)
+        and (task.get("checkpoint") or {}).get("action") == receipt.action
+        and isinstance((task.get("checkpoint") or {}).get("args"), str)
+        and not task["checkpoint"]["args"].lstrip().startswith("{")
+        for task in self.tasks.tasks
+    )
+    matching_args = (receipt.args if legacy_contract else
+                     json.dumps(receipt.arguments, ensure_ascii=False, allow_nan=False,
+                                sort_keys=True, separators=(",", ":"))
                      if receipt.arguments is not None else receipt.args)
     evidence = {} if receipt.action in TOOLS or not should_reconcile else self.tasks.record_evidence(
         task_id=explicit_task_id, action=receipt.action, args=matching_args,
-        args_projection=receipt_projection["args"], args_fingerprint=receipt.args_sha256,
+        args_projection=receipt_projection["args"],
+        args_fingerprint=None if legacy_contract else receipt.args_sha256,
         result=receipt_projection["result"], success=receipt.success,
         acceptance=task_acceptance, receipt_id=receipt.receipt_id,
         verification_status=receipt.verification.get("status"),
