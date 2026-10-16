@@ -164,7 +164,8 @@ class EventsRepository:
 
     def list_sessions(self, *, workspace_id: str = "default", limit: int = 100,
                       user_id: str | None = None) -> list[dict[str, Any]]:
-        clauses = ["workspace_id=?", "session_id IS NOT NULL", "event_type NOT LIKE 'conversation.%'"]
+        # Session summaries expose aggregate metadata only; private conversation payloads stay hidden.
+        clauses = ["workspace_id=?", "session_id IS NOT NULL"]
         params: list[Any] = [workspace_id]
         if user_id is not None:
             clauses.append("user_id=?")

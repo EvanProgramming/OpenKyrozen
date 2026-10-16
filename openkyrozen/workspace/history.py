@@ -431,7 +431,7 @@ class HistoryManager:
                     session_id=self.session_id, expected_head=journal_head,
                     checkpoint=backfill_checkpoint,
                 )
-            except Exception:
+            except Exception as exc:
                 try:
                     self._restore(recovery)
                     if head_switched:
@@ -445,6 +445,9 @@ class HistoryManager:
                         )
                 except Exception as recovery_error:
                     raise HistoryError(f"rollback failed and recovery failed: {recovery_error}") from recovery_error
+                from openkyrozen.agent.conversation import ConversationHistoryError
+                if isinstance(exc, ConversationHistoryError):
+                    raise HistoryError("conversation changed during rollback; retry from the current head") from exc
                 raise
             return target, recovery
 

@@ -134,6 +134,7 @@ class AgentRuntime:
         _agent_prompt_tools_list,
         _system_prompt,
         _build_messages,
+        _refresh_tool_inventory,
     )
 
     # agent.session
@@ -295,6 +296,7 @@ class AgentRuntime:
         self._stable_prefix_info = ContextVar("stable_prefix_info", default={})
         self._context_history_metrics = ContextVar("context_history_metrics", default={})
         self._context_history_seen = ContextVar("context_history_seen", default=None)
+        self._context_history_projection_ids = ContextVar("context_history_projection_ids", default=None)
         self._conversation_expected_head = ContextVar("conversation_expected_head", default=None)
         self._sessions = {}
         self._workspaces = {workspace.root: workspace}
@@ -386,6 +388,7 @@ class AgentRuntime:
             conversation_head = self._conversation_expected_head.set(None)
             self._last_model_response.set(None)
             history_seen = self._context_history_seen.set(set())
+            history_projection = self._context_history_projection_ids.set(None)
             events = self._stream_event_callback.set(on_event)
             native_response = self._last_response_is_native.set(False)
             turn_failed = self._turn_failed.set(False)
@@ -430,6 +433,7 @@ class AgentRuntime:
                 self._conversation_turn_id.reset(conversation_turn)
                 self._conversation_expected_head.reset(conversation_head)
                 self._context_history_seen.reset(history_seen)
+                self._context_history_projection_ids.reset(history_projection)
 
     @property
     def conversation_history(self):

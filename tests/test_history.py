@@ -236,6 +236,20 @@ class HistoryManagerTests(unittest.TestCase):
         self.assertEqual(restored, [])
         self.assertEqual(self.manager.current()["id"], current["id"])
 
+    def test_stale_journal_head_is_reported_as_history_error(self):
+        from openkyrozen.agent.conversation import ConversationHistoryError
+
+        baseline = self.manager.ensure_root()
+        current = self.manager.commit_turn(
+            self.manager.begin_turn(conversation=[], interaction={}, tasks=[]),
+            user_message="current", assistant_message="answer", conversation=[], interaction={}, tasks=[],
+        )
+        with patch.object(self.store, "append_history_rollback",
+                          side_effect=ConversationHistoryError("stale journal head"), create=True):
+            with self.assertRaises(HistoryError) as raised:
+                self.manager.rollback(baseline["id"], confirm="rollback", expected_head=current["id"])
+        self.assertIsInstance(raised.exception.__cause__, ConversationHistoryError)
+
     def test_invalid_source_scope_cannot_escape_snapshot_root(self):
         with self.assertRaises(HistoryError):
             HistoryManager(self.store, self.root, self.state, source_scope_id=str(self.root), session_id="x")

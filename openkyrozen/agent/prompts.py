@@ -105,6 +105,42 @@ def _agent_prompt_tools_list(self, agent_config: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _refresh_tool_inventory(self, messages: list[dict[str, Any]]) -> None:
+    inventory = self._agent_prompt_tools_list(load_agent_config(self._get_workspace_root()))
+    markers = (
+        "## Available read-only tools\n", "## Available tools\n", "## Available Tools\n",
+        "Available read-only tools:\n",
+        "Here are the tools you can use. Make sure to pick an action name exactly as listed:\n",
+    )
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "system":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        for marker in markers:
+            start = content.find(marker)
+            if start < 0:
+                continue
+            body_start = start + len(marker)
+            end = content.find("\n## ", body_start)
+            if end < 0:
+                end = len(content)
+            message["content"] = content[:body_start] + inventory + content[end:]
+            break
+    import hashlib
+    import json
+    catalog = [(item.name, item.version, item.input_schema) for item in self.tool_registry.specs.values()]
+    stable = messages[0].get("content", "") if messages and isinstance(messages[0], dict) else ""
+    fingerprint = hashlib.sha256(json.dumps({
+        "instructions": stable, "catalog": catalog,
+        "capabilities": sorted(self._permitted_tool_names()),
+    }, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    self._stable_prefix_info.set({
+        **self._stable_prefix_info.get(), "fingerprint": fingerprint,
+    })
+
+
 def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = None) -> str:
     from openkyrozen.agent.delegation import GUIDANCE
     tools_list += "\n\n## Automatic sub-agent delegation\n" + GUIDANCE
@@ -427,17 +463,41 @@ def _build_messages(self, user_input: str, learned_context: str = "",
     if learned_context and self._active_interaction_mode.get() == "agent":
         messages.append({"role": "system", "content": learned_context})
 
-    history = retain_context_digests(
-        self.short_term_memory, self.SHORT_TERM_CAP * 2,
-    )
-    if not any(is_context_digest(msg) for msg in history):
+    history = retain_context_digests(self.short_term_memory, self.SHORT_TERM_CAP * 2)
+    history_entry_ids = None
+    native_entries = [entry for entry in self.conversation_history.active_entries()
+                      if entry.kind == "model.response"
+                      and (entry.payload.get("response", {}).get("tool_calls")
+                           or entry.payload.get("response", {}).get("continuation"))]
+    if native_entries:
+        continuation = native_entries[-1].payload["response"].get("continuation") or {}
+        provider = self.execution_context.provider or self.llm_provider
+        if provider is None:
+            raise ValueError("Native conversation history requires its original provider")
+        provider_id = continuation.get("provider_id")
+        if not hasattr(provider, "_primary"):
+            from openkyrozen.providers.models import provider_identity
+            provider_id = provider_identity(provider)
+        model = continuation.get("request_model", self.DEEPSEEK_MODEL) if hasattr(provider, "_primary") else self.DEEPSEEK_MODEL
+        history = self.conversation_history.provider_messages(
+            provider_id=provider_id, model=model,
+            exclude_turn_id=self._conversation_turn_id.get(),
+        )
+        history_entry_ids = history.entry_ids
+    elif not any(is_context_digest(msg) for msg in history):
         digest = self._restore_learning_context_digest()
         if digest:
             history.insert(0, digest)
+    history_start = len(messages)
     for msg in history:
         messages.append(msg)
 
     messages.append({"role": "user", "content": user_input})
+    self._context_history_projection_ids.set(
+        (id(messages), {history_start + index: entry_id for index, entry_id in enumerate(history_entry_ids)},
+         (history_start, history_start + len(history_entry_ids)))
+        if history_entry_ids is not None else None
+    )
 
     import hashlib
     import json

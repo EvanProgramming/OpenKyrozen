@@ -150,6 +150,34 @@ class ServerBoundaryTests(unittest.TestCase):
             {"role": "assistant", "content": "durable answer"},
         ])
 
+    def test_empty_canonical_web_branch_does_not_restore_legacy_events(self):
+        session_id = f"empty-branch-{uuid.uuid4().hex}"
+        original_sessions = server._sessions
+        server._sessions = {}
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                memory = MemoryBank(Path(directory) / "state.sqlite3", user_id=server._SERVER_ACTOR_ID,
+                                    workspace_id=server._agent.interaction_workspace_id())
+                with patch.object(server._agent.current_session, "memory", memory):
+                    bound = server._agent.open_session(session_id, user_id=server._SERVER_ACTOR_ID)
+                    with server._agent.use_session(bound):
+                        history = server._agent.conversation_history
+                        history.append(history.entry(
+                            "branch.selection", {"target_journal_head": None},
+                        ))
+                        server._agent.memory_bank.store.append_event(
+                            "session.message", {"role": "user", "content": "abandoned"},
+                            user_id=server._SERVER_ACTOR_ID,
+                            workspace_id=server._agent.interaction_workspace_id(), session_id=session_id,
+                        )
+                    session = server._get_or_create_session(session_id, server._SERVER_ACTOR_ID)
+                    self.assertEqual(session["messages"], [])
+        finally:
+            for key in list(server._agent._sessions):
+                if key[2] == session_id:
+                    server._agent._sessions.pop(key, None)
+            server._sessions = original_sessions
+
     def test_chat_interaction_controls_persist_and_restore_without_new_endpoint(self):
         client = TestClient(server.app)
         with tempfile.TemporaryDirectory() as directory:

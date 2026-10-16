@@ -98,7 +98,8 @@ def _get_or_create_session(self, session_id: str, user_id: str = "anonymous") ->
             bound = runtime.open_session(session_id, user_id=user_id)
             with runtime.use_session(bound):
                 messages = runtime.conversation_history.display_messages()
-            if not messages:
+                journal_head = runtime.conversation_history.head
+            if not messages and journal_head is None:
                 persisted = runtime.memory_bank.store.list_events(
                     event_type="session.message", limit=service._MAX_SESSION_MESSAGES,
                     workspace_id=runtime.memory_bank.workspace_id, session_id=session_id,

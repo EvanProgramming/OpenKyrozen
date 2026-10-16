@@ -110,6 +110,20 @@ class ConversationHistoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.history.provider_messages(provider_id="stub", model="m2")
 
+    def test_textless_failed_outcome_is_not_projected_as_blank_assistant(self):
+        self.history.append(self.history.entry("user.input", {"text": "question"}))
+        self.history.append(self.history.entry("turn.outcome", {
+            "status": "failed", "error_type": "ProviderError",
+        }))
+        self.assertEqual(self.history.display_messages(), [{"role": "user", "content": "question"}])
+
+    def test_journal_only_session_is_discoverable_without_exposing_payload(self):
+        self.history.append(self.history.entry("user.input", {"text": "private prompt"}))
+        sessions = self.store.list_sessions(workspace_id="project", user_id="alice")
+        self.assertEqual([item["session_id"] for item in sessions], ["session-a"])
+        self.assertNotIn("payload", sessions[0])
+        self.assertEqual(self.store.list_events(workspace_id="project", user_id="alice"), [])
+
     def test_workspace_checkpoint_links_private_journal_and_rollback_selects_branch(self):
         from openkyrozen.workspace.history import HistoryManager
         from openkyrozen.workspace.context import source_scope_id
@@ -151,6 +165,48 @@ class ConversationHistoryTests(unittest.TestCase):
 
 
 class ConversationRuntimeTests(unittest.TestCase):
+    def test_prompt_assembly_uses_correlated_native_history(self):
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.providers.models import ToolCall, ToolReply
+        from openkyrozen.tools import ToolAdapters
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
+            "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
+        }):
+            root = Path(temp)
+            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+                                    tools=ToolAdapters(root), user_id="alice")
+            try:
+                runtime = app.runtime
+                class Provider:
+                    name = "fixture"
+                runtime.llm_provider = Provider()
+                runtime.DEEPSEEK_MODEL = "m1"
+                history = runtime.conversation_history
+                from openkyrozen.providers.models import provider_identity
+                response = ModelResponse(
+                    "", tool_calls=(ToolCall("call-1", "read_file", {"path": "a"}),),
+                    finish_reason=FinishReason.TOOL_REQUEST,
+                    continuation=ProviderContinuation(provider_identity(runtime.llm_provider), "m1", "fixture", {"opaque": 1}),
+                )
+                history.append(history.entry("user.input", {"text": "old request"}))
+                history.append(history.entry("model.response", {
+                    "response": model_response_to_dict(response),
+                }, call_id="call-1"))
+                history.append(history.entry("tool.result", {
+                    "call_id": "call-1", "name": "read_file", "output": {
+                        "data": {"text": "file"}, "text": "file", "error": None, "metadata": {},
+                    }, "is_error": False,
+                }, call_id="call-1"))
+                messages = runtime._build_messages("next request")
+                self.assertTrue(any(isinstance(item, ModelResponse) for item in messages))
+                replies = [item for item in messages if isinstance(item, ToolReply)]
+                self.assertEqual([(item.call_id, item.output["text"]) for item in replies], [("call-1", "file")])
+                self.assertFalse(any(isinstance(item, dict) and item.get("content", "").startswith("Tool result (")
+                                     for item in messages))
+            finally:
+                app.close()
+
     def test_provider_error_is_not_journaled_as_a_completed_turn(self):
         from openkyrozen.app.bootstrap import build_application, build_memory
         from openkyrozen.tools import ToolAdapters
@@ -338,6 +394,10 @@ class ConversationRuntimeTests(unittest.TestCase):
                     metrics = runtime._context_history_metrics.get()
                     self.assertEqual(metrics["retransmitted_entry_count"], 2)
                     self.assertEqual(metrics["duplicate_entry_count"], 0)
+                    duplicate = [{"role": "user", "content": "old"}, {"role": "user", "content": "old"}]
+                    runtime._record_context_history_metrics(duplicate)
+                    self.assertEqual(runtime._context_history_metrics.get()["duplicate_entry_count"], 1)
+                    self.assertEqual(runtime._context_history_metrics.get()["retransmitted_entry_count"], 1)
                 self.assertEqual(sum(item["role"] == "user" and item["content"] == "fresh one" for item in first), 1)
                 self.assertEqual(sum(item["role"] == "user" and item["content"] == "fresh two" for item in second), 1)
             finally:

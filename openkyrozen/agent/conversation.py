@@ -11,6 +11,16 @@ from typing import Any
 _MISSING = object()
 
 
+class _ProviderProjection(list):
+    def __init__(self):
+        super().__init__()
+        self.entry_ids: list[str] = []
+
+    def append_entry(self, entry: ConversationEntry, message: Any) -> None:
+        self.append(message)
+        self.entry_ids.append(entry.id)
+
+
 class ConversationHistoryError(ValueError):
     """A journal write, read, or provider projection cannot be applied safely."""
 
@@ -151,35 +161,42 @@ class ConversationHistory:
             elif entry.kind == "legacy.assistant":
                 messages.append({"role": "assistant", "content": payload["text"]})
             elif entry.kind == "turn.outcome":
-                messages.append({"role": "assistant", "content": payload.get("text", "")})
+                text = payload.get("text")
+                if isinstance(text, str) and text:
+                    messages.append({"role": "assistant", "content": text})
         return messages
 
-    def provider_messages(self, *, provider_id: str, model: str, native: bool = True) -> list[Any]:
+    def provider_messages(self, *, provider_id: str, model: str, native: bool = True,
+                          exclude_turn_id: str | None = None) -> list[Any]:
         from openkyrozen.providers.models import ToolReply, validate_tool_history
-        messages = []
+        messages = _ProviderProjection()
         pending_calls = []
         for entry in self.active_entries():
+            if exclude_turn_id is not None and entry.turn_id == exclude_turn_id:
+                continue
             payload = entry.payload
             if entry.kind == "user.input":
-                messages.append({"role": "user", "content": payload["text"]})
+                messages.append_entry(entry, {"role": "user", "content": payload["text"]})
+            elif entry.kind == "legacy.assistant":
+                messages.append_entry(entry, {"role": "assistant", "content": payload["text"]})
             elif entry.kind == "model.response":
                 response = model_response_from_dict(payload["response"])
                 if response.continuation is None and not response.tool_calls:
-                    messages.append({"role": "assistant", "content": response.text})
+                    messages.append_entry(entry, {"role": "assistant", "content": response.text})
                 else:
-                    messages.append(response)
+                    messages.append_entry(entry, response)
                     pending_calls.extend(response.tool_calls)
             elif entry.kind == "tool.result":
                 call_id = payload.get("call_id")
                 if native and pending_calls:
-                    messages.append(ToolReply(
+                    messages.append_entry(entry, ToolReply(
                         call_id, payload["name"], payload["output"], payload.get("is_error", False),
                     ))
                     if pending_calls[0].id == call_id:
                         pending_calls.pop(0)
                 else:
                     output = payload.get("output", {})
-                    messages.append({"role": "user", "content": (
+                    messages.append_entry(entry, {"role": "user", "content": (
                         f"Tool result ({payload.get('name', 'tool')}): {output.get('text', '')}"
                     )})
         validate_tool_history(messages, provider_id=provider_id, model=model, native=native)

@@ -227,6 +227,8 @@ def _execute_action_rounds(self, turn):
         # Observe this response once.  The same parsed result drives task
         # updates, unknown-action handling, loop control, and final rendering.
         step_reply, step_meta = self._observe_turn_response(turn, step_reply, summary_messages)
+        if step_meta["define_tool_registered"]:
+            self._refresh_tool_inventory(summary_messages)
         step_reply, step_meta, plan_recovery_exhausted = self._recover_plan_response(turn,
             step_reply, step_meta, summary_messages,
             inspection_complete=bool(turn.tool_records),
@@ -267,6 +269,8 @@ def _execute_action_rounds(self, turn):
             if not step_reply:
                 continue
             step_reply, step_meta = self._observe_turn_response(turn, step_reply, summary_messages)
+            if step_meta["define_tool_registered"]:
+                self._refresh_tool_inventory(summary_messages)
             next_tool_calls = step_meta["tool_calls"]
             if step_meta["protocol_error"]:
                 turn.protocol_error_message = step_meta["protocol_error"]
@@ -302,6 +306,8 @@ def _execute_action_rounds(self, turn):
                 break
             # Re-observe the replacement response exactly once.
             step_reply, step_meta = self._observe_turn_response(turn, step_reply, summary_messages)
+            if step_meta["define_tool_registered"]:
+                self._refresh_tool_inventory(summary_messages)
             next_tool_calls = step_meta["tool_calls"]
             if step_meta["protocol_error"]:
                 turn.protocol_error_message = step_meta["protocol_error"]
@@ -374,6 +380,8 @@ def _execute_action_rounds(self, turn):
                 if not step_reply:
                     break
                 step_reply, step_meta = self._observe_turn_response(turn, step_reply, summary_messages)
+                if step_meta["define_tool_registered"]:
+                    self._refresh_tool_inventory(summary_messages)
                 next_tool_calls = step_meta["tool_calls"]
                 if step_meta["protocol_error"]:
                     turn.protocol_error_message = step_meta["protocol_error"]
@@ -402,6 +410,8 @@ def _execute_action_rounds(self, turn):
                 if not step_reply:
                     break
                 step_reply, step_meta = self._observe_turn_response(turn, step_reply, summary_messages)
+                if step_meta["define_tool_registered"]:
+                    self._refresh_tool_inventory(summary_messages)
                 next_tool_calls = step_meta["tool_calls"]
                 if step_meta["protocol_error"]:
                     turn.protocol_error_message = step_meta["protocol_error"]

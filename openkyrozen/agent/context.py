@@ -37,7 +37,8 @@ def _record_context_history_metrics(self, messages: list[dict[str, Any]]) -> Non
 
     entries = self.conversation_history.active_entries()
     visible: dict[tuple[str, str], int] = {}
-    for message in messages:
+    message_keys: dict[int, tuple[str, str]] = {}
+    for index, message in enumerate(messages):
         if isinstance(message, dict) and message.get("role") in {"user", "assistant"} and isinstance(message.get("content"), str):
             key = (message["role"], message["content"])
             visible[key] = visible.get(key, 0) + 1
@@ -49,7 +50,10 @@ def _record_context_history_metrics(self, messages: list[dict[str, Any]]) -> Non
                                                "output": message.output, "is_error": message.is_error},
                                               sort_keys=True, ensure_ascii=False))
             visible[key] = visible.get(key, 0) + 1
-    history_entries = []
+        else:
+            continue
+        message_keys[index] = key
+    entries_by_key: dict[tuple[str, str], list[str]] = {}
     active_turn_id = self._conversation_turn_id.get()
     for entry in entries:
         if active_turn_id is not None and entry.turn_id == active_turn_id:
@@ -67,24 +71,42 @@ def _record_context_history_metrics(self, messages: list[dict[str, Any]]) -> Non
                                               sort_keys=True, ensure_ascii=False))
         else:
             continue
-        if visible.get(key, 0):
-            history_entries.append(entry)
-            visible[key] -= 1
+        entries_by_key.setdefault(key, []).append(entry.id)
+    projection = self._context_history_projection_ids.get()
+    if projection is not None and projection[0] == id(messages):
+        history_ids = [entry_id for _, entry_id in sorted(projection[1].items())]
+        start, end = projection[2]
+        mapped = set(projection[1])
+        for index, key in message_keys.items():
+            identities = entries_by_key.get(key, [])
+            if start <= index < end and index not in mapped and identities:
+                history_ids.append(identities[-1])
+    else:
+        history_ids = []
+        for key, count in visible.items():
+            identities = entries_by_key.get(key, [])
+            if not identities:
+                continue
+            history_ids.extend(identities[:count])
+            if count > len(identities):
+                history_ids.extend([identities[-1]] * (count - len(identities)))
     seen = self._context_history_seen.get()
     if seen is None:
         seen = set()
         self._context_history_seen.set(seen)
-    history_ids = [entry.id for entry in history_entries]
+    unique_history_ids = set(history_ids)
+    new_ids = unique_history_ids - seen
+    retransmitted_ids = unique_history_ids & seen
     entry_tokens = {entry.id: max(1, (len(json.dumps(entry.payload, ensure_ascii=False)) + 3) // 4)
-                    for entry in history_entries}
+                    for entry in entries if entry.id in history_ids}
     self._context_history_metrics.set({
-        "new_entry_count": sum(entry_id not in seen for entry_id in history_ids),
-        "retransmitted_entry_count": sum(entry_id in seen for entry_id in history_ids),
+        "new_entry_count": len(new_ids),
+        "retransmitted_entry_count": len(retransmitted_ids),
         "duplicate_entry_count": len(history_ids) - len(set(history_ids)),
-        "new_context_tokens": sum(entry_tokens[item] for item in history_ids if item not in seen),
-        "retransmitted_history_tokens": sum(entry_tokens[item] for item in history_ids if item in seen),
+        "new_context_tokens": sum(entry_tokens[item] for item in new_ids),
+        "retransmitted_history_tokens": sum(entry_tokens[item] for item in retransmitted_ids),
     })
-    seen.update(history_ids)
+    seen.update(unique_history_ids)
 
 
 def _save_learning_context_digest(self, digest: dict[str, Any] | None) -> None:
