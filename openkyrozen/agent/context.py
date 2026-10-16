@@ -152,6 +152,27 @@ def _cache_reported_context_tokens(self, messages: list[dict], prompt_tokens: in
             counts.pop(next(iter(counts)))
 
 
+def _update_context_history_projection(self, messages: list[Any], previous: list[Any]) -> None:
+    projection = self._context_history_projection_ids.get()
+    if projection is None or projection[0] != id(messages):
+        return
+    retained_positions = {}
+    for index, message in enumerate(messages):
+        retained_positions.setdefault(id(message), []).append(index)
+    remapped = {}
+    for old_index, entry_id in projection[1].items():
+        if old_index >= len(previous):
+            continue
+        positions = retained_positions.get(id(previous[old_index]), [])
+        if positions:
+            remapped[positions.pop(0)] = entry_id
+    if remapped:
+        bounds = (min(remapped), max(remapped) + 1)
+    else:
+        bounds = (0, 0)
+    self._context_history_projection_ids.set((id(messages), remapped, bounds))
+
+
 def _is_context_overflow_error(self, exc: Exception) -> bool:
     from openkyrozen.providers.errors import legacy_context_overflow
     return legacy_context_overflow(exc)
@@ -185,7 +206,9 @@ def _prepare_context_for_call(self, messages: list[dict], model: str | None = No
         messages, state,
         lambda text, output_chars: self._summarize_context_with_chat_model(text, output_chars, model or state.model),
     )
+    previous_messages = list(messages)
     messages[:] = result.messages
+    _update_context_history_projection(self, messages, previous_messages)
     if result.history_digest is not None:
         retained_ids = {id(item) for item in messages}
         retained_history = [item for item in self.short_term_memory if id(item) in retained_ids]
@@ -212,7 +235,9 @@ def _recover_context_after_overflow(self, messages: list[dict], model: str | Non
         lambda text, output_chars: self._summarize_context_with_chat_model(text, output_chars, model or state.model),
         force=True,
     )
+    previous_messages = list(messages)
     messages[:] = result.messages
+    _update_context_history_projection(self, messages, previous_messages)
     if result.history_digest is not None:
         retained_ids = {id(item) for item in messages}
         retained_history = [item for item in self.short_term_memory if id(item) in retained_ids]

@@ -89,6 +89,70 @@ class ConversationHistoryTests(unittest.TestCase):
         self.assertIn(first.id, [entry.id for entry in self.history.entries()])
         self.assertEqual(self.history.display_messages(), [{"role": "user", "content": "replacement"}])
 
+    def test_legacy_replacement_commits_branch_and_entries_atomically(self):
+        first = self.history.entry("user.input", {"text": "old"})
+        self.history.append(first)
+        original_head = self.history.head
+        encode = self.store.database._json
+        count = 0
+
+        def fail_second_entry(value):
+            nonlocal count
+            count += 1
+            if count == 2:
+                raise RuntimeError("simulated serialization failure")
+            return encode(value)
+
+        with patch.object(self.store.database, "_json", side_effect=fail_second_entry):
+            with self.assertRaisesRegex(RuntimeError, "serialization failure"):
+                self.history.reconcile_legacy([
+                    {"role": "user", "content": "replacement"},
+                    {"role": "assistant", "content": "answer"},
+                ])
+        self.assertEqual(self.history.head, original_head)
+        self.assertEqual(self.history.display_messages(), [{"role": "user", "content": "old"}])
+
+    def test_context_metrics_drop_compacted_native_history_entries(self):
+        from types import SimpleNamespace
+        from openkyrozen.agent.compaction import ContextState
+        from openkyrozen.agent.context import _prepare_context_for_call, _record_context_history_metrics
+        from openkyrozen.providers.models import ModelResponse
+
+        first = self.history.entry("model.response", {
+            "response": model_response_to_dict(ModelResponse(text="first")),
+        })
+        self.history.append(first)
+        second = self.history.entry("model.response", {
+            "response": model_response_to_dict(ModelResponse(text="second")),
+        })
+        self.history.append(second)
+        retained = ModelResponse(text="second")
+        messages = [ModelResponse(text="first"), retained]
+
+        from contextvars import ContextVar
+        from types import SimpleNamespace
+        runtime = SimpleNamespace(
+            _active_context_state=ContextVar("active_context", default=ContextState("fixture")),
+            _in_context_compaction=ContextVar("in_compaction", default=False),
+            _context_history_projection_ids=ContextVar("projection", default=None),
+            conversation_history=self.history,
+            _conversation_turn_id=ContextVar("turn_id", default=None),
+            _context_history_seen=ContextVar("seen", default=set()),
+            _context_history_metrics=ContextVar("metrics", default={}),
+            short_term_memory=[],
+            _store_context_status=lambda _state: None,
+            _load_reported_context_tokens=lambda _state: None,
+            _summarize_context_with_chat_model=lambda *_args: None,
+        )
+        runtime._context_history_projection_ids.set((id(messages), {0: first.id, 1: second.id}, (0, 2)))
+        result = SimpleNamespace(messages=[retained], history_digest=None, compacted=True, impossible=False)
+        with patch("openkyrozen.agent.context.compact_for_pressure", return_value=result):
+            _prepare_context_for_call(runtime, messages)
+        _record_context_history_metrics(runtime, messages)
+        metrics = runtime._context_history_metrics.get()
+        self.assertEqual(metrics["new_entry_count"], 1)
+        self.assertEqual(metrics["duplicate_entry_count"], 0)
+
     def test_native_provider_projection_round_trips_continuation_and_results(self):
         response = ModelResponse(
             text="", tool_calls=(ToolCall("call-1", "read_file", {"path": "a|b"}),),

@@ -243,13 +243,18 @@ class ConversationHistory:
         branch = self.entry("branch.selection", {
             "target_journal_head": None, "reason": "legacy_message_list_replaced",
         }, parent_id=parent)
-        self.append(branch, expected_head=parent)
+        entries = [branch]
+        parent_id = branch.id
         for index, message in enumerate(normalized):
             kind = "user.input" if message["role"] == "user" else "legacy.assistant"
             entry = self.entry(kind, {
                 "text": message.get("content", ""), "provenance": "legacy_replacement", "index": index,
-            })
-            self.append(entry, expected_head=entry.parent_id)
+            }, parent_id=parent_id)
+            entries.append(entry)
+            parent_id = entry.id
+        self.store.append_conversation_entries(
+            [entry.as_dict() for entry in entries], expected_head=parent,
+        )
 
 
 def model_response_to_dict(response) -> dict[str, Any]:
