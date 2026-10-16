@@ -16,3 +16,5 @@
 - [V3 #255 — Shared typed runtime events](2026-10-14-v3-issue-255.md)
 
 Add a linked issue-specific plan here before coding any later V3 issue.
+
+- [V3 #246 — Reapproval for material Strategic Plan revisions](2026-10-16-v3-issue-246.md)
