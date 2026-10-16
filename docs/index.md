@@ -37,6 +37,7 @@ This index covers the current product guides, developer references, and dated en
 - [V3 structured provider streaming plan](superpowers/plans/2026-10-12-v3-issue-230.md) records typed stream events, adapter integration, terminal-state guarantees, and validation for issue #230.
 - [V3 SQLite migration plan](superpowers/plans/2026-10-14-v3-issue-264.md) records ordered schema migrations, backups, persisted approval history, and verification for issue #264.
 - [V3 Working Plan contract](superpowers/plans/2026-10-14-v3-issue-241.md) records plan ownership, complexity policy, lifecycle, persistence, and verification for issue #241.
+- [V3 atomic Working Plan edits](superpowers/plans/2026-10-16-v3-issue-242.md) records revision-checked operations, atomic persistence, ordering, dependencies, and validation for issue #242.
 - [V3 plan index](superpowers/plans/index.md) links the issue-specific implementation plans and identifies their coverage.
 - [V3 execution receipt implementation plan](superpowers/plans/2026-10-14-v3-issue-236.md) records receipt identity, explicit task binding, structured effect verification, compatibility, and validation for issue #236.
 - [V3 runtime events implementation plan](superpowers/plans/2026-10-14-v3-issue-255.md) records the canonical event contract, correlation, interface adapters, and validation for issue #255.

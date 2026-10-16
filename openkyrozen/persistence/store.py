@@ -176,6 +176,13 @@ class EventStore:
             plan, tasks, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
         )
 
+    def apply_working_plan_edit(self, plan, tasks, *, expected_revision, expected_tasks,
+                                user_id, workspace_id, session_id):
+        return self.tasks.apply_working_plan_edit(
+            plan, tasks, expected_revision=expected_revision, expected_tasks=expected_tasks,
+            user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+        )
+
     def claim_task(self, *, user_id, workspace_id, session_id):
         return self.tasks.claim_task(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
 

@@ -116,8 +116,49 @@ _SCHEMAS = {'read_file': {'properties': {'path': {'type': 'string'}},
                    'type': 'object',
                    'additionalProperties': False}}
 
+_PLAN_EXECUTION_SCHEMA = {'type':'object','properties':{
+    'action': {'type':'string','minLength':1},
+    'arguments': {'type':'object','properties':{},'additionalProperties':True},
+},'required':['action','arguments'],'additionalProperties':False}
+_PLAN_TASK_SCHEMA = {'type':'object','properties':{
+    'description': {'type':'string','minLength':1},
+    'acceptance': {'type':'array','items':{'type':'string','minLength':1}},
+    'dependencies': {'type':'array','items':{'type':'string','minLength':1}},
+    'priority': {'type':'integer'},
+    'execution': _PLAN_EXECUTION_SCHEMA,
+},'required':['description','acceptance'],'additionalProperties':False}
+_PLAN_UPDATE_FIELDS_SCHEMA = {'type':'object','properties':{
+    'description': {'type':'string','minLength':1},
+    'acceptance': {'type':'array','items':{'type':'string','minLength':1}},
+    'dependencies': {'type':'array','items':{'type':'string','minLength':1}},
+    'priority': {'type':'integer'},
+    'execution': _PLAN_EXECUTION_SCHEMA,
+},'minProperties':1,'additionalProperties':False}
+_PLAN_OPERATION_SCHEMAS = [
+    {'type':'object','properties':{'op':{'type':'string','enum':['add']},
+        'ref':{'type':'string','minLength':1},'task':_PLAN_TASK_SCHEMA},
+        'required':['op','ref','task'],'additionalProperties':False},
+    {'type':'object','properties':{'op':{'type':'string','enum':['update']},
+        'task':{'type':'string','minLength':1},'fields':_PLAN_UPDATE_FIELDS_SCHEMA},
+        'required':['op','task','fields'],'additionalProperties':False},
+    {'type':'object','properties':{'op':{'type':'string','enum':['cancel']},
+        'task':{'type':'string','minLength':1}},'required':['op','task'],'additionalProperties':False},
+    {'type':'object','properties':{'op':{'type':'string','enum':['reorder']},
+        'tasks':{'type':'array','items':{'type':'string','minLength':1},'minItems':1}},
+        'required':['op','tasks'],'additionalProperties':False},
+    {'type':'object','properties':{'op':{'type':'string','enum':['add_dependency']},
+        'task':{'type':'string','minLength':1},'depends_on':{'type':'string','minLength':1}},
+        'required':['op','task','depends_on'],'additionalProperties':False},
+    {'type':'object','properties':{'op':{'type':'string','enum':['remove_dependency']},
+        'task':{'type':'string','minLength':1},'depends_on':{'type':'string','minLength':1}},
+        'required':['op','task','depends_on'],'additionalProperties':False},
+]
+
 _OBJECT_FIELDS = {
     'update_plan': {'complexity': {'type':'string','enum':['simple','medium','complex']},
+                    'plan_id': {'type':'string','minLength':1},
+                    'expected_revision': {'type':'integer','minimum':0},
+                    'operations': {'type':'array','items':{'anyOf':_PLAN_OPERATION_SCHEMAS}},
                     'tasks': {'type':'array','minItems':1,'items':{'type':'object','properties':{
                         'id': {'type':'string','minLength':1},
                         'description': {'type':'string','minLength':1},
@@ -159,7 +200,7 @@ _OBJECT_FIELDS = {
 }
 for _name, _properties in _OBJECT_FIELDS.items():
     _required = {
-        'update_plan': ['complexity', 'tasks'],
+        'update_plan': [],
         'read_file': ['path'], 'find_files': ['pattern'], 'write_file': ['path', 'content'],
         'run_cmd': ['command'], 'execute_terminal_command': ['command'], 'search_web': ['query'],
         'search_files': ['query'],
@@ -173,6 +214,16 @@ for _name, _properties in _OBJECT_FIELDS.items():
         'graph_explain': ['symbol'], 'graph_path': ['source', 'target'],
     }.get(_name, [])
     _SCHEMAS[_name] = {'type':'object','properties':_properties,'required':_required,'additionalProperties':False}
+
+_SCHEMAS['update_plan']['anyOf'] = [
+    {'type': 'object', 'properties': {key: _OBJECT_FIELDS['update_plan'][key]
+                                      for key in ('operations', 'expected_revision', 'plan_id', 'complexity')},
+     'required': ['operations', 'expected_revision'], 'additionalProperties': False},
+    {'type': 'object', 'properties': {key: _OBJECT_FIELDS['update_plan'][key]
+                                      for key in ('complexity', 'tasks')},
+     'required': ['complexity', 'tasks'], 'additionalProperties': False},
+]
+
 
 
 def builtin_names(owner=None):

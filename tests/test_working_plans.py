@@ -15,6 +15,252 @@ from openkyrozen.tools.models import ToolResult
 
 
 class WorkingPlanModelTests(unittest.TestCase):
+    def test_ordered_plan_edits_create_and_revise_at_expected_revision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="atomic-create")
+
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "inspect", "task": {
+                    "description": "Inspect workspace", "acceptance": ["files identified"],
+                }},
+                {"op": "add", "ref": "test", "task": {
+                    "description": "Run tests", "acceptance": ["tests pass"],
+                }},
+                {"op": "add_dependency", "task": "test", "depends_on": "inspect"},
+            ])
+
+            self.assertEqual(created["revision"], 1)
+            self.assertEqual(len(created["tasks"]), 2)
+            self.assertNotEqual(created["references"]["inspect"], created["references"]["test"])
+            self.assertEqual(created["tasks"][1]["dependencies"], [created["references"]["inspect"]])
+            revised = manager.edit_plan(
+                plan_id=created["plan_id"], expected_revision=1, complexity="complex",
+                operations=[{"op": "reorder", "tasks": [created["references"]["test"],
+                                                               created["references"]["inspect"]]}],
+            )
+            self.assertEqual(revised["revision"], 2)
+            self.assertEqual([task["id"] for task in revised["tasks"]], [
+                created["references"]["test"], created["references"]["inspect"],
+            ])
+            recovered = TaskManager(store, workspace_id="project", session_id="atomic-create")
+            recovered.recover()
+            self.assertEqual(recovered.working_plan.revision, 2)
+            self.assertEqual(list(recovered.working_plan.task_ids), [
+                created["references"]["test"], created["references"]["inspect"],
+            ])
+
+    def test_stale_or_invalid_plan_edit_leaves_database_and_memory_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="stale-edit")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {
+                    "description": "First", "acceptance": ["done"],
+                }},
+            ])
+            memory_before = (manager.working_plan, [dict(task) for task in manager.tasks])
+            with self.assertRaisesRegex(ValueError, "revision"):
+                manager.edit_plan(plan_id=created["plan_id"], expected_revision=0,
+                                  complexity="complex", operations=[{"op": "add", "ref": "stale", "task": {
+                                      "description": "Stale", "acceptance": ["must not persist"],
+                                  }}])
+            with self.assertRaisesRegex(ValueError, "empty"):
+                manager.edit_plan(plan_id=created["plan_id"], expected_revision=1,
+                                  complexity="complex", operations=[])
+            with self.assertRaisesRegex(ValueError, "dependency"):
+                manager.edit_plan(plan_id=created["plan_id"], expected_revision=1, complexity="complex", operations=[
+                    {"op": "add_dependency", "task": "first", "depends_on": "missing"},
+                ])
+            self.assertEqual(manager.working_plan, memory_before[0])
+            self.assertEqual(manager.tasks, memory_before[1])
+            self.assertEqual(store.get_working_plan(
+                user_id="local", workspace_id="project", session_id="stale-edit",
+            )["revision"], 1)
+            self.assertEqual(len(store.list_working_plan_tasks(
+                created["plan_id"], user_id="local", workspace_id="project", session_id="stale-edit",
+            )), 1)
+
+    def test_plan_edit_rejects_incomplete_reorder_and_dependency_cycles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="invalid-edits")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "a", "task": {"description": "A", "acceptance": ["A"]}},
+                {"op": "add", "ref": "b", "task": {"description": "B", "acceptance": ["B"]}},
+                {"op": "add_dependency", "task": "b", "depends_on": "a"},
+            ])
+            with self.assertRaisesRegex(ValueError, "reorder"):
+                manager.edit_plan(plan_id=created["plan_id"], expected_revision=1, complexity="complex", operations=[
+                    {"op": "reorder", "tasks": [created["references"]["a"]]},
+                ])
+            with self.assertRaisesRegex(ValueError, "cycle"):
+                manager.edit_plan(plan_id=created["plan_id"], expected_revision=1, complexity="complex", operations=[
+                    {"op": "add_dependency", "task": created["references"]["a"],
+                     "depends_on": created["references"]["b"]},
+                ])
+            self.assertEqual(manager.working_plan.revision, 1)
+
+    def test_update_cancel_and_remove_dependency_operations_preserve_task_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="mutations")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
+                {"op": "add", "ref": "second", "task": {"description": "Second", "acceptance": ["second"]}},
+                {"op": "add_dependency", "task": "second", "depends_on": "first"},
+            ])
+            first_id, second_id = created["references"]["first"], created["references"]["second"]
+            revised = manager.edit_plan(plan_id=created["plan_id"], expected_revision=1, operations=[
+                {"op": "update", "task": first_id, "fields": {"description": "Inspect first"}},
+                {"op": "remove_dependency", "task": second_id, "depends_on": first_id},
+                {"op": "cancel", "task": second_id},
+            ])
+            self.assertEqual(revised["revision"], 2)
+            self.assertEqual(revised["tasks"][0]["description"], "Inspect first")
+            self.assertEqual(revised["tasks"][1]["id"], second_id)
+            self.assertEqual(revised["tasks"][1]["dependencies"], [])
+            self.assertEqual(revised["tasks"][1]["status"], "cancelled")
+
+    def test_plan_edits_preserve_evidence_and_require_new_task_for_changed_work(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="retain-evidence")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {"description": "Inspect", "acceptance": ["files listed"]}},
+            ])
+            task_id = created["references"]["first"]
+            evidence = manager.record_evidence(task_id=task_id, action="list_dir", result="src", success=True)
+            with self.assertRaisesRegex(ValueError, "new task"):
+                manager.edit_plan(plan_id=created["plan_id"], expected_revision=1, operations=[
+                    {"op": "update", "task": task_id, "fields": {"description": "Inspect another directory"}},
+                ])
+            revised = manager.edit_plan(plan_id=created["plan_id"], expected_revision=1, operations=[
+                {"op": "add", "ref": "second", "task": {"description": "Inspect another directory",
+                                                               "acceptance": ["second directory listed"]}},
+            ])
+            self.assertEqual(revised["tasks"][0]["id"], task_id)
+            self.assertEqual(revised["tasks"][0]["evidence"], [evidence])
+            self.assertEqual(revised["tasks"][0]["status"], "pending")
+
+    def test_executed_task_dependencies_cannot_be_changed_in_place(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="executed-dependency")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
+                {"op": "add", "ref": "second", "task": {"description": "Second", "acceptance": ["second"]}},
+            ])
+            task_id = created["references"]["first"]
+            manager.record_evidence(task_id=task_id, action="read_file", result="read", success=True,
+                                    acceptance="first")
+            with self.assertRaisesRegex(ValueError, "executed task"):
+                manager.edit_plan(plan_id=created["plan_id"], expected_revision=1, operations=[
+                    {"op": "add_dependency", "task": task_id, "depends_on": created["references"]["second"]},
+                ])
+            self.assertEqual(manager.working_plan.revision, 1)
+            self.assertEqual(manager.tasks[0]["dependencies"], [])
+            self.assertTrue(manager.tasks[0]["evidence"])
+
+    def test_duplicate_batch_references_are_rejected_before_plan_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="duplicate-refs")
+            with self.assertRaisesRegex(ValueError, "unique"):
+                manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                    {"op": "add", "ref": "same", "task": {"description": "A", "acceptance": ["A"]}},
+                    {"op": "add", "ref": "same", "task": {"description": "B", "acceptance": ["B"]}},
+                ])
+            self.assertIsNone(store.get_working_plan(
+                user_id="local", workspace_id="project", session_id="duplicate-refs",
+            ))
+
+    def test_plan_claim_order_honors_reorder_and_unsatisfied_prerequisites(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="claim-order")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
+                {"op": "add", "ref": "second", "task": {"description": "Second", "acceptance": ["second"]}},
+                {"op": "add_dependency", "task": "second", "depends_on": "first"},
+            ])
+            first_id, second_id = created["references"]["first"], created["references"]["second"]
+            self.assertEqual(manager.claim_next()["id"], first_id)
+            self.assertTrue(manager.set_status(0, "failed"))
+            self.assertIsNone(manager.claim_next())
+            self.assertEqual(store.list_working_plan_tasks(
+                created["plan_id"], user_id="local", workspace_id="project", session_id="claim-order",
+            )[1]["status"], "pending")
+
+    def test_reordered_ready_tasks_claim_in_explicit_plan_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="reorder-claim")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "a", "task": {"description": "A", "acceptance": ["A"]}},
+                {"op": "add", "ref": "b", "task": {"description": "B", "acceptance": ["B"]}},
+                {"op": "reorder", "tasks": ["b", "a"]},
+            ])
+            self.assertEqual(manager.claim_next()["id"], created["references"]["b"])
+
+    def test_legacy_done_dependency_counts_as_satisfied(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="legacy-done")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
+                {"op": "add", "ref": "second", "task": {"description": "Second", "acceptance": ["second"]}},
+                {"op": "add_dependency", "task": "second", "depends_on": "first"},
+            ])
+            first_id, second_id = created["references"]["first"], created["references"]["second"]
+            with store.database.connection() as db:
+                db.execute("UPDATE tasks SET status='done' WHERE id=?", (first_id,))
+            self.assertEqual(manager.claim_next()["id"], second_id)
+
+    def test_edit_rejects_progress_changed_after_candidate_was_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="claim-race")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
+            ])
+            original_apply = store.apply_working_plan_edit
+            def claim_before_commit(*args, **kwargs):
+                store.claim_task(user_id="local", workspace_id="project", session_id="claim-race")
+                return original_apply(*args, **kwargs)
+            store.apply_working_plan_edit = claim_before_commit
+            with self.assertRaisesRegex(ValueError, "progress changed"):
+                manager.edit_plan(plan_id=created["plan_id"], expected_revision=1, complexity="complex", operations=[
+                    {"op": "add", "ref": "second", "task": {"description": "Second", "acceptance": ["second"]}},
+                ])
+            self.assertEqual(manager.working_plan.revision, 1)
+            self.assertEqual(len(manager.working_plan.task_ids), 1)
+            self.assertEqual(len(store.list_working_plan_tasks(
+                created["plan_id"], user_id="local", workspace_id="project", session_id="claim-race",
+            )), 1)
+
+    def test_edit_storage_failure_rolls_back_plan_tasks_and_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="edit-failure")
+            original_json = store.database._json
+            def fail_plan_event(value):
+                if isinstance(value, dict) and value.get("revision") == 1 and value.get("plan_id"):
+                    raise OSError("injected event failure")
+                return original_json(value)
+            store.database._json = fail_plan_event
+            with self.assertRaisesRegex(OSError, "event failure"):
+                manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                    {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
+                ])
+            store.database._json = original_json
+            self.assertIsNone(manager.working_plan)
+            self.assertIsNone(store.get_working_plan(
+                user_id="local", workspace_id="project", session_id="edit-failure",
+            ))
+            self.assertEqual(store.list_tasks(user_id="local", workspace_id="project", session_id="edit-failure"), [])
+            self.assertEqual(store.list_events(user_id="local", workspace_id="project", session_id="edit-failure"), [])
+
     def test_complexity_policy_only_requires_a_plan_for_complex_work(self):
         self.assertFalse(requires_working_plan("simple"))
         self.assertFalse(requires_working_plan("medium"))
@@ -102,15 +348,22 @@ class WorkingPlanModelTests(unittest.TestCase):
                 {"id": plan.task_ids[1], "description": "Run the focused checks", "acceptance": ["tests pass"]},
             ])
             self.assertEqual(manager.tasks[0]["status"], "running")
+            with self.assertRaisesRegex(ValueError, "executed task"):
+                manager.update_plan(complexity="complex", tasks=[
+                    {"id": first_task_id, "description": "Inspect the current workspace", "acceptance": ["record relevant files"]},
+                    {"id": plan.task_ids[1], "description": "Run focused checks", "acceptance": ["tests pass"]},
+                ])
+            self.assertTrue(manager.set_status(0, "cancelled"))
             revised = manager.update_plan(complexity="complex", tasks=[
-                {"id": first_task_id, "description": "Inspect the current workspace", "acceptance": ["record relevant files"]},
-                {"id": plan.task_ids[1], "description": "Run focused checks", "acceptance": ["tests pass"]},
+                {"id": first_task_id, "description": "Inspect the workspace", "acceptance": ["identify relevant files"]},
+                {"id": plan.task_ids[1], "description": "Run the focused checks", "acceptance": ["tests pass"]},
+                {"description": "Inspect the current workspace", "acceptance": ["record relevant files"]},
             ])
             self.assertEqual(revised.id, plan.id)
             self.assertEqual(revised.task_ids[0], first_task_id)
-            self.assertEqual(manager.tasks[0]["status"], "pending")
+            self.assertEqual(manager.tasks[0]["status"], "cancelled")
             self.assertEqual(manager.tasks[0]["evidence"], [])
-            self.assertEqual(manager.tasks[0]["acceptance"], ["record relevant files"])
+            self.assertEqual(manager.tasks[2]["acceptance"], ["record relevant files"])
 
             recovered = TaskManager(store, workspace_id="project", session_id="plan")
             recovered.recover()
@@ -206,7 +459,7 @@ class WorkingPlanModelTests(unittest.TestCase):
     def test_migration_version_includes_working_plan_schema(self):
         with tempfile.TemporaryDirectory() as directory:
             database = SQLiteDatabase(Path(directory) / "state.sqlite3")
-            self.assertEqual(database.SCHEMA_VERSION, 4)
+            self.assertEqual(database.SCHEMA_VERSION, 5)
             with database.connection() as db:
                 self.assertIsNotNone(db.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='working_plans'"
@@ -214,6 +467,26 @@ class WorkingPlanModelTests(unittest.TestCase):
                 self.assertIsNotNone(db.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='working_plan_tasks'"
                 ).fetchone())
+                self.assertIn("revision", {row["name"] for row in db.execute("PRAGMA table_info(working_plans)")})
+
+    def test_schema_four_working_plan_is_upgraded_without_losing_tasks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            store = EventStore(path)
+            manager = TaskManager(store, workspace_id="project", session_id="schema-four")
+            plan = manager.update_plan(complexity="complex", tasks=[
+                {"description": "Preserve me", "acceptance": ["still present"]},
+            ])
+            with store.database.connection() as db:
+                db.execute("ALTER TABLE working_plans DROP COLUMN revision")
+                db.execute("DELETE FROM schema_migrations WHERE version=5")
+            migrated = SQLiteDatabase(path)
+            recovered = TaskManager(EventStore(path), workspace_id="project", session_id="schema-four")
+            recovered.recover()
+            self.assertEqual(recovered.working_plan.id, plan.id)
+            self.assertEqual(recovered.working_plan.revision, 0)
+            self.assertEqual(recovered.tasks[0]["description"], "Preserve me")
+            self.assertEqual(migrated.SCHEMA_VERSION, 5)
 
     def test_update_plan_is_a_typed_registry_tool_with_object_arguments(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -224,8 +497,29 @@ class WorkingPlanModelTests(unittest.TestCase):
             registry = runtime.tool_registry
             spec = registry.get_spec("update_plan")
             self.assertEqual(spec.input_schema["type"], "object")
-            self.assertIn("tasks", spec.input_schema["required"])
+            self.assertIn("operations", spec.input_schema["properties"])
             token = issue_capability_token("test", {"write"})
+
+            missing_revision = registry.invoke_result("update_plan", {
+                "operations": [{"op": "add", "ref": "bad", "task": {
+                    "description": "Must not persist", "acceptance": ["never created"],
+                }}],
+            }, token)
+            self.assertFalse(missing_revision.success)
+            self.assertEqual(missing_revision.error.code, "invalid_arguments")
+            self.assertIsNone(runtime.tasks.working_plan)
+
+            mixed = registry.invoke_result("update_plan", {
+                "operations": [{"op": "add", "ref": "canonical", "task": {
+                    "description": "Canonical branch", "acceptance": ["canonical"],
+                }}],
+                "expected_revision": 0,
+                "complexity": "complex",
+                "tasks": [{"description": "Legacy branch", "acceptance": ["legacy"]}],
+            }, token)
+            self.assertFalse(mixed.success)
+            self.assertEqual(mixed.error.code, "invalid_arguments")
+            self.assertIsNone(runtime.tasks.working_plan)
 
             result = registry.invoke_result("update_plan", {
                 "complexity": "complex",
@@ -237,6 +531,38 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(result.data["complexity"], "complex")
             self.assertEqual(len(result.data["task_ids"]), 1)
             self.assertNotIn("tool_registry", result.data)
+            plan_id = result.data["plan_id"]
+
+            canonical = registry.invoke_result("update_plan", {
+                "plan_id": plan_id, "expected_revision": 1,
+                "operations": [{"op": "add", "ref": "verify", "task": {
+                    "description": "Verify result", "acceptance": ["verification passes"],
+                }}],
+            }, token)
+            self.assertTrue(canonical.success)
+            self.assertEqual(canonical.data["revision"], 2)
+            self.assertEqual(len(canonical.data["tasks"]), 2)
+            updated = registry.invoke_result("update_plan", {
+                "plan_id": plan_id, "expected_revision": 2,
+                "operations": [{"op": "update", "task": canonical.data["task_ids"][0],
+                                "fields": {"description": "Inspect the updated repository"}}],
+            }, token)
+            self.assertTrue(updated.success, updated.error)
+            self.assertEqual(updated.data["revision"], 3)
+            first_id, second_id = updated.data["task_ids"]
+            for revision, operation in enumerate((
+                {"op": "add_dependency", "task": second_id, "depends_on": first_id},
+                {"op": "remove_dependency", "task": second_id, "depends_on": first_id},
+                {"op": "reorder", "tasks": [second_id, first_id]},
+                {"op": "cancel", "task": second_id},
+            ), start=3):
+                result = registry.invoke_result("update_plan", {
+                    "plan_id": plan_id,
+                    "expected_revision": revision,
+                    "operations": [operation],
+                }, token)
+                self.assertTrue(result.success, result.error)
+                self.assertEqual(result.data["revision"], revision + 1)
 
     def test_runtime_call_persists_a_typed_working_plan(self):
         from openkyrozen.providers.models import ToolCall
