@@ -136,6 +136,52 @@ class ConversationHistoryTests(unittest.TestCase):
             {"role": "assistant", "content": "There is no pending plan to accept."},
         ])
 
+    def test_native_projection_keeps_runtime_outcome_when_it_replaces_model_prose(self):
+        response = ModelResponse("The work is complete.")
+        self.history.append(self.history.entry("user.input", {"text": "finish"}, turn_id="turn-1"))
+        self.history.append(self.history.entry("model.response", {
+            "response": model_response_to_dict(response),
+        }, turn_id="turn-1"))
+        self.history.append(self.history.entry("turn.outcome", {
+            "status": "failed", "text": "The work remains incomplete."}, turn_id="turn-1"))
+        self.assertEqual(self.history.provider_messages(provider_id="fixture", model="m1")[-1], {
+            "role": "assistant", "content": "The work remains incomplete.",
+        })
+
+    def test_native_projection_omits_duplicate_model_outcome(self):
+        response = ModelResponse("The work is complete.")
+        self.history.append(self.history.entry("user.input", {"text": "finish"}, turn_id="turn-1"))
+        self.history.append(self.history.entry("model.response", {
+            "response": model_response_to_dict(response),
+        }, turn_id="turn-1"))
+        self.history.append(self.history.entry("turn.outcome", {
+            "status": "completed", "text": response.text}, turn_id="turn-1"))
+        projected = self.history.provider_messages(provider_id="fixture", model="m1")
+        assistants = [item for item in projected if isinstance(item, dict) and item.get("role") == "assistant"]
+        self.assertEqual(assistants, [{"role": "assistant", "content": response.text}])
+
+    def test_legacy_import_is_atomic_and_can_retry_after_storage_failure(self):
+        messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "second"},
+        ]
+        encode = self.store.database._json
+        calls = 0
+
+        def fail_second(value):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("simulated legacy import failure")
+            return encode(value)
+
+        with patch.object(self.store.database, "_json", side_effect=fail_second):
+            with self.assertRaisesRegex(RuntimeError, "simulated"):
+                self.history.import_legacy(messages)
+        self.assertIsNone(self.history.head)
+        self.history.import_legacy(messages)
+        self.assertEqual(self.history.display_messages(), messages)
+
     def test_journal_only_session_is_discoverable_without_exposing_payload(self):
         self.history.append(self.history.entry("user.input", {"text": "private prompt"}))
         sessions = self.store.list_sessions(workspace_id="project", user_id="alice")

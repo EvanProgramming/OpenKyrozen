@@ -172,8 +172,10 @@ class ConversationHistory:
         messages = _ProviderProjection()
         pending_calls = []
         entries = self.active_entries()
-        model_turn_ids = {entry.turn_id for entry in entries
-                          if entry.kind == "model.response" and entry.turn_id is not None}
+        model_turn_text = {}
+        for entry in entries:
+            if entry.kind == "model.response" and entry.turn_id is not None:
+                model_turn_text[entry.turn_id] = model_response_from_dict(entry.payload["response"]).text
         for entry in entries:
             if exclude_turn_id is not None and entry.turn_id == exclude_turn_id:
                 continue
@@ -202,10 +204,9 @@ class ConversationHistory:
                     messages.append_entry(entry, {"role": "user", "content": (
                         f"Tool result ({payload.get('name', 'tool')}): {output.get('text', '')}"
                     )})
-            elif (entry.kind == "turn.outcome" and entry.turn_id is not None
-                  and entry.turn_id not in model_turn_ids):
+            elif entry.kind == "turn.outcome":
                 text = payload.get("text")
-                if isinstance(text, str) and text:
+                if isinstance(text, str) and text and text != model_turn_text.get(entry.turn_id):
                     messages.append_entry(entry, {"role": "assistant", "content": text})
         validate_tool_history(messages, provider_id=provider_id, model=model, native=native)
         return messages
@@ -214,6 +215,8 @@ class ConversationHistory:
         """Import old display-only snapshots once; never infer controls from their text."""
         if self.head is not None:
             return
+        entries = []
+        parent_id = None
         for index, message in enumerate(messages):
             if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
                 continue
@@ -221,8 +224,13 @@ class ConversationHistory:
             if not isinstance(content, str):
                 continue
             kind = "user.input" if message["role"] == "user" else "legacy.assistant"
-            entry = self.entry(kind, {"text": content, "provenance": "legacy_snapshot", "index": index})
-            self.append(entry, expected_head=entry.parent_id)
+            entry = self.entry(kind, {"text": content, "provenance": "legacy_snapshot", "index": index},
+                               parent_id=parent_id)
+            entries.append(entry)
+            parent_id = entry.id
+        self.store.append_conversation_entries(
+            [entry.as_dict() for entry in entries], expected_head=None,
+        )
 
     def reconcile_legacy(self, messages: list[dict[str, Any]]) -> None:
         """Import an explicitly supplied replacement list as a new branch."""

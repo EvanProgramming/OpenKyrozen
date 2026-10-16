@@ -42,6 +42,9 @@ class EventStore:
     def append_conversation_entry(self, entry, *, expected_head=...):
         return self.events.append_conversation_entry(entry, expected_head=expected_head)
 
+    def append_conversation_entries(self, entries, *, expected_head=...):
+        return self.events.append_conversation_entries(entries, expected_head=expected_head)
+
     def append_history_rollback(self, entries, events, **scope):
         return self.events.append_history_rollback(entries, events, **scope)
 

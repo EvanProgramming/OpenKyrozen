@@ -69,6 +69,44 @@ class EventsRepository:
             db.commit()
         return entry_id
 
+    def append_conversation_entries(self, entries: list[dict[str, Any]], *, expected_head=...):
+        """Append one conversation import as a single head-checked transaction."""
+        if not entries:
+            return ()
+        first = entries[0]
+        scope = (first["user_id"], first["workspace_id"], first["session_id"])
+        from openkyrozen.agent.conversation import ConversationHistoryError
+        with self.database._lock, self.database.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT id FROM events WHERE event_type='conversation.entry' AND user_id=? "
+                "AND workspace_id=? AND session_id=? ORDER BY rowid DESC LIMIT 1", scope,
+            ).fetchone()
+            head = row["id"] if row else None
+            if expected_head is not ... and expected_head != head:
+                db.rollback()
+                raise ConversationHistoryError("Conversation history head changed")
+            try:
+                for entry in entries:
+                    if ((entry["user_id"], entry["workspace_id"], entry["session_id"]) != scope
+                            or entry.get("parent_id") != head):
+                        raise ConversationHistoryError("Conversation entry scope or parent is stale")
+                    existing = db.execute("SELECT 1 FROM events WHERE id=?", (entry["id"],)).fetchone()
+                    if existing:
+                        raise ConversationHistoryError("Conversation entry ID conflicts with an existing entry")
+                    db.execute(
+                        "INSERT INTO events(id,event_type,payload,user_id,workspace_id,session_id,task_id,created_at) "
+                        "VALUES(?,'conversation.entry',?,?,?,?,?,?)",
+                        (entry["id"], self.database._json(entry), *scope, entry.get("task_id"),
+                         entry.get("created_at") or utc_now()),
+                    )
+                    head = entry["id"]
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+        return tuple(entry["id"] for entry in entries)
+
     def list_conversation_entries(self, *, user_id: str, workspace_id: str, session_id: str):
         with self.database.connection() as db:
             rows = db.execute(
