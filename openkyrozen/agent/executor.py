@@ -21,7 +21,7 @@ from openkyrozen.tasks.models import _receipt_args
 def _legacy_object_arguments(args, spec):
     if not isinstance(args, str) or not spec or not getattr(spec, "legacy_fields", ()):
         return args if isinstance(args, dict) else {}
-    fields = args.split("|")
+    fields = args.split("|", len(spec.legacy_fields) - 1)
     if len(fields) != len(spec.legacy_fields):
         return {}
     candidate = dict(zip(spec.legacy_fields, fields))
@@ -106,6 +106,16 @@ def _strategic_plan_denial(plan, action, args, spec, workspace_root):
     return None
 
 
+def _awaiting_revision_mutation(state, action, args, spec, runtime) -> bool:
+    return bool(state.get("pending_plan") and state.get("executing_plan") and (
+        runtime._is_state_changing_action(action, args)
+        or not spec
+        or spec.source == "dynamic"
+        or spec.capability in {"write", "shell", "destructive", "dynamic"}
+        or spec.side_effects in {"filesystem", "process", "destructive"}
+    ))
+
+
 def _notify_tool_execute(self, action: str, args: Any, result: ToolResult) -> None:
     """Emit the typed outcome to observers; display text cannot change status."""
     result = result if isinstance(result, ToolResult) else tool_failure(
@@ -154,7 +164,12 @@ def _is_state_changing_action(self, action: str, args: str) -> bool:
             options = args.get('options', [])
             return bool(options and (options[0] in {'-d','-D','--delete','-m','-M','--move','-c','-C','--copy','-f','--force'} or not options[0].startswith('-')))
         if action == 'git_remote': return args.get('operation', 'list') in {'add','remove'}
-        return action in {"write_file", "edit_file", "run_cmd", "git_clone", "git_add", "git_commit", "git_push", "git_pull", "git_checkout", "git_stash", "git_reset", "github_cli"}
+        return action in {
+            "write_file", "edit_file", "run_cmd", "git_clone", "git_add", "git_commit", "git_push",
+            "git_pull", "git_checkout", "git_stash", "git_reset", "github_cli", "define_tool",
+            "browser_open", "browser_click", "browser_type", "graph_refresh", "spawn_agents",
+            "browser_close", "send_subagent", "cancel_subagent", "update_plan",
+        }
     if action == "git_branch":
         return bool(str(args).strip()) and not str(args).lstrip().startswith(("-a", "-v"))
     if action == "git_remote":
@@ -162,6 +177,8 @@ def _is_state_changing_action(self, action: str, args: str) -> bool:
     return action in {
         "write_file", "edit_file", "run_cmd", "git_clone", "git_add", "git_commit", "git_push",
         "git_pull", "git_checkout", "git_stash", "git_reset", "git_remote", "github_cli", "define_tool",
+        "browser_open", "browser_click", "browser_type", "graph_refresh", "spawn_agents", "send_subagent",
+        "browser_close", "cancel_subagent", "update_plan",
     }
 
 
@@ -330,7 +347,12 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         outcome = tool_failure("invalid_arguments", f"Error: unknown tool '{action}'")
         self._notify_tool_execute(action, args, outcome)
         return finish(outcome)
-    executing_plan = self._interaction_controller.state().get("executing_plan")
+    interaction_state = self._interaction_controller.state()
+    executing_plan = interaction_state.get("executing_plan")
+    if _awaiting_revision_mutation(interaction_state, action, args, approved_spec, self):
+        outcome = tool_failure("permission_denied", "Error: strategic plan revision is awaiting approval; mutation is paused.")
+        self._notify_tool_execute(action, args, outcome)
+        return finish(outcome)
     if executing_plan:
         denial = _strategic_plan_denial(
             executing_plan, action, args, self.tool_registry.specs.get(action), self._get_workspace_root(),
@@ -390,10 +412,13 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
             and self._execution_capability_token.allows(current_spec.capability)
         )
     if authorized and executing_plan:
-        current_plan = self._interaction_controller.state().get("executing_plan")
+        current_state = self._interaction_controller.state()
+        current_plan = current_state.get("executing_plan")
         if (not current_plan or current_plan.get("plan_id") != executing_plan.get("plan_id")
                 or current_plan.get("fingerprint") != executing_plan.get("fingerprint")):
             denial = "accepted plan changed while approval was pending"
+        elif _awaiting_revision_mutation(current_state, action, args, self.tool_registry.specs.get(action), self):
+            denial = "strategic plan revision is awaiting approval; mutation is paused"
         else:
             denial = _strategic_plan_denial(
                 current_plan, action, args, self.tool_registry.specs.get(action), self._get_workspace_root(),
@@ -478,8 +503,21 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
         )
     args = str(args)
     operation_id = self._operation_id(operation_scope, canonical, args)
-    active_plan = self._interaction_controller.state().get("executing_plan")
-    if self._is_state_changing_action(canonical, args) and active_plan:
+    interaction_state = self._interaction_controller.state()
+    is_mutation = self._is_state_changing_action(canonical, args)
+    if is_mutation and interaction_state.get("pending_plan") and interaction_state.get("executing_plan"):
+        emit_rejected_call()
+        result = "Error: strategic plan revision is awaiting approval; mutation is paused."
+        outcome = tool_failure("permission_denied", result)
+        self._notify_tool_execute(canonical, args, outcome)
+        return self._make_execution_receipt(
+            action=canonical, args=args, authorized=False, started_at=started_at, success=False,
+            result=result, operation_scope=operation_scope, failure=outcome.error.code,
+            tool_error=outcome.error, tool_result=outcome, call_id=call_id,
+            call_id_source="synthetic", expected_spec=expected_spec,
+        )
+    active_plan = interaction_state.get("executing_plan")
+    if is_mutation and active_plan:
         structured = _legacy_object_arguments(args, expected_spec)
         match_args = (json.dumps(structured, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                       if structured else args)
@@ -518,7 +556,21 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             tool_result=outcome, call_id=call_id, call_id_source="synthetic",
             expected_spec=expected_spec,
         )
+    typed_arguments = None
+    spec = self.tool_registry.specs.get(canonical)
+    if interaction_state.get("executing_plan") and spec and spec.source != "legacy" and spec.legacy_fields:
+        parts = args.split("|", len(spec.legacy_fields) - 1)
+        if len(parts) == len(spec.legacy_fields):
+            candidate = dict(zip(spec.legacy_fields, parts))
+            try:
+                if (spec.legacy_arguments(candidate) == args
+                        and self.tool_registry._argument_error(spec.input_schema, candidate) is None):
+                    typed_arguments = candidate
+            except (TypeError, ValueError):
+                pass
     receipt = self._run_tool(canonical, args, return_receipt=True, operation_scope=operation_scope,
+                             _typed_arguments=typed_arguments,
+                             _expected_spec=spec if typed_arguments is not None else None,
                              _call_id=call_id, _call_id_source="synthetic")
     assert isinstance(receipt, ExecutionReceipt)
     if (receipt.success and receipt.action != "run_cmd"

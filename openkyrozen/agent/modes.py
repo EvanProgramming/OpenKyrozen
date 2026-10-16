@@ -308,6 +308,33 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
     return plan
 
 
+def _revision_materiality(accepted: dict[str, Any], proposal: dict[str, Any]) -> str:
+    """Allow unchanged objectives only when all revised bounds are provably narrower."""
+    if any(accepted.get(field) != proposal.get(field)
+           for field in ("title", "summary", "assumptions")):
+        return "material"
+    objectives = lambda plan: {
+        step["id"]: (step["title"], step["description"], tuple(step["acceptance"]),
+                     tuple(step["acceptance_verifications"]))
+        for step in plan.get("steps", ())
+    }
+    if objectives(accepted) != objectives(proposal):
+        return "material"
+    old, new = accepted.get("bounds"), proposal.get("bounds")
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return "material"
+    if (not set(new.get("capabilities", ())) <= set(old.get("capabilities", ()))
+            or not set(new.get("effects", ())) <= set(old.get("effects", ()))
+            or (old.get("risk_ceiling") == "normal" and new.get("risk_ceiling") == "high")):
+        return "material"
+    roots = [posixpath.normpath(path) for path in old.get("workspace_paths", ())]
+    for path in map(posixpath.normpath, new.get("workspace_paths", ())):
+        if not any(root == "." or path == root or path.startswith(root.rstrip("/") + "/")
+                   for root in roots):
+            return "material"
+    return "within_bounds"
+
+
 def parse_control_block(text: str, name: str) -> Any | None:
     """Return the JSON object from one named fenced or plain control block."""
     source = str(text or "")
@@ -466,7 +493,12 @@ class InteractionController:
             elif event_type == "interaction.question_resolved" and question and payload.get("request_id") == question.get("request_id"):
                 question = None
             elif event_type == "interaction.plan_proposed":
-                plan = payload
+                if payload.get("revision_materiality") != "within_bounds":
+                    plan = payload
+            elif event_type == "interaction.plan_auto_accepted":
+                if executing and payload.get("plan_id") == executing.get("plan_id"):
+                    executing = dict(payload)
+                    plan = None
             elif event_type == "interaction.plan_accepted":
                 if plan and payload.get("plan_id") == plan.get("plan_id") and payload.get("version") == plan.get("version"):
                     executing = dict(plan)
@@ -554,6 +586,17 @@ class InteractionController:
         state = self.state()
         previous = state.get("pending_plan") or state.get("executing_plan")
         plan = validate_plan_proposal(value, previous=previous, original_input=original_input)
+        executing = state.get("executing_plan")
+        if executing:
+            plan["revision_materiality"] = _revision_materiality(executing, plan)
+            if plan["revision_materiality"] == "within_bounds":
+                plan.update({key: executing[key] for key in (
+                    "working_plan_id", "working_plan_revision", "working_task_ids",
+                ) if key in executing})
+                self._append("interaction.plan_auto_accepted", plan)
+                return plan
+        else:
+            plan["revision_materiality"] = "initial"
         self._append("interaction.plan_proposed", plan)
         return plan
 
@@ -574,6 +617,9 @@ class InteractionController:
                 proposals[key] = payload
             elif event["event_type"] == "interaction.plan_accepted":
                 accepted[key] = payload
+            elif event["event_type"] == "interaction.plan_auto_accepted":
+                proposals[key] = payload
+                accepted[key] = payload
         matches = [proposal for key, proposal in proposals.items() if key in accepted
                    and (not plan_id or key[0] == plan_id) and (version is None or key[1] == version)]
         if not matches:
@@ -593,8 +639,6 @@ class InteractionController:
             if version is not None and version != executing.get("version"):
                 raise InteractionError("accepted plan version is stale")
             return executing, False
-        if plan and executing:
-            raise InteractionError("a revised Strategic Plan requires reapproval before replacing the active plan")
         if not plan or (plan_id and plan_id != plan.get("plan_id")) or (version is not None and version != plan.get("version")):
             accepted = self.accepted_plan(plan_id, version)
             if accepted:
@@ -602,31 +646,60 @@ class InteractionController:
             raise InteractionError("plan is not pending")
         operations = []
         strategic_bindings = {}
+        new_refs = []
+        if executing:
+            if (plan.get("revision_materiality") != "material"
+                    or plan.get("plan_id") != executing.get("plan_id")
+                    or plan.get("version") != executing.get("version", 0) + 1):
+                raise InteractionError("Strategic Plan revision is stale or does not require approval")
+            working = task_manager.working_plan
+            if (not working or working.id != executing.get("working_plan_id")
+                    or working.revision != executing.get("working_plan_revision")):
+                raise ValueError("Working Plan revision changed; reload before accepting")
+            active_ids = set(executing.get("working_task_ids", ()))
+            for task in task_manager.tasks:
+                if task["id"] in active_ids and task.get("status") == "running":
+                    raise ValueError("a Working Plan task is running; retry approval after it stops")
+                if task["id"] in active_ids and task.get("status") == "pending":
+                    operations.append({"op": "cancel", "task": task["id"]})
         for step in plan["steps"]:
-            operations.append({"op": "add", "ref": step["id"], "task": {
+            ref = f"revision_{step['id']}" if executing else step["id"]
+            new_refs.append(ref)
+            operations.append({"op": "add", "ref": ref, "task": {
                 "description": f"{step['title']}: {step['description']}",
                 "acceptance": step["acceptance"],
             }})
-            strategic_bindings[step["id"]] = {
+            strategic_bindings[ref] = {
                 "plan_id": plan["plan_id"], "version": plan["version"],
                 "fingerprint": plan["fingerprint"], "objective_id": step["id"],
                 "acceptance_ids": step["acceptance_ids"],
                 "acceptance_verifications": step["acceptance_verifications"],
             }
         working = task_manager.edit_plan(
-            complexity="complex", expected_revision=0, operations=operations,
+            complexity="complex", expected_revision=(executing.get("working_plan_revision", 0)
+                                                      if executing else 0), operations=operations,
+            plan_id=executing.get("working_plan_id") if executing else None,
             strategic_bindings=strategic_bindings,
             transaction_event={"event_type": "interaction.plan_accepted", "payload": {
                 "plan_id": plan["plan_id"], "version": plan["version"],
                 "fingerprint": plan["fingerprint"],
+                **({"revision_of": {"version": executing["version"],
+                                     "fingerprint": executing["fingerprint"]}} if executing else {}),
+                "working_task_refs": new_refs,
             }, "expected_proposal": {
                 "plan_id": plan["plan_id"], "version": plan["version"],
                 "fingerprint": plan["fingerprint"],
-            }},
+            }, **({"expected_working_plan": {
+                "plan_id": executing["working_plan_id"],
+                "revision": executing["working_plan_revision"],
+                "strategic_plan_id": executing["plan_id"],
+                "version": executing["version"],
+                "fingerprint": executing["fingerprint"],
+            }} if executing else {})},
         )
         return {**plan, "working_plan_id": working["plan_id"],
                 "working_plan_revision": working["revision"],
-                "working_task_ids": [task["id"] for task in working["tasks"]]}, True
+                "working_task_ids": [working["references"][ref] for ref in new_refs]}, True
 
     def complete_plan(self, plan: dict[str, Any], *, status: str = "completed",
                       task_manager: Any | None = None) -> None:

@@ -361,7 +361,11 @@ def _delegation_tool_access(self, action, args):
             if path not in owned:
                 raise ValueError("Sub-agent write is outside its assigned files")
         parent = getattr(self.current_session, "_delegation_parent", None)
-        if parent and parent.interaction.state().get("executing_plan") and self._is_state_changing_action(action, args):
+        parent_state = parent.interaction.state() if parent else {}
+        if (parent_state.get("pending_plan") and parent_state.get("executing_plan")
+                and self._is_state_changing_action(action, args)):
+            raise PermissionError("Parent Strategic Plan revision is awaiting approval")
+        if parent and parent_state.get("executing_plan") and self._is_state_changing_action(action, args):
             structured = json.dumps(args, ensure_ascii=False, sort_keys=True) if isinstance(args, dict) else str(args)
             allowed, reason = parent.tasks.mutation_matches_current_task(action, structured)
             if not allowed:

@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from openkyrozen.tools.models import ToolResult
+from openkyrozen.providers.models import ToolCall
 from types import SimpleNamespace
 from openkyrozen.agent.executor import _legacy_object_arguments, _strategic_plan_denial
 from pathlib import Path
@@ -55,6 +56,16 @@ class StrategicPlanExecutionBoundsTests(unittest.TestCase):
             }]}, "write_file", normalized), 0)
             self.assertIsNone(_strategic_plan_denial(
                 plan, "write_file", "site/index.html|ok", spec, Path(directory)))
+
+    def test_pipe_content_cannot_fall_back_to_a_sibling_objective_match(self):
+        objective = {"title": "Write src/public/index.html", "description": "Update the public page."}
+        spec = SimpleNamespace(legacy_fields=("path", "content"),
+                               legacy_arguments=lambda value: "|".join((value["path"], value["content"])))
+        args = "src/private/index.html|content|with-pipes"
+        structured = _legacy_object_arguments(args, spec)
+        from openkyrozen.agent.executor import _file_mutation_matches_objective
+        self.assertEqual(structured, {"path": "src/private/index.html", "content": "content|with-pipes"})
+        self.assertFalse(_file_mutation_matches_objective(objective, structured))
 
     def test_find_and_git_path_arrays_are_checked_against_plan_bounds(self):
         from pathlib import Path
@@ -301,6 +312,162 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
         self.assertEqual(revised["plan_id"], accepted["plan_id"])
         self.assertEqual(revised["version"], accepted["version"] + 1)
         self.assertNotEqual(revised["fingerprint"], accepted["fingerprint"])
+
+    def test_material_revision_is_staged_without_replacing_the_accepted_plan(self):
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=self._proposal()["plan_id"], version=1,
+        )
+        proposal = self.controller.propose_plan({
+            "title": "Expand the page", "summary": "Add a second page.",
+            "bounds": {"workspace_paths": ["site", "docs"], "capabilities": ["read", "write"],
+                       "effects": ["filesystem", "read_only"], "risk_ceiling": "normal"},
+            "steps": [{"id": "docs", "title": "Add docs", "description": "Create a second page.",
+                       "acceptance": ["The second page exists"]}],
+        })
+        state = self.controller.state()
+        self.assertEqual(proposal["revision_materiality"], "material")
+        self.assertEqual(state["pending_plan"]["fingerprint"], proposal["fingerprint"])
+        self.assertEqual(state["executing_plan"]["fingerprint"], accepted["fingerprint"])
+        self.assertEqual(self.manager.working_plan.revision, accepted["working_plan_revision"])
+
+    def test_narrowing_bounds_with_the_same_objectives_is_automatically_accepted(self):
+        proposal = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=proposal["plan_id"], version=proposal["version"],
+        )
+        narrowed = self.controller.propose_plan({
+            "title": proposal["title"], "summary": proposal["summary"],
+            "assumptions": proposal["assumptions"],
+            "bounds": {"workspace_paths": ["site/docs"], "capabilities": ["read"],
+                       "effects": ["read_only"], "risk_ceiling": "normal"},
+            "steps": [{"id": step["id"], "title": step["title"], "description": step["description"],
+                       "acceptance": step["acceptance"]} for step in proposal["steps"]],
+        })
+        state = self.controller.state()
+        self.assertEqual(narrowed["revision_materiality"], "within_bounds")
+        self.assertIsNone(state["pending_plan"])
+        self.assertEqual(state["executing_plan"]["version"], 2)
+        self.assertEqual(state["executing_plan"]["working_plan_id"], accepted["working_plan_id"])
+
+    def test_changing_acceptance_verification_requires_reapproval(self):
+        proposal = self.controller.propose_plan({
+            "title": "Create the page", "summary": "Create and verify the page.",
+            "bounds": {"workspace_paths": ["site"], "capabilities": ["read", "write"],
+                       "effects": ["read_only", "filesystem"], "risk_ceiling": "normal"},
+            "steps": [{"id": "page", "title": "Create page", "description": "Write site/index.html.",
+                       "acceptance": [{"criterion": "Page content matches", "verification": {
+                           "action": "write_file", "arguments": {"path": "site/index.html", "content": "safe"},
+                       }}]}],
+        })
+        self.controller.accept_plan(self.manager, plan_id=proposal["plan_id"], version=proposal["version"])
+        revised = self.controller.propose_plan({
+            "title": proposal["title"], "summary": proposal["summary"], "bounds": proposal["bounds"],
+            "steps": [{"id": "page", "title": "Create page", "description": "Write site/index.html.",
+                       "acceptance": [{"criterion": "Page content matches", "verification": {
+                           "action": "write_file", "arguments": {"path": "site/index.html", "content": "unsafe"},
+                       }}]}],
+        })
+        self.assertEqual(revised["revision_materiality"], "material")
+        self.assertEqual(self.controller.state()["pending_plan"]["fingerprint"], revised["fingerprint"])
+
+    def test_material_reapproval_replaces_active_tasks_in_one_revision(self):
+        original = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=original["plan_id"], version=original["version"],
+        )
+        old_task_id = accepted["working_task_ids"][0]
+        proposal = self.controller.propose_plan({
+            "title": "Expand the page", "summary": "Add a second page.",
+            "bounds": {"workspace_paths": ["site", "docs"], "capabilities": ["read", "write"],
+                       "effects": ["filesystem", "read_only"], "risk_ceiling": "normal"},
+            "steps": [{"id": "docs", "title": "Add docs", "description": "Create a second page.",
+                       "acceptance": ["The second page exists"]}],
+        })
+        revised, created = self.controller.accept_plan(
+            self.manager, plan_id=proposal["plan_id"], version=proposal["version"],
+        )
+        self.assertTrue(created)
+        self.assertEqual(self.manager.working_plan.revision, accepted["working_plan_revision"] + 1)
+        tasks = {task["id"]: task for task in self.manager.tasks}
+        self.assertEqual(tasks[old_task_id]["status"], "cancelled")
+        new_task = tasks[revised["working_task_ids"][0]]
+        self.assertEqual(new_task["status"], "pending")
+        self.assertEqual(new_task["checkpoint"]["strategic_plan"]["version"], proposal["version"])
+        self.assertIsNone(self.controller.state()["pending_plan"])
+        self.assertEqual(self.controller.state()["executing_plan"]["version"], proposal["version"])
+        accepted_events = self.store.list_events(
+            "interaction.plan_accepted", workspace_id="project", session_id="strategic-session",
+        )
+        revised_acceptance = next(event for event in accepted_events
+                                  if event["payload"].get("version") == proposal["version"])
+        self.assertEqual(revised_acceptance["payload"]["revision_of"]["version"], accepted["version"])
+
+    def test_failed_reapproval_commit_preserves_old_plan_and_tasks(self):
+        original = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=original["plan_id"], version=original["version"],
+        )
+        original_tasks = [dict(task) for task in self.manager.tasks]
+        proposal = self.controller.propose_plan({
+            "title": "Expanded", "summary": "New objective.", "bounds": original["bounds"],
+            "steps": [{"id": "expanded", "title": "Expanded", "description": "New work.",
+                       "acceptance": ["Expanded work is verified"]}],
+        })
+        json_encoder = self.store.database._json
+
+        def fail_revision(payload):
+            if isinstance(payload, dict) and payload.get("version") == proposal["version"]:
+                raise RuntimeError("simulated acceptance event failure")
+            return json_encoder(payload)
+
+        with patch.object(self.store.database, "_json", side_effect=fail_revision):
+            with self.assertRaisesRegex(RuntimeError, "simulated"):
+                self.controller.accept_plan(
+                    self.manager, plan_id=proposal["plan_id"], version=proposal["version"],
+                )
+        self.assertEqual(self.manager.tasks, original_tasks)
+        self.assertEqual(self.manager.working_plan.revision, accepted["working_plan_revision"])
+        self.assertEqual(self.controller.state()["executing_plan"]["fingerprint"], accepted["fingerprint"])
+        self.assertEqual(self.controller.state()["pending_plan"]["fingerprint"], proposal["fingerprint"])
+
+    def test_stale_working_plan_revision_rejects_material_reapproval(self):
+        original = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=original["plan_id"], version=original["version"],
+        )
+        proposal = self.controller.propose_plan({
+            "title": "Expanded", "summary": "New objective.",
+            "bounds": original["bounds"],
+            "steps": [{"id": "expanded", "title": "Expanded", "description": "New work.",
+                       "acceptance": ["Expanded work is verified"]}],
+        })
+        self.manager.edit_plan(
+            plan_id=accepted["working_plan_id"], expected_revision=accepted["working_plan_revision"],
+            operations=[{"op": "add", "ref": "concurrent", "task": {
+                "description": "Concurrent plan update", "acceptance": [],
+            }}],
+        )
+        with self.assertRaisesRegex(ValueError, "revision changed"):
+            self.controller.accept_plan(self.manager, plan_id=proposal["plan_id"], version=proposal["version"])
+        state = self.controller.state()
+        self.assertEqual(state["executing_plan"]["fingerprint"], accepted["fingerprint"])
+        self.assertEqual(state["pending_plan"]["fingerprint"], proposal["fingerprint"])
+
+    def test_running_working_task_must_stop_before_material_reapproval(self):
+        original = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=original["plan_id"], version=original["version"],
+        )
+        proposal = self.controller.propose_plan({
+            "title": "Expanded", "summary": "New objective.", "bounds": original["bounds"],
+            "steps": [{"id": "expanded", "title": "Expanded", "description": "New work.",
+                       "acceptance": ["Expanded work is verified"]}],
+        })
+        self.manager.set_status(0, "running")
+        with self.assertRaisesRegex(ValueError, "task is running"):
+            self.controller.accept_plan(self.manager, plan_id=proposal["plan_id"], version=proposal["version"])
+        self.assertEqual(self.controller.state()["executing_plan"]["fingerprint"], accepted["fingerprint"])
+        self.assertEqual(self.manager.tasks[0]["status"], "running")
 
     def test_staging_and_cancelling_revision_preserves_accepted_plan_bounds(self):
         plan = self._proposal()
@@ -726,8 +893,9 @@ class InteractionTests(unittest.TestCase):
             evidence = manager.record_evidence(
                 action="write_file", args="index.html|ready", result="Wrote index.html", success=True,
             )
-            self.assertNotIn("task_id", evidence)
+            self.assertIsNone(evidence.get("task_id"))
             self.assertEqual(manager.tasks[0]["status"], "pending")
+            self.assertFalse(any(item.get("acceptance") for item in manager.tasks[0]["evidence"]))
         finally:
             self.agent.tasks = previous_tasks
             self.agent._interaction_controller = previous_controller
@@ -1213,6 +1381,111 @@ class InteractionTests(unittest.TestCase):
                  previous_root) = previous
                 self.agent._set_workspace_root(previous_root)
 
+    def test_pipe_content_cannot_use_a_sibling_file_from_a_strategic_objective(self):
+        previous = (
+            self.agent.tasks, self.agent._interaction_controller, self.agent._execution_capability_token,
+            self.agent._get_workspace_root(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = EventStore(root / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="bounded", session_id="surface:tui")
+            controller = InteractionController(store, workspace_id="bounded", session_id="surface:tui")
+            proposal = controller.propose_plan({
+                "title": "Update public page", "summary": "Update only the public index page.",
+                "bounds": {"workspace_paths": ["src"], "capabilities": ["read", "write"],
+                           "effects": ["read_only", "filesystem"], "risk_ceiling": "normal"},
+                "steps": [{"id": "page", "title": "Write public page",
+                           "description": "Write src/public/index.html.",
+                           "acceptance": [{"criterion": "Public page can be read", "verification": {
+                               "action": "read_file", "arguments": {"path": "src/public/index.html"},
+                           }}]}],
+            })
+            controller.accept_plan(manager, plan_id=proposal["plan_id"], version=proposal["version"])
+            self.agent.tasks = manager
+            self.agent._interaction_controller = controller
+            self.agent._set_workspace_root(root)
+            self.agent._execution_capability_token = issue_capability_token(
+                "test:exact-strategic-path", frozenset({"write"}),
+            )
+            try:
+                receipt = self.agent._execute_turn_action(
+                    "write_file", "src/private/index.html|content|with-pipes",
+                    operation_scope="exact-strategic-path", successful_operations=set(),
+                )
+                self.assertFalse(receipt.success)
+                self.assertEqual(receipt.failure, "permission_denied")
+                self.assertFalse((root / "src/private/index.html").exists())
+                self.assertFalse((root / "src/public/index.html").exists())
+            finally:
+                (self.agent.tasks, self.agent._interaction_controller, self.agent._execution_capability_token,
+                 previous_root) = previous
+                self.agent._set_workspace_root(previous_root)
+
+    def test_material_revision_blocks_mutations_until_approval(self):
+        previous = (
+            self.agent.tasks, self.agent._interaction_controller, self.agent._execution_capability_token,
+            self.agent._get_workspace_root(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = EventStore(root / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="bound", session_id="surface:tui")
+            controller = InteractionController(store, workspace_id="bound", session_id="surface:tui")
+            proposal = controller.propose_plan({
+                "title": "Create page", "summary": "Create only the accepted page.",
+                "bounds": {"workspace_paths": ["."], "capabilities": ["read", "write", "browser"],
+                           "effects": ["read_only", "filesystem", "remote"], "risk_ceiling": "normal"},
+                "steps": [{"id": "page", "title": "Create page", "description": "Write index.html.",
+                           "acceptance": ["index.html exists"]}],
+            })
+            accepted, _ = controller.accept_plan(manager, plan_id=proposal["plan_id"], version=1)
+            controller.propose_plan({
+                "title": "Create page and README", "summary": "Add another artifact.",
+                "bounds": proposal["bounds"],
+                "steps": [{"id": "docs", "title": "Create README", "description": "Write README.md.",
+                           "acceptance": ["README.md exists"]}],
+            })
+            self.agent.tasks = manager
+            self.agent._interaction_controller = controller
+            self.agent._set_workspace_root(root)
+            self.agent._execution_capability_token = issue_capability_token(
+                "test:pending-revision", frozenset({"write", "browser"}),
+            )
+            try:
+                receipt = self.agent._execute_turn_action(
+                    "write_file", "index.html|must wait", operation_scope="pending-revision",
+                    successful_operations=set(),
+                )
+                self.assertFalse(receipt.success)
+                self.assertEqual(receipt.failure, "permission_denied")
+                self.assertFalse((root / "index.html").exists())
+                browser = self.agent._execute_turn_action(
+                    "browser_open", "https://example.com", operation_scope="bound",
+                    successful_operations=set(),
+                )
+                self.assertFalse(browser.success)
+                self.assertEqual(browser.failure, "permission_denied")
+                native_browser = self.agent.execute_call(
+                    self.agent.current_session,
+                    ToolCall("pending-browser", "browser_open", {"url": "https://example.com"}),
+                    operation_scope="bound", approve=lambda *_args, **_kwargs: True,
+                )
+                self.assertFalse(native_browser.success)
+                self.assertEqual(native_browser.failure, "permission_denied")
+                native_close = self.agent.execute_call(
+                    self.agent.current_session,
+                    ToolCall("pending-browser-close", "browser_close", {"session_id": "browser-1"}),
+                    operation_scope="bound", approve=lambda *_args, **_kwargs: True,
+                )
+                self.assertFalse(native_close.success)
+                self.assertEqual(native_close.failure, "permission_denied")
+                self.assertEqual(controller.state()["executing_plan"]["fingerprint"], accepted["fingerprint"])
+            finally:
+                (self.agent.tasks, self.agent._interaction_controller, self.agent._execution_capability_token,
+                 previous_root) = previous
+                self.agent._set_workspace_root(previous_root)
+
     def test_mocked_provider_flow_questions_revision_acceptance_and_agent_receipt(self):
         class LearningStub:
             def feedback_signal(self, _text): return None
@@ -1246,16 +1519,24 @@ class InteractionTests(unittest.TestCase):
                 '```json\n{"questions":[{"id":"scope","header":"Scope",'
                 '"prompt":"Which target?","choices":["Core","All"]}]}\n```',
                 'PlanProposal:\n```json\n{"title":"Marker","summary":"Create a marker safely.",'
-                '"assumptions":[],"steps":[{"id":"write-marker","title":"Write marker",'
-                '"description":"Create marker.txt with requested content.","acceptance":["marker.txt exists"]}]}\n```',
+                '"assumptions":[],"bounds":{"workspace_paths":["."],"capabilities":["read","write"],'
+                '"effects":["read_only","filesystem"],"risk_ceiling":"normal"},'
+                '"steps":[{"id":"write-marker","title":"Write marker",'
+                '"description":"Create marker.txt with requested content.","acceptance":[{"criterion":"marker.txt exists",'
+                '"verification":{"action":"read_file","arguments":{"path":"marker.txt"}}}]}]}\n```',
                 'PlanProposal:\n```json\n{"title":"Marker with verification","summary":"Create and verify a marker.",'
-                '"assumptions":[],"steps":[{"id":"write-marker","title":"Write marker",'
-                '"description":"Create marker.txt with requested content.","acceptance":["marker.txt exists"]}]}\n```',
+                '"assumptions":[],"bounds":{"workspace_paths":["."],"capabilities":["read","write"],'
+                '"effects":["read_only","filesystem"],"risk_ceiling":"normal"},'
+                '"steps":[{"id":"write-marker","title":"Write marker",'
+                '"description":"Create marker.txt with requested content.","acceptance":[{"criterion":"marker.txt exists",'
+                '"verification":{"action":"read_file","arguments":{"path":"marker.txt"}}}]}]}\n```',
                 'Action: {"action":"write_file","args":"marker.txt|ready"}',
                 'AskUser:\n```json\n{"questions":[{"id":"verify","header":"Verification",'
                 '"prompt":"Which accepted check should finish the task?","choices":["File exists","Read contents"]}]}\n```',
                 'Action: {"action":"read_file","args":"marker.txt"}',
                 'TaskDone: 0\nMarker created and verified.',
+                "The marker is present and its contents match the request.",
+                "The marker was created and its contents were verified.",
             ]
             try:
                 stream_events = []

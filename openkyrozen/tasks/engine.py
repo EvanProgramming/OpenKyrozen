@@ -195,14 +195,24 @@ class TaskManager:
             raise ValueError("strategic_bindings must be an object")
         if transaction_event is not None and (
                 not isinstance(transaction_event, dict)
-                or set(transaction_event) not in (
-                    {"event_type", "payload"}, {"event_type", "payload", "expected_proposal"},
-                )
+                or not {"event_type", "payload"} <= set(transaction_event)
+                or set(transaction_event) - {"event_type", "payload", "expected_proposal", "expected_working_plan"}
                 or transaction_event.get("event_type") != "interaction.plan_accepted"
                 or not isinstance(transaction_event.get("payload"), dict)
+                or ("working_task_refs" in transaction_event.get("payload", {}) and (
+                    not isinstance(transaction_event["payload"]["working_task_refs"], list)
+                    or not transaction_event["payload"]["working_task_refs"]
+                    or any(not isinstance(ref, str) for ref in transaction_event["payload"]["working_task_refs"])
+                ))
                 or ("expected_proposal" in transaction_event and (
                     not isinstance(transaction_event["expected_proposal"], dict)
                     or set(transaction_event["expected_proposal"]) != {"plan_id", "version", "fingerprint"}
+                ))
+                or ("expected_working_plan" in transaction_event and (
+                    not isinstance(transaction_event["expected_working_plan"], dict)
+                    or set(transaction_event["expected_working_plan"]) != {
+                        "plan_id", "revision", "strategic_plan_id", "version", "fingerprint",
+                    }
                 ))):
             raise ValueError("only a structured plan-acceptance transaction event is supported")
 
@@ -407,10 +417,14 @@ class TaskManager:
                 {"event_type": transaction_event["event_type"], **(
                     {"expected_proposal": transaction_event["expected_proposal"]}
                     if "expected_proposal" in transaction_event else {}
-                ), "payload": {
-                    **transaction_event["payload"], "working_plan_id": plan_id,
+                ), **({"expected_working_plan": transaction_event["expected_working_plan"]}
+                    if "expected_working_plan" in transaction_event else {}), "payload": {
+                    **{key: value for key, value in transaction_event["payload"].items()
+                       if key != "working_task_refs"}, "working_plan_id": plan_id,
                     "working_plan_revision": expected_revision + 1,
-                    "working_task_ids": [task["id"] for task in tasks],
+                    "working_task_ids": ([references[ref] for ref in transaction_event["payload"]["working_task_refs"]]
+                                         if "working_task_refs" in transaction_event["payload"]
+                                         else [task["id"] for task in tasks]),
                 }} if transaction_event else None
             ),
         )
@@ -622,6 +636,11 @@ class TaskManager:
             return False, "the accepted plan has no pending task"
         if self._receipt_match_score(current, action, args) > 0:
             return True, ""
+        strategic_file = (
+            action == "write_file" and bool((current.get("checkpoint") or {}).get("strategic_plan"))
+        )
+        if strategic_file:
+            return False, "the file path must match an approved objective or verification path"
         if _ordered_plan_info(current) is None or not _ordered_action_compatible(
                 current.get("description", ""), action):
             return False, f"the next accepted step is: {current.get('description', '')}"

@@ -125,6 +125,29 @@ class SubAgentTests(unittest.TestCase):
                 with _delegation_tool_access(agent, "edit_file", args):
                     self.fail("out-of-scope edit entered the guarded operation")
 
+    def test_delegated_write_pauses_while_parent_revision_awaits_approval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: (root / raw).resolve())
+            coordinator = SimpleNamespace(
+                root=root, access=None, check_cancelled=lambda _run: None,
+                runs={"child": {"assignment": {"scope": ["allowed.py"]}}},
+                cancelled={"child": threading.Event()},
+            )
+            parent = SimpleNamespace(interaction=SimpleNamespace(state=lambda: {
+                "pending_plan": {"fingerprint": "pending"},
+                "executing_plan": {"fingerprint": "accepted"},
+            }))
+            child = SimpleNamespace(workspace=SimpleNamespace(adapters=adapters), _delegation_parent=parent)
+            agent = SimpleNamespace(
+                execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
+                current_session=child, _workspace_access={}, _get_workspace_root=lambda: root,
+                _is_state_changing_action=lambda *_args: True,
+            )
+            with self.assertRaisesRegex(PermissionError, "revision is awaiting approval"):
+                with _delegation_tool_access(agent, "write_file", "allowed.py|must pause"):
+                    self.fail("delegated write entered while parent revision was pending")
+
     def test_edit_file_scope_parsing_keeps_json_text_after_pipe(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

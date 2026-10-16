@@ -232,6 +232,22 @@ class TasksRepository:
                             or any(latest_payload.get(key) != value
                                    for key, value in expected_proposal.items())):
                         raise ValueError("Strategic Plan proposal changed; reload before accepting")
+                expected_working_plan = (transaction_event or {}).get("expected_working_plan")
+                if expected_working_plan is not None:
+                    latest = db.execute(
+                        "SELECT event_type,payload FROM events WHERE user_id=? AND workspace_id=? "
+                        "AND session_id=? AND event_type IN ('interaction.plan_accepted', "
+                        "'interaction.plan_auto_accepted') ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                        (user_id, workspace_id, scoped_session),
+                    ).fetchone()
+                    latest_payload = self.database._loads(latest["payload"], {}) if latest else {}
+                    if (not latest or any(latest_payload.get(key) != expected_working_plan[value]
+                            for key, value in (("plan_id", "strategic_plan_id"),
+                                               ("version", "version"),
+                                               ("fingerprint", "fingerprint"),
+                                               ("working_plan_id", "plan_id"),
+                                               ("working_plan_revision", "revision")))):
+                        raise ValueError("Strategic Plan acceptance changed; reload before accepting")
                 current = db.execute(
                     "SELECT * FROM working_plans WHERE user_id=? AND workspace_id=? AND session_id=? AND status='active'",
                     (user_id, workspace_id, scoped_session),
