@@ -130,7 +130,7 @@ if __name__ == "__main__":
                 "expected_sha256": hashlib.sha256(initial_page.encode()).hexdigest(),
             }),
         }),
-        "TaskDone: 0\nAction: " + json.dumps(
+        "TaskDone: 1\nAction: " + json.dumps(
             {"action": "write_file", "args": f"test_deploy.py|{deployment_test}"}
         ),
         "TaskDone: 2\nAction: " + json.dumps(
