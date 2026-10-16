@@ -89,7 +89,8 @@ class TaskManager:
             criteria = acceptance[position] if acceptance and position < len(acceptance) else None
             self.add_task(description, task_id=task_id, checkpoint=checkpoint, acceptance=criteria)
 
-    def set_status(self, idx: int, status: str, *, evidence: dict[str, Any] | None = None) -> bool:
+    def set_status(self, idx: int, status: str, *, evidence: dict[str, Any] | None = None,
+                   _terminalize_plan: bool = True) -> bool:
         if not 0 <= idx < len(self.tasks):
             return False
         status = canonical_status(status)
@@ -114,17 +115,24 @@ class TaskManager:
             return False
         self.tasks[idx] = task
         self._event(task, f"task.{task['status']}", {"evidence": evidence or {}})
-        if status in {"succeeded", "cancelled"} and self.working_plan is not None:
+        if _terminalize_plan and status in {"succeeded", "cancelled"} and self.working_plan is not None:
             plan_tasks = [item for item in self.tasks if item["id"] in self.working_plan.task_ids]
             terminal = len(plan_tasks) == len(self.working_plan.task_ids) and all(
                 canonical_status(item["status"]) in {"succeeded", "cancelled"} for item in plan_tasks
             )
             plan_status = "completed" if terminal and any(
                 canonical_status(item["status"]) == "succeeded" for item in plan_tasks
+            ) and all(
+                canonical_status(item["status"]) != "succeeded" or any(
+                    evidence.get("success") is True and evidence.get("acceptance")
+                    for evidence in item.get("evidence", []) if isinstance(evidence, dict)
+                ) for item in plan_tasks
             ) else "cancelled" if terminal else None
             if (plan_status is not None and self.store.set_working_plan_status(
                         self.working_plan.id, plan_status, user_id=self.user_id,
                         workspace_id=self.workspace_id, session_id=self.session_id,
+                        expected_revision=self.working_plan.revision,
+                        expected_task_ids=self.working_plan.task_ids,
                     )):
                 self.working_plan = WorkingPlan(
                     id=self.working_plan.id, complexity=self.working_plan.complexity,
@@ -333,26 +341,39 @@ class TaskManager:
 
         for task in tasks:
             task["plan_id"] = plan_id
-        plan = {"id": plan_id, "complexity": complexity, "status": "active",
+        terminal = bool(tasks) and all(canonical_status(task["status"]) in {"succeeded", "cancelled"}
+                                       for task in tasks)
+        completed = terminal and any(canonical_status(task["status"]) == "succeeded" for task in tasks) and all(
+            canonical_status(task["status"]) != "succeeded" or any(
+                evidence.get("success") is True and evidence.get("acceptance")
+                for evidence in task.get("evidence", []) if isinstance(evidence, dict)
+            ) for task in tasks
+        )
+        plan_status = "completed" if completed else "cancelled" if terminal else "active"
+        plan = {"id": plan_id, "complexity": complexity, "status": plan_status,
                 "created_at": created_at, "updated_at": now, "revision": expected_revision + 1}
         revision = self.store.apply_working_plan_edit(
             plan, tasks, expected_revision=expected_revision, expected_tasks=previous_tasks,
             user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
         )
         working_plan = WorkingPlan(
-            id=plan_id, complexity=complexity, status="active", task_ids=tuple(task["id"] for task in tasks),
+            id=plan_id, complexity=complexity, status=plan_status, task_ids=tuple(task["id"] for task in tasks),
             created_at=created_at, updated_at=now, revision=revision,
         )
         self.working_plan = working_plan
         self.tasks = tasks + [task for task in self.tasks if task["id"] not in original_ids]
-        payload = {"plan_id": plan_id, "revision": revision, "task_ids": list(working_plan.task_ids)}
+        payload = {"plan_id": plan_id, "revision": revision, "task_ids": list(working_plan.task_ids),
+                   "status": plan_status}
         callback = self._runtime_event_callback.get()
         if callable(callback):
             try:
-                callback("working_plan.updated", payload, tasks[-1]["id"] if tasks else None)
+                event_type = ("working_plan.completed" if plan_status == "completed"
+                              else "working_plan.cancelled" if plan_status == "cancelled"
+                              else "working_plan.updated")
+                callback(event_type, payload, tasks[-1]["id"] if tasks else None)
             except Exception:
                 pass
-        return {**payload, "complexity": complexity, "status": "active", "tasks": deepcopy(tasks),
+        return {**payload, "complexity": complexity, "tasks": deepcopy(tasks),
                 "references": dict(references)}
 
     def update_plan(self, *, complexity: str, tasks: list[dict[str, Any]] | None = None,
@@ -472,7 +493,8 @@ class TaskManager:
                             args_fingerprint: str | None = None) -> dict[str, Any] | None:
         candidates = [
             task for task in self.tasks
-            if canonical_status(task.get("status", "pending")) in {"pending", "running"}
+            if (self.working_plan is None or task["id"] in self.working_plan.task_ids)
+            and canonical_status(task.get("status", "pending")) in {"pending", "running"}
             and self._dependencies_succeeded(task, self.tasks)
         ]
         scored = [(self._receipt_match_score(task, action, args, args_fingerprint), task)
@@ -534,7 +556,8 @@ class TaskManager:
         """Authorize a mutation only when it belongs to the next ordered task."""
         current = next((
             task for task in self.tasks
-            if canonical_status(task.get("status", "pending")) in {"pending", "running"}
+            if (self.working_plan is None or task["id"] in self.working_plan.task_ids)
+            and canonical_status(task.get("status", "pending")) in {"pending", "running"}
             and self._dependencies_succeeded(task, self.tasks)
         ), None)
         if current is None:
@@ -756,17 +779,22 @@ class TaskManager:
         if self.working_plan is not None:
             plan = self.working_plan
             plan_ids = set(plan.task_ids)
-            self.working_plan = None
             for index, task in enumerate(self.tasks):
                 if task["id"] in plan_ids and task["status"] not in {"succeeded", "cancelled"}:
-                    self.set_status(index, "cancelled")
+                    if not self.set_status(index, "cancelled", _terminalize_plan=False):
+                        return
+            plan = self.working_plan or plan
             if plan.status == "active" and self.store.set_working_plan_status(
                 plan.id, "cancelled", user_id=self.user_id, workspace_id=self.workspace_id,
-                session_id=self.session_id,
+                session_id=self.session_id, expected_revision=plan.revision,
+                expected_task_ids=plan.task_ids,
             ):
                 plan_task = next((task for task in self.tasks if task["id"] in plan_ids), None)
                 if plan_task is not None:
                     self._event(plan_task, "working_plan.cancelled", {"plan_id": plan.id})
+            elif plan.status == "active":
+                return
+            self.working_plan = None
         self.tasks.clear()
         self._pending_completions.clear()
         self._evidence.clear()
@@ -884,22 +912,27 @@ class TaskManager:
                         latest = self._reload_task(task["id"])
                         if latest is not None:
                             task.update(latest)
-            if (plan_tasks and saved_plan["status"] == "active"
-                    and all(task["status"] in {"succeeded", "cancelled"} and (
-                        task["status"] == "cancelled" or any(
-                            item.get("success") is True and item.get("acceptance")
-                            for item in task.get("evidence", [])
-                        )
-                    ) for task in plan_tasks)
+            terminal = bool(plan_tasks) and all(
+                task["status"] in {"succeeded", "done", "cancelled"} for task in plan_tasks
+            )
+            completed = terminal and any(task["status"] in {"succeeded", "done"} for task in plan_tasks) and all(
+                task["status"] not in {"succeeded", "done"} or any(
+                    item.get("success") is True and item.get("acceptance")
+                    for item in task.get("evidence", []) if isinstance(item, dict)
+                ) for task in plan_tasks
+            )
+            plan_status = "completed" if completed else "cancelled" if terminal else "active"
+            if (plan_status != "active" and saved_plan["status"] == "active"
                     and self.store.set_working_plan_status(
-                        saved_plan["id"], "completed" if any(task["status"] == "succeeded" for task in plan_tasks)
-                        else "cancelled", user_id=self.user_id,
+                        saved_plan["id"], plan_status, user_id=self.user_id,
                         workspace_id=self.workspace_id, session_id=self.session_id,
+                        expected_revision=int(saved_plan.get("revision", 0)),
+                        expected_task_ids=[task["id"] for task in plan_tasks],
                     )):
-                saved_plan["status"] = "completed" if any(task["status"] == "succeeded" for task in plan_tasks) else "cancelled"
+                saved_plan["status"] = plan_status
                 saved_plan["updated_at"] = utc_now()
-                if saved_plan["status"] == "completed":
-                    self._event(plan_tasks[-1], "working_plan.completed", {"plan_id": saved_plan["id"]})
+                event_type = "working_plan.completed" if plan_status == "completed" else "working_plan.cancelled"
+                self._event(plan_tasks[-1], event_type, {"plan_id": saved_plan["id"]})
             self.working_plan = WorkingPlan(
                 id=saved_plan["id"], complexity=saved_plan["complexity"], status=saved_plan["status"],
                 task_ids=tuple(task["id"] for task in plan_tasks),

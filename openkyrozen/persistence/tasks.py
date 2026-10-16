@@ -80,16 +80,56 @@ class TasksRepository:
         return dict(row) if row is not None else None
 
     def set_working_plan_status(self, plan_id: str, status: str, *, user_id: str,
-                                workspace_id: str, session_id: str | None) -> bool:
+                                workspace_id: str, session_id: str | None,
+                                expected_revision: int | None = None,
+                                expected_task_ids: list[str] | tuple[str, ...] | None = None) -> bool:
         if status not in {"completed", "cancelled"}:
             raise ValueError("Working Plan terminal status must be completed or cancelled")
         with self.database._lock, self.database.connection() as db:
-            cursor = db.execute(
-                "UPDATE working_plans SET status=?,updated_at=? WHERE id=? AND user_id=? "
-                "AND workspace_id=? AND session_id=? AND status='active'",
-                (status, utc_now(), plan_id, user_id, workspace_id, session_id or ""),
-            )
-        return cursor.rowcount == 1
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                plan = db.execute(
+                    "SELECT revision FROM working_plans WHERE id=? AND user_id=? AND workspace_id=? "
+                    "AND session_id=? AND status='active'",
+                    (plan_id, user_id, workspace_id, session_id or ""),
+                ).fetchone()
+                if plan is None or (expected_revision is not None and plan["revision"] != expected_revision):
+                    db.rollback()
+                    return False
+                members = [row["task_id"] for row in db.execute(
+                    "SELECT task_id FROM working_plan_tasks WHERE plan_id=? ORDER BY position", (plan_id,),
+                )]
+                if expected_task_ids is not None and members != list(expected_task_ids):
+                    db.rollback()
+                    return False
+                tasks = db.execute(
+                    "SELECT status,evidence FROM tasks JOIN working_plan_tasks ON tasks.id=working_plan_tasks.task_id "
+                    "WHERE working_plan_tasks.plan_id=? ORDER BY working_plan_tasks.position", (plan_id,),
+                ).fetchall()
+                if not tasks or any(row["status"] not in {"succeeded", "done", "cancelled"} for row in tasks):
+                    db.rollback()
+                    return False
+                if status == "completed" and any(
+                    row["status"] in {"succeeded", "done"} and not any(
+                        item.get("success") is True and item.get("acceptance")
+                        for item in self.database._loads(row["evidence"], []) if isinstance(item, dict)
+                    ) for row in tasks
+                ):
+                    db.rollback()
+                    return False
+                if status == "completed" and not any(row["status"] in {"succeeded", "done"} for row in tasks):
+                    db.rollback()
+                    return False
+                cursor = db.execute(
+                    "UPDATE working_plans SET status=?,updated_at=? WHERE id=? AND user_id=? "
+                    "AND workspace_id=? AND session_id=? AND status='active' AND revision=?",
+                    (status, utc_now(), plan_id, user_id, workspace_id, session_id or "", plan["revision"]),
+                )
+                db.commit()
+                return cursor.rowcount == 1
+            except Exception:
+                db.rollback()
+                raise
 
     def list_working_plan_tasks(self, plan_id: str, *, user_id: str, workspace_id: str,
                                 session_id: str) -> list[dict[str, Any]]:
@@ -189,7 +229,7 @@ class TasksRepository:
                     db.execute(
                         "INSERT INTO working_plans(id,user_id,workspace_id,session_id,complexity,status,created_at,updated_at,revision) "
                         "VALUES(?,?,?,?,?,?,?,?,?)",
-                        (plan["id"], user_id, workspace_id, scoped_session, plan["complexity"], "active",
+                        (plan["id"], user_id, workspace_id, scoped_session, plan["complexity"], plan["status"],
                          plan["created_at"], now, revision),
                     )
                 else:
@@ -213,8 +253,8 @@ class TasksRepository:
                         raise ValueError("Working Plan task progress changed; reload before editing")
                     revision = expected_revision + 1
                     db.execute(
-                        "UPDATE working_plans SET complexity=?,updated_at=?,revision=? WHERE id=? AND revision=?",
-                        (plan["complexity"], now, revision, plan["id"], expected_revision),
+                        "UPDATE working_plans SET complexity=?,status=?,updated_at=?,revision=? WHERE id=? AND revision=?",
+                        (plan["complexity"], plan["status"], now, revision, plan["id"], expected_revision),
                     )
 
                 db.execute("DELETE FROM working_plan_tasks WHERE plan_id=?", (plan["id"],))
@@ -245,13 +285,14 @@ class TasksRepository:
                         (plan["id"], task["id"], position),
                     )
 
-                event_payload = {"plan_id": plan["id"], "revision": revision,
+                event_payload = {"plan_id": plan["id"], "revision": revision, "status": plan["status"],
                                  "task_ids": [task["id"] for task in tasks]}
                 db.execute(
                     "INSERT INTO events(id,event_type,payload,user_id,workspace_id,session_id,task_id,created_at) "
                     "VALUES(?,?,?,?,?,?,NULL,?)",
-                    (f"evt_{uuid.uuid4().hex}", "working_plan.updated", self.database._json(event_payload),
-                     user_id, workspace_id, scoped_session, now),
+                    (f"evt_{uuid.uuid4().hex}",
+                     "working_plan.cancelled" if plan["status"] == "cancelled" else "working_plan.updated",
+                     self.database._json(event_payload), user_id, workspace_id, session_id, now),
                 )
                 db.commit()
                 return revision

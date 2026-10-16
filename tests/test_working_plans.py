@@ -264,6 +264,86 @@ class WorkingPlanModelTests(unittest.TestCase):
                 self.assertTrue(manager.set_status(index, "succeeded", evidence={"success": True, "acceptance": acceptance}))
             self.assertEqual(manager.working_plan.status, "completed")
 
+    def test_edit_cancelling_every_member_terminalizes_plan_atomically(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = TaskManager(EventStore(Path(directory) / "state.sqlite3"),
+                                  workspace_id="project", session_id="cancel-all-edit")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "one", "task": {"description": "One", "acceptance": ["one"]}},
+                {"op": "add", "ref": "two", "task": {"description": "Two", "acceptance": ["two"]}},
+            ])
+            result = manager.edit_plan(plan_id=created["plan_id"], expected_revision=1, operations=[
+                {"op": "cancel", "task": created["references"]["one"]},
+                {"op": "cancel", "task": created["references"]["two"]},
+            ])
+            self.assertEqual(result["status"], "cancelled")
+            self.assertIsNone(manager.store.get_working_plan(
+                user_id=manager.user_id, workspace_id=manager.workspace_id, session_id=manager.session_id,
+            ))
+
+    def test_stale_manager_cannot_terminalize_a_newer_plan_revision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            stale = TaskManager(store, workspace_id="project", session_id="terminal-race")
+            created = stale.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "one", "task": {"description": "One", "acceptance": ["one"]}},
+            ])
+            fresh = TaskManager(store, workspace_id="project", session_id="terminal-race")
+            fresh.recover()
+            fresh.edit_plan(plan_id=created["plan_id"], expected_revision=1, operations=[
+                {"op": "add", "ref": "two", "task": {"description": "Two", "acceptance": ["two"]}},
+            ])
+            self.assertTrue(stale.set_status(0, "succeeded", evidence={"success": True, "acceptance": "one"}))
+            saved = store.get_working_plan(user_id=stale.user_id, workspace_id=stale.workspace_id,
+                                          session_id=stale.session_id)
+            members = store.list_working_plan_tasks(saved["id"], user_id=stale.user_id,
+                                                    workspace_id=stale.workspace_id, session_id=stale.session_id)
+            self.assertEqual(saved["revision"], 2)
+            self.assertEqual([task["status"] for task in members], ["succeeded", "pending"])
+
+    def test_clear_does_not_cancel_a_task_claimed_by_another_manager(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            stale = TaskManager(store, workspace_id="project", session_id="clear-claim-race")
+            stale.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "one", "task": {"description": "One", "acceptance": ["one"]}},
+            ])
+            worker = TaskManager(store, workspace_id="project", session_id="clear-claim-race")
+            claimed = worker.claim_next()
+            stale.clear()
+            saved = store.get_working_plan(user_id=stale.user_id, workspace_id=stale.workspace_id,
+                                          session_id=stale.session_id)
+            self.assertIsNotNone(saved)
+            saved_task = next(task for task in store.list_tasks(
+                user_id=stale.user_id, workspace_id=stale.workspace_id, session_id=stale.session_id,
+            ) if task["id"] == claimed["id"])
+            self.assertEqual(saved_task["status"], "running")
+
+    def test_mutation_match_does_not_fall_through_from_blocked_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = TaskManager(EventStore(Path(directory) / "state.sqlite3"),
+                                  workspace_id="project", session_id="blocked-plan-scope")
+            result = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
+                {"op": "add", "ref": "second", "task": {"description": "Second", "acceptance": ["second"]}},
+                {"op": "add_dependency", "task": "second", "depends_on": "first"},
+            ])
+            manager.set_status(0, "failed")
+            unrelated = manager.add_task("Unrelated pending task", task_id="outside-plan")
+            allowed, _ = manager.mutation_matches_current_task("write_file", "outside-plan|content")
+            self.assertFalse(allowed)
+
+    def test_sessionless_working_plan_edit_keeps_event_session_null(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id=None)
+            manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "one", "task": {"description": "One", "acceptance": ["one"]}},
+            ])
+            with store.database.connection() as db:
+                session = db.execute("SELECT session_id FROM events WHERE event_type='working_plan.updated'").fetchone()[0]
+            self.assertIsNone(session)
+
     def test_stale_worker_cannot_resurrect_cancelled_task(self):
         with tempfile.TemporaryDirectory() as directory:
             store = EventStore(Path(directory) / "state.sqlite3")
@@ -557,6 +637,22 @@ class WorkingPlanModelTests(unittest.TestCase):
                 status = db.execute(
                     "SELECT status FROM working_plans WHERE id=?", (plan.id,),
                 ).fetchone()["status"]
+            self.assertEqual(status, "cancelled")
+
+    def test_legacy_done_without_acceptance_evidence_cannot_complete_mixed_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="legacy-done-evidence")
+            plan = manager.update_plan(complexity="complex", tasks=[
+                {"description": "first", "acceptance": ["first is verified"]},
+                {"description": "second", "acceptance": ["second is verified"]},
+            ])
+            with store.database.connection() as db:
+                db.execute("UPDATE tasks SET status='done' WHERE id=?", (plan.task_ids[0],))
+            manager.recover()
+            self.assertTrue(manager.set_status(1, "cancelled"))
+            with store.database.connection() as db:
+                status = db.execute("SELECT status FROM working_plans WHERE id=?", (plan.id,)).fetchone()[0]
             self.assertEqual(status, "cancelled")
 
     def test_legacy_update_accepts_unchanged_execution_after_receipt(self):
