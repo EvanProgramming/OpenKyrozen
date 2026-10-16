@@ -90,16 +90,35 @@ if __name__ == "__main__":
         "plan_name": "Deploy local acceptance page",
         "overview": "Create a page and verify its local HTTP deployment.",
         "do_not_execute_until_approved": True,
+        "bounds": {
+            "workspace_paths": ["."],
+            "capabilities": ["read", "write", "shell"],
+            "effects": ["read_only", "filesystem", "process"],
+            "risk_ceiling": "normal",
+        },
         "steps": [
             {"step_id": "page", "title": "Create index.html", "details": "Write index.html.",
-             "acceptance_criteria": ["index.html exists"]},
+             "acceptance_criteria": [{"criterion": "index.html exists", "verification": {
+                 "action": "write_file", "arguments": {"path": "index.html", "content": initial_page},
+             }}]},
             {"step_id": "edit", "title": "Edit index.html safely", "details": "Update the draft page before verification.",
-             "acceptance_criteria": ["index.html contains verified"]},
+             "acceptance_criteria": [{"criterion": "index.html contains verified", "verification": {
+                 "action": "edit_file", "arguments": {
+                     "path": "index.html", "old_text": "draft", "new_text": "verified",
+                     "expected_sha256": hashlib.sha256(initial_page.encode()).hexdigest(),
+                 },
+             }}]},
             {"step_id": "test", "title": "Create test_deploy.py", "details": "Write test_deploy.py.",
-             "acceptance_criteria": ["test_deploy.py exists"]},
+             "acceptance_criteria": [{"criterion": "test_deploy.py exists", "verification": {
+                 "action": "write_file", "arguments": {"path": "test_deploy.py", "content": deployment_test},
+             }}]},
             {"step_id": "verify", "title": "Verify local deployment",
              "details": "Run python -m unittest test_deploy.py -v.",
-             "acceptance_criteria": ["unittest exits successfully"]},
+             "acceptance_criteria": [{"criterion": "unittest exits successfully", "verification": {
+                 "action": "run_cmd", "arguments": {
+                     "command": f"{sys.executable} -m unittest test_deploy.py -v",
+                 },
+             }}]},
         ],
     }
     responses = [
