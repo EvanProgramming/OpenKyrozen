@@ -197,7 +197,7 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
             + (
                 "The final plan must use this standalone control:\n"
                 "PlanProposal:\n```json\n"
-                '{"title":"Plan title","summary":"Outcome","assumptions":[],"bounds":{"workspace_paths":["src"],"capabilities":["read","write"],"effects":["read_only","filesystem"],"risk_ceiling":"normal"},"steps":[{"id":"objective-1","title":"Step","description":"Work to perform after acceptance","acceptance":["Observable result"]}]}\n'
+                '{"title":"Plan title","summary":"Outcome","assumptions":[],"bounds":{"workspace_paths":["src"],"capabilities":["read","write"],"effects":["read_only","filesystem"],"risk_ceiling":"normal"},"steps":[{"id":"objective-1","title":"Step","description":"Work to perform after acceptance","acceptance":[{"criterion":"Observable result","verification":{"action":"read_file","arguments":{"path":"src/result.txt"}}}]}]}\n'
                 "```\nUse 1-10 stable objective IDs and state the smallest workspace paths, capability/effect categories, and normal or high risk ceiling. Output no task or execution controls.\n"
                 if interaction_mode == "plan" else ""
             )

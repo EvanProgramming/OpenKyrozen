@@ -373,6 +373,7 @@ def normalize_provider_control(text: str, *, plan_mode: bool = False) -> tuple[s
             "title": value.get("title") or value.get("plan_name"),
             "summary": value.get("summary") or value.get("overview") or value.get("goal"),
             "assumptions": value.get("assumptions") or [],
+            **({"bounds": value["bounds"]} if "bounds" in value else {}),
             "steps": steps,
         }
 
@@ -477,7 +478,8 @@ class InteractionController:
                 if plan and payload.get("plan_id") == plan.get("plan_id"):
                     plan = None
             elif event_type == "interaction.plan_completed":
-                if executing and payload.get("plan_id") == executing.get("plan_id"):
+                if (executing and payload.get("plan_id") == executing.get("plan_id")
+                        and payload.get("status") in {"completed", "cancelled"}):
                     executing = None
         effective = route_mode(
             preference, user_input, pending_plan=plan is not None, executing_plan=executing is not None,
@@ -630,16 +632,25 @@ class InteractionController:
                       task_manager: Any | None = None) -> None:
         if status not in {"completed", "failed", "cancelled"}:
             raise InteractionError("Strategic Plan terminal status is invalid")
-        if any(event["event_type"] == "interaction.plan_completed"
-               and event.get("payload", {}).get("plan_id") == plan.get("plan_id")
-               and event.get("payload", {}).get("version") == plan.get("version")
-               for event in self._history()):
+        prior_completions = [event.get("payload", {}).get("status") for event in self._history()
+                             if event["event_type"] == "interaction.plan_completed"
+                             and event.get("payload", {}).get("plan_id") == plan.get("plan_id")
+                             and event.get("payload", {}).get("version") == plan.get("version")]
+        if any(previous in {"completed", "cancelled"} or previous == status
+               for previous in prior_completions):
             return
-        task_ids = plan.get("working_task_ids")
+        working = task_manager.working_plan if task_manager is not None else None
+        task_ids = (list(working.task_ids) if working and working.id == plan.get("working_plan_id")
+                    else plan.get("working_task_ids"))
         if status == "completed":
             if task_manager is None or not isinstance(task_ids, list) or not task_ids:
                 raise InteractionError("Strategic Plan completion requires its linked Working Plan evidence")
             tasks = {task.get("id"): task for task in task_manager.tasks}
+            objectives = {step["id"] for step in plan.get("steps", [])}
+            for task_id in task_ids:
+                binding = (tasks.get(task_id, {}).get("checkpoint") or {}).get("strategic_plan") or {}
+                if binding.get("plan_id") != plan.get("plan_id") or binding.get("objective_id") not in objectives:
+                    raise InteractionError("Working Plan contains a task not linked to the accepted Strategic Plan")
             if any(tasks.get(task_id, {}).get("status") != "succeeded"
                    or not any(isinstance(item, dict) and item.get("success") is True and item.get("acceptance")
                               for item in tasks[task_id].get("evidence", []))

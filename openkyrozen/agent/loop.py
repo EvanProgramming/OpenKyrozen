@@ -108,9 +108,20 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
                              error=f"{type(exc).__name__}: {exc}", **context)
             raise
         state_after = self._interaction_controller.state()
-        active_task_ids = active_plan.get("working_task_ids", []) if active_plan else []
+        working_plan = self.tasks.working_plan
+        active_task_ids = (list(working_plan.task_ids)
+                           if active_plan and working_plan
+                           and working_plan.id == active_plan.get("working_plan_id")
+                           else active_plan.get("working_task_ids", []) if active_plan else [])
         active_tasks = [task for task in self.tasks.tasks if task.get("id") in active_task_ids]
+        active_objectives = {step.get("id") for step in active_plan.get("steps", [])} if active_plan else set()
+        tasks_remain_plan_bound = all(
+            ((task.get("checkpoint") or {}).get("strategic_plan") or {}).get("plan_id") == active_plan.get("plan_id")
+            and ((task.get("checkpoint") or {}).get("strategic_plan") or {}).get("objective_id") in active_objectives
+            for task in active_tasks
+        )
         if (active_plan and active_task_ids and not state_after.get("pending_question") and active_tasks
+                and tasks_remain_plan_bound
                 and all(is_terminal(task) for task in active_tasks)):
             statuses = {task.get("status") for task in active_tasks}
             status = ("completed" if statuses == {"succeeded"} else

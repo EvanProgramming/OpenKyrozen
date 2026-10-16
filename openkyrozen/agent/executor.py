@@ -18,6 +18,49 @@ from openkyrozen.agent.types import ExecutionReceipt
 from openkyrozen.tasks.models import _receipt_args
 
 
+def _legacy_object_arguments(args, spec):
+    if not isinstance(args, str) or not spec or not getattr(spec, "legacy_fields", ()):
+        return args if isinstance(args, dict) else {}
+    fields = args.split("|")
+    if len(fields) != len(spec.legacy_fields):
+        return {}
+    candidate = dict(zip(spec.legacy_fields, fields))
+    try:
+        return candidate if spec.legacy_arguments(candidate) == args else {}
+    except ValueError:
+        return {}
+
+
+def _file_mutation_matches_objective(task, arguments):
+    path = arguments.get("path") if isinstance(arguments, dict) else None
+    if not isinstance(path, str) or not path.strip():
+        return False
+    normalized = path.replace("\\", "/").strip("/").casefold()
+    basename = normalized.rsplit("/", 1)[-1]
+    description = " ".join(str(task.get(field, "")) for field in ("title", "description")).replace("\\", "/").casefold()
+    explicit_paths = {match.removeprefix("./") for match in re.findall(
+        r"(?<![a-z0-9_.-])(?:\./)?(?:[a-z0-9_.-]+/)+[a-z0-9_.-]+", description,
+    )}
+    for item in task.get("acceptance", []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            arguments = json.loads(item.get("args", ""))
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if (isinstance(arguments, dict) and
+                str(arguments.get("path", "")).replace("\\", "/").strip("/").casefold() == normalized):
+            return True
+    if any(normalized == value or normalized.startswith(value.rstrip("/") + "/")
+           for value in explicit_paths):
+        return True
+    if explicit_paths:
+        return False
+    if normalized in description or basename in description:
+        return True
+    return False
+
+
 def _strategic_plan_denial(plan, action, args, spec, workspace_root):
     """Return a denial when a tool exceeds the bounds the user accepted."""
     bounds = plan.get("bounds") if isinstance(plan, dict) else None
@@ -39,15 +82,16 @@ def _strategic_plan_denial(plan, action, args, spec, workspace_root):
     if spec.risk == "high" and bounds.get("risk_ceiling") != "high":
         return "tool risk exceeds the accepted plan"
 
-    paths = {}
-    if isinstance(args, dict):
-        paths = {key: value for key, value in args.items()
-                 if key in {"path", "file_path", "directory", "destination", "target_path", "clone_path"}
-                 and isinstance(value, str) and value.strip()}
-    elif action in {"write_file", "read_file", "edit_file", "search_files", "list_dir", "list_tree"}:
-        raw = str(args).split("|", 1)[0].strip()
-        if raw:
-            paths = {"path": raw}
+    structured = args if isinstance(args, dict) else _legacy_object_arguments(args, spec)
+    path_fields = {"path", "file_path", "directory", "destination", "target_path", "clone_path"}
+    paths = {key: value for key, value in structured.items()
+             if key in path_fields and isinstance(value, str) and value.strip()}
+    for key in ("paths", "directories"):
+        values = structured.get(key)
+        if isinstance(values, list) and all(isinstance(value, str) and value.strip() for value in values):
+            paths.update({f"{key}:{index}": value for index, value in enumerate(values)})
+    if action == "find_files" and not paths:
+        paths = {"directory": structured.get("directory", ".")}
     if effect == "filesystem" and not paths:
         return "filesystem effect has no path that can be checked against the accepted scope"
     root = Path(workspace_root).expanduser().resolve()
@@ -434,9 +478,22 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
         )
     args = str(args)
     operation_id = self._operation_id(operation_scope, canonical, args)
-    if (self._is_state_changing_action(canonical, args)
-            and self._interaction_controller.state().get("executing_plan")):
-        allowed, reason = self.tasks.mutation_matches_current_task(canonical, args)
+    active_plan = self._interaction_controller.state().get("executing_plan")
+    if self._is_state_changing_action(canonical, args) and active_plan:
+        structured = _legacy_object_arguments(args, expected_spec)
+        match_args = (json.dumps(structured, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                      if structured else args)
+        scoped_file_mutation = (
+            canonical in {"write_file", "edit_file"}
+            and _file_mutation_matches_objective(next((task for task in self.tasks.tasks
+                if self.tasks.working_plan and task.get("id") in self.tasks.working_plan.task_ids
+                and task.get("status") in {"pending", "running"}
+                and self.tasks._dependencies_succeeded(task, self.tasks.tasks)), {}), structured)
+            and _strategic_plan_denial(active_plan, canonical, structured, expected_spec,
+                                       self._get_workspace_root()) is None
+        )
+        allowed, reason = ((True, "") if scoped_file_mutation else
+                           self.tasks.mutation_matches_current_task(canonical, match_args))
         if not allowed:
             emit_rejected_call()
             result = f"Error: action does not match the accepted plan; {reason}."

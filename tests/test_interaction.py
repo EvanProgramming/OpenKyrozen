@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from openkyrozen.tools.models import ToolResult
 from types import SimpleNamespace
-from openkyrozen.agent.executor import _strategic_plan_denial
+from openkyrozen.agent.executor import _legacy_object_arguments, _strategic_plan_denial
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +27,48 @@ from openkyrozen.workspace.context import resolve_launch_context
 
 
 class StrategicPlanExecutionBoundsTests(unittest.TestCase):
+    def test_full_path_objectives_do_not_match_a_sibling_with_the_same_basename(self):
+        from openkyrozen.agent.executor import _file_mutation_matches_objective
+        objective = {"title": "Write src/public/index.html", "description": "Update the public page."}
+        self.assertFalse(_file_mutation_matches_objective(objective, {"path": "src/private/index.html"}))
+        self.assertTrue(_file_mutation_matches_objective(objective, {"path": "src/public/index.html"}))
+        scoped_directory = {"title": "Create index.html in src/public", "description": "",
+                            "acceptance": [{"args": '{"path":"src/public/index.html"}'}]}
+        self.assertTrue(_file_mutation_matches_objective(scoped_directory, {"path": "src/public/index.html"}))
+        self.assertFalse(_file_mutation_matches_objective(scoped_directory, {"path": "src/private/index.html"}))
+
+    def test_legacy_mutation_arguments_are_normalized_for_scope_checks(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            plan = {"bounds": {"workspace_paths": ["site"], "capabilities": ["write"],
+                               "effects": ["filesystem"], "risk_ceiling": "normal"}}
+            spec = SimpleNamespace(capability="write", side_effects="filesystem", risk="normal",
+                                   legacy_fields=("path", "content"),
+                                   legacy_arguments=lambda value: "|".join((value["path"], value["content"])))
+            self.assertEqual(_legacy_object_arguments("site/index.html|ok", spec),
+                             {"path": "site/index.html", "content": "ok"})
+            normalized = json.dumps(_legacy_object_arguments("site/index.html|ok", spec),
+                                    ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            manager = TaskManager(EventStore(Path(directory) / "match.sqlite3"), workspace_id="w", session_id="s")
+            self.assertGreater(manager._receipt_match_score({"acceptance": [{
+                "action": "write_file", "args": normalized,
+            }]}, "write_file", normalized), 0)
+            self.assertIsNone(_strategic_plan_denial(
+                plan, "write_file", "site/index.html|ok", spec, Path(directory)))
+
+    def test_find_and_git_path_arrays_are_checked_against_plan_bounds(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = {"bounds": {"workspace_paths": ["src"], "capabilities": ["read", "git"],
+                               "effects": ["read_only", "filesystem"], "risk_ceiling": "normal"}}
+            find = SimpleNamespace(capability="read", side_effects="read", risk="normal")
+            add = SimpleNamespace(capability="git", side_effects="mutation", risk="normal")
+            self.assertIn("outside", _strategic_plan_denial(
+                plan, "find_files", "*.py|tests", find, root))
+            self.assertIn("outside", _strategic_plan_denial(
+                plan, "git_add", {"paths": ["src/a.py", "outside/b.py"]}, add, root))
+
     def test_tool_effect_capability_risk_and_workspace_must_fit_accepted_bounds(self):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory:
@@ -154,6 +196,43 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
             "steps": [{"id": "page", "title": "Create page", "description": "Write the page.",
                        "acceptance": ["Page exists", "Page content is correct"]}],
         })
+
+    def test_failed_plan_keeps_its_accepted_execution_bounds(self):
+        plan = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=plan["plan_id"], version=plan["version"],
+        )
+        self.controller.complete_plan(accepted, status="failed", task_manager=self.manager)
+        self.assertEqual(self.controller.state()["executing_plan"]["fingerprint"], accepted["fingerprint"])
+
+    def test_failed_plan_can_complete_after_resumed_work_passes_evidence(self):
+        plan = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=plan["plan_id"], version=plan["version"],
+        )
+        self.controller.complete_plan(accepted, status="failed", task_manager=self.manager)
+        task = self.manager.tasks[0]
+        task["status"] = "succeeded"
+        task["evidence"] = [{"success": True, "acceptance": "verified",
+                              "acceptance_ids": plan["steps"][0]["acceptance_ids"]}]
+        self.controller.complete_plan(accepted, task_manager=self.manager)
+        self.assertIsNone(self.controller.state()["executing_plan"])
+
+    def test_completion_checks_current_working_plan_membership(self):
+        plan = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=plan["plan_id"], version=plan["version"],
+        )
+        task = self.manager.tasks[0]
+        task["status"] = "succeeded"
+        task["evidence"] = [{"success": True, "acceptance": "verified",
+                              "acceptance_ids": plan["steps"][0]["acceptance_ids"]}]
+        self.manager.edit_plan(complexity="complex", plan_id=self.manager.working_plan.id,
+                               expected_revision=self.manager.working_plan.revision,
+                               operations=[{"op": "add", "ref": "extra", "task": {
+                                   "description": "Unbound extra work", "acceptance": ["Done"]}}])
+        with self.assertRaisesRegex(InteractionError, "linked to the accepted Strategic Plan"):
+            self.controller.complete_plan(accepted, task_manager=self.manager)
 
     def test_acceptance_atomically_links_working_plan_tasks_and_criteria(self):
         plan = self._proposal()
@@ -601,8 +680,9 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(manager.tasks[0]["acceptance"][0]["criterion"],
                          "Relevant path and tests are identified")
         self.assertEqual(self.controller.state()["effective_mode"], "agent")
-        self.controller.complete_plan(accepted)
-        self.assertEqual(self.controller.state()["effective_mode"], "ask")
+        with self.assertRaisesRegex(InteractionError, "requires its linked Working Plan evidence"):
+            self.controller.complete_plan(accepted)
+        self.assertEqual(self.controller.state()["effective_mode"], "agent")
         completed_duplicate, created_after_completion = self.controller.accept_plan(
             manager, plan_id=second["plan_id"], version=second["version"],
         )
@@ -646,8 +726,8 @@ class InteractionTests(unittest.TestCase):
             evidence = manager.record_evidence(
                 action="write_file", args="index.html|ready", result="Wrote index.html", success=True,
             )
-            self.assertEqual(evidence["task_id"], manager.tasks[0]["id"])
-            self.assertEqual(manager.tasks[0]["status"], "succeeded")
+            self.assertNotIn("task_id", evidence)
+            self.assertEqual(manager.tasks[0]["status"], "pending")
         finally:
             self.agent.tasks = previous_tasks
             self.agent._interaction_controller = previous_controller
@@ -671,12 +751,15 @@ class InteractionTests(unittest.TestCase):
             "plan_name": "Status page", "mode": "plan",
             "do_not_execute_until_approved": True,
             "overview": "Build after approval.", "assumptions": ["Python exists"],
+            "bounds": {"workspace_paths": ["site"], "capabilities": ["read", "write"],
+                       "effects": ["read_only", "filesystem"], "risk_ceiling": "normal"},
             "steps": [{"step": 1, "title": "Create page", "details": "Write index.html.",
                        "acceptance_criteria": ["index.html exists"]}],
         })
         parsed = self.agent._observe_model_response(shaped)
         self.assertEqual(parsed["plan_proposal"]["title"], "Status page")
         self.assertEqual(parsed["plan_proposal"]["steps"][0]["id"], "step-1")
+        self.assertEqual(parsed["plan_proposal"]["bounds"]["workspace_paths"], ["site"])
         self.assertEqual(parsed["tool_calls"], [])
 
         executable = json.dumps({
@@ -689,7 +772,7 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(sanitized["plan_proposal"]["title"], "Safe proposal")
         self.assertEqual(
             set(sanitized["plan_proposal"]["steps"][0]),
-            {"id", "title", "description", "acceptance"},
+            {"id", "title", "description", "acceptance", "acceptance_ids", "acceptance_verifications"},
         )
         self.assertEqual(
             sanitized["plan_proposal"]["steps"][0]["acceptance"],
@@ -814,6 +897,46 @@ class InteractionTests(unittest.TestCase):
         for forbidden in ("write_file", "run_cmd", "TaskList", "TaskDone", "DefineTool", "git_commit"):
             self.assertNotIn(forbidden, prompt)
         self.assertIn("The first Plan-mode response must be exactly one listed read-only Action", prompt)
+        self.assertIn('"criterion":"Observable result"', prompt)
+        self.assertIn('"verification":{"action":"read_file"', prompt)
+
+    def test_bounded_write_objective_allows_mutation_with_a_separate_read_verifier(self):
+        from openkyrozen.agent.types import ExecutionReceipt
+        previous = self.agent._interaction_controller
+        previous_tasks = self.agent.tasks
+        previous_root = self.agent._get_workspace_root()
+        manager = TaskManager(self.store, workspace_id="workspace", session_id="session")
+        controller = InteractionController(self.store, workspace_id="workspace", session_id="session")
+        proposal = controller.propose_plan({
+            "title": "Write page", "summary": "Write the page.", "bounds": {
+                "workspace_paths": ["site"], "capabilities": ["write"],
+                "effects": ["filesystem", "read_only"], "risk_ceiling": "normal",
+            }, "steps": [{"id": "page", "title": "Write page", "description": "Write the page.",
+                         "acceptance": [{"criterion": "Page can be read", "verification": {
+                             "action": "read_file", "arguments": {"path": "site/index.html"},
+                         }}]}],
+        })
+        controller.accept_plan(manager, plan_id=proposal["plan_id"], version=proposal["version"])
+        self.agent.tasks = manager
+        self.agent._interaction_controller = controller
+        self.agent._set_workspace_root(Path(self.directory.name))
+        receipt = ExecutionReceipt(
+            "receipt", "operation", "write_file", "site/index.html|ok", True,
+            "start", "end", True, "written", call_id="call", call_id_source="synthetic",
+            arguments={"path": "site/index.html", "content": "ok"}, tool_result=ToolResult(text="written"),
+        )
+        try:
+            with patch.object(self.agent.tasks, "mutation_matches_current_task", return_value=(False, "wrong task")) as match, \
+                    patch.object(self.agent, "_run_tool", return_value=receipt):
+                result = self.agent._execute_turn_action(
+                    "write_file", "site/index.html|ok", operation_scope="test", successful_operations=set(),
+                )
+            self.assertTrue(result.success, result.result)
+            match.assert_not_called()
+        finally:
+            self.agent._interaction_controller = previous
+            self.agent.tasks = previous_tasks
+            self.agent._set_workspace_root(previous_root)
 
     def test_plan_requires_inspection_and_normalizes_structured_prose(self):
         class LearningStub:
@@ -1055,7 +1178,9 @@ class InteractionTests(unittest.TestCase):
                     "risk_ceiling": "normal"}, "steps": [{
                     "id": "page", "title": "Create index.html",
                     "description": "Write index.html with the requested markup.",
-                    "acceptance": ["index.html exists"],
+                    "acceptance": [{"criterion": "index.html exists", "verification": {
+                        "action": "read_file", "arguments": {"path": "index.html"},
+                    }}],
                 }],
             })
             controller.accept_plan(
