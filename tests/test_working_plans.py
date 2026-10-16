@@ -539,6 +539,50 @@ class WorkingPlanModelTests(unittest.TestCase):
                 user_id="local", workspace_id="project", session_id="clear-terminal-tasks",
             )], ["cancelled", "cancelled"])
 
+    def test_clear_does_not_complete_a_partially_succeeded_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="clear-partial-plan")
+            plan = manager.update_plan(complexity="complex", tasks=[
+                {"description": "first", "acceptance": ["first is verified"]},
+                {"description": "second", "acceptance": ["second is verified"]},
+            ])
+            manager.set_status(0, "succeeded", evidence={
+                "success": True, "acceptance": "first is verified",
+            })
+
+            manager.clear()
+
+            with store.database.connection() as db:
+                status = db.execute(
+                    "SELECT status FROM working_plans WHERE id=?", (plan.id,),
+                ).fetchone()["status"]
+            self.assertEqual(status, "cancelled")
+
+    def test_legacy_update_accepts_unchanged_execution_after_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = TaskManager(EventStore(Path(directory) / "state.sqlite3"),
+                                  workspace_id="project", session_id="same-execution")
+            task_data = {
+                "description": "Read the source file", "acceptance": ["source was read"],
+                "execution": {"action": "read_file", "arguments": {"path": "src/main.py"}},
+            }
+            manager.update_plan(complexity="complex", tasks=[task_data])
+            task_id = manager.tasks[0]["id"]
+            task = dict(manager.tasks[0])
+            task["checkpoint"] = {
+                **task["checkpoint"], "ordered_receipt": True,
+                "args_sha256": "stable-fingerprint",
+            }
+            self.assertTrue(manager._persist(task, expected_status="pending"))
+            manager.tasks[0].update(task)
+            manager.record_evidence(task_id=task_id, action="read_file", args='{"path":"src/main.py"}',
+                                    args_fingerprint="stable-fingerprint", result="source", success=True)
+
+            manager.update_plan(complexity="complex", tasks=[{"id": task_id, **task_data}])
+
+            self.assertEqual(manager.tasks[0]["checkpoint"]["args_sha256"], "stable-fingerprint")
+
     def test_working_plan_isolated_by_user_workspace_and_session(self):
         with tempfile.TemporaryDirectory() as directory:
             store = EventStore(Path(directory) / "state.sqlite3")

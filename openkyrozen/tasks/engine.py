@@ -258,8 +258,15 @@ class TaskManager:
                 })
                 normalized = {key: validated[key] for key in fields if key != "execution"}
                 if "execution" in fields:
-                    base = {key: value for key, value in current.get("checkpoint", {}).items()
-                            if key not in {"action", "args", "args_sha256", "ordered_receipt"}}
+                    checkpoint = current.get("checkpoint", {})
+                    unchanged_execution = all(
+                        checkpoint.get(key) == validated["checkpoint"].get(key)
+                        for key in ("action", "args")
+                    )
+                    excluded = {"action", "args"} if unchanged_execution else {
+                        "action", "args", "args_sha256", "ordered_receipt",
+                    }
+                    base = {key: value for key, value in checkpoint.items() if key not in excluded}
                     normalized["checkpoint"] = {**base, **validated["checkpoint"]}
                 changed = any(current.get(key) != value for key, value in normalized.items())
                 if changed and (current["status"] != "pending" or current.get("attempts", 0)
@@ -749,17 +756,17 @@ class TaskManager:
         if self.working_plan is not None:
             plan = self.working_plan
             plan_ids = set(plan.task_ids)
+            self.working_plan = None
             for index, task in enumerate(self.tasks):
                 if task["id"] in plan_ids and task["status"] not in {"succeeded", "cancelled"}:
                     self.set_status(index, "cancelled")
-            if self.working_plan.status == "active" and self.store.set_working_plan_status(
+            if plan.status == "active" and self.store.set_working_plan_status(
                 plan.id, "cancelled", user_id=self.user_id, workspace_id=self.workspace_id,
                 session_id=self.session_id,
             ):
                 plan_task = next((task for task in self.tasks if task["id"] in plan_ids), None)
                 if plan_task is not None:
                     self._event(plan_task, "working_plan.cancelled", {"plan_id": plan.id})
-            self.working_plan = None
         self.tasks.clear()
         self._pending_completions.clear()
         self._evidence.clear()
