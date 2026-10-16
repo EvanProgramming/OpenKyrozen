@@ -44,6 +44,11 @@ class EventStore:
     def list_events(self, event_type: str | None=None, *, limit: int=100, workspace_id: str='default', session_id: str | None=None, user_id: str | None=None):
         return self.events.list_events(event_type, limit=limit, workspace_id=workspace_id, session_id=session_id, user_id=user_id)
 
+    def list_interaction_events(self, *, workspace_id: str, session_id: str, user_id: str):
+        return self.events.list_interaction_events(
+            workspace_id=workspace_id, session_id=session_id, user_id=user_id,
+        )
+
     def list_sessions(self, *, workspace_id: str='default', limit: int=100, user_id: str | None=None):
         return self.events.list_sessions(workspace_id=workspace_id, limit=limit, user_id=user_id)
 
@@ -161,6 +166,11 @@ class EventStore:
 
     def get_working_plan(self, *, user_id, workspace_id, session_id):
         return self.tasks.get_working_plan(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
+
+    def get_working_plan_by_id(self, plan_id, *, user_id, workspace_id, session_id):
+        return self.tasks.get_working_plan_by_id(
+            plan_id, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+        )
 
     def set_working_plan_status(self, plan_id, status, *, user_id, workspace_id, session_id, **expected):
         return self.tasks.set_working_plan_status(

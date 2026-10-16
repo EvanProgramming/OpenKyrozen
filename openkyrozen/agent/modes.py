@@ -189,12 +189,17 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
             acceptance = [acceptance]
         if not isinstance(acceptance, list) or not 1 <= len(acceptance) <= 5:
             raise InteractionError("each plan step requires 1-5 acceptance criteria")
+        supplied_verifications = step.get("acceptance_verifications")
+        if supplied_verifications is not None and (
+                not isinstance(supplied_verifications, list) or len(supplied_verifications) != len(acceptance)):
+            raise InteractionError("acceptance verifications must align with acceptance criteria")
         acceptance_verifications = []
         normalized_acceptance = []
-        for item in acceptance:
-            verification = None
+        for criterion_index, item in enumerate(acceptance):
+            verification = supplied_verifications[criterion_index] if supplied_verifications is not None else None
             if isinstance(item, dict) and set(item) == {"criterion", "verification"}:
                 verification = item["verification"]
+            if verification is not None:
                 if (not isinstance(verification, dict) or set(verification) != {"action", "arguments"}
                         or not isinstance(verification.get("action"), str)
                         or not verification["action"].strip() or not isinstance(verification.get("arguments"), dict)):
@@ -278,7 +283,7 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
         "read_only", "filesystem", "process", "remote", "destructive", "internal",
     })
     risk_ceiling = raw_bounds.get("risk_ceiling", "normal")
-    if risk_ceiling not in {"normal", "high"}:
+    if not isinstance(risk_ceiling, str) or risk_ceiling not in {"normal", "high"}:
         raise InteractionError("risk ceiling must be normal or high")
     bounds = {
         "workspace_paths": sorted(normalised_paths), "capabilities": sorted(capabilities),
@@ -432,8 +437,12 @@ class InteractionController:
         )
 
     def _history(self) -> list[dict[str, Any]]:
+        if callable(getattr(self.store, "list_interaction_events", None)):
+            return self.store.list_interaction_events(
+                workspace_id=self.workspace_id, session_id=self.session_id, user_id=self.user_id,
+            )
         events = self.store.list_events(
-            limit=10_000, workspace_id=self.workspace_id, session_id=self.session_id,
+            limit=None, workspace_id=self.workspace_id, session_id=self.session_id,
             user_id=self.user_id,
         )
         return [event for event in reversed(events)
@@ -593,18 +602,35 @@ class InteractionController:
             if version is not None and version != executing.get("version"):
                 raise InteractionError("accepted plan version is stale")
             return executing, False
-        if plan and executing:
-            raise InteractionError("a revised Strategic Plan requires reapproval before replacing the active plan")
         if not plan or (plan_id and plan_id != plan.get("plan_id")) or (version is not None and version != plan.get("version")):
             accepted = self.accepted_plan(plan_id, version)
             if accepted:
                 return accepted, False
             raise InteractionError("plan is not pending")
+        if executing and task_manager.working_plan is None:
+            task_manager.recover()
+        working_plan = task_manager.working_plan if executing else None
+        previous_tasks = [task for task in task_manager.tasks
+                          if working_plan and task.get("id") in working_plan.task_ids]
+        if any(task.get("status") == "running" for task in previous_tasks):
+            raise InteractionError("cannot replace a Strategic Plan while a Working Plan task is running")
         operations = []
         strategic_bindings = {}
+        reused: set[str] = set()
         for step in plan["steps"]:
+            description = f"{step['title']}: {step['description']}"
+            existing = next((task for task in previous_tasks
+                             if task.get("status") == "succeeded"
+                             and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("objective_id") == step["id"]
+                             and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("acceptance_ids") == step["acceptance_ids"]
+                             and task.get("description") == description
+                             and [item.get("criterion") if isinstance(item, dict) else item
+                                  for item in task.get("acceptance", [])] == step["acceptance"]), None)
+            if existing:
+                reused.add(existing["id"])
+                continue
             operations.append({"op": "add", "ref": step["id"], "task": {
-                "description": f"{step['title']}: {step['description']}",
+                "description": description,
                 "acceptance": step["acceptance"],
             }})
             strategic_bindings[step["id"]] = {
@@ -613,8 +639,17 @@ class InteractionController:
                 "acceptance_ids": step["acceptance_ids"],
                 "acceptance_verifications": step["acceptance_verifications"],
             }
-        working = task_manager.edit_plan(
-            complexity="complex", expected_revision=0, operations=operations,
+        for task in previous_tasks:
+            if task["id"] not in reused and task.get("status") in {"pending", "failed", "blocked"}:
+                operations.insert(0, {"op": "cancel", "task": task["id"]})
+        if working_plan and not operations:
+            task = previous_tasks[0]
+            operations.append({"op": "update", "task": task["id"], "fields": {"priority": task["priority"]}})
+        try:
+            working = task_manager.edit_plan(
+            complexity=working_plan.complexity if working_plan else "complex",
+            plan_id=working_plan.id if working_plan else None,
+            expected_revision=working_plan.revision if working_plan else 0, operations=operations,
             strategic_bindings=strategic_bindings,
             transaction_event={"event_type": "interaction.plan_accepted", "payload": {
                 "plan_id": plan["plan_id"], "version": plan["version"],
@@ -623,10 +658,20 @@ class InteractionController:
                 "plan_id": plan["plan_id"], "version": plan["version"],
                 "fingerprint": plan["fingerprint"],
             }},
-        )
+            )
+        except ValueError:
+            accepted = self.accepted_plan(plan["plan_id"], plan["version"])
+            if accepted and accepted.get("fingerprint") == plan["fingerprint"]:
+                return accepted, False
+            raise
+        bound_ids = [task["id"] for task in working["tasks"]
+                     if task.get("status") != "cancelled"
+                     and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("plan_id") == plan["plan_id"]
+                     and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("objective_id")
+                     in {step["id"] for step in plan["steps"]}]
         return {**plan, "working_plan_id": working["plan_id"],
                 "working_plan_revision": working["revision"],
-                "working_task_ids": [task["id"] for task in working["tasks"]]}, True
+                "working_task_ids": bound_ids}, True
 
     def complete_plan(self, plan: dict[str, Any], *, status: str = "completed",
                       task_manager: Any | None = None) -> None:
@@ -674,6 +719,18 @@ class InteractionController:
             "fingerprint": plan.get("fingerprint"), "working_plan_id": plan.get("working_plan_id"),
             "working_task_ids": task_ids or [], "status": status,
         })
+
+    def reconcile_plan_completion(self, task_manager: Any) -> None:
+        plan = self.state().get("executing_plan")
+        if not plan or not plan.get("working_plan_id"):
+            return
+        working = task_manager.working_plan
+        if working is None or working.id != plan["working_plan_id"]:
+            working = task_manager.restore_working_plan(plan["working_plan_id"])
+        if working is not None and working.status in {"completed", "cancelled"}:
+            self.complete_plan(
+                plan, status=working.status, task_manager=task_manager,
+            )
 
 
 def render_question(question: dict[str, Any]) -> str:

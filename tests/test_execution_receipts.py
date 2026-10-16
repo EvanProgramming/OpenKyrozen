@@ -264,6 +264,16 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         self.assertEqual(task["evidence"], [])
         self.assertEqual(task["status"], "pending")
 
+    def test_legacy_tool_receipt_uses_canonical_arguments_for_matching(self):
+        receipt = self.app.runtime._run_tool(
+            "write_file", "notes.txt|legacy pipe content", return_receipt=True,
+            operation_scope="review-regression",
+        )
+        self.assertEqual(receipt.arguments, {"path": "notes.txt", "content": "legacy pipe content"})
+        self.assertEqual(receipt.args_sha256, __import__("hashlib").sha256(
+            json.dumps(receipt.arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest())
+
     def test_early_legacy_rejection_publishes_correlated_tool_call(self):
         from openkyrozen.agent.events import RuntimeEventPublisher
 
@@ -300,7 +310,11 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         self.assertEqual(receipt.workspace_id, "project-workspace")
 
     def test_strategic_criterion_coverage_requires_receipt_verification(self):
-        from dataclasses import replace
+        def verified(receipt, status):
+            return ExecutionReceipt.from_dict({
+                **receipt.as_dict(),
+                "verification": {"status": status, "method": "fixture", "observed": None},
+            })
 
         runtime = self.app.runtime
         arguments = {"path": "criterion.txt", "content": "verified"}
@@ -318,9 +332,7 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
                 result="write reported", operation_scope="test", task_id=task["id"],
                 tool_result=ToolResult(text="write reported"),
             )
-            runtime._record_turn_receipt(replace(
-                receipt, verification={"status": status, "method": "fixture", "observed": None},
-            ))
+            runtime._record_turn_receipt(verified(receipt, status))
             self.assertNotIn("acceptance_ids", task["evidence"][-1])
 
         (self.root / "criterion.txt").write_text("verified", encoding="utf-8")
@@ -334,12 +346,19 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         self.assertEqual(task["evidence"][-1]["acceptance_ids"], ["criterion-content"])
 
     def test_strategic_task_stays_active_until_every_criterion_has_a_verified_receipt(self):
-        from dataclasses import replace
+        def verified(receipt):
+            return ExecutionReceipt.from_dict({
+                **receipt.as_dict(),
+                "verification": {"status": "verified", "method": "fixture", "observed": None},
+            })
 
         runtime = self.app.runtime
         write_args = {"path": "criterion.txt", "content": "verified"}
         read_args = {"path": "criterion.txt"}
-        self.plan("write_file", write_args)
+        runtime.tasks.update_plan(complexity="complex", tasks=[{
+            "description": "Verify requested content",
+            "acceptance": ["all declared criteria pass"],
+        }])
         task = runtime.tasks.tasks[0]
         criteria = [("criterion-content", "write_file", write_args),
                     ("criterion-readable", "read_file", read_args)]
@@ -359,13 +378,11 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
                 result="verified", operation_scope="test", task_id=task["id"],
                 tool_result=ToolResult(text="verified"),
             )
-            runtime._record_turn_receipt(replace(
-                receipt, verification={"status": "verified", "method": "fixture", "observed": None},
-            ))
+            runtime._record_turn_receipt(verified(receipt))
             if criterion_id == "criterion-content":
                 self.assertIn(task["status"], {"pending", "running"})
                 self.assertIsNotNone(runtime.tasks.active_working_task(task["id"]))
-        self.assertEqual(task["status"], "succeeded")
+        self.assertEqual(runtime.tasks.tasks[0]["status"], "succeeded")
 
     def test_legacy_execute_persists_receipt_in_project_scope(self):
         runtime = self.app.runtime

@@ -79,6 +79,15 @@ class TasksRepository:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def get_working_plan_by_id(self, plan_id: str, *, user_id: str,
+                               workspace_id: str, session_id: str) -> dict[str, Any] | None:
+        with self.database.connection() as db:
+            row = db.execute(
+                "SELECT * FROM working_plans WHERE id=? AND user_id=? AND workspace_id=? AND session_id=?",
+                (plan_id, user_id, workspace_id, session_id or ""),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def set_working_plan_status(self, plan_id: str, status: str, *, user_id: str,
                                 workspace_id: str, session_id: str | None,
                                 expected_revision: int | None = None,

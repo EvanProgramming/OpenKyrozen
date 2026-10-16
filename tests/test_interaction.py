@@ -27,6 +27,30 @@ from openkyrozen.workspace.context import resolve_launch_context
 
 
 class StrategicPlanExecutionBoundsTests(unittest.TestCase):
+    def test_json_string_arguments_are_checked_against_accepted_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan = {"bounds": {"workspace_paths": ["src"], "capabilities": ["read", "write"],
+                               "effects": ["read_only", "filesystem"], "risk_ceiling": "normal"}}
+            read = SimpleNamespace(capability="read", side_effects="read_only", risk="normal")
+            write = SimpleNamespace(capability="write", side_effects="filesystem", risk="normal")
+            search_denial = _strategic_plan_denial(
+                plan, "search_files", '{"directory":"outside"}', read, Path(directory))
+            self.assertIsNotNone(search_denial)
+            self.assertIn("outside", _strategic_plan_denial(
+                plan, "edit_file", '{"path":"outside/file.py","old_text":"x","new_text":"y"}',
+                write, Path(directory)))
+
+    def test_non_string_risk_ceiling_is_a_plan_validation_error(self):
+        proposal = {
+            "title": "Change", "summary": "Make the change.", "steps": [{
+                "title": "Update", "description": "Update safely.", "acceptance": ["Tests pass"],
+            }],
+            "bounds": {"workspace_paths": ["."], "capabilities": ["read"],
+                       "effects": ["read_only"], "risk_ceiling": []},
+        }
+        with self.assertRaises(InteractionError):
+            validate_plan_proposal(proposal)
+
     def test_full_path_objectives_do_not_match_a_sibling_with_the_same_basename(self):
         from openkyrozen.agent.executor import _file_mutation_matches_objective
         objective = {"title": "Write src/public/index.html", "description": "Update the public page."}
@@ -117,6 +141,20 @@ class StrategicPlanExecutionBoundsTests(unittest.TestCase):
 
 
 class StrategicPlanContractTests(unittest.TestCase):
+    def test_revalidating_a_normalized_plan_preserves_verified_acceptance_contracts(self):
+        proposal = {
+            "title": "Change", "summary": "Make the change.",
+            "steps": [{"id": "inspect", "title": "Inspect", "description": "Read the file.",
+                       "acceptance": [{"criterion": "File is readable", "verification": {
+                           "action": "read_file", "arguments": {"path": "src/file.txt"},
+                       }}]}],
+        }
+        first = validate_plan_proposal(proposal)
+        second = validate_plan_proposal(first)
+        self.assertEqual(second["steps"][0]["acceptance_verifications"],
+                         first["steps"][0]["acceptance_verifications"])
+        self.assertEqual(second["steps"][0]["acceptance_ids"], first["steps"][0]["acceptance_ids"])
+
     def test_strategic_plan_has_stable_objective_criteria_and_approved_bounds(self):
         proposal = {
             "title": "Change", "summary": "Make the requested change.", "assumptions": [],
@@ -197,6 +235,131 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
                        "acceptance": ["Page exists", "Page content is correct"]}],
         })
 
+    def test_working_plan_edits_cannot_add_or_redefine_unbound_strategic_work(self):
+        plan = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=plan["plan_id"], version=plan["version"],
+        )
+        task_id = accepted["working_task_ids"][0]
+        with self.assertRaisesRegex(ValueError, "(?i)strategic"):
+            self.manager.edit_plan(
+                plan_id=self.manager.working_plan.id, expected_revision=self.manager.working_plan.revision,
+                operations=[{"op": "add", "ref": "unbound", "task": {
+                    "description": "Write src/other.py", "acceptance": ["Other file is written"],
+                }}],
+            )
+        with self.assertRaisesRegex(ValueError, "(?i)strategic"):
+            self.manager.edit_plan(
+                plan_id=self.manager.working_plan.id, expected_revision=self.manager.working_plan.revision,
+                operations=[{"op": "update", "task": task_id, "fields": {
+                    "description": "Replace the objective with another file write",
+                }}],
+            )
+        result = self.manager.edit_plan(
+            plan_id=self.manager.working_plan.id, expected_revision=self.manager.working_plan.revision,
+            operations=[{"op": "update", "task": task_id, "fields": {"priority": 1}}],
+        )
+        binding = next(task for task in result["tasks"] if task["id"] == task_id)["checkpoint"]["strategic_plan"]
+        self.assertEqual(binding["fingerprint"], accepted["fingerprint"])
+
+    def test_accepting_material_revision_replaces_executing_plan_atomically(self):
+        first = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=first["plan_id"], version=first["version"],
+        )
+        old_task_id = accepted["working_task_ids"][0]
+        revision = self.controller.propose_plan({
+            "title": "Revised page", "summary": "Update the accepted page objective.",
+            "bounds": first["bounds"],
+            "steps": [{"id": "page", "title": "Create revised page", "description": "Write the revised page.",
+                       "acceptance": ["Page exists", "Page content is correct"]}],
+        })
+        updated, created = self.controller.accept_plan(
+            self.manager, plan_id=revision["plan_id"], version=revision["version"],
+        )
+        self.assertTrue(created)
+        self.assertEqual(updated["version"], 2)
+        self.assertEqual(self.controller.state()["executing_plan"]["version"], 2)
+        self.assertIsNone(self.controller.state()["pending_plan"])
+        self.assertEqual(self.manager.working_plan.id, accepted["working_plan_id"])
+        self.assertEqual(next(task for task in self.manager.tasks if task["id"] == old_task_id)["status"], "cancelled")
+        self.assertEqual(len(updated["working_task_ids"]), 1)
+        self.assertNotEqual(updated["working_task_ids"][0], old_task_id)
+
+    def test_restart_reconciles_completion_after_working_plan_terminalization(self):
+        plan = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=plan["plan_id"], version=plan["version"],
+        )
+        task = self.manager.tasks[0]
+        evidence = {"success": True, "acceptance": "verified",
+                    "acceptance_ids": task["checkpoint"]["strategic_plan"]["acceptance_ids"]}
+        self.assertTrue(self.manager.set_status(0, "succeeded", evidence=evidence))
+        self.assertEqual(self.manager.working_plan.status, "completed")
+
+        restored_manager = TaskManager(self.store, workspace_id="project", session_id="strategic-session")
+        restored_manager.recover()
+        restored_controller = InteractionController(
+            self.store, workspace_id="project", session_id="strategic-session",
+        )
+        restored_controller.reconcile_plan_completion(restored_manager)
+        self.assertIsNone(restored_controller.state()["executing_plan"])
+        self.assertEqual(self.store.list_events(
+            "interaction.plan_completed", workspace_id="project", session_id="strategic-session",
+        )[-1]["payload"]["status"], "completed")
+
+    def test_legacy_receipt_matching_preserves_strategic_task_binding(self):
+        plan = self.controller.propose_plan({
+            "title": "Read the page", "summary": "Read and verify the page.",
+            "steps": [{"id": "read", "title": "Read", "description": "Read src/page.txt.",
+                       "acceptance": [{"criterion": "Page is readable", "verification": {
+                           "action": "read_file", "arguments": {"path": "src/page.txt"},
+                       }}]}],
+        })
+        self.controller.accept_plan(self.manager, plan_id=plan["plan_id"], version=plan["version"])
+        task = self.manager.tasks[0]
+        result = self.manager.record_evidence(
+            action="read_file", args='{"path":"src/page.txt"}', result="contents", success=True,
+            verification_status="verified",
+        )
+        self.assertEqual(result["task_id"], task["id"])
+        self.assertEqual(task["checkpoint"]["strategic_plan"]["plan_id"], plan["plan_id"])
+
+    def test_duplicate_acceptance_racing_with_commit_returns_existing_plan(self):
+        plan = self._proposal()
+        winner = InteractionController(self.store, workspace_id="project", session_id="strategic-session")
+        winner_manager = TaskManager(self.store, workspace_id="project", session_id="strategic-session")
+        loser_manager = TaskManager(self.store, workspace_id="project", session_id="strategic-session")
+        original_edit = loser_manager.edit_plan
+
+        def race(**kwargs):
+            winner.accept_plan(winner_manager, plan_id=plan["plan_id"], version=plan["version"])
+            return original_edit(**kwargs)
+
+        with patch.object(loser_manager, "edit_plan", side_effect=race):
+            duplicate, created = self.controller.accept_plan(
+                loser_manager, plan_id=plan["plan_id"], version=plan["version"],
+            )
+        self.assertFalse(created)
+        self.assertEqual(duplicate["working_plan_id"], winner_manager.working_plan.id)
+        self.assertEqual(len(self.store.list_events(
+            "interaction.plan_accepted", workspace_id="project", session_id="strategic-session",
+        )), 1)
+
+    def test_interaction_state_keeps_accepted_bounds_after_generic_event_window(self):
+        plan = self._proposal()
+        self.controller.accept_plan(self.manager, plan_id=plan["plan_id"], version=plan["version"])
+        now = "2026-10-17T00:00:00Z"
+        with self.store.database.connection() as db:
+            db.executemany(
+                "INSERT INTO events(id,event_type,payload,user_id,workspace_id,session_id,task_id,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                [(f"noise-{index}", "unrelated.event", "{}", "local", "project",
+                  "strategic-session", None, now) for index in range(10_001)],
+            )
+        restored = InteractionController(self.store, workspace_id="project", session_id="strategic-session")
+        self.assertEqual(restored.state()["executing_plan"]["fingerprint"], plan["fingerprint"])
+
     def test_failed_plan_keeps_its_accepted_execution_bounds(self):
         plan = self._proposal()
         accepted, _ = self.controller.accept_plan(
@@ -218,7 +381,7 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
         self.controller.complete_plan(accepted, task_manager=self.manager)
         self.assertIsNone(self.controller.state()["executing_plan"])
 
-    def test_completion_checks_current_working_plan_membership(self):
+    def test_strategic_working_plan_rejects_unbound_additions(self):
         plan = self._proposal()
         accepted, _ = self.controller.accept_plan(
             self.manager, plan_id=plan["plan_id"], version=plan["version"],
@@ -227,12 +390,13 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
         task["status"] = "succeeded"
         task["evidence"] = [{"success": True, "acceptance": "verified",
                               "acceptance_ids": plan["steps"][0]["acceptance_ids"]}]
-        self.manager.edit_plan(complexity="complex", plan_id=self.manager.working_plan.id,
-                               expected_revision=self.manager.working_plan.revision,
-                               operations=[{"op": "add", "ref": "extra", "task": {
-                                   "description": "Unbound extra work", "acceptance": ["Done"]}}])
-        with self.assertRaisesRegex(InteractionError, "linked to the accepted Strategic Plan"):
-            self.controller.complete_plan(accepted, task_manager=self.manager)
+        with self.assertRaisesRegex(ValueError, "approved strategic binding"):
+            self.manager.edit_plan(complexity="complex", plan_id=self.manager.working_plan.id,
+                                   expected_revision=self.manager.working_plan.revision,
+                                   operations=[{"op": "add", "ref": "extra", "task": {
+                                       "description": "Unbound extra work", "acceptance": ["Done"]}}])
+        self.controller.complete_plan(accepted, task_manager=self.manager)
+        self.assertIsNone(self.controller.state()["executing_plan"])
 
     def test_acceptance_atomically_links_working_plan_tasks_and_criteria(self):
         plan = self._proposal()
@@ -1246,16 +1410,23 @@ class InteractionTests(unittest.TestCase):
                 '```json\n{"questions":[{"id":"scope","header":"Scope",'
                 '"prompt":"Which target?","choices":["Core","All"]}]}\n```',
                 'PlanProposal:\n```json\n{"title":"Marker","summary":"Create a marker safely.",'
+                '"bounds":{"workspace_paths":["."],"capabilities":["read","write"],'
+                '"effects":["read_only","filesystem"],"risk_ceiling":"normal"},'
                 '"assumptions":[],"steps":[{"id":"write-marker","title":"Write marker",'
-                '"description":"Create marker.txt with requested content.","acceptance":["marker.txt exists"]}]}\n```',
+                '"description":"Create marker.txt with requested content.","acceptance":[{"criterion":"marker.txt exists",'
+                '"verification":{"action":"read_file","arguments":{"path":"marker.txt"}}}]}]}\n```',
                 'PlanProposal:\n```json\n{"title":"Marker with verification","summary":"Create and verify a marker.",'
+                '"bounds":{"workspace_paths":["."],"capabilities":["read","write"],'
+                '"effects":["read_only","filesystem"],"risk_ceiling":"normal"},'
                 '"assumptions":[],"steps":[{"id":"write-marker","title":"Write marker",'
-                '"description":"Create marker.txt with requested content.","acceptance":["marker.txt exists"]}]}\n```',
+                '"description":"Create marker.txt with requested content.","acceptance":[{"criterion":"marker.txt exists",'
+                '"verification":{"action":"read_file","arguments":{"path":"marker.txt"}}}]}]}\n```',
                 'Action: {"action":"write_file","args":"marker.txt|ready"}',
                 'AskUser:\n```json\n{"questions":[{"id":"verify","header":"Verification",'
                 '"prompt":"Which accepted check should finish the task?","choices":["File exists","Read contents"]}]}\n```',
                 'Action: {"action":"read_file","args":"marker.txt"}',
                 'TaskDone: 0\nMarker created and verified.',
+                'Marker created and verified.',
             ]
             try:
                 stream_events = []

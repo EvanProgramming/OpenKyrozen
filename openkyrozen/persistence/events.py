@@ -45,6 +45,17 @@ class EventsRepository:
             ).fetchall()
         return [dict(row, payload=self.database._loads(row["payload"], {})) for row in rows]
 
+    def list_interaction_events(self, *, workspace_id: str, session_id: str,
+                                user_id: str) -> list[dict[str, Any]]:
+        with self.database.connection() as db:
+            rows = db.execute(
+                "SELECT * FROM events WHERE workspace_id=? AND session_id=? AND user_id=? "
+                "AND (event_type LIKE 'interaction.%' OR event_type='history.restored') "
+                "ORDER BY created_at,rowid",
+                (workspace_id, session_id, user_id),
+            ).fetchall()
+        return [dict(row, payload=self.database._loads(row["payload"], {})) for row in rows]
+
 
     def list_sessions(self, *, workspace_id: str = "default", limit: int = 100,
                       user_id: str | None = None) -> list[dict[str, Any]]:

@@ -231,6 +231,14 @@ class TaskManager:
         original_ids = {task["id"] for task in previous_tasks}
         tasks = deepcopy(previous_tasks)
         by_id = {task["id"]: task for task in tasks}
+        has_strategic_tasks = any(
+            isinstance(task.get("checkpoint"), dict) and isinstance(task["checkpoint"].get("strategic_plan"), dict)
+            for task in previous_tasks
+        )
+        is_strategic_acceptance = bool(
+            transaction_event and transaction_event.get("event_type") == "interaction.plan_accepted"
+            and transaction_event.get("expected_proposal")
+        )
         references: dict[str, str] = {}
         used_strategic_bindings: set[str] = set()
         now = utc_now()
@@ -263,6 +271,8 @@ class TaskManager:
                 if not isinstance(ref, str) or not ref.strip() or ref in references or ref in by_id:
                     raise ValueError("task references must be unique nonempty strings")
                 fields = self._plan_task_fields(operation["task"])
+                if has_strategic_tasks and (not is_strategic_acceptance or not strategic_bindings or ref not in strategic_bindings):
+                    raise ValueError("new work in a Strategic Plan requires an approved strategic binding")
                 task_id = f"task_{scope_key}_{uuid.uuid4().hex}"
                 task = {"id": task_id, **fields, "status": "pending", "attempts": 0,
                         "checkpoint": fields["checkpoint"], "evidence": [], "created_at": now,
@@ -276,6 +286,11 @@ class TaskManager:
                             or not isinstance(binding.get("acceptance_ids"), list)
                             or not isinstance(binding.get("acceptance_verifications"), list)):
                         raise ValueError("strategic task binding is invalid")
+                    accepted_payload = (transaction_event or {}).get("payload", {})
+                    if (not is_strategic_acceptance
+                            or any(binding.get(key) != accepted_payload.get(key)
+                                   for key in ("plan_id", "version", "fingerprint"))):
+                        raise ValueError("strategic task binding must match the approved plan")
                     task["checkpoint"] = {**task["checkpoint"], "strategic_plan": deepcopy(binding)}
                     verifications = binding["acceptance_verifications"]
                     if len(verifications) != len(fields["acceptance"]):
@@ -305,6 +320,10 @@ class TaskManager:
                 if not isinstance(fields, dict) or not fields or set(fields) - {"description", "acceptance", "dependencies", "priority", "execution"}:
                     raise ValueError("update fields are empty or unsupported")
                 current = by_id[task_id]
+                if (has_strategic_tasks and isinstance(current.get("checkpoint"), dict)
+                        and isinstance(current["checkpoint"].get("strategic_plan"), dict)
+                        and set(fields) - {"priority", "dependencies"}):
+                    raise ValueError("Strategic Plan task intent cannot change without approval")
                 validated = self._plan_task_fields({
                     "description": fields.get("description", current["description"]),
                     "acceptance": fields.get("acceptance", []),
@@ -702,6 +721,7 @@ class TaskManager:
                 }
             elif inferred and not (task.get("checkpoint") or {}).get("action"):
                 candidate["checkpoint"] = {
+                    **(task.get("checkpoint") or {}),
                     "action": canonical, "args": persisted_args,
                     **({"args_sha256": args_fingerprint} if args_fingerprint else {}),
                 }
@@ -1030,5 +1050,24 @@ class TaskManager:
         else:
             self.tasks = unfinished
         return unfinished
+
+    def restore_working_plan(self, plan_id: str) -> WorkingPlan | None:
+        saved = self.store.get_working_plan_by_id(
+            plan_id, user_id=self.user_id, workspace_id=self.workspace_id,
+            session_id=self.session_id or "",
+        )
+        if saved is None:
+            return None
+        tasks = self.store.list_working_plan_tasks(
+            plan_id, user_id=self.user_id, workspace_id=self.workspace_id,
+            session_id=self.session_id or "",
+        )
+        self.working_plan = WorkingPlan(
+            id=saved["id"], complexity=saved["complexity"], status=saved["status"],
+            task_ids=tuple(task["id"] for task in tasks), created_at=saved["created_at"],
+            updated_at=saved["updated_at"], revision=int(saved.get("revision", 0)),
+        )
+        self.tasks = tasks + [task for task in self.tasks if task["id"] not in self.working_plan.task_ids]
+        return self.working_plan
 
 from .worker import TaskWorker

@@ -28,6 +28,7 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
     previous_capability_token = self._execution_capability_token
     original_user_input = user_input
     history_token: TurnToken | None = None
+    self._interaction_controller.reconcile_plan_completion(self.tasks)
     try:
         history_token = self.history_manager().begin_turn(
             conversation=list(self.short_term_memory), interaction=self._interaction_controller.state(user_input),
@@ -107,6 +108,7 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
             runtime.turn_end(reply="", success=False,
                              error=f"{type(exc).__name__}: {exc}", **context)
             raise
+        self._interaction_controller.reconcile_plan_completion(self.tasks)
         state_after = self._interaction_controller.state()
         working_plan = self.tasks.working_plan
         active_task_ids = (list(working_plan.task_ids)
