@@ -299,6 +299,74 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         )
         self.assertEqual(receipt.workspace_id, "project-workspace")
 
+    def test_strategic_criterion_coverage_requires_receipt_verification(self):
+        from dataclasses import replace
+
+        runtime = self.app.runtime
+        arguments = {"path": "criterion.txt", "content": "verified"}
+        self.plan("write_file", arguments)
+        task = runtime.tasks.tasks[0]
+        task["acceptance"] = [{
+            "id": "criterion-content", "criterion": "File has approved content", "action": "write_file",
+            "args": json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        }]
+        task.setdefault("checkpoint", {})["strategic_plan"] = {"acceptance_ids": ["criterion-content"]}
+
+        for status in ("failed", "unavailable"):
+            receipt = runtime._make_execution_receipt(
+                action="write_file", args=arguments, authorized=True, started_at="start", success=True,
+                result="write reported", operation_scope="test", task_id=task["id"],
+                tool_result=ToolResult(text="write reported"),
+            )
+            runtime._record_turn_receipt(replace(
+                receipt, verification={"status": status, "method": "fixture", "observed": None},
+            ))
+            self.assertNotIn("acceptance_ids", task["evidence"][-1])
+
+        (self.root / "criterion.txt").write_text("verified", encoding="utf-8")
+        receipt = runtime._make_execution_receipt(
+            action="write_file", args=arguments, authorized=True, started_at="start", success=True,
+            result="write verified", operation_scope="test", task_id=task["id"],
+            tool_result=ToolResult(text="write verified"),
+        )
+        self.assertEqual(receipt.verification["status"], "verified")
+        runtime._record_turn_receipt(receipt)
+        self.assertEqual(task["evidence"][-1]["acceptance_ids"], ["criterion-content"])
+
+    def test_strategic_task_stays_active_until_every_criterion_has_a_verified_receipt(self):
+        from dataclasses import replace
+
+        runtime = self.app.runtime
+        write_args = {"path": "criterion.txt", "content": "verified"}
+        read_args = {"path": "criterion.txt"}
+        self.plan("write_file", write_args)
+        task = runtime.tasks.tasks[0]
+        criteria = [("criterion-content", "write_file", write_args),
+                    ("criterion-readable", "read_file", read_args)]
+        task["acceptance"] = [{
+            "id": criterion_id, "criterion": criterion_id, "action": action,
+            "args": json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        } for criterion_id, action, arguments in criteria]
+        task.setdefault("checkpoint", {})["strategic_plan"] = {
+            "acceptance_ids": [criterion_id for criterion_id, _, _ in criteria],
+        }
+
+        for criterion_id, action, arguments in criteria:
+            if action == "write_file":
+                (self.root / "criterion.txt").write_text("verified", encoding="utf-8")
+            receipt = runtime._make_execution_receipt(
+                action=action, args=arguments, authorized=True, started_at="start", success=True,
+                result="verified", operation_scope="test", task_id=task["id"],
+                tool_result=ToolResult(text="verified"),
+            )
+            runtime._record_turn_receipt(replace(
+                receipt, verification={"status": "verified", "method": "fixture", "observed": None},
+            ))
+            if criterion_id == "criterion-content":
+                self.assertIn(task["status"], {"pending", "running"})
+                self.assertIsNotNone(runtime.tasks.active_working_task(task["id"]))
+        self.assertEqual(task["status"], "succeeded")
+
     def test_legacy_execute_persists_receipt_in_project_scope(self):
         runtime = self.app.runtime
         session = runtime.current_session

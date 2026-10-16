@@ -6,6 +6,7 @@ import json
 import re
 import uuid
 import time
+from pathlib import Path
 from typing import Any
 from openkyrozen.persistence.models import stable_hash, utc_now
 from openkyrozen.app.config import AgentConfigError, effective_capabilities, load_agent_config
@@ -15,6 +16,50 @@ from openkyrozen.tools.models import (CommandResult, ToolError, ToolResult, comm
 from openkyrozen.security.tool_policy import tool_capability
 from openkyrozen.agent.types import ExecutionReceipt
 from openkyrozen.tasks.models import _receipt_args
+
+
+def _strategic_plan_denial(plan, action, args, spec, workspace_root):
+    """Return a denial when a tool exceeds the bounds the user accepted."""
+    bounds = plan.get("bounds") if isinstance(plan, dict) else None
+    if not isinstance(bounds, dict):
+        return "accepted plan has no enforceable bounds"
+    capabilities = set(bounds.get("capabilities", ()))
+    effects = set(bounds.get("effects", ()))
+    if not spec or spec.capability not in capabilities:
+        return "tool capability is outside the accepted plan"
+    effect = {
+        "none": "read_only", "read": "read_only", "read_only": "read_only",
+        "mutation": "filesystem", "internal_write": "internal", "orchestration": "internal",
+        "stateful": "internal", "external": "remote", "unknown": "unknown",
+    }.get(spec.side_effects, spec.side_effects)
+    if effect not in effects:
+        return "tool effect is outside the accepted plan"
+    if effect == "process":
+        return "process effects cannot be confined to approved workspace paths"
+    if spec.risk == "high" and bounds.get("risk_ceiling") != "high":
+        return "tool risk exceeds the accepted plan"
+
+    paths = {}
+    if isinstance(args, dict):
+        paths = {key: value for key, value in args.items()
+                 if key in {"path", "file_path", "directory", "destination", "target_path", "clone_path"}
+                 and isinstance(value, str) and value.strip()}
+    elif action in {"write_file", "read_file", "edit_file", "search_files", "list_dir", "list_tree"}:
+        raw = str(args).split("|", 1)[0].strip()
+        if raw:
+            paths = {"path": raw}
+    if effect == "filesystem" and not paths:
+        return "filesystem effect has no path that can be checked against the accepted scope"
+    root = Path(workspace_root).expanduser().resolve()
+    allowed_roots = [(root / str(path)).resolve() for path in bounds.get("workspace_paths", ())]
+    if any(allowed != root and root not in allowed.parents for allowed in allowed_roots):
+        return "accepted workspace scope resolves outside the active workspace"
+    for value in paths.values():
+        candidate = Path(value).expanduser()
+        candidate = (candidate if candidate.is_absolute() else root / candidate).resolve()
+        if not any(candidate == allowed or allowed in candidate.parents for allowed in allowed_roots):
+            return "tool path is outside the accepted workspace scope"
+    return None
 
 
 def _notify_tool_execute(self, action: str, args: Any, result: ToolResult) -> None:
@@ -241,6 +286,15 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         outcome = tool_failure("invalid_arguments", f"Error: unknown tool '{action}'")
         self._notify_tool_execute(action, args, outcome)
         return finish(outcome)
+    executing_plan = self._interaction_controller.state().get("executing_plan")
+    if executing_plan:
+        denial = _strategic_plan_denial(
+            executing_plan, action, args, self.tool_registry.specs.get(action), self._get_workspace_root(),
+        )
+        if denial:
+            outcome = tool_failure("permission_denied", f"Error: {denial}.")
+            self._notify_tool_execute(action, args, outcome)
+            return finish(outcome)
     from openkyrozen.security.permission_gate import git_read_arguments_allowed
     if not git_read_arguments_allowed(action, args):
         outcome = tool_failure("invalid_arguments", "Error: read-only Git tools reject output-writing and external-execution options.")
@@ -291,6 +345,19 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
             and request.session_id == self.current_session.session_id
             and self._execution_capability_token.allows(current_spec.capability)
         )
+    if authorized and executing_plan:
+        current_plan = self._interaction_controller.state().get("executing_plan")
+        if (not current_plan or current_plan.get("plan_id") != executing_plan.get("plan_id")
+                or current_plan.get("fingerprint") != executing_plan.get("fingerprint")):
+            denial = "accepted plan changed while approval was pending"
+        else:
+            denial = _strategic_plan_denial(
+                current_plan, action, args, self.tool_registry.specs.get(action), self._get_workspace_root(),
+            )
+        if denial:
+            outcome = tool_failure("permission_denied", f"Error: {denial}.")
+            self._notify_tool_execute(action, args, outcome)
+            return finish(outcome)
     if not authorized:
         outcome = tool_failure("approval_denied", f"Error: {action} requires confirmation. Approve it interactively or set KYROZEN_APPROVAL_MODE=never for an explicitly automated CLI.")
         self._notify_tool_execute(action, args, outcome)
@@ -423,11 +490,15 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
         bool(explicit_task_id) or receipt.call_id_source == "legacy"
         or (allow_legacy_task_matching and receipt.call_id_source == "synthetic")
     )
+    matching_args = (json.dumps(receipt.arguments, ensure_ascii=False, allow_nan=False,
+                                 sort_keys=True, separators=(",", ":"))
+                     if receipt.arguments is not None else receipt.args)
     evidence = {} if receipt.action in TOOLS or not should_reconcile else self.tasks.record_evidence(
-        task_id=explicit_task_id, action=receipt.action, args=receipt.args,
+        task_id=explicit_task_id, action=receipt.action, args=matching_args,
         args_projection=receipt_projection["args"], args_fingerprint=receipt.args_sha256,
         result=receipt_projection["result"], success=receipt.success,
         acceptance=task_acceptance, receipt_id=receipt.receipt_id,
+        verification_status=receipt.verification.get("status"),
     )
     task_id = evidence.get("task_id")
     effective_acceptance = evidence.get("acceptance") or (
@@ -435,11 +506,18 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
     )
     if task_id:
         task = next((item for item in self.tasks.tasks if item["id"] == task_id), None)
-        if task and not (task.get("checkpoint") or {}).get("action"):
+        checkpoint = (task or {}).get("checkpoint") or {}
+        if task and not checkpoint.get("action") and not checkpoint.get("strategic_plan"):
             self.tasks.update_checkpoint(task_id, {"action": receipt.action, "args": receipt_projection["args"]})
     if task_id and receipt.success and effective_acceptance:
-        index = next(index for index, task in enumerate(self.tasks.tasks) if task["id"] == task_id)
-        self.tasks.set_status(index, "succeeded")
+        task = next((item for item in self.tasks.tasks if item["id"] == task_id), None)
+        strategic = (task or {}).get("checkpoint", {}).get("strategic_plan", {})
+        required = set(strategic.get("acceptance_ids", []))
+        covered = {criterion_id for item in (task or {}).get("evidence", [])
+                   for criterion_id in item.get("acceptance_ids", [])}
+        if not required or required <= covered:
+            index = next(index for index, item in enumerate(self.tasks.tasks) if item["id"] == task_id)
+            self.tasks.set_status(index, "succeeded")
     receipt_payload = receipt_projection
     if receipt.task_id is not None and receipt.task_id != task_id:
         receipt_payload["requested_task_id"] = receipt.task_id

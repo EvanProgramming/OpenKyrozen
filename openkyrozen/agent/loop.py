@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from openkyrozen.tasks.engine import is_complete, is_terminal
+from openkyrozen.tasks.engine import is_terminal
 from openkyrozen.agent.modes import InteractionError, is_plan_acceptance
 from openkyrozen.workspace.history_port import TurnToken
 
@@ -108,10 +108,16 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
                              error=f"{type(exc).__name__}: {exc}", **context)
             raise
         state_after = self._interaction_controller.state()
-        if (active_plan and not state_after.get("pending_question") and self.tasks.tasks
-                and all(is_terminal(task) for task in self.tasks.tasks)):
-            status = "completed" if all(is_complete(task) for task in self.tasks.tasks) else "failed"
-            self._interaction_controller.complete_plan(active_plan, status=status)
+        active_task_ids = active_plan.get("working_task_ids", []) if active_plan else []
+        active_tasks = [task for task in self.tasks.tasks if task.get("id") in active_task_ids]
+        if (active_plan and active_task_ids and not state_after.get("pending_question") and active_tasks
+                and all(is_terminal(task) for task in active_tasks)):
+            statuses = {task.get("status") for task in active_tasks}
+            status = ("completed" if statuses == {"succeeded"} else
+                      "cancelled" if statuses <= {"succeeded", "cancelled"} else "failed")
+            self._interaction_controller.complete_plan(
+                active_plan, status=status, task_manager=self.tasks,
+            )
             self._emit_stream_event({"event": "interaction", "interaction": self.interaction_envelope()})
         self._track_fix_outcome(original_user_input, reply)
         runtime.turn_end(reply=reply, success=True, **context)

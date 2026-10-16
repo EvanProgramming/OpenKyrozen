@@ -208,7 +208,8 @@ class TasksRepository:
 
     def apply_working_plan_edit(self, plan: dict[str, Any], tasks: list[dict[str, Any]], *,
                                 expected_revision: int, expected_tasks: list[dict[str, Any]],
-                                user_id: str, workspace_id: str, session_id: str | None) -> int:
+                                user_id: str, workspace_id: str, session_id: str | None,
+                                transaction_event: dict[str, Any] | None = None) -> int:
         """Commit a validated plan snapshot only if its revision and execution state are current."""
         import uuid
 
@@ -217,6 +218,20 @@ class TasksRepository:
         with self.database._lock, self.database.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
+                expected_proposal = (transaction_event or {}).get("expected_proposal")
+                if expected_proposal is not None:
+                    latest = db.execute(
+                        "SELECT event_type,payload FROM events WHERE user_id=? AND workspace_id=? "
+                        "AND session_id=? AND event_type IN ('interaction.plan_proposed', "
+                        "'interaction.plan_accepted', 'interaction.plan_cancelled') "
+                        "ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                        (user_id, workspace_id, scoped_session),
+                    ).fetchone()
+                    latest_payload = self.database._loads(latest["payload"], {}) if latest else {}
+                    if (not latest or latest["event_type"] != "interaction.plan_proposed"
+                            or any(latest_payload.get(key) != value
+                                   for key, value in expected_proposal.items())):
+                        raise ValueError("Strategic Plan proposal changed; reload before accepting")
                 current = db.execute(
                     "SELECT * FROM working_plans WHERE user_id=? AND workspace_id=? AND session_id=? AND status='active'",
                     (user_id, workspace_id, scoped_session),
@@ -294,6 +309,14 @@ class TasksRepository:
                      "working_plan.cancelled" if plan["status"] == "cancelled" else "working_plan.updated",
                      self.database._json(event_payload), user_id, workspace_id, session_id, now),
                 )
+                if transaction_event is not None:
+                    db.execute(
+                        "INSERT INTO events(id,event_type,payload,user_id,workspace_id,session_id,task_id,created_at) "
+                        "VALUES(?,?,?,?,?,?,NULL,?)",
+                        (f"evt_{uuid.uuid4().hex}", transaction_event["event_type"],
+                         self.database._json(transaction_event["payload"]),
+                         user_id, workspace_id, scoped_session, now),
+                    )
                 db.commit()
                 return revision
             except Exception:

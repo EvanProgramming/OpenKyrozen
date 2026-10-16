@@ -179,7 +179,9 @@ class TaskManager:
                 "dependencies": list(dependencies), "priority": priority, "checkpoint": checkpoint}
 
     def edit_plan(self, *, expected_revision: int, operations: list[dict[str, Any]],
-                  complexity: str | None = None, plan_id: str | None = None) -> dict[str, Any]:
+                  complexity: str | None = None, plan_id: str | None = None,
+                  strategic_bindings: dict[str, dict[str, Any]] | None = None,
+                  transaction_event: dict[str, Any] | None = None) -> dict[str, Any]:
         """Apply a validated ordered operation batch as one revision-checked transaction."""
         if type(expected_revision) is not int or expected_revision < 0:
             raise ValueError("expected_revision must be a nonnegative integer")
@@ -189,6 +191,20 @@ class TaskManager:
             raise ValueError("operations cannot be empty")
         if plan_id is not None and (not isinstance(plan_id, str) or not plan_id.strip()):
             raise ValueError("plan_id must be a nonempty string")
+        if strategic_bindings is not None and not isinstance(strategic_bindings, dict):
+            raise ValueError("strategic_bindings must be an object")
+        if transaction_event is not None and (
+                not isinstance(transaction_event, dict)
+                or set(transaction_event) not in (
+                    {"event_type", "payload"}, {"event_type", "payload", "expected_proposal"},
+                )
+                or transaction_event.get("event_type") != "interaction.plan_accepted"
+                or not isinstance(transaction_event.get("payload"), dict)
+                or ("expected_proposal" in transaction_event and (
+                    not isinstance(transaction_event["expected_proposal"], dict)
+                    or set(transaction_event["expected_proposal"]) != {"plan_id", "version", "fingerprint"}
+                ))):
+            raise ValueError("only a structured plan-acceptance transaction event is supported")
 
         saved = self.store.get_working_plan(
             user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id or "",
@@ -216,6 +232,7 @@ class TaskManager:
         tasks = deepcopy(previous_tasks)
         by_id = {task["id"]: task for task in tasks}
         references: dict[str, str] = {}
+        used_strategic_bindings: set[str] = set()
         now = utc_now()
         scope_key = _task_key(f"{self.user_id}:{self.workspace_id}:{self.session_id or ''}")
 
@@ -250,6 +267,35 @@ class TaskManager:
                 task = {"id": task_id, **fields, "status": "pending", "attempts": 0,
                         "checkpoint": fields["checkpoint"], "evidence": [], "created_at": now,
                         "updated_at": now, "plan_id": plan_id}
+                if strategic_bindings and ref in strategic_bindings:
+                    binding = strategic_bindings[ref]
+                    if (not isinstance(binding, dict)
+                            or set(binding) != {"plan_id", "version", "fingerprint", "objective_id", "acceptance_ids",
+                                                "acceptance_verifications"}
+                            or not isinstance(binding.get("version"), int)
+                            or not isinstance(binding.get("acceptance_ids"), list)
+                            or not isinstance(binding.get("acceptance_verifications"), list)):
+                        raise ValueError("strategic task binding is invalid")
+                    task["checkpoint"] = {**task["checkpoint"], "strategic_plan": deepcopy(binding)}
+                    verifications = binding["acceptance_verifications"]
+                    if len(verifications) != len(fields["acceptance"]):
+                        raise ValueError("strategic acceptance verifications do not match the task")
+                    task["acceptance"] = []
+                    for criterion_id, criterion, verification in zip(
+                            binding["acceptance_ids"], fields["acceptance"], verifications):
+                        item = {"id": criterion_id, "criterion": criterion}
+                        if verification is not None:
+                            if (not isinstance(verification, dict) or set(verification) != {"action", "arguments"}
+                                    or not isinstance(verification.get("action"), str)
+                                    or not isinstance(verification.get("arguments"), dict)):
+                                raise ValueError("strategic acceptance verification is invalid")
+                            item["action"] = _receipt_action(verification["action"])
+                            item["args"] = json.dumps(verification["arguments"], ensure_ascii=False,
+                                                       allow_nan=False, sort_keys=True, separators=(",", ":"))
+                        task["acceptance"].append(item)
+                    if len(task["acceptance"]) != len(fields["acceptance"]):
+                        raise ValueError("strategic acceptance criteria do not match the task")
+                    used_strategic_bindings.add(ref)
                 references[ref] = task_id
                 tasks.append(task)
                 by_id[task_id] = task
@@ -338,6 +384,8 @@ class TaskManager:
                     ready.append(dependent)
         if resolved != len(tasks):
             raise ValueError("dependency cycle detected")
+        if used_strategic_bindings != set(strategic_bindings or {}):
+            raise ValueError("strategic bindings must identify added task references exactly")
 
         for task in tasks:
             task["plan_id"] = plan_id
@@ -355,6 +403,16 @@ class TaskManager:
         revision = self.store.apply_working_plan_edit(
             plan, tasks, expected_revision=expected_revision, expected_tasks=previous_tasks,
             user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
+            transaction_event=(
+                {"event_type": transaction_event["event_type"], **(
+                    {"expected_proposal": transaction_event["expected_proposal"]}
+                    if "expected_proposal" in transaction_event else {}
+                ), "payload": {
+                    **transaction_event["payload"], "working_plan_id": plan_id,
+                    "working_plan_revision": expected_revision + 1,
+                    "working_task_ids": [task["id"] for task in tasks],
+                }} if transaction_event else None
+            ),
         )
         working_plan = WorkingPlan(
             id=plan_id, complexity=complexity, status=plan_status, task_ids=tuple(task["id"] for task in tasks),
@@ -582,7 +640,8 @@ class TaskManager:
     def record_evidence(self, *, task_id: str | None = None, action: str, result: str, success: bool,
                         acceptance: str | None = None, args: str | None = None,
                         args_projection: str | None = None,
-                        args_fingerprint: str | None = None, receipt_id: str | None = None) -> dict[str, Any]:
+                        args_fingerprint: str | None = None, receipt_id: str | None = None,
+                        verification_status: str | None = None) -> dict[str, Any]:
         canonical = _receipt_action(action)
         normalized_args = _receipt_args(args)
         persisted_args = _receipt_args(args_projection) if args_projection is not None else normalized_args
@@ -624,6 +683,14 @@ class TaskManager:
         persisted_targets = []
         for task in targets:
             candidate = deepcopy(task)
+            if success and verification_status in {"verified", "not_applicable"}:
+                verified_ids = [criterion["id"] for criterion in candidate.get("acceptance", [])
+                                if isinstance(criterion, dict) and criterion.get("id")
+                                and criterion.get("action") == canonical
+                                and criterion.get("args") == normalized_args]
+                if verified_ids:
+                    item["acceptance_ids"] = verified_ids
+                    item.setdefault("acceptance", "verified strategic criterion")
             if ordered_inferred:
                 marker = _ordered_plan_info(task)
                 if marker:
