@@ -422,7 +422,8 @@ class TaskManager:
                     **{key: value for key, value in transaction_event["payload"].items()
                        if key != "working_task_refs"}, "working_plan_id": plan_id,
                     "working_plan_revision": expected_revision + 1,
-                    "working_task_ids": ([references[ref] for ref in transaction_event["payload"]["working_task_refs"]]
+                    "working_task_ids": ([references[ref] if ref in references else resolve(ref)
+                                          for ref in transaction_event["payload"]["working_task_refs"]]
                                          if "working_task_refs" in transaction_event["payload"]
                                          else [task["id"] for task in tasks]),
                 }} if transaction_event else None

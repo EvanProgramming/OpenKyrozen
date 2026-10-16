@@ -56,7 +56,7 @@ def _file_mutation_matches_objective(task, arguments):
         return True
     if explicit_paths:
         return False
-    if normalized in description or basename in description:
+    if normalized in description or ("/" not in normalized and basename in description):
         return True
     return False
 
@@ -107,7 +107,7 @@ def _strategic_plan_denial(plan, action, args, spec, workspace_root):
 
 
 def _awaiting_revision_mutation(state, action, args, spec, runtime) -> bool:
-    return bool(state.get("pending_plan") and state.get("executing_plan") and (
+    return bool(action != "cancel_subagent" and state.get("pending_plan") and state.get("executing_plan") and (
         runtime._is_state_changing_action(action, args)
         or not spec
         or spec.source == "dynamic"
@@ -353,7 +353,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         outcome = tool_failure("permission_denied", "Error: strategic plan revision is awaiting approval; mutation is paused.")
         self._notify_tool_execute(action, args, outcome)
         return finish(outcome)
-    if executing_plan:
+    if executing_plan and action != "cancel_subagent":
         denial = _strategic_plan_denial(
             executing_plan, action, args, self.tool_registry.specs.get(action), self._get_workspace_root(),
         )
@@ -411,7 +411,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
             and request.session_id == self.current_session.session_id
             and self._execution_capability_token.allows(current_spec.capability)
         )
-    if authorized and executing_plan:
+    if authorized and executing_plan and action != "cancel_subagent":
         current_state = self._interaction_controller.state()
         current_plan = current_state.get("executing_plan")
         if (not current_plan or current_plan.get("plan_id") != executing_plan.get("plan_id")
@@ -502,10 +502,25 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             expected_spec=expected_spec,
         )
     args = str(args)
-    operation_id = self._operation_id(operation_scope, canonical, args)
     interaction_state = self._interaction_controller.state()
+    spec = expected_spec
+    typed_arguments = None
+    if interaction_state.get("executing_plan") and spec and spec.source != "legacy" and spec.legacy_fields:
+        parts = args.split("|", len(spec.legacy_fields) - 1)
+        if len(parts) == len(spec.legacy_fields):
+            candidate = dict(zip(spec.legacy_fields, parts))
+            try:
+                if (spec.legacy_arguments(candidate) == args
+                        and self.tool_registry._argument_error(spec.input_schema, candidate) is None):
+                    typed_arguments = candidate
+            except (TypeError, ValueError):
+                pass
+    operation_id = self._operation_id(
+        operation_scope, canonical, typed_arguments if typed_arguments is not None else args,
+    )
     is_mutation = self._is_state_changing_action(canonical, args)
-    if is_mutation and interaction_state.get("pending_plan") and interaction_state.get("executing_plan"):
+    if (is_mutation and canonical != "cancel_subagent"
+            and interaction_state.get("pending_plan") and interaction_state.get("executing_plan")):
         emit_rejected_call()
         result = "Error: strategic plan revision is awaiting approval; mutation is paused."
         outcome = tool_failure("permission_denied", result)
@@ -517,8 +532,8 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             call_id_source="synthetic", expected_spec=expected_spec,
         )
     active_plan = interaction_state.get("executing_plan")
-    if is_mutation and active_plan:
-        structured = _legacy_object_arguments(args, expected_spec)
+    if is_mutation and active_plan and canonical != "cancel_subagent":
+        structured = typed_arguments or _legacy_object_arguments(args, expected_spec)
         match_args = (json.dumps(structured, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                       if structured else args)
         scoped_file_mutation = (
@@ -556,18 +571,6 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             tool_result=outcome, call_id=call_id, call_id_source="synthetic",
             expected_spec=expected_spec,
         )
-    typed_arguments = None
-    spec = self.tool_registry.specs.get(canonical)
-    if interaction_state.get("executing_plan") and spec and spec.source != "legacy" and spec.legacy_fields:
-        parts = args.split("|", len(spec.legacy_fields) - 1)
-        if len(parts) == len(spec.legacy_fields):
-            candidate = dict(zip(spec.legacy_fields, parts))
-            try:
-                if (spec.legacy_arguments(candidate) == args
-                        and self.tool_registry._argument_error(spec.input_schema, candidate) is None):
-                    typed_arguments = candidate
-            except (TypeError, ValueError):
-                pass
     receipt = self._run_tool(canonical, args, return_receipt=True, operation_scope=operation_scope,
                              _typed_arguments=typed_arguments,
                              _expected_spec=spec if typed_arguments is not None else None,

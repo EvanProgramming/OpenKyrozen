@@ -28,6 +28,12 @@ from openkyrozen.workspace.context import resolve_launch_context
 
 
 class StrategicPlanExecutionBoundsTests(unittest.TestCase):
+    def test_basename_only_objective_does_not_authorize_nested_sibling(self):
+        from openkyrozen.agent.executor import _file_mutation_matches_objective
+        objective = {"title": "Write index.html", "description": "Create index.html."}
+        self.assertTrue(_file_mutation_matches_objective(objective, {"path": "index.html"}))
+        self.assertFalse(_file_mutation_matches_objective(objective, {"path": "private/index.html"}))
+
     def test_full_path_objectives_do_not_match_a_sibling_with_the_same_basename(self):
         from openkyrozen.agent.executor import _file_mutation_matches_objective
         objective = {"title": "Write src/public/index.html", "description": "Update the public page."}
@@ -125,6 +131,13 @@ class StrategicPlanExecutionBoundsTests(unittest.TestCase):
             shell = SimpleNamespace(capability="shell", side_effects="process", risk="normal")
             self.assertIn("cannot be confined", _strategic_plan_denial(
                 plan, "run_cmd", {"command": "rm -rf /tmp/unrelated"}, shell, Path(directory)))
+
+    def test_pending_material_revision_does_not_block_subagent_cancellation(self):
+        from openkyrozen.agent.executor import _awaiting_revision_mutation
+        state = {"pending_plan": {"version": 2}, "executing_plan": {"version": 1}}
+        runtime = SimpleNamespace(_is_state_changing_action=lambda *_args: True)
+        self.assertFalse(_awaiting_revision_mutation(state, "cancel_subagent", "run-1", None, runtime))
+        self.assertTrue(_awaiting_revision_mutation(state, "write_file", "index.html|x", None, runtime))
 
 
 class StrategicPlanContractTests(unittest.TestCase):
@@ -229,21 +242,65 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
         self.controller.complete_plan(accepted, task_manager=self.manager)
         self.assertIsNone(self.controller.state()["executing_plan"])
 
-    def test_completion_checks_current_working_plan_membership(self):
+    def test_completion_uses_accepted_revision_tasks_after_working_plan_changes(self):
         plan = self._proposal()
         accepted, _ = self.controller.accept_plan(
             self.manager, plan_id=plan["plan_id"], version=plan["version"],
         )
-        task = self.manager.tasks[0]
-        task["status"] = "succeeded"
-        task["evidence"] = [{"success": True, "acceptance": "verified",
-                              "acceptance_ids": plan["steps"][0]["acceptance_ids"]}]
         self.manager.edit_plan(complexity="complex", plan_id=self.manager.working_plan.id,
                                expected_revision=self.manager.working_plan.revision,
                                operations=[{"op": "add", "ref": "extra", "task": {
                                    "description": "Unbound extra work", "acceptance": ["Done"]}}])
-        with self.assertRaisesRegex(InteractionError, "linked to the accepted Strategic Plan"):
-            self.controller.complete_plan(accepted, task_manager=self.manager)
+        self.assertTrue(self.manager.set_status(0, "succeeded", evidence={
+            "success": True, "acceptance": "verified",
+            "acceptance_ids": plan["steps"][0]["acceptance_ids"],
+        }))
+        self.controller.complete_plan(accepted, task_manager=self.manager)
+        completed = self.store.list_events(
+            "interaction.plan_completed", workspace_id="project", session_id="strategic-session",
+        )
+        self.assertEqual(completed[-1]["payload"]["working_task_ids"], accepted["working_task_ids"])
+
+    def test_material_revision_reuses_succeeded_objective_and_its_evidence(self):
+        original = self.controller.propose_plan({
+            "title": "Implement the page", "summary": "Create and verify one page.",
+            "bounds": {"workspace_paths": ["site"], "capabilities": ["read", "write"],
+                       "effects": ["read_only", "filesystem"], "risk_ceiling": "normal"},
+            "steps": [{"id": "page", "title": "Create page", "description": "Write the page.",
+                       "acceptance": ["Page exists", "Page content is correct"]},
+                      {"id": "followup", "title": "Prepare follow-up", "description": "Prepare follow-up work.",
+                       "acceptance": ["Follow-up is prepared"]}],
+        })
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=original["plan_id"], version=original["version"],
+        )
+        original_task = self.manager.tasks[0]
+        self.assertTrue(self.manager.set_status(0, "succeeded", evidence={
+            "success": True, "acceptance": "verified",
+            "acceptance_ids": original["steps"][0]["acceptance_ids"],
+        }))
+        revision = self.controller.propose_plan({
+            "title": original["title"], "summary": "Clarify the outcome without repeating completed work.",
+            "bounds": original["bounds"], "steps": [original["steps"][0], {
+                "id": "docs", "title": "Document the page", "description": "Document the completed page.",
+                "acceptance": ["The page is documented"],
+            }],
+        })
+        revised, created = self.controller.accept_plan(
+            self.manager, plan_id=revision["plan_id"], version=revision["version"],
+        )
+        self.assertTrue(created)
+        self.assertEqual(revised["working_task_ids"][0], original_task["id"])
+        self.assertEqual(self.manager.tasks[0]["status"], "succeeded")
+        self.assertEqual(self.manager.tasks[0]["evidence"][0]["acceptance_ids"], original["steps"][0]["acceptance_ids"])
+        docs = next(index for index, task in enumerate(self.manager.tasks)
+                    if task["id"] == revised["working_task_ids"][1])
+        self.assertTrue(self.manager.set_status(docs, "succeeded", evidence={
+            "success": True, "acceptance": "verified",
+            "acceptance_ids": revision["steps"][1]["acceptance_ids"],
+        }))
+        self.controller.complete_plan(revised, task_manager=self.manager)
+        self.assertIsNone(self.controller.state()["executing_plan"])
 
     def test_acceptance_atomically_links_working_plan_tasks_and_criteria(self):
         plan = self._proposal()
@@ -447,7 +504,7 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
                 "description": "Concurrent plan update", "acceptance": [],
             }}],
         )
-        with self.assertRaisesRegex(ValueError, "revision changed"):
+        with self.assertRaisesRegex(InteractionError, "revision changed"):
             self.controller.accept_plan(self.manager, plan_id=proposal["plan_id"], version=proposal["version"])
         state = self.controller.state()
         self.assertEqual(state["executing_plan"]["fingerprint"], accepted["fingerprint"])
@@ -464,7 +521,7 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
                        "acceptance": ["Expanded work is verified"]}],
         })
         self.manager.set_status(0, "running")
-        with self.assertRaisesRegex(ValueError, "task is running"):
+        with self.assertRaisesRegex(InteractionError, "task is running"):
             self.controller.accept_plan(self.manager, plan_id=proposal["plan_id"], version=proposal["version"])
         self.assertEqual(self.controller.state()["executing_plan"]["fingerprint"], accepted["fingerprint"])
         self.assertEqual(self.manager.tasks[0]["status"], "running")
@@ -1422,6 +1479,41 @@ class InteractionTests(unittest.TestCase):
                  previous_root) = previous
                 self.agent._set_workspace_root(previous_root)
 
+    def test_duplicate_legacy_write_uses_canonical_typed_operation_identity(self):
+        previous = (self.agent.tasks, self.agent._interaction_controller,
+                    self.agent._execution_capability_token, self.agent._get_workspace_root())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = EventStore(root / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="duplicate", session_id="surface:tui")
+            controller = InteractionController(store, workspace_id="duplicate", session_id="surface:tui")
+            proposal = controller.propose_plan({
+                "title": "Create page", "summary": "Create only the accepted page.",
+                "bounds": {"workspace_paths": ["."], "capabilities": ["read", "write"],
+                           "effects": ["read_only", "filesystem"], "risk_ceiling": "normal"},
+                "steps": [{"id": "page", "title": "Create index.html", "description": "Write index.html.",
+                           "acceptance": ["index.html exists"]}],
+            })
+            controller.accept_plan(manager, plan_id=proposal["plan_id"], version=proposal["version"])
+            self.agent.tasks, self.agent._interaction_controller = manager, controller
+            self.agent._set_workspace_root(root)
+            self.agent._execution_capability_token = issue_capability_token("test:duplicate", frozenset({"write"}))
+            operations: set[str] = set()
+            try:
+                first = self.agent._execute_turn_action(
+                    "write_file", "index.html|same", operation_scope="duplicate", successful_operations=operations,
+                )
+                second = self.agent._execute_turn_action(
+                    "write_file", "index.html|same", operation_scope="duplicate", successful_operations=operations,
+                )
+                self.assertTrue(first.success, first.result)
+                self.assertFalse(second.success)
+                self.assertEqual(second.failure, "conflict")
+            finally:
+                (self.agent.tasks, self.agent._interaction_controller,
+                 self.agent._execution_capability_token, previous_root) = previous
+                self.agent._set_workspace_root(previous_root)
+
     def test_material_revision_blocks_mutations_until_approval(self):
         previous = (
             self.agent.tasks, self.agent._interaction_controller, self.agent._execution_capability_token,
@@ -1480,6 +1572,19 @@ class InteractionTests(unittest.TestCase):
                 )
                 self.assertFalse(native_close.success)
                 self.assertEqual(native_close.failure, "permission_denied")
+                from openkyrozen.agent.types import ExecutionReceipt
+                cancelled = ExecutionReceipt(
+                    "cancel-receipt", "cancel-operation", "cancel_subagent", "run-1", True,
+                    "start", "end", True, "cancelled", call_id="cancel-call",
+                    call_id_source="synthetic", arguments={"run_id": "run-1"},
+                    tool_result=ToolResult(text="cancelled"),
+                )
+                with patch.object(self.agent, "_run_tool", return_value=cancelled) as dispatch:
+                    cancellation = self.agent._execute_turn_action(
+                        "cancel_subagent", "run-1", operation_scope="bound", successful_operations=set(),
+                    )
+                self.assertTrue(cancellation.success)
+                dispatch.assert_called_once()
                 self.assertEqual(controller.state()["executing_plan"]["fingerprint"], accepted["fingerprint"])
             finally:
                 (self.agent.tasks, self.agent._interaction_controller, self.agent._execution_capability_token,

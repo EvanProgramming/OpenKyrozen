@@ -109,10 +109,12 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
             raise
         state_after = self._interaction_controller.state()
         working_plan = self.tasks.working_plan
-        active_task_ids = (list(working_plan.task_ids)
-                           if active_plan and working_plan
-                           and working_plan.id == active_plan.get("working_plan_id")
-                           else active_plan.get("working_task_ids", []) if active_plan else [])
+        active_task_ids = (
+            list(active_plan["working_task_ids"])
+            if active_plan and "working_task_ids" in active_plan else
+            list(working_plan.task_ids) if active_plan and working_plan
+            and working_plan.id == active_plan.get("working_plan_id") else []
+        )
         active_tasks = [task for task in self.tasks.tasks if task.get("id") in active_task_ids]
         active_objectives = {step.get("id") for step in active_plan.get("steps", [])} if active_plan else set()
         tasks_remain_plan_bound = all(

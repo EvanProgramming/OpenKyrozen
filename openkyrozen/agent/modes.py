@@ -655,14 +655,26 @@ class InteractionController:
             working = task_manager.working_plan
             if (not working or working.id != executing.get("working_plan_id")
                     or working.revision != executing.get("working_plan_revision")):
-                raise ValueError("Working Plan revision changed; reload before accepting")
+                raise InteractionError("Working Plan revision changed; reload before accepting")
             active_ids = set(executing.get("working_task_ids", ()))
             for task in task_manager.tasks:
                 if task["id"] in active_ids and task.get("status") == "running":
-                    raise ValueError("a Working Plan task is running; retry approval after it stops")
+                    raise InteractionError("a Working Plan task is running; retry approval after it stops")
                 if task["id"] in active_ids and task.get("status") == "pending":
                     operations.append({"op": "cancel", "task": task["id"]})
         for step in plan["steps"]:
+            if executing:
+                reusable = next((task for task in task_manager.tasks
+                                 if task.get("id") in active_ids
+                                 and task.get("status") == "succeeded"
+                                 and ((task.get("checkpoint") or {}).get("strategic_plan") or {}).get("objective_id") == step["id"]
+                                 and ((task.get("checkpoint") or {}).get("strategic_plan") or {}).get("acceptance_ids") == step["acceptance_ids"]
+                                 and {criterion_id for item in task.get("evidence", [])
+                                      if isinstance(item, dict) and item.get("success") is True
+                                      for criterion_id in item.get("acceptance_ids", ())} >= set(step["acceptance_ids"])), None)
+                if reusable:
+                    new_refs.append(reusable["id"])
+                    continue
             ref = f"revision_{step['id']}" if executing else step["id"]
             new_refs.append(ref)
             operations.append({"op": "add", "ref": ref, "task": {
@@ -675,31 +687,35 @@ class InteractionController:
                 "acceptance_ids": step["acceptance_ids"],
                 "acceptance_verifications": step["acceptance_verifications"],
             }
-        working = task_manager.edit_plan(
-            complexity="complex", expected_revision=(executing.get("working_plan_revision", 0)
-                                                      if executing else 0), operations=operations,
-            plan_id=executing.get("working_plan_id") if executing else None,
-            strategic_bindings=strategic_bindings,
-            transaction_event={"event_type": "interaction.plan_accepted", "payload": {
-                "plan_id": plan["plan_id"], "version": plan["version"],
-                "fingerprint": plan["fingerprint"],
-                **({"revision_of": {"version": executing["version"],
-                                     "fingerprint": executing["fingerprint"]}} if executing else {}),
-                "working_task_refs": new_refs,
-            }, "expected_proposal": {
-                "plan_id": plan["plan_id"], "version": plan["version"],
-                "fingerprint": plan["fingerprint"],
-            }, **({"expected_working_plan": {
-                "plan_id": executing["working_plan_id"],
-                "revision": executing["working_plan_revision"],
-                "strategic_plan_id": executing["plan_id"],
-                "version": executing["version"],
-                "fingerprint": executing["fingerprint"],
-            }} if executing else {})},
-        )
+        try:
+            working = task_manager.edit_plan(
+                complexity="complex", expected_revision=(executing.get("working_plan_revision", 0)
+                                                          if executing else 0), operations=operations,
+                plan_id=executing.get("working_plan_id") if executing else None,
+                strategic_bindings=strategic_bindings,
+                transaction_event={"event_type": "interaction.plan_accepted", "payload": {
+                    "plan_id": plan["plan_id"], "version": plan["version"],
+                    "fingerprint": plan["fingerprint"],
+                    **({"revision_of": {"version": executing["version"],
+                                         "fingerprint": executing["fingerprint"]}} if executing else {}),
+                    "working_task_refs": new_refs,
+                }, "expected_proposal": {
+                    "plan_id": plan["plan_id"], "version": plan["version"],
+                    "fingerprint": plan["fingerprint"],
+                }, **({"expected_working_plan": {
+                    "plan_id": executing["working_plan_id"],
+                    "revision": executing["working_plan_revision"],
+                    "strategic_plan_id": executing["plan_id"],
+                    "version": executing["version"],
+                    "fingerprint": executing["fingerprint"],
+                }} if executing else {})},
+            )
+        except ValueError as exc:
+            raise InteractionError(str(exc)) from exc
         return {**plan, "working_plan_id": working["plan_id"],
                 "working_plan_revision": working["revision"],
-                "working_task_ids": [working["references"][ref] for ref in new_refs]}, True
+                "working_task_ids": [working["references"][ref] if ref in working["references"] else ref
+                                     for ref in new_refs]}, True
 
     def complete_plan(self, plan: dict[str, Any], *, status: str = "completed",
                       task_manager: Any | None = None) -> None:
@@ -713,8 +729,9 @@ class InteractionController:
                for previous in prior_completions):
             return
         working = task_manager.working_plan if task_manager is not None else None
-        task_ids = (list(working.task_ids) if working and working.id == plan.get("working_plan_id")
-                    else plan.get("working_task_ids"))
+        task_ids = plan.get("working_task_ids")
+        if task_ids is None and working and working.id == plan.get("working_plan_id"):
+            task_ids = list(working.task_ids)
         if status == "completed":
             if task_manager is None or not isinstance(task_ids, list) or not task_ids:
                 raise InteractionError("Strategic Plan completion requires its linked Working Plan evidence")
