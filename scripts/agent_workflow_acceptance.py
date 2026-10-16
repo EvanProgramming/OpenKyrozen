@@ -104,10 +104,7 @@ if __name__ == "__main__":
              }}]},
             {"step_id": "edit", "title": "Edit index.html safely", "details": "Update the draft page before verification.",
              "acceptance_criteria": [{"criterion": "index.html contains verified", "verification": {
-                 "action": "edit_file", "arguments": {
-                     "path": "index.html", "old_text": "draft", "new_text": "verified",
-                     "expected_sha256": hashlib.sha256(initial_page.encode()).hexdigest(),
-                 },
+                 "action": "read_file", "arguments": {"path": "index.html"},
              }}]},
             {"step_id": "test", "title": "Create test_deploy.py", "details": "Write test_deploy.py.",
              "acceptance_criteria": [{"criterion": "test_deploy.py exists", "verification": {
@@ -130,6 +127,7 @@ if __name__ == "__main__":
                 "expected_sha256": hashlib.sha256(initial_page.encode()).hexdigest(),
             }),
         }),
+        "Action: " + json.dumps({"action": "read_file", "args": "index.html"}),
         "TaskDone: 1\nAction: " + json.dumps(
             {"action": "write_file", "args": f"test_deploy.py|{deployment_test}"}
         ),
@@ -185,7 +183,7 @@ if __name__ == "__main__":
                 "execution.receipt", workspace_id="acceptance", session_id="release",
             )
             assert [event["payload"]["action"] for event in reversed(receipts)] == [
-                "list_dir", "write_file", "edit_file", "write_file", "read_file",
+                "list_dir", "write_file", "edit_file", "read_file", "write_file", "read_file",
             ]
             state = main._interaction_controller.state()
             assert state["executing_plan"] is None
