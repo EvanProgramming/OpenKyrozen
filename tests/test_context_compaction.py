@@ -56,12 +56,34 @@ class ContextCompactionTests(unittest.TestCase):
         self.assertIs(result.messages[2], reply)
         self.assertGreater(state.status["input_tokens"], 0)
 
+        oversized = [{"role": "user", "content": "question" * 1_000}, response, reply]
         state = ContextState("custom", configured_window=100, reserve_tokens=20)
-        result = compact_for_pressure(messages, state, lambda *_: self.fail("native history must not summarize"), force=True)
+        result = compact_for_pressure(oversized, state, lambda *_: self.fail("native history must not summarize"))
         self.assertTrue(result.impossible)
-        self.assertEqual(result.messages, messages)
+        self.assertEqual(result.messages, oversized)
         self.assertIs(result.messages[1], response)
         self.assertIs(result.messages[2], reply)
+
+    def test_compaction_can_summarize_legacy_prefix_before_native_history(self):
+        from openkyrozen.providers.models import FinishReason, ModelResponse, ToolCall, ToolReply
+
+        response = ModelResponse("", tool_calls=(ToolCall("c1", "read_file", {"path": "a"}),),
+                                 finish_reason=FinishReason.TOOL_REQUEST)
+        reply = ToolReply("c1", "read_file", {"text": "contents"})
+        messages = ([{"role": "system", "content": "fixed"}]
+                    + [{"role": "user", "content": f"old-{index}:" + "x" * 2_000}
+                       for index in range(8)]
+                    + [response, reply, {"role": "user", "content": "current"}])
+        result = compact_for_pressure(
+            messages, ContextState("custom", configured_window=4_000, reserve_tokens=50),
+            lambda _text, limit: "summary " + "y" * min(100, limit),
+        )
+        self.assertTrue(result.compacted)
+        self.assertFalse(result.impossible)
+        self.assertIn(response, result.messages)
+        self.assertIn(reply, result.messages)
+        self.assertLess(result.messages.index(response), result.messages.index(reply))
+        self.assertEqual(result.messages[-1], {"role": "user", "content": "current"})
 
     def test_batched_summary_retains_distinct_facts_from_later_batches(self):
         summaries = iter(("FIRST: " + "x" * 80, "LAST: required fix " + "y" * 80))

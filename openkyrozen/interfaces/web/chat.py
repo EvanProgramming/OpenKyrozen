@@ -127,9 +127,20 @@ def _get_or_create_session(self, session_id: str, user_id: str = "anonymous") ->
                 del service._sessions[oldest]
         session = service._sessions[session_id]
         service._initialise_session_defaults(session)
-        current = service._agent.history_manager(session_id).current()
-        if current is not None and current.get("kind") != "recovery":
-            session["messages"] = retain_context_digests(list(current.get("conversation", [])), service._MAX_SESSION_MESSAGES)
+        runtime = service._agent
+        bound = runtime.open_session(session_id, user_id=session.get("user_id", user_id))
+        with runtime.use_session(bound):
+            history = runtime.conversation_history
+            if history.head is not None:
+                session["messages"] = retain_context_digests(
+                    history.display_messages(), service._MAX_SESSION_MESSAGES,
+                )
+            else:
+                current = runtime.history_manager(session_id).current()
+                if current is not None and current.get("kind") != "recovery":
+                    session["messages"] = retain_context_digests(
+                        list(current.get("conversation", [])), service._MAX_SESSION_MESSAGES,
+                    )
         return session
 
 

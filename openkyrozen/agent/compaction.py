@@ -251,8 +251,16 @@ def compact_for_pressure(messages: list[Any], state: ContextState, summarize: Su
 
     from openkyrozen.providers.models import ModelResponse, ToolReply
     if any(isinstance(item, (ModelResponse, ToolReply)) for item in working):
-        status["compaction"] = {"status": "native_history_cannot_be_compacted_safely"}
-        return CompactionResult(working, impossible=True)
+        first_native = next(index for index, item in enumerate(working)
+                            if isinstance(item, (ModelResponse, ToolReply)))
+        prefix = compact_for_pressure(working[:first_native], state, summarize, force=force)
+        working = prefix.messages + working[first_native:]
+        status = state.update(working, compaction=state.status.get("compaction"))
+        if prefix.impossible or under_pressure(status):
+            status["compaction"] = {"status": "native_history_cannot_be_compacted_safely"}
+            return CompactionResult(working, compacted=prefix.compacted,
+                                    history_digest=prefix.history_digest, impossible=True)
+        return CompactionResult(working, compacted=prefix.compacted, history_digest=prefix.history_digest)
 
     non_system = [item for item in working if item.get("role") != "system" and not is_context_digest(item)]
     tracked_history = [item for item in non_system if id(item) in state.history_message_ids]

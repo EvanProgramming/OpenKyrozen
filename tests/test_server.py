@@ -160,6 +160,41 @@ class ServerBoundaryTests(unittest.TestCase):
                     server._agent._sessions.pop(key, None)
             server._sessions = original_sessions
 
+    def test_web_session_read_prefers_journal_over_older_workspace_snapshot(self):
+        from types import SimpleNamespace
+
+        session_id = f"web-journal-snapshot-{uuid.uuid4().hex}"
+        original_sessions = server._sessions
+        server._sessions = {}
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                memory = MemoryBank(Path(directory) / "state.sqlite3", user_id=server._SERVER_ACTOR_ID,
+                                    workspace_id=server._agent.interaction_workspace_id())
+                with patch.object(server._agent.current_session, "memory", memory):
+                    bound = server._agent.open_session(session_id, user_id=server._SERVER_ACTOR_ID)
+                    with server._agent.use_session(bound):
+                        history = server._agent.conversation_history
+                        history.append(history.entry("user.input", {"text": "latest journal input"}))
+                        history.append(history.entry("turn.outcome", {
+                            "status": "completed", "text": "latest journal answer",
+                        }))
+                    older_snapshot = {"kind": "chat", "conversation": [
+                        {"role": "user", "content": "older workspace snapshot"},
+                    ]}
+                    with patch.object(server._agent, "history_manager", return_value=SimpleNamespace(
+                        current=lambda: older_snapshot,
+                    )):
+                        session = server._get_or_create_session(session_id, server._SERVER_ACTOR_ID)
+                    self.assertEqual(session["messages"], [
+                        {"role": "user", "content": "latest journal input"},
+                        {"role": "assistant", "content": "latest journal answer"},
+                    ])
+        finally:
+            for key in list(server._agent._sessions):
+                if key[2] == session_id:
+                    server._agent._sessions.pop(key, None)
+            server._sessions = original_sessions
+
     def test_empty_canonical_web_branch_does_not_restore_legacy_events(self):
         session_id = f"empty-branch-{uuid.uuid4().hex}"
         original_sessions = server._sessions

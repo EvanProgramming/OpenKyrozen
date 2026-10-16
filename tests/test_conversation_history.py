@@ -117,6 +117,25 @@ class ConversationHistoryTests(unittest.TestCase):
         }))
         self.assertEqual(self.history.display_messages(), [{"role": "user", "content": "question"}])
 
+    def test_native_projection_includes_local_outcomes_without_model_responses(self):
+        response = ModelResponse(
+            "prior answer", continuation=ProviderContinuation("fixture", "m1", "fixture", {"opaque": 1}),
+        )
+        self.history.append(self.history.entry("user.input", {"text": "prior"}, turn_id="turn-1"))
+        self.history.append(self.history.entry("model.response", {
+            "response": model_response_to_dict(response),
+        }, turn_id="turn-1"))
+        self.history.append(self.history.entry("user.input", {"text": "accept plan"}, turn_id="turn-2"))
+        self.history.append(self.history.entry("turn.outcome", {
+            "status": "completed", "text": "There is no pending plan to accept.",
+        }, turn_id="turn-2"))
+
+        projected = self.history.provider_messages(provider_id="fixture", model="m1")
+        self.assertEqual(projected[-2:], [
+            {"role": "user", "content": "accept plan"},
+            {"role": "assistant", "content": "There is no pending plan to accept."},
+        ])
+
     def test_journal_only_session_is_discoverable_without_exposing_payload(self):
         self.history.append(self.history.entry("user.input", {"text": "private prompt"}))
         sessions = self.store.list_sessions(workspace_id="project", user_id="alice")

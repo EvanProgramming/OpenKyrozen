@@ -171,7 +171,10 @@ class ConversationHistory:
         from openkyrozen.providers.models import ToolReply, validate_tool_history
         messages = _ProviderProjection()
         pending_calls = []
-        for entry in self.active_entries():
+        entries = self.active_entries()
+        model_turn_ids = {entry.turn_id for entry in entries
+                          if entry.kind == "model.response" and entry.turn_id is not None}
+        for entry in entries:
             if exclude_turn_id is not None and entry.turn_id == exclude_turn_id:
                 continue
             payload = entry.payload
@@ -199,6 +202,11 @@ class ConversationHistory:
                     messages.append_entry(entry, {"role": "user", "content": (
                         f"Tool result ({payload.get('name', 'tool')}): {output.get('text', '')}"
                     )})
+            elif (entry.kind == "turn.outcome" and entry.turn_id is not None
+                  and entry.turn_id not in model_turn_ids):
+                text = payload.get("text")
+                if isinstance(text, str) and text:
+                    messages.append_entry(entry, {"role": "assistant", "content": text})
         validate_tool_history(messages, provider_id=provider_id, model=model, native=native)
         return messages
 
