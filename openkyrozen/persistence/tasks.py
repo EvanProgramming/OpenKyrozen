@@ -206,7 +206,8 @@ class TasksRepository:
                             task[field] = self.database._loads(task[field], {} if field == "checkpoint" else [])
                         prior_tasks.append(task)
                     def progress(rows):
-                        return [(row["id"], row["status"], int(row["attempts"]), row["updated_at"],
+                        return [(row["id"], "succeeded" if row["status"] == "done" else row["status"],
+                                 int(row["attempts"]), row["updated_at"],
                                  self.database._json(row.get("evidence", []))) for row in rows]
                     if progress(prior_tasks) != progress(expected_tasks):
                         raise ValueError("Working Plan task progress changed; reload before editing")
@@ -260,7 +261,8 @@ class TasksRepository:
 
 
 
-    def write_task(self, task: dict[str, Any], *, user_id: str, workspace_id: str, session_id: str | None) -> None:
+    def write_task(self, task: dict[str, Any], *, user_id: str, workspace_id: str, session_id: str | None,
+                   expected_status: str | None = None) -> bool:
         now = task.get("updated_at") or utc_now()
         with self.database._lock, self.database.connection() as db:
             row = db.execute(
@@ -275,16 +277,22 @@ class TasksRepository:
                 user_id, workspace_id, session_id, task.get("created_at", now), now,
             )
             if row:
-                db.execute(
+                status_filter = " AND status=?" if expected_status is not None else ""
+                cursor = db.execute(
                     "UPDATE tasks SET parent_id=?,description=?,status=?,priority=?,dependencies=?,acceptance=?,attempts=?,checkpoint=?,evidence=?,updated_at=? "
-                    "WHERE id=? AND user_id=? AND workspace_id=? AND session_id IS ?",
-                    values[1:10] + (now, task["id"], user_id, workspace_id, session_id),
+                    "WHERE id=? AND user_id=? AND workspace_id=? AND session_id IS ?" + status_filter,
+                    values[1:10] + (now, task["id"], user_id, workspace_id, session_id)
+                    + ((expected_status,) if expected_status is not None else ()),
                 )
+                return cursor.rowcount == 1
+            if expected_status is not None:
+                return False
             else:
                 db.execute(
                     "INSERT INTO tasks(id,parent_id,description,status,priority,dependencies,acceptance,attempts,checkpoint,evidence,user_id,workspace_id,session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     values,
                 )
+                return True
 
 
     def claim_task(self, *, user_id: str, workspace_id: str, session_id: str | None) -> dict[str, Any] | None:

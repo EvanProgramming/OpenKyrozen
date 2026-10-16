@@ -155,8 +155,9 @@ class EventStore:
     def set_skill_status(self, skill_id: str, status: str, *, workspace_id: str='default'):
         return self.catalogs.set_skill_status(skill_id, status, workspace_id=workspace_id)
 
-    def write_task(self, task, *, user_id, workspace_id, session_id):
-        return self.tasks.write_task(task, user_id=user_id, workspace_id=workspace_id, session_id=session_id)
+    def write_task(self, task, *, user_id, workspace_id, session_id, expected_status=None):
+        return self.tasks.write_task(task, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+                                     expected_status=expected_status)
 
     def get_working_plan(self, *, user_id, workspace_id, session_id):
         return self.tasks.get_working_plan(user_id=user_id, workspace_id=workspace_id, session_id=session_id)

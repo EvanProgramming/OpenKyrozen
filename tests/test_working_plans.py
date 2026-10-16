@@ -7,6 +7,7 @@ from pathlib import Path
 from openkyrozen.persistence.store import EventStore
 from openkyrozen.tasks.engine import TaskManager
 from openkyrozen.tasks.models import WorkingPlan, requires_working_plan
+from openkyrozen.tasks.worker import TaskWorker
 from openkyrozen.persistence.database import SQLiteDatabase
 from openkyrozen.app.bootstrap import build_application, build_memory
 from openkyrozen.security.capabilities import issue_capability_token
@@ -174,6 +175,139 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertIsNone(store.get_working_plan(
                 user_id="local", workspace_id="project", session_id="duplicate-refs",
             ))
+
+    def test_batch_reference_cannot_shadow_existing_task_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="shadow-ref")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
+            ])
+            task_id = created["references"]["first"]
+            with self.assertRaisesRegex(ValueError, "reference"):
+                manager.edit_plan(plan_id=created["plan_id"], expected_revision=1, operations=[
+                    {"op": "add", "ref": task_id, "task": {"description": "Replacement", "acceptance": ["new"]}},
+                    {"op": "cancel", "task": task_id},
+                ])
+            self.assertEqual(manager.tasks[0]["status"], "pending")
+
+    def test_edit_preserves_legacy_checkpoint_and_acceptance_shapes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="legacy-checkpoint")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
+            ])
+            task = manager.tasks[0]
+            task["acceptance"] = [{"action": "read_file", "args": "README.md"}]
+            task["checkpoint"] = {"action": "run_cmd", "args": "pytest -q", "ordered_plan": {"id": "legacy"}}
+            manager._persist(task)
+            revised = manager.edit_plan(plan_id=created["plan_id"], expected_revision=1, operations=[
+                {"op": "update", "task": task["id"], "fields": {"priority": 2}},
+            ])
+            self.assertEqual(revised["tasks"][0]["checkpoint"], task["checkpoint"])
+            self.assertEqual(revised["tasks"][0]["acceptance"], task["acceptance"])
+            changed_execution = manager.edit_plan(plan_id=created["plan_id"], expected_revision=2, operations=[
+                {"op": "update", "task": task["id"], "fields": {
+                    "execution": {"action": "run_cmd", "arguments": {"command": "pytest -q"}},
+                }},
+            ])
+            self.assertEqual(changed_execution["tasks"][0]["checkpoint"]["ordered_plan"], {"id": "legacy"})
+            self.assertEqual(changed_execution["tasks"][0]["checkpoint"]["args"], '{"command":"pytest -q"}')
+
+    def test_legacy_done_status_does_not_block_plan_edit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="legacy-status-edit")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
+            ])
+            with store.database.connection() as db:
+                db.execute("UPDATE tasks SET status='done' WHERE id=?", (created["references"]["first"],))
+            revised = manager.edit_plan(plan_id=created["plan_id"], expected_revision=1, operations=[
+                {"op": "add", "ref": "second", "task": {"description": "Second", "acceptance": ["second"]}},
+            ])
+            self.assertEqual(revised["revision"], 2)
+
+    def test_foreground_execution_obeys_dependencies_after_reorder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="foreground-dependency")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {"description": "Inspect source", "acceptance": ["inspect"],
+                                                                    "execution": {"action": "read_file", "arguments": {"path": "a.py"}}}},
+                {"op": "add", "ref": "second", "task": {"description": "Inspect dependent", "acceptance": ["dependent"],
+                                                                     "execution": {"action": "read_file", "arguments": {"path": "b.py"}}}},
+                {"op": "add_dependency", "task": "second", "depends_on": "first"},
+                {"op": "reorder", "tasks": ["second", "first"]},
+            ])
+            second_id = created["references"]["second"]
+            self.assertIsNone(manager.active_working_task(second_id))
+            allowed, _ = manager.mutation_matches_current_task("read_file", '{"path":"b.py"}')
+            self.assertFalse(allowed)
+
+    def test_cancelled_replaced_step_does_not_prevent_plan_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = TaskManager(EventStore(Path(directory) / "state.sqlite3"),
+                                  workspace_id="project", session_id="cancel-replacement")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "old", "task": {"description": "Old step", "acceptance": ["old"]}},
+                {"op": "add", "ref": "last", "task": {"description": "Last step", "acceptance": ["last"]}},
+            ])
+            old_id, last_id = created["references"]["old"], created["references"]["last"]
+            revised = manager.edit_plan(plan_id=created["plan_id"], expected_revision=1, operations=[
+                {"op": "cancel", "task": old_id},
+                {"op": "add", "ref": "replacement", "task": {"description": "Replacement", "acceptance": ["replacement"]}},
+            ])
+            for task_id, acceptance in ((last_id, "last"), (revised["references"]["replacement"], "replacement")):
+                index = next(i for i, item in enumerate(manager.tasks) if item["id"] == task_id)
+                self.assertTrue(manager.set_status(index, "succeeded", evidence={"success": True, "acceptance": acceptance}))
+            self.assertEqual(manager.working_plan.status, "completed")
+
+    def test_stale_worker_cannot_resurrect_cancelled_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            worker_manager = TaskManager(store, workspace_id="project", session_id="cancel-race")
+            created = worker_manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
+            ])
+            task_id = created["references"]["first"]
+            worker_manager.claim_next()
+            editor = TaskManager(store, workspace_id="project", session_id="cancel-race")
+            editor.recover()
+            editor.edit_plan(plan_id=created["plan_id"], expected_revision=1,
+                             operations=[{"op": "cancel", "task": task_id}])
+            worker_manager.record_evidence(task_id=task_id, action="read_file", result="late", success=True,
+                                            acceptance="first")
+            index = next(i for i, item in enumerate(worker_manager.tasks) if item["id"] == task_id)
+            self.assertFalse(worker_manager.set_status(index, "succeeded", evidence={"success": True, "acceptance": "first"}))
+            saved = store.list_working_plan_tasks(created["plan_id"], user_id="local", workspace_id="project",
+                                                   session_id="cancel-race")[0]
+            self.assertEqual(saved["status"], "cancelled")
+
+    def test_worker_finishing_after_concurrent_cancel_keeps_cancellation_terminal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="worker-cancel")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
+            ])
+            task_id = created["references"]["first"]
+
+            def execute(_task):
+                editor = TaskManager(store, workspace_id="project", session_id="worker-cancel")
+                editor.recover()
+                editor.edit_plan(plan_id=created["plan_id"], expected_revision=1,
+                                 operations=[{"op": "cancel", "task": task_id}])
+                return {"success": True, "result": "late result", "action": "read_file",
+                        "acceptance": "first"}
+
+            result = TaskWorker(manager, execute).run_once()
+            self.assertEqual(result["status"], "cancelled")
+            saved = store.list_working_plan_tasks(created["plan_id"], user_id="local", workspace_id="project",
+                                                   session_id="worker-cancel")[0]
+            self.assertEqual(saved["status"], "cancelled")
+            self.assertEqual(saved["evidence"], [])
 
     def test_plan_claim_order_honors_reorder_and_unsatisfied_prerequisites(self):
         with tempfile.TemporaryDirectory() as directory:
