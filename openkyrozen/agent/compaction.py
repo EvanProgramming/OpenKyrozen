@@ -82,8 +82,22 @@ def _category(message: dict[str, Any], index: int, last_non_system: int) -> str:
     return "conversation"
 
 
-def estimate_messages(messages: list[dict[str, Any]]) -> tuple[int, dict[str, int]]:
+def _accounting_message(message: Any) -> dict[str, Any]:
+    """Create a text-only estimate without changing native provider history."""
+    from openkyrozen.providers.models import ModelResponse, ToolReply
+
+    if isinstance(message, ModelResponse):
+        calls = [{"name": call.name, "arguments": call.arguments} for call in message.tool_calls]
+        content = message.text + ("\n" + str(calls) if calls else "")
+        return {"role": "assistant", "content": content}
+    if isinstance(message, ToolReply):
+        return {"role": "tool", "content": str(message.output)}
+    return message
+
+
+def estimate_messages(messages: list[Any]) -> tuple[int, dict[str, int]]:
     """Estimate complete provider-visible prompt tokens and content categories."""
+    messages = [_accounting_message(item) for item in messages]
     last_non_system = max((index for index, item in enumerate(messages)
                            if item.get("role") != "system"), default=-1)
     breakdown: dict[str, int] = {
@@ -101,7 +115,8 @@ def estimate_messages(messages: list[dict[str, Any]]) -> tuple[int, dict[str, in
     return total + 2, breakdown  # small chat-framing allowance
 
 
-def message_fingerprint(messages: list[dict[str, Any]]) -> str:
+def message_fingerprint(messages: list[Any]) -> str:
+    messages = [_accounting_message(item) for item in messages]
     payload = "\n".join(
         f"{item.get('role', '')}\x00{item.get('content', '')}" for item in messages
     )
@@ -219,7 +234,7 @@ def _tool_parts(message: dict[str, Any]) -> tuple[str, list[str]] | None:
     return prefix + marker, trailing.splitlines()
 
 
-def compact_for_pressure(messages: list[dict[str, Any]], state: ContextState, summarize: Summarizer,
+def compact_for_pressure(messages: list[Any], state: ContextState, summarize: Summarizer,
                          *, force: bool = False) -> CompactionResult:
     """Compact only under a declared-window pressure or an explicit overflow retry."""
     working = list(messages)
@@ -233,6 +248,11 @@ def compact_for_pressure(messages: list[dict[str, Any]], state: ContextState, su
     if not force and not under_pressure(status):
         status["compaction"] = {"status": "not_needed"}
         return CompactionResult(working)
+
+    from openkyrozen.providers.models import ModelResponse, ToolReply
+    if any(isinstance(item, (ModelResponse, ToolReply)) for item in working):
+        status["compaction"] = {"status": "native_history_cannot_be_compacted_safely"}
+        return CompactionResult(working, impossible=True)
 
     non_system = [item for item in working if item.get("role") != "system" and not is_context_digest(item)]
     tracked_history = [item for item in non_system if id(item) in state.history_message_ids]

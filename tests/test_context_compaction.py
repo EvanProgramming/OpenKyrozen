@@ -42,6 +42,27 @@ def _messages(old_count=4, *, chars=1_000):
 
 
 class ContextCompactionTests(unittest.TestCase):
+    def test_native_history_is_accounted_without_mutation_and_cannot_be_compacted_away(self):
+        from openkyrozen.providers.models import FinishReason, ModelResponse, ToolCall, ToolReply
+
+        response = ModelResponse("", tool_calls=(ToolCall("c1", "read_file", {"path": "a"}),),
+                                 finish_reason=FinishReason.TOOL_REQUEST)
+        reply = ToolReply("c1", "read_file", {"text": "contents"})
+        messages = [{"role": "user", "content": "question"}, response, reply]
+        state = ContextState("custom", configured_window=100_000, reserve_tokens=100)
+        result = compact_for_pressure(messages, state, lambda *_: self.fail("native history must not summarize"))
+        self.assertEqual(result.messages, messages)
+        self.assertIs(result.messages[1], response)
+        self.assertIs(result.messages[2], reply)
+        self.assertGreater(state.status["input_tokens"], 0)
+
+        state = ContextState("custom", configured_window=100, reserve_tokens=20)
+        result = compact_for_pressure(messages, state, lambda *_: self.fail("native history must not summarize"), force=True)
+        self.assertTrue(result.impossible)
+        self.assertEqual(result.messages, messages)
+        self.assertIs(result.messages[1], response)
+        self.assertIs(result.messages[2], reply)
+
     def test_batched_summary_retains_distinct_facts_from_later_batches(self):
         summaries = iter(("FIRST: " + "x" * 80, "LAST: required fix " + "y" * 80))
         result = _bounded_summary("A" * 20 + "B" * 20, lambda _text, _limit: next(summaries), 20, 40)

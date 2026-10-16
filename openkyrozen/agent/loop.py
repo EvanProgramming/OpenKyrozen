@@ -118,6 +118,13 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
             self._record_conversation_entry("turn.outcome", {
                 "status": "failed", "error_type": type(exc).__name__,
             })
+            from openkyrozen.agent.compaction import is_context_digest, retain_context_digests
+            display = conversation.display_messages()
+            limit = self.SHORT_TERM_CAP * 2
+            digest = next((item for item in reversed(self.short_term_memory) if is_context_digest(item)), None)
+            projected = ([digest] if digest else []) + display
+            self.short_term_memory = retain_context_digests(projected, limit)
+            self.current_session.messages_compacted = bool(digest) or len(projected) > limit
             if active_plan:
                 self._interaction_controller.complete_plan(active_plan, status="failed")
             self._track_fix_outcome(original_user_input, f"Turn failed: {type(exc).__name__}: {exc}")
@@ -146,10 +153,12 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
         from openkyrozen.agent.compaction import is_context_digest, retain_context_digests
         digest = next((item for item in reversed(self.short_term_memory) if is_context_digest(item)), None)
         display = conversation.display_messages()
+        projected = ([digest] if digest else []) + display
+        truncated = len(projected) > self.SHORT_TERM_CAP * 2
         self.short_term_memory = retain_context_digests(
-            ([digest] if digest else []) + display, self.SHORT_TERM_CAP * 2,
+            projected, self.SHORT_TERM_CAP * 2,
         )
-        self.current_session.messages_compacted = bool(digest)
+        self.current_session.messages_compacted = bool(digest) or truncated
         if history_token is not None:
             try:
                 self.history_manager().commit_turn(

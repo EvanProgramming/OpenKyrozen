@@ -207,6 +207,50 @@ class ConversationRuntimeTests(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_prompt_assembly_preserves_selected_continuation_model_and_pauses_on_mismatch(self):
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.providers.models import ProviderContractError, provider_identity
+        from openkyrozen.tools import ToolAdapters
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
+            "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
+        }):
+            root = Path(temp)
+            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+                                    tools=ToolAdapters(root), user_id="alice")
+            try:
+                runtime = app.runtime
+
+                class Provider:
+                    name = "fixture"
+                    _continuation_id = "provider-instance"
+
+                provider = Provider()
+                runtime.llm_provider = provider
+                runtime.DEEPSEEK_MODEL = "selected-model"
+                response = ModelResponse(
+                    "answer", finish_reason=FinishReason.FINAL,
+                    continuation=ProviderContinuation(
+                        provider_identity(provider), "selected-model", "fixture", {"opaque": True},
+                    ),
+                )
+                runtime.conversation_history.append(runtime.conversation_history.entry("user.input", {
+                    "text": "prior request",
+                }))
+                runtime.conversation_history.append(runtime.conversation_history.entry("model.response", {
+                    "response": model_response_to_dict(response),
+                }))
+                messages = runtime._build_messages("next request")
+                self.assertTrue(any(isinstance(item, ModelResponse) for item in messages))
+                runtime.DEEPSEEK_MODEL = "changed-model"
+                with self.assertRaisesRegex(ProviderContractError, "different provider or model"):
+                    runtime._build_messages("request after model change")
+                runtime.llm_provider = Provider()
+                with self.assertRaisesRegex(ProviderContractError, "different provider or model"):
+                    runtime._build_messages("request after provider restart")
+            finally:
+                app.close()
+
     def test_provider_error_is_not_journaled_as_a_completed_turn(self):
         from openkyrozen.app.bootstrap import build_application, build_memory
         from openkyrozen.tools import ToolAdapters
@@ -229,6 +273,53 @@ class ConversationRuntimeTests(unittest.TestCase):
                 outcome = [entry for entry in runtime.conversation_history.entries()
                            if entry.kind == "turn.outcome"][-1]
                 self.assertEqual(outcome.payload["status"], "failed")
+            finally:
+                app.close()
+
+    def test_failed_turn_refreshes_display_cache_before_next_turn(self):
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.tools import ToolAdapters
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
+            "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
+        }):
+            root = Path(temp)
+            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+                                    tools=ToolAdapters(root), user_id="alice")
+            try:
+                runtime = app.runtime
+                with patch.object(runtime, "_chat_turn_impl", side_effect=RuntimeError("provider unavailable")):
+                    with self.assertRaisesRegex(RuntimeError, "provider unavailable"):
+                        runtime.chat(runtime.current_session, "first question")
+                with patch.object(runtime, "_chat_turn_impl", return_value="second answer"):
+                    runtime.chat(runtime.current_session, "second question")
+                entries = runtime.conversation_history.active_entries()
+                self.assertEqual([item.payload["text"] for item in entries if item.kind == "user.input"][-2:],
+                                 ["first question", "second question"])
+                self.assertFalse(any(item.kind == "branch.selection" for item in entries))
+            finally:
+                app.close()
+
+    def test_truncated_display_projection_does_not_replace_canonical_history(self):
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.tools import ToolAdapters
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
+            "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
+        }):
+            root = Path(temp)
+            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+                                    tools=ToolAdapters(root), user_id="alice")
+            try:
+                runtime = app.runtime
+                runtime.SHORT_TERM_CAP = 1
+                with patch.object(runtime, "_chat_turn_impl", side_effect=["answer 1", "answer 2", "answer 3"]):
+                    for question in ("question 1", "question 2", "question 3"):
+                        runtime.chat(runtime.current_session, question)
+                entries = runtime.conversation_history.active_entries()
+                self.assertFalse(any(item.kind == "branch.selection" for item in entries))
+                self.assertEqual([item.payload["text"] for item in entries if item.kind == "user.input"][-3:],
+                                 ["question 1", "question 2", "question 3"])
             finally:
                 app.close()
 
