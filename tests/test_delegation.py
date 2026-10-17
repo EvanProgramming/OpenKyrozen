@@ -165,6 +165,43 @@ class DelegationTests(unittest.TestCase):
         finally:
             self.runtime._turn_context.reset(context_token)
 
+    def test_parent_strategic_bounds_restrict_delegated_reads(self):
+        from openkyrozen.agent.turn import ExecutionContext
+        from types import SimpleNamespace
+
+        outside = self.root / "outside.txt"
+        outside.write_text("private", encoding="utf-8")
+        parent = SimpleNamespace(
+            interaction=SimpleNamespace(state=lambda: {"executing_plan": {
+                "bounds": {"workspace_paths": ["allowed"], "capabilities": ["read"],
+                           "effects": ["read_only"], "risk_ceiling": "normal"},
+            }}),
+            workspace=SimpleNamespace(root=self.root),
+            tasks=SimpleNamespace(),
+        )
+        session = self.runtime.current_session
+        previous_parent = getattr(session, "_delegation_parent", None)
+        session._delegation_parent = parent
+        child_id = "out-of-plan-reader"
+        coordinator = SimpleNamespace(
+            access=WorkspaceAccess(), root=self.root.resolve(),
+            runs={child_id: {"assignment": brief(scope=["outside.txt"])}},
+            cancelled={child_id: threading.Event()}, check_cancelled=lambda _run_id: None,
+        )
+        token = self.runtime._turn_context.set(
+            ExecutionContext(child_run_id=child_id, coordinator=coordinator),
+        )
+        try:
+            with self.assertRaisesRegex(PermissionError, "accepted Strategic Plan"):
+                with self.runtime._delegation_tool_access("read_file", "outside.txt"):
+                    self.fail("child read outside parent Strategic Plan bounds must not run")
+        finally:
+            self.runtime._turn_context.reset(token)
+            if previous_parent is None:
+                del session._delegation_parent
+            else:
+                session._delegation_parent = previous_parent
+
     def manager(self, invoke, concurrency=4):
         coordinator = Delegation(self.runtime.memory_bank, invoke,
             profiles=self.runtime.subagent_manager.profiles, root=self.root, concurrency=concurrency)
@@ -888,13 +925,18 @@ class DelegationTests(unittest.TestCase):
     def test_delegated_receipts_do_not_infer_strategic_plan_task_association(self):
         runtime = self.runtime
         proposal = runtime.current_session.interaction.propose_plan({"title":"Create two files",
-            "summary":"Write only first.txt and second.txt", "assumptions":[], "steps":[
+            "summary":"Write only first.txt and second.txt", "assumptions":[],
+            "bounds":{"workspace_paths":["."],"capabilities":["read","write"],
+                      "effects":["read_only","filesystem"],"risk_ceiling":"normal"}, "steps":[
                 {"id": "first", "title":"Create first.txt", "description":"Write first.txt with ok",
-                 "acceptance":["first.txt exists"]},
+                 "acceptance":["first.txt exists"],
+                 "execution":{"action":"write_file","arguments":{"path":"first.txt","content":"ok"}}},
                 {"id": "second", "title":"Create second.txt", "description":"Write second.txt with ok",
-                 "acceptance":["second.txt exists"]}]})
+                 "acceptance":["second.txt exists"],
+                 "execution":{"action":"write_file","arguments":{"path":"second.txt","content":"ok"}}}]})
         runtime.current_session.interaction.accept_plan(runtime.tasks,
             plan_id=proposal["plan_id"], version=proposal["version"])
+        self.assertEqual(runtime.tasks.tasks[0]["checkpoint"].get("action"), "write_file")
         class Provider:
             def chat(inner, messages, model):
                 reviewing = "Independently verify" in messages[1]["content"]
@@ -914,12 +956,16 @@ class DelegationTests(unittest.TestCase):
             wrong = coordinator.spawn([brief("wrong", profile="coder", scope=["outside-plan.txt"])])[0]
             self.assertEqual(coordinator.wait([wrong["run_id"]],5)[0]["status"], "blocked")
             self.assertFalse((self.root/"outside-plan.txt").exists())
+            same_name = coordinator.spawn([brief("same-name", profile="coder", scope=["other/first.txt"])])[0]
+            self.assertEqual(coordinator.wait([same_name["run_id"]],5)[0]["status"], "blocked")
+            self.assertFalse((self.root/"other/first.txt").exists())
             agents = coordinator.spawn([brief(0, profile="coder", scope=["first.txt"]),
                 brief(1, profile="coder", scope=["second.txt"], dependencies=["0"])])
             finished = coordinator.wait([run["run_id"] for run in agents],5)
         finally:
             runtime._active_interaction_mode.reset(token)
         self.assertEqual([run["status"] for run in finished], ["succeeded", "blocked"], finished)
+        self.assertIsNone(finished[0]["result"]["tool_records"][0]["task_id"])
         self.assertFalse((self.root/"second.txt").exists())
 
     def test_explicit_working_plan_task_id_reconciles_only_after_independent_review(self):

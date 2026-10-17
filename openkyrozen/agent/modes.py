@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import posixpath
 import re
 import shlex
 import uuid
+from copy import deepcopy
 from typing import Any
 
 from .ports import InteractionStore
@@ -182,23 +185,173 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
         if step_id in seen_ids:
             raise InteractionError("plan step ids must be unique")
         seen_ids.add(step_id)
+        execution = step.get("execution")
+        if execution is not None:
+            action = execution.get("action") if isinstance(execution, dict) else None
+            arguments = execution.get("arguments") if isinstance(execution, dict) else None
+            if (not isinstance(execution, dict) or set(execution) != {"action", "arguments"}
+                    or not isinstance(action, str) or action not in {"write_file", "edit_file"}
+                    or not isinstance(arguments, dict)
+                    or not isinstance(arguments.get("path"), str) or not arguments["path"].strip()):
+                raise InteractionError("file execution contract must name write_file or edit_file and an exact path")
+            required = ({"path", "content"} if action == "write_file" else
+                        {"path", "old_text", "new_text", "expected_sha256"})
+            if set(arguments) != required or any(not isinstance(item, str) for item in arguments.values()):
+                raise InteractionError("file execution arguments must exactly match the selected file operation")
+            if action == "edit_file" and (
+                    not arguments["old_text"] or not re.fullmatch(r"[0-9a-fA-F]{64}", arguments["expected_sha256"])):
+                raise InteractionError("edit_file requires nonempty old_text and a SHA-256 read hash")
+            try:
+                json.dumps(arguments, ensure_ascii=False, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise InteractionError("file execution arguments must be JSON-safe") from exc
+            execution = {"action": action, "arguments": deepcopy(arguments)}
         acceptance = step.get("acceptance")
         if isinstance(acceptance, str):
             acceptance = [acceptance]
         if not isinstance(acceptance, list) or not 1 <= len(acceptance) <= 5:
             raise InteractionError("each plan step requires 1-5 acceptance criteria")
-        normalised.append({
+        supplied_verifications = step.get("acceptance_verifications")
+        if supplied_verifications is not None and (
+                not isinstance(supplied_verifications, list) or len(supplied_verifications) != len(acceptance)):
+            raise InteractionError("acceptance verifications must align with acceptance criteria")
+        acceptance_verifications = []
+        normalized_acceptance = []
+        for criterion_index, item in enumerate(acceptance):
+            verification = supplied_verifications[criterion_index] if supplied_verifications is not None else None
+            if isinstance(item, dict) and set(item) == {"criterion", "verification"}:
+                verification = item["verification"]
+            if verification is not None:
+                if (not isinstance(verification, dict)
+                        or set(verification) not in ({"action", "arguments"}, {"action", "arguments", "expect"})
+                        or not isinstance(verification.get("action"), str)
+                        or not verification["action"].strip() or not isinstance(verification.get("arguments"), dict)):
+                    raise InteractionError("acceptance verification must contain an action and object arguments")
+                if verification["action"] == "read_file":
+                    expect = verification.get("expect")
+                    if (not isinstance(expect, dict) or len(expect) != 1
+                            or set(expect) not in ({"equals"}, {"contains"})
+                            or not isinstance(next(iter(expect.values())), str)
+                            or ("contains" in expect and not expect["contains"])):
+                        raise InteractionError("read_file verification requires a nonempty equals or contains predicate")
+                elif "expect" in verification:
+                    raise InteractionError("expected-result predicates are currently supported only for read_file")
+                try:
+                    json.dumps(verification["arguments"], ensure_ascii=False, allow_nan=False)
+                except (TypeError, ValueError) as exc:
+                    raise InteractionError("acceptance verification arguments must be JSON-safe") from exc
+            criterion = _text(item.get("criterion") if isinstance(item, dict) else item,
+                              "acceptance criterion", 300)
+            normalized_acceptance.append(criterion)
+            acceptance_verifications.append(verification)
+        acceptance = normalized_acceptance
+        acceptance_ids = []
+        for criterion, verification in zip(acceptance, acceptance_verifications):
+            identity = json.dumps({"criterion": criterion, "verification": verification}, sort_keys=True,
+                                  ensure_ascii=False, separators=(",", ":"))
+            acceptance_ids.append(f"{step_id}-ac-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]}")
+        if len(set(acceptance_ids)) != len(acceptance_ids):
+            raise InteractionError("acceptance criteria must be unique within each objective")
+        normalised_step = {
             "id": step_id,
             "title": _text(step.get("title") or f"Step {index}", "step title", 120),
             "description": _text(step.get("description"), "step description", 800),
-            "acceptance": [_text(item, "acceptance criterion", 300) for item in acceptance],
-        })
+            "acceptance": acceptance,
+            "acceptance_ids": acceptance_ids,
+            "acceptance_verifications": acceptance_verifications,
+        }
+        if execution is not None:
+            normalised_step["execution"] = execution
+        normalised.append(normalised_step)
     assumptions = value.get("assumptions", [])
     if assumptions is None:
         assumptions = []
     if not isinstance(assumptions, list) or len(assumptions) > 10:
         raise InteractionError("assumptions must contain at most 10 items")
-    return {
+    raw_bounds = value.get("bounds")
+    bounds_source = "proposal"
+    if raw_bounds is None:
+        if "bounds" in value:
+            raise InteractionError("bounds must be an object")
+        raw_bounds = {
+            "workspace_paths": ["."], "capabilities": ["read"],
+            "effects": ["read_only"], "risk_ceiling": "normal",
+        }
+        bounds_source = "legacy-default"
+    if not isinstance(raw_bounds, dict) or set(raw_bounds) - {
+        "workspace_paths", "capabilities", "effects", "risk_ceiling",
+    }:
+        raise InteractionError("bounds must declare workspace paths, capabilities, effects, and risk ceiling")
+
+    def values(field: str, allowed: set[str] | None = None) -> list[str]:
+        raw = raw_bounds.get(field, [])
+        if not isinstance(raw, list) or len(raw) > 32:
+            raise InteractionError(f"bounds.{field} must be an array with at most 32 values")
+        result = []
+        for item in raw:
+            if not isinstance(item, str) or not item.strip():
+                raise InteractionError(f"bounds.{field} entries must be nonempty strings")
+            item = item.strip()
+            if allowed is not None and item not in allowed:
+                raise InteractionError(f"unsupported bounds.{field} value: {item}")
+            result.append(item)
+        if len(set(result)) != len(result):
+            raise InteractionError(f"bounds.{field} values must be unique")
+        return result
+
+    paths = values("workspace_paths")
+    normalised_paths = []
+    for path in paths:
+        path = path.replace("\\", "/")
+        if path.startswith("/") or re.match(r"^[A-Za-z]:", path):
+            raise InteractionError("workspace paths must be relative to the active workspace")
+        path = posixpath.normpath(path)
+        if path == ".." or path.startswith("../"):
+            raise InteractionError("workspace paths cannot escape the active workspace")
+        normalised_paths.append(path)
+    if len(set(normalised_paths)) != len(normalised_paths):
+        raise InteractionError("workspace paths must be unique after normalization")
+    capabilities = values("capabilities", {
+        "read", "write", "shell", "network", "git", "browser", "destructive", "dynamic",
+    })
+    effects = values("effects", {
+        "read_only", "filesystem", "process", "remote", "destructive", "internal",
+    })
+    risk_ceiling = raw_bounds.get("risk_ceiling", "normal")
+    if not isinstance(risk_ceiling, str) or risk_ceiling not in {"normal", "high"}:
+        raise InteractionError("risk ceiling must be normal or high")
+    bounds = {
+        "workspace_paths": sorted(normalised_paths), "capabilities": sorted(capabilities),
+        "effects": sorted(effects), "risk_ceiling": risk_ceiling,
+    }
+    contract_policies = {
+        "read_file": ("read", "read_only"),
+        "write_file": ("write", "filesystem"),
+        "edit_file": ("write", "filesystem"),
+    }
+    for step in normalised:
+        contracts = ([step["execution"]] if step.get("execution") else []) + [
+            verification for verification in step["acceptance_verifications"] if verification
+        ]
+        for contract in contracts:
+            policy = contract_policies.get(contract["action"])
+            if policy is None:
+                raise InteractionError(f"unsupported Strategic Plan contract action: {contract['action']}")
+            capability, effect = policy
+            if capability not in bounds["capabilities"] or effect not in bounds["effects"]:
+                raise InteractionError("Strategic Plan contract exceeds its approved capability or effect bounds")
+            path = contract["arguments"].get("path")
+            if not isinstance(path, str) or not path.strip():
+                raise InteractionError("Strategic Plan file contracts require a path")
+            normalized_contract_path = posixpath.normpath(path.replace("\\", "/"))
+            if (normalized_contract_path.startswith("/") or normalized_contract_path == ".."
+                    or normalized_contract_path.startswith("../")):
+                raise InteractionError("Strategic Plan contract path escapes the approved workspace")
+            if not any(root == "." or normalized_contract_path == root
+                       or normalized_contract_path.startswith(root.rstrip("/") + "/")
+                       for root in bounds["workspace_paths"]):
+                raise InteractionError("Strategic Plan contract path is outside its approved workspace bounds")
+    plan = {
         "plan_id": _text(
             (previous or {}).get("plan_id") or f"plan_{uuid.uuid4().hex}",
             "plan_id", 100,
@@ -208,8 +361,18 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
         "summary": _text(value.get("summary"), "plan summary", 1200),
         "assumptions": [_text(item, "assumption", 300) for item in assumptions],
         "steps": normalised,
+        "bounds": bounds,
+        "bounds_source": bounds_source,
         "original_input": str(original_input).strip()[:12_000],
     }
+    fingerprint_fields = {key: plan[key] for key in (
+        "plan_id", "version", "title", "summary", "assumptions", "steps", "bounds",
+    )}
+    plan["fingerprint"] = hashlib.sha256(json.dumps(
+        fingerprint_fields, ensure_ascii=False, allow_nan=False, sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    return plan
 
 
 def parse_control_block(text: str, name: str) -> Any | None:
@@ -272,11 +435,13 @@ def normalize_provider_control(text: str, *, plan_mode: bool = False) -> tuple[s
                     step.get("acceptance") or step.get("acceptance_criteria")
                     or ["Step completed with observable evidence"]
                 ),
+                **({"execution": step["execution"]} if "execution" in step else {}),
             })
         return "PlanProposal", {
             "title": value.get("title") or value.get("plan_name"),
             "summary": value.get("summary") or value.get("overview") or value.get("goal"),
             "assumptions": value.get("assumptions") or [],
+            **({"bounds": value["bounds"]} if "bounds" in value else {}),
             "steps": steps,
         }
 
@@ -335,8 +500,12 @@ class InteractionController:
         )
 
     def _history(self) -> list[dict[str, Any]]:
+        if callable(getattr(self.store, "list_interaction_events", None)):
+            return self.store.list_interaction_events(
+                workspace_id=self.workspace_id, session_id=self.session_id, user_id=self.user_id,
+            )
         events = self.store.list_events(
-            limit=10_000, workspace_id=self.workspace_id, session_id=self.session_id,
+            limit=None, workspace_id=self.workspace_id, session_id=self.session_id,
             user_id=self.user_id,
         )
         return [event for event in reversed(events)
@@ -370,16 +539,21 @@ class InteractionController:
                 question = None
             elif event_type == "interaction.plan_proposed":
                 plan = payload
-                executing = None
             elif event_type == "interaction.plan_accepted":
                 if plan and payload.get("plan_id") == plan.get("plan_id") and payload.get("version") == plan.get("version"):
                     executing = dict(plan)
+                    for field in ("working_plan_id", "working_plan_revision", "working_task_ids"):
+                        if field in payload:
+                            executing[field] = payload[field]
                     plan = None
             elif event_type == "interaction.plan_cancelled":
                 if plan and payload.get("plan_id") == plan.get("plan_id"):
                     plan = None
             elif event_type == "interaction.plan_completed":
-                if executing and payload.get("plan_id") == executing.get("plan_id"):
+                if (executing and payload.get("plan_id") == executing.get("plan_id")
+                        and payload.get("version") == executing.get("version")
+                        and payload.get("fingerprint") == executing.get("fingerprint")
+                        and payload.get("status") in {"completed", "cancelled"}):
                     executing = None
         effective = route_mode(
             preference, user_input, pending_plan=plan is not None, executing_plan=executing is not None,
@@ -451,7 +625,14 @@ class InteractionController:
         return question
 
     def propose_plan(self, value: Any, *, original_input: str = "") -> dict[str, Any]:
-        previous = self.state().get("pending_plan")
+        state = self.state()
+        previous = state.get("pending_plan") or state.get("executing_plan")
+        if previous and state.get("pending_plan") is None:
+            latest = [int(event.get("payload", {}).get("version", 0)) for event in self._history()
+                      if event.get("event_type") == "interaction.plan_proposed"
+                      and event.get("payload", {}).get("plan_id") == previous.get("plan_id")]
+            if latest:
+                previous = {**previous, "version": max(latest)}
         plan = validate_plan_proposal(value, previous=previous, original_input=original_input)
         self._append("interaction.plan_proposed", plan)
         return plan
@@ -465,44 +646,179 @@ class InteractionController:
 
     def accepted_plan(self, plan_id: str | None = None, version: int | None = None) -> dict[str, Any] | None:
         proposals: dict[tuple[str, int], dict[str, Any]] = {}
-        accepted: set[tuple[str, int]] = set()
+        accepted: dict[tuple[str, int], dict[str, Any]] = {}
         for event in self._history():
             payload = event.get("payload", {})
             key = (str(payload.get("plan_id") or ""), int(payload.get("version") or 0))
             if event["event_type"] == "interaction.plan_proposed":
                 proposals[key] = payload
             elif event["event_type"] == "interaction.plan_accepted":
-                accepted.add(key)
+                accepted[key] = payload
         matches = [proposal for key, proposal in proposals.items() if key in accepted
                    and (not plan_id or key[0] == plan_id) and (version is None or key[1] == version)]
-        return matches[-1] if matches else None
+        if not matches:
+            return None
+        proposal = matches[-1]
+        key = (str(proposal.get("plan_id") or ""), int(proposal.get("version") or 0))
+        return {**proposal, **{field: accepted[key][field] for field in (
+            "working_plan_id", "working_plan_revision", "working_task_ids",
+        ) if field in accepted[key]}}
 
     def accept_plan(self, task_manager: Any, *, plan_id: str | None = None,
                     version: int | None = None) -> tuple[dict[str, Any], bool]:
         state = self.state()
         plan = state.get("pending_plan")
         executing = state.get("executing_plan")
-        if executing and (not plan_id or plan_id == executing.get("plan_id")):
+        if executing and not plan and (not plan_id or plan_id == executing.get("plan_id")):
+            if version is not None and version != executing.get("version"):
+                raise InteractionError("accepted plan version is stale")
             return executing, False
         if not plan or (plan_id and plan_id != plan.get("plan_id")) or (version is not None and version != plan.get("version")):
             accepted = self.accepted_plan(plan_id, version)
             if accepted:
                 return accepted, False
             raise InteractionError("plan is not pending")
-        descriptions = [f"{step['title']}: {step['description']}" for step in plan["steps"]]
-        acceptance = [
-            [{"criterion": criterion} for criterion in step["acceptance"]]
-            for step in plan["steps"]
-        ]
-        prefix = f"{plan['plan_id']}-v{plan['version']}"
-        task_manager.add_ordered_plan(descriptions, task_id_prefix=prefix, acceptance=acceptance)
-        self._append("interaction.plan_accepted", {"plan_id": plan["plan_id"], "version": plan["version"]})
-        return plan, True
+        if executing and task_manager.working_plan is None:
+            task_manager.recover()
+        elif not executing and task_manager.working_plan is None:
+            task_manager.recover()
+        if (not executing and task_manager.working_plan is not None
+                and task_manager.working_plan.status == "active"):
+            raise InteractionError("cannot accept a Strategic Plan while an unrelated Working Plan is active")
+        working_plan = task_manager.working_plan if executing else None
+        previous_tasks = [task for task in task_manager.tasks
+                          if working_plan and task.get("id") in working_plan.task_ids]
+        if any(task.get("status") == "running" for task in previous_tasks):
+            raise InteractionError("cannot replace a Strategic Plan while a Working Plan task is running")
+        operations = []
+        strategic_bindings = {}
+        reused: set[str] = set()
+        for step in plan["steps"]:
+            description = f"{step['title']}: {step['description']}"
+            existing = next((task for task in previous_tasks
+                             if task.get("status") == "succeeded"
+                             and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("objective_id") == step["id"]
+                             and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("acceptance_ids") == step["acceptance_ids"]
+                             and task.get("description") == description
+                             and [item.get("criterion") if isinstance(item, dict) else item
+                                  for item in task.get("acceptance", [])] == step["acceptance"]
+                             and (task.get("checkpoint") or {}).get("action") == (step.get("execution") or {}).get("action")
+                             and ((task.get("checkpoint") or {}).get("args") or "") == (
+                                 json.dumps((step.get("execution") or {}).get("arguments", {}), ensure_ascii=False,
+                                            allow_nan=False, sort_keys=True, separators=(",", ":"))
+                                 if step.get("execution") else "")), None)
+            if existing:
+                reused.add(existing["id"])
+                continue
+            operations.append({"op": "add", "ref": step["id"], "task": {
+                "description": description,
+                "acceptance": step["acceptance"],
+                **({"execution": step["execution"]} if step.get("execution") else {}),
+            }})
+            strategic_bindings[step["id"]] = {
+                "plan_id": plan["plan_id"], "version": plan["version"],
+                "fingerprint": plan["fingerprint"], "objective_id": step["id"],
+                "acceptance_ids": step["acceptance_ids"],
+                "acceptance_verifications": step["acceptance_verifications"],
+                "execution": step.get("execution"),
+            }
+        for task in previous_tasks:
+            if task["id"] not in reused and task.get("status") in {"pending", "failed", "blocked"}:
+                operations.insert(0, {"op": "cancel", "task": task["id"]})
+        if working_plan and not operations:
+            task = previous_tasks[0]
+            operations.append({"op": "update", "task": task["id"], "fields": {"priority": task["priority"]}})
+        try:
+            working = task_manager.edit_plan(
+            complexity=working_plan.complexity if working_plan else "complex",
+            plan_id=working_plan.id if working_plan else None,
+            expected_revision=working_plan.revision if working_plan else 0, operations=operations,
+            strategic_bindings=strategic_bindings,
+            transaction_event={"event_type": "interaction.plan_accepted", "payload": {
+                "plan_id": plan["plan_id"], "version": plan["version"],
+                "fingerprint": plan["fingerprint"],
+            }, "expected_proposal": {
+                "plan_id": plan["plan_id"], "version": plan["version"],
+                "fingerprint": plan["fingerprint"],
+            }},
+            )
+        except ValueError:
+            accepted = self.accepted_plan(plan["plan_id"], plan["version"])
+            if accepted and accepted.get("fingerprint") == plan["fingerprint"]:
+                return accepted, False
+            raise
+        bound_ids = [task["id"] for task in working["tasks"]
+                     if (task.get("checkpoint") or {}).get("strategic_plan", {}).get("plan_id") == plan["plan_id"]
+                     and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("version") == plan["version"]
+                     and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("fingerprint") == plan["fingerprint"]
+                     and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("objective_id")
+                     in {step["id"] for step in plan["steps"]}]
+        return {**plan, "working_plan_id": working["plan_id"],
+                "working_plan_revision": working["revision"],
+                "working_task_ids": bound_ids}, True
 
-    def complete_plan(self, plan: dict[str, Any], *, status: str = "completed") -> None:
+    def complete_plan(self, plan: dict[str, Any], *, status: str = "completed",
+                      task_manager: Any | None = None) -> None:
+        if status not in {"completed", "failed", "cancelled"}:
+            raise InteractionError("Strategic Plan terminal status is invalid")
+        prior_completions = [event.get("payload", {}).get("status") for event in self._history()
+                             if event["event_type"] == "interaction.plan_completed"
+                             and event.get("payload", {}).get("plan_id") == plan.get("plan_id")
+                             and event.get("payload", {}).get("version") == plan.get("version")]
+        if any(previous in {"completed", "cancelled"} or previous == status
+               for previous in prior_completions):
+            return
+        working = task_manager.working_plan if task_manager is not None else None
+        current_tasks = {task.get("id"): task for task in task_manager.tasks} if task_manager is not None else {}
+        task_ids = ([task_id for task_id in working.task_ids
+                     if (current_tasks.get(task_id, {}).get("checkpoint") or {}).get("strategic_plan", {}).get("version") == plan.get("version")
+                     and (current_tasks.get(task_id, {}).get("checkpoint") or {}).get("strategic_plan", {}).get("fingerprint") == plan.get("fingerprint")]
+                    if working and working.id == plan.get("working_plan_id")
+                    else plan.get("working_task_ids"))
+        if status == "completed":
+            if task_manager is None or not isinstance(task_ids, list) or not task_ids:
+                raise InteractionError("Strategic Plan completion requires its linked Working Plan evidence")
+            tasks = {task.get("id"): task for task in task_manager.tasks}
+            objectives = {step["id"] for step in plan.get("steps", [])}
+            for task_id in task_ids:
+                binding = (tasks.get(task_id, {}).get("checkpoint") or {}).get("strategic_plan") or {}
+                if binding.get("plan_id") != plan.get("plan_id") or binding.get("objective_id") not in objectives:
+                    raise InteractionError("Working Plan contains a task not linked to the accepted Strategic Plan")
+            if any(tasks.get(task_id, {}).get("status") != "succeeded"
+                   or not any(isinstance(item, dict) and item.get("success") is True and item.get("acceptance")
+                              for item in tasks[task_id].get("evidence", []))
+                   for task_id in task_ids):
+                raise InteractionError("Strategic Plan tasks have not passed their acceptance evidence gates")
+            for task_id in task_ids:
+                task = tasks[task_id]
+                binding = (task.get("checkpoint") or {}).get("strategic_plan") or {}
+                required = set(binding.get("acceptance_ids", ()))
+                if required:
+                    covered = {
+                        criterion_id
+                        for item in task.get("evidence", [])
+                        if isinstance(item, dict) and item.get("success") is True
+                        for criterion_id in item.get("acceptance_ids", ())
+                    }
+                    if not required <= covered:
+                        raise InteractionError("Strategic Plan criteria have not all been verified")
         self._append("interaction.plan_completed", {
-            "plan_id": plan["plan_id"], "version": plan["version"], "status": status,
+            "plan_id": plan["plan_id"], "version": plan["version"],
+            "fingerprint": plan.get("fingerprint"), "working_plan_id": plan.get("working_plan_id"),
+            "working_task_ids": task_ids or [], "status": status,
         })
+
+    def reconcile_plan_completion(self, task_manager: Any) -> None:
+        plan = self.state().get("executing_plan")
+        if not plan or not plan.get("working_plan_id"):
+            return
+        working = task_manager.working_plan
+        if working is None or working.id != plan["working_plan_id"]:
+            working = task_manager.restore_working_plan(plan["working_plan_id"])
+        if working is not None and working.status in {"completed", "cancelled"}:
+            self.complete_plan(
+                plan, status=working.status, task_manager=task_manager,
+            )
 
 
 def render_question(question: dict[str, Any]) -> str:
@@ -523,6 +839,28 @@ def render_plan(plan: dict[str, Any]) -> str:
     lines.extend(["", "Plan:"])
     for index, step in enumerate(plan["steps"], 1):
         lines.append(f"{index}. {step['title']} — {step['description']}")
-        lines.extend(f"   - Acceptance: {item}" for item in step["acceptance"])
+        lines.extend(f"   - Acceptance [{criterion_id}]: {item}"
+                     for criterion_id, item in zip(step["acceptance_ids"], step["acceptance"]))
+        if step.get("execution"):
+            lines.append(f"   - Approved file operation: {step['execution']['action']} "
+                         f"{json.dumps(step['execution']['arguments'], ensure_ascii=False, sort_keys=True)}")
+        for verification in step["acceptance_verifications"]:
+            if verification:
+                detail = f" with the approved arguments"
+                if verification.get("expect"):
+                    detail += f" and expected {json.dumps(verification['expect'], ensure_ascii=False)}"
+                lines.append(f"     Verified by {verification['action']}{detail}.")
+            else:
+                lines.append("     No verification contract; this criterion cannot pass the completion gate.")
+    bounds = plan["bounds"]
+    lines.extend([
+        "", "Approved bounds:",
+        f"- Workspace paths: {', '.join(bounds['workspace_paths']) or '(none; no file paths)' }",
+        f"- Capabilities: {', '.join(bounds['capabilities']) or '(none)' }",
+        f"- Effects: {', '.join(bounds['effects']) or '(none)' }",
+        f"- Risk ceiling: {bounds['risk_ceiling']}",
+        f"- Bounds provenance: {plan.get('bounds_source', 'legacy-default')}",
+        f"- Strategic fingerprint: {plan['fingerprint']}",
+    ])
     lines.extend(["", "Accept with `/plan accept` or `accept plan`; send feedback to revise; cancel with `/plan cancel`."])
     return "\n".join(lines)

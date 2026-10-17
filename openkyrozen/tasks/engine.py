@@ -179,7 +179,9 @@ class TaskManager:
                 "dependencies": list(dependencies), "priority": priority, "checkpoint": checkpoint}
 
     def edit_plan(self, *, expected_revision: int, operations: list[dict[str, Any]],
-                  complexity: str | None = None, plan_id: str | None = None) -> dict[str, Any]:
+                  complexity: str | None = None, plan_id: str | None = None,
+                  strategic_bindings: dict[str, dict[str, Any]] | None = None,
+                  transaction_event: dict[str, Any] | None = None) -> dict[str, Any]:
         """Apply a validated ordered operation batch as one revision-checked transaction."""
         if type(expected_revision) is not int or expected_revision < 0:
             raise ValueError("expected_revision must be a nonnegative integer")
@@ -189,6 +191,20 @@ class TaskManager:
             raise ValueError("operations cannot be empty")
         if plan_id is not None and (not isinstance(plan_id, str) or not plan_id.strip()):
             raise ValueError("plan_id must be a nonempty string")
+        if strategic_bindings is not None and not isinstance(strategic_bindings, dict):
+            raise ValueError("strategic_bindings must be an object")
+        if transaction_event is not None and (
+                not isinstance(transaction_event, dict)
+                or set(transaction_event) not in (
+                    {"event_type", "payload"}, {"event_type", "payload", "expected_proposal"},
+                )
+                or transaction_event.get("event_type") != "interaction.plan_accepted"
+                or not isinstance(transaction_event.get("payload"), dict)
+                or ("expected_proposal" in transaction_event and (
+                    not isinstance(transaction_event["expected_proposal"], dict)
+                    or set(transaction_event["expected_proposal"]) != {"plan_id", "version", "fingerprint"}
+                ))):
+            raise ValueError("only a structured plan-acceptance transaction event is supported")
 
         saved = self.store.get_working_plan(
             user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id or "",
@@ -215,7 +231,16 @@ class TaskManager:
         original_ids = {task["id"] for task in previous_tasks}
         tasks = deepcopy(previous_tasks)
         by_id = {task["id"]: task for task in tasks}
+        has_strategic_tasks = any(
+            isinstance(task.get("checkpoint"), dict) and isinstance(task["checkpoint"].get("strategic_plan"), dict)
+            for task in previous_tasks
+        )
+        is_strategic_acceptance = bool(
+            transaction_event and transaction_event.get("event_type") == "interaction.plan_accepted"
+            and transaction_event.get("expected_proposal")
+        )
         references: dict[str, str] = {}
+        used_strategic_bindings: set[str] = set()
         now = utc_now()
         scope_key = _task_key(f"{self.user_id}:{self.workspace_id}:{self.session_id or ''}")
 
@@ -246,10 +271,70 @@ class TaskManager:
                 if not isinstance(ref, str) or not ref.strip() or ref in references or ref in by_id:
                     raise ValueError("task references must be unique nonempty strings")
                 fields = self._plan_task_fields(operation["task"])
+                if has_strategic_tasks and (not is_strategic_acceptance or not strategic_bindings or ref not in strategic_bindings):
+                    raise ValueError("new work in a Strategic Plan requires an approved strategic binding")
                 task_id = f"task_{scope_key}_{uuid.uuid4().hex}"
                 task = {"id": task_id, **fields, "status": "pending", "attempts": 0,
                         "checkpoint": fields["checkpoint"], "evidence": [], "created_at": now,
                         "updated_at": now, "plan_id": plan_id}
+                if strategic_bindings and ref in strategic_bindings:
+                    binding = strategic_bindings[ref]
+                    if (not isinstance(binding, dict)
+                            or set(binding) not in ({"plan_id", "version", "fingerprint", "objective_id", "acceptance_ids",
+                                                     "acceptance_verifications"},
+                                                    {"plan_id", "version", "fingerprint", "objective_id", "acceptance_ids",
+                                                     "acceptance_verifications", "execution"})
+                            or not isinstance(binding.get("version"), int)
+                            or not isinstance(binding.get("acceptance_ids"), list)
+                            or not isinstance(binding.get("acceptance_verifications"), list)):
+                        raise ValueError("strategic task binding is invalid")
+                    accepted_payload = (transaction_event or {}).get("payload", {})
+                    if (not is_strategic_acceptance
+                            or any(binding.get(key) != accepted_payload.get(key)
+                                   for key in ("plan_id", "version", "fingerprint"))):
+                        raise ValueError("strategic task binding must match the approved plan")
+                    execution = binding.get("execution")
+                    if execution is not None:
+                        if (not isinstance(execution, dict) or set(execution) != {"action", "arguments"}
+                                or fields["checkpoint"].get("action") != _receipt_action(execution.get("action"))
+                                or fields["checkpoint"].get("args") != json.dumps(
+                                    execution.get("arguments"), ensure_ascii=False, allow_nan=False,
+                                    sort_keys=True, separators=(",", ":"))):
+                            raise ValueError("strategic task execution must match its approved contract")
+                    elif fields["checkpoint"].get("action"):
+                        raise ValueError("strategic task execution is missing from its approved binding")
+                    task["checkpoint"] = {**task["checkpoint"], "strategic_plan": deepcopy(binding)}
+                    verifications = binding["acceptance_verifications"]
+                    if len(verifications) != len(fields["acceptance"]):
+                        raise ValueError("strategic acceptance verifications do not match the task")
+                    task["acceptance"] = []
+                    for criterion_id, criterion, verification in zip(
+                            binding["acceptance_ids"], fields["acceptance"], verifications):
+                        item = {"id": criterion_id, "criterion": criterion}
+                        if verification is not None:
+                            if (not isinstance(verification, dict)
+                                    or set(verification) not in ({"action", "arguments"},
+                                                                 {"action", "arguments", "expect"})
+                                    or not isinstance(verification.get("action"), str)
+                                    or not isinstance(verification.get("arguments"), dict)):
+                                raise ValueError("strategic acceptance verification is invalid")
+                            if verification["action"] == "read_file":
+                                expect = verification.get("expect")
+                                if (not isinstance(expect, dict) or len(expect) != 1
+                                        or set(expect) not in ({"equals"}, {"contains"})
+                                        or not isinstance(next(iter(expect.values())), str)
+                                        or ("contains" in expect and not expect["contains"])):
+                                    raise ValueError("strategic read_file verification requires an expected result")
+                                item["expect"] = deepcopy(expect)
+                            elif "expect" in verification:
+                                raise ValueError("expected-result predicates are supported only for read_file")
+                            item["action"] = _receipt_action(verification["action"])
+                            item["args"] = json.dumps(verification["arguments"], ensure_ascii=False,
+                                                       allow_nan=False, sort_keys=True, separators=(",", ":"))
+                        task["acceptance"].append(item)
+                    if len(task["acceptance"]) != len(fields["acceptance"]):
+                        raise ValueError("strategic acceptance criteria do not match the task")
+                    used_strategic_bindings.add(ref)
                 references[ref] = task_id
                 tasks.append(task)
                 by_id[task_id] = task
@@ -259,6 +344,10 @@ class TaskManager:
                 if not isinstance(fields, dict) or not fields or set(fields) - {"description", "acceptance", "dependencies", "priority", "execution"}:
                     raise ValueError("update fields are empty or unsupported")
                 current = by_id[task_id]
+                if (has_strategic_tasks and isinstance(current.get("checkpoint"), dict)
+                        and isinstance(current["checkpoint"].get("strategic_plan"), dict)
+                        and set(fields) - {"priority", "dependencies"}):
+                    raise ValueError("Strategic Plan task intent cannot change without approval")
                 validated = self._plan_task_fields({
                     "description": fields.get("description", current["description"]),
                     "acceptance": fields.get("acceptance", []),
@@ -338,6 +427,8 @@ class TaskManager:
                     ready.append(dependent)
         if resolved != len(tasks):
             raise ValueError("dependency cycle detected")
+        if used_strategic_bindings != set(strategic_bindings or {}):
+            raise ValueError("strategic bindings must identify added task references exactly")
 
         for task in tasks:
             task["plan_id"] = plan_id
@@ -355,6 +446,16 @@ class TaskManager:
         revision = self.store.apply_working_plan_edit(
             plan, tasks, expected_revision=expected_revision, expected_tasks=previous_tasks,
             user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
+            transaction_event=(
+                {"event_type": transaction_event["event_type"], **(
+                    {"expected_proposal": transaction_event["expected_proposal"]}
+                    if "expected_proposal" in transaction_event else {}
+                ), "payload": {
+                    **transaction_event["payload"], "working_plan_id": plan_id,
+                    "working_plan_revision": expected_revision + 1,
+                    "working_task_ids": [task["id"] for task in tasks],
+                }} if transaction_event else None
+            ),
         )
         working_plan = WorkingPlan(
             id=plan_id, complexity=complexity, status=plan_status, task_ids=tuple(task["id"] for task in tasks),
@@ -448,6 +549,16 @@ class TaskManager:
 
     def _has_evidence(self, idx: int, evidence: dict[str, Any] | None = None) -> bool:
         evidence_items = ([evidence] if evidence else []) + self.tasks[idx].get("evidence", [])
+        strategic = ((self.tasks[idx].get("checkpoint") or {}).get("strategic_plan") or {})
+        required = set(strategic.get("acceptance_ids", ()))
+        if required:
+            covered = {
+                criterion_id
+                for item in evidence_items
+                if item.get("success") is True
+                for criterion_id in item.get("acceptance_ids", ())
+            }
+            return required <= covered
         return any(item.get("success") is True and item.get("acceptance") for item in evidence_items)
 
     def _receipt_match_score(self, task: dict[str, Any], action: str, args: str,
@@ -458,18 +569,17 @@ class TaskManager:
         checkpoint = task.get("checkpoint") or {}
         checkpoint_action = _receipt_action(checkpoint.get("action"))
         checkpoint_args = _receipt_args(checkpoint.get("args"))
-        if checkpoint_action:
-            if checkpoint_action != action:
-                return -1
+        if checkpoint_action == action:
             if checkpoint_args:
                 checkpoint_fingerprint = (checkpoint.get("args_sha256")
                                           or hashlib.sha256(checkpoint_args.encode("utf-8")).hexdigest())
                 if args_fingerprint:
                     if checkpoint_fingerprint != args_fingerprint:
-                        return -1
+                        checkpoint_action = None
                 elif checkpoint_args != args:
-                    return -1
-            return 200 if checkpoint_args else 150
+                    checkpoint_action = None
+            if checkpoint_action:
+                return 200 if checkpoint_args else 150
 
         score = 0
         for criterion in task.get("acceptance") or []:
@@ -582,7 +692,9 @@ class TaskManager:
     def record_evidence(self, *, task_id: str | None = None, action: str, result: str, success: bool,
                         acceptance: str | None = None, args: str | None = None,
                         args_projection: str | None = None,
-                        args_fingerprint: str | None = None, receipt_id: str | None = None) -> dict[str, Any]:
+                        args_fingerprint: str | None = None, receipt_id: str | None = None,
+                        verification_status: str | None = None,
+                        verification_result: str | None = None) -> dict[str, Any]:
         canonical = _receipt_action(action)
         normalized_args = _receipt_args(args)
         persisted_args = _receipt_args(args_projection) if args_projection is not None else normalized_args
@@ -624,6 +736,25 @@ class TaskManager:
         persisted_targets = []
         for task in targets:
             candidate = deepcopy(task)
+            if success and verification_status in {"verified", "not_applicable"}:
+                verified_ids = []
+                for criterion in candidate.get("acceptance", []):
+                    if (not isinstance(criterion, dict) or not criterion.get("id")
+                            or criterion.get("action") != canonical or criterion.get("args") != normalized_args):
+                        continue
+                    expect = criterion.get("expect")
+                    if canonical == "read_file":
+                        if not isinstance(expect, dict) or len(expect) != 1:
+                            continue
+                        operator, expected = next(iter(expect.items()))
+                        content = str(verification_result if verification_result is not None else result)
+                        if (operator == "equals" and content != expected) or (
+                                operator == "contains" and expected not in content):
+                            continue
+                    verified_ids.append(criterion["id"])
+                if verified_ids:
+                    item["acceptance_ids"] = verified_ids
+                    item.setdefault("acceptance", "verified strategic criterion")
             if ordered_inferred:
                 marker = _ordered_plan_info(task)
                 if marker:
@@ -635,6 +766,7 @@ class TaskManager:
                 }
             elif inferred and not (task.get("checkpoint") or {}).get("action"):
                 candidate["checkpoint"] = {
+                    **(task.get("checkpoint") or {}),
                     "action": canonical, "args": persisted_args,
                     **({"args_sha256": args_fingerprint} if args_fingerprint else {}),
                 }
@@ -963,5 +1095,24 @@ class TaskManager:
         else:
             self.tasks = unfinished
         return unfinished
+
+    def restore_working_plan(self, plan_id: str) -> WorkingPlan | None:
+        saved = self.store.get_working_plan_by_id(
+            plan_id, user_id=self.user_id, workspace_id=self.workspace_id,
+            session_id=self.session_id or "",
+        )
+        if saved is None:
+            return None
+        tasks = self.store.list_working_plan_tasks(
+            plan_id, user_id=self.user_id, workspace_id=self.workspace_id,
+            session_id=self.session_id or "",
+        )
+        self.working_plan = WorkingPlan(
+            id=saved["id"], complexity=saved["complexity"], status=saved["status"],
+            task_ids=tuple(task["id"] for task in tasks), created_at=saved["created_at"],
+            updated_at=saved["updated_at"], revision=int(saved.get("revision", 0)),
+        )
+        self.tasks = tasks + [task for task in self.tasks if task["id"] not in self.working_plan.task_ids]
+        return self.working_plan
 
 from .worker import TaskWorker
