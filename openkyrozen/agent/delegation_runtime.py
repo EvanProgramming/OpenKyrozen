@@ -362,7 +362,7 @@ def _delegation_tool_access(self, action, args):
                 raise ValueError("Sub-agent write is outside its assigned files")
         parent = getattr(self.current_session, "_delegation_parent", None)
         parent_plan = parent.interaction.state().get("executing_plan") if parent else None
-        if parent and parent_plan and self._is_state_changing_action(action, args):
+        if parent and parent_plan:
             from openkyrozen.agent.executor import _legacy_object_arguments, _strategic_plan_denial
             arguments = args if isinstance(args, dict) else None
             spec = getattr(self.tool_registry, "specs", {}).get(action)
@@ -378,9 +378,10 @@ def _delegation_tool_access(self, action, args):
             )
             if denial:
                 raise PermissionError(f"Sub-agent operation exceeds the accepted Strategic Plan: {denial}")
-            allowed, reason = parent.tasks.mutation_matches_current_task(action, match_args)
-            if not allowed:
-                raise ValueError("Sub-agent action does not match accepted plan: " + reason)
+            if self._is_state_changing_action(action, args):
+                allowed, reason = parent.tasks.mutation_matches_current_task(action, match_args)
+                if not allowed:
+                    raise ValueError("Sub-agent action does not match accepted plan: " + reason)
     guarded = action in {"read_file", "write_file", "edit_file", "search_files"} or self._is_state_changing_action(action, args) or action in {"git_diff", "git_show"}
     if access and guarded:
         cancelled = (lambda: coordinator.cancelled[context.child_run_id].is_set()) if coordinator else (lambda: False)

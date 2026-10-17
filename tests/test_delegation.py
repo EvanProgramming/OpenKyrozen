@@ -165,6 +165,43 @@ class DelegationTests(unittest.TestCase):
         finally:
             self.runtime._turn_context.reset(context_token)
 
+    def test_parent_strategic_bounds_restrict_delegated_reads(self):
+        from openkyrozen.agent.turn import ExecutionContext
+        from types import SimpleNamespace
+
+        outside = self.root / "outside.txt"
+        outside.write_text("private", encoding="utf-8")
+        parent = SimpleNamespace(
+            interaction=SimpleNamespace(state=lambda: {"executing_plan": {
+                "bounds": {"workspace_paths": ["allowed"], "capabilities": ["read"],
+                           "effects": ["read_only"], "risk_ceiling": "normal"},
+            }}),
+            workspace=SimpleNamespace(root=self.root),
+            tasks=SimpleNamespace(),
+        )
+        session = self.runtime.current_session
+        previous_parent = getattr(session, "_delegation_parent", None)
+        session._delegation_parent = parent
+        child_id = "out-of-plan-reader"
+        coordinator = SimpleNamespace(
+            access=WorkspaceAccess(), root=self.root.resolve(),
+            runs={child_id: {"assignment": brief(scope=["outside.txt"])}},
+            cancelled={child_id: threading.Event()}, check_cancelled=lambda _run_id: None,
+        )
+        token = self.runtime._turn_context.set(
+            ExecutionContext(child_run_id=child_id, coordinator=coordinator),
+        )
+        try:
+            with self.assertRaisesRegex(PermissionError, "accepted Strategic Plan"):
+                with self.runtime._delegation_tool_access("read_file", "outside.txt"):
+                    self.fail("child read outside parent Strategic Plan bounds must not run")
+        finally:
+            self.runtime._turn_context.reset(token)
+            if previous_parent is None:
+                del session._delegation_parent
+            else:
+                session._delegation_parent = previous_parent
+
     def manager(self, invoke, concurrency=4):
         coordinator = Delegation(self.runtime.memory_bank, invoke,
             profiles=self.runtime.subagent_manager.profiles, root=self.root, concurrency=concurrency)

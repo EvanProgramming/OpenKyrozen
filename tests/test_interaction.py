@@ -303,6 +303,39 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
         self.assertEqual(len(updated["working_task_ids"]), 1)
         self.assertNotEqual(updated["working_task_ids"][0], old_task_id)
 
+    def test_revised_plan_completion_ignores_cancelled_tasks_from_previous_versions(self):
+        first = self._proposal()
+        self.controller.accept_plan(self.manager, plan_id=first["plan_id"], version=first["version"])
+        revised = self.controller.propose_plan({
+            "title": "Revised page", "summary": "Update the accepted page objective.",
+            "bounds": first["bounds"],
+            "steps": [{"id": "page", "title": "Create revised page", "description": "Write the revised page.",
+                       "acceptance": first["steps"][0]["acceptance"]}],
+        })
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=revised["plan_id"], version=revised["version"],
+        )
+        task = next(task for task in self.manager.tasks if task["id"] == accepted["working_task_ids"][0])
+        evidence = {"success": True, "acceptance": "verified",
+                    "acceptance_ids": task["checkpoint"]["strategic_plan"]["acceptance_ids"]}
+        self.assertTrue(self.manager.set_status(self.manager.tasks.index(task), "succeeded", evidence=evidence))
+        self.controller.complete_plan(accepted, task_manager=self.manager)
+        self.assertIsNone(self.controller.state()["executing_plan"])
+
+    def test_active_unrelated_working_plan_is_preserved_when_strategic_acceptance_is_rejected(self):
+        self.manager.update_plan(complexity="complex", tasks=[{
+            "description": "Existing work", "acceptance": ["Existing work is done"],
+        }])
+        existing_id = self.manager.tasks[0]["id"]
+        plan = self._proposal()
+        with self.assertRaises(InteractionError):
+            self.controller.accept_plan(self.manager, plan_id=plan["plan_id"], version=plan["version"])
+        self.assertEqual(self.manager.tasks[0]["id"], existing_id)
+        self.assertEqual(self.manager.tasks[0]["description"], "Existing work")
+        self.assertEqual(self.store.list_events(
+            "interaction.plan_accepted", workspace_id="project", session_id="strategic-session",
+        ), [])
+
     def test_restart_reconciles_completion_after_working_plan_terminalization(self):
         plan = self._proposal()
         accepted, _ = self.controller.accept_plan(
@@ -499,6 +532,23 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
         self.controller.cancel_plan(revision["plan_id"], revision["version"])
         self.assertEqual(self.controller.state()["executing_plan"]["fingerprint"], accepted["fingerprint"])
 
+    def test_cancelled_revision_numbers_are_not_reused(self):
+        plan = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=plan["plan_id"], version=plan["version"],
+        )
+        revised = self.controller.propose_plan({
+            "title": "First revision", "summary": "Stage revision one.",
+            "bounds": plan["bounds"], "steps": plan["steps"],
+        })
+        self.controller.cancel_plan(revised["plan_id"], revised["version"])
+        replacement = self.controller.propose_plan({
+            "title": "Replacement revision", "summary": "Stage a distinct revision.",
+            "bounds": plan["bounds"], "steps": plan["steps"],
+        })
+        self.assertEqual(replacement["plan_id"], accepted["plan_id"])
+        self.assertEqual(replacement["version"], revised["version"] + 1)
+
     def test_acceptance_rejects_proposal_superseded_before_transaction(self):
         plan = self._proposal()
         edit_plan = self.manager.edit_plan
@@ -587,7 +637,8 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
                                                   verification_status="not_applicable")
         self.assertNotIn("acceptance_ids", wrong_read)
         second = self.manager.record_evidence(task_id=task["id"], action="read_file",
-                                              args='{"path":"site/index.html"}', result="ok", success=True,
+                                              args='{"path":"site/index.html"}', result="token=<redacted>",
+                                              verification_result="token=ok", success=True,
                                               verification_status="not_applicable")
         self.assertEqual(second["acceptance_ids"], [task["acceptance"][1]["id"]])
         self.manager.set_status(0, "succeeded")
@@ -599,7 +650,7 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
         from types import SimpleNamespace
         import hashlib
 
-        large_content = "x" * 1500
+        large_content = "x " * 100_000 + "UNIQUE-END"
         proposal = self.controller.propose_plan({
             "title": "Verified page", "summary": "Create and inspect a page.",
             "bounds": {"workspace_paths": ["site"], "capabilities": ["read", "write"],
@@ -609,7 +660,7 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
                            {"criterion": "Page exists", "verification": {"action": "write_file",
                             "arguments": {"path": "site/index.html", "content": large_content}}},
                            {"criterion": "Page can be read back", "verification": {"action": "read_file",
-                            "arguments": {"path": "site/index.html"}, "expect": {"equals": large_content}}},
+                            "arguments": {"path": "site/index.html"}, "expect": {"contains": "UNIQUE-END"}}},
                        ]}],
         })
         self.controller.accept_plan(self.manager, plan_id=proposal["plan_id"], version=proposal["version"])
@@ -631,7 +682,7 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
                     arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")
                 ).encode()).hexdigest(),
                 authorized=True, started_at="start", completed_at="end", success=True,
-                result=large_content if action == "read_file" else "ok",
+                result=large_content[:200_000] if action == "read_file" else "ok",
                 call_id=f"call-{index}",
                 call_id_source="native", arguments=arguments,
                 tool_result=ToolResult(text=large_content if action == "read_file" else "ok"),
@@ -1160,6 +1211,43 @@ class InteractionTests(unittest.TestCase):
             self.agent._interaction_controller = previous
             self.agent.tasks = previous_tasks
             self.agent._set_workspace_root(previous_root)
+
+    def test_explicit_execution_contract_rejects_changed_write_arguments(self):
+        from openkyrozen.agent.types import ExecutionReceipt
+        previous = self.agent._interaction_controller
+        previous_tasks = self.agent.tasks
+        manager = TaskManager(self.store, workspace_id="workspace", session_id="session")
+        controller = InteractionController(self.store, workspace_id="workspace", session_id="session")
+        approved = {"path": "site/index.html", "content": "approved"}
+        proposal = controller.propose_plan({
+            "title": "Write page", "summary": "Write the approved content.", "bounds": {
+                "workspace_paths": ["site"], "capabilities": ["write"],
+                "effects": ["filesystem", "read_only"], "risk_ceiling": "normal",
+            }, "steps": [{"id": "page", "title": "Write page", "description": "Write the page.",
+                         "execution": {"action": "write_file", "arguments": approved},
+                         "acceptance": [{"criterion": "Page can be read", "verification": {
+                             "action": "read_file", "arguments": {"path": "site/index.html"},
+                             "expect": {"contains": "approved"},
+                         }}]}],
+        })
+        controller.accept_plan(manager, plan_id=proposal["plan_id"], version=proposal["version"])
+        self.agent.tasks = manager
+        self.agent._interaction_controller = controller
+        receipt = ExecutionReceipt(
+            "receipt", "operation", "write_file", "site/index.html|different", True,
+            "start", "end", True, "written", call_id="call", call_id_source="synthetic",
+            arguments={"path": "site/index.html", "content": "different"}, tool_result=ToolResult(text="written"),
+        )
+        try:
+            with patch.object(self.agent, "_run_tool", return_value=receipt) as execute:
+                outcome = self.agent._execute_turn_action(
+                    "write_file", "site/index.html|different", operation_scope="test", successful_operations=set(),
+                )
+            self.assertFalse(outcome.success)
+            execute.assert_not_called()
+        finally:
+            self.agent._interaction_controller = previous
+            self.agent.tasks = previous_tasks
 
     def test_structured_legacy_arguments_match_the_accepted_action_contract(self):
         from openkyrozen.agent.types import ExecutionReceipt

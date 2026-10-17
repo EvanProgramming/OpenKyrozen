@@ -684,7 +684,8 @@ class TaskManager:
                         acceptance: str | None = None, args: str | None = None,
                         args_projection: str | None = None,
                         args_fingerprint: str | None = None, receipt_id: str | None = None,
-                        verification_status: str | None = None) -> dict[str, Any]:
+                        verification_status: str | None = None,
+                        verification_result: str | None = None) -> dict[str, Any]:
         canonical = _receipt_action(action)
         normalized_args = _receipt_args(args)
         persisted_args = _receipt_args(args_projection) if args_projection is not None else normalized_args
@@ -737,7 +738,7 @@ class TaskManager:
                         if not isinstance(expect, dict) or len(expect) != 1:
                             continue
                         operator, expected = next(iter(expect.items()))
-                        content = str(result)
+                        content = str(verification_result if verification_result is not None else result)
                         if (operator == "equals" and content != expected) or (
                                 operator == "contains" and expected not in content):
                             continue

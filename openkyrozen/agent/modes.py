@@ -598,6 +598,12 @@ class InteractionController:
     def propose_plan(self, value: Any, *, original_input: str = "") -> dict[str, Any]:
         state = self.state()
         previous = state.get("pending_plan") or state.get("executing_plan")
+        if previous and state.get("pending_plan") is None:
+            latest = [int(event.get("payload", {}).get("version", 0)) for event in self._history()
+                      if event.get("event_type") == "interaction.plan_proposed"
+                      and event.get("payload", {}).get("plan_id") == previous.get("plan_id")]
+            if latest:
+                previous = {**previous, "version": max(latest)}
         plan = validate_plan_proposal(value, previous=previous, original_input=original_input)
         self._append("interaction.plan_proposed", plan)
         return plan
@@ -645,6 +651,11 @@ class InteractionController:
             raise InteractionError("plan is not pending")
         if executing and task_manager.working_plan is None:
             task_manager.recover()
+        elif not executing and task_manager.working_plan is None:
+            task_manager.recover()
+        if (not executing and task_manager.working_plan is not None
+                and task_manager.working_plan.status == "active"):
+            raise InteractionError("cannot accept a Strategic Plan while an unrelated Working Plan is active")
         working_plan = task_manager.working_plan if executing else None
         previous_tasks = [task for task in task_manager.tasks
                           if working_plan and task.get("id") in working_plan.task_ids]
@@ -728,7 +739,10 @@ class InteractionController:
                for previous in prior_completions):
             return
         working = task_manager.working_plan if task_manager is not None else None
-        task_ids = (list(working.task_ids) if working and working.id == plan.get("working_plan_id")
+        current_tasks = {task.get("id"): task for task in task_manager.tasks} if task_manager is not None else {}
+        task_ids = ([task_id for task_id in working.task_ids
+                     if current_tasks.get(task_id, {}).get("status") != "cancelled"]
+                    if working and working.id == plan.get("working_plan_id")
                     else plan.get("working_task_ids"))
         if status == "completed":
             if task_manager is None or not isinstance(task_ids, list) or not task_ids:

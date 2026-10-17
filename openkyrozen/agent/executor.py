@@ -515,12 +515,15 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
     if self._is_state_changing_action(canonical, args) and active_plan:
         match_args = (json.dumps(structured, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                       if isinstance(structured, dict) and structured else args)
+        current_task = next((task for task in self.tasks.tasks
+            if self.tasks.working_plan and task.get("id") in self.tasks.working_plan.task_ids
+            and task.get("status") in {"pending", "running"}
+            and self.tasks._dependencies_succeeded(task, self.tasks.tasks)), {})
+        checkpoint = current_task.get("checkpoint") or {}
         scoped_file_mutation = (
-            canonical in {"write_file", "edit_file"}
-            and _file_mutation_matches_objective(next((task for task in self.tasks.tasks
-                if self.tasks.working_plan and task.get("id") in self.tasks.working_plan.task_ids
-                and task.get("status") in {"pending", "running"}
-                and self.tasks._dependencies_succeeded(task, self.tasks.tasks)), {}), structured)
+            not checkpoint.get("action")
+            and canonical in {"write_file", "edit_file"}
+            and _file_mutation_matches_objective(current_task, structured)
             and _strategic_plan_denial(active_plan, canonical, structured, expected_spec,
                                        self._get_workspace_root()) is None
         )
@@ -602,6 +605,8 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
         result=receipt_projection["result"], success=receipt.success,
         acceptance=task_acceptance, receipt_id=receipt.receipt_id,
         verification_status=receipt.verification.get("status"),
+        verification_result=(receipt.tool_result.text if receipt.action == "read_file"
+                             and receipt.tool_result is not None else None),
     )
     task_id = evidence.get("task_id")
     effective_acceptance = evidence.get("acceptance") or (
