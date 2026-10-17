@@ -34,6 +34,19 @@ class EventStore:
     def append_event(self, event_type: str, payload: Any, *, user_id: str='local', workspace_id: str='default', session_id: str | None=None, task_id: str | None=None):
         return self.events.append_event(event_type, payload, user_id=user_id, workspace_id=workspace_id, session_id=session_id, task_id=task_id)
 
+    def append_plan_auto_accepted(self, payload: dict[str, Any], *, expected_previous: dict[str, Any],
+                                  user_id: str, workspace_id: str, session_id: str):
+        return self.events.append_plan_auto_accepted(
+            payload, expected_previous=expected_previous, user_id=user_id,
+            workspace_id=workspace_id, session_id=session_id,
+        )
+
+    def append_plan_completed(self, payload: dict[str, Any], *, user_id: str,
+                              workspace_id: str, session_id: str):
+        return self.events.append_plan_completed(
+            payload, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+        )
+
     def delete_session_data(self, *, user_id: str, workspace_id: str, session_id: str):
         return self.deletion.delete_session(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
 
@@ -43,6 +56,11 @@ class EventStore:
 
     def list_events(self, event_type: str | None=None, *, limit: int=100, workspace_id: str='default', session_id: str | None=None, user_id: str | None=None):
         return self.events.list_events(event_type, limit=limit, workspace_id=workspace_id, session_id=session_id, user_id=user_id)
+
+    def list_interaction_events(self, *, workspace_id: str, session_id: str, user_id: str):
+        return self.events.list_interaction_events(
+            workspace_id=workspace_id, session_id=session_id, user_id=user_id,
+        )
 
     def list_sessions(self, *, workspace_id: str='default', limit: int=100, user_id: str | None=None):
         return self.events.list_sessions(workspace_id=workspace_id, limit=limit, user_id=user_id)
@@ -162,6 +180,11 @@ class EventStore:
     def get_working_plan(self, *, user_id, workspace_id, session_id):
         return self.tasks.get_working_plan(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
 
+    def get_working_plan_by_id(self, plan_id, *, user_id, workspace_id, session_id):
+        return self.tasks.get_working_plan_by_id(
+            plan_id, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+        )
+
     def set_working_plan_status(self, plan_id, status, *, user_id, workspace_id, session_id, **expected):
         return self.tasks.set_working_plan_status(
             plan_id, status, user_id=user_id, workspace_id=workspace_id, session_id=session_id, **expected,
@@ -178,10 +201,11 @@ class EventStore:
         )
 
     def apply_working_plan_edit(self, plan, tasks, *, expected_revision, expected_tasks,
-                                user_id, workspace_id, session_id):
+                                user_id, workspace_id, session_id, transaction_event=None):
         return self.tasks.apply_working_plan_edit(
             plan, tasks, expected_revision=expected_revision, expected_tasks=expected_tasks,
             user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+            transaction_event=transaction_event,
         )
 
     def claim_task(self, *, user_id, workspace_id, session_id):

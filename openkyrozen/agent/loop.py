@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from openkyrozen.tasks.engine import is_complete, is_terminal
+from openkyrozen.tasks.engine import is_terminal
 from openkyrozen.agent.modes import InteractionError, is_plan_acceptance
 from openkyrozen.workspace.history_port import TurnToken
 
@@ -28,6 +28,7 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
     previous_capability_token = self._execution_capability_token
     original_user_input = user_input
     history_token: TurnToken | None = None
+    self._interaction_controller.reconcile_plan_completion(self.tasks)
     try:
         history_token = self.history_manager().begin_turn(
             conversation=list(self.short_term_memory), interaction=self._interaction_controller.state(user_input),
@@ -107,11 +108,31 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
             runtime.turn_end(reply="", success=False,
                              error=f"{type(exc).__name__}: {exc}", **context)
             raise
+        self._interaction_controller.reconcile_plan_completion(self.tasks)
         state_after = self._interaction_controller.state()
-        if (active_plan and not state_after.get("pending_question") and self.tasks.tasks
-                and all(is_terminal(task) for task in self.tasks.tasks)):
-            status = "completed" if all(is_complete(task) for task in self.tasks.tasks) else "failed"
-            self._interaction_controller.complete_plan(active_plan, status=status)
+        working_plan = self.tasks.working_plan
+        active_task_ids = (
+            list(active_plan["working_task_ids"])
+            if active_plan and "working_task_ids" in active_plan else
+            list(working_plan.task_ids) if active_plan and working_plan
+            and working_plan.id == active_plan.get("working_plan_id") else []
+        )
+        active_tasks = [task for task in self.tasks.tasks if task.get("id") in active_task_ids]
+        active_objectives = {step.get("id") for step in active_plan.get("steps", [])} if active_plan else set()
+        tasks_remain_plan_bound = all(
+            ((task.get("checkpoint") or {}).get("strategic_plan") or {}).get("plan_id") == active_plan.get("plan_id")
+            and ((task.get("checkpoint") or {}).get("strategic_plan") or {}).get("objective_id") in active_objectives
+            for task in active_tasks
+        )
+        if (active_plan and active_task_ids and not state_after.get("pending_question") and active_tasks
+                and tasks_remain_plan_bound
+                and all(is_terminal(task) for task in active_tasks)):
+            statuses = {task.get("status") for task in active_tasks}
+            status = ("completed" if statuses == {"succeeded"} else
+                      "cancelled" if statuses <= {"succeeded", "cancelled"} else "failed")
+            self._interaction_controller.complete_plan(
+                active_plan, status=status, task_manager=self.tasks,
+            )
             self._emit_stream_event({"event": "interaction", "interaction": self.interaction_envelope()})
         self._track_fix_outcome(original_user_input, reply)
         runtime.turn_end(reply=reply, success=True, **context)
