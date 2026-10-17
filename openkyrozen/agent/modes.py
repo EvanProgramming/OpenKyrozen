@@ -324,6 +324,33 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
         "workspace_paths": sorted(normalised_paths), "capabilities": sorted(capabilities),
         "effects": sorted(effects), "risk_ceiling": risk_ceiling,
     }
+    contract_policies = {
+        "read_file": ("read", "read_only"),
+        "write_file": ("write", "filesystem"),
+        "edit_file": ("write", "filesystem"),
+    }
+    for step in normalised:
+        contracts = ([step["execution"]] if step.get("execution") else []) + [
+            verification for verification in step["acceptance_verifications"] if verification
+        ]
+        for contract in contracts:
+            policy = contract_policies.get(contract["action"])
+            if policy is None:
+                raise InteractionError(f"unsupported Strategic Plan contract action: {contract['action']}")
+            capability, effect = policy
+            if capability not in bounds["capabilities"] or effect not in bounds["effects"]:
+                raise InteractionError("Strategic Plan contract exceeds its approved capability or effect bounds")
+            path = contract["arguments"].get("path")
+            if not isinstance(path, str) or not path.strip():
+                raise InteractionError("Strategic Plan file contracts require a path")
+            normalized_contract_path = posixpath.normpath(path.replace("\\", "/"))
+            if (normalized_contract_path.startswith("/") or normalized_contract_path == ".."
+                    or normalized_contract_path.startswith("../")):
+                raise InteractionError("Strategic Plan contract path escapes the approved workspace")
+            if not any(root == "." or normalized_contract_path == root
+                       or normalized_contract_path.startswith(root.rstrip("/") + "/")
+                       for root in bounds["workspace_paths"]):
+                raise InteractionError("Strategic Plan contract path is outside its approved workspace bounds")
     plan = {
         "plan_id": _text(
             (previous or {}).get("plan_id") or f"plan_{uuid.uuid4().hex}",
@@ -524,6 +551,8 @@ class InteractionController:
                     plan = None
             elif event_type == "interaction.plan_completed":
                 if (executing and payload.get("plan_id") == executing.get("plan_id")
+                        and payload.get("version") == executing.get("version")
+                        and payload.get("fingerprint") == executing.get("fingerprint")
                         and payload.get("status") in {"completed", "cancelled"}):
                     executing = None
         effective = route_mode(
@@ -719,8 +748,9 @@ class InteractionController:
                 return accepted, False
             raise
         bound_ids = [task["id"] for task in working["tasks"]
-                     if task.get("status") != "cancelled"
-                     and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("plan_id") == plan["plan_id"]
+                     if (task.get("checkpoint") or {}).get("strategic_plan", {}).get("plan_id") == plan["plan_id"]
+                     and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("version") == plan["version"]
+                     and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("fingerprint") == plan["fingerprint"]
                      and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("objective_id")
                      in {step["id"] for step in plan["steps"]}]
         return {**plan, "working_plan_id": working["plan_id"],
@@ -741,7 +771,8 @@ class InteractionController:
         working = task_manager.working_plan if task_manager is not None else None
         current_tasks = {task.get("id"): task for task in task_manager.tasks} if task_manager is not None else {}
         task_ids = ([task_id for task_id in working.task_ids
-                     if current_tasks.get(task_id, {}).get("status") != "cancelled"]
+                     if (current_tasks.get(task_id, {}).get("checkpoint") or {}).get("strategic_plan", {}).get("version") == plan.get("version")
+                     and (current_tasks.get(task_id, {}).get("checkpoint") or {}).get("strategic_plan", {}).get("fingerprint") == plan.get("fingerprint")]
                     if working and working.id == plan.get("working_plan_id")
                     else plan.get("working_task_ids"))
         if status == "completed":
