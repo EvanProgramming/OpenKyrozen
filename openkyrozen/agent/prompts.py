@@ -155,7 +155,7 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
         "PlanProposal:\n```json\n"
         '{"title":"Plan title","summary":"Outcome","assumptions":[],"bounds":{"workspace_paths":["src"],"capabilities":["read","write"],"effects":["read_only","filesystem"],"risk_ceiling":"normal"},"steps":[{"id":"objective-1","title":"Step","description":"Work to perform","acceptance":[{"criterion":"File contains the requested text","verification":{"action":"read_file","arguments":{"path":"src/example.txt"},"expect":{"contains":"requested text"}}}]}]}\n'
         "```\n"
-        "Use 1-10 stable objective IDs and list exact workspace-relative paths, capability/effect categories, and a normal or high risk ceiling in bounds. Give each acceptance criterion a verification action and exact arguments; for `read_file`, include one case-sensitive `expect` predicate (`equals` or `contains`). Only matching successful receipts that satisfy the predicate prove that criterion. A revision is a new version created by the runtime.\n"
+        "Use 1-10 stable objective IDs and exact workspace paths, capabilities/effects, and risk ceiling. Give each criterion a verification action and exact arguments. For `read_file`, add one case-sensitive `expect` (`equals` or nonempty `contains`); only matching output verifies it.\n"
         "In `agent` mode, execute within the available capabilities and existing approval policy.\n"
         "Legacy Plan and TaskList execution applies only in `agent` mode.\n"
     )
