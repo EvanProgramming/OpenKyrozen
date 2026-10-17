@@ -41,6 +41,12 @@ class EventStore:
             workspace_id=workspace_id, session_id=session_id,
         )
 
+    def append_plan_completed(self, payload: dict[str, Any], *, user_id: str,
+                              workspace_id: str, session_id: str):
+        return self.events.append_plan_completed(
+            payload, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+        )
+
     def delete_session_data(self, *, user_id: str, workspace_id: str, session_id: str):
         return self.deletion.delete_session(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
 

@@ -566,6 +566,8 @@ class InteractionController:
                     plan = None
             elif event_type == "interaction.plan_completed":
                 if (executing and payload.get("plan_id") == executing.get("plan_id")
+                        and payload.get("version") == executing.get("version")
+                        and payload.get("fingerprint") == executing.get("fingerprint")
                         and payload.get("status") in {"completed", "cancelled"}):
                     executing = None
         effective = route_mode(
@@ -822,10 +824,15 @@ class InteractionController:
         prior_completions = [event.get("payload", {}).get("status") for event in self._history()
                              if event["event_type"] == "interaction.plan_completed"
                              and event.get("payload", {}).get("plan_id") == plan.get("plan_id")
-                             and event.get("payload", {}).get("version") == plan.get("version")]
+                             and event.get("payload", {}).get("version") == plan.get("version")
+                             and event.get("payload", {}).get("fingerprint") == plan.get("fingerprint")]
         if any(previous in {"completed", "cancelled"} or previous == status
                for previous in prior_completions):
             return
+        executing = self.state().get("executing_plan")
+        if not executing or any(executing.get(key) != plan.get(key)
+                                for key in ("plan_id", "version", "fingerprint")):
+            raise InteractionError("Strategic Plan changed; reload before recording completion")
         working = task_manager.working_plan if task_manager is not None else None
         current_tasks = {task.get("id"): task for task in task_manager.tasks} if task_manager is not None else {}
         task_ids = plan.get("working_task_ids")
@@ -859,11 +866,20 @@ class InteractionController:
                     }
                     if not required <= covered:
                         raise InteractionError("Strategic Plan criteria have not all been verified")
-        self._append("interaction.plan_completed", {
+        payload = {
             "plan_id": plan["plan_id"], "version": plan["version"],
             "fingerprint": plan.get("fingerprint"), "working_plan_id": plan.get("working_plan_id"),
             "working_task_ids": task_ids or [], "status": status,
-        })
+        }
+        append = getattr(self.store, "append_plan_completed", None)
+        if callable(append):
+            try:
+                append(payload, user_id=self.user_id, workspace_id=self.workspace_id,
+                       session_id=self.session_id)
+            except ValueError as exc:
+                raise InteractionError(str(exc)) from exc
+        else:
+            self._append("interaction.plan_completed", payload)
 
     def reconcile_plan_completion(self, task_manager: Any) -> None:
         plan = self.state().get("executing_plan")

@@ -346,6 +346,39 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
         self.controller.complete_plan(accepted, task_manager=self.manager)
         self.assertIsNone(self.controller.state()["executing_plan"])
 
+    def test_stale_plan_completion_cannot_clear_a_newer_accepted_version(self):
+        first = self._proposal()
+        old, _ = self.controller.accept_plan(self.manager, plan_id=first["plan_id"], version=first["version"])
+        revision = self.controller.propose_plan({
+            "title": "Revised page", "summary": "Change the page objective.",
+            "bounds": first["bounds"],
+            "steps": [{"id": "page", "title": "Create revised page", "description": "Write revised content.",
+                       "acceptance": ["Revised page exists"]}],
+        })
+        current, _ = self.controller.accept_plan(
+            self.manager, plan_id=revision["plan_id"], version=revision["version"],
+        )
+        with self.assertRaisesRegex(InteractionError, "changed"):
+            self.controller.complete_plan(old, status="cancelled", task_manager=self.manager)
+        with self.assertRaisesRegex(ValueError, "changed"):
+            self.store.append_plan_completed({
+                "plan_id": old["plan_id"], "version": old["version"],
+                "fingerprint": old["fingerprint"], "status": "cancelled",
+            }, user_id="local", workspace_id="project", session_id="strategic-session")
+        self.assertEqual(self.controller.state()["executing_plan"]["fingerprint"], current["fingerprint"])
+
+    def test_restored_pending_revision_blocks_auto_acceptance(self):
+        current = self._proposal()
+        pending = {**current, "version": current["version"] + 1, "fingerprint": "new-fingerprint"}
+        self.store.append_event("history.restored", {"interaction": {
+            "executing_plan": current, "pending_plan": pending,
+        }}, workspace_id="project", session_id="strategic-session")
+        with self.assertRaisesRegex(ValueError, "changed"):
+            self.store.append_plan_auto_accepted(
+                {**pending, "revision_materiality": "within_bounds"}, expected_previous=current,
+                user_id="local", workspace_id="project", session_id="strategic-session",
+            )
+
     def test_active_unrelated_working_plan_is_preserved_when_strategic_acceptance_is_rejected(self):
         self.manager.update_plan(complexity="complex", tasks=[{
             "description": "Existing work", "acceptance": ["Existing work is done"],
