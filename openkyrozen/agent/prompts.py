@@ -189,9 +189,9 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
         "In `ask` mode, answer or investigate with read/network tools only.\n"
         "In `plan` mode, first use exactly one read-only inspection Action, then output only a PlanProposal block. Do not execute the plan:\n"
         "PlanProposal:\n```json\n"
-        '{"title":"Plan title","summary":"Outcome","assumptions":[],"steps":[{"id":"step-1","title":"Step","description":"Work to perform","acceptance":["Observable result"]}]}\n'
+        '{"title":"Plan title","summary":"Outcome","assumptions":[],"bounds":{"workspace_paths":["src"],"capabilities":["read","write"],"effects":["read_only","filesystem"],"risk_ceiling":"normal"},"steps":[{"id":"objective-1","title":"Step","description":"Work to perform","acceptance":[{"criterion":"File contains the requested text","verification":{"action":"read_file","arguments":{"path":"src/example.txt"},"expect":{"contains":"requested text"}}}]}]}\n'
         "```\n"
-        "Use 1-10 stable step IDs. A revision is a new version created by the runtime.\n"
+        "Use 1-10 stable objective IDs and exact workspace paths, capabilities/effects, and risk ceiling. Give each criterion a verification action and exact arguments. For `read_file`, add one case-sensitive `expect` (`equals` or nonempty `contains`); only matching output verifies it.\n"
         "In `agent` mode, execute within the available capabilities and existing approval policy.\n"
         "Legacy Plan and TaskList execution applies only in `agent` mode.\n"
     )
@@ -233,8 +233,8 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
             + (
                 "The final plan must use this standalone control:\n"
                 "PlanProposal:\n```json\n"
-                '{"title":"Plan title","summary":"Outcome","assumptions":[],"steps":[{"id":"step-1","title":"Step","description":"Work to perform after acceptance","acceptance":["Observable result"]}]}\n'
-                "```\nUse 1-10 stable step IDs. Output no task or execution controls.\n"
+                '{"title":"Plan title","summary":"Outcome","assumptions":[],"bounds":{"workspace_paths":["src"],"capabilities":["read","write"],"effects":["read_only","filesystem"],"risk_ceiling":"normal"},"steps":[{"id":"objective-1","title":"Step","description":"Work to perform after acceptance","acceptance":[{"criterion":"Observable result","verification":{"action":"read_file","arguments":{"path":"src/result.txt"},"expect":{"contains":"approved content"}}}],"execution":{"action":"write_file","arguments":{"path":"src/result.txt","content":"approved content"}}}]}\n'
+                "```\nUse 1-10 stable objective IDs and state the smallest workspace paths, capability/effect categories, and normal or high risk ceiling. Every `read_file` verifier must include one case-sensitive `expect` predicate (`equals` or `contains`). Include an optional exact `execution` object only for a planned file write/edit; its action and complete arguments are part of user approval, and it does not execute before acceptance. Do not output task controls or tool calls.\n"
                 if interaction_mode == "plan" else ""
             )
             + "\n## Available read-only tools\n" + readonly_tools + "\n\n"

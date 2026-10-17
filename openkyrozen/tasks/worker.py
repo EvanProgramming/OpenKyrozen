@@ -39,6 +39,8 @@ class TaskWorker:
             receipt_id=outcome.get("receipt_id"),
         )
         index = next(i for i, item in enumerate(self.manager.tasks) if item["id"] == task_id)
+        if self.manager.tasks[index].get("status") == "cancelled":
+            return {"task": self.manager.tasks[index], "status": "cancelled", "result": result, "evidence": {}}
         status = "succeeded" if success and self.manager.set_status(index, "succeeded") else "failed"
         if status == "failed" and self.manager.tasks[index].get("status") != "failed":
             self.manager.set_status(index, "failed")

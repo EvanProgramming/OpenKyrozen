@@ -10,8 +10,12 @@
 - [V3 #230 — Structured provider streaming](2026-10-12-v3-issue-230.md)
 - [V3 #264 — Version SQLite state and migrate safely](2026-10-14-v3-issue-264.md)
 - [V3 #241 — Working Plans and task lifecycle](2026-10-14-v3-issue-241.md)
+- [V3 #242 — Atomic Working Plan edits](2026-10-16-v3-issue-242.md)
+- [V3 #245 — Versioned, user-approved Strategic Plans](2026-10-16-v3-issue-245.md)
 - [V3 #236 — Execution receipts and task association](2026-10-14-v3-issue-236.md)
 - [V3 #255 — Shared typed runtime events](2026-10-14-v3-issue-255.md)
 - [V3 #247 — Canonical conversation history](2026-10-15-v3-issue-247.md)
 
 Add a linked issue-specific plan here before coding any later V3 issue.
+
+- [V3 #246 — Reapproval for material Strategic Plan revisions](2026-10-16-v3-issue-246.md)

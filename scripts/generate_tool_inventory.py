@@ -57,6 +57,12 @@ def _mcp_contract(server: Any, name: str, function: Any) -> str:
     required = schema.get("required", [])
     if required:
         fields += f"; required: {', '.join(f'`{key}`' for key in required)}"
+    alternatives = schema.get("anyOf", [])
+    if alternatives:
+        fields += "; requires either " + " or ".join(
+            " and ".join(f"`{key}`" for key in branch.get("required", []))
+            for branch in alternatives
+        )
     return fields
 
 
