@@ -105,6 +105,7 @@ if __name__ == "__main__":
             {"step_id": "edit", "title": "Edit index.html safely", "details": "Update the draft page before verification.",
              "acceptance_criteria": [{"criterion": "index.html contains verified", "verification": {
                  "action": "read_file", "arguments": {"path": "index.html"},
+                 "expect": {"contains": "verified"},
              }}]},
             {"step_id": "test", "title": "Create test_deploy.py", "details": "Write test_deploy.py.",
              "acceptance_criteria": [{"criterion": "test_deploy.py exists", "verification": {
@@ -114,6 +115,7 @@ if __name__ == "__main__":
              "details": "Read the deployment test; the acceptance harness runs it after the plan finishes.",
              "acceptance_criteria": [{"criterion": "unittest exits successfully", "verification": {
                  "action": "read_file", "arguments": {"path": "test_deploy.py"},
+                 "expect": {"contains": "unittest"},
              }}]},
         ],
     }
