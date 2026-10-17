@@ -7,6 +7,7 @@ import json
 import hashlib
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -90,16 +91,32 @@ if __name__ == "__main__":
         "plan_name": "Deploy local acceptance page",
         "overview": "Create a page and verify its local HTTP deployment.",
         "do_not_execute_until_approved": True,
+        "bounds": {
+            "workspace_paths": ["."],
+            "capabilities": ["read", "write", "shell"],
+            "effects": ["read_only", "filesystem", "process"],
+            "risk_ceiling": "normal",
+        },
         "steps": [
             {"step_id": "page", "title": "Create index.html", "details": "Write index.html.",
-             "acceptance_criteria": ["index.html exists"]},
+             "acceptance_criteria": [{"criterion": "index.html exists", "verification": {
+                 "action": "write_file", "arguments": {"path": "index.html", "content": initial_page},
+             }}]},
             {"step_id": "edit", "title": "Edit index.html safely", "details": "Update the draft page before verification.",
-             "acceptance_criteria": ["index.html contains verified"]},
+             "acceptance_criteria": [{"criterion": "index.html contains verified", "verification": {
+                 "action": "read_file", "arguments": {"path": "index.html"},
+                 "expect": {"contains": "verified"},
+             }}]},
             {"step_id": "test", "title": "Create test_deploy.py", "details": "Write test_deploy.py.",
-             "acceptance_criteria": ["test_deploy.py exists"]},
+             "acceptance_criteria": [{"criterion": "test_deploy.py exists", "verification": {
+                 "action": "write_file", "arguments": {"path": "test_deploy.py", "content": deployment_test},
+             }}]},
             {"step_id": "verify", "title": "Verify local deployment",
-             "details": "Run python -m unittest test_deploy.py -v.",
-             "acceptance_criteria": ["unittest exits successfully"]},
+             "details": "Read the deployment test; the acceptance harness runs it after the plan finishes.",
+             "acceptance_criteria": [{"criterion": "unittest exits successfully", "verification": {
+                 "action": "read_file", "arguments": {"path": "test_deploy.py"},
+                 "expect": {"contains": "unittest"},
+             }}]},
         ],
     }
     responses = [
@@ -112,11 +129,12 @@ if __name__ == "__main__":
                 "expected_sha256": hashlib.sha256(initial_page.encode()).hexdigest(),
             }),
         }),
-        "TaskDone: 0\nAction: " + json.dumps(
+        "Action: " + json.dumps({"action": "read_file", "args": "index.html"}),
+        "TaskDone: 1\nAction: " + json.dumps(
             {"action": "write_file", "args": f"test_deploy.py|{deployment_test}"}
         ),
         "TaskDone: 2\nAction: " + json.dumps(
-            {"action": "run_cmd", "args": f"{sys.executable} -m unittest test_deploy.py -v"}
+            {"action": "read_file", "args": "test_deploy.py"}
         ),
         "TaskDone: 3\nDeployment verified.",
     ]
@@ -159,11 +177,15 @@ if __name__ == "__main__":
 
             assert "Deployment verified" in reply, reply
             assert [task["status"] for task in main.tasks.tasks] == ["succeeded"] * 4
+            subprocess.run(
+                [sys.executable, "-m", "unittest", "test_deploy.py", "-v"],
+                cwd=root, check=True, capture_output=True, text=True,
+            )
             receipts = store.list_events(
                 "execution.receipt", workspace_id="acceptance", session_id="release",
             )
             assert [event["payload"]["action"] for event in reversed(receipts)] == [
-                "list_dir", "write_file", "edit_file", "write_file", "run_cmd",
+                "list_dir", "write_file", "edit_file", "read_file", "write_file", "read_file",
             ]
             state = main._interaction_controller.state()
             assert state["executing_plan"] is None

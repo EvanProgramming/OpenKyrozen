@@ -15,7 +15,6 @@ from openkyrozen.tools.models import (CommandResult, ToolError, ToolResult, comm
                                       render_tool_result, tool_failure)
 from openkyrozen.security.tool_policy import tool_capability
 from openkyrozen.agent.types import ExecutionReceipt
-from openkyrozen.tasks.models import _receipt_args
 
 
 def _legacy_object_arguments(args, spec):
@@ -82,7 +81,15 @@ def _strategic_plan_denial(plan, action, args, spec, workspace_root):
     if spec.risk == "high" and bounds.get("risk_ceiling") != "high":
         return "tool risk exceeds the accepted plan"
 
-    structured = args if isinstance(args, dict) else _legacy_object_arguments(args, spec)
+    structured = args if isinstance(args, dict) else None
+    if structured is None and isinstance(args, str) and args.lstrip().startswith("{"):
+        try:
+            parsed = json.loads(args)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        structured = parsed if isinstance(parsed, dict) else None
+    if structured is None:
+        structured = _legacy_object_arguments(args, spec)
     path_fields = {"path", "file_path", "directory", "destination", "target_path", "clone_path"}
     paths = {key: value for key, value in structured.items()
              if key in path_fields and isinstance(value, str) and value.strip()}
@@ -188,6 +195,7 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                             tool_error: ToolError | None = None, result_data: Any = None,
                             tool_result: ToolResult | None = None, call_id: str | None = None,
                             call_id_source: str = "legacy", task_id: str | None = None,
+                            receipt_arguments: dict[str, Any] | None = None,
                             expected_spec=None) -> ExecutionReceipt:
     canonical = self._operation_action(action)
     from openkyrozen.agent.delegation import TOOLS
@@ -200,8 +208,10 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         tool_result = result
         result = render_tool_result(tool_result)
     success = tool_result.success if tool_result is not None else bool(success)
-    effect, effect_verified = self._subagent_tool_evidence(canonical, args, result_text, success=success)
-    acceptance, accepted = self._acceptance_for_tool(canonical, args, result_text, success=success)
+    canonical_arguments = receipt_arguments if receipt_arguments is not None else args if isinstance(args, dict) else None
+    evidence_arguments = canonical_arguments if canonical_arguments is not None else args
+    effect, effect_verified = self._subagent_tool_evidence(canonical, evidence_arguments, result_text, success=success)
+    acceptance, accepted = self._acceptance_for_tool(canonical, evidence_arguments, result_text, success=success)
     verification = {"status": "unavailable", "method": "none", "observed": None}
     if command is not None:
         verification = {
@@ -251,13 +261,12 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
 
     return ExecutionReceipt(
         receipt_id=f"receipt_{uuid.uuid4().hex}",
-        operation_id=self._operation_id(operation_scope, canonical, args),
+        operation_id=self._operation_id(operation_scope, canonical,
+                                        canonical_arguments if canonical_arguments is not None else args),
         action=canonical,
         args=self._fix_safe_text(self._operation_args(canonical, args), 1000),
-        args_sha256=hashlib.sha256(
-            (self._operation_args(canonical, args) if isinstance(args, dict)
-             else _receipt_args(self._operation_args(canonical, args))).encode("utf-8")
-        ).hexdigest(),
+        args_sha256=(hashlib.sha256(self._operation_args(canonical, canonical_arguments).encode("utf-8")).hexdigest()
+                     if canonical_arguments is not None else None),
         authorized=authorized,
         started_at=started_at,
         completed_at=utc_now(),
@@ -272,7 +281,7 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         result_data=result_data,
         call_id=call_id,
         call_id_source=call_id_source,
-        arguments=args if isinstance(args, dict) else None,
+        arguments=canonical_arguments,
         tool_result=tool_result,
         user_id=getattr(task_manager, "user_id", None) or getattr(getattr(self, "memory_bank", None), "user_id", None),
         workspace_id=getattr(task_manager, "workspace_id", None) or getattr(getattr(self, "memory_bank", None), "workspace_id", None),
@@ -296,6 +305,19 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
     action = self.TOOL_ALIASES.get(action, action)
     receipt_args = _typed_arguments if _typed_arguments is not None else args
     approved_spec = _expected_spec or self.tool_registry.specs.get(action)
+    receipt_arguments = _typed_arguments if _typed_arguments is not None else args if isinstance(args, dict) else None
+    legacy_receipt_source = args
+    parsed_arguments = None
+    if isinstance(args, str) and args.lstrip().startswith("{"):
+        try:
+            parsed_arguments = json.loads(args)
+        except (json.JSONDecodeError, TypeError):
+            try:
+                parsed_arguments = ast.literal_eval(args)
+            except (ValueError, SyntaxError):
+                parsed_arguments = None
+        if isinstance(parsed_arguments, dict):
+            receipt_arguments = parsed_arguments
     if _typed_arguments is not None:
         args = _typed_arguments
     elif action in self.tool_registry.specs and self.tool_registry.get_spec(action).source == "dynamic":
@@ -312,20 +334,20 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
             args = f"{args.get('file_path') or args.get('path') or ''}|{args.get('content') or args.get('text') or ''}"
         else:
             args = json.dumps(args)
-    elif isinstance(args, str) and args.startswith("{"):
-        try:
-            parsed = ast.literal_eval(args)
-            if isinstance(parsed, dict):
-                if action in ("run_cmd", "execute_terminal_command"):
-                    args = parsed.get("cmd") or parsed.get("command") or ""
-                elif action == "write_file":
-                    args = f"{parsed.get('file_path') or parsed.get('path') or ''}|{parsed.get('content') or parsed.get('text') or ''}"
-                else:
-                    args = json.dumps(parsed)
-        except (ValueError, SyntaxError):
-            pass
+    elif isinstance(parsed_arguments, dict):
+        if action in ("run_cmd", "execute_terminal_command"):
+            args = parsed_arguments.get("cmd") or parsed_arguments.get("command") or ""
+        elif action == "write_file":
+            args = f"{parsed_arguments.get('file_path') or parsed_arguments.get('path') or ''}|{parsed_arguments.get('content') or parsed_arguments.get('text') or ''}"
+        else:
+            args = json.dumps(parsed_arguments)
     if isinstance(args, dict):
-        receipt_args = args
+        receipt_arguments = args
+        if not isinstance(receipt_args, dict):
+            receipt_args = args
+    elif receipt_arguments is None:
+        legacy_arguments = _legacy_object_arguments(legacy_receipt_source, approved_spec)
+        receipt_arguments = legacy_arguments or None
     self._publish_runtime_event(
         "tool.call", {"tool_name": action,
                       "argument_keys": sorted(receipt_args)[:64] if isinstance(receipt_args, dict) else []},
@@ -335,7 +357,8 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         text = render_tool_result(outcome)
         if return_receipt:
             return self._make_execution_receipt(
-                action=action, args=receipt_args, authorized=authorized, started_at=started_at,
+                action=action, args=receipt_args, receipt_arguments=receipt_arguments,
+                authorized=authorized, started_at=started_at,
                 success=outcome.success, result=text, operation_scope=operation_scope,
                 failure=outcome.error.code if outcome.error else None, raw_result=raw_result,
                 tool_error=outcome.error, result_data=outcome.data, tool_result=outcome,
@@ -502,6 +525,15 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             expected_spec=expected_spec,
         )
     args = str(args)
+    structured = None
+    if args.lstrip().startswith("{"):
+        try:
+            parsed = json.loads(args)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        structured = parsed if isinstance(parsed, dict) else None
+    if structured is None:
+        structured = _legacy_object_arguments(args, expected_spec)
     interaction_state = self._interaction_controller.state()
     spec = expected_spec
     typed_arguments = None
@@ -515,12 +547,10 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                     typed_arguments = candidate
             except (TypeError, ValueError):
                 pass
-    operation_id = self._operation_id(
-        operation_scope, canonical, typed_arguments if typed_arguments is not None else args,
-    )
+    operation_arguments = typed_arguments or (structured if isinstance(structured, dict) and structured else args)
+    operation_id = self._operation_id(operation_scope, canonical, operation_arguments)
     is_mutation = self._is_state_changing_action(canonical, args)
-    if (is_mutation and canonical != "cancel_subagent"
-            and interaction_state.get("pending_plan") and interaction_state.get("executing_plan")):
+    if _awaiting_revision_mutation(interaction_state, canonical, args, expected_spec, self):
         emit_rejected_call()
         result = "Error: strategic plan revision is awaiting approval; mutation is paused."
         outcome = tool_failure("permission_denied", result)
@@ -533,15 +563,18 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
         )
     active_plan = interaction_state.get("executing_plan")
     if is_mutation and active_plan and canonical != "cancel_subagent":
-        structured = typed_arguments or _legacy_object_arguments(args, expected_spec)
+        structured = typed_arguments or structured
         match_args = (json.dumps(structured, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-                      if structured else args)
+                      if isinstance(structured, dict) and structured else args)
+        current_task = next((task for task in self.tasks.tasks
+            if self.tasks.working_plan and task.get("id") in self.tasks.working_plan.task_ids
+            and task.get("status") in {"pending", "running"}
+            and self.tasks._dependencies_succeeded(task, self.tasks.tasks)), {})
+        checkpoint = current_task.get("checkpoint") or {}
         scoped_file_mutation = (
-            canonical in {"write_file", "edit_file"}
-            and _file_mutation_matches_objective(next((task for task in self.tasks.tasks
-                if self.tasks.working_plan and task.get("id") in self.tasks.working_plan.task_ids
-                and task.get("status") in {"pending", "running"}
-                and self.tasks._dependencies_succeeded(task, self.tasks.tasks)), {}), structured)
+            not checkpoint.get("action")
+            and canonical in {"write_file", "edit_file"}
+            and _file_mutation_matches_objective(current_task, structured)
             and _strategic_plan_denial(active_plan, canonical, structured, expected_spec,
                                        self._get_workspace_root()) is None
         )
@@ -553,7 +586,9 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             outcome = tool_failure("permission_denied", result)
             self._notify_tool_execute(canonical, args, outcome)
             return self._make_execution_receipt(
-                action=canonical, args=args, authorized=False, started_at=started_at,
+                action=canonical, args=args,
+                receipt_arguments=operation_arguments if isinstance(operation_arguments, dict) else None,
+                authorized=False, started_at=started_at,
                 success=False, result=result, operation_scope=operation_scope,
                 failure=outcome.error.code, tool_error=outcome.error,
                 tool_result=outcome, call_id=call_id, call_id_source="synthetic",
@@ -566,7 +601,9 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
         result = render_tool_result(outcome)
         self._notify_tool_execute(canonical, args, outcome)
         return self._make_execution_receipt(
-            action=canonical, args=args, authorized=True, started_at=started_at, success=False,
+            action=canonical, args=args,
+            receipt_arguments=operation_arguments if isinstance(operation_arguments, dict) else None,
+            authorized=True, started_at=started_at, success=False,
             result=result, operation_scope=operation_scope, failure=outcome.error.code, tool_error=outcome.error,
             tool_result=outcome, call_id=call_id, call_id_source="synthetic",
             expected_spec=expected_spec,
@@ -602,15 +639,27 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
         bool(explicit_task_id) or receipt.call_id_source == "legacy"
         or (allow_legacy_task_matching and receipt.call_id_source == "synthetic")
     )
-    matching_args = (json.dumps(receipt.arguments, ensure_ascii=False, allow_nan=False,
-                                 sort_keys=True, separators=(",", ":"))
+    legacy_contract = any(
+        task.get("status") in {"pending", "running"}
+        and self.tasks._dependencies_succeeded(task, self.tasks.tasks)
+        and (task.get("checkpoint") or {}).get("action") == receipt.action
+        and isinstance((task.get("checkpoint") or {}).get("args"), str)
+        and not task["checkpoint"]["args"].lstrip().startswith("{")
+        for task in self.tasks.tasks
+    )
+    matching_args = (receipt.args if legacy_contract else
+                     json.dumps(receipt.arguments, ensure_ascii=False, allow_nan=False,
+                                sort_keys=True, separators=(",", ":"))
                      if receipt.arguments is not None else receipt.args)
     evidence = {} if receipt.action in TOOLS or not should_reconcile else self.tasks.record_evidence(
         task_id=explicit_task_id, action=receipt.action, args=matching_args,
-        args_projection=receipt_projection["args"], args_fingerprint=receipt.args_sha256,
+        args_projection=receipt_projection["args"],
+        args_fingerprint=None if legacy_contract else receipt.args_sha256,
         result=receipt_projection["result"], success=receipt.success,
         acceptance=task_acceptance, receipt_id=receipt.receipt_id,
         verification_status=receipt.verification.get("status"),
+        verification_result=(receipt.tool_result.text if receipt.action == "read_file"
+                             and receipt.tool_result is not None else None),
     )
     task_id = evidence.get("task_id")
     effective_acceptance = evidence.get("acceptance") or (

@@ -8,6 +8,7 @@ import posixpath
 import re
 import shlex
 import uuid
+from copy import deepcopy
 from typing import Any
 
 from .ports import InteractionStore
@@ -184,21 +185,57 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
         if step_id in seen_ids:
             raise InteractionError("plan step ids must be unique")
         seen_ids.add(step_id)
+        execution = step.get("execution")
+        if execution is not None:
+            action = execution.get("action") if isinstance(execution, dict) else None
+            arguments = execution.get("arguments") if isinstance(execution, dict) else None
+            if (not isinstance(execution, dict) or set(execution) != {"action", "arguments"}
+                    or not isinstance(action, str) or action not in {"write_file", "edit_file"}
+                    or not isinstance(arguments, dict)
+                    or not isinstance(arguments.get("path"), str) or not arguments["path"].strip()):
+                raise InteractionError("file execution contract must name write_file or edit_file and an exact path")
+            required = ({"path", "content"} if action == "write_file" else
+                        {"path", "old_text", "new_text", "expected_sha256"})
+            if set(arguments) != required or any(not isinstance(item, str) for item in arguments.values()):
+                raise InteractionError("file execution arguments must exactly match the selected file operation")
+            if action == "edit_file" and (
+                    not arguments["old_text"] or not re.fullmatch(r"[0-9a-fA-F]{64}", arguments["expected_sha256"])):
+                raise InteractionError("edit_file requires nonempty old_text and a SHA-256 read hash")
+            try:
+                json.dumps(arguments, ensure_ascii=False, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise InteractionError("file execution arguments must be JSON-safe") from exc
+            execution = {"action": action, "arguments": deepcopy(arguments)}
         acceptance = step.get("acceptance")
         if isinstance(acceptance, str):
             acceptance = [acceptance]
         if not isinstance(acceptance, list) or not 1 <= len(acceptance) <= 5:
             raise InteractionError("each plan step requires 1-5 acceptance criteria")
+        supplied_verifications = step.get("acceptance_verifications")
+        if supplied_verifications is not None and (
+                not isinstance(supplied_verifications, list) or len(supplied_verifications) != len(acceptance)):
+            raise InteractionError("acceptance verifications must align with acceptance criteria")
         acceptance_verifications = []
         normalized_acceptance = []
-        for item in acceptance:
-            verification = None
+        for criterion_index, item in enumerate(acceptance):
+            verification = supplied_verifications[criterion_index] if supplied_verifications is not None else None
             if isinstance(item, dict) and set(item) == {"criterion", "verification"}:
                 verification = item["verification"]
-                if (not isinstance(verification, dict) or set(verification) != {"action", "arguments"}
+            if verification is not None:
+                if (not isinstance(verification, dict)
+                        or set(verification) not in ({"action", "arguments"}, {"action", "arguments", "expect"})
                         or not isinstance(verification.get("action"), str)
                         or not verification["action"].strip() or not isinstance(verification.get("arguments"), dict)):
                     raise InteractionError("acceptance verification must contain an action and object arguments")
+                if verification["action"] == "read_file":
+                    expect = verification.get("expect")
+                    if (not isinstance(expect, dict) or len(expect) != 1
+                            or set(expect) not in ({"equals"}, {"contains"})
+                            or not isinstance(next(iter(expect.values())), str)
+                            or ("contains" in expect and not expect["contains"])):
+                        raise InteractionError("read_file verification requires a nonempty equals or contains predicate")
+                elif "expect" in verification:
+                    raise InteractionError("expected-result predicates are currently supported only for read_file")
                 try:
                     json.dumps(verification["arguments"], ensure_ascii=False, allow_nan=False)
                 except (TypeError, ValueError) as exc:
@@ -215,14 +252,17 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
             acceptance_ids.append(f"{step_id}-ac-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]}")
         if len(set(acceptance_ids)) != len(acceptance_ids):
             raise InteractionError("acceptance criteria must be unique within each objective")
-        normalised.append({
+        normalised_step = {
             "id": step_id,
             "title": _text(step.get("title") or f"Step {index}", "step title", 120),
             "description": _text(step.get("description"), "step description", 800),
             "acceptance": acceptance,
             "acceptance_ids": acceptance_ids,
             "acceptance_verifications": acceptance_verifications,
-        })
+        }
+        if execution is not None:
+            normalised_step["execution"] = execution
+        normalised.append(normalised_step)
     assumptions = value.get("assumptions", [])
     if assumptions is None:
         assumptions = []
@@ -278,7 +318,7 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
         "read_only", "filesystem", "process", "remote", "destructive", "internal",
     })
     risk_ceiling = raw_bounds.get("risk_ceiling", "normal")
-    if risk_ceiling not in {"normal", "high"}:
+    if not isinstance(risk_ceiling, str) or risk_ceiling not in {"normal", "high"}:
         raise InteractionError("risk ceiling must be normal or high")
     bounds = {
         "workspace_paths": sorted(normalised_paths), "capabilities": sorted(capabilities),
@@ -395,6 +435,7 @@ def normalize_provider_control(text: str, *, plan_mode: bool = False) -> tuple[s
                     step.get("acceptance") or step.get("acceptance_criteria")
                     or ["Step completed with observable evidence"]
                 ),
+                **({"execution": step["execution"]} if "execution" in step else {}),
             })
         return "PlanProposal", {
             "title": value.get("title") or value.get("plan_name"),
@@ -459,8 +500,12 @@ class InteractionController:
         )
 
     def _history(self) -> list[dict[str, Any]]:
+        if callable(getattr(self.store, "list_interaction_events", None)):
+            return self.store.list_interaction_events(
+                workspace_id=self.workspace_id, session_id=self.session_id, user_id=self.user_id,
+            )
         events = self.store.list_events(
-            limit=10_000, workspace_id=self.workspace_id, session_id=self.session_id,
+            limit=None, workspace_id=self.workspace_id, session_id=self.session_id,
             user_id=self.user_id,
         )
         return [event for event in reversed(events)
@@ -585,6 +630,12 @@ class InteractionController:
     def propose_plan(self, value: Any, *, original_input: str = "") -> dict[str, Any]:
         state = self.state()
         previous = state.get("pending_plan") or state.get("executing_plan")
+        if previous and state.get("pending_plan") is None:
+            latest = [int(event.get("payload", {}).get("version", 0)) for event in self._history()
+                      if event.get("event_type") == "interaction.plan_proposed"
+                      and event.get("payload", {}).get("plan_id") == previous.get("plan_id")]
+            if latest:
+                previous = {**previous, "version": max(latest)}
         plan = validate_plan_proposal(value, previous=previous, original_input=original_input)
         executing = state.get("executing_plan")
         if executing:
@@ -644,78 +695,108 @@ class InteractionController:
             if accepted:
                 return accepted, False
             raise InteractionError("plan is not pending")
+        if executing and task_manager.working_plan is None:
+            task_manager.recover()
+        elif not executing and task_manager.working_plan is None:
+            task_manager.recover()
+        if (not executing and task_manager.working_plan is not None
+                and task_manager.working_plan.status == "active"):
+            raise InteractionError("cannot accept a Strategic Plan while an unrelated Working Plan is active")
+        working_plan = task_manager.working_plan if executing else None
+        previous_tasks = [task for task in task_manager.tasks
+                          if working_plan and task.get("id") in working_plan.task_ids]
+        if any(task.get("status") == "running" for task in previous_tasks):
+            raise InteractionError("cannot replace a Strategic Plan while a Working Plan task is running")
         operations = []
         strategic_bindings = {}
-        new_refs = []
+        active_ids = set(executing.get("working_task_ids", ())) if executing else set()
         if executing:
             if (plan.get("revision_materiality") != "material"
                     or plan.get("plan_id") != executing.get("plan_id")
                     or plan.get("version") != executing.get("version", 0) + 1):
                 raise InteractionError("Strategic Plan revision is stale or does not require approval")
-            working = task_manager.working_plan
-            if (not working or working.id != executing.get("working_plan_id")
-                    or working.revision != executing.get("working_plan_revision")):
+            if (not working_plan or working_plan.id != executing.get("working_plan_id")
+                    or working_plan.revision != executing.get("working_plan_revision")):
                 raise InteractionError("Working Plan revision changed; reload before accepting")
-            active_ids = set(executing.get("working_task_ids", ()))
-            for task in task_manager.tasks:
-                if task["id"] in active_ids and task.get("status") == "running":
-                    raise InteractionError("a Working Plan task is running; retry approval after it stops")
-                if task["id"] in active_ids and task.get("status") == "pending":
-                    operations.append({"op": "cancel", "task": task["id"]})
+
+        prior = [task for task in previous_tasks if not executing or task.get("id") in active_ids]
+        if any(task.get("status") == "running" for task in prior):
+            raise InteractionError("cannot replace a Strategic Plan while a Working Plan task is running")
+        new_refs = []
+        reused: set[str] = set()
         for step in plan["steps"]:
-            if executing:
-                reusable = next((task for task in task_manager.tasks
-                                 if task.get("id") in active_ids
-                                 and task.get("status") == "succeeded"
-                                 and ((task.get("checkpoint") or {}).get("strategic_plan") or {}).get("objective_id") == step["id"]
-                                 and ((task.get("checkpoint") or {}).get("strategic_plan") or {}).get("acceptance_ids") == step["acceptance_ids"]
-                                 and {criterion_id for item in task.get("evidence", [])
-                                      if isinstance(item, dict) and item.get("success") is True
-                                      for criterion_id in item.get("acceptance_ids", ())} >= set(step["acceptance_ids"])), None)
-                if reusable:
-                    new_refs.append(reusable["id"])
-                    continue
-            ref = f"revision_{step['id']}" if executing else step["id"]
+            description = f"{step['title']}: {step['description']}"
+            execution = step.get("execution") or {}
+            expected_args = (json.dumps(execution.get("arguments", {}), ensure_ascii=False,
+                                        allow_nan=False, sort_keys=True, separators=(",", ":"))
+                             if execution else "")
+            existing = next((task for task in prior
+                             if task.get("status") == "succeeded"
+                             and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("objective_id") == step["id"]
+                             and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("acceptance_ids") == step["acceptance_ids"]
+                             and task.get("description") == description
+                             and [item.get("criterion") if isinstance(item, dict) else item
+                                  for item in task.get("acceptance", [])] == step["acceptance"]
+                             and (task.get("checkpoint") or {}).get("action") == execution.get("action")
+                             and ((task.get("checkpoint") or {}).get("args") or "") == expected_args
+                             and {criterion_id for item in task.get("evidence", [])
+                                  if isinstance(item, dict) and item.get("success") is True
+                                  for criterion_id in item.get("acceptance_ids", ())} >= set(step["acceptance_ids"])), None)
+            if existing:
+                new_refs.append(existing["id"])
+                reused.add(existing["id"])
+                continue
+            ref = f"revision_{plan['version']}_{step['id']}" if executing else step["id"]
             new_refs.append(ref)
             operations.append({"op": "add", "ref": ref, "task": {
-                "description": f"{step['title']}: {step['description']}",
-                "acceptance": step["acceptance"],
+                "description": description, "acceptance": step["acceptance"],
+                **({"execution": step["execution"]} if step.get("execution") else {}),
             }})
             strategic_bindings[ref] = {
                 "plan_id": plan["plan_id"], "version": plan["version"],
                 "fingerprint": plan["fingerprint"], "objective_id": step["id"],
                 "acceptance_ids": step["acceptance_ids"],
                 "acceptance_verifications": step["acceptance_verifications"],
+                "execution": step.get("execution"),
             }
+        for task in prior:
+            if task["id"] not in reused and task.get("status") in {"pending", "failed", "blocked"}:
+                operations.insert(0, {"op": "cancel", "task": task["id"]})
+        if not operations:
+            if not prior:
+                raise InteractionError("Strategic Plan has no Working Plan tasks to reuse")
+            operations.append({"op": "update", "task": prior[0]["id"],
+                               "fields": {"priority": prior[0]["priority"]}})
+        payload = {
+            "plan_id": plan["plan_id"], "version": plan["version"],
+            "fingerprint": plan["fingerprint"], "working_task_refs": new_refs,
+            **({"revision_of": {"version": executing["version"],
+                                 "fingerprint": executing["fingerprint"]}} if executing else {}),
+        }
         try:
             working = task_manager.edit_plan(
-                complexity="complex", expected_revision=(executing.get("working_plan_revision", 0)
-                                                          if executing else 0), operations=operations,
-                plan_id=executing.get("working_plan_id") if executing else None,
-                strategic_bindings=strategic_bindings,
-                transaction_event={"event_type": "interaction.plan_accepted", "payload": {
-                    "plan_id": plan["plan_id"], "version": plan["version"],
-                    "fingerprint": plan["fingerprint"],
-                    **({"revision_of": {"version": executing["version"],
-                                         "fingerprint": executing["fingerprint"]}} if executing else {}),
-                    "working_task_refs": new_refs,
-                }, "expected_proposal": {
-                    "plan_id": plan["plan_id"], "version": plan["version"],
-                    "fingerprint": plan["fingerprint"],
-                }, **({"expected_working_plan": {
-                    "plan_id": executing["working_plan_id"],
-                    "revision": executing["working_plan_revision"],
-                    "strategic_plan_id": executing["plan_id"],
-                    "version": executing["version"],
-                    "fingerprint": executing["fingerprint"],
-                }} if executing else {})},
+                complexity=working_plan.complexity if working_plan else "complex",
+                plan_id=working_plan.id if working_plan else None,
+                expected_revision=working_plan.revision if working_plan else 0,
+                operations=operations, strategic_bindings=strategic_bindings,
+                transaction_event={"event_type": "interaction.plan_accepted", "payload": payload,
+                    "expected_proposal": {"plan_id": plan["plan_id"], "version": plan["version"],
+                                           "fingerprint": plan["fingerprint"]},
+                    **({"expected_working_plan": {
+                        "plan_id": executing["working_plan_id"],
+                        "revision": executing["working_plan_revision"],
+                        "strategic_plan_id": executing["plan_id"],
+                        "version": executing["version"], "fingerprint": executing["fingerprint"],
+                    }} if executing else {})},
             )
         except ValueError as exc:
+            accepted = self.accepted_plan(plan["plan_id"], plan["version"])
+            if accepted and accepted.get("fingerprint") == plan["fingerprint"]:
+                return accepted, False
             raise InteractionError(str(exc)) from exc
+        bound_ids = [working["references"][ref] if ref in working["references"] else ref for ref in new_refs]
         return {**plan, "working_plan_id": working["plan_id"],
-                "working_plan_revision": working["revision"],
-                "working_task_ids": [working["references"][ref] if ref in working["references"] else ref
-                                     for ref in new_refs]}, True
+                "working_plan_revision": working["revision"], "working_task_ids": bound_ids}, True
 
     def complete_plan(self, plan: dict[str, Any], *, status: str = "completed",
                       task_manager: Any | None = None) -> None:
@@ -729,9 +810,11 @@ class InteractionController:
                for previous in prior_completions):
             return
         working = task_manager.working_plan if task_manager is not None else None
+        current_tasks = {task.get("id"): task for task in task_manager.tasks} if task_manager is not None else {}
         task_ids = plan.get("working_task_ids")
         if task_ids is None and working and working.id == plan.get("working_plan_id"):
-            task_ids = list(working.task_ids)
+            task_ids = [task_id for task_id in working.task_ids
+                        if current_tasks.get(task_id, {}).get("status") != "cancelled"]
         if status == "completed":
             if task_manager is None or not isinstance(task_ids, list) or not task_ids:
                 raise InteractionError("Strategic Plan completion requires its linked Working Plan evidence")
@@ -765,6 +848,18 @@ class InteractionController:
             "working_task_ids": task_ids or [], "status": status,
         })
 
+    def reconcile_plan_completion(self, task_manager: Any) -> None:
+        plan = self.state().get("executing_plan")
+        if not plan or not plan.get("working_plan_id"):
+            return
+        working = task_manager.working_plan
+        if working is None or working.id != plan["working_plan_id"]:
+            working = task_manager.restore_working_plan(plan["working_plan_id"])
+        if working is not None and working.status in {"completed", "cancelled"}:
+            self.complete_plan(
+                plan, status=working.status, task_manager=task_manager,
+            )
+
 
 def render_question(question: dict[str, Any]) -> str:
     lines = ["I need a little more detail before continuing:"]
@@ -786,9 +881,15 @@ def render_plan(plan: dict[str, Any]) -> str:
         lines.append(f"{index}. {step['title']} — {step['description']}")
         lines.extend(f"   - Acceptance [{criterion_id}]: {item}"
                      for criterion_id, item in zip(step["acceptance_ids"], step["acceptance"]))
+        if step.get("execution"):
+            lines.append(f"   - Approved file operation: {step['execution']['action']} "
+                         f"{json.dumps(step['execution']['arguments'], ensure_ascii=False, sort_keys=True)}")
         for verification in step["acceptance_verifications"]:
             if verification:
-                lines.append(f"     Verified by {verification['action']} with the approved arguments.")
+                detail = f" with the approved arguments"
+                if verification.get("expect"):
+                    detail += f" and expected {json.dumps(verification['expect'], ensure_ascii=False)}"
+                lines.append(f"     Verified by {verification['action']}{detail}.")
             else:
                 lines.append("     No verification contract; this criterion cannot pass the completion gate.")
     bounds = plan["bounds"]
