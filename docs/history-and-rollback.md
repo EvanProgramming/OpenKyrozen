@@ -1,6 +1,6 @@
 # Conversation history and rollback
 
-History preserves conversation snapshots as a tree. Each node is tied to a user actor, workspace, session, and parent version. The current head represents the active line. Creating a new change after a rollback can leave the old branch available for inspection rather than discarding it.
+Workspace history preserves snapshots as a tree. Each node is tied to a user actor, workspace, session, and parent version, and its private checkpoint points to the canonical conversation journal. The journal retains full versioned provider responses and tool results independently of display snapshots. Rollback appends a branch selection; abandoned conversation entries remain stored and recoverable.
 
 ## Inspect history
 
@@ -10,7 +10,7 @@ Use `/history` in the terminal UI or the session-history routes listed in [tool-
 
 In the TUI, choose a numbered history node to preview the target. Explicitly confirm with `/rollback NUMBER confirm` after reviewing it. The session head is updated only through the rollback operation. A stale head or a mismatched session is rejected instead of overwriting a newer branch. In the web API, the rollback endpoint is scoped to the requested session and node; authenticate and inspect its preview/result before continuing work.
 
-Rollback restores the recorded files in scope and rewinds the selected conversation history. It does not reverse external effects such as messages, network requests, deployments, provider charges, or database changes outside the captured workspace. It also does not imply that shared memory claims, agent credentials, or another session's state have been erased. Check those stores separately.
+Rollback restores the recorded files in scope and selects the conversation branch captured by that node. It does not reverse external effects such as messages, network requests, deployments, provider charges, or database changes outside the captured workspace. It also does not imply that shared memory claims, agent credentials, or another session's state have been erased. Check those stores separately.
 
 ## Recovery points and safety
 

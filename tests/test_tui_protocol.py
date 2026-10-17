@@ -330,7 +330,7 @@ class TUIProtocolTests(unittest.TestCase):
                 patch.object(self.backend.agent, "is_plan_acceptance", return_value=False), \
                 patch.object(self.backend.agent.current_session, "tasks", tasks), \
                 patch.object(self.backend.agent.current_session, "memory", memory), \
-                patch.object(self.backend.agent, "_chat_turn", side_effect=self.backend.agent.ProviderUnavailableError("offline")), \
+                patch.object(self.backend.agent, "chat", side_effect=self.backend.agent.ProviderUnavailableError("offline")), \
                 patch.object(self.backend, "interaction"), \
                 patch.object(self.backend, "usage"):
             self.backend._run_submit("question", "turn-failed")
@@ -344,14 +344,14 @@ class TUIProtocolTests(unittest.TestCase):
                 patch.object(self.backend.agent, "is_plan_acceptance", return_value=False), \
                 patch.object(self.backend.agent.current_session, "tasks", tasks), \
                 patch.object(self.backend.agent.current_session, "memory", memory), \
-                patch.object(self.backend.agent, "_chat_turn", return_value="answer") as chat, \
+                patch.object(self.backend.agent, "chat", return_value="answer") as chat, \
                 patch.object(self.backend.agent, "_clean_final_response", return_value="answer"), \
                 patch.object(self.backend.agent, "_split_reply", return_value=("", "answer")), \
                 patch.object(self.backend, "interaction"), \
                 patch.object(self.backend, "usage"):
             self.backend._run_submit("question", "turn-success")
 
-        prompt = chat.call_args.args[0]
+        prompt = chat.call_args.args[1]
         self.assertIn("attachments/batch/notes.txt", prompt)
         self.assertIn("User request:\nquestion", prompt)
         self.assertEqual(self.backend._staged_attachments, [])
@@ -368,7 +368,7 @@ class TUIProtocolTests(unittest.TestCase):
                 patch.object(self.backend.agent, "is_plan_acceptance", return_value=False), \
                 patch.object(self.backend.agent.current_session, "tasks", tasks), \
                 patch.object(self.backend.agent.current_session, "memory", memory), \
-                patch.object(self.backend.agent, "_chat_turn", return_value="answer") as chat, \
+                patch.object(self.backend.agent, "chat", return_value="answer") as chat, \
                 patch.object(self.backend.agent, "_clean_final_response", return_value="answer"), \
                 patch.object(self.backend.agent, "_split_reply", return_value=("", "answer")), \
                 patch.object(self.backend, "interaction"), \
@@ -376,7 +376,7 @@ class TUIProtocolTests(unittest.TestCase):
             self.backend._run_submit("Build a todo list /mode plan", "inline-1")
 
         command.assert_called_once_with("/mode plan", {}, "inline-1")
-        self.assertEqual(chat.call_args.args[0], "Build a todo list")
+        self.assertEqual(chat.call_args.args[1], "Build a todo list")
 
     def test_emit_is_one_json_object_per_line_and_redacts_secrets(self):
         self.backend.emit("response", "r1", text="token=should-not-leak")

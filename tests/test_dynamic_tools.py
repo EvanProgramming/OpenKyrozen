@@ -40,6 +40,18 @@ class DynamicToolTests(unittest.TestCase):
         self.assertFalse(validate_tool_source("import os\ndef bad(args):\n    return os.system(args)\n", "bad")[0])
         self.assertFalse(validate_tool_source("def bad(args):\n    return open(args).read()\n", "bad")[0])
 
+    def test_registered_tool_replaces_the_prompt_inventory_and_prefix_fingerprint(self):
+        messages = [{"role": "system", "content": (
+            "Prefix\n## Available tools\nold_tool\n\n## Execution protocol\nKeep this section."
+        )}]
+        before = main._stable_prefix_info.get().get("fingerprint")
+        with patch.object(main, "_agent_prompt_tools_list", return_value="new_tool"):
+            main._refresh_tool_inventory(messages)
+        self.assertIn("new_tool", messages[0]["content"])
+        self.assertNotIn("old_tool", messages[0]["content"])
+        self.assertIn("## Execution protocol\nKeep this section.", messages[0]["content"])
+        self.assertNotEqual(main._stable_prefix_info.get()["fingerprint"], before)
+
     def test_chat_observer_registers_and_runs_a_real_dynamic_tool(self):
         source = (
             "DefineTool:\n```python\n"

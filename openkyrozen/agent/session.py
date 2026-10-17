@@ -95,8 +95,9 @@ def interaction_workspace_id(self, context: LaunchContext | None = None) -> str:
 def bind_interaction_scope(self, session_id: str, *, user_id: str | None = None) -> None:
     session = self.open_session(session_id, user_id=user_id)
     self._default_session = session
-    current = self.history_manager(session_id).current()
-    session.messages = (list(current.get("conversation", [])) if current is not None and current.get("kind") != "recovery" else [])
+    if not session.messages:
+        current = self.history_manager(session_id).current()
+        session.messages = (list(current.get("conversation", [])) if current is not None and current.get("kind") != "recovery" else [])
     self._restore_ponytail_level()
 
 

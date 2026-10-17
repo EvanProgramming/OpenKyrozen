@@ -184,6 +184,32 @@ class NativeRequestTests(unittest.TestCase):
         self.assertEqual(primary.calls, ["deepseek-model", "deepseek-model"])
         self.assertEqual(fallback.calls, [])
 
+    def test_fallback_pins_final_continuation_without_tool_calls(self):
+        from openkyrozen.providers.base import LLMProvider
+        from openkyrozen.providers.config import ProviderConfig
+        from openkyrozen.providers.fallback import FallbackProvider
+        from openkyrozen.providers.models import with_provider_continuation
+
+        class Probe(LLMProvider):
+            def __init__(self, provider, response=None):
+                super().__init__(ProviderConfig(provider=provider, model_simple=f"{provider}-model"))
+                self.response = response
+                self.calls = []
+            def chat(self, messages, model=None): return "", None
+            def chat_response(self, messages, model=None, *, tools=None):
+                self.calls.append(model)
+                return self.response or ModelResponse(text="reply")
+
+        primary, fallback = Probe("deepseek"), Probe("openai")
+        first = with_provider_continuation(
+            ModelResponse(text="fallback answer"), fallback, "openai-model", "probe", {"opaque": True},
+        )
+        wrapper = FallbackProvider.__new__(FallbackProvider)
+        wrapper._primary, wrapper._fallbacks = primary, [fallback]
+        wrapper.chat_response([first, {"role": "user", "content": "next turn"}], "deepseek-model")
+        self.assertEqual(primary.calls, [])
+        self.assertEqual(fallback.calls, ["openai-model"])
+
     def test_native_request_executes_through_runtime_without_action_parsing(self):
         import tempfile
         from pathlib import Path

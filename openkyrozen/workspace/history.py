@@ -208,7 +208,12 @@ class HistoryManager:
                 file_summary={**summary, "changes": {"added": 0, "changed": 0, "deleted": 0, "total": 0},
                               "manifest_digest": hashlib.sha256(_json(manifest).encode()).hexdigest()},
             )
-            self.store.insert_history_node(node, set_head=True)
+            self.store.insert_history_node(
+                node, set_head=True,
+                journal_head=self.store.conversation_head(
+                    user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
+                ),
+            )
             return node
 
     def begin_turn(self, *, conversation: list[dict[str, Any]], interaction: dict[str, Any],
@@ -218,7 +223,7 @@ class HistoryManager:
 
     def commit_turn(self, token: TurnToken, *, user_message: str, assistant_message: str,
                     conversation: list[dict[str, Any]], interaction: dict[str, Any],
-                    tasks: list[dict[str, Any]]) -> dict[str, Any]:
+                    tasks: list[dict[str, Any]], journal_head: str | None = None) -> dict[str, Any]:
         with self._lock:
             parent = self.store.history_node(token.parent_id, user_id=self.user_id,
                                              workspace_id=self.workspace_id, session_id=self.session_id)
@@ -236,7 +241,8 @@ class HistoryManager:
                 file_summary={**summary, "changes": self._changes(parent_manifest, manifest),
                               "manifest_digest": hashlib.sha256(_json(manifest).encode()).hexdigest()},
             )
-            if not self.store.insert_history_node(node, set_head=True, expected_head=token.parent_id):
+            if not self.store.insert_history_node(node, set_head=True, expected_head=token.parent_id,
+                                                  journal_head=journal_head):
                 shutil.rmtree(self._node_path(node_id), ignore_errors=True)
                 raise HistoryError("history head changed while recording the turn")
             return node
@@ -363,7 +369,12 @@ class HistoryManager:
                 snapshot_relpath=recovery_snapshot, file_summary={**recovery_summary,
                     "changes": self._changes(self._manifest(current), recovery_manifest)},
             )
-            self.store.insert_history_node(recovery)
+            self.store.insert_history_node(
+                recovery,
+                journal_head=self.store.conversation_head(
+                    user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
+                ),
+            )
             head_switched = False
             try:
                 self._restore(target)
@@ -373,15 +384,54 @@ class HistoryManager:
                 head_switched = True
                 self.store.replace_tasks(target["tasks"], user_id=self.user_id, workspace_id=self.workspace_id,
                                          session_id=self.session_id)
-                self.store.append_event(
-                    "history.rollback", {"target_id": target["id"], "recovery_id": recovery_id},
+                target_checkpoint = self.store.conversation_checkpoint(
+                    target["id"], user_id=self.user_id,
+                    workspace_id=self.workspace_id, session_id=self.session_id,
+                )
+                journal_head = self.store.conversation_head(
                     user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
                 )
-                self.store.append_event(
-                    "history.restored", {"node_id": target["id"], "interaction": target["interaction"]},
+                from openkyrozen.agent.conversation import ConversationEntry
+                imported = []
+                target_journal_head = target_checkpoint.get("journal_head") if target_checkpoint else None
+                backfill_checkpoint = None
+                if target_journal_head is None and target.get("conversation"):
+                    parent = journal_head
+                    for index, message in enumerate(target["conversation"]):
+                        if (not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}
+                                or not isinstance(message.get("content"), str)):
+                            continue
+                        item = ConversationEntry(
+                            id=f"conv_{uuid.uuid4().hex}",
+                            kind="user.input" if message["role"] == "user" else "legacy.assistant",
+                            payload={"text": message["content"], "provenance": "legacy_history_node",
+                                     "node_id": target["id"], "index": index, "legacy_index": len(imported)},
+                            parent_id=parent, user_id=self.user_id,
+                            workspace_id=self.workspace_id, session_id=self.session_id,
+                        )
+                        imported.append(item.as_dict())
+                        parent = item.id
+                    target_journal_head = parent
+                    backfill_checkpoint = {"node_id": target["id"], "journal_head": target_journal_head}
+                branch = ConversationEntry(
+                    id=f"conv_{uuid.uuid4().hex}", kind="branch.selection",
+                    payload={"target_node_id": target["id"],
+                             "target_journal_head": target_journal_head,
+                             "recovery_node_id": recovery_id},
+                    parent_id=imported[-1]["id"] if imported else journal_head,
                     user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
                 )
-            except Exception:
+                self.store.append_history_rollback(
+                    [*imported, branch.as_dict()], [
+                        {"event_type": "history.rollback",
+                         "payload": {"target_id": target["id"], "recovery_id": recovery_id}},
+                        {"event_type": "history.restored",
+                         "payload": {"node_id": target["id"], "interaction": target["interaction"]}},
+                    ], user_id=self.user_id, workspace_id=self.workspace_id,
+                    session_id=self.session_id, expected_head=journal_head,
+                    checkpoint=backfill_checkpoint,
+                )
+            except Exception as exc:
                 try:
                     self._restore(recovery)
                     if head_switched:
@@ -395,6 +445,9 @@ class HistoryManager:
                         )
                 except Exception as recovery_error:
                     raise HistoryError(f"rollback failed and recovery failed: {recovery_error}") from recovery_error
+                from openkyrozen.agent.conversation import ConversationHistoryError
+                if isinstance(exc, ConversationHistoryError):
+                    raise HistoryError("conversation changed during rollback; retry from the current head") from exc
                 raise
             return target, recovery
 

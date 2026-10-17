@@ -288,7 +288,12 @@ class StreamingEndpointTests(unittest.TestCase):
                     "session.message", workspace_id="dsml-test", session_id=session_id,
                 ) if event["payload"].get("role") == "assistant"
             ]
-            self.assertEqual(assistant_messages[-1]["content"], content)
+            self.assertEqual(assistant_messages, [])
+            responses = [entry for entry in memory.store.list_conversation_entries(
+                user_id=server._SERVER_ACTOR_ID, workspace_id=memory.workspace_id, session_id=session_id,
+            ) if entry.get("kind") == "model.response"]
+            self.assertIn("DSML", responses[-1]["payload"]["response"]["text"])
+            self.assertNotIn("DSML", content)
             event_names = [item.get("event") for item in payloads]
             self.assertLess(event_names.index("usage"), event_names.index("completion"))
             completion = next(item for item in payloads if item.get("event") == "completion")
@@ -342,7 +347,12 @@ class StreamingEndpointTests(unittest.TestCase):
                     "session.message", workspace_id="inline-control-test", session_id=session_id,
                 ) if event["payload"].get("role") == "assistant"
             ]
-            self.assertEqual(assistant_messages[-1]["content"], main._clean_final_response(content))
+            self.assertEqual(assistant_messages, [])
+            responses = [entry for entry in memory.store.list_conversation_entries(
+                user_id=server._SERVER_ACTOR_ID, workspace_id=memory.workspace_id, session_id=session_id,
+            ) if entry.get("kind") == "model.response"]
+            self.assertIn("Action:", responses[-1]["payload"]["response"]["text"])
+            self.assertNotIn("Action:", content)
 
     def test_prose_prefixed_alias_controls_are_filtered_before_sse_and_persistence(self):
         session_id = "stream-prose-alias-regression"
@@ -391,7 +401,11 @@ class StreamingEndpointTests(unittest.TestCase):
                     "session.message", workspace_id="prose-alias-test", session_id=session_id,
                 ) if event["payload"].get("role") == "assistant"
             ]
-            self.assertEqual(assistant_messages[-1]["content"], main._clean_final_response(content))
+            self.assertEqual(assistant_messages, [])
+            responses = [entry for entry in memory.store.list_conversation_entries(
+                user_id=server._SERVER_ACTOR_ID, workspace_id=memory.workspace_id, session_id=session_id,
+            ) if entry.get("kind") == "model.response"]
+            self.assertTrue(responses)
 
     def test_tool_name_prose_survives_sse_and_persistence(self):
         session_id = "stream-tool-name-prose-regression"
@@ -438,7 +452,11 @@ class StreamingEndpointTests(unittest.TestCase):
                     "session.message", workspace_id="tool-name-prose-test", session_id=session_id,
                 ) if event["payload"].get("role") == "assistant"
             ]
-            self.assertEqual(assistant_messages[-1]["content"], expected)
+            self.assertEqual(assistant_messages, [])
+            responses = [entry for entry in memory.store.list_conversation_entries(
+                user_id=server._SERVER_ACTOR_ID, workspace_id=memory.workspace_id, session_id=session_id,
+            ) if entry.get("kind") == "model.response"]
+            self.assertEqual(responses[-1]["payload"]["response"]["text"], expected)
 
     def test_generic_invoke_tags_split_at_every_boundary_stay_out_of_sse(self):
         marker = _SplitGenericInvokeProvider.marker
@@ -495,7 +513,12 @@ class StreamingEndpointTests(unittest.TestCase):
                     "session.message", workspace_id="generic-invoke-test", session_id=session_id,
                 ) if event["payload"].get("role") == "assistant"
             ]
-            self.assertEqual(assistant_messages[-1]["content"], expected)
+            self.assertEqual(assistant_messages, [])
+            responses = [entry for entry in memory.store.list_conversation_entries(
+                user_id=server._SERVER_ACTOR_ID, workspace_id=memory.workspace_id, session_id=session_id,
+            ) if entry.get("kind") == "model.response"]
+            self.assertIn("invoke name=\"read_file\"", responses[-1]["payload"]["response"]["text"])
+            self.assertNotIn("<invoke", content)
 
 
 if __name__ == "__main__":

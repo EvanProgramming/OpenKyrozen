@@ -32,6 +32,9 @@ def restore_history(self, node_id: str, *, confirm: str, expected_head: str | No
         current_tasks=list(self.tasks.tasks),
     )
     self.bind_interaction_scope(manager.session_id, user_id=self.memory_bank.user_id)
+    self.short_term_memory = self.conversation_history.display_messages()
+    self.current_session.history_loaded = True
+    self.current_session.messages_compacted = False
     if self._project_graph is not None:
         try:
             self._project_graph.refresh_async(callback=None)

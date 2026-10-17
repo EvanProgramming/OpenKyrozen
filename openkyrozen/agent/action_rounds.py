@@ -37,6 +37,9 @@ def _execute_action_rounds(self, turn):
     consecutive_search_failures = 0  # track failed search_web calls to prevent loops
     total_search_calls = sum(record["action"] == "search_web" for record in turn.tool_records)
     unsupported_action_retries = 0
+    evolving_messages = None
+    previous_model_reply = None
+    previous_tool_results: list[str] = []
     distribution_reply = None
     coordinator = self.subagent_manager.coordinator
     delegated_this_turn = coordinator and any(run["version"] != turn.agent_versions.get(run["run_id"])
@@ -198,6 +201,14 @@ def _execute_action_rounds(self, turn):
             memory = self._build_memory_context(turn.user_input, context=turn.memory_context)
             if memory:
                 summary_messages.insert(2, {"role": "system", "content": memory})
+        if evolving_messages is not None:
+            summary_messages = evolving_messages
+            summary_messages.append({"role": "assistant", "content": previous_model_reply or ""})
+            if previous_tool_results:
+                summary_messages.append({"role": "user", "content": "Tool results:\n" + "\n".join(previous_tool_results)})
+            if error_hint or search_throttle:
+                summary_messages.append({"role": "user", "content": error_hint + search_throttle
+                                         + self._build_task_progress_hint()})
         if distribution_reply is not None:
             step_reply, distribution_reply = distribution_reply, None
         else:
@@ -216,6 +227,8 @@ def _execute_action_rounds(self, turn):
         # Observe this response once.  The same parsed result drives task
         # updates, unknown-action handling, loop control, and final rendering.
         step_reply, step_meta = self._observe_turn_response(turn, step_reply, summary_messages)
+        if step_meta["define_tool_registered"]:
+            self._refresh_tool_inventory(summary_messages)
         step_reply, step_meta, plan_recovery_exhausted = self._recover_plan_response(turn,
             step_reply, step_meta, summary_messages,
             inspection_complete=bool(turn.tool_records),
@@ -243,6 +256,8 @@ def _execute_action_rounds(self, turn):
                 turn.protocol_error_message = self._UNSUPPORTED_ACTION_PROTOCOL_MESSAGE
                 break
             step_reply = self._call_llm_with_spinner(summary_messages + [{
+                "role": "assistant", "content": step_reply,
+            }, {
                 "role": "user",
                 "content": (
                     f"System: {self._UNSUPPORTED_ACTION_PROTOCOL_MESSAGE} "
@@ -254,6 +269,8 @@ def _execute_action_rounds(self, turn):
             if not step_reply:
                 continue
             step_reply, step_meta = self._observe_turn_response(turn, step_reply, summary_messages)
+            if step_meta["define_tool_registered"]:
+                self._refresh_tool_inventory(summary_messages)
             next_tool_calls = step_meta["tool_calls"]
             if step_meta["protocol_error"]:
                 turn.protocol_error_message = step_meta["protocol_error"]
@@ -289,6 +306,8 @@ def _execute_action_rounds(self, turn):
                 break
             # Re-observe the replacement response exactly once.
             step_reply, step_meta = self._observe_turn_response(turn, step_reply, summary_messages)
+            if step_meta["define_tool_registered"]:
+                self._refresh_tool_inventory(summary_messages)
             next_tool_calls = step_meta["tool_calls"]
             if step_meta["protocol_error"]:
                 turn.protocol_error_message = step_meta["protocol_error"]
@@ -351,13 +370,18 @@ def _execute_action_rounds(self, turn):
                 if next_pending_desc:
                     nudge += f"The next task is: \"{next_pending_desc}\". "
                 nudge += "Output the Action block for this task NOW. Do not explain or summarise — just act."
-                summary_messages.append({"role": "user", "content": nudge})
+                summary_messages.extend([
+                    {"role": "assistant", "content": step_reply},
+                    {"role": "user", "content": nudge},
+                ])
                 step_reply = self._call_llm_with_spinner(summary_messages).strip()
                 turn.turn_prompt_total += self._last_prompt_tokens
                 turn.turn_completion_total += self._last_completion_tokens
                 if not step_reply:
                     break
                 step_reply, step_meta = self._observe_turn_response(turn, step_reply, summary_messages)
+                if step_meta["define_tool_registered"]:
+                    self._refresh_tool_inventory(summary_messages)
                 next_tool_calls = step_meta["tool_calls"]
                 if step_meta["protocol_error"]:
                     turn.protocol_error_message = step_meta["protocol_error"]
@@ -375,17 +399,19 @@ def _execute_action_rounds(self, turn):
                 turn.final_answer = step_meta["clean"] or self._deterministic_tool_summary(turn.tool_records)
                 break
             else:
-                summary_messages.append({
+                summary_messages.extend([{"role": "assistant", "content": step_reply}, {
                     "role": "user",
                     "content": "System: You have not output an Action block. "
                                "Output the next JSON Action block now to continue."
-                })
+                }])
                 step_reply = self._call_llm_with_spinner(summary_messages).strip()
                 turn.turn_prompt_total += self._last_prompt_tokens
                 turn.turn_completion_total += self._last_completion_tokens
                 if not step_reply:
                     break
                 step_reply, step_meta = self._observe_turn_response(turn, step_reply, summary_messages)
+                if step_meta["define_tool_registered"]:
+                    self._refresh_tool_inventory(summary_messages)
                 next_tool_calls = step_meta["tool_calls"]
                 if step_meta["protocol_error"]:
                     turn.protocol_error_message = step_meta["protocol_error"]
@@ -431,6 +457,9 @@ def _execute_action_rounds(self, turn):
                 "requires args in format path|content",
             ]) for r in next_results
         )
+        evolving_messages = summary_messages
+        previous_model_reply = step_reply
+        previous_tool_results = list(next_results)
         # Hard limit: too many search_web calls → one last chance to complete
         if total_search_calls >= 7 and consecutive_search_failures >= 3:
             final_msg = (
@@ -441,7 +470,8 @@ def _execute_action_rounds(self, turn):
                 "directly. Acknowledge any gaps honestly."
             ).format(consecutive_search_failures)
             step_reply = self._call_llm_with_spinner(
-                summary_messages + [{"role": "user", "content": final_msg}]
+                summary_messages + [{"role": "assistant", "content": step_reply},
+                                    {"role": "user", "content": final_msg}]
             ).strip()
             step_reply, search_meta = self._observe_turn_response(turn, step_reply, summary_messages)
             interaction_reply = self._interaction_gate(search_meta, turn.user_input)

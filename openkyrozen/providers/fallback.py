@@ -96,7 +96,7 @@ class FallbackProvider(LLMProvider):
         candidates = [self._primary] + self._fallbacks
         from openkyrozen.providers.models import ModelResponse, provider_identity, ProviderContractError
         continuation = next((item.continuation for item in reversed(messages)
-                             if isinstance(item, ModelResponse) and item.tool_calls), None)
+                             if isinstance(item, ModelResponse) and item.continuation is not None), None)
         if continuation is not None:
             provider = next((candidate for candidate in candidates
                              if provider_identity(candidate) == continuation.provider_id), None)

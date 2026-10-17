@@ -260,7 +260,7 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
             return value, remaining - len(value)
         return clean(value, budget)[0]
 
-    return ExecutionReceipt(
+    receipt = ExecutionReceipt(
         receipt_id=f"receipt_{uuid.uuid4().hex}",
         operation_id=self._operation_id(operation_scope, canonical,
                                         canonical_arguments if canonical_arguments is not None else args),
@@ -294,6 +294,21 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         side_effects=getattr(expected_spec, "side_effects", "unknown"),
         verification=verification,
     )
+    if getattr(self, "_conversation_turn_id", None) is not None and self._conversation_turn_id.get():
+        from openkyrozen.agent.conversation import tool_result_to_dict
+        outcome = tool_result or ToolResult(
+            data=receipt.result_data, text=receipt.result,
+            error=(ToolError(receipt.failure or "execution_failed", receipt.result or "Tool failed")
+                   if not receipt.success else None),
+        )
+        self._record_conversation_entry("tool.result", {
+            "call_id": receipt.call_id, "name": receipt.action,
+            "arguments": receipt.arguments if receipt.arguments is not None else {"legacy": receipt.args},
+            "output": tool_result_to_dict(outcome), "is_error": not outcome.success,
+            "receipt_id": receipt.receipt_id,
+            "verification": receipt.verification,
+        }, call_id=receipt.call_id, task_id=receipt.task_id)
+    return receipt
 
 
 def _run_tool(self, action: str, args: str, *, return_success: bool = False,

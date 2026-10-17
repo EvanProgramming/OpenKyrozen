@@ -29,9 +29,7 @@ def _run_cli_chat(self, user_input, interaction_before):
         self.console.print(f"[{self._ERROR}][Error] Received empty response from LLM[/{self._ERROR}]")
         return
 
-    self.short_term_memory.append({"role": "user", "content": user_input})
     cleaned_reply = self._remove_task_blocks(reply)
-    self.short_term_memory.append({"role": "assistant", "content": cleaned_reply})
     self.memory_bank.add_log(f"User: {user_input}\nAssistant: {self._clean_final_response(reply)}")
 
     thinking, answer = self._split_reply(reply)
@@ -69,8 +67,6 @@ def _run_cli_chat(self, user_input, interaction_before):
         if len(reply.strip()) < 5:
             self.console.print(f"[{self._ERROR}][Error] Received empty response from LLM[/{self._ERROR}]")
             break
-        self.short_term_memory.append({"role": "user", "content": user_input})
-        self.short_term_memory.append({"role": "assistant", "content": reply})
         self.memory_bank.add_log(f"User: {user_input}\nAssistant: {self._clean_final_response(reply)}")
         thinking, answer = self._split_reply(reply)
         if thinking:

@@ -36,12 +36,32 @@ serialization while using explicit sessions; they do not swap agent globals.
 | Workspace | Root, bound tool adapters, graph, GitHub client and launch context |
 | AgentSession | Actor, conversation, durable task scope, interaction controller, learning feedback and subagents |
 | Turn | Response state, callbacks, capability token, selected model and request usage |
+| ConversationHistory | Versioned private turn entries and provider/display projections, scoped by actor, interaction workspace and actual session ID |
+| EventsRepository | Transactional journal append, idempotent entry IDs, expected-head checks and private record reads over the existing SQLite `events` table |
 
 Session identity includes actor, interaction scope, session ID and workspace root.
 Personal memory retains its existing global workspace scope. Source snapshots and
 project history use the source scope. Changing projects selects another adapter owner;
 existing sessions retain their original workspace. Context variables carry session,
 event, approval and execution state through provider threads without global mutation.
+
+ConversationHistory records user input, each received provider response, correlated
+typed tool results, interaction references and turn outcomes. Entry payloads are
+versioned defensive JSON snapshots; private rows are not returned by generic event,
+SSE or interface APIs. The runtime records before the next dispatch and stops if a
+journal write fails. Workspace snapshot nodes carry a private journal checkpoint;
+rollback appends a branch-selection entry and preserves the abandoned branch.
+Legacy message lists are imported with provenance without parsing their text. Saved
+provider continuations remain bound to their original provider/model and cannot replay
+tools when that binding no longer validates.
+
+The provider projection restores typed responses and correlated tool replies, and
+fails if a native call/reply group or continuation binding is incomplete. The display
+projection renders each completed turn once. Context compaction remains a derived
+message view and never rewrites the journal. Context usage reports estimated,
+content-free component attribution, a stable-prefix fingerprint, newly introduced
+history, retransmission and duplicate-entry counts; provider-reported input totals
+remain separate from those estimates.
 
 ## Package responsibilities
 

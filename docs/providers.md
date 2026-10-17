@@ -110,6 +110,15 @@ fixture does not establish live gateway acceptance.
 Offline fixtures and installed SDK types validate the contract; they do not establish
 live provider interoperability.
 
+Conversation history is owned by the runtime. It records full structured responses,
+correlated tool results and provider-bound continuation state in private journal
+entries; public runtime events remain redacted projections. Native requests restore
+typed call/reply groups only when every reply and the saved provider/model binding
+validate. After restart, a mismatched continuation is reported and pauses native
+projection rather than silently rebinding or executing a tool again. See
+[architecture](architecture.md) for journal scope, rollback branching and context
+accounting behavior.
+
 ## Optional dependencies
 
 `pip install -e '.[web]'` installs FastAPI and Uvicorn. Provider extras are `.[claude]`, `.[gemini]`, `.[perplexity]`, `.[bedrock]`, and `.[vertex]`; `.[cloud]` groups the cloud integrations. `.[browser]` installs Playwright; browser execution also needs a browser installation. `.[all]` installs the supported optional Python integrations. The official installer has its own pinned set of dependencies; see [installation](installation.md).
