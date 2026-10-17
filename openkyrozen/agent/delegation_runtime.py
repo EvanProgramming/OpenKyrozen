@@ -361,9 +361,24 @@ def _delegation_tool_access(self, action, args):
             if path not in owned:
                 raise ValueError("Sub-agent write is outside its assigned files")
         parent = getattr(self.current_session, "_delegation_parent", None)
-        if parent and parent.interaction.state().get("executing_plan") and self._is_state_changing_action(action, args):
-            structured = json.dumps(args, ensure_ascii=False, sort_keys=True) if isinstance(args, dict) else str(args)
-            allowed, reason = parent.tasks.mutation_matches_current_task(action, structured)
+        parent_plan = parent.interaction.state().get("executing_plan") if parent else None
+        if parent and parent_plan and self._is_state_changing_action(action, args):
+            from openkyrozen.agent.executor import _legacy_object_arguments, _strategic_plan_denial
+            arguments = args if isinstance(args, dict) else None
+            spec = getattr(self.tool_registry, "specs", {}).get(action)
+            if arguments is None and isinstance(args, str):
+                if spec is not None:
+                    normalized = _legacy_object_arguments(args, spec)
+                    arguments = normalized if normalized else None
+            match_args = (json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                          if arguments is not None else str(args))
+            denial = _strategic_plan_denial(
+                parent_plan, action, arguments if arguments is not None else args,
+                spec, parent.workspace.root,
+            )
+            if denial:
+                raise PermissionError(f"Sub-agent operation exceeds the accepted Strategic Plan: {denial}")
+            allowed, reason = parent.tasks.mutation_matches_current_task(action, match_args)
             if not allowed:
                 raise ValueError("Sub-agent action does not match accepted plan: " + reason)
     guarded = action in {"read_file", "write_file", "edit_file", "search_files"} or self._is_state_changing_action(action, args) or action in {"git_diff", "git_show"}

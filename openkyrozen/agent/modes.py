@@ -8,6 +8,7 @@ import posixpath
 import re
 import shlex
 import uuid
+from copy import deepcopy
 from typing import Any
 
 from .ports import InteractionStore
@@ -184,6 +185,27 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
         if step_id in seen_ids:
             raise InteractionError("plan step ids must be unique")
         seen_ids.add(step_id)
+        execution = step.get("execution")
+        if execution is not None:
+            action = execution.get("action") if isinstance(execution, dict) else None
+            arguments = execution.get("arguments") if isinstance(execution, dict) else None
+            if (not isinstance(execution, dict) or set(execution) != {"action", "arguments"}
+                    or not isinstance(action, str) or action not in {"write_file", "edit_file"}
+                    or not isinstance(arguments, dict)
+                    or not isinstance(arguments.get("path"), str) or not arguments["path"].strip()):
+                raise InteractionError("file execution contract must name write_file or edit_file and an exact path")
+            required = ({"path", "content"} if action == "write_file" else
+                        {"path", "old_text", "new_text", "expected_sha256"})
+            if set(arguments) != required or any(not isinstance(item, str) for item in arguments.values()):
+                raise InteractionError("file execution arguments must exactly match the selected file operation")
+            if action == "edit_file" and (
+                    not arguments["old_text"] or not re.fullmatch(r"[0-9a-fA-F]{64}", arguments["expected_sha256"])):
+                raise InteractionError("edit_file requires nonempty old_text and a SHA-256 read hash")
+            try:
+                json.dumps(arguments, ensure_ascii=False, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise InteractionError("file execution arguments must be JSON-safe") from exc
+            execution = {"action": action, "arguments": deepcopy(arguments)}
         acceptance = step.get("acceptance")
         if isinstance(acceptance, str):
             acceptance = [acceptance]
@@ -220,14 +242,17 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
             acceptance_ids.append(f"{step_id}-ac-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]}")
         if len(set(acceptance_ids)) != len(acceptance_ids):
             raise InteractionError("acceptance criteria must be unique within each objective")
-        normalised.append({
+        normalised_step = {
             "id": step_id,
             "title": _text(step.get("title") or f"Step {index}", "step title", 120),
             "description": _text(step.get("description"), "step description", 800),
             "acceptance": acceptance,
             "acceptance_ids": acceptance_ids,
             "acceptance_verifications": acceptance_verifications,
-        })
+        }
+        if execution is not None:
+            normalised_step["execution"] = execution
+        normalised.append(normalised_step)
     assumptions = value.get("assumptions", [])
     if assumptions is None:
         assumptions = []
@@ -373,6 +398,7 @@ def normalize_provider_control(text: str, *, plan_mode: bool = False) -> tuple[s
                     step.get("acceptance") or step.get("acceptance_criteria")
                     or ["Step completed with observable evidence"]
                 ),
+                **({"execution": step["execution"]} if "execution" in step else {}),
             })
         return "PlanProposal", {
             "title": value.get("title") or value.get("plan_name"),
@@ -625,19 +651,26 @@ class InteractionController:
                              and (task.get("checkpoint") or {}).get("strategic_plan", {}).get("acceptance_ids") == step["acceptance_ids"]
                              and task.get("description") == description
                              and [item.get("criterion") if isinstance(item, dict) else item
-                                  for item in task.get("acceptance", [])] == step["acceptance"]), None)
+                                  for item in task.get("acceptance", [])] == step["acceptance"]
+                             and (task.get("checkpoint") or {}).get("action") == (step.get("execution") or {}).get("action")
+                             and ((task.get("checkpoint") or {}).get("args") or "") == (
+                                 json.dumps((step.get("execution") or {}).get("arguments", {}), ensure_ascii=False,
+                                            allow_nan=False, sort_keys=True, separators=(",", ":"))
+                                 if step.get("execution") else "")), None)
             if existing:
                 reused.add(existing["id"])
                 continue
             operations.append({"op": "add", "ref": step["id"], "task": {
                 "description": description,
                 "acceptance": step["acceptance"],
+                **({"execution": step["execution"]} if step.get("execution") else {}),
             }})
             strategic_bindings[step["id"]] = {
                 "plan_id": plan["plan_id"], "version": plan["version"],
                 "fingerprint": plan["fingerprint"], "objective_id": step["id"],
                 "acceptance_ids": step["acceptance_ids"],
                 "acceptance_verifications": step["acceptance_verifications"],
+                "execution": step.get("execution"),
             }
         for task in previous_tasks:
             if task["id"] not in reused and task.get("status") in {"pending", "failed", "blocked"}:
@@ -753,6 +786,9 @@ def render_plan(plan: dict[str, Any]) -> str:
         lines.append(f"{index}. {step['title']} — {step['description']}")
         lines.extend(f"   - Acceptance [{criterion_id}]: {item}"
                      for criterion_id, item in zip(step["acceptance_ids"], step["acceptance"]))
+        if step.get("execution"):
+            lines.append(f"   - Approved file operation: {step['execution']['action']} "
+                         f"{json.dumps(step['execution']['arguments'], ensure_ascii=False, sort_keys=True)}")
         for verification in step["acceptance_verifications"]:
             if verification:
                 lines.append(f"     Verified by {verification['action']} with the approved arguments.")

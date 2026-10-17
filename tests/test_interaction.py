@@ -145,6 +145,7 @@ class StrategicPlanContractTests(unittest.TestCase):
         proposal = {
             "title": "Change", "summary": "Make the change.",
             "steps": [{"id": "inspect", "title": "Inspect", "description": "Read the file.",
+                       "execution": {"action": "write_file", "arguments": {"path": "src/file.txt", "content": "x"}},
                        "acceptance": [{"criterion": "File is readable", "verification": {
                            "action": "read_file", "arguments": {"path": "src/file.txt"},
                        }}]}],
@@ -153,6 +154,7 @@ class StrategicPlanContractTests(unittest.TestCase):
         second = validate_plan_proposal(first)
         self.assertEqual(second["steps"][0]["acceptance_verifications"],
                          first["steps"][0]["acceptance_verifications"])
+        self.assertEqual(second["steps"][0]["execution"], first["steps"][0]["execution"])
         self.assertEqual(second["steps"][0]["acceptance_ids"], first["steps"][0]["acceptance_ids"])
 
     def test_strategic_plan_has_stable_objective_criteria_and_approved_bounds(self):
@@ -169,10 +171,14 @@ class StrategicPlanContractTests(unittest.TestCase):
         first = validate_plan_proposal(proposal)
         repeated = validate_plan_proposal(proposal)
         revised = validate_plan_proposal({**proposal, "summary": "Deliver the requested change."}, previous=first)
+        changed_operation = validate_plan_proposal({**proposal, "steps": [{**proposal["steps"][0],
+            "execution": {"action": "write_file", "arguments": {"path": "src/file.txt", "content": "different"}},
+        }]}, previous=first)
 
         self.assertEqual(first["steps"][0]["id"], "implement")
         self.assertEqual(first["steps"][0]["acceptance_ids"], repeated["steps"][0]["acceptance_ids"])
         self.assertEqual(first["steps"][0]["acceptance_ids"], revised["steps"][0]["acceptance_ids"])
+        self.assertNotEqual(first["fingerprint"], changed_operation["fingerprint"])
         self.assertEqual(first["bounds"]["workspace_paths"], ["docs", "src"])
         self.assertEqual(first["bounds"]["risk_ceiling"], "normal")
         self.assertEqual(len(first["fingerprint"]), 64)
@@ -910,7 +916,7 @@ class InteractionTests(unittest.TestCase):
             'PlanProposal\n```json\n{"steps": []}\n```', "PlanProposal",
         ), {"steps": []})
 
-    def test_provider_shaped_plan_discards_executable_step_metadata(self):
+    def test_provider_shaped_plan_keeps_only_explicit_approved_file_contracts(self):
         shaped = json.dumps({
             "plan_name": "Status page", "mode": "plan",
             "do_not_execute_until_approved": True,
@@ -918,12 +924,16 @@ class InteractionTests(unittest.TestCase):
             "bounds": {"workspace_paths": ["site"], "capabilities": ["read", "write"],
                        "effects": ["read_only", "filesystem"], "risk_ceiling": "normal"},
             "steps": [{"step": 1, "title": "Create page", "details": "Write index.html.",
-                       "acceptance_criteria": ["index.html exists"]}],
+                       "acceptance_criteria": ["index.html exists"],
+                       "execution": {"action": "write_file", "arguments": {
+                           "path": "site/index.html", "content": "approved",
+                       }} }],
         })
         parsed = self.agent._observe_model_response(shaped)
         self.assertEqual(parsed["plan_proposal"]["title"], "Status page")
         self.assertEqual(parsed["plan_proposal"]["steps"][0]["id"], "step-1")
         self.assertEqual(parsed["plan_proposal"]["bounds"]["workspace_paths"], ["site"])
+        self.assertEqual(parsed["plan_proposal"]["steps"][0]["execution"]["arguments"]["path"], "site/index.html")
         self.assertEqual(parsed["tool_calls"], [])
 
         executable = json.dumps({
@@ -942,6 +952,30 @@ class InteractionTests(unittest.TestCase):
             sanitized["plan_proposal"]["steps"][0]["acceptance"],
             ["Step completed with observable evidence"],
         )
+
+    def test_strategic_file_execution_contract_is_validated_and_rendered_for_approval(self):
+        plan = validate_plan_proposal({
+            "title": "Create page", "summary": "Write the approved page.",
+            "bounds": {"workspace_paths": ["site"], "capabilities": ["write"],
+                       "effects": ["filesystem"], "risk_ceiling": "normal"},
+            "steps": [{"id": "page", "title": "Create page", "description": "Write site/index.html.",
+                       "acceptance": ["Page exists"], "execution": {
+                           "action": "write_file", "arguments": {"path": "site/index.html", "content": "ok"},
+                       }}],
+        })
+        self.assertIn('"path": "site/index.html"', render_plan(plan))
+        with self.assertRaises(InteractionError):
+            validate_plan_proposal({**plan, "steps": [{**plan["steps"][0], "execution": {
+                "action": "run_cmd", "arguments": {"command": "rm -rf ."},
+            }}]})
+        for execution in (
+            {"action": [], "arguments": {"path": "site/index.html", "content": "ok"}},
+            {"action": "write_file", "arguments": {"path": "site/index.html"}},
+            {"action": "edit_file", "arguments": {"path": "site/index.html", "old_text": "x",
+                "new_text": "y", "expected_sha256": "stale"}},
+        ):
+            with self.subTest(execution=execution), self.assertRaises(InteractionError):
+                validate_plan_proposal({**plan, "steps": [{**plan["steps"][0], "execution": execution}]})
 
     def test_plan_mode_converts_plain_plan_and_discards_early_actions(self):
         mode_token = self.agent._active_interaction_mode.set("plan")
@@ -1058,8 +1092,12 @@ class InteractionTests(unittest.TestCase):
         self.assertIn("PlanProposal", prompt)
         self.assertIn("read_file", prompt)
         self.assertIn("search_web", prompt)
-        for forbidden in ("write_file", "run_cmd", "TaskList", "TaskDone", "DefineTool", "git_commit"):
+        for forbidden in ("TaskList", "TaskDone", "DefineTool", "git_commit"):
             self.assertNotIn(forbidden, prompt)
+        readonly_inventory = prompt.split("## Available read-only tools\n", 1)[1].split("\n## ", 1)[0]
+        self.assertNotIn("- write_file:", readonly_inventory)
+        self.assertNotIn("- run_cmd:", readonly_inventory)
+        self.assertIn("does not execute before acceptance", prompt)
         self.assertIn("The first Plan-mode response must be exactly one listed read-only Action", prompt)
         self.assertIn('"criterion":"Observable result"', prompt)
         self.assertIn('"verification":{"action":"read_file"', prompt)

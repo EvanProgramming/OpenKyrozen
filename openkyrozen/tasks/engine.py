@@ -280,8 +280,10 @@ class TaskManager:
                 if strategic_bindings and ref in strategic_bindings:
                     binding = strategic_bindings[ref]
                     if (not isinstance(binding, dict)
-                            or set(binding) != {"plan_id", "version", "fingerprint", "objective_id", "acceptance_ids",
-                                                "acceptance_verifications"}
+                            or set(binding) not in ({"plan_id", "version", "fingerprint", "objective_id", "acceptance_ids",
+                                                     "acceptance_verifications"},
+                                                    {"plan_id", "version", "fingerprint", "objective_id", "acceptance_ids",
+                                                     "acceptance_verifications", "execution"})
                             or not isinstance(binding.get("version"), int)
                             or not isinstance(binding.get("acceptance_ids"), list)
                             or not isinstance(binding.get("acceptance_verifications"), list)):
@@ -291,6 +293,16 @@ class TaskManager:
                             or any(binding.get(key) != accepted_payload.get(key)
                                    for key in ("plan_id", "version", "fingerprint"))):
                         raise ValueError("strategic task binding must match the approved plan")
+                    execution = binding.get("execution")
+                    if execution is not None:
+                        if (not isinstance(execution, dict) or set(execution) != {"action", "arguments"}
+                                or fields["checkpoint"].get("action") != _receipt_action(execution.get("action"))
+                                or fields["checkpoint"].get("args") != json.dumps(
+                                    execution.get("arguments"), ensure_ascii=False, allow_nan=False,
+                                    sort_keys=True, separators=(",", ":"))):
+                            raise ValueError("strategic task execution must match its approved contract")
+                    elif fields["checkpoint"].get("action"):
+                        raise ValueError("strategic task execution is missing from its approved binding")
                     task["checkpoint"] = {**task["checkpoint"], "strategic_plan": deepcopy(binding)}
                     verifications = binding["acceptance_verifications"]
                     if len(verifications) != len(fields["acceptance"]):
