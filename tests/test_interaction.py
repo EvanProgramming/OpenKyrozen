@@ -621,6 +621,96 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
         self.assertEqual(state["executing_plan"]["version"], 2)
         self.assertEqual(state["executing_plan"]["working_plan_id"], accepted["working_plan_id"])
 
+    def test_execution_contract_changes_require_material_reapproval(self):
+        proposal = self.controller.propose_plan({
+            "title": "Write the page", "summary": "Create the approved file.",
+            "bounds": {"workspace_paths": ["site"], "capabilities": ["write"],
+                       "effects": ["filesystem"], "risk_ceiling": "normal"},
+            "steps": [{"id": "page", "title": "Write page", "description": "Write the page.",
+                       "execution": {"action": "write_file", "arguments": {
+                           "path": "site/index.html", "content": "old",
+                       }}, "acceptance": ["Page exists"]}],
+        })
+        self.controller.accept_plan(self.manager, plan_id=proposal["plan_id"], version=proposal["version"])
+        changed = self.controller.propose_plan({
+            "title": proposal["title"], "summary": proposal["summary"], "bounds": proposal["bounds"],
+            "steps": [{**proposal["steps"][0], "execution": {"action": "write_file", "arguments": {
+                "path": "site/index.html", "content": "new",
+            }}}],
+        })
+        self.assertEqual(changed["revision_materiality"], "material")
+
+    def test_auto_accepted_revisions_advance_the_version_before_material_approval(self):
+        proposal = self._proposal()
+        self.controller.accept_plan(self.manager, plan_id=proposal["plan_id"], version=proposal["version"])
+        first = self.controller.propose_plan({
+            "title": proposal["title"], "summary": proposal["summary"], "bounds": {
+                **proposal["bounds"], "capabilities": ["read"],
+            }, "steps": proposal["steps"],
+        })
+        second = self.controller.propose_plan({
+            "title": proposal["title"], "summary": proposal["summary"], "bounds": {
+                **proposal["bounds"], "workspace_paths": ["site/pages"], "capabilities": ["read"],
+            }, "steps": proposal["steps"],
+        })
+        self.assertEqual(first["version"], 2)
+        self.assertEqual(second["version"], 3)
+        material = self.controller.propose_plan({
+            "title": "Revised page", "summary": "A material objective change.",
+            "bounds": {**proposal["bounds"], "workspace_paths": ["site/pages"],
+                       "capabilities": ["read"]}, "steps": proposal["steps"],
+        })
+        self.assertEqual(material["version"], 4)
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=material["plan_id"], version=material["version"],
+        )
+        self.assertEqual(accepted["version"], 4)
+
+    def test_stale_auto_accepted_revision_cannot_replace_newer_narrower_bounds(self):
+        initial = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=initial["plan_id"], version=initial["version"],
+        )
+        stale_snapshot = self.controller.state()
+        first = InteractionController(self.store, workspace_id="project", session_id="strategic-session")
+        second = InteractionController(self.store, workspace_id="project", session_id="strategic-session")
+        first.state = lambda: stale_snapshot
+        second.state = lambda: stale_snapshot
+        accepted_narrow = first.propose_plan({
+            "title": initial["title"], "summary": initial["summary"], "bounds": {
+                **initial["bounds"], "workspace_paths": ["site/docs"],
+            }, "steps": initial["steps"],
+        })
+        with self.assertRaisesRegex(InteractionError, "changed|stale"):
+            second.propose_plan({
+                "title": initial["title"], "summary": initial["summary"], "bounds": {
+                    **initial["bounds"], "workspace_paths": ["site/private"],
+                }, "steps": initial["steps"],
+            })
+        self.assertEqual(self.controller.state()["executing_plan"]["fingerprint"],
+                         accepted_narrow["fingerprint"])
+
+    def test_material_revision_uses_current_working_plan_revision_at_staging(self):
+        original = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=original["plan_id"], version=original["version"],
+        )
+        self.manager.edit_plan(
+            plan_id=accepted["working_plan_id"], expected_revision=accepted["working_plan_revision"],
+            operations=[{"op": "update", "task": accepted["working_task_ids"][0],
+                         "fields": {"priority": 2}}],
+        )
+        proposal = self.controller.propose_plan({
+            "title": "Expand", "summary": "A material objective change.",
+            "bounds": original["bounds"],
+            "steps": [{"id": "next", "title": "New objective", "description": "Add a new objective.",
+                       "acceptance": ["New objective is done"]}],
+        })
+        updated, _ = self.controller.accept_plan(
+            self.manager, plan_id=proposal["plan_id"], version=proposal["version"],
+        )
+        self.assertEqual(updated["working_plan_revision"], accepted["working_plan_revision"] + 2)
+
     def test_changing_acceptance_verification_requires_reapproval(self):
         proposal = self.controller.propose_plan({
             "title": "Create the page", "summary": "Create and verify the page.",
@@ -754,6 +844,27 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
         self.assertEqual(state["pending_plan"]["fingerprint"], revision["fingerprint"])
         self.controller.cancel_plan(revision["plan_id"], revision["version"])
         self.assertEqual(self.controller.state()["executing_plan"]["fingerprint"], accepted["fingerprint"])
+
+    def test_cancelled_material_proposal_does_not_block_a_later_safe_narrowing(self):
+        proposal = self._proposal()
+        accepted, _ = self.controller.accept_plan(
+            self.manager, plan_id=proposal["plan_id"], version=proposal["version"],
+        )
+        material = self.controller.propose_plan({
+            "title": "Expanded objective", "summary": "Add a new objective.",
+            "bounds": proposal["bounds"],
+            "steps": [{"id": "new", "title": "New work", "description": "Add new work.",
+                       "acceptance": ["New work is done"]}],
+        })
+        self.controller.cancel_plan(material["plan_id"], material["version"])
+        narrowed = self.controller.propose_plan({
+            "title": proposal["title"], "summary": proposal["summary"],
+            "bounds": {**proposal["bounds"], "capabilities": ["read"]},
+            "steps": proposal["steps"],
+        })
+        self.assertEqual(narrowed["revision_materiality"], "within_bounds")
+        self.assertEqual(self.controller.state()["executing_plan"]["fingerprint"], narrowed["fingerprint"])
+        self.assertEqual(self.controller.state()["executing_plan"]["working_plan_id"], accepted["working_plan_id"])
 
     def test_cancelled_revision_numbers_are_not_reused(self):
         plan = self._proposal()
@@ -1435,6 +1546,40 @@ class InteractionTests(unittest.TestCase):
             self.agent._interaction_controller = previous
             self.agent.tasks = previous_tasks
             self.agent._set_workspace_root(previous_root)
+
+    def test_legacy_update_plan_is_not_matched_as_a_task_execution_action(self):
+        previous = (self.agent.tasks, self.agent._interaction_controller)
+        manager = TaskManager(self.store, workspace_id="workspace", session_id="session")
+        controller = InteractionController(self.store, workspace_id="workspace", session_id="session")
+        proposal = controller.propose_plan({
+            "title": "Maintain the page", "summary": "Keep work within the page objective.",
+            "bounds": {"workspace_paths": ["."], "capabilities": ["write"],
+                       "effects": ["internal"], "risk_ceiling": "normal"},
+            "steps": [{"id": "page", "title": "Maintain page", "description": "Update and verify the page.",
+                       "acceptance": ["Page is verified"]}],
+        })
+        accepted, _ = controller.accept_plan(
+            manager, plan_id=proposal["plan_id"], version=proposal["version"],
+        )
+        self.agent.tasks = manager
+        self.agent._interaction_controller = controller
+        args = json.dumps({
+            "plan_id": accepted["working_plan_id"],
+            "expected_revision": accepted["working_plan_revision"],
+            "operations": [{"op": "update", "task": accepted["working_task_ids"][0],
+                            "fields": {"priority": 2}}],
+        })
+        try:
+            with patch.object(self.agent, "_confirm_tool_action", return_value=True), \
+                    patch.object(manager, "mutation_matches_current_task", return_value=(False, "wrong task")) as match:
+                result = self.agent._execute_turn_action(
+                    "update_plan", args, operation_scope="plan-edit", successful_operations=set(),
+                )
+            self.assertTrue(result.success, result.result)
+            self.assertEqual(manager.tasks[0]["priority"], 2)
+            match.assert_not_called()
+        finally:
+            self.agent.tasks, self.agent._interaction_controller = previous
 
     def test_explicit_execution_contract_rejects_changed_write_arguments(self):
         from openkyrozen.agent.types import ExecutionReceipt

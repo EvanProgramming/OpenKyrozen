@@ -21,6 +21,59 @@ class EventsRepository:
             )
         return event_id
 
+    def append_plan_auto_accepted(self, payload: dict[str, Any], *, expected_previous: dict[str, Any],
+                                  user_id: str, workspace_id: str, session_id: str) -> str:
+        """Append a narrowed-plan acceptance only if its accepted predecessor is current."""
+        event_id = f"evt_{uuid.uuid4().hex}"
+        accepted_types = {"interaction.plan_accepted", "interaction.plan_auto_accepted"}
+        relevant_types = (*accepted_types, "interaction.plan_proposed", "interaction.plan_cancelled",
+                          "interaction.plan_completed", "history.restored")
+        with self.database._lock, self.database.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                rows = db.execute(
+                    "SELECT event_type,payload FROM events WHERE user_id=? AND workspace_id=? "
+                    "AND session_id=? AND event_type IN (?,?,?,?,?,?) ORDER BY created_at,rowid",
+                    (user_id, workspace_id, session_id, *relevant_types),
+                ).fetchall()
+                current = None
+                pending = False
+                for row in rows:
+                    event_type = row["event_type"]
+                    event_payload = self.database._loads(row["payload"], {})
+                    if event_type == "history.restored":
+                        interaction = event_payload.get("interaction", {})
+                        restored = interaction.get("executing_plan") if isinstance(interaction, dict) else None
+                        if isinstance(restored, dict) and restored.get("plan_id") == expected_previous.get("plan_id"):
+                            current, pending = restored, False
+                        continue
+                    if event_payload.get("plan_id") != expected_previous.get("plan_id"):
+                        continue
+                    if event_type in accepted_types:
+                        current, pending = event_payload, False
+                    elif event_type == "interaction.plan_proposed":
+                        pending = True
+                    elif event_type == "interaction.plan_cancelled":
+                        pending = False
+                    elif (event_type == "interaction.plan_completed"
+                          and event_payload.get("status") in {"completed", "cancelled"}):
+                        current, pending = None, False
+                if (pending or not current
+                        or any(current.get(key) != expected_previous.get(key)
+                               for key in ("plan_id", "version", "fingerprint"))):
+                    raise ValueError("Strategic Plan changed; reload before accepting")
+                db.execute(
+                    "INSERT INTO events(id,event_type,payload,user_id,workspace_id,session_id,task_id,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (event_id, "interaction.plan_auto_accepted", self.database._json(payload), user_id,
+                     workspace_id, session_id, None, utc_now()),
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+        return event_id
+
 
     def list_events(self, event_type: str | None = None, *, limit: int | None = 100,
                     workspace_id: str = "default", session_id: str | None = None,

@@ -34,6 +34,13 @@ class EventStore:
     def append_event(self, event_type: str, payload: Any, *, user_id: str='local', workspace_id: str='default', session_id: str | None=None, task_id: str | None=None):
         return self.events.append_event(event_type, payload, user_id=user_id, workspace_id=workspace_id, session_id=session_id, task_id=task_id)
 
+    def append_plan_auto_accepted(self, payload: dict[str, Any], *, expected_previous: dict[str, Any],
+                                  user_id: str, workspace_id: str, session_id: str):
+        return self.events.append_plan_auto_accepted(
+            payload, expected_previous=expected_previous, user_id=user_id,
+            workspace_id=workspace_id, session_id=session_id,
+        )
+
     def delete_session_data(self, *, user_id: str, workspace_id: str, session_id: str):
         return self.deletion.delete_session(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
 

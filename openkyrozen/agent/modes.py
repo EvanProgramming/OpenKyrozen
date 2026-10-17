@@ -355,7 +355,7 @@ def _revision_materiality(accepted: dict[str, Any], proposal: dict[str, Any]) ->
         return "material"
     objectives = lambda plan: {
         step["id"]: (step["title"], step["description"], tuple(step["acceptance"]),
-                     tuple(step["acceptance_verifications"]))
+                     tuple(step["acceptance_verifications"]), step.get("execution"))
         for step in plan.get("steps", ())
     }
     if objectives(accepted) != objectives(proposal):
@@ -499,6 +499,16 @@ class InteractionController:
             session_id=self.session_id,
         )
 
+    def _append_auto_accepted(self, plan: dict[str, Any], previous: dict[str, Any]) -> None:
+        append = getattr(self.store, "append_plan_auto_accepted", None)
+        if not callable(append):
+            raise InteractionError("atomic Strategic Plan revision is unavailable")
+        try:
+            append(plan, expected_previous=previous, user_id=self.user_id,
+                   workspace_id=self.workspace_id, session_id=self.session_id)
+        except ValueError as exc:
+            raise InteractionError(str(exc)) from exc
+
     def _history(self) -> list[dict[str, Any]]:
         if callable(getattr(self.store, "list_interaction_events", None)):
             return self.store.list_interaction_events(
@@ -632,7 +642,7 @@ class InteractionController:
         previous = state.get("pending_plan") or state.get("executing_plan")
         if previous and state.get("pending_plan") is None:
             latest = [int(event.get("payload", {}).get("version", 0)) for event in self._history()
-                      if event.get("event_type") == "interaction.plan_proposed"
+                      if event.get("event_type") in {"interaction.plan_proposed", "interaction.plan_auto_accepted"}
                       and event.get("payload", {}).get("plan_id") == previous.get("plan_id")]
             if latest:
                 previous = {**previous, "version": max(latest)}
@@ -640,11 +650,17 @@ class InteractionController:
         executing = state.get("executing_plan")
         if executing:
             plan["revision_materiality"] = _revision_materiality(executing, plan)
+            working = self.store.get_working_plan(
+                user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
+            ) if callable(getattr(self.store, "get_working_plan", None)) else None
+            working_revision = (working.get("revision") if working
+                                and working.get("id") == executing.get("working_plan_id")
+                                else executing.get("working_plan_revision"))
+            plan.update({"working_plan_id": executing.get("working_plan_id"),
+                         "working_plan_revision": working_revision,
+                         "working_task_ids": executing.get("working_task_ids", [])})
             if plan["revision_materiality"] == "within_bounds":
-                plan.update({key: executing[key] for key in (
-                    "working_plan_id", "working_plan_revision", "working_task_ids",
-                ) if key in executing})
-                self._append("interaction.plan_auto_accepted", plan)
+                self._append_auto_accepted(plan, executing)
                 return plan
         else:
             plan["revision_materiality"] = "initial"
@@ -715,8 +731,9 @@ class InteractionController:
                     or plan.get("plan_id") != executing.get("plan_id")
                     or plan.get("version") != executing.get("version", 0) + 1):
                 raise InteractionError("Strategic Plan revision is stale or does not require approval")
+            staged_revision = plan.get("working_plan_revision", executing.get("working_plan_revision"))
             if (not working_plan or working_plan.id != executing.get("working_plan_id")
-                    or working_plan.revision != executing.get("working_plan_revision")):
+                    or working_plan.revision != staged_revision):
                 raise InteractionError("Working Plan revision changed; reload before accepting")
 
         prior = [task for task in previous_tasks if not executing or task.get("id") in active_ids]

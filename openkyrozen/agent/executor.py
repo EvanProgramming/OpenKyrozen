@@ -547,6 +547,12 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                     typed_arguments = candidate
             except (TypeError, ValueError):
                 pass
+    if canonical == "update_plan" and isinstance(structured, dict):
+        try:
+            if self.tool_registry._argument_error(expected_spec.input_schema, structured) is None:
+                typed_arguments = structured
+        except (AttributeError, TypeError, ValueError):
+            pass
     operation_arguments = typed_arguments or (structured if isinstance(structured, dict) and structured else args)
     operation_id = self._operation_id(operation_scope, canonical, operation_arguments)
     is_mutation = self._is_state_changing_action(canonical, args)
@@ -562,7 +568,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             call_id_source="synthetic", expected_spec=expected_spec,
         )
     active_plan = interaction_state.get("executing_plan")
-    if is_mutation and active_plan and canonical != "cancel_subagent":
+    if is_mutation and active_plan and canonical not in {"cancel_subagent", "update_plan"}:
         structured = typed_arguments or structured
         match_args = (json.dumps(structured, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                       if isinstance(structured, dict) and structured else args)
