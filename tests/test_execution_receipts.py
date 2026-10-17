@@ -365,6 +365,7 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         task["acceptance"] = [{
             "id": criterion_id, "criterion": criterion_id, "action": action,
             "args": json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            **({"expect": {"contains": "verified"}} if action == "read_file" else {}),
         } for criterion_id, action, arguments in criteria]
         task.setdefault("checkpoint", {})["strategic_plan"] = {
             "acceptance_ids": [criterion_id for criterion_id, _, _ in criteria],

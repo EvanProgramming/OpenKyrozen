@@ -141,6 +141,16 @@ class StrategicPlanExecutionBoundsTests(unittest.TestCase):
 
 
 class StrategicPlanContractTests(unittest.TestCase):
+    def test_read_file_acceptance_requires_an_expected_content_predicate(self):
+        with self.assertRaises(InteractionError):
+            validate_plan_proposal({
+                "title": "Change", "summary": "Make the change.",
+                "steps": [{"id": "inspect", "title": "Inspect", "description": "Read the file.",
+                           "acceptance": [{"criterion": "File contains READY", "verification": {
+                               "action": "read_file", "arguments": {"path": "src/file.txt"},
+                           }}]}],
+            })
+
     def test_revalidating_a_normalized_plan_preserves_verified_acceptance_contracts(self):
         proposal = {
             "title": "Change", "summary": "Make the change.",
@@ -148,6 +158,7 @@ class StrategicPlanContractTests(unittest.TestCase):
                        "execution": {"action": "write_file", "arguments": {"path": "src/file.txt", "content": "x"}},
                        "acceptance": [{"criterion": "File is readable", "verification": {
                            "action": "read_file", "arguments": {"path": "src/file.txt"},
+                           "expect": {"contains": "x"},
                        }}]}],
         }
         first = validate_plan_proposal(proposal)
@@ -320,6 +331,7 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
             "steps": [{"id": "read", "title": "Read", "description": "Read src/page.txt.",
                        "acceptance": [{"criterion": "Page is readable", "verification": {
                            "action": "read_file", "arguments": {"path": "src/page.txt"},
+                           "expect": {"contains": "contents"},
                        }}]}],
         })
         self.controller.accept_plan(self.manager, plan_id=plan["plan_id"], version=plan["version"])
@@ -547,7 +559,8 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
                            {"criterion": "Page exists", "verification": {
                                "action": "write_file", "arguments": {"path": "site/index.html", "content": "ok"}}},
                            {"criterion": "Page can be read back", "verification": {
-                               "action": "read_file", "arguments": {"path": "site/index.html"}}},
+                               "action": "read_file", "arguments": {"path": "site/index.html"},
+                               "expect": {"contains": "ok"}}},
                        ]}],
         })
         accepted, _ = self.controller.accept_plan(
@@ -569,6 +582,10 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
                                              result="file written", success=True, verification_status="verified")
         self.assertEqual(first["acceptance_ids"], [task["acceptance"][0]["id"]])
         self.assertNotIn(task["acceptance"][1]["id"], first["acceptance_ids"])
+        wrong_read = self.manager.record_evidence(task_id=task["id"], action="read_file",
+                                                  args='{"path":"site/index.html"}', result="wrong", success=True,
+                                                  verification_status="not_applicable")
+        self.assertNotIn("acceptance_ids", wrong_read)
         second = self.manager.record_evidence(task_id=task["id"], action="read_file",
                                               args='{"path":"site/index.html"}', result="ok", success=True,
                                               verification_status="not_applicable")
@@ -592,7 +609,7 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
                            {"criterion": "Page exists", "verification": {"action": "write_file",
                             "arguments": {"path": "site/index.html", "content": large_content}}},
                            {"criterion": "Page can be read back", "verification": {"action": "read_file",
-                            "arguments": {"path": "site/index.html"}}},
+                            "arguments": {"path": "site/index.html"}, "expect": {"equals": large_content}}},
                        ]}],
         })
         self.controller.accept_plan(self.manager, plan_id=proposal["plan_id"], version=proposal["version"])
@@ -613,9 +630,11 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
                 args_sha256=hashlib.sha256(json.dumps(
                     arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")
                 ).encode()).hexdigest(),
-                authorized=True, started_at="start", completed_at="end", success=True, result="ok",
+                authorized=True, started_at="start", completed_at="end", success=True,
+                result=large_content if action == "read_file" else "ok",
                 call_id=f"call-{index}",
-                call_id_source="native", arguments=arguments, tool_result=ToolResult(text="ok"),
+                call_id_source="native", arguments=arguments,
+                tool_result=ToolResult(text=large_content if action == "read_file" else "ok"),
                 user_id="local", workspace_id="project", session_id="strategic-session",
                 plan_id=self.manager.working_plan.id, task_id=task["id"], side_effects="filesystem",
                 verification={"status": "verified", "method": "fixture", "observed": None},
@@ -1101,6 +1120,7 @@ class InteractionTests(unittest.TestCase):
         self.assertIn("The first Plan-mode response must be exactly one listed read-only Action", prompt)
         self.assertIn('"criterion":"Observable result"', prompt)
         self.assertIn('"verification":{"action":"read_file"', prompt)
+        self.assertIn('"expect":{"contains":"approved content"}', prompt)
 
     def test_bounded_write_objective_allows_mutation_with_a_separate_read_verifier(self):
         from openkyrozen.agent.types import ExecutionReceipt
@@ -1116,6 +1136,7 @@ class InteractionTests(unittest.TestCase):
             }, "steps": [{"id": "page", "title": "Write page", "description": "Write the page.",
                          "acceptance": [{"criterion": "Page can be read", "verification": {
                              "action": "read_file", "arguments": {"path": "site/index.html"},
+                             "expect": {"contains": "contents"},
                          }}]}],
         })
         controller.accept_plan(manager, plan_id=proposal["plan_id"], version=proposal["version"])
@@ -1421,6 +1442,7 @@ class InteractionTests(unittest.TestCase):
                     "description": "Write index.html with the requested markup.",
                     "acceptance": [{"criterion": "index.html exists", "verification": {
                         "action": "read_file", "arguments": {"path": "index.html"},
+                        "expect": {"contains": "<html"},
                     }}],
                 }],
             })
@@ -1491,13 +1513,13 @@ class InteractionTests(unittest.TestCase):
                 '"effects":["read_only","filesystem"],"risk_ceiling":"normal"},'
                 '"assumptions":[],"steps":[{"id":"write-marker","title":"Write marker",'
                 '"description":"Create marker.txt with requested content.","acceptance":[{"criterion":"marker.txt exists",'
-                '"verification":{"action":"read_file","arguments":{"path":"marker.txt"}}}]}]}\n```',
+                '"verification":{"action":"read_file","arguments":{"path":"marker.txt"},"expect":{"contains":"ready"}}}]}]}\n```',
                 'PlanProposal:\n```json\n{"title":"Marker with verification","summary":"Create and verify a marker.",'
                 '"bounds":{"workspace_paths":["."],"capabilities":["read","write"],'
                 '"effects":["read_only","filesystem"],"risk_ceiling":"normal"},'
                 '"assumptions":[],"steps":[{"id":"write-marker","title":"Write marker",'
                 '"description":"Create marker.txt with requested content.","acceptance":[{"criterion":"marker.txt exists",'
-                '"verification":{"action":"read_file","arguments":{"path":"marker.txt"}}}]}]}\n```',
+                '"verification":{"action":"read_file","arguments":{"path":"marker.txt"},"expect":{"contains":"ready"}}}]}]}\n```',
                 'Action: {"action":"write_file","args":"marker.txt|ready"}',
                 'AskUser:\n```json\n{"questions":[{"id":"verify","header":"Verification",'
                 '"prompt":"Which accepted check should finish the task?","choices":["File exists","Read contents"]}]}\n```',

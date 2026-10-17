@@ -312,10 +312,22 @@ class TaskManager:
                             binding["acceptance_ids"], fields["acceptance"], verifications):
                         item = {"id": criterion_id, "criterion": criterion}
                         if verification is not None:
-                            if (not isinstance(verification, dict) or set(verification) != {"action", "arguments"}
+                            if (not isinstance(verification, dict)
+                                    or set(verification) not in ({"action", "arguments"},
+                                                                 {"action", "arguments", "expect"})
                                     or not isinstance(verification.get("action"), str)
                                     or not isinstance(verification.get("arguments"), dict)):
                                 raise ValueError("strategic acceptance verification is invalid")
+                            if verification["action"] == "read_file":
+                                expect = verification.get("expect")
+                                if (not isinstance(expect, dict) or len(expect) != 1
+                                        or set(expect) not in ({"equals"}, {"contains"})
+                                        or not isinstance(next(iter(expect.values())), str)
+                                        or ("contains" in expect and not expect["contains"])):
+                                    raise ValueError("strategic read_file verification requires an expected result")
+                                item["expect"] = deepcopy(expect)
+                            elif "expect" in verification:
+                                raise ValueError("expected-result predicates are supported only for read_file")
                             item["action"] = _receipt_action(verification["action"])
                             item["args"] = json.dumps(verification["arguments"], ensure_ascii=False,
                                                        allow_nan=False, sort_keys=True, separators=(",", ":"))
@@ -715,10 +727,21 @@ class TaskManager:
         for task in targets:
             candidate = deepcopy(task)
             if success and verification_status in {"verified", "not_applicable"}:
-                verified_ids = [criterion["id"] for criterion in candidate.get("acceptance", [])
-                                if isinstance(criterion, dict) and criterion.get("id")
-                                and criterion.get("action") == canonical
-                                and criterion.get("args") == normalized_args]
+                verified_ids = []
+                for criterion in candidate.get("acceptance", []):
+                    if (not isinstance(criterion, dict) or not criterion.get("id")
+                            or criterion.get("action") != canonical or criterion.get("args") != normalized_args):
+                        continue
+                    expect = criterion.get("expect")
+                    if canonical == "read_file":
+                        if not isinstance(expect, dict) or len(expect) != 1:
+                            continue
+                        operator, expected = next(iter(expect.items()))
+                        content = str(result)
+                        if (operator == "equals" and content != expected) or (
+                                operator == "contains" and expected not in content):
+                            continue
+                    verified_ids.append(criterion["id"])
                 if verified_ids:
                     item["acceptance_ids"] = verified_ids
                     item.setdefault("acceptance", "verified strategic criterion")
