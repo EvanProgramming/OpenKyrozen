@@ -4,6 +4,7 @@ import json
 import hashlib
 import re
 import uuid
+from copy import deepcopy
 from contextvars import ContextVar
 from typing import Any
 from openkyrozen.persistence.models import utc_now
@@ -26,8 +27,19 @@ class TaskManager:
         self.working_plan: WorkingPlan | None = None
         self._runtime_event_callback: ContextVar[Any] = ContextVar("task_runtime_event_callback", default=None)
 
-    def _persist(self, task: dict[str, Any]) -> None:
-        self.store.write_task(task, user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id)
+    def _persist(self, task: dict[str, Any], *, expected_status: str | None = None) -> bool:
+        return self.store.write_task(task, user_id=self.user_id, workspace_id=self.workspace_id,
+                                     session_id=self.session_id, expected_status=expected_status)
+
+    def _reload_task(self, task_id: str) -> dict[str, Any] | None:
+        return next((item for item in self.store.list_tasks(
+            user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id, limit=10000,
+        ) if item["id"] == task_id), None)
+
+    @staticmethod
+    def _dependencies_succeeded(task: dict[str, Any], tasks: list[dict[str, Any]]) -> bool:
+        statuses = {item["id"]: canonical_status(item.get("status", "pending")) for item in tasks}
+        return all(statuses.get(dependency) == "succeeded" for dependency in task.get("dependencies", []))
     def _event(self, task: dict[str, Any], event_type: str, payload: Any) -> None:
         self.store.append_event(event_type, payload, user_id=self.user_id, workspace_id=self.workspace_id,
                                 session_id=self.session_id, task_id=task["id"])
@@ -77,7 +89,8 @@ class TaskManager:
             criteria = acceptance[position] if acceptance and position < len(acceptance) else None
             self.add_task(description, task_id=task_id, checkpoint=checkpoint, acceptance=criteria)
 
-    def set_status(self, idx: int, status: str, *, evidence: dict[str, Any] | None = None) -> bool:
+    def set_status(self, idx: int, status: str, *, evidence: dict[str, Any] | None = None,
+                   _terminalize_plan: bool = True) -> bool:
         if not 0 <= idx < len(self.tasks):
             return False
         status = canonical_status(status)
@@ -88,129 +101,319 @@ class TaskManager:
             return True
         if status == "succeeded" and not self._has_evidence(idx, evidence):
             return False
-        task = self.tasks[idx]
+        task = deepcopy(self.tasks[idx])
+        expected_status = self.tasks[idx].get("status", "pending")
         task["status"] = status
         if evidence:
             task.setdefault("evidence", []).append(evidence)
         from openkyrozen.persistence.models import utc_now
         task["updated_at"] = utc_now()
-        self._persist(task)
+        if not self._persist(task, expected_status=expected_status):
+            latest = self._reload_task(task["id"])
+            if latest is not None:
+                self.tasks[idx] = latest
+            return False
+        self.tasks[idx] = task
         self._event(task, f"task.{task['status']}", {"evidence": evidence or {}})
-        if status == "succeeded" and self.working_plan is not None:
+        if _terminalize_plan and status in {"succeeded", "cancelled"} and self.working_plan is not None:
             plan_tasks = [item for item in self.tasks if item["id"] in self.working_plan.task_ids]
-            if (len(plan_tasks) == len(self.working_plan.task_ids)
-                    and all(item["status"] == "succeeded" for item in plan_tasks)
-                    and self.store.set_working_plan_status(
-                        self.working_plan.id, "completed", user_id=self.user_id,
+            terminal = len(plan_tasks) == len(self.working_plan.task_ids) and all(
+                canonical_status(item["status"]) in {"succeeded", "cancelled"} for item in plan_tasks
+            )
+            plan_status = "completed" if terminal and any(
+                canonical_status(item["status"]) == "succeeded" for item in plan_tasks
+            ) and all(
+                canonical_status(item["status"]) != "succeeded" or any(
+                    evidence.get("success") is True and evidence.get("acceptance")
+                    for evidence in item.get("evidence", []) if isinstance(evidence, dict)
+                ) for item in plan_tasks
+            ) else "cancelled" if terminal else None
+            if (plan_status is not None and self.store.set_working_plan_status(
+                        self.working_plan.id, plan_status, user_id=self.user_id,
                         workspace_id=self.workspace_id, session_id=self.session_id,
+                        expected_revision=self.working_plan.revision,
+                        expected_task_ids=self.working_plan.task_ids,
                     )):
                 self.working_plan = WorkingPlan(
                     id=self.working_plan.id, complexity=self.working_plan.complexity,
-                    status="completed", task_ids=self.working_plan.task_ids,
+                    status=plan_status, task_ids=self.working_plan.task_ids,
                     created_at=self.working_plan.created_at, updated_at=utc_now(),
+                    revision=self.working_plan.revision,
                 )
-                self._event(task, "working_plan.completed", {"plan_id": self.working_plan.id})
+                if plan_status == "completed":
+                    self._event(task, "working_plan.completed", {"plan_id": self.working_plan.id})
+                else:
+                    self._event(task, "working_plan.cancelled", {"plan_id": self.working_plan.id})
         return True
 
-    def update_plan(self, *, complexity: str, tasks: list[dict[str, Any]]) -> WorkingPlan:
-        """Create or revise plan steps by runtime-owned identity, preserving progress."""
-        complexity = str(complexity or "").strip().lower()
+    @staticmethod
+    def _plan_task_fields(task: Any) -> dict[str, Any]:
+        if not isinstance(task, dict):
+            raise ValueError("task must be an object")
+        allowed = {"description", "acceptance", "dependencies", "priority", "execution"}
+        if set(task) - allowed:
+            raise ValueError("task contains unsupported fields")
+        description = task.get("description")
+        acceptance = task.get("acceptance")
+        dependencies = task.get("dependencies", [])
+        priority = task.get("priority", 0)
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError("task description must be a nonempty string")
+        if not isinstance(acceptance, list) or any(not isinstance(value, str) or not value.strip() for value in acceptance):
+            raise ValueError("task acceptance must be an array of nonempty strings")
+        if not isinstance(dependencies, list) or any(not isinstance(value, str) or not value for value in dependencies):
+            raise ValueError("task dependencies must be an array of task references")
+        if type(priority) is not int:
+            raise ValueError("task priority must be an integer")
+        checkpoint: dict[str, Any] = {}
+        execution = task.get("execution")
+        if execution is not None:
+            if (not isinstance(execution, dict) or set(execution) != {"action", "arguments"}
+                    or not isinstance(execution.get("action"), str) or not execution["action"].strip()
+                    or not isinstance(execution.get("arguments"), dict)):
+                raise ValueError("execution must contain an action and object arguments")
+            checkpoint = {"action": execution["action"].strip(),
+                          "args": json.dumps(execution["arguments"], ensure_ascii=False, allow_nan=False,
+                                             sort_keys=True, separators=(",", ":"))}
+        return {"description": description.strip(), "acceptance": list(acceptance),
+                "dependencies": list(dependencies), "priority": priority, "checkpoint": checkpoint}
+
+    def edit_plan(self, *, expected_revision: int, operations: list[dict[str, Any]],
+                  complexity: str | None = None, plan_id: str | None = None) -> dict[str, Any]:
+        """Apply a validated ordered operation batch as one revision-checked transaction."""
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("expected_revision must be a nonnegative integer")
+        if not isinstance(operations, list):
+            raise ValueError("operations must be an array")
+        if not operations:
+            raise ValueError("operations cannot be empty")
+        if plan_id is not None and (not isinstance(plan_id, str) or not plan_id.strip()):
+            raise ValueError("plan_id must be a nonempty string")
+
+        saved = self.store.get_working_plan(
+            user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id or "",
+        )
+        complexity = str(complexity or (saved.get("complexity") if saved else "complex")).strip().lower()
         if complexity not in {"simple", "medium", "complex"}:
             raise ValueError("complexity must be simple, medium, or complex")
-        if not isinstance(tasks, list) or not tasks:
-            raise ValueError("a Working Plan requires at least one task")
-        if self.working_plan is None:
-            self.recover()
+        if plan_id is None:
+            if saved is not None or expected_revision != 0:
+                raise ValueError("plan_id and the current revision are required to edit an existing Working Plan")
+            previous_tasks: list[dict[str, Any]] = []
+            plan_id = f"plan_{_task_key(f'{self.user_id}:{self.workspace_id}:{self.session_id or ''}')}_{uuid.uuid4().hex}"
+            created_at = utc_now()
+        else:
+            if saved is None or saved["id"] != plan_id:
+                raise ValueError("plan_id does not identify the active Working Plan")
+            if saved.get("revision", 0) != expected_revision:
+                raise ValueError("Working Plan revision changed; reload before editing")
+            previous_tasks = self.store.list_working_plan_tasks(
+                plan_id, user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id or "",
+            )
+            created_at = saved["created_at"]
 
-        previous = self.working_plan
-        if previous is not None and previous.status != "active":
-            previous = None
-        current_plan_tasks = (
-            self.store.list_working_plan_tasks(
-                previous.id, user_id=self.user_id, workspace_id=self.workspace_id,
-                session_id=self.session_id or "",
-            ) if previous is not None else []
-        )
-        by_id = {task["id"]: task for task in current_plan_tasks}
-        seen: set[str] = set()
-        revised: list[dict[str, Any]] = []
+        original_ids = {task["id"] for task in previous_tasks}
+        tasks = deepcopy(previous_tasks)
+        by_id = {task["id"]: task for task in tasks}
+        references: dict[str, str] = {}
         now = utc_now()
         scope_key = _task_key(f"{self.user_id}:{self.workspace_id}:{self.session_id or ''}")
+
+        def resolve(value: Any) -> str:
+            if not isinstance(value, str) or not value:
+                raise ValueError("task reference must be a nonempty string")
+            task_id = references.get(value, value)
+            if task_id not in by_id:
+                raise ValueError(f"Unknown task or dependency reference: {value}")
+            return task_id
+
+        allowed_by_op = {
+            "add": {"op", "ref", "task"}, "update": {"op", "task", "fields"},
+            "cancel": {"op", "task"}, "reorder": {"op", "tasks"},
+            "add_dependency": {"op", "task", "depends_on"},
+            "remove_dependency": {"op", "task", "depends_on"},
+        }
+        if saved is None and not any(isinstance(item, dict) and item.get("op") == "add" for item in operations):
+            raise ValueError("a new Working Plan requires at least one add operation")
+        for operation in operations:
+            if not isinstance(operation, dict) or operation.get("op") not in allowed_by_op:
+                raise ValueError("each plan operation requires a supported op")
+            kind = operation["op"]
+            if set(operation) != allowed_by_op[kind]:
+                raise ValueError(f"{kind} operation has missing or unsupported fields")
+            if kind == "add":
+                ref = operation["ref"]
+                if not isinstance(ref, str) or not ref.strip() or ref in references or ref in by_id:
+                    raise ValueError("task references must be unique nonempty strings")
+                fields = self._plan_task_fields(operation["task"])
+                task_id = f"task_{scope_key}_{uuid.uuid4().hex}"
+                task = {"id": task_id, **fields, "status": "pending", "attempts": 0,
+                        "checkpoint": fields["checkpoint"], "evidence": [], "created_at": now,
+                        "updated_at": now, "plan_id": plan_id}
+                references[ref] = task_id
+                tasks.append(task)
+                by_id[task_id] = task
+            elif kind == "update":
+                task_id = resolve(operation["task"])
+                fields = operation["fields"]
+                if not isinstance(fields, dict) or not fields or set(fields) - {"description", "acceptance", "dependencies", "priority", "execution"}:
+                    raise ValueError("update fields are empty or unsupported")
+                current = by_id[task_id]
+                validated = self._plan_task_fields({
+                    "description": fields.get("description", current["description"]),
+                    "acceptance": fields.get("acceptance", []),
+                    **{key: fields[key] for key in ("dependencies", "priority", "execution") if key in fields},
+                })
+                normalized = {key: validated[key] for key in fields if key != "execution"}
+                if "execution" in fields:
+                    checkpoint = current.get("checkpoint", {})
+                    unchanged_execution = all(
+                        checkpoint.get(key) == validated["checkpoint"].get(key)
+                        for key in ("action", "args")
+                    )
+                    excluded = {"action", "args"} if unchanged_execution else {
+                        "action", "args", "args_sha256", "ordered_receipt",
+                    }
+                    base = {key: value for key, value in checkpoint.items() if key not in excluded}
+                    normalized["checkpoint"] = {**base, **validated["checkpoint"]}
+                changed = any(current.get(key) != value for key, value in normalized.items())
+                if changed and (current["status"] != "pending" or current.get("attempts", 0)
+                                or current.get("evidence")):
+                    raise ValueError("executed task changes require cancellation and a new task")
+                current.update(normalized, updated_at=now)
+            elif kind == "cancel":
+                task_id = resolve(operation["task"])
+                current = by_id[task_id]
+                if not valid_task_transition(current["status"], "cancelled"):
+                    raise ValueError("task cannot be cancelled from its current state")
+                current.update(status="cancelled", updated_at=now)
+            elif kind == "reorder":
+                requested = operation["tasks"]
+                if not isinstance(requested, list):
+                    raise ValueError("reorder tasks must be an array")
+                ordered = [resolve(value) for value in requested]
+                if len(ordered) != len(tasks) or len(set(ordered)) != len(tasks) or set(ordered) != set(by_id):
+                    raise ValueError("reorder must list every plan task exactly once")
+                tasks = [by_id[task_id] for task_id in ordered]
+            else:
+                task_id = resolve(operation["task"])
+                dependency_id = resolve(operation["depends_on"])
+                if task_id == dependency_id:
+                    raise ValueError("a task cannot depend on itself")
+                current = by_id[task_id]
+                dependencies = list(current.get("dependencies", []))
+                if kind == "add_dependency":
+                    if dependency_id in dependencies:
+                        raise ValueError("duplicate dependency")
+                    if current["status"] != "pending" or current.get("attempts", 0) or current.get("evidence"):
+                        raise ValueError("executed task dependencies require cancellation and a new task")
+                    dependencies.append(dependency_id)
+                else:
+                    if dependency_id not in dependencies:
+                        raise ValueError("dependency does not exist")
+                    if current["status"] != "pending" or current.get("attempts", 0) or current.get("evidence"):
+                        raise ValueError("executed task dependencies require cancellation and a new task")
+                    dependencies.remove(dependency_id)
+                current["dependencies"] = dependencies
+
+        for task in tasks:
+            task["dependencies"] = [resolve(value) for value in task.get("dependencies", [])]
+            if len(set(task["dependencies"])) != len(task["dependencies"]):
+                raise ValueError("task dependencies must be unique")
+        dependents: dict[str, list[str]] = {task["id"]: [] for task in tasks}
+        remaining: dict[str, int] = {}
+        for task in tasks:
+            dependencies = task["dependencies"]
+            remaining[task["id"]] = len(dependencies)
+            for dependency in dependencies:
+                dependents[dependency].append(task["id"])
+        ready = [task_id for task_id, count in remaining.items() if count == 0]
+        resolved = 0
+        while ready:
+            task_id = ready.pop()
+            resolved += 1
+            for dependent in dependents[task_id]:
+                remaining[dependent] -= 1
+                if remaining[dependent] == 0:
+                    ready.append(dependent)
+        if resolved != len(tasks):
+            raise ValueError("dependency cycle detected")
+
+        for task in tasks:
+            task["plan_id"] = plan_id
+        terminal = bool(tasks) and all(canonical_status(task["status"]) in {"succeeded", "cancelled"}
+                                       for task in tasks)
+        completed = terminal and any(canonical_status(task["status"]) == "succeeded" for task in tasks) and all(
+            canonical_status(task["status"]) != "succeeded" or any(
+                evidence.get("success") is True and evidence.get("acceptance")
+                for evidence in task.get("evidence", []) if isinstance(evidence, dict)
+            ) for task in tasks
+        )
+        plan_status = "completed" if completed else "cancelled" if terminal else "active"
+        plan = {"id": plan_id, "complexity": complexity, "status": plan_status,
+                "created_at": created_at, "updated_at": now, "revision": expected_revision + 1}
+        revision = self.store.apply_working_plan_edit(
+            plan, tasks, expected_revision=expected_revision, expected_tasks=previous_tasks,
+            user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
+        )
+        working_plan = WorkingPlan(
+            id=plan_id, complexity=complexity, status=plan_status, task_ids=tuple(task["id"] for task in tasks),
+            created_at=created_at, updated_at=now, revision=revision,
+        )
+        self.working_plan = working_plan
+        self.tasks = tasks + [task for task in self.tasks if task["id"] not in original_ids]
+        payload = {"plan_id": plan_id, "revision": revision, "task_ids": list(working_plan.task_ids),
+                   "status": plan_status}
+        callback = self._runtime_event_callback.get()
+        if callable(callback):
+            try:
+                event_type = ("working_plan.completed" if plan_status == "completed"
+                              else "working_plan.cancelled" if plan_status == "cancelled"
+                              else "working_plan.updated")
+                callback(event_type, payload, tasks[-1]["id"] if tasks else None)
+            except Exception:
+                pass
+        return {**payload, "complexity": complexity, "tasks": deepcopy(tasks),
+                "references": dict(references)}
+
+    def update_plan(self, *, complexity: str, tasks: list[dict[str, Any]] | None = None,
+                    plan_id: str | None = None, expected_revision: int | None = None,
+                    operations: list[dict[str, Any]] | None = None) -> WorkingPlan | dict[str, Any]:
+        """Apply canonical operations or adapt the historical complexity/tasks shape."""
+        if operations is not None:
+            if expected_revision is None:
+                raise ValueError("expected_revision is required for plan edits")
+            return self.edit_plan(complexity=complexity, plan_id=plan_id,
+                                  expected_revision=expected_revision, operations=operations)
+        if not isinstance(tasks, list) or not tasks:
+            raise ValueError("a Working Plan requires at least one task")
+        saved = self.store.get_working_plan(
+            user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id or "",
+        )
+        expected_revision = int(saved.get("revision", 0)) if saved else 0
+        operations: list[dict[str, Any]] = []
+        previous = self.store.list_working_plan_tasks(
+            saved["id"], user_id=self.user_id, workspace_id=self.workspace_id,
+            session_id=self.session_id or "",
+        ) if saved else []
+        by_id = {task["id"]: task for task in previous}
         for item in tasks:
-            if not isinstance(item, dict) or not isinstance(item.get("description"), str):
-                raise ValueError("each plan task requires a description")
-            description = item["description"].strip()
-            acceptance = item.get("acceptance")
-            execution = item.get("execution")
-            if not description or not isinstance(acceptance, list) or any(
-                not isinstance(value, str) or not value.strip() for value in acceptance
-            ):
-                raise ValueError("each plan task requires a description and explicit string acceptance criteria")
-            checkpoint = {}
-            if execution is not None:
-                if (not isinstance(execution, dict) or not isinstance(execution.get("action"), str)
-                        or not execution["action"].strip() or not isinstance(execution.get("arguments"), dict)):
-                    raise ValueError("execution must contain a tool action and object arguments")
-                checkpoint = {
-                    "action": execution["action"].strip(),
-                    "args": json.dumps(execution["arguments"], ensure_ascii=False, allow_nan=False,
-                                       sort_keys=True, separators=(",", ":")),
-                }
+            if not isinstance(item, dict):
+                raise ValueError("each plan task must be an object")
+            fields = {key: value for key, value in item.items() if key != "id"}
             task_id = item.get("id")
             if task_id is not None:
-                if not isinstance(task_id, str) or task_id not in by_id:
+                if task_id not in by_id:
                     raise ValueError("task id must identify a task in the active Working Plan")
-                if task_id in seen:
-                    raise ValueError("a task id may appear only once in a plan update")
-                task = dict(by_id[task_id])
-                if (task["description"] != description or task.get("acceptance", []) != acceptance
-                        or task.get("checkpoint", {}) != checkpoint):
-                    task["status"] = "pending"
-                    task["evidence"] = []
-                task.update(description=description, acceptance=list(acceptance), checkpoint=checkpoint, updated_at=now)
-                seen.add(task_id)
+                operations.append({"op": "update", "task": task_id, "fields": fields})
             else:
-                task_id = f"task_{scope_key}_{uuid.uuid4().hex}"
-                task = {
-                    "id": task_id, "description": description, "status": "pending", "priority": 0,
-                    "dependencies": [], "acceptance": list(acceptance), "attempts": 0,
-                    "checkpoint": checkpoint, "evidence": [], "created_at": now, "updated_at": now,
-                    "plan_id": previous.id if previous else None,
-                }
-                seen.add(task_id)
-            revised.append(task)
-
-        plan_id = previous.id if previous else f"plan_{scope_key}_{uuid.uuid4().hex}"
-        ordered_tasks = list(current_plan_tasks)
-        ordered_by_id = {task["id"]: task for task in ordered_tasks}
-        for task in revised:
-            if task["id"] in ordered_by_id:
-                ordered_by_id[task["id"]].update(task)
-            else:
-                ordered_by_id[task["id"]] = task
-                ordered_tasks.append(task)
-        ordered_tasks = [ordered_by_id[task["id"]] for task in ordered_tasks]
-        for task in ordered_tasks:
-            task["plan_id"] = plan_id
-        plan = {
-            "id": plan_id, "complexity": complexity, "status": "active",
-            "created_at": previous.created_at if previous else now, "updated_at": now,
-        }
-        self.store.write_working_plan(
-            plan, ordered_tasks, user_id=self.user_id, workspace_id=self.workspace_id,
-            session_id=self.session_id,
-        )
-        self.working_plan = WorkingPlan(
-            id=plan_id, complexity=complexity, status="active",
-            task_ids=tuple(task["id"] for task in ordered_tasks),
-            created_at=plan["created_at"], updated_at=now,
-        )
-        plan_ids = set(self.working_plan.task_ids)
-        self.tasks = [task for task in self.tasks if task["id"] not in plan_ids]
-        self.tasks = ordered_tasks + self.tasks
-        self._event(ordered_tasks[-1], "working_plan.updated", {
-            "plan_id": plan_id, "complexity": complexity, "task_ids": list(self.working_plan.task_ids),
-        })
+                ref = f"legacy_{len(operations)}"
+                operations.append({"op": "add", "ref": ref, "task": fields})
+        if saved is None:
+            result = self.edit_plan(complexity=complexity, expected_revision=0, operations=operations)
+        else:
+            result = self.edit_plan(complexity=complexity, plan_id=saved["id"],
+                                    expected_revision=expected_revision, operations=operations)
         return self.working_plan
 
     def adopt_legacy_plan(self, *, complexity: str = "complex") -> WorkingPlan:
@@ -290,7 +493,9 @@ class TaskManager:
                             args_fingerprint: str | None = None) -> dict[str, Any] | None:
         candidates = [
             task for task in self.tasks
-            if canonical_status(task.get("status", "pending")) in {"pending", "running"}
+            if (self.working_plan is None or task["id"] in self.working_plan.task_ids)
+            and canonical_status(task.get("status", "pending")) in {"pending", "running"}
+            and self._dependencies_succeeded(task, self.tasks)
         ]
         scored = [(self._receipt_match_score(task, action, args, args_fingerprint), task)
                   for task in candidates]
@@ -328,7 +533,9 @@ class TaskManager:
         if len(valid_groups) != 1:
             return None
         _plan_id, ordered_tasks = valid_groups[0]
-        pending = [task for task in ordered_tasks if canonical_status(task.get("status", "pending")) in {"pending", "running"}]
+        pending = [task for task in ordered_tasks
+                   if canonical_status(task.get("status", "pending")) in {"pending", "running"}
+                   and self._dependencies_succeeded(task, self.tasks)]
         if not pending:
             return None
         candidate = pending[0]
@@ -349,7 +556,9 @@ class TaskManager:
         """Authorize a mutation only when it belongs to the next ordered task."""
         current = next((
             task for task in self.tasks
-            if canonical_status(task.get("status", "pending")) in {"pending", "running"}
+            if (self.working_plan is None or task["id"] in self.working_plan.task_ids)
+            and canonical_status(task.get("status", "pending")) in {"pending", "running"}
+            and self._dependencies_succeeded(task, self.tasks)
         ), None)
         if current is None:
             return False, "the accepted plan has no pending task"
@@ -412,24 +621,34 @@ class TaskManager:
                 item["task_id"] = matched["id"]
                 if success and not acceptance:
                     item["acceptance"] = f"verified receipt for planned action {canonical}"
+        persisted_targets = []
         for task in targets:
+            candidate = deepcopy(task)
             if ordered_inferred:
                 marker = _ordered_plan_info(task)
                 if marker:
                     item["ordered_plan"] = marker
-                task["checkpoint"] = {
+                candidate["checkpoint"] = {
                     **(task.get("checkpoint") or {}), "action": canonical,
                     "args": persisted_args, "ordered_receipt": True,
                     **({"args_sha256": args_fingerprint} if args_fingerprint else {}),
                 }
             elif inferred and not (task.get("checkpoint") or {}).get("action"):
-                task["checkpoint"] = {
+                candidate["checkpoint"] = {
                     "action": canonical, "args": persisted_args,
                     **({"args_sha256": args_fingerprint} if args_fingerprint else {}),
                 }
-            task.setdefault("evidence", []).append(item)
-            task["updated_at"] = utc_now()
-            self._persist(task)
+            candidate.setdefault("evidence", []).append(item)
+            candidate["updated_at"] = utc_now()
+            if self._persist(candidate, expected_status=task.get("status", "pending")):
+                task.update(candidate)
+                persisted_targets.append(task)
+            else:
+                latest = self._reload_task(task["id"])
+                if latest is not None:
+                    self._replace_task(latest)
+                item["unmatched_reason"] = "Task status changed before evidence was recorded."
+        targets = persisted_targets
         if ordered_inferred and success:
             index = next((index for index, task in enumerate(self.tasks) if targets and task["id"] == targets[0]["id"]), None)
             if index is not None and not is_complete(self.tasks[index]):
@@ -448,7 +667,8 @@ class TaskManager:
     def active_task_id(self) -> str | None:
         """Return the next task that may receive an execution receipt."""
         for task in self.tasks:
-            if task.get("status") in {"pending", "running"}:
+            if (task.get("status") in {"pending", "running"}
+                    and self._dependencies_succeeded(task, self.tasks)):
                 return task["id"]
         return None
 
@@ -459,7 +679,8 @@ class TaskManager:
             return None
         task = next((item for item in self.tasks if item.get("id") == task_id), None)
         if (task is None or task.get("plan_id") != plan.id
-                or canonical_status(task.get("status", "pending")) not in {"pending", "running"}):
+                or canonical_status(task.get("status", "pending")) not in {"pending", "running"}
+                or not self._dependencies_succeeded(task, self.tasks)):
             return None
         return task
 
@@ -489,10 +710,16 @@ class TaskManager:
         index = next((i for i, task in enumerate(self.tasks) if task["id"] == str(task_id)), None)
         if index is None:
             return False
-        task = self.tasks[index]
+        task = deepcopy(self.tasks[index])
+        expected_status = self.tasks[index].get("status", "pending")
         task["checkpoint"] = {**task.get("checkpoint", {}), **checkpoint}
         task["updated_at"] = utc_now()
-        self._persist(task)
+        if not self._persist(task, expected_status=expected_status):
+            latest = self._reload_task(task["id"])
+            if latest is not None:
+                self.tasks[index] = latest
+            return False
+        self.tasks[index] = task
         self._event(task, "task.checkpoint", {"checkpoint": task["checkpoint"]})
         return True
 
@@ -510,9 +737,16 @@ class TaskManager:
         if task.get("status") not in {"failed", "blocked"}:
             return task if task.get("status") == "pending" else None
         previous = task["status"]
-        task["status"] = "pending"
-        task["updated_at"] = utc_now()
-        self._persist(task)
+        updated = deepcopy(task)
+        updated["status"] = "pending"
+        updated["updated_at"] = utc_now()
+        if not self._persist(updated, expected_status=previous):
+            latest = self._reload_task(task["id"])
+            if latest is not None:
+                self.tasks[index] = latest
+            return None
+        self.tasks[index] = updated
+        task = updated
         self._event(task, "task.resumed", {"previous_status": previous})
         return task
 
@@ -547,14 +781,19 @@ class TaskManager:
             plan_ids = set(plan.task_ids)
             for index, task in enumerate(self.tasks):
                 if task["id"] in plan_ids and task["status"] not in {"succeeded", "cancelled"}:
-                    self.set_status(index, "cancelled")
-            if self.working_plan.status == "active" and self.store.set_working_plan_status(
+                    if not self.set_status(index, "cancelled", _terminalize_plan=False):
+                        return
+            plan = self.working_plan or plan
+            if plan.status == "active" and self.store.set_working_plan_status(
                 plan.id, "cancelled", user_id=self.user_id, workspace_id=self.workspace_id,
-                session_id=self.session_id,
+                session_id=self.session_id, expected_revision=plan.revision,
+                expected_task_ids=plan.task_ids,
             ):
                 plan_task = next((task for task in self.tasks if task["id"] in plan_ids), None)
                 if plan_task is not None:
                     self._event(plan_task, "working_plan.cancelled", {"plan_id": plan.id})
+            elif plan.status == "active":
+                return
             self.working_plan = None
         self.tasks.clear()
         self._pending_completions.clear()
@@ -649,8 +888,12 @@ class TaskManager:
             if task["status"] == "running":
                 task["status"] = "pending"
                 task["updated_at"] = utc_now()
-                self._persist(task)
-                self._event(task, "task.recovered", {"previous_status": "running"})
+                if self._persist(task, expected_status="running"):
+                    self._event(task, "task.recovered", {"previous_status": "running"})
+                else:
+                    latest = self._reload_task(task["id"])
+                    if latest is not None:
+                        task.update(latest)
         saved_plan = self.store.get_working_plan(
             user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id or "",
         )
@@ -663,24 +906,38 @@ class TaskManager:
                 if task["status"] == "running":
                     task["status"] = "pending"
                     task["updated_at"] = utc_now()
-                    self._persist(task)
-                    self._event(task, "task.recovered", {"previous_status": "running"})
-            if (plan_tasks and saved_plan["status"] == "active"
-                    and all(task["status"] == "succeeded" and any(
-                        item.get("success") is True and item.get("acceptance")
-                        for item in task.get("evidence", [])
-                    ) for task in plan_tasks)
+                    if self._persist(task, expected_status="running"):
+                        self._event(task, "task.recovered", {"previous_status": "running"})
+                    else:
+                        latest = self._reload_task(task["id"])
+                        if latest is not None:
+                            task.update(latest)
+            terminal = bool(plan_tasks) and all(
+                task["status"] in {"succeeded", "done", "cancelled"} for task in plan_tasks
+            )
+            completed = terminal and any(task["status"] in {"succeeded", "done"} for task in plan_tasks) and all(
+                task["status"] not in {"succeeded", "done"} or any(
+                    item.get("success") is True and item.get("acceptance")
+                    for item in task.get("evidence", []) if isinstance(item, dict)
+                ) for task in plan_tasks
+            )
+            plan_status = "completed" if completed else "cancelled" if terminal else "active"
+            if (plan_status != "active" and saved_plan["status"] == "active"
                     and self.store.set_working_plan_status(
-                        saved_plan["id"], "completed", user_id=self.user_id,
+                        saved_plan["id"], plan_status, user_id=self.user_id,
                         workspace_id=self.workspace_id, session_id=self.session_id,
+                        expected_revision=int(saved_plan.get("revision", 0)),
+                        expected_task_ids=[task["id"] for task in plan_tasks],
                     )):
-                saved_plan["status"] = "completed"
+                saved_plan["status"] = plan_status
                 saved_plan["updated_at"] = utc_now()
-                self._event(plan_tasks[-1], "working_plan.completed", {"plan_id": saved_plan["id"]})
+                event_type = "working_plan.completed" if plan_status == "completed" else "working_plan.cancelled"
+                self._event(plan_tasks[-1], event_type, {"plan_id": saved_plan["id"]})
             self.working_plan = WorkingPlan(
                 id=saved_plan["id"], complexity=saved_plan["complexity"], status=saved_plan["status"],
                 task_ids=tuple(task["id"] for task in plan_tasks),
                 created_at=saved_plan["created_at"], updated_at=saved_plan["updated_at"],
+                revision=int(saved_plan.get("revision", 0)),
             )
             plan_ids = set(self.working_plan.task_ids)
             self.tasks = plan_tasks + [task for task in unfinished if task["id"] not in plan_ids]

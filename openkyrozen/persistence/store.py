@@ -155,15 +155,16 @@ class EventStore:
     def set_skill_status(self, skill_id: str, status: str, *, workspace_id: str='default'):
         return self.catalogs.set_skill_status(skill_id, status, workspace_id=workspace_id)
 
-    def write_task(self, task, *, user_id, workspace_id, session_id):
-        return self.tasks.write_task(task, user_id=user_id, workspace_id=workspace_id, session_id=session_id)
+    def write_task(self, task, *, user_id, workspace_id, session_id, expected_status=None):
+        return self.tasks.write_task(task, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+                                     expected_status=expected_status)
 
     def get_working_plan(self, *, user_id, workspace_id, session_id):
         return self.tasks.get_working_plan(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
 
-    def set_working_plan_status(self, plan_id, status, *, user_id, workspace_id, session_id):
+    def set_working_plan_status(self, plan_id, status, *, user_id, workspace_id, session_id, **expected):
         return self.tasks.set_working_plan_status(
-            plan_id, status, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+            plan_id, status, user_id=user_id, workspace_id=workspace_id, session_id=session_id, **expected,
         )
 
     def list_working_plan_tasks(self, plan_id, *, user_id, workspace_id, session_id):
@@ -174,6 +175,13 @@ class EventStore:
     def write_working_plan(self, plan, tasks, *, user_id, workspace_id, session_id):
         return self.tasks.write_working_plan(
             plan, tasks, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+        )
+
+    def apply_working_plan_edit(self, plan, tasks, *, expected_revision, expected_tasks,
+                                user_id, workspace_id, session_id):
+        return self.tasks.apply_working_plan_edit(
+            plan, tasks, expected_revision=expected_revision, expected_tasks=expected_tasks,
+            user_id=user_id, workspace_id=workspace_id, session_id=session_id,
         )
 
     def claim_task(self, *, user_id, workspace_id, session_id):

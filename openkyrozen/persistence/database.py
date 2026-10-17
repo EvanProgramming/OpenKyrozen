@@ -160,6 +160,9 @@ _MIGRATIONS = (
         CREATE UNIQUE INDEX IF NOT EXISTS idx_working_plans_active_scope
             ON working_plans(user_id, workspace_id, session_id) WHERE status='active';
     """),
+    (5, """
+        ALTER TABLE working_plans ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0);
+    """),
 )
 
 _REQUIRED_COLUMNS = {
@@ -248,7 +251,8 @@ class SQLiteDatabase:
                             (migration_version, utc_now()),
                         )
                 if version == self.SCHEMA_VERSION:
-                    self._execute_script(db, _MIGRATIONS[-1][1])
+                    if "ALTER TABLE" not in _MIGRATIONS[-1][1].upper():
+                        self._execute_script(db, _MIGRATIONS[-1][1])
                 if self._needs_upgrade(db, self.SCHEMA_VERSION):
                     self._execute_script(db, _MIGRATIONS[2][1])
                 self._validate_schema(db, self.SCHEMA_VERSION)
@@ -301,7 +305,7 @@ class SQLiteDatabase:
         required = {1: ("events", "memories", "files", "tasks", "task_events", "learning_proposals"),
                     2: ("scheduled_jobs", "skills", "usage_attempts", "usage_resets"),
                     3: ("history_nodes", "history_heads"),
-                    4: ("working_plans", "working_plan_tasks")}
+                    4: ("working_plans", "working_plan_tasks"), 5: ()}
         tables = {row["name"] for row in db.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )}
@@ -312,6 +316,10 @@ class SQLiteDatabase:
                     raise RuntimeError(
                         f"OpenKyrozen SQLite schema is inconsistent: {table} is missing required columns"
                     )
+        if version >= 5:
+            columns = {row["name"] for row in db.execute('PRAGMA table_info("working_plans")')}
+            if "revision" not in columns:
+                raise RuntimeError("OpenKyrozen SQLite schema is inconsistent: working_plans is missing revision")
         tables = {row["name"] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         for table in ("learning_feature_flags", "learning_policies", "learning_runtime"):
             if table in tables:

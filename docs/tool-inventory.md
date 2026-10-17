@@ -60,7 +60,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `search_web` | `network` | `remote` | false | Search the internet for real-time information. | `query`: string; required: `query` |
 | `send_subagent` | `read` | `internal` | false | Reuse a finished sub-agent; args JSON contains run_id and a complete assignment. | `assignment`: object, `run_id`: string; required: `run_id`, `assignment` |
 | `spawn_agents` | `read` | `internal` | false | Automatically start parallel specialist assignments; args is a JSON assignment batch. | `assignments`: array |
-| `update_plan` | `write` | `internal` | false | Create a plan or add/edit identified steps; omitted existing steps remain. | `complexity`: string, `tasks`: array; required: `complexity`, `tasks` |
+| `update_plan` | `write` | `internal` | false | Apply revision-checked ordered Working Plan edits or adapt the legacy task list. | `complexity`: string, `expected_revision`: integer, `operations`: array, `plan_id`: string, `tasks`: array; requires either `operations` and `expected_revision` or `complexity` and `tasks` |
 | `wait_subagents` | `read` | `internal` | false | Wait up to 60 seconds for delegated work and its mandatory reviews; args is JSON. | `run_ids`: array, `timeout`: number |
 | `write_file` | `write` | `filesystem` | false | Write content to a file. Args format: "path\|content". | `content`: string, `path`: string; required: `path`, `content` |
 

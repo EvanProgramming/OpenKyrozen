@@ -37,6 +37,7 @@ class WorkingPlan:
     task_ids: tuple[str, ...]
     created_at: str
     updated_at: str
+    revision: int = 0
 
 
 def requires_working_plan(complexity: str) -> bool:

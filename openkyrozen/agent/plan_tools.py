@@ -5,11 +5,15 @@ from openkyrozen.tools.models import legacy_text_api, tool_failure, tool_success
 
 @legacy_text_api
 def _update_plan(self, arguments: dict):
-    """Create a plan or add/edit identified steps; omitted existing steps remain."""
+    """Apply revision-checked ordered Working Plan edits or adapt the legacy task list."""
     try:
-        plan = self.tasks.update_plan(
-            complexity=arguments["complexity"], tasks=arguments["tasks"],
-        )
+        if "operations" in arguments:
+            result = self.tasks.update_plan(
+                complexity=arguments.get("complexity"), plan_id=arguments.get("plan_id"),
+                expected_revision=arguments["expected_revision"], operations=arguments["operations"],
+            )
+            return tool_success("Working Plan updated.", data=result)
+        plan = self.tasks.update_plan(complexity=arguments["complexity"], tasks=arguments["tasks"])
     except (KeyError, TypeError, ValueError) as exc:
         return tool_failure("invalid_arguments", f"Error: invalid Working Plan: {exc}")
     return tool_success(
