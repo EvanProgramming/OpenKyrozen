@@ -50,8 +50,7 @@ def _file_mutation_matches_objective(task, arguments):
         if (isinstance(arguments, dict) and
                 str(arguments.get("path", "")).replace("\\", "/").strip("/").casefold() == normalized):
             return True
-    if any(normalized == value or normalized.startswith(value.rstrip("/") + "/")
-           for value in explicit_paths):
+    if normalized in explicit_paths:
         return True
     if explicit_paths:
         return False
@@ -97,6 +96,8 @@ def _strategic_plan_denial(plan, action, args, spec, workspace_root):
         values = structured.get(key)
         if isinstance(values, list) and all(isinstance(value, str) and value.strip() for value in values):
             paths.update({f"{key}:{index}": value for index, value in enumerate(values)})
+    if action in {"list_dir", "list_tree", "search_files"} and not paths:
+        paths = {"path": structured.get("path", ".")}
     if action == "find_files" and not paths:
         paths = {"directory": structured.get("directory", ".")}
     if effect == "filesystem" and not paths:

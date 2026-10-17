@@ -4,7 +4,11 @@ import unittest
 from openkyrozen.tools.models import ToolResult
 from openkyrozen.providers.models import ToolCall
 from types import SimpleNamespace
-from openkyrozen.agent.executor import _legacy_object_arguments, _strategic_plan_denial
+from openkyrozen.agent.executor import (
+    _file_mutation_matches_objective,
+    _legacy_object_arguments,
+    _strategic_plan_denial,
+)
 from pathlib import Path
 from unittest.mock import patch
 
@@ -67,6 +71,23 @@ class StrategicPlanExecutionBoundsTests(unittest.TestCase):
                             "acceptance": [{"args": '{"path":"src/public/index.html"}'}]}
         self.assertTrue(_file_mutation_matches_objective(scoped_directory, {"path": "src/public/index.html"}))
         self.assertFalse(_file_mutation_matches_objective(scoped_directory, {"path": "src/private/index.html"}))
+
+    def test_pathless_read_defaults_are_checked_against_accepted_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan = {"bounds": {"workspace_paths": ["src"], "capabilities": ["read"],
+                               "effects": ["read_only"], "risk_ceiling": "normal"}}
+            read = SimpleNamespace(capability="read", side_effects="read", risk="normal")
+            for action, args in (("list_dir", {}), ("list_tree", ""), ("search_files", {"query": "token"})):
+                with self.subTest(action=action):
+                    self.assertIn("outside", _strategic_plan_denial(
+                        plan, action, args, read, Path(directory),
+                    ))
+
+    def test_explicit_file_path_does_not_authorize_descendants(self):
+        objective = {"title": "Write src/public/index.html", "description": "Update the page."}
+        self.assertFalse(_file_mutation_matches_objective(
+            objective, {"path": "src/public/index.html/private.txt"},
+        ))
 
     def test_legacy_mutation_arguments_are_normalized_for_scope_checks(self):
         from pathlib import Path
@@ -136,6 +157,24 @@ class StrategicPlanExecutionBoundsTests(unittest.TestCase):
             self.assertIn("capability", _strategic_plan_denial(
                 plan, "write_file", {"path": "file.txt"}, write, Path(directory)))
 
+    def test_contract_action_capability_effect_and_path_must_fit_bounds(self):
+        proposal = {"title": "Build page", "summary": "Write and verify.", "steps": [{
+            "id": "page", "title": "Build", "description": "Write src/page.html.",
+            "execution": {"action": "write_file", "arguments": {"path": "src/page.html", "content": "ok"}},
+            "acceptance": [{"criterion": "Page is correct", "verification": {
+                "action": "read_file", "arguments": {"path": "src/page.html"}, "expect": {"contains": "ok"},
+            }}],
+        }]}
+        proposal["bounds"] = {"workspace_paths": ["src"], "capabilities": ["write"],
+                              "effects": ["filesystem"], "risk_ceiling": "normal"}
+        with self.assertRaisesRegex(InteractionError, "capability or effect"):
+            validate_plan_proposal(proposal)
+        proposal["bounds"] = {"workspace_paths": ["src"], "capabilities": ["read", "write"],
+                              "effects": ["read_only", "filesystem"], "risk_ceiling": "normal"}
+        proposal["steps"][0]["acceptance"][0]["verification"]["arguments"]["path"] = "outside/page.html"
+        with self.assertRaisesRegex(InteractionError, "outside its approved workspace"):
+            validate_plan_proposal(proposal)
+
     def test_workspace_scope_resolves_symlinks_before_authorizing(self):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
@@ -178,6 +217,8 @@ class StrategicPlanContractTests(unittest.TestCase):
     def test_revalidating_a_normalized_plan_preserves_verified_acceptance_contracts(self):
         proposal = {
             "title": "Change", "summary": "Make the change.",
+            "bounds": {"workspace_paths": ["src"], "capabilities": ["read", "write"],
+                       "effects": ["read_only", "filesystem"], "risk_ceiling": "normal"},
             "steps": [{"id": "inspect", "title": "Inspect", "description": "Read the file.",
                        "execution": {"action": "write_file", "arguments": {"path": "src/file.txt", "content": "x"}},
                        "acceptance": [{"criterion": "File is readable", "verification": {
@@ -378,6 +419,63 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
                 {**pending, "revision_materiality": "within_bounds"}, expected_previous=current,
                 user_id="local", workspace_id="project", session_id="strategic-session",
             )
+    def test_cancelled_current_objective_blocks_strategic_completion(self):
+        plan = self.controller.propose_plan({
+            "title": "Build two pages", "summary": "Build and verify both pages.",
+            "bounds": {"workspace_paths": ["site"], "capabilities": ["read", "write"],
+                       "effects": ["read_only", "filesystem"], "risk_ceiling": "normal"},
+            "steps": [{"id": name, "title": f"Build {name}", "description": f"Write site/{name}.html.",
+                       "acceptance": [{"criterion": f"{name} can be read", "verification": {
+                           "action": "read_file", "arguments": {"path": f"site/{name}.html"},
+                           "expect": {"contains": name},
+                       }}]} for name in ("first", "second")],
+        })
+        accepted, _ = self.controller.accept_plan(self.manager, plan_id=plan["plan_id"], version=plan["version"])
+        first, second = accepted["working_task_ids"]
+        first_task = next(task for task in self.manager.tasks if task["id"] == first)
+        self.assertTrue(self.manager.set_status(self.manager.tasks.index(first_task), "cancelled"))
+        second_task = next(task for task in self.manager.tasks if task["id"] == second)
+        evidence = {"success": True, "acceptance": "verified",
+                    "acceptance_ids": second_task["checkpoint"]["strategic_plan"]["acceptance_ids"]}
+        self.assertTrue(self.manager.set_status(self.manager.tasks.index(second_task), "succeeded", evidence=evidence))
+        with self.assertRaisesRegex(InteractionError, "acceptance evidence gates"):
+            self.controller.complete_plan(accepted, task_manager=self.manager)
+
+    def test_delayed_prior_version_completion_does_not_clear_current_plan(self):
+        first = self._proposal()
+        old, _ = self.controller.accept_plan(self.manager, plan_id=first["plan_id"], version=first["version"])
+        revised = self.controller.propose_plan({
+            "title": "Revised page", "summary": "Update the accepted page objective.",
+            "bounds": first["bounds"],
+            "steps": [{"id": "page", "title": "Create revised page", "description": "Write the revised page.",
+                       "acceptance": first["steps"][0]["acceptance"]}],
+        })
+        current, _ = self.controller.accept_plan(self.manager, plan_id=revised["plan_id"], version=revised["version"])
+        self.store.append_event("interaction.plan_completed", {
+            "plan_id": old["plan_id"], "version": old["version"],
+            "fingerprint": old["fingerprint"], "status": "completed",
+        }, workspace_id="project", session_id="strategic-session")
+        state = self.controller.state()["executing_plan"]
+        self.assertEqual(state["version"], current["version"])
+        self.assertEqual(state["fingerprint"], current["fingerprint"])
+
+    def test_verifier_receipt_matches_separately_from_execution_checkpoint(self):
+        index = self.manager.add_task("Write then verify", checkpoint={
+            "action": "write_file", "args": '{"path":"site/page.html","content":"ok"}',
+        }, acceptance=[{"action": "read_file", "args": '{"path":"site/page.html"}'}])
+        task = self.manager.tasks[index]
+        self.assertGreater(self.manager._receipt_match_score(
+            task, "read_file", '{"path":"site/page.html"}',
+        ), 0)
+
+    def test_task_completion_requires_every_strategic_acceptance_id(self):
+        index = self.manager.add_task("Verify both criteria", acceptance=["both checks pass"])
+        task = self.manager.tasks[index]
+        task["checkpoint"]["strategic_plan"] = {"acceptance_ids": ["criterion-a", "criterion-b"]}
+        task["evidence"] = [{"success": True, "acceptance": "first", "acceptance_ids": ["criterion-a"]}]
+        self.manager.request_completion(index)
+        self.manager.reconcile_completions({task["id"]})
+        self.assertEqual(task["status"], "pending")
 
     def test_active_unrelated_working_plan_is_preserved_when_strategic_acceptance_is_rejected(self):
         self.manager.update_plan(complexity="complex", tasks=[{
@@ -1550,7 +1648,7 @@ class InteractionTests(unittest.TestCase):
         controller = InteractionController(self.store, workspace_id="workspace", session_id="session")
         proposal = controller.propose_plan({
             "title": "Write page", "summary": "Write the page.", "bounds": {
-                "workspace_paths": ["site"], "capabilities": ["write"],
+                "workspace_paths": ["site"], "capabilities": ["read", "write"],
                 "effects": ["filesystem", "read_only"], "risk_ceiling": "normal",
             }, "steps": [{"id": "page", "title": "Write page", "description": "Write the page.",
                          "acceptance": [{"criterion": "Page can be read", "verification": {
@@ -1623,7 +1721,7 @@ class InteractionTests(unittest.TestCase):
         approved = {"path": "site/index.html", "content": "approved"}
         proposal = controller.propose_plan({
             "title": "Write page", "summary": "Write the approved content.", "bounds": {
-                "workspace_paths": ["site"], "capabilities": ["write"],
+                "workspace_paths": ["site"], "capabilities": ["read", "write"],
                 "effects": ["filesystem", "read_only"], "risk_ceiling": "normal",
             }, "steps": [{"id": "page", "title": "Write page", "description": "Write the page.",
                          "execution": {"action": "write_file", "arguments": approved},

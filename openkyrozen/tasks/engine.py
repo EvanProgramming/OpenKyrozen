@@ -564,6 +564,16 @@ class TaskManager:
 
     def _has_evidence(self, idx: int, evidence: dict[str, Any] | None = None) -> bool:
         evidence_items = ([evidence] if evidence else []) + self.tasks[idx].get("evidence", [])
+        strategic = ((self.tasks[idx].get("checkpoint") or {}).get("strategic_plan") or {})
+        required = set(strategic.get("acceptance_ids", ()))
+        if required:
+            covered = {
+                criterion_id
+                for item in evidence_items
+                if item.get("success") is True
+                for criterion_id in item.get("acceptance_ids", ())
+            }
+            return required <= covered
         return any(item.get("success") is True and item.get("acceptance") for item in evidence_items)
 
     def _receipt_match_score(self, task: dict[str, Any], action: str, args: str,
@@ -574,18 +584,17 @@ class TaskManager:
         checkpoint = task.get("checkpoint") or {}
         checkpoint_action = _receipt_action(checkpoint.get("action"))
         checkpoint_args = _receipt_args(checkpoint.get("args"))
-        if checkpoint_action:
-            if checkpoint_action != action:
-                return -1
+        if checkpoint_action == action:
             if checkpoint_args:
                 checkpoint_fingerprint = (checkpoint.get("args_sha256")
                                           or hashlib.sha256(checkpoint_args.encode("utf-8")).hexdigest())
                 if args_fingerprint:
                     if checkpoint_fingerprint != args_fingerprint:
-                        return -1
+                        checkpoint_action = None
                 elif checkpoint_args != args:
-                    return -1
-            return 200 if checkpoint_args else 150
+                    checkpoint_action = None
+            if checkpoint_action:
+                return 200 if checkpoint_args else 150
 
         score = 0
         for criterion in task.get("acceptance") or []:
