@@ -230,6 +230,21 @@ class RuntimeEventChatTests(unittest.TestCase):
         finally:
             runtime._last_response_is_native.reset(token)
 
+    def test_legacy_protocol_usage_event_contains_markers_without_response_text(self):
+        runtime = self.app.runtime
+        events = []
+        token = runtime._runtime_event_publisher.set(RuntimeEventPublisher(
+            user_id="alice", workspace_id="workspace", session_id="session",
+            on_runtime_event=events.append,
+        ))
+        try:
+            runtime._parse_model_response('Action: ```json\n{"action":"read_file","args":"README.md"}\n```')
+        finally:
+            runtime._runtime_event_publisher.reset(token)
+        event = next(item for item in events if item.kind == "legacy.protocol_used")
+        self.assertEqual(event.payload, {"markers": ["Action", "text_tool_call"]})
+        self.assertNotIn("README.md", str(event.payload))
+
     def test_denied_structured_call_has_receipt_but_no_execution_start(self):
         from openkyrozen.providers.models import ToolCall
 
