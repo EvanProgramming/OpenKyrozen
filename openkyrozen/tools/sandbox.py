@@ -41,21 +41,12 @@ def _sbpl_path(path: str) -> str:
 
 
 def _bwrap_command(executable: str, workspace: str, cwd: str,
-                   command: str) -> list[str]:
-    workspace_mounts: list[str] = []
-    if workspace != "/tmp" and os.path.commonpath([workspace, "/tmp"]) == "/tmp":
-        parent = Path(workspace).parent
-        missing: list[str] = []
-        while str(parent) != "/tmp":
-            missing.append(str(parent))
-            parent = parent.parent
-        for directory in reversed(missing):
-            workspace_mounts.extend(("--dir", directory))
-    workspace_mounts.extend(("--bind", workspace, workspace))
+                   command: str, temp_path: str) -> list[str]:
     return [executable, "--die-with-parent", "--new-session", "--unshare-pid",
             "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev",
-            "--proc", "/proc", "--tmpfs", "/tmp", *workspace_mounts,
-            "--chdir", cwd, "--setenv", "TMPDIR", "/tmp", "--", "/bin/sh", "-c", command]
+            "--proc", "/proc", "--bind", workspace, workspace,
+            "--bind", temp_path, temp_path, "--chdir", cwd,
+            "--setenv", "TMPDIR", temp_path, "--", "/bin/sh", "-c", command]
 
 
 def _profile(workspace: str, temp_path: str) -> str:
@@ -81,8 +72,10 @@ def _probe_backend(backend: str, executable: str) -> str | None:
                 f"! touch {shlex.quote(str(outside))} 2>/dev/null"
             )
             if backend == "bubblewrap":
-                argv = _bwrap_command(executable, str(workspace), str(workspace), command)
-                result = subprocess.run(argv, capture_output=True, text=True, timeout=5, check=False)
+                with tempfile.TemporaryDirectory(prefix="kyrozen-sandbox-probe-") as temp:
+                    temp_path = str(Path(temp).resolve())
+                    argv = _bwrap_command(executable, str(workspace), str(workspace), command, temp_path)
+                    result = subprocess.run(argv, capture_output=True, text=True, timeout=5, check=False)
             else:
                 with tempfile.TemporaryDirectory(prefix="kyrozen-sandbox-probe-") as temp:
                     profile = _profile(str(workspace), str(Path(temp).resolve()))
@@ -140,9 +133,11 @@ def sandbox_command(command: str, *, workspace: str, cwd: str,
             False, sandbox_env, backend, temporary_directory,
         )
 
+    temporary_directory = tempfile.TemporaryDirectory(prefix="kyrozen-sandbox-")
+    temp_path = str(Path(temporary_directory.name).resolve())
     sandbox_env = dict(env)
-    sandbox_env["TMPDIR"] = "/tmp"
+    sandbox_env["TMPDIR"] = temp_path
     return SandboxedCommand(
-        _bwrap_command(executable, workspace, cwd, command),
-        False, sandbox_env, backend,
+        _bwrap_command(executable, workspace, cwd, command, temp_path),
+        False, sandbox_env, backend, temporary_directory,
     )
