@@ -50,6 +50,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.core == 'true'
     runs-on: ubuntu-latest
+    env:
+      KYROZEN_SANDBOX_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -61,6 +63,11 @@ jobs:
             requirements.txt
       - name: Install the core development environment
         run: make install-core PYTHON=python
+      - name: Install the required Linux filesystem sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Run non-browser tests
         if: needs.changes.outputs.python == 'true' || needs.changes.outputs.all == 'true'
         run: make test-core PYTHON=python
