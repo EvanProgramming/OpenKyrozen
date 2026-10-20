@@ -1598,9 +1598,18 @@ class InteractionTests(unittest.TestCase):
             {"action": "write_file", "arguments": {"path": "site/index.html"}},
             {"action": "edit_file", "arguments": {"path": "site/index.html", "old_text": "x",
                 "new_text": "y", "expected_sha256": "stale"}},
+            {"action": "apply_patch", "arguments": {"path": "site/index.html", "expected_sha256": "stale",
+                "hunks": [{"old_text": "x", "new_text": "y"}]}},
         ):
             with self.subTest(execution=execution), self.assertRaises(InteractionError):
                 validate_plan_proposal({**plan, "steps": [{**plan["steps"][0], "execution": execution}]})
+
+        patch_execution = {"action": "apply_patch", "arguments": {
+            "path": "site/index.html", "expected_sha256": "0" * 64,
+            "hunks": [{"old_text": "old", "new_text": "new"}],
+        }}
+        patch_plan = validate_plan_proposal({**plan, "steps": [{**plan["steps"][0], "execution": patch_execution}]})
+        self.assertEqual(patch_plan["steps"][0]["execution"], patch_execution)
 
     def test_plan_mode_converts_plain_plan_and_discards_early_actions(self):
         mode_token = self.agent._active_interaction_mode.set("plan")
