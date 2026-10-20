@@ -222,7 +222,7 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertIn("✓ legacy complete", hint)
             self.assertIn("✓ durable complete", hint)
 
-    def test_blocked_tasks_are_visible_and_cannot_be_summarised_as_complete(self):
+    def test_blocked_task_panel_is_visible_without_gating_simple_turns(self):
         class StubLearning:
             def feedback_signal(self, _text):
                 return None
@@ -271,9 +271,10 @@ class TaskConsistencyTests(unittest.TestCase):
                 main.tasks = original_tasks
                 main.learning_engine = original_learning
 
-            self.assertIn("blocked", reply.lower())
-            self.assertIn("Recovery required", reply)
-            self.assertNotIn("All requested file and Git operations completed.", reply)
+            self.assertIn("All requested file and Git operations completed.", reply)
+            self.assertNotIn("Recovery required", reply)
+            self.assertIn("Tool status: incomplete", reply)
+            self.assertIn("read_file", reply)
             self.assertEqual(
                 store.list_tasks(workspace_id="project", session_id="blocked-test")[0]["status"],
                 "blocked",
@@ -1065,7 +1066,8 @@ class TaskConsistencyTests(unittest.TestCase):
         main.subagent_manager = SimpleNamespace(coordinator=None)
         main.tasks = SimpleNamespace(tasks=[])
         turn = SimpleNamespace(
-            final_answer="Verified result", protocol_error_message=None, tool_records=[{}, {}],
+            final_answer="Verified result", protocol_error_message=None,
+            tool_records=[{"success": True}, {"success": True}],
             turn_prompt_total=10, turn_completion_total=5, turn_start=time.time(), tool_calls=[],
             pending_interaction_reply=None, interaction_mode="agent", fix_workflow=None,
             user_input="complete work", response_text="", learning_run=None,
@@ -1080,6 +1082,72 @@ class TaskConsistencyTests(unittest.TestCase):
             main.subagent_manager, main.tasks = original_manager, original_tasks
         self.assertEqual(answer, "Verified result")
         self.assertEqual(recap.call_count, 0)
+
+    def test_simple_turn_completion_ignores_an_unrelated_pending_task_ledger(self):
+        from types import SimpleNamespace
+        original_manager, original_tasks = main.subagent_manager, main.tasks
+        with tempfile.TemporaryDirectory() as directory:
+            tasks = TaskManager(MemoryBank(Path(directory) / "state.sqlite3").store,
+                                workspace_id="completion", session_id="simple-turn")
+            tasks.add_task("Unrelated unfinished work")
+            main.subagent_manager, main.tasks = SimpleNamespace(coordinator=None), tasks
+            turn = SimpleNamespace(
+                final_answer="The direct answer is verified.", protocol_error_message=None, tool_records=[],
+                turn_prompt_total=0, turn_completion_total=0, turn_start=time.time(), tool_calls=[],
+                pending_interaction_reply=None, interaction_mode="agent", complexity="simple",
+                fix_workflow=None, user_input="What is two plus two?", response_text="", learning_run=None,
+                learning_receipts=[], runtime_status="completed",
+            )
+            try:
+                with patch.object(main, "_advance_fix_workflow", side_effect=lambda state, _request, answer, *_args: (state, answer)), \
+                        patch.object(main, "_finish_learning_run", side_effect=lambda _run, _receipts, _task, result, *_args: result):
+                    answer = main._complete_turn(turn)
+            finally:
+                main.subagent_manager, main.tasks = original_manager, original_tasks
+        self.assertEqual(answer, "The direct answer is verified.")
+        self.assertEqual(turn.runtime_status, "completed")
+
+    def test_complex_plan_keeps_answer_and_reports_incomplete_or_blocked_state(self):
+        from types import SimpleNamespace
+        original_manager, original_tasks = main.subagent_manager, main.tasks
+        with tempfile.TemporaryDirectory() as directory:
+            tasks = TaskManager(MemoryBank(Path(directory) / "state.sqlite3").store,
+                                workspace_id="completion", session_id="complex-turn")
+            plan = tasks.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "inspect", "task": {
+                    "description": "Inspect source", "acceptance": ["source reviewed"],
+                }},
+            ])
+            main.subagent_manager, main.tasks = SimpleNamespace(coordinator=None), tasks
+
+            def complete(status):
+                turn = SimpleNamespace(
+                    final_answer="I found a likely cause.", protocol_error_message=None, tool_records=[],
+                    turn_prompt_total=0, turn_completion_total=0, turn_start=time.time(), tool_calls=[],
+                    pending_interaction_reply=None, interaction_mode="agent", complexity="complex",
+                    fix_workflow=None, user_input="Investigate the failure", response_text="", learning_run=None,
+                    learning_receipts=[], runtime_status="completed",
+                )
+                if status == "blocked":
+                    tasks.edit_plan(plan_id=plan["plan_id"], expected_revision=1, operations=[{
+                        "op": "block", "task": plan["task_ids"][0], "reason": "Repository access is unavailable",
+                    }])
+                with patch.object(main, "_advance_fix_workflow", side_effect=lambda state, _request, answer, *_args: (state, answer)), \
+                        patch.object(main, "_finish_learning_run", side_effect=lambda _run, _receipts, _task, result, *_args: result):
+                    answer = main._complete_turn(turn)
+                return answer, turn.runtime_status
+
+            try:
+                incomplete_answer, incomplete_status = complete("incomplete")
+                self.assertEqual(incomplete_status, "incomplete")
+                self.assertIn("I found a likely cause.", incomplete_answer)
+                self.assertIn("Inspect source", incomplete_answer)
+                blocked_answer, blocked_status = complete("blocked")
+            finally:
+                main.subagent_manager, main.tasks = original_manager, original_tasks
+        self.assertEqual(blocked_status, "blocked")
+        self.assertIn("I found a likely cause.", blocked_answer)
+        self.assertIn("Repository access is unavailable", blocked_answer)
 
     def test_streaming_provider_timeout_covers_stalls_after_first_chunk(self):
         class SlowStreamingProvider:

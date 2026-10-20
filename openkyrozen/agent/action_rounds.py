@@ -28,7 +28,6 @@ def _execute_action_rounds(self, turn):
     # Unified multi-step loop - always runs, can handle early errors
     round_limit = self.MAX_STEPS_PER_TURN
     round_count = 0
-    incomplete_prompt_attempts = 0
     turn.final_answer: str | None = None
     turn.pending_interaction_reply: str | None = None
     turn.protocol_error_message: str | None = None
@@ -326,68 +325,24 @@ def _execute_action_rounds(self, turn):
                 turn.protocol_error_message = "Plan mode ended without a valid PlanProposal; no changes were made."
                 break
 
-            # Stop once every task is terminal, but only trust model prose when
-            # every durable task actually succeeded.
-            all_terminal = not self.tasks.tasks or all(is_terminal(t) for t in self.tasks.tasks)
-            all_succeeded = not self.tasks.tasks or all(is_complete(t) for t in self.tasks.tasks)
+            plan = self.tasks.working_plan
+            planned_turn = (turn.interaction_mode == "agent" and turn.complexity == "complex"
+                            and plan is not None and plan.status == "active")
+            plan_tasks = ([task for task in self.tasks.tasks if task.get("id") in plan.task_ids]
+                          if planned_turn else [])
+            all_terminal = not plan_tasks or all(is_terminal(task) for task in plan_tasks)
+            all_succeeded = not plan_tasks or all(is_complete(task) or task.get("status") == "cancelled"
+                                                 for task in plan_tasks)
             if all_terminal:
                 turn.final_answer = (
                     step_meta["clean"] if all_succeeded and step_meta["clean"]
-                    else self._deterministic_tool_summary(turn.tool_records)
+                    else step_meta["clean"] or self._deterministic_tool_summary(turn.tool_records)
                 )
                 break
-
-            # Find the next pending task to tell the LLM what to do
-            next_pending_desc = ""
-            for t in self.tasks.tasks:
-                if canonical_status(t["status"]) == "pending":
-                    next_pending_desc = t["description"]
-                    break
-
-            if self.tasks.tasks and any(
-                not is_complete(t) and canonical_status(t["status"]) != "cancelled"
-                for t in self.tasks.tasks
-            ):
-                incomplete_prompt_attempts += 1
-                if incomplete_prompt_attempts >= 12:
-                    for idx, task in enumerate(self.tasks.tasks):
-                        if canonical_status(task["status"]) in {"pending", "running"}:
-                            self.tasks.set_status(idx, "blocked", reason="The agent exhausted 12 attempts to complete the plan.")
-                    self._render_warning(f"Blocked remaining tasks after {incomplete_prompt_attempts} unsuccessful nudges; no task was marked complete.")
-                    break
-
-                # Build a specific nudge mentioning the exact next task
-                nudge = (
-                    f"System: You have {sum(1 for t in self.tasks.tasks if t['status'] == 'pending')} "
-                    "incomplete tasks remaining. "
-                )
-                if next_pending_desc:
-                    nudge += f"The next task is: \"{next_pending_desc}\". "
-                nudge += "Output the Action block for this task NOW. Do not explain or summarise — just act."
-                summary_messages.extend([
-                    {"role": "assistant", "content": step_reply},
-                    {"role": "user", "content": nudge},
-                ])
-                step_reply = self._call_llm_with_spinner(summary_messages).strip()
-                turn.turn_prompt_total += self._last_prompt_tokens
-                turn.turn_completion_total += self._last_completion_tokens
-                if not step_reply:
-                    break
-                step_reply, step_meta = self._observe_turn_response(turn, step_reply, summary_messages)
-                next_tool_calls = step_meta["tool_calls"]
-                if step_meta["protocol_error"]:
-                    turn.protocol_error_message = step_meta["protocol_error"]
-                    break
-                interaction_reply = self._persist_interaction_control(step_meta, turn.user_input)
-                if interaction_reply is not None:
-                    turn.pending_interaction_reply = interaction_reply
-                    turn.final_answer = interaction_reply
-                    break
-                if not next_tool_calls:
-                    # Still no action — don't give up yet, loop will try again
-                    # (incomplete_prompt_attempts will eventually trigger the 12-nudge limit)
-                    pass
-            elif self._is_question(step_reply):
+            if planned_turn:
+                turn.final_answer = step_meta["clean"] or self._deterministic_tool_summary(turn.tool_records)
+                break
+            if self._is_question(step_reply):
                 turn.final_answer = step_meta["clean"] or self._deterministic_tool_summary(turn.tool_records)
                 break
             else:

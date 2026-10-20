@@ -136,6 +136,20 @@ class RuntimeEventChatTests(unittest.TestCase):
         self.assertEqual(len({item.turn_id for item in events}), 1)
         self.assertTrue(all(item.session_id == runtime.current_session.session_id for item in events))
 
+    def test_turn_completion_event_reports_runtime_status_separately_from_answer(self):
+        runtime = self.app.runtime
+        events = []
+
+        def run_turn(*_args, **_kwargs):
+            runtime._turn_completion_status.set("blocked")
+            return "The work is blocked by a missing permission."
+
+        with patch.object(runtime, "_chat_turn", side_effect=run_turn):
+            reply = runtime.chat(runtime.current_session, "Inspect the repository", on_runtime_event=events.append)
+        self.assertEqual(reply, "The work is blocked by a missing permission.")
+        self.assertEqual(events[-1].kind, "turn.completed")
+        self.assertEqual(events[-1].payload["status"], "blocked")
+
     def test_legacy_receipt_projection_is_bounded_before_publication(self):
         events, legacy = [], []
         publisher = RuntimeEventPublisher(

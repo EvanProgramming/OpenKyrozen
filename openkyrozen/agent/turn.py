@@ -27,6 +27,7 @@ class TurnContext:
     tool_records: Any = None
     tool_results_text: Any = None
     turn_start: Any = None
+    runtime_status: str = "completed"
 
 @dataclass
 class ExecutionContext:
