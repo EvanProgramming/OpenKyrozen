@@ -220,7 +220,7 @@ def _execute_action_rounds(self, turn):
         if step_reply.startswith("[LLM Error]"):
             for index, task in enumerate(self.tasks.tasks):
                 if canonical_status(task["status"]) in {"pending", "running"}:
-                    self.tasks.set_status(index, "blocked")
+                    self.tasks.set_status(index, "blocked", reason=step_reply.removeprefix("[LLM Error]").strip())
             turn.final_answer = step_reply
             break
 
@@ -352,7 +352,7 @@ def _execute_action_rounds(self, turn):
                 if incomplete_prompt_attempts >= 12:
                     for idx, task in enumerate(self.tasks.tasks):
                         if canonical_status(task["status"]) in {"pending", "running"}:
-                            self.tasks.set_status(idx, "blocked")
+                            self.tasks.set_status(idx, "blocked", reason="The agent exhausted 12 attempts to complete the plan.")
                     self._render_warning(f"Blocked remaining tasks after {incomplete_prompt_attempts} unsuccessful nudges; no task was marked complete.")
                     break
 

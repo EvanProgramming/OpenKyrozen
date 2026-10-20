@@ -90,7 +90,7 @@ class TaskManager:
             self.add_task(description, task_id=task_id, checkpoint=checkpoint, acceptance=criteria)
 
     def set_status(self, idx: int, status: str, *, evidence: dict[str, Any] | None = None,
-                   _terminalize_plan: bool = True) -> bool:
+                   reason: str | None = None, _terminalize_plan: bool = True) -> bool:
         if not 0 <= idx < len(self.tasks):
             return False
         status = canonical_status(status)
@@ -99,11 +99,19 @@ class TaskManager:
             return False
         if current == status:
             return True
+        if status == "blocked" and self.tasks[idx].get("plan_id") and (
+                not isinstance(reason, str) or not reason.strip()):
+            raise ValueError("blocking a Working Plan task requires a reason")
         if status == "succeeded" and not self._has_evidence(idx, evidence):
             return False
         task = deepcopy(self.tasks[idx])
         expected_status = self.tasks[idx].get("status", "pending")
         task["status"] = status
+        if status == "blocked":
+            task["checkpoint"] = {**(task.get("checkpoint") or {}), "plan_block": {
+                "reason": reason.strip() if reason else "Task was blocked outside a Working Plan.",
+                "action": "block",
+            }}
         if evidence:
             task.setdefault("evidence", []).append(evidence)
         from openkyrozen.persistence.models import utc_now
@@ -114,7 +122,9 @@ class TaskManager:
                 self.tasks[idx] = latest
             return False
         self.tasks[idx] = task
-        self._event(task, f"task.{task['status']}", {"evidence": evidence or {}})
+        self._event(task, f"task.{task['status']}", {
+            "evidence": evidence or {}, **({"reason": reason.strip()} if reason else {}),
+        })
         if _terminalize_plan and status in {"succeeded", "cancelled"} and self.working_plan is not None:
             plan_tasks = [item for item in self.tasks if item["id"] in self.working_plan.task_ids]
             terminal = len(plan_tasks) == len(self.working_plan.task_ids) and all(
@@ -181,7 +191,8 @@ class TaskManager:
     def edit_plan(self, *, expected_revision: int, operations: list[dict[str, Any]],
                   complexity: str | None = None, plan_id: str | None = None,
                   strategic_bindings: dict[str, dict[str, Any]] | None = None,
-                  transaction_event: dict[str, Any] | None = None) -> dict[str, Any]:
+                  transaction_event: dict[str, Any] | None = None,
+                  reason: str | None = None) -> dict[str, Any]:
         """Apply a validated ordered operation batch as one revision-checked transaction."""
         if type(expected_revision) is not int or expected_revision < 0:
             raise ValueError("expected_revision must be a nonnegative integer")
@@ -193,6 +204,8 @@ class TaskManager:
             raise ValueError("plan_id must be a nonempty string")
         if strategic_bindings is not None and not isinstance(strategic_bindings, dict):
             raise ValueError("strategic_bindings must be an object")
+        if reason is not None and (not isinstance(reason, str) or not reason.strip()):
+            raise ValueError("reason must be a nonempty string")
         if transaction_event is not None and (
                 not isinstance(transaction_event, dict)
                 or not {"event_type", "payload"} <= set(transaction_event)
@@ -254,6 +267,48 @@ class TaskManager:
         now = utc_now()
         scope_key = _task_key(f"{self.user_id}:{self.workspace_id}:{self.session_id or ''}")
 
+        def supersede(source_ids: list[str], ref: str, task_data: Any) -> str:
+            if any((by_id[item].get("checkpoint") or {}).get("strategic_plan") for item in source_ids):
+                raise ValueError("Strategic Plan tasks cannot be superseded without approval")
+            if not isinstance(ref, str) or not ref.strip() or ref in references or ref in by_id:
+                raise ValueError("task references must be unique nonempty strings")
+            fields = self._plan_task_fields(task_data)
+            sources = [by_id[item] for item in source_ids]
+            if any(item["status"] not in {"pending", "failed", "blocked"}
+                   and not (item["status"] == "cancelled" and (item.get("checkpoint") or {}).get("superseded_by"))
+                   for item in sources):
+                raise ValueError("only pending, failed, or blocked tasks can be superseded")
+            if any(task["status"] in {"running", "failed", "blocked"}
+                   and any(source_id in task.get("dependencies", []) for source_id in source_ids)
+                   for task in tasks if task["id"] not in source_ids):
+                raise ValueError("superseded tasks have an executing or resumable dependent")
+            inherited = list(dict.fromkeys(
+                dep for item in sources for dep in item.get("dependencies", []) if dep not in source_ids
+            ))
+            if "dependencies" not in task_data:
+                fields["dependencies"] = inherited
+            task_id = f"task_{scope_key}_{uuid.uuid4().hex}"
+            task = {"id": task_id, **fields, "status": "pending", "attempts": 0,
+                    "evidence": [], "created_at": now, "updated_at": now, "plan_id": plan_id,
+                    "parent_id": source_ids[0], "checkpoint": {**fields["checkpoint"], "supersedes": source_ids}}
+            for source in sources:
+                checkpoint = dict(source.get("checkpoint") or {})
+                checkpoint["superseded_by"] = [task_id]
+                source.update(status="cancelled", checkpoint=checkpoint, updated_at=now)
+            for other in tasks:
+                if other["id"] in source_ids or other["status"] != "pending":
+                    continue
+                deps = other.get("dependencies", [])
+                if any(source_id in deps for source_id in source_ids):
+                    other["dependencies"] = list(dict.fromkeys(
+                        replacement if dep in source_ids else dep
+                        for dep in deps for replacement in ([task_id] if dep in source_ids else [dep])
+                    ))
+            references[ref] = task_id
+            tasks.append(task)
+            by_id[task_id] = task
+            return task_id
+
         def resolve(value: Any) -> str:
             if not isinstance(value, str) or not value:
                 raise ValueError("task reference must be a nonempty string")
@@ -267,6 +322,9 @@ class TaskManager:
             "cancel": {"op", "task"}, "reorder": {"op", "tasks"},
             "add_dependency": {"op", "task", "depends_on"},
             "remove_dependency": {"op", "task", "depends_on"},
+            "split": {"op", "task", "children"}, "replace": {"op", "task", "replacement"},
+            "merge": {"op", "tasks", "replacement"},
+            "block": {"op", "task", "reason"}, "unblock": {"op", "task", "reason"},
         }
         if saved is None and not any(isinstance(item, dict) and item.get("op") == "add" for item in operations):
             raise ValueError("a new Working Plan requires at least one add operation")
@@ -386,6 +444,49 @@ class TaskManager:
                 if not valid_task_transition(current["status"], "cancelled"):
                     raise ValueError("task cannot be cancelled from its current state")
                 current.update(status="cancelled", updated_at=now)
+            elif kind in {"split", "replace", "merge"}:
+                raw_sources = operation["tasks"] if kind == "merge" else [operation["task"]]
+                source_ids = [resolve(item) for item in raw_sources]
+                if not source_ids or len(set(source_ids)) != len(source_ids) or (kind == "merge" and len(source_ids) < 2):
+                    raise ValueError("supersession requires distinct source tasks")
+                if kind == "split":
+                    children = operation["children"]
+                    if not isinstance(children, list) or len(children) < 2:
+                        raise ValueError("split requires at least two children")
+                    for child in children:
+                        if not isinstance(child, dict) or set(child) != {"ref", "task"}:
+                            raise ValueError("each split child requires ref and task")
+                        supersede(source_ids, child["ref"], child["task"])
+                    child_ids = [references[child["ref"]] for child in children]
+                    by_id[source_ids[0]]["checkpoint"]["superseded_by"] = child_ids
+                    for child_id in child_ids:
+                        by_id[child_id]["checkpoint"]["supersedes"] = source_ids
+                    for other in tasks:
+                        if other["id"] != source_ids[0] and other["status"] == "pending":
+                            deps = other.get("dependencies", [])
+                            if any(child_id in deps for child_id in child_ids):
+                                other["dependencies"] = list(dict.fromkeys(
+                                    [dep for dep in deps if dep not in child_ids] + child_ids
+                                ))
+                else:
+                    replacement = operation["replacement"]
+                    if not isinstance(replacement, dict) or set(replacement) != {"ref", "task"}:
+                        raise ValueError("replacement requires ref and task")
+                    supersede(source_ids, replacement["ref"], replacement["task"])
+            elif kind in {"block", "unblock"}:
+                task_id = resolve(operation["task"])
+                current = by_id[task_id]
+                why = operation["reason"]
+                if not isinstance(why, str) or not why.strip():
+                    raise ValueError(f"{kind} requires a nonempty reason")
+                if has_strategic_tasks and (current.get("checkpoint") or {}).get("strategic_plan"):
+                    raise ValueError("Strategic Plan task status requires approval")
+                expected, target = ("pending", "blocked") if kind == "block" else ("blocked", "pending")
+                if current["status"] != expected:
+                    raise ValueError(f"{kind} requires a {expected} task")
+                checkpoint = dict(current.get("checkpoint") or {})
+                checkpoint["plan_block"] = {"reason": why.strip(), "action": kind}
+                current.update(status=target, checkpoint=checkpoint, updated_at=now)
             elif kind == "reorder":
                 requested = operation["tasks"]
                 if not isinstance(requested, list):
@@ -456,6 +557,7 @@ class TaskManager:
         revision = self.store.apply_working_plan_edit(
             plan, tasks, expected_revision=expected_revision, expected_tasks=previous_tasks,
             user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
+            revision_operations=deepcopy(operations), revision_reason=reason.strip() if reason else None,
             transaction_event=(
                 {"event_type": transaction_event["event_type"], **(
                     {"expected_proposal": transaction_event["expected_proposal"]}
@@ -492,15 +594,16 @@ class TaskManager:
         return {**payload, "complexity": complexity, "tasks": deepcopy(tasks),
                 "references": dict(references)}
 
-    def update_plan(self, *, complexity: str, tasks: list[dict[str, Any]] | None = None,
+    def update_plan(self, *, complexity: str | None = None, tasks: list[dict[str, Any]] | None = None,
                     plan_id: str | None = None, expected_revision: int | None = None,
-                    operations: list[dict[str, Any]] | None = None) -> WorkingPlan | dict[str, Any]:
+                    operations: list[dict[str, Any]] | None = None,
+                    reason: str | None = None) -> WorkingPlan | dict[str, Any]:
         """Apply canonical operations or adapt the historical complexity/tasks shape."""
         if operations is not None:
             if expected_revision is None:
                 raise ValueError("expected_revision is required for plan edits")
             return self.edit_plan(complexity=complexity, plan_id=plan_id,
-                                  expected_revision=expected_revision, operations=operations)
+                                  expected_revision=expected_revision, operations=operations, reason=reason)
         if not isinstance(tasks, list) or not tasks:
             raise ValueError("a Working Plan requires at least one task")
         saved = self.store.get_working_plan(
