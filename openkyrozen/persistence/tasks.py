@@ -218,7 +218,9 @@ class TasksRepository:
     def apply_working_plan_edit(self, plan: dict[str, Any], tasks: list[dict[str, Any]], *,
                                 expected_revision: int, expected_tasks: list[dict[str, Any]],
                                 user_id: str, workspace_id: str, session_id: str | None,
-                                transaction_event: dict[str, Any] | None = None) -> int:
+                                transaction_event: dict[str, Any] | None = None,
+                                revision_operations: list[dict[str, Any]] | None = None,
+                    revision_reason: str | None = None) -> int:
         """Commit a validated plan snapshot only if its revision and execution state are current."""
         import uuid
 
@@ -326,7 +328,11 @@ class TasksRepository:
                     )
 
                 event_payload = {"plan_id": plan["id"], "revision": revision, "status": plan["status"],
-                                 "task_ids": [task["id"] for task in tasks]}
+                                 "task_ids": [task["id"] for task in tasks],
+                                 "plan": {**plan, "revision": revision}, "tasks": tasks,
+                                 "operations": revision_operations or []}
+                if revision_reason is not None:
+                    event_payload["reason"] = revision_reason
                 db.execute(
                     "INSERT INTO events(id,event_type,payload,user_id,workspace_id,session_id,task_id,created_at) "
                     "VALUES(?,?,?,?,?,?,NULL,?)",

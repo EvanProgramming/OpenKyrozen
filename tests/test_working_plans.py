@@ -16,6 +16,99 @@ from openkyrozen.tools.models import ToolResult
 
 
 class WorkingPlanModelTests(unittest.TestCase):
+    def test_plan_supersession_blocking_and_revision_history_survive_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="plan-revisions")
+            created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "broad", "task": {"description": "Investigate all", "acceptance": ["result"]}},
+                {"op": "add", "ref": "after", "task": {"description": "Finish", "acceptance": ["done"]}},
+                {"op": "add_dependency", "task": "after", "depends_on": "broad"},
+            ], reason="Initial plan")
+            broad, after = [task["id"] for task in created["tasks"]]
+            split = manager.edit_plan(plan_id=created["plan_id"], expected_revision=1, operations=[
+                {"op": "split", "task": broad, "children": [
+                    {"ref": "inspect", "task": {"description": "Inspect", "acceptance": ["files"]}},
+                    {"ref": "test", "task": {"description": "Test", "acceptance": ["pass"]}},
+                ]},
+            ], reason="Separate investigation and verification")
+            inspect_id, test_id = split["references"]["inspect"], split["references"]["test"]
+            tasks = {task["id"]: task for task in split["tasks"]}
+            self.assertEqual(tasks[broad]["status"], "cancelled")
+            self.assertEqual(tasks[broad]["checkpoint"]["superseded_by"], [inspect_id, test_id])
+            self.assertEqual(tasks[inspect_id]["checkpoint"]["supersedes"], [broad])
+            self.assertEqual(tasks[after]["dependencies"], [inspect_id, test_id])
+
+            blocked = manager.edit_plan(plan_id=created["plan_id"], expected_revision=2,
+                operations=[{"op": "block", "task": inspect_id, "reason": "Waiting on access"}])
+            self.assertEqual(next(task for task in blocked["tasks"] if task["id"] == inspect_id)["status"], "blocked")
+            unblocked = manager.edit_plan(plan_id=created["plan_id"], expected_revision=3,
+                operations=[{"op": "unblock", "task": inspect_id, "reason": "Access restored"}])
+            self.assertEqual(next(task for task in unblocked["tasks"] if task["id"] == inspect_id)["status"], "pending")
+
+            events = store.list_events("working_plan.updated", user_id="local", workspace_id="project",
+                                        session_id="plan-revisions", limit=10)
+            latest = next(event["payload"] for event in events if event["payload"]["revision"] == 4)
+            self.assertNotIn("reason", latest)
+            self.assertEqual(latest["revision"], 4)
+            self.assertEqual(len(latest["tasks"]), 4)
+            self.assertEqual(latest["plan"]["revision"], 4)
+            first = next(event["payload"] for event in events if event["payload"]["revision"] == 2)
+            self.assertEqual(first["reason"], "Separate investigation and verification")
+
+            recovered = TaskManager(store, workspace_id="project", session_id="plan-revisions")
+            recovered.recover()
+            self.assertEqual(recovered.working_plan.revision, 4)
+            self.assertEqual({task["id"] for task in recovered.tasks}, {task["id"] for task in latest["tasks"]})
+
+    def test_plan_merge_and_replace_preserve_supersession_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="merge-replace")
+            plan = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "one", "task": {"description": "One", "acceptance": ["one"]}},
+                {"op": "add", "ref": "two", "task": {"description": "Two", "acceptance": ["two"]}},
+            ])
+            one, two = [task["id"] for task in plan["tasks"]]
+            merged = manager.edit_plan(plan_id=plan["plan_id"], expected_revision=1, operations=[
+                {"op": "merge", "tasks": [one, two], "replacement": {
+                    "ref": "combined", "task": {"description": "Combined", "acceptance": ["combined"]}}},
+            ])
+            combined = merged["references"]["combined"]
+            replaced = manager.edit_plan(plan_id=plan["plan_id"], expected_revision=2, operations=[
+                {"op": "replace", "task": combined, "replacement": {
+                    "ref": "corrected", "task": {"description": "Corrected", "acceptance": ["corrected"]}}},
+            ])
+            corrected = replaced["references"]["corrected"]
+            tasks = {task["id"]: task for task in replaced["tasks"]}
+            self.assertEqual(tasks[one]["checkpoint"]["superseded_by"], [combined])
+            self.assertEqual(tasks[two]["checkpoint"]["superseded_by"], [combined])
+            self.assertEqual(tasks[combined]["checkpoint"]["supersedes"], [one, two])
+            self.assertEqual(tasks[combined]["checkpoint"]["superseded_by"], [corrected])
+            self.assertEqual(tasks[corrected]["checkpoint"]["supersedes"], [combined])
+
+    def test_invalid_split_rolls_back_all_supersession_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="split-rollback")
+            plan = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "broad", "task": {"description": "Broad", "acceptance": ["done"]}},
+            ])
+            source_id = plan["tasks"][0]["id"]
+            with self.assertRaisesRegex(ValueError, "unique"):
+                manager.edit_plan(plan_id=plan["plan_id"], expected_revision=1, operations=[
+                    {"op": "split", "task": source_id, "children": [
+                        {"ref": "child", "task": {"description": "First", "acceptance": ["first"]}},
+                        {"ref": "child", "task": {"description": "Second", "acceptance": ["second"]}},
+                    ]},
+                ])
+            recovered = TaskManager(store, workspace_id="project", session_id="split-rollback")
+            recovered.recover()
+            self.assertEqual(recovered.working_plan.revision, 1)
+            self.assertEqual(len(recovered.tasks), 1)
+            self.assertEqual(recovered.tasks[0]["status"], "pending")
+            self.assertNotIn("superseded_by", recovered.tasks[0]["checkpoint"])
+
     def test_ordered_plan_edits_create_and_revise_at_expected_revision(self):
         with tempfile.TemporaryDirectory() as directory:
             store = EventStore(Path(directory) / "state.sqlite3")
@@ -611,7 +704,7 @@ class WorkingPlanModelTests(unittest.TestCase):
                 {"description": "blocked", "acceptance": ["recover or cancel"]},
             ])
             manager.set_status(0, "failed")
-            manager.set_status(1, "blocked")
+            manager.set_status(1, "blocked", reason="Waiting for recovery or cancellation")
 
             manager.clear()
 
@@ -837,6 +930,17 @@ class WorkingPlanModelTests(unittest.TestCase):
                 }, token)
                 self.assertTrue(result.success, result.error)
                 self.assertEqual(result.data["revision"], revision + 1)
+
+            split = registry.invoke_result("update_plan", {
+                "plan_id": plan_id, "expected_revision": 7,
+                "reason": "Separate inspection from verification",
+                "operations": [{"op": "split", "task": first_id, "children": [
+                    {"ref": "inspect", "task": {"description": "Inspect", "acceptance": ["files"]}},
+                    {"ref": "verify", "task": {"description": "Verify", "acceptance": ["pass"]}},
+                ]}],
+            }, token)
+            self.assertTrue(split.success, split.error)
+            self.assertEqual(split.data["revision"], 8)
 
     def test_runtime_call_persists_a_typed_working_plan(self):
         from openkyrozen.providers.models import ToolCall

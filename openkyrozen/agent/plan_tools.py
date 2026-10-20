@@ -11,6 +11,7 @@ def _update_plan(self, arguments: dict):
             result = self.tasks.update_plan(
                 complexity=arguments.get("complexity"), plan_id=arguments.get("plan_id"),
                 expected_revision=arguments["expected_revision"], operations=arguments["operations"],
+                reason=arguments.get("reason"),
             )
             return tool_success("Working Plan updated.", data=result)
         plan = self.tasks.update_plan(complexity=arguments["complexity"], tasks=arguments["tasks"])

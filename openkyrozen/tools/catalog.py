@@ -171,12 +171,31 @@ _PLAN_OPERATION_SCHEMAS = [
     {'type':'object','properties':{'op':{'type':'string','enum':['remove_dependency']},
         'task':{'type':'string','minLength':1},'depends_on':{'type':'string','minLength':1}},
         'required':['op','task','depends_on'],'additionalProperties':False},
+    {'type':'object','properties':{'op':{'type':'string','enum':['split']},
+        'task':{'type':'string','minLength':1},'children':{'type':'array','minItems':2,'items':{
+            'type':'object','properties':{'ref':{'type':'string','minLength':1},'task':_PLAN_TASK_SCHEMA},
+            'required':['ref','task'],'additionalProperties':False}}},
+        'required':['op','task','children'],'additionalProperties':False},
+    {'type':'object','properties':{'op':{'type':'string','enum':['replace']},
+        'task':{'type':'string','minLength':1},'replacement':{'type':'object','properties':{
+            'ref':{'type':'string','minLength':1},'task':_PLAN_TASK_SCHEMA},
+            'required':['ref','task'],'additionalProperties':False}},
+        'required':['op','task','replacement'],'additionalProperties':False},
+    {'type':'object','properties':{'op':{'type':'string','enum':['merge']},
+        'tasks':{'type':'array','minItems':2,'items':{'type':'string','minLength':1}},
+        'replacement':{'type':'object','properties':{'ref':{'type':'string','minLength':1},'task':_PLAN_TASK_SCHEMA},
+            'required':['ref','task'],'additionalProperties':False}},
+        'required':['op','tasks','replacement'],'additionalProperties':False},
+    *[{'type':'object','properties':{'op':{'type':'string','enum':[op]},
+        'task':{'type':'string','minLength':1},'reason':{'type':'string','minLength':1}},
+        'required':['op','task','reason'],'additionalProperties':False} for op in ('block','unblock')],
 ]
 
 _OBJECT_FIELDS = {
     'update_plan': {'complexity': {'type':'string','enum':['simple','medium','complex']},
                     'plan_id': {'type':'string','minLength':1},
                     'expected_revision': {'type':'integer','minimum':0},
+                    'reason': {'type':'string','minLength':1},
                     'operations': {'type':'array','items':{'anyOf':_PLAN_OPERATION_SCHEMAS}},
                     'tasks': {'type':'array','minItems':1,'items':{'type':'object','properties':{
                         'id': {'type':'string','minLength':1},
@@ -250,7 +269,7 @@ for _name, _properties in _OBJECT_FIELDS.items():
 
 _SCHEMAS['update_plan']['anyOf'] = [
     {'type': 'object', 'properties': {key: _OBJECT_FIELDS['update_plan'][key]
-                                      for key in ('operations', 'expected_revision', 'plan_id', 'complexity')},
+                                      for key in ('operations', 'expected_revision', 'plan_id', 'complexity', 'reason')},
      'required': ['operations', 'expected_revision'], 'additionalProperties': False},
     {'type': 'object', 'properties': {key: _OBJECT_FIELDS['update_plan'][key]
                                       for key in ('complexity', 'tasks')},

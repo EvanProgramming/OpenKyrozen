@@ -227,11 +227,13 @@ class EventStore:
         )
 
     def apply_working_plan_edit(self, plan, tasks, *, expected_revision, expected_tasks,
-                                user_id, workspace_id, session_id, transaction_event=None):
+                                user_id, workspace_id, session_id, transaction_event=None,
+                                revision_operations=None, revision_reason=None):
         return self.tasks.apply_working_plan_edit(
             plan, tasks, expected_revision=expected_revision, expected_tasks=expected_tasks,
             user_id=user_id, workspace_id=workspace_id, session_id=session_id,
-            transaction_event=transaction_event,
+            transaction_event=transaction_event, revision_operations=revision_operations,
+            revision_reason=revision_reason,
         )
 
     def claim_task(self, *, user_id, workspace_id, session_id):
