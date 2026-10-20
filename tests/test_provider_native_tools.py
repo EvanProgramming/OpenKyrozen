@@ -148,6 +148,11 @@ class NativeRequestTests(unittest.TestCase):
                 self.assertEqual(result.text, "ready")
                 self.assertEqual([tool["name"] for tool in provider.tools], ["read_file"])
                 self.assertEqual(set(provider.tools[0]), {"name", "description", "parameters"})
+                with patch.object(app.runtime, "_effective_execution_capabilities", return_value=frozenset({"read"})):
+                    app.runtime._get_model_response(
+                        [], tool_names=["read_file"], history_tool_names={"write_file"},
+                    )
+                self.assertEqual([tool["name"] for tool in provider.tools], ["read_file", "write_file"])
             finally:
                 app.close()
 

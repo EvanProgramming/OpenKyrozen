@@ -13,9 +13,10 @@ KYROZEN_PROMPT_PROFILE=classic kyrozen --project .
 The same environment variable applies to TUI and web processes. Invalid values
 raise an explicit configuration error when the runtime builds the prompt.
 
-Compact mode keeps full descriptions for `list_dir`, `find_files`, `read_file`,
-`write_file`, `run_cmd`, and `discover_tools`. Other permitted tools appear by
-exact name, grouped by capability. The agent can request their descriptions:
+Compact mode keeps full descriptions for `list_dir`, `find_files`, `search_files`,
+`read_file`, `write_file`, `edit_file`, `run_cmd`, and `discover_tools`. Other
+permitted tools appear by exact name, grouped by capability. The agent can request
+their descriptions:
 
 ```text
 Action:
@@ -33,6 +34,18 @@ interaction mode. Ask and Plan remain read-only. Tool execution retains its
 existing capability, approval, workspace, and receipt checks. Dynamic tools remain
 visible only with dynamic permission. MCP lists the new read-capability tool using
 the existing generic `{ "args": "..." }` input contract.
+
+Providers using native structured calls receive schemas for only the compact core
+tools at first when `discover_tools` is permitted. They can call `discover_tools`
+with `{"names":["git_log"]}`; the next request includes schemas for selected tools
+that remain permitted by the current configuration, interaction mode, and session
+capability. If discovery is unavailable, compact mode exposes the already permitted
+inventory so it cannot strand a capability that lacks the read permission used by
+discovery. Discovery changes which schemas are presented, not what the agent is
+authorized to execute. Declarations for tools already called remain available to
+complete current-turn provider history after a permission change, but new calls are
+checked against the current permitted set. The `classic` profile and providers
+without native tool support retain their existing inventory behavior.
 
 Compact mode removes repeated workflow text and duplicate continuation guidance.
 It preserves role configuration, untrusted-input handling, mode controls, the
