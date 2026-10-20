@@ -7,6 +7,7 @@ import fnmatch
 import hashlib
 import json
 import codecs
+import re
 import shutil
 import stat
 import subprocess
@@ -129,12 +130,7 @@ def read_file(self, args: str) -> str:
             request = args if isinstance(args, dict) else json.loads(args)
             if not isinstance(request, dict) or not isinstance(request.get("path"), str):
                 return tool_failure('invalid_arguments', "Error: structured read requires a path", retriable=False)
-            if not isinstance(args, dict) or set(request) != {"path"}:
-                return _read_file_excerpt(self, request)
-            raw_path = request["path"].strip()
-            abs_path = self._resolve_workspace_path(raw_path)
-            with open(abs_path, "r", encoding="utf-8") as f:
-                return tool_success(f.read())
+            return _read_file_excerpt(self, request)
         raw_path = args.strip()
         if not raw_path:
             return tool_failure('invalid_arguments', "Error: read_file requires a path", retriable=False)
@@ -246,6 +242,68 @@ def edit_file(self, args: str) -> str:
         return tool_success(str(f"Updated {path.relative_to(self._WORKSPACE_ROOT).as_posix()}"))
     except Exception as exc:
         return tool_failure('execution_error', f"Error editing file: {exc}", retriable=False)
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+@legacy_text_api
+def apply_patch(self, args: str) -> str:
+    """Apply exact, non-overlapping text hunks only to the file version read by the caller."""
+    temporary = None
+    try:
+        request = args if isinstance(args, dict) else json.loads(args)
+        if (not isinstance(request, dict) or set(request) != {"path", "expected_sha256", "hunks"}
+                or not isinstance(request.get("path"), str)
+                or not isinstance(request.get("expected_sha256"), str)
+                or not re.fullmatch(r"[0-9a-fA-F]{64}", request["expected_sha256"])
+                or not isinstance(request.get("hunks"), list) or not request["hunks"]):
+            return tool_failure("invalid_arguments", "Error: apply_patch requires path, expected_sha256, and non-empty hunks", retriable=False)
+        spans = []
+        for hunk in request["hunks"]:
+            if (not isinstance(hunk, dict) or set(hunk) != {"old_text", "new_text"}
+                    or not isinstance(hunk.get("old_text"), str) or not hunk["old_text"]
+                    or not isinstance(hunk.get("new_text"), str)):
+                return tool_failure("invalid_arguments", "Error: each patch hunk requires non-empty old_text and string new_text", retriable=False)
+        path = self._resolve_workspace_path(request["path"])
+        original = path.read_bytes()
+        expected = request["expected_sha256"].lower()
+        digest = hashlib.sha256(original).hexdigest()
+        if digest != expected:
+            return tool_failure("stale_file", "Error: file is stale; read it again before patching", retriable=False)
+        content = original.decode("utf-8")
+        for hunk in request["hunks"]:
+            old = hunk["old_text"]
+            start = content.find(old)
+            if start < 0 or content.find(old, start + 1) >= 0:
+                return tool_failure("stale_file", "Error: each old_text hunk must match exactly once", retriable=False)
+            spans.append((start, start + len(old), hunk["new_text"]))
+        ordered = sorted(spans)
+        if any(previous[1] > current[0] for previous, current in zip(ordered, ordered[1:])):
+            return tool_failure("invalid_arguments", "Error: patch hunks overlap", retriable=False)
+        updated = content
+        for start, end, replacement in reversed(ordered):
+            updated = updated[:start] + replacement + updated[end:]
+        updated_bytes = updated.encode("utf-8")
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(updated_bytes)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            return tool_failure("stale_file", "Error: file changed during patch; read it again before patching", retriable=False)
+        os.replace(temporary, path)
+        temporary = None
+        relative = path.relative_to(self._WORKSPACE_ROOT).as_posix()
+        data = {"path": relative, "old_sha256": digest,
+                "new_sha256": hashlib.sha256(updated_bytes).hexdigest(), "hunk_count": len(spans)}
+        return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
+    except Exception as exc:
+        return tool_failure("execution_error", f"Error applying patch: {exc}", retriable=False)
     finally:
         if temporary:
             try:

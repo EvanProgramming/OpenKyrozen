@@ -112,7 +112,7 @@ def _jev_permission_check(self, action: str, category: str) -> bool:
         "criteria": {"allow": "The described category is safe to execute without user approval",
                      "deny": "This category is risky, sensitive, or uncertain"},
     }}
-    safe_actions = {"read_file", "run_cmd", "write_file", "git_push", "git_reset", "github_cli",
+    safe_actions = {"read_file", "run_cmd", "write_file", "apply_patch", "git_push", "git_reset", "github_cli",
                     "git_commit", "git_pull", "git_checkout", "git_remote", "git_clone", "git_add",
                     "git_stash", "define_tool", "search_memory", "check_stored_data"}
     summary = {"action": action if action in safe_actions else "other_tool",

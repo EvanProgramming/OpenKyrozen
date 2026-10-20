@@ -414,7 +414,7 @@ class ServerBoundaryTests(unittest.TestCase):
             finally:
                 server._agent._set_workspace_root(previous_root)
             self.assertEqual(called["id"], 5)
-            self.assertEqual(called["result"]["content"][0]["text"], "MCP object mapping works")
+            self.assertEqual(json.loads(called["result"]["content"][0]["text"])["content"], "MCP object mapping works")
             self.assertFalse(called["result"]["isError"])
 
     def test_mcp_protocol_and_execution_errors_echo_ids_and_respect_capabilities(self):

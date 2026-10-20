@@ -176,7 +176,7 @@ def _is_state_changing_action(self, action: str, args: str) -> bool:
             return bool(options and (options[0] in {'-d','-D','--delete','-m','-M','--move','-c','-C','--copy','-f','--force'} or not options[0].startswith('-')))
         if action == 'git_remote': return args.get('operation', 'list') in {'add','remove'}
         return action in {
-            "write_file", "edit_file", "run_cmd", "git_clone", "git_add", "git_commit", "git_push",
+            "write_file", "edit_file", "apply_patch", "run_cmd", "git_clone", "git_add", "git_commit", "git_push",
             "git_pull", "git_checkout", "git_stash", "git_reset", "github_cli", "define_tool",
             "browser_open", "browser_click", "browser_type", "graph_refresh", "spawn_agents",
             "browser_close", "send_subagent", "cancel_subagent", "update_plan",
@@ -186,7 +186,7 @@ def _is_state_changing_action(self, action: str, args: str) -> bool:
     if action == "git_remote":
         return str(args).lstrip().startswith(("add ", "remove "))
     return action in {
-        "write_file", "edit_file", "run_cmd", "git_clone", "git_add", "git_commit", "git_push",
+        "write_file", "edit_file", "apply_patch", "run_cmd", "git_clone", "git_add", "git_commit", "git_push",
         "git_pull", "git_checkout", "git_stash", "git_reset", "git_remote", "github_cli", "define_tool",
         "browser_open", "browser_click", "browser_type", "graph_refresh", "spawn_agents", "send_subagent",
         "browser_close", "cancel_subagent", "update_plan",
@@ -660,7 +660,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
         checkpoint = current_task.get("checkpoint") or {}
         scoped_file_mutation = (
             not checkpoint.get("action")
-            and canonical in {"write_file", "edit_file"}
+            and canonical in {"write_file", "edit_file", "apply_patch"}
             and _file_mutation_matches_objective(current_task, structured)
             and _strategic_plan_denial(active_plan, canonical, structured, expected_spec,
                                        self._get_workspace_root()) is None

@@ -26,6 +26,7 @@ _ROWS = (
     ('git_show', 'read', 'read', 'adapter', 'normal', False, ('show',), (), (), ()),
     ('write_file', 'write', 'mutation', 'adapter', 'normal', False, ('write',), ('path', 'content'), (('path', 'file_path'), ('content', 'text')), ()),
     ('edit_file', 'write', 'mutation', 'adapter', 'normal', False, (), (), (), ()),
+    ('apply_patch', 'write', 'mutation', 'adapter', 'normal', False, (), (), (), ()),
     ('run_cmd', 'shell', 'unknown', 'adapter', 'normal', False, ('bash', 'shell', 'sh', 'run_command', 'cmd', 'exec', 'execute', 'run_shell_command', 'run_shell', 'shell_command', 'execute_shell', 'shell_cmd', 'bash_cmd', 'command', 'run'), ('command',), (('command', 'cmd'),), ()),
     ('execute_terminal_command', 'shell', 'unknown', 'adapter', 'normal', False, ('run_terminal_command', 'run_terminal', 'terminal'), ('command',), (('command', 'cmd'),), ()),
     ('search_web', 'network', 'external', 'adapter', 'normal', False, (), ('query',), (), ()),
@@ -183,6 +184,10 @@ _OBJECT_FIELDS = {
     'calculate': {'expression': {'type':'string','minLength':1,'maxLength':4000}},
     'read_file': {'path': {'type':'string'}, 'start_line': {'type':'integer','minimum':1}, 'max_lines': {'type':'integer','minimum':1}, 'max_chars': {'type':'integer','minimum':1}},
     'edit_file': {'path': {'type':'string'}, 'old_text': {'type':'string','minLength':1}, 'new_text': {'type':'string'}, 'expected_sha256': {'type':'string'}},
+    'apply_patch': {'path': {'type':'string'}, 'expected_sha256': {'type':'string','pattern':'^[0-9a-fA-F]{64}$'},
+                    'hunks': {'type':'array','minItems':1,'items':{'type':'object','properties':{
+                        'old_text': {'type':'string','minLength':1}, 'new_text': {'type':'string'},
+                    },'required':['old_text','new_text'],'additionalProperties':False}}},
     'git_status': {'path': {'type':'string'}},
     'git_diff': {'options': {'type':'array','items':{'type':'string'}}}, 'git_log': {'options': {'type':'array','items':{'type':'string'}}},
     'git_branch': {'options': {'type':'array','items':{'type':'string'}}}, 'git_add': {'paths': {'type':'array','items':{'type':'string'}}},
@@ -215,6 +220,7 @@ for _name, _properties in _OBJECT_FIELDS.items():
         'browser_close': ['session_id'], 'send_subagent': ['run_id', 'assignment'],
         'cancel_subagent': ['run_id'], 'search_memory': ['query'], 'calculate': ['expression'],
         'edit_file': ['path', 'old_text', 'new_text', 'expected_sha256'],
+        'apply_patch': ['path', 'expected_sha256', 'hunks'],
         'git_commit': ['message'], 'git_remote': ['operation'], 'graph_query': ['question'],
         'graph_explain': ['symbol'], 'graph_path': ['source', 'target'],
     }.get(_name, [])
@@ -245,7 +251,7 @@ def builtin_metadata(name):
             effects = 'process'
         elif name == 'git_reset':
             effects = 'destructive'
-        elif name in {'write_file', 'edit_file', 'git_add', 'git_commit', 'git_checkout', 'git_stash', 'git_branch', 'git_remote'}:
+        elif name in {'write_file', 'edit_file', 'apply_patch', 'git_add', 'git_commit', 'git_checkout', 'git_stash', 'git_branch', 'git_remote'}:
             effects = 'filesystem'
         elif name in {'git_clone', 'git_push', 'git_pull', 'github_cli', 'search_web', 'read_webpage',
                       'analyze_remote_repo', 'browser_open', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_close',
