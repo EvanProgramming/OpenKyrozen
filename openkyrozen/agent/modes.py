@@ -735,11 +735,16 @@ class InteractionController:
             if version is not None and version != executing.get("version"):
                 raise InteractionError("accepted plan version is stale")
             return executing, False
-        if not plan or (plan_id and plan_id != plan.get("plan_id")) or (version is not None and version != plan.get("version")):
+        if not plan:
+            if executing and plan_id and plan_id != executing.get("plan_id"):
+                raise InteractionError("accepted plan identity is stale")
             accepted = self.accepted_plan(plan_id, version)
             if accepted:
                 return accepted, False
             raise InteractionError("plan is not pending")
+        if ((plan_id and plan_id != plan.get("plan_id"))
+                or (version is not None and version != plan.get("version"))):
+            raise InteractionError("plan is not pending at the requested version")
         if executing and task_manager.working_plan is None:
             task_manager.recover()
         elif not executing and task_manager.working_plan is None:
@@ -837,6 +842,15 @@ class InteractionController:
             )
         except ValueError as exc:
             accepted = self.accepted_plan(plan["plan_id"], plan["version"])
+            current_state = self.state()
+            current_plan = current_state.get("pending_plan") or current_state.get("executing_plan")
+            if current_plan and not all(
+                    current_plan.get(key) == plan.get(key)
+                    for key in ("plan_id", "version", "fingerprint")):
+                message = str(exc)
+                if "changed" not in message.lower() and "stale" not in message.lower():
+                    message = f"Strategic Plan changed while acceptance was pending: {message}"
+                raise InteractionError(message) from exc
             if accepted and accepted.get("fingerprint") == plan["fingerprint"]:
                 return accepted, False
             raise InteractionError(str(exc)) from exc

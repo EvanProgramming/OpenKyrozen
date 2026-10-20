@@ -272,7 +272,10 @@ def _command(self, name: str, args: Any, request_id: str) -> None:
             self.emit("response", request_id, text="Interaction mode set to plan.")
             self.interaction(request_id)
         elif action == "accept":
-            self.submit("accept plan", request_id)
+            plan = runtime._interaction_controller.state().get("pending_plan")
+            acceptance = ({"plan_id": plan["plan_id"], "version": plan["version"]}
+                          if plan else None)
+            self.submit("accept plan", request_id, plan_acceptance=acceptance)
         elif action == "cancel":
             try:
                 runtime.cancel_interaction_plan()

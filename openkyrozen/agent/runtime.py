@@ -366,6 +366,7 @@ class AgentRuntime:
             return None
 
     def chat(self, session, message, *, clear_tasks=False, profile=None, memory_context=None,
+             plan_acceptance: dict[str, Any] | None = None,
              on_event: EventSink | None = None, on_runtime_event: RuntimeEventSink | None = None,
              approve: Approval | None = None) -> str:
         with self.use_session(session):
@@ -405,6 +406,7 @@ class AgentRuntime:
                 try:
                     reply = self._chat_turn(
                         message, clear_tasks=clear_tasks, profile=profile, memory_context=memory_context,
+                        **({"plan_acceptance": plan_acceptance} if plan_acceptance is not None else {}),
                     )
                 except BaseException as exc:
                     from openkyrozen.providers.errors import ProviderError, ProviderErrorKind

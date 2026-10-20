@@ -552,6 +552,28 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
             "interaction.plan_accepted", workspace_id="project", session_id="strategic-session",
         )), 1)
 
+    def test_acceptance_racing_with_newer_revision_rejects_stale_result(self):
+        plan = self._proposal()
+        winner = InteractionController(self.store, workspace_id="project", session_id="strategic-session")
+        winner_manager = TaskManager(self.store, workspace_id="project", session_id="strategic-session")
+        loser_manager = TaskManager(self.store, workspace_id="project", session_id="strategic-session")
+        original_edit = loser_manager.edit_plan
+
+        def race(**kwargs):
+            winner.accept_plan(winner_manager, plan_id=plan["plan_id"], version=plan["version"])
+            winner.propose_plan({
+                "title": "Revised page", "summary": "Write the revised page.",
+                "bounds": plan["bounds"],
+                "steps": [{"id": "page", "title": "Create revised page", "description": "Write it.",
+                           "acceptance": ["Revised page exists"]}],
+            })
+            return original_edit(**kwargs)
+
+        with patch.object(loser_manager, "edit_plan", side_effect=race):
+            with self.assertRaisesRegex(InteractionError, "changed|stale"):
+                self.controller.accept_plan(loser_manager, plan_id=plan["plan_id"], version=plan["version"])
+        self.assertEqual(self.controller.state()["pending_plan"]["version"], 2)
+
     def test_interaction_state_keeps_accepted_bounds_after_generic_event_window(self):
         plan = self._proposal()
         self.controller.accept_plan(self.manager, plan_id=plan["plan_id"], version=plan["version"])
@@ -1339,6 +1361,32 @@ class InteractionTests(unittest.TestCase):
         nodes = self.agent.history_manager(session.session_id).list()
         self.assertEqual(nodes[-1]["user_message"], "accept plan")
         self.assertEqual(nodes[-1]["assistant_message"], reply)
+
+    def test_queued_plan_acceptance_rejects_a_newer_proposal(self):
+        session = self.agent.open_session("queued-plan-acceptance")
+        first = session.interaction.propose_plan({
+            "title": "First proposal", "summary": "Create one file.",
+            "steps": [{"id": "file", "title": "Create file", "description": "Write it.",
+                       "acceptance": ["File exists"]}],
+        })
+        session.interaction.accept_plan(session.tasks, plan_id=first["plan_id"], version=first["version"])
+        newer = session.interaction.propose_plan({
+            "title": "Revised proposal", "summary": "Create the revised file.",
+            "steps": [{"id": "file", "title": "Create revised file", "description": "Write it safely.",
+                       "acceptance": ["Revised file exists"]}],
+        })
+        with self.assertRaisesRegex(InteractionError, "not pending"):
+            session.interaction.accept_plan(
+                session.tasks, plan_id=first["plan_id"], version=first["version"],
+            )
+
+        reply = self.agent.chat(session, "accept plan", plan_acceptance={
+            "plan_id": first["plan_id"], "version": first["version"],
+        })
+
+        self.assertIn("changed", reply.lower())
+        self.assertEqual(session.interaction.state()["pending_plan"]["version"], newer["version"])
+        self.assertEqual(session.interaction.state()["executing_plan"]["version"], first["version"])
 
     def test_restore_history_refreshes_active_session_transcript(self):
         from openkyrozen.agent.conversation import ConversationHistory

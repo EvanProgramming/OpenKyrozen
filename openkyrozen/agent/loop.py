@@ -10,7 +10,8 @@ from .turn import TurnContext, scoped_turn
 
 def _chat_turn_impl(self, user_input: str, clear_tasks: bool = False, profile: str | None = None,
                     memory_context: dict[str, Any] | None = None,
-                    inspection_complete: bool = False) -> str:
+                    inspection_complete: bool = False,
+                    plan_acceptance: dict[str, Any] | None = None) -> str:
     """Coordinate context, protocol recovery, execution and completion for one turn."""
     turn = TurnContext(user_input, clear_tasks, profile, memory_context, inspection_complete)
     self._prepare_turn(turn)
@@ -23,7 +24,8 @@ def _chat_turn_impl(self, user_input: str, clear_tasks: bool = False, profile: s
 
 @scoped_turn
 def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | None = None,
-               memory_context: dict[str, Any] | None = None) -> str:
+               memory_context: dict[str, Any] | None = None,
+               plan_acceptance: dict[str, Any] | None = None) -> str:
     """Run one chat turn with failure-isolated plugin lifecycle hooks."""
     previous_capability_token = self._execution_capability_token
     original_user_input = user_input
@@ -66,9 +68,27 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
     elif mode_override is None and is_plan_acceptance(user_input):
         created = None
         try:
-            accepted_plan, created = self._interaction_controller.accept_plan(self.tasks)
+            if plan_acceptance is not None:
+                plan_id = plan_acceptance.get("plan_id")
+                version = plan_acceptance.get("version")
+                if (not isinstance(plan_id, str) or not plan_id.strip()
+                        or not isinstance(version, int) or isinstance(version, bool) or version < 1):
+                    raise InteractionError("plan acceptance identity is invalid")
+                current_state = self._interaction_controller.state()
+                current_plan = current_state.get("pending_plan") or current_state.get("executing_plan")
+                if (not current_plan or current_plan.get("plan_id") != plan_id
+                        or current_plan.get("version") != version):
+                    raise InteractionError("plan acceptance identity is stale")
+            accepted_plan, created = self._interaction_controller.accept_plan(
+                self.tasks,
+                plan_id=plan_id if plan_acceptance is not None else None,
+                version=version if plan_acceptance is not None else None,
+            )
         except InteractionError:
-            early_reply = "There is no pending plan to accept."
+            early_reply = (
+                "The plan changed before acceptance. Review the current proposal and accept it explicitly."
+                if plan_acceptance else "There is no pending plan to accept."
+            )
         if created is False and not self._interaction_controller.state().get("executing_plan"):
             early_reply = "Plan was already accepted."
         if early_reply is None:
@@ -112,6 +132,7 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
                     user_input, clear_tasks=clear_tasks, profile=profile,
                     memory_context=memory_context,
                     inspection_complete=bool(pending_question or pending_plan),
+                    plan_acceptance=plan_acceptance,
                 )
             if backend := self._fast_used_backend.get():
                 reply = f"Made a decision with {'Jev' if backend == 'jev' else 'Kev'}.\n\n{reply}"

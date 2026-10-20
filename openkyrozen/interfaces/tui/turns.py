@@ -157,13 +157,13 @@ def _stream_projection(self, request_id: str):
     return callback
 
 
-def submit(self, text: str, request_id: str) -> None:
+def submit(self, text: str, request_id: str, *, plan_acceptance: dict[str, Any] | None = None) -> None:
     with self._state_lock:
         if self._busy:
             self.emit("error", request_id, code="busy", error="A turn is already running.")
             return
         self._busy = True
-    worker = threading.Thread(target=self._run_submit, args=(text, request_id), daemon=True)
+    worker = threading.Thread(target=self._run_submit, args=(text, request_id, plan_acceptance), daemon=True)
     self._workers.add(worker)
     worker.start()
 
@@ -249,7 +249,7 @@ def _attachment_prompt(self, text: str) -> str:
     )
 
 
-def _run_submit(self, text: str, request_id: str) -> None:
+def _run_submit(self, text: str, request_id: str, plan_acceptance: dict[str, Any] | None = None) -> None:
     runtime = self.agent
     approval_token = runtime._approval_callback.set(self._approval)
     try:
@@ -293,6 +293,7 @@ def _run_submit(self, text: str, request_id: str) -> None:
         reply = self._quiet_call(
             runtime.chat, runtime.current_session, self._attachment_prompt(sanitized),
             on_runtime_event=self._stream_projection(request_id), approve=self._approval,
+            **({"plan_acceptance": plan_acceptance} if plan_acceptance is not None else {}),
             clear_tasks=not bool(state["pending_question"] or state["pending_plan"]
                                  or runtime.is_plan_acceptance(sanitized)),
         )
