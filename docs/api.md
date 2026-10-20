@@ -90,7 +90,7 @@ DNS rebinding is not fully prevented by application checks. Restrict outbound tr
 
 ## MCP endpoint
 
-`POST /mcp` accepts JSON-RPC and the supported MCP protocol versions `2024-11-05` and `2025-06-18`. Initialize with `method: "initialize"`, then notify `notifications/initialized`. `tools/list` exposes only tools allowed by `KYROZEN_MCP_CAPABILITIES` (default `workspace`); `server/discover` returns the corresponding discovery view. Use `tools/call` with `params.name` and `params.arguments`. The server maps typed objects for common structured tools into the existing plain-string action contract; for all other tools, pass `{"args":"<plain string>"}`.
+`POST /mcp` accepts JSON-RPC and the supported MCP protocol versions `2024-11-05` and `2025-06-18`. Initialize with `method: "initialize"`, then notify `notifications/initialized`. `tools/list` exposes only tools allowed by `KYROZEN_MCP_CAPABILITIES` (default `workspace`); `server/discover` returns the corresponding discovery view. Use `tools/call` with `params.name` and the typed object in `params.arguments`. File calls such as `read_file`, `write_file`, `edit_file`, and `apply_patch` use their canonical structured schemas. Structured `read_file` returns a hash-bearing bounded excerpt in `structuredContent` and the serialized object in text content; legacy string reads retain their plain-text boundary behavior.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"example","version":"1.0"}}}
@@ -99,6 +99,8 @@ DNS rebinding is not fully prevented by application checks. Restrict outbound tr
 ```json
 {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"README.md"}}}
 ```
+
+`apply_patch` accepts `{"path":"src/app.py","expected_sha256":"<hash from read_file>","hunks":[{"old_text":"old block","new_text":"new block"}]}`. Each non-empty old block must match exactly once in the unchanged file, and hunks must not overlap. A stale hash, ambiguous match, invalid path, or overlapping patch leaves the file unchanged.
 
 Unknown method/tool, malformed params, and denied capabilities return JSON-RPC errors. A tool that ran but returned a failed `ExecutionReceipt` returns a normal tool result with `isError: true`. MCP calls use the normal executor and capability token. MCP is a non-interactive surface: an approval requirement cannot be accepted through a chat prompt on this endpoint. `KYROZEN_MCP_ALLOW_DANGEROUS=1` selects the full profile; only set it for an intentionally trusted deployment.
 

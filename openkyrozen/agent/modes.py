@@ -190,17 +190,27 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
             action = execution.get("action") if isinstance(execution, dict) else None
             arguments = execution.get("arguments") if isinstance(execution, dict) else None
             if (not isinstance(execution, dict) or set(execution) != {"action", "arguments"}
-                    or not isinstance(action, str) or action not in {"write_file", "edit_file"}
+                    or not isinstance(action, str) or action not in {"write_file", "edit_file", "apply_patch"}
                     or not isinstance(arguments, dict)
                     or not isinstance(arguments.get("path"), str) or not arguments["path"].strip()):
-                raise InteractionError("file execution contract must name write_file or edit_file and an exact path")
+                raise InteractionError("file execution contract must name write_file, edit_file, or apply_patch and an exact path")
             required = ({"path", "content"} if action == "write_file" else
+                        {"path", "expected_sha256", "hunks"} if action == "apply_patch" else
                         {"path", "old_text", "new_text", "expected_sha256"})
-            if set(arguments) != required or any(not isinstance(item, str) for item in arguments.values()):
+            if set(arguments) != required or (action != "apply_patch" and any(not isinstance(item, str) for item in arguments.values())):
                 raise InteractionError("file execution arguments must exactly match the selected file operation")
             if action == "edit_file" and (
                     not arguments["old_text"] or not re.fullmatch(r"[0-9a-fA-F]{64}", arguments["expected_sha256"])):
                 raise InteractionError("edit_file requires nonempty old_text and a SHA-256 read hash")
+            if action == "apply_patch" and (
+                    not isinstance(arguments["path"], str) or not arguments["path"].strip()
+                    or not isinstance(arguments["expected_sha256"], str)
+                    or not re.fullmatch(r"[0-9a-fA-F]{64}", arguments["expected_sha256"])
+                    or not isinstance(arguments["hunks"], list) or not arguments["hunks"]
+                    or any(not isinstance(hunk, dict) or set(hunk) != {"old_text", "new_text"}
+                           or not isinstance(hunk.get("old_text"), str) or not hunk["old_text"]
+                           or not isinstance(hunk.get("new_text"), str) for hunk in arguments["hunks"])):
+                raise InteractionError("apply_patch requires a SHA-256 read hash and exact-text hunks")
             try:
                 json.dumps(arguments, ensure_ascii=False, allow_nan=False)
             except (TypeError, ValueError) as exc:
@@ -328,6 +338,7 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
         "read_file": ("read", "read_only"),
         "write_file": ("write", "filesystem"),
         "edit_file": ("write", "filesystem"),
+        "apply_patch": ("write", "filesystem"),
     }
     for step in normalised:
         contracts = ([step["execution"]] if step.get("execution") else []) + [

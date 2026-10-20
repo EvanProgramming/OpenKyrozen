@@ -229,10 +229,11 @@ class DelegationTests(unittest.TestCase):
             agents = coordinator.spawn([brief(0), brief(1, provider="anthropic", model="claude-test")])
             finished = coordinator.wait(timeout=10)
         self.assertEqual([r["status"] for r in finished], ["succeeded", "succeeded"])
-        self.assertTrue(all(run["result"]["tool_records"][0]["result"] == source for run in finished))
-        self.assertTrue(all(source in str(message["content"]) for call in self.calls if len(call[4]) > 2
+        self.assertTrue(all(json.loads(run["result"]["tool_records"][0]["result"])["content"] == source
+                            for run in finished))
+        self.assertTrue(all("return sum(values)" in str(message["content"]) for call in self.calls if len(call[4]) > 2
                             for message in call[4][-1:]))
-        self.assertIn(source, str(coordinator.detail(finished[0]["run_id"])["messages"][-2]["content"]))
+        self.assertIn("return sum(values)", str(coordinator.detail(finished[0]["run_id"])["messages"][-2]["content"]))
         self.assertIs(parent_context, self.runtime.execution_context)
         self.assertEqual(parent_context.last_prompt_tokens, 123)
         self.assertNotIn("private-value", self.runtime._fix_safe_text('{"api_key":"private-value"}'))

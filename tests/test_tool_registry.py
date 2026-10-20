@@ -6,7 +6,7 @@ from openkyrozen.tools import ToolAdapters
 class RegistryRegressions(unittest.TestCase):
     def test_every_adapter_has_complete_spec(self):
         adapters = ToolAdapters()
-        self.assertEqual(len(adapters.AVAILABLE_TOOLS),40)
+        self.assertEqual(len(adapters.AVAILABLE_TOOLS),41)
         for name, executor in adapters.AVAILABLE_TOOLS.items():
             spec = adapters.tool_registry.get_spec(name)
             self.assertTrue(callable(spec.executor))
@@ -49,6 +49,16 @@ class RegistryRegressions(unittest.TestCase):
         mcp['write_file']['inputSchema']['properties']['path']['type']='number'
         self.assertEqual(registry.get_spec('write_file').input_schema['properties']['path']['type'],'string')
         self.assertNotIn('bash',provider)
+
+    def test_apply_patch_schema_and_policy_are_filesystem_mutation(self):
+        from openkyrozen.tools.catalog import builtin_metadata
+        from openkyrozen.security.tool_policy import allowed_tool_names
+        adapters = ToolAdapters()
+        schema = adapters.tool_registry.get_spec('apply_patch').input_schema
+        self.assertEqual(schema['required'], ['path', 'expected_sha256', 'hunks'])
+        self.assertEqual(schema['properties']['hunks']['items']['required'], ['old_text', 'new_text'])
+        self.assertEqual(builtin_metadata('apply_patch')['side_effects'], 'filesystem')
+        self.assertIn('apply_patch', allowed_tool_names(adapters.AVAILABLE_TOOLS, 'workspace'))
 
 class RegistryContractTests(unittest.TestCase):
     def make(self,name='custom',**changes):
@@ -131,7 +141,7 @@ class RuntimeCatalogTests(unittest.TestCase):
             finally:
                 app.close()
 
-    def test_all50_bound_tools_and_workspace_isolation(self):
+    def test_all51_bound_tools_and_workspace_isolation(self):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
@@ -140,7 +150,7 @@ class RuntimeCatalogTests(unittest.TestCase):
             app=build_application(memory=build_memory(Path(home)/'state.sqlite3'))
             try:
                 runtime=app.runtime
-                self.assertEqual(len(runtime.AVAILABLE_TOOLS),50)
+                self.assertEqual(len(runtime.AVAILABLE_TOOLS),51)
                 self.assertEqual(set(runtime.AVAILABLE_TOOLS),set(runtime.tool_registry.specs))
                 self.assertTrue(all(getattr(spec.executor, "__tool_result_executor__", None)
                                     for spec in runtime.tool_registry.specs.values()))

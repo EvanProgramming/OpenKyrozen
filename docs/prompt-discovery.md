@@ -14,7 +14,7 @@ The same environment variable applies to TUI and web processes. Invalid values
 raise an explicit configuration error when the runtime builds the prompt.
 
 Compact mode keeps full descriptions for `list_dir`, `find_files`, `search_files`,
-`read_file`, `write_file`, `edit_file`, `run_cmd`, and `discover_tools`. Other
+`read_file`, `write_file`, `edit_file`, `apply_patch`, `run_cmd`, and `discover_tools`. Other
 permitted tools appear by exact name, grouped by capability. The agent can request
 their descriptions:
 

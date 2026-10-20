@@ -117,7 +117,12 @@ def acceptance(*, live=False):
                         assert sources, "FAIL: author or reviewer did not inspect a fixture source"
                         for receipt, relative_path in sources:
                             path = root / relative_path
-                            assert receipt["result"] == path.read_text(), "FAIL: inspection receipt changed physical source lines"
+                            result = receipt["result"]
+                            try:
+                                result = json.loads(result).get("content", result)
+                            except (TypeError, json.JSONDecodeError):
+                                pass
+                            assert result == path.read_text(), "FAIL: inspection receipt changed physical source lines"
                             observed_sources.add(path.name)
                 assert observed_sources == {"alpha.py", "beta.py"}
                 assert all(task["status"] in {"succeeded", "done"} for task in runtime.tasks.tasks), (

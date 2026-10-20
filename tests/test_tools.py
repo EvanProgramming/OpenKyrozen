@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 from pathlib import Path
 
-from openkyrozen.tools import ToolAdapters
+from openkyrozen.tools import ToolAdapters, invoke_tool_result
 tools = ToolAdapters()
 AVAILABLE_TOOLS = tools.AVAILABLE_TOOLS
 allowed_tool_names = tools.allowed_tool_names
@@ -25,6 +25,97 @@ set_workspace_root = tools.set_workspace_root
 write_file = tools.write_file
 
 class WorkspaceToolTests(unittest.TestCase):
+    def test_native_read_is_always_structured_and_legacy_read_stays_text(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "note.txt").write_text("hello\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                native = invoke_tool_result(tools.read_file, {"path": "note.txt"})
+                legacy = tools.read_file("note.txt")
+            finally:
+                tools.set_workspace_root(original)
+        self.assertEqual(native.data["content"], "hello\n")
+        self.assertRegex(native.data["sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(legacy, "hello\n")
+
+    def test_structured_write_keeps_pipe_in_content(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools.set_workspace_root(root)
+            try:
+                result = invoke_tool_result(tools.write_file, {"path": "note.txt", "content": "left|right"})
+            finally:
+                tools.set_workspace_root(original)
+            self.assertTrue(result.success)
+            self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "left|right")
+
+    def test_apply_patch_is_atomic_stale_safe_and_rejects_ambiguous_hunks(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "module.py"
+            target.write_text("first = 1\n\nsecond = 2\n", encoding="utf-8")
+            tools.set_workspace_root(root)
+            try:
+                digest = hashlib.sha256(target.read_bytes()).hexdigest()
+                args = {"path": "module.py", "expected_sha256": digest, "hunks": [
+                    {"old_text": "first = 1", "new_text": "first = 3"},
+                    {"old_text": "second = 2", "new_text": "second = 4"},
+                ]}
+                result = invoke_tool_result(tools.apply_patch, args)
+                self.assertTrue(result.success)
+                self.assertEqual(target.read_text(encoding="utf-8"), "first = 3\n\nsecond = 4\n")
+                changed = target.read_bytes()
+                args["expected_sha256"] = digest
+                stale = invoke_tool_result(tools.apply_patch, args)
+                self.assertFalse(stale.success)
+                self.assertEqual(target.read_bytes(), changed)
+                args["expected_sha256"] = hashlib.sha256(changed).hexdigest()
+                args["hunks"] = [{"old_text": "first", "new_text": "x"},
+                                 {"old_text": "first = 3", "new_text": "y"}]
+                overlap = invoke_tool_result(tools.apply_patch, args)
+                self.assertFalse(overlap.success)
+                self.assertEqual(target.read_bytes(), changed)
+                args["hunks"] = [{"old_text": " = ", "new_text": " = x"}]
+                ambiguous = invoke_tool_result(tools.apply_patch, args)
+                self.assertFalse(ambiguous.success)
+                self.assertEqual(target.read_bytes(), changed)
+            finally:
+                tools.set_workspace_root(original)
+
+    def test_apply_patch_rejects_invalid_hunks_and_workspace_escape(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "module.py"
+            target.write_text("value = 1\n", encoding="utf-8")
+            outside = root.parent / f"{root.name}-outside.txt"
+            outside.write_text("secret\n", encoding="utf-8")
+            (root / "link.txt").symlink_to(outside)
+            tools.set_workspace_root(root)
+            try:
+                digest = hashlib.sha256(target.read_bytes()).hexdigest()
+                for hunks in ([], [{"old_text": "", "new_text": "x"}],
+                              [{"old_text": "value", "new_text": "x"},
+                               {"old_text": "value", "new_text": "y"}]):
+                    result = invoke_tool_result(tools.apply_patch, {
+                        "path": "module.py", "expected_sha256": digest, "hunks": hunks,
+                    })
+                    self.assertFalse(result.success)
+                    self.assertEqual(target.read_text(encoding="utf-8"), "value = 1\n")
+                escape = invoke_tool_result(tools.apply_patch, {
+                    "path": "link.txt", "expected_sha256": "0" * 64,
+                    "hunks": [{"old_text": "secret", "new_text": "exposed"}],
+                })
+                self.assertFalse(escape.success)
+                self.assertEqual(outside.read_text(encoding="utf-8"), "secret\n")
+            finally:
+                tools.set_workspace_root(original)
+                outside.unlink(missing_ok=True)
+
     def test_structured_read_returns_hash_and_truncation_metadata(self):
         original = tools._WORKSPACE_ROOT
         with tempfile.TemporaryDirectory() as directory:

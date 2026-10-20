@@ -51,7 +51,7 @@ class ToolAdapters:
 
     from .search import (search_web)
 
-    from .filesystem import (find_files, list_dir, list_tree, write_file, edit_file, read_file, search_files)
+    from .filesystem import (find_files, list_dir, list_tree, write_file, edit_file, apply_patch, read_file, search_files)
 
     from .git import (_git_working_directory, git_clone, git_diff, git_log, git_branch, git_add, git_commit, git_push, git_pull, git_checkout, git_stash, git_reset, git_show, git_remote, git_status, execute_terminal_command)
 

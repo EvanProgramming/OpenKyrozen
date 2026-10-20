@@ -5,7 +5,7 @@ from openkyrozen.agent.turn import TurnContext
 from openkyrozen.providers.models import FinishReason, ToolReply
 
 _COMPACT_CORE_TOOLS = frozenset({
-    "list_dir", "find_files", "search_files", "read_file", "write_file", "edit_file",
+    "list_dir", "find_files", "search_files", "read_file", "write_file", "edit_file", "apply_patch",
     "run_cmd", "discover_tools",
 })
 

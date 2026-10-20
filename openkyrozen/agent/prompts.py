@@ -87,15 +87,15 @@ def _agent_prompt_tools_list(self, agent_config: dict[str, Any]) -> str:
     permitted = self._permitted_tool_names(agent_config) - {"update_plan"}
     detailed = permitted
     if self._prompt_profile() == "compact":
-        detailed = permitted & ({"list_dir", "find_files", "search_files", "read_file", "write_file", "edit_file", "run_cmd", "discover_tools"}
+        detailed = permitted & ({"list_dir", "find_files", "search_files", "read_file", "write_file", "edit_file", "apply_patch", "run_cmd", "discover_tools"}
                                 | set(self.execution_context.discovered_tools))
     lines = [f"- {name}: {self.tool_registry.get_spec(name).description}"
              for name, fn in self.AVAILABLE_TOOLS.items() if name in detailed]
     if self._prompt_profile() == "compact":
         if "search_files" in detailed:
             lines.append('search_files JSON: {"query":"literal text","path":".","glob":"*.py","limit":100}')
-        if "edit_file" in detailed:
-            lines.append('edit_file JSON: {"path":"file","old_text":"exact text","new_text":"replacement","expected_sha256":"hash from structured read_file"}')
+        if detailed & {"edit_file", "apply_patch"}:
+            lines.append("Use the structured read_file SHA-256 for edit_file and exact-text apply_patch hunks.")
     groups: dict[str, list[str]] = {}
     for name in sorted(permitted - detailed):
         groups.setdefault(tool_capability(name,self.AVAILABLE_TOOLS), []).append(name)
@@ -299,9 +299,10 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
         "{\"action\": \"tool_name\", \"args\": \"arguments\"}\n"
         "```\n\n"
         "**Args rules:**\n"
-        "- `args` is always a **plain string**, never a JSON object.\n"
+        "- In this legacy Action protocol, `args` is a plain string. Native provider tool calls use the tool's typed object schema.\n"
         "- For `write_file`: use `\"path|content\"` (pipe‑separated).\n"
         "- For precise existing-file changes, prefer `edit_file` with JSON fields `path`, `old_text`, `new_text`, and the `expected_sha256` from a structured `read_file`; reread and retry if stale.\n"
+        "- For several independent exact replacements in one file, use `apply_patch` with `path`, `expected_sha256`, and ordered exact-text `hunks`; each old block must match once in the same file version.\n"
         "- `search_files` takes JSON `query` and optional workspace-relative `path`, `glob`, and `limit`; it searches literal text and returns bounded file/line results.\n"
         "- For `run_cmd`: the full shell command as one string.\n"
         "- Use only the action names listed above. Aliases like `bash`→`run_cmd` are accepted.\n"

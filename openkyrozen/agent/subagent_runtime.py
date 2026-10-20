@@ -58,7 +58,7 @@ def _subagent_action_arguments(self, action: str, args: Any) -> Any:
         if len(values) < minimum: return None
         values.extend([''] * (len(fields)-len(values)))
         return dict(zip(fields, values))
-    if action in {'edit_file','search_files','spawn_agents','send_subagent','list_subagents','wait_subagents','cancel_subagent'}:
+    if action in {'edit_file','apply_patch','search_files','spawn_agents','send_subagent','list_subagents','wait_subagents','cancel_subagent'}:
         try:
             value = json.loads(args or '{}')
             return value if isinstance(value, dict) else None

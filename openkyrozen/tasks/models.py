@@ -67,6 +67,7 @@ _RECEIPT_ACTION_ALIASES = {
     "commit": "git_commit",
     "write": "write_file",
     "edit_file": "write_file",
+    "apply_patch": "write_file",
     "run_command": "run_cmd",
     "execute_terminal_command": "run_cmd",
     "run_terminal": "run_cmd",

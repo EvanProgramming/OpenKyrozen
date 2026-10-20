@@ -7,7 +7,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 
 ## Runtime tools
 
-- Built-in runtime tools: **50**
+- Built-in runtime tools: **51**
 - Names with the `git_` prefix: **14**
 - The CLI Action contract is a plain string in the `args` field.
 - Web and MCP exposure is filtered by the configured capability profile.
@@ -15,6 +15,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | Tool | Capability | Side effects | Parallel safe | Plain-string Action contract | MCP object input schema |
 |---|---|---|---|---|---|
 | `analyze_remote_repo` | `network` | `remote` | false | Clone a remote git repository, read its files, and return a summary. | `url`: string; required: `url` |
+| `apply_patch` | `write` | `filesystem` | false | Apply exact, non-overlapping text hunks only to the file version read by the caller. | `expected_sha256`: string, `hunks`: array, `path`: string; required: `path`, `expected_sha256`, `hunks` |
 | `browser_click` | `browser` | `remote` | false | Click a selector. Args format: session_id\|CSS selector. | `selector`: string, `session_id`: string; required: `session_id`, `selector` |
 | `browser_close` | `browser` | `remote` | false | Close an isolated browser session. Args: browser session ID. | `session_id`: string; required: `session_id` |
 | `browser_open` | `browser` | `remote` | false | Open a URL in an isolated headless browser profile. Args: URL. | `url`: string; required: `url` |

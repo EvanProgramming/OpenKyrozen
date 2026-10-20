@@ -337,9 +337,9 @@ def _delegation_tool_access(self, action, args):
         str(self._get_workspace_root().resolve()), WorkspaceAccess(),
     )
     path = None
-    if action in {"write_file", "edit_file", "read_file", "search_files"}:
+    if action in {"write_file", "edit_file", "apply_patch", "read_file", "search_files"}:
         raw = args.get('path', '') if isinstance(args, dict) else str(args).split("|", 1)[0].strip()
-        if action in {"edit_file", "read_file", "search_files"} and raw.startswith("{"):
+        if action in {"edit_file", "apply_patch", "read_file", "search_files"} and raw.startswith("{"):
             try:
                 request = json.loads(str(args))
                 if isinstance(request, dict):
@@ -369,12 +369,12 @@ def _delegation_tool_access(self, action, args):
         read_only_network = capability == "network" and action in {
             "search_web", "read_webpage", "analyze_remote_repo", "github_status", "github_read",
         }
-        if action not in {"write_file", "edit_file"} and not read_only_network and (
+        if action not in {"write_file", "edit_file", "apply_patch"} and not read_only_network and (
             capability in {"write", "shell", "git", "browser", "destructive", "dynamic"}
             or effects not in {"none", "read", "read_only"}
         ):
             raise PermissionError(f"Sub-agent capability '{capability}' is not confined to assigned files")
-        if action in {"write_file", "edit_file"}:
+        if action in {"write_file", "edit_file", "apply_patch"}:
             brief = coordinator.runs[context.child_run_id]["assignment"]
             owned = {str(coordinator.root / p) for p in brief["scope"]}
             if path not in owned:
@@ -408,7 +408,7 @@ def _delegation_tool_access(self, action, args):
                 allowed, reason = parent.tasks.mutation_matches_current_task(action, match_args)
                 if not allowed:
                     raise ValueError("Sub-agent action does not match accepted plan: " + reason)
-    guarded = action in {"read_file", "write_file", "edit_file", "search_files"} or self._is_state_changing_action(action, args) or action in {"git_diff", "git_show"}
+    guarded = action in {"read_file", "write_file", "edit_file", "apply_patch", "search_files"} or self._is_state_changing_action(action, args) or action in {"git_diff", "git_show"}
     if access and guarded:
         cancelled = (lambda: coordinator.cancelled[context.child_run_id].is_set()) if coordinator else (lambda: False)
         with access.acquire(path, cancelled, context.child_run_id,

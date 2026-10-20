@@ -202,7 +202,7 @@ class ExecutionReceiptContractTests(unittest.TestCase):
         from openkyrozen.tools.catalog import builtin_metadata
 
         expected = {
-            "read_file": "read_only", "write_file": "filesystem", "run_cmd": "process",
+            "read_file": "read_only", "write_file": "filesystem", "apply_patch": "filesystem", "run_cmd": "process",
             "search_web": "remote", "git_push": "remote", "git_reset": "destructive",
             "browser_snapshot": "remote", "graph_refresh": "internal", "calculate": "read_only",
         }
