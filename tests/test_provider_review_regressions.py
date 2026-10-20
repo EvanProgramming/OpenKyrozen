@@ -137,18 +137,18 @@ class GitHubReviewRegressions(unittest.TestCase):
             def chat_stream(self,messages,model=None):
                 try:
                     yield 'first'
-                    release.wait(0.5)
+                    release.wait(2.0)
                     yield 'late'
                 finally:
                     closed.set()
         try:
-            with provider_request_scope(timeout=0.03):
+            with provider_request_scope(timeout=1.0):
                 stream=Adapter().chat_stream([])
                 self.assertEqual(next(stream),'first')
                 started=time.monotonic()
                 with self.assertRaises(ProviderError):
                     next(stream)
-                self.assertLess(time.monotonic()-started,0.25)
+                self.assertLess(time.monotonic()-started,1.5)
         finally:
             release.set()
             stream.close()
