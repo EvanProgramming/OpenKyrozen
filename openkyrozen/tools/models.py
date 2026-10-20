@@ -171,6 +171,7 @@ def command_tool_result(result: "CommandResult") -> ToolResult:
         "duration_seconds": result.duration_seconds,
         "timed_out": result.timed_out,
         "process_id": result.process_id,
+        "sandbox_backend": result.sandbox_backend,
     }
     if result.success:
         return ToolResult(data=data, text=result.output)
@@ -195,6 +196,7 @@ class CommandResult:
     duration_seconds: float = 0.0
     timed_out: bool = False
     process_id: str | None = None
+    sandbox_backend: str | None = None
 
     def __str__(self) -> str:
         return self.output

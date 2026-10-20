@@ -523,6 +523,7 @@ class AgentRuntime:
     def run_command(self, args):
         if isinstance(args, dict) and args.get("background") is True:
             from openkyrozen.tools.models import CommandResult
+            from openkyrozen.tools.sandbox import SandboxUnavailableError
             adapters = self.current_session.workspace.adapters
             options = adapters._validated_shell_options(args)
             if isinstance(options, CommandResult):
@@ -532,8 +533,14 @@ class AgentRuntime:
                 handle = self.current_session.process_manager.start(
                     command, cwd=cwd, env=env, timeout_seconds=timeout,
                 )
-                return CommandResult(f"Started background process {handle.process_id}", True,
-                                     process_id=handle.process_id)
+                message = f"Started background process {handle.process_id}"
+                if handle.sandbox_backend == "unavailable":
+                    message = "OS filesystem sandbox unavailable; process ran without filesystem protection.\n" + message
+                return CommandResult(message, True, process_id=handle.process_id,
+                                     sandbox_backend=handle.sandbox_backend)
+            except SandboxUnavailableError as exc:
+                return CommandResult(f"Error: {exc}", False, failure="sandbox_unavailable",
+                                     sandbox_backend="unavailable")
             except (OSError, RuntimeError, ValueError) as exc:
                 return CommandResult(f"Error starting background process: {exc}", False,
                                      failure="execution_error")

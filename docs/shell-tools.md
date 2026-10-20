@@ -19,7 +19,12 @@ minutes), and is stopped when the application closes. Handles cannot be
 restored after restart. A session can own up to 32 handles until the application
 closes so completed output remains available for paging.
 
-The native structured API exposes all fields directly. The historical string
-Action and `run_cmd("...")` APIs remain supported for foreground commands.
-Operating-system isolation is handled separately by the managed sandbox work;
-these workspace checks constrain the requested working directory only.
+The native structured API exposes all fields directly, including
+`sandbox_backend` (`bubblewrap`, `sandbox-exec`, or `unavailable`). The
+historical string Action and `run_cmd("...")` APIs remain supported for
+foreground commands. Linux uses optional Bubblewrap; macOS uses the experimental
+`sandbox-exec`; Windows has no filesystem backend. A missing backend is reported
+and permits execution by default. Set `KYROZEN_SANDBOX_REQUIRED=1` in
+OpenKyrozen's environment to block commands when no backend is available.
+Backend startup failures never fall back to unsandboxed execution. See
+[security and permissions](security.md) for the filesystem rules and limitations.

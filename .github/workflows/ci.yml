@@ -68,7 +68,7 @@ jobs:
         if: needs.changes.outputs.docs == 'true' || needs.changes.outputs.all == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y zsh
+          sudo apt-get install --no-install-recommends -y zsh bubblewrap
           make docs-check PYTHON=python
 
   python-test:
@@ -87,7 +87,7 @@ jobs:
       - name: Install full development dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y zsh
+          sudo apt-get install --no-install-recommends -y zsh bubblewrap
           python -m pip install --upgrade pip
           pip install -e '.[all]'
       - name: Install Chromium and run the full test suite
@@ -124,7 +124,7 @@ jobs:
       - name: Install all development dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y zsh
+          sudo apt-get install --no-install-recommends -y zsh bubblewrap
           python -m pip install --upgrade pip
           pip install -e '.[all]'
       - name: Install Chromium and run the full test suite
