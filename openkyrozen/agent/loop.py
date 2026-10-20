@@ -184,7 +184,7 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
             "task_ids": [item.get("id") for item in self.tasks.tasks if item.get("id")],
         })
         self._record_conversation_entry("turn.outcome", {
-            "status": "failed" if self._turn_failed.get() else "completed",
+            "status": "failed" if self._turn_failed.get() else self._turn_completion_status.get(),
             "text": self._clean_final_response(reply),
         })
         from openkyrozen.agent.compaction import is_context_digest, retain_context_digests

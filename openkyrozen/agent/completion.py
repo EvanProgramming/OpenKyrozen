@@ -54,16 +54,7 @@ def _complete_turn(self, turn):
     elif len(turn.final_answer.strip()) < 10:
         turn.final_answer = self._deterministic_tool_summary(turn.tool_records)
 
-    # Durable task rows are authoritative.  Never let a natural-language
-    # response or generated recap claim completion when any task failed,
-    # blocked, cancelled, pending, or is still running.
-    durable_tasks_incomplete = bool(self.tasks.tasks) and not all(is_complete(t) for t in self.tasks.tasks)
-    if durable_tasks_incomplete and turn.pending_interaction_reply is None:
-        summary = self._deterministic_tool_summary(turn.tool_records)
-        turn.final_answer = (
-            f"{turn.protocol_error_message}\n\n{summary}" if turn.protocol_error_message else summary
-        )
-    elif turn.protocol_error_message:
+    if turn.protocol_error_message:
         turn.final_answer = (turn.protocol_error_message + "\n\n" + turn.final_answer
                              if delegated else turn.protocol_error_message)
 
@@ -86,6 +77,53 @@ def _complete_turn(self, turn):
             if run["reviews"]:
                 lines.extend(f"  Review finding: {item}" for item in run["reviews"][-1]["findings"])
         turn.final_answer = "\n".join(lines)
+
+    verified_fix = turn.fix_workflow and turn.fix_workflow.get("stage") in {"verified", "explained"}
+    failed_tools = [] if verified_fix else [record for record in turn.tool_records if not record.get("success")]
+    turn.runtime_status = "incomplete" if failed_tools else "completed"
+    if failed_tools:
+        failures = "\n".join(
+            f"- {record.get('action', 'Tool')}: operation failed; its result was not verified."
+            for record in failed_tools
+        )
+        turn.final_answer = f"{turn.final_answer.rstrip()}\n\nTool status: incomplete; failed operations were not verified.\n{failures}"
+    plan = getattr(self.tasks, "working_plan", None)
+    if (turn.interaction_mode == "agent" and getattr(turn, "complexity", None) == "complex"
+            and plan is not None and plan.status in {"active", "completed", "cancelled"}):
+        plan_tasks = [task for task in self.tasks.tasks if task.get("id") in plan.task_ids]
+        succeeded = [task for task in plan_tasks if is_complete(task)]
+        cancelled = [task for task in plan_tasks if task.get("status") == "cancelled"]
+        blocked = [task for task in plan_tasks if task.get("status") == "blocked"]
+        runnable = [task for task in plan_tasks if task.get("status") == "pending" and all(
+            next((item.get("status") for item in plan_tasks if item.get("id") == dependency), None) == "succeeded"
+            for dependency in task.get("dependencies", [])
+        )]
+        failed = [task for task in plan_tasks if task.get("status") == "failed"]
+        if plan.status == "completed":
+            turn.runtime_status = "completed"
+            status_line = (f"Plan status: completed; {len(succeeded)} task(s) have verified acceptance evidence"
+                           + (f" and {len(cancelled)} were deliberately cancelled." if cancelled else "."))
+        elif plan.status == "cancelled":
+            turn.runtime_status = "cancelled"
+            status_line = "Plan status: cancelled; the Working Plan did not complete."
+        elif blocked and not runnable and not any(task.get("status") == "running" for task in plan_tasks):
+            turn.runtime_status = "blocked"
+            status_line = "Plan status: blocked."
+            for task in blocked:
+                reason = (task.get("checkpoint") or {}).get("plan_block", {}).get("reason")
+                status_line += f"\n- {task['description']}: {reason or 'No blocker reason was recorded.'}"
+        else:
+            turn.runtime_status = "incomplete"
+            outstanding = [task for task in plan_tasks
+                           if task.get("status") in {"pending", "running", "failed", "blocked"}]
+            status_line = "Plan status: incomplete; required work remains."
+            for task in outstanding:
+                status_line += f"\n- {task['status']}: {task['description']}"
+        turn.final_answer = f"{turn.final_answer.rstrip()}\n\n{status_line}"
+
+    completion_status = getattr(self, "_turn_completion_status", None)
+    if callable(getattr(completion_status, "set", None)):
+        completion_status.set(turn.runtime_status)
 
     self._turn_cost_log.append({
         "tokens": turn.turn_prompt_total + turn.turn_completion_total,

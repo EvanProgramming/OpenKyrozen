@@ -286,6 +286,7 @@ class AgentRuntime:
         self._conversation_turn_id = ContextVar("conversation_turn_id", default=None)
         self._last_model_response = ContextVar("last_model_response", default=None)
         self._record_foreground_model = ContextVar("record_foreground_model", default=False)
+        self._turn_completion_status = ContextVar("turn_completion_status", default="completed")
         self._stable_prefix_info = ContextVar("stable_prefix_info", default={})
         self._context_history_metrics = ContextVar("context_history_metrics", default={})
         self._context_history_seen = ContextVar("context_history_seen", default=None)
@@ -393,6 +394,7 @@ class AgentRuntime:
             events = self._stream_event_callback.set(on_event)
             native_response = self._last_response_is_native.set(False)
             turn_failed = self._turn_failed.set(False)
+            completion_status = self._turn_completion_status.set("completed")
             last_model_request = self._last_model_request_id.set(None)
             approval = self._approval_callback.set(approve)
             task_event_context = getattr(getattr(session, "tasks", None), "_runtime_event_callback", None)
@@ -421,12 +423,13 @@ class AgentRuntime:
                 if publisher.last_model_failed or self._turn_failed.get():
                     publisher.publish("turn.failed", {"error_type": "provider_error"})
                 else:
-                    publisher.publish("turn.completed", {"status": "completed"})
+                    publisher.publish("turn.completed", {"status": self._turn_completion_status.get()})
                 return reply
             finally:
                 self._stream_event_callback.reset(events)
                 self._last_response_is_native.reset(native_response)
                 self._turn_failed.reset(turn_failed)
+                self._turn_completion_status.reset(completion_status)
                 self._last_model_request_id.reset(last_model_request)
                 self._approval_callback.reset(approval)
                 if task_event is not None:

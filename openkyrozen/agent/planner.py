@@ -115,6 +115,6 @@ def _build_task_progress_hint(self) -> str:
     if pending_tasks:
         next_task = pending_tasks[0]["description"][:80]
         lines.append(f"▶ NEXT TASK TO EXECUTE: \"{next_task}\"")
-        lines.append(f"⚠️  {len(pending_tasks)} tasks remain. DO NOT STOP. Output the next Action NOW.")
+        lines.append(f"{len(pending_tasks)} task(s) remain pending; the runtime reports the plan as incomplete until resolved.")
     lines.append("=" * 40)
     return "\n".join(lines) + "\n"
