@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from openkyrozen.tools.sandbox import sandbox_command
 
 _MAX_OUTPUT_CHARS = 1_000_000
 _MAX_PROCESS_SECONDS = 30 * 60
@@ -25,6 +26,9 @@ class ProcessHandle:
     workspace_id: str
     session_id: str
     timeout_seconds: float
+    sandbox_backend: str = "unavailable"
+    temporary_directory: object | None = None
+    sandbox_reason: str | None = None
     started_at: float = field(default_factory=time.monotonic)
     stdout: str = ""
     stderr: str = ""
@@ -52,13 +56,25 @@ class SessionProcessManager:
                 raise RuntimeError("session process manager is closed")
             if len(self._handles) >= 32:
                 raise RuntimeError("session process handle limit reached")
-            process = subprocess.Popen(
-                command, shell=True, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, start_new_session=(os.name != "nt"),
-                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
+            invocation = sandbox_command(
+                command, workspace=self.workspace_id, cwd=cwd,
+                env=os.environ.copy() if env is None else env,
             )
-            handle = ProcessHandle(uuid.uuid4().hex, process, self.owner_id,
-                                   self.workspace_id, self.session_id, timeout_seconds)
+            try:
+                process = subprocess.Popen(
+                    invocation.command, shell=invocation.shell, cwd=cwd, env=invocation.env,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    start_new_session=(os.name != "nt"),
+                    creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
+                )
+            except Exception:
+                invocation.close()
+                raise
+            handle = ProcessHandle(
+                uuid.uuid4().hex, process, self.owner_id, self.workspace_id,
+                self.session_id, timeout_seconds, invocation.backend,
+                invocation.temporary_directory, invocation.unavailable_reason,
+            )
             self._handles[handle.process_id] = handle
         for name in ("stdout", "stderr"):
             threading.Thread(target=self._collect, args=(handle, name), daemon=True).start()
@@ -70,10 +86,13 @@ class SessionProcessManager:
             handle.process.wait(timeout=min(handle.timeout_seconds, _MAX_PROCESS_SECONDS))
         except subprocess.TimeoutExpired:
             if handle.process.poll() is None:
-                handle.timed_out = True
                 self.stop(handle.process_id)
+                handle.timed_out = True
         finally:
             handle.finished_at = time.monotonic()
+            if handle.temporary_directory is not None:
+                handle.temporary_directory.cleanup()
+                handle.temporary_directory = None
 
     @staticmethod
     def _collect(handle: ProcessHandle, name: str) -> None:
@@ -110,6 +129,8 @@ class SessionProcessManager:
             "process_id": process_id, "stream": stream, "offset": offset,
             "output": page, "next_offset": offset + len(page),
             "output_truncated": truncated, "timed_out": timed_out,
+            "sandbox_backend": handle.sandbox_backend,
+            "sandbox_reason": handle.sandbox_reason,
             "duration_seconds": duration,
             "running": handle.process.poll() is None,
             "exit_code": handle.process.poll(),

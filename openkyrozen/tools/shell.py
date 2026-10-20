@@ -2,12 +2,14 @@ from __future__ import annotations
 from openkyrozen.tools.models import CommandResult, ToolError, ToolResult, command_tool_result, legacy_text_api, tool_failure, tool_json_result, tool_success
 
 import os
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 from openkyrozen.security.command_policy import _BLOCKED_RE
+from openkyrozen.tools.sandbox import SandboxUnavailableError, sandbox_command
 
 def _is_dangerous(self, cmd: str) -> bool:
     """Return True if the command looks dangerous and should be blocked."""
@@ -72,36 +74,95 @@ def run_command(self, args: str | dict) -> CommandResult:
     if background:
         return CommandResult("Error: background processes require a session runtime", False,
                              failure="invalid_arguments")
+    invocation = None
+    process = None
     try:
-        started = time.monotonic()
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-            cwd=working_directory,
+        invocation = sandbox_command(
+            cmd, workspace=str(self._WORKSPACE_ROOT), cwd=working_directory, env=env,
         )
-        out = result.stdout or ""
-        err = result.stderr or ""
+        started = time.monotonic()
+        process = subprocess.Popen(
+            invocation.command, shell=invocation.shell, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, env=invocation.env, cwd=working_directory,
+            start_new_session=(os.name != "nt"),
+        )
+        try:
+            out, err = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                               capture_output=True, timeout=5, check=False)
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            try:
+                out, err = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                if os.name != "nt":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                out, err = process.communicate()
+            elapsed = time.monotonic() - started
+            message = f"Error: command timed out after {timeout}s"
+            if invocation.backend == "unavailable":
+                reason = f" Reason: {invocation.unavailable_reason}." if invocation.unavailable_reason else ""
+                message = "OS filesystem sandbox unavailable; command ran without filesystem protection." + reason + "\n" + message
+            return CommandResult(message, False,
+                                 process.returncode, "timeout", out, err, elapsed, True,
+                                 sandbox_backend=invocation.backend,
+                                 sandbox_reason=invocation.unavailable_reason)
         elapsed = time.monotonic() - started
-        if result.returncode != 0:
+        message = ""
+        if invocation.backend == "unavailable":
+            message = "OS filesystem sandbox unavailable; command ran without filesystem protection."
+            if invocation.unavailable_reason:
+                message += f" Reason: {invocation.unavailable_reason}."
+            message += "\n"
+        if process.returncode != 0:
             return CommandResult(
-                f"Exit code {result.returncode}\nstdout:\n{out}\nstderr:\n{err}".strip(),
-                False, result.returncode, "nonzero_exit", out, err, elapsed,
+                f"{message}Exit code {process.returncode}\nstdout:\n{out}\nstderr:\n{err}".strip(),
+                False, process.returncode, "nonzero_exit", out, err, elapsed,
+                sandbox_backend=invocation.backend,
+                sandbox_reason=invocation.unavailable_reason,
             )
-        return CommandResult(out.strip() or "(no output)", True, result.returncode,
-                             stdout=out, stderr=err, duration_seconds=elapsed)
+        return CommandResult(message + (out.strip() or "(no output)"), True, process.returncode,
+                             stdout=out, stderr=err, duration_seconds=elapsed,
+                             sandbox_backend=invocation.backend,
+                             sandbox_reason=invocation.unavailable_reason)
+    except SandboxUnavailableError as exc:
+        return CommandResult(f"Error: required OS filesystem sandbox unavailable: {exc}", False,
+                             failure="sandbox_unavailable", sandbox_backend="unavailable",
+                             sandbox_reason=exc.reason)
     except subprocess.TimeoutExpired as exc:
         elapsed = time.monotonic() - started if "started" in locals() else 0.0
         out = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         err = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
         return CommandResult(f"Error: command timed out after {timeout}s", False,
                              failure="timeout", stdout=out, stderr=err,
-                             duration_seconds=elapsed, timed_out=True)
+                             duration_seconds=elapsed, timed_out=True,
+                             sandbox_backend=invocation.backend if invocation else "unavailable",
+                             sandbox_reason=invocation.unavailable_reason if invocation else None)
     except Exception as e:
-        return CommandResult(f"Error running command: {e}", False, failure="execution_error")
+        return CommandResult(f"Error running command: {e}", False, failure="execution_error",
+                             sandbox_backend=invocation.backend if invocation else "unavailable",
+                             sandbox_reason=invocation.unavailable_reason if invocation else None)
+    finally:
+        if process is not None and process.poll() is None:
+            try:
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                   capture_output=True, timeout=5, check=False)
+                else:
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if invocation is not None:
+            invocation.close()
 
 
 @legacy_text_api

@@ -41,7 +41,7 @@ You: search for the latest Python release and cite the source
 
 `kyrozen` opens the global workspace; `kyrozen --project /path/to/repo` binds a session to a project. The web interface is optional: run `kyrozen-web --host 127.0.0.1 --port 8000` and visit `http://127.0.0.1:8000`. Configure `KYROZEN_SERVER_TOKEN` before binding beyond loopback.
 
-The interaction modes make authority visible: Ask and Plan are read/network-only; Agent carries out explicitly requested or accepted work under capability and approval checks. These are application policy controls, not an operating-system sandbox.
+The interaction modes make authority visible: Ask and Plan are read/network-only; Agent carries out explicitly requested or accepted work under capability and approval checks. Managed shell commands also use an available OS filesystem sandbox; see [security and permissions](docs/security.md) for supported backends and limitations.
 
 ## What it does
 
