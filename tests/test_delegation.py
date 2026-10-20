@@ -906,12 +906,23 @@ class DelegationTests(unittest.TestCase):
             response = client.post("/mcp", json={"jsonrpc": "2.0", "id": name, "method": "tools/call",
                 "params": {"session_id": session, "name": name, "arguments": args}}).json()
             self.assertFalse(response["result"]["isError"], response)
-            return json.loads(response["result"]["content"][0]["text"])
+            value = json.loads(response["result"]["content"][0]["text"])
+            if name != "read_tool_artifact" and "artifact_id" in value:
+                content, offset = [], 0
+                while True:
+                    page = call("read_tool_artifact", {"artifact_id": value["artifact_id"], "offset": offset}, session)
+                    content.append(page["content"])
+                    if page["next_offset"] is None:
+                        break
+                    offset = page["next_offset"]
+                value = json.loads("".join(content))["data"]
+            return value
         run = call("spawn_agents", {"assignments": [brief()]})["agents"][0]
         runs = call("wait_subagents", {"run_ids": [run["run_id"]], "timeout": 5})["agents"]
         self.assertEqual(runs[0]["status"], "succeeded")
         self.assertEqual(call("list_subagents", {}, "mcp-b")["agents"], [])
-        self.assertEqual(call("list_subagents", {"run_id": run["run_id"]})["run_id"], run["run_id"])
+        listing = call("list_subagents", {"run_id": run["run_id"]})
+        self.assertEqual(listing["run_id"], run["run_id"])
         self.assertEqual(call("cancel_subagent", {"run_id": run["run_id"]})["status"], "succeeded")
         session = self.runtime.open_session("mcp-a")
         with self.runtime.use_session(session):

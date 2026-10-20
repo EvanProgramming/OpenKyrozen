@@ -163,6 +163,14 @@ _MIGRATIONS = (
     (5, """
         ALTER TABLE working_plans ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0);
     """),
+    (6, """
+        CREATE TABLE IF NOT EXISTS tool_artifacts (
+            id TEXT PRIMARY KEY, user_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
+            session_id TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_tool_artifacts_scope
+            ON tool_artifacts(user_id, workspace_id, session_id, created_at);
+    """),
 )
 
 _REQUIRED_COLUMNS = {
@@ -186,6 +194,7 @@ _REQUIRED_COLUMNS = {
     "learning_runtime": {"user_id", "workspace_id", "mode", "status", "updated_at"},
     "working_plans": {"id", "user_id", "workspace_id", "session_id", "complexity", "status", "created_at", "updated_at"},
     "working_plan_tasks": {"plan_id", "task_id", "position"},
+    "tool_artifacts": {"id", "user_id", "workspace_id", "session_id", "content", "created_at"},
 }
 
 class SQLiteDatabase:
@@ -305,7 +314,8 @@ class SQLiteDatabase:
         required = {1: ("events", "memories", "files", "tasks", "task_events", "learning_proposals"),
                     2: ("scheduled_jobs", "skills", "usage_attempts", "usage_resets"),
                     3: ("history_nodes", "history_heads"),
-                    4: ("working_plans", "working_plan_tasks"), 5: ()}
+                    4: ("working_plans", "working_plan_tasks"), 5: (),
+                    6: ("tool_artifacts",)}
         tables = {row["name"] for row in db.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )}

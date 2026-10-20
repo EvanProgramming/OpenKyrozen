@@ -7,7 +7,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 
 ## Runtime tools
 
-- Built-in runtime tools: **49**
+- Built-in runtime tools: **50**
 - Names with the `git_` prefix: **14**
 - The CLI Action contract is a plain string in the `args` field.
 - Web and MCP exposure is filtered by the configured capability profile.
@@ -53,6 +53,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `list_subagents` | `read` | `internal` | false | List agents or inspect one run_id from this chat/project; args is JSON. | `run_id`: string |
 | `list_tree` | `read` | `read_only` | false | Recursively list the directory tree of the given path. Args format: "path" (default "."). | `path`: string |
 | `read_file` | `read` | `read_only` | false | Read content from a file. Args format: "path". | `max_chars`: integer, `max_lines`: integer, `path`: string, `start_line`: integer; required: `path` |
+| `read_tool_artifact` | `read` | `read_only` | false | Read a session-owned tool artifact in pages up to 1,000 characters. | `artifact_id`: string, `limit`: integer, `offset`: integer; required: `artifact_id` |
 | `read_webpage` | `network` | `remote` | false | Fetch the content of a web page and return its plain‑text body. | `url`: string; required: `url` |
 | `run_cmd` | `shell` | `process` | false | Execute a shell command. Args: the full command string. | `command`: string; required: `command` |
 | `search_files` | `read` | `read_only` | false | Search literal text with bounded, relative file-and-line results. | `glob`: string, `limit`: integer, `path`: string, `query`: string; required: `query` |

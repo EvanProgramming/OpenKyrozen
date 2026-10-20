@@ -23,9 +23,11 @@ def _load_runtime() -> tuple[dict[str, Any], Any, Any]:
     from openkyrozen.agent import delegation_runtime
     from openkyrozen.agent.prompts import _discover_tools
     from openkyrozen.agent.plan_tools import _update_plan
+    from openkyrozen.agent.runtime import AgentRuntime
     from openkyrozen.tools.catalog import builtin_names
     runtime_functions = {'check_stored_data':_check_stored_data, 'search_memory':_search_memory,
-                         'discover_tools':_discover_tools, 'update_plan':_update_plan}
+                         'discover_tools':_discover_tools, 'update_plan':_update_plan,
+                         'read_tool_artifact':AgentRuntime._read_tool_artifact}
     for name in builtin_names('runtime'):
         tools[name] = runtime_functions[name]
     for name in builtin_names('orchestration'):

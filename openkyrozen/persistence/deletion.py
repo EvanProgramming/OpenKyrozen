@@ -3,14 +3,14 @@ from __future__ import annotations
 
 SESSION_TABLES = (
     "events", "memories", "working_plans", "tasks", "usage_attempts", "usage_resets",
-    "history_nodes", "history_heads",
+    "history_nodes", "history_heads", "tool_artifacts",
 )
 
 WORKSPACE_TABLES = (
     "events", "memories", "files", "working_plans", "tasks", "learning_proposals",
     "learning_feature_flags", "learning_policies", "learning_runtime",
     "scheduled_jobs", "skills", "usage_attempts", "usage_resets",
-    "history_nodes", "history_heads",
+    "history_nodes", "history_heads", "tool_artifacts",
 )
 
 

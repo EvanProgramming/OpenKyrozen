@@ -24,6 +24,10 @@ class DeletionPersistenceTests(unittest.TestCase):
         }, set_head=True)
 
     def test_delete_session_removes_only_session_owned_records(self):
+        artifact_a = self.store.artifacts.create("private output A", user_id="local",
+                                                  workspace_id="project-a", session_id="chat-a")
+        artifact_b = self.store.artifacts.create("private output B", user_id="local",
+                                                  workspace_id="project-a", session_id="chat-b")
         from openkyrozen.tasks.engine import TaskManager
         manager = TaskManager(self.store, workspace_id="project-a", session_id="chat-a")
         session_plan = manager.update_plan(complexity="complex", tasks=[
@@ -64,11 +68,18 @@ class DeletionPersistenceTests(unittest.TestCase):
         self.assertEqual(self.store.list_usage_attempts(user_id="local", workspace_id="project-a", session_id="chat-a"), [])
         self.assertIsNone(self.store.history_head(user_id="local", workspace_id="project-a", session_id="chat-a"))
         self.assertIsNotNone(self.store.history_head(user_id="local", workspace_id="project-a", session_id="chat-b"))
+        self.assertIsNone(self.store.artifacts.read_page(artifact_a, 0, 100, user_id="local",
+                                                         workspace_id="project-a", session_id="chat-a"))
+        self.assertEqual(self.store.artifacts.read_page(artifact_b, 0, 100, user_id="local",
+                                                        workspace_id="project-a", session_id="chat-b")["content"],
+                         "private output B")
         with self.store.database.connection() as db:
             self.assertIsNone(db.execute("SELECT id FROM working_plans WHERE id=?", (session_plan.id,)).fetchone())
             self.assertIsNotNone(db.execute("SELECT id FROM working_plans WHERE id=?", (other_plan.id,)).fetchone())
 
     def test_delete_project_scope_removes_project_data_and_registry_only(self):
+        project_artifact = self.store.artifacts.create("project output", user_id="local",
+                                                        workspace_id="project-a", session_id="chat-a")
         from openkyrozen.tasks.engine import TaskManager
         plan = TaskManager(self.store, workspace_id="project-a", session_id="chat-a").update_plan(
             complexity="complex", tasks=[{"description": "remove plan", "acceptance": ["done"]}],
@@ -102,6 +113,8 @@ class DeletionPersistenceTests(unittest.TestCase):
                          ["project-b"])
         self.assertEqual(self.store.list_memories(user_id="local", workspace_id="project-a"), [])
         self.assertEqual(len(self.store.list_memories(user_id="local", workspace_id="project-b")), 1)
+        self.assertIsNone(self.store.artifacts.read_page(project_artifact, 0, 100, user_id="local",
+                                                         workspace_id="project-a", session_id="chat-a"))
         with self.store.database.connection() as db:
             self.assertIsNone(db.execute("SELECT id FROM working_plans WHERE id=?", (plan.id,)).fetchone())
 
