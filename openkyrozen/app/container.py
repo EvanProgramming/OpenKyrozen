@@ -15,6 +15,7 @@ class Application:
             coordinator = getattr(session.subagents, "coordinator", None)
             if coordinator:
                 coordinator.close()
+            session.process_manager.close()
         self.runtime._technology_executor.shutdown(wait=False, cancel_futures=True)
         for workspace in self.runtime._workspaces.values():
             workspace.adapters._BROWSER.close_all()

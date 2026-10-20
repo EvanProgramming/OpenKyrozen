@@ -164,7 +164,14 @@ def command_tool_result(result: "CommandResult") -> ToolResult:
     """Preserve explicit process status and exit details as a typed outcome."""
     if not isinstance(result, CommandResult):
         raise TypeError("Expected CommandResult")
-    data = {"exit_code": result.exit_code} if result.exit_code is not None else None
+    data = {
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "duration_seconds": result.duration_seconds,
+        "timed_out": result.timed_out,
+        "process_id": result.process_id,
+    }
     if result.success:
         return ToolResult(data=data, text=result.output)
     code = {"nonzero_exit": "command_failed", "denied": "permission_denied"}.get(
@@ -183,6 +190,11 @@ class CommandResult:
     success: bool
     exit_code: int | None = None
     failure: str | None = None
+    stdout: str = ""
+    stderr: str = ""
+    duration_seconds: float = 0.0
+    timed_out: bool = False
+    process_id: str | None = None
 
     def __str__(self) -> str:
         return self.output

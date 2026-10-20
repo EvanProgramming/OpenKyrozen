@@ -316,6 +316,9 @@ class AgentRuntime:
         key = (owner, self.interaction_workspace_id(), session_id, self.current_session.workspace.root)
         with self._delegation_lock:
             if key not in self._sessions or self._sessions[key].memory.store is not self.memory_bank.store:
+                previous = self._sessions.get(key)
+                if previous is not None:
+                    previous.process_manager.close()
                 self._sessions[key] = self._create_session(session_id, owner, self.current_session.workspace, key[1])
             return self._sessions[key]
 
@@ -518,7 +521,51 @@ class AgentRuntime:
         return cached[1]
 
     def run_command(self, args):
+        if isinstance(args, dict) and args.get("background") is True:
+            from openkyrozen.tools.models import CommandResult
+            adapters = self.current_session.workspace.adapters
+            options = adapters._validated_shell_options(args)
+            if isinstance(options, CommandResult):
+                return options
+            command, timeout, cwd, env, _ = options
+            try:
+                handle = self.current_session.process_manager.start(
+                    command, cwd=cwd, env=env, timeout_seconds=timeout,
+                )
+                return CommandResult(f"Started background process {handle.process_id}", True,
+                                     process_id=handle.process_id)
+            except (OSError, RuntimeError, ValueError) as exc:
+                return CommandResult(f"Error starting background process: {exc}", False,
+                                     failure="execution_error")
         return self.current_session.workspace.adapters.run_command(args)
+
+    @legacy_text_api
+    def _read_process(self, args):
+        """Read a bounded page from a session-owned process stream."""
+        from openkyrozen.tools.models import tool_failure, tool_success
+        if not isinstance(args, dict):
+            return tool_failure("invalid_arguments", "Error: process_id is required.")
+        page = self.current_session.process_manager.read(
+            args.get("process_id"), args.get("stream", "stdout"),
+            args.get("offset", 0), args.get("limit", 4000),
+        )
+        if page is None:
+            return tool_failure("not_found", "Error: process handle not found in this session.")
+        return tool_success(json.dumps(page, ensure_ascii=False), data=page)
+
+    @legacy_text_api
+    def _stop_process(self, args):
+        """Stop a process owned by the current actor, workspace, and session."""
+        from openkyrozen.tools.models import tool_failure, tool_success
+        process_id = args.get("process_id") if isinstance(args, dict) else None
+        if not isinstance(process_id, str):
+            return tool_failure("not_found", "Error: process handle not found in this session.")
+        stopped = self.current_session.process_manager.stop(process_id)
+        if stopped is None:
+            return tool_failure("not_found", "Error: process handle not found in this session.")
+        if not stopped:
+            return tool_failure("execution_error", "Error: unable to stop the process.")
+        return tool_success(f"Stopped process {process_id}", data={"process_id": process_id, "stopped": True})
 
     @legacy_text_api
     def _read_tool_artifact(self, args):

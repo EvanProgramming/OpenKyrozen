@@ -56,7 +56,7 @@ Jev Decision is an optional judgment service for bounded routing and evidence ch
 
 ## Documentation
 
-The README is an overview. Detailed installation, command, provider, safety, storage, API, and operating instructions are maintained in the [documentation index](docs/index.md). Start with [usage](docs/usage.md), [configuration](docs/configuration.md), or the [security guide](docs/security.md). The [generated runtime inventory](docs/tool-inventory.md) is the source of truth for tool names, HTTP routes, and MCP schemas.
+The README is an overview. Detailed installation, command, provider, safety, storage, API, and operating instructions are maintained in the [documentation index](docs/index.md). Start with [usage](docs/usage.md), [configuration](docs/configuration.md), the [security guide](docs/security.md), or [shell execution](docs/shell-tools.md). The [generated runtime inventory](docs/tool-inventory.md) is the source of truth for tool names, HTTP routes, and MCP schemas.
 
 ## Develop
 

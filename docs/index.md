@@ -17,7 +17,7 @@ This index covers the current product guides, developer references, and dated en
 |---|---|
 | Safety and deployment | [Security and permissions](security.md) · [API, web, and MCP](api.md) · [Troubleshooting](troubleshooting.md) |
 | Data and outcomes | [Memory and storage](memory-and-storage.md) · [Tasks and automation](tasks-and-automation.md) · [History and rollback](history-and-rollback.md) · [Usage and cost](usage-and-cost.md) |
-| Tool execution | [Large tool outputs](tool-output-artifacts.md) |
+| Tool execution | [Shell execution and process handles](shell-tools.md) · [Large tool outputs](tool-output-artifacts.md) |
 | Improvement and extension | [Self-learning](self-evolution.md) · [Extensions](extensions.md) · [Sub-agents](subagents.md) · [Project intelligence](native-project-intelligence.md) |
 | Decision and prompts | [Jev Decision validation](decision-assist-validation.md) · [System One benchmark](system-one-benchmark.md) · [Compact prompts and discovery](prompt-discovery.md) · [Fast mode benchmark](fast-mode-benchmark.md) |
 | Compatibility | [Legacy protocol lifecycle](legacy-protocol-compatibility.md) |

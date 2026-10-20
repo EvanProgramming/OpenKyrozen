@@ -47,7 +47,8 @@ class ToolAdapters:
 
     from .registry import (set_workspace_root, set_project_graph, set_github_cli, _resolve_workspace_path)
 
-    from .shell import (_is_dangerous, _active_command_env, run_command, run_cmd)
+    from .shell import (_is_dangerous, _active_command_env, _validated_shell_options, run_command, run_cmd)
+    from .processes import new_process_manager
 
     from .search import (search_web)
 
