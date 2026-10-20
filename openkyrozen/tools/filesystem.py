@@ -302,6 +302,8 @@ def apply_patch(self, args: str) -> str:
         data = {"path": relative, "old_sha256": digest,
                 "new_sha256": hashlib.sha256(updated_bytes).hexdigest(), "hunk_count": len(spans)}
         return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
+    except FileNotFoundError:
+        return tool_failure("not_found", f"Error: file not found: {request.get('path', '')}", retriable=False)
     except Exception as exc:
         return tool_failure("execution_error", f"Error applying patch: {exc}", retriable=False)
     finally:

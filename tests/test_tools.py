@@ -116,6 +116,20 @@ class WorkspaceToolTests(unittest.TestCase):
                 tools.set_workspace_root(original)
                 outside.unlink(missing_ok=True)
 
+    def test_apply_patch_reports_missing_file_as_not_found(self):
+        original = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            tools.set_workspace_root(directory)
+            try:
+                result = invoke_tool_result(tools.apply_patch, {
+                    "path": "missing.txt", "expected_sha256": "0" * 64,
+                    "hunks": [{"old_text": "old", "new_text": "new"}],
+                })
+            finally:
+                tools.set_workspace_root(original)
+        self.assertFalse(result.success)
+        self.assertEqual(result.error.code, "not_found")
+
     def test_structured_read_returns_hash_and_truncation_metadata(self):
         original = tools._WORKSPACE_ROOT
         with tempfile.TemporaryDirectory() as directory:
