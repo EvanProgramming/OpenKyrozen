@@ -12,13 +12,15 @@ from openkyrozen.tools.manifest import ToolRegistry
 
 class CapabilityTests(unittest.TestCase):
     def test_token_expires_and_registry_filters_and_blocks_tools(self):
-        registry = ToolRegistry()
-        registry.register("read", lambda args: ToolResult(text="ok"), capability="read")
-        registry.register("write", lambda args: ToolResult(text="changed"), capability="write")
+        from openkyrozen.tools import ToolAdapters
+        registry = ToolAdapters().tool_registry
+        registry.register("read_file", lambda args: ToolResult(text="ok"))
+        registry.register("write_file", lambda args: ToolResult(text="changed"))
         token = issue_capability_token("test", {"read"}, ttl_seconds=1)
-        self.assertEqual([item["name"] for item in registry.catalog(token)], ["read"])
-        self.assertEqual(registry.invoke("read", "", token), "ok")
-        denied = registry.invoke_result("write", "", token)
+        self.assertIn("read_file", [item["name"] for item in registry.catalog(token)])
+        self.assertNotIn("write_file", [item["name"] for item in registry.catalog(token)])
+        self.assertEqual(registry.invoke("read_file", {"path": "x"}, token), "ok")
+        denied = registry.invoke_result("write_file", {"path": "x", "content": "x"}, token)
         self.assertFalse(denied.success)
         self.assertEqual(denied.error.code, "permission_denied")
         self.assertTrue(token.allows("read"))

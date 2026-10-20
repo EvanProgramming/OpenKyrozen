@@ -121,8 +121,7 @@ def _awaiting_revision_mutation(state, action, args, spec, runtime) -> bool:
     return bool(action != "cancel_subagent" and state.get("pending_plan") and state.get("executing_plan") and (
         runtime._is_state_changing_action(action, args)
         or not spec
-        or spec.source == "dynamic"
-        or spec.capability in {"write", "shell", "destructive", "dynamic"}
+        or spec.capability in {"write", "shell", "destructive"}
         or spec.side_effects in {"filesystem", "process", "destructive"}
     ))
 
@@ -177,7 +176,7 @@ def _is_state_changing_action(self, action: str, args: str) -> bool:
         if action == 'git_remote': return args.get('operation', 'list') in {'add','remove'}
         return action in {
             "write_file", "edit_file", "apply_patch", "run_cmd", "git_clone", "git_add", "git_commit", "git_push",
-            "git_pull", "git_checkout", "git_stash", "git_reset", "github_cli", "define_tool",
+            "git_pull", "git_checkout", "git_stash", "git_reset", "github_cli",
             "browser_open", "browser_click", "browser_type", "graph_refresh", "spawn_agents",
             "browser_close", "send_subagent", "cancel_subagent", "update_plan",
         }
@@ -187,7 +186,7 @@ def _is_state_changing_action(self, action: str, args: str) -> bool:
         return str(args).lstrip().startswith(("add ", "remove "))
     return action in {
         "write_file", "edit_file", "apply_patch", "run_cmd", "git_clone", "git_add", "git_commit", "git_push",
-        "git_pull", "git_checkout", "git_stash", "git_reset", "git_remote", "github_cli", "define_tool",
+        "git_pull", "git_checkout", "git_stash", "git_reset", "git_remote", "github_cli",
         "browser_open", "browser_click", "browser_type", "graph_refresh", "spawn_agents", "send_subagent",
         "browser_close", "cancel_subagent", "update_plan",
     }
@@ -384,13 +383,6 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
             receipt_arguments = parsed_arguments
     if _typed_arguments is not None:
         args = _typed_arguments
-    elif action in self.tool_registry.specs and self.tool_registry.get_spec(action).source == "dynamic":
-        if isinstance(args, str):
-            try:
-                parsed = json.loads(args) if args.lstrip().startswith("{") else None
-            except json.JSONDecodeError:
-                parsed = None
-            args = parsed if isinstance(parsed, dict) else {"args": args}
     elif isinstance(args, dict):
         if action in ("run_cmd", "execute_terminal_command"):
             args = args.get("cmd") or args.get("command") or ""
@@ -617,6 +609,21 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                 call_id_source=call_id_source, expected_spec=expected_spec,
             )
         typed_arguments = args
+    elif spec is not None and spec.source not in {"builtin", "legacy"}:
+        schema_error = (self.tool_registry._argument_error(spec.input_schema, structured)
+                        if isinstance(structured, dict) else "expected a JSON object")
+        if schema_error is not None:
+            emit_rejected_call()
+            result = f"Error: invalid arguments for `{action}`: {schema_error}."
+            outcome = tool_failure("invalid_arguments", result)
+            self._notify_tool_execute(action, args, outcome)
+            return self._make_execution_receipt(
+                action=canonical, args=args, authorized=False, started_at=started_at, success=False,
+                result=result, operation_scope=operation_scope, failure=outcome.error.code,
+                tool_error=outcome.error, tool_result=outcome, call_id=call_id,
+                call_id_source=call_id_source, expected_spec=expected_spec,
+            )
+        typed_arguments = structured
     if (not native_arguments and interaction_state.get("executing_plan") and spec
             and spec.source != "legacy" and spec.legacy_fields):
         parts = args.split("|", len(spec.legacy_fields) - 1)

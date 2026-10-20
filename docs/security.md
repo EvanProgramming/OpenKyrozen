@@ -25,7 +25,7 @@ Bubblewrap is an optional Linux system package (for Debian or Ubuntu, install wi
 
 Treat model output, shell output, web pages, repository files, saved memory, skill content, and sub-agent results as untrusted input. They are never approval grants or runtime instructions with higher authority. OpenKyrozen filters known prompt-injection patterns at input boundaries and preserves policy checks when an action is requested. These controls lower risk; they cannot prove arbitrary content harmless.
 
-Downloaded skills and plugins execute or influence behavior according to their implementation. Inspect source and provenance, enable only what you need, and remove or roll back an extension you do not trust. Learned policies and skills have size, permission, verification, and rollback gates; they cannot add capabilities. Dynamic tools remain separately gated by `KYROZEN_ALLOW_DYNAMIC_TOOLS` and capability policy. See [extensions](extensions.md) and [self-learning](self-evolution.md).
+Downloaded skills and plugins execute or influence behavior according to their implementation. Inspect source and provenance, enable only what you need, and remove or roll back an extension you do not trust. Learned policies and skills have size, permission, verification, and rollback gates; they cannot add capabilities or register tools. Model-generated tool registration is removed; custom tools require explicit registry metadata during application composition. See [extensions](extensions.md) and [self-learning](self-evolution.md).
 
 ## Server authentication
 

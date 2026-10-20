@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import time
 import re
-from openkyrozen.app.config import load_agent_config
 from openkyrozen.tasks.models import requires_working_plan
 
 def _initial_turn_response(self, turn):
@@ -46,14 +45,6 @@ def _initial_turn_response(self, turn):
             [], turn.turn_prompt_total + turn.turn_completion_total, turn.turn_start,
         )
     turn.tool_calls = response_meta["tool_calls"]
-    if response_meta["define_tool_registered"]:
-        agent_config = load_agent_config(self._get_workspace_root())
-        messages.append({
-            "role": "system",
-            "content": "Refreshed tool inventory after DefineTool registration:\n"
-                       + self._agent_prompt_tools_list(agent_config),
-        })
-
     interaction_reply = self._interaction_gate(response_meta, turn.user_input)
     if interaction_reply is not None:
         return self._finish_learning_run(
@@ -156,7 +147,6 @@ def _initial_turn_response(self, turn):
 
     if not turn.tool_calls:
         if (turn.interaction_mode == "agent" and (self._requires_tool_action(turn.user_input) or _llm_has_plan or _llm_has_tasklist
-                or response_meta["define_tool_registered"]
                 or response_meta["unsupported_action_protocol"])):
             action_retries = 0
             while not turn.tool_calls and action_retries < 3:
@@ -170,8 +160,8 @@ def _initial_turn_response(self, turn):
                     reminder = (
                         "System: You output a protocol block but no Action block. "
                         "You **must** now output a JSON Action block to perform the work. "
-                        "If a new tool was registered, use its exact name from the refreshed tool inventory. "
-                        "Do not repeat the Plan or DefineTool block — output only the next Action."
+                        "Use only the exact names from the available tool inventory. "
+                        "Do not repeat the Plan block — output only the next Action."
                     )
                 elif action_retries == 2:
                     reminder = (
@@ -199,13 +189,6 @@ def _initial_turn_response(self, turn):
                         turn.learning_run, turn.learning_receipts, turn.user_input, interaction_reply, [],
                         turn.turn_prompt_total + turn.turn_completion_total, turn.turn_start,
                     )
-                if response_meta["define_tool_registered"]:
-                    agent_config = load_agent_config(self._get_workspace_root())
-                    messages.append({
-                        "role": "system",
-                        "content": "Refreshed tool inventory after DefineTool registration:\n"
-                                   + self._agent_prompt_tools_list(agent_config),
-                    })
                 if turn.tool_calls:
                     _llm_has_plan = response_meta["has_plan"]
                     _llm_has_tasklist = response_meta["has_tasklist"]

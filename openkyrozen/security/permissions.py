@@ -114,7 +114,7 @@ def _jev_permission_check(self, action: str, category: str) -> bool:
     }}
     safe_actions = {"read_file", "run_cmd", "write_file", "apply_patch", "git_push", "git_reset", "github_cli",
                     "git_commit", "git_pull", "git_checkout", "git_remote", "git_clone", "git_add",
-                    "git_stash", "define_tool", "search_memory", "check_stored_data"}
+                    "git_stash", "search_memory", "check_stored_data"}
     summary = {"action": action if action in safe_actions else "other_tool",
                "risk_category": category, "surface": "local TUI"}
     try:

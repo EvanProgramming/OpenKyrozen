@@ -30,13 +30,13 @@ SUPPORTED_PROVIDERS = frozenset({
     "azure_openai", "perplexity", "bedrock", "vertex",
 })
 CAPABILITY_NAMES = frozenset({
-    "read", "write", "shell", "network", "git", "browser", "destructive", "dynamic",
-    "readonly", "workspace", "full",
+    "read", "write", "shell", "network", "git", "browser", "destructive",
+    "readonly", "workspace", "full", "dynamic",
 })
 CAPABILITY_PROFILES = {
     "readonly": frozenset({"read", "network"}),
     "workspace": frozenset({"read", "write", "shell", "network", "git", "browser"}),
-    "full": frozenset({"read", "write", "shell", "network", "git", "browser", "destructive", "dynamic"}),
+    "full": frozenset({"read", "write", "shell", "network", "git", "browser", "destructive"}),
 }
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_. -]{0,63}\Z")
 _MAX_TEXT_CHARS = 25_000
@@ -327,4 +327,4 @@ def effective_capabilities(config: Mapping[str, Any]) -> frozenset[str]:
     for item in requested:
         item = str(item).strip().lower()
         capabilities.update(CAPABILITY_PROFILES.get(item, {item}))
-    return frozenset(capabilities & (CAPABILITY_NAMES - {"readonly", "workspace", "full"}))
+    return frozenset(capabilities & (CAPABILITY_NAMES - {"readonly", "workspace", "full", "dynamic"}))

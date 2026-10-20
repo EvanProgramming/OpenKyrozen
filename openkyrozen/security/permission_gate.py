@@ -101,7 +101,7 @@ def risk_category(action: str, args: object, tools=None) -> str | None:
     text = _arguments(args)
     if _PRIVATE.search(text) or re.search(r"(?i)\b(api[_-]?key|password|credential|secret|private key|token)\b", text):
         return "private_data_access"
-    if action == 'define_tool' or tool_risk(action,tools) == 'high':
+    if tool_risk(action,tools) == 'high':
         return "external_or_irreversible_change"
     if action in {"search_memory", "check_stored_data", "browser_snapshot"}:
         return "private_data_access"
@@ -113,7 +113,7 @@ def risk_category(action: str, args: object, tools=None) -> str | None:
         return None if _safe_shell_command(text) else "opaque_or_high_impact_command"
     if action == "write_file":
         return None
-    if tool_capability(action, tools) in {"shell", "git", "destructive", "dynamic"}:
+    if tool_capability(action, tools) in {"shell", "git", "destructive"}:
         return "external_or_irreversible_change"
     return None
 
@@ -122,7 +122,7 @@ def requires_ask_approval(action: str, args: object, tools=None) -> bool:
     action = str(action or "").strip()
     if risk_category(action, args, tools):
         return True
-    return tool_capability(action, tools) in {"write", "shell", "git", "browser", "destructive", "dynamic"}
+    return tool_capability(action, tools) in {"write", "shell", "git", "browser", "destructive"}
 
 
 def git_read_arguments_allowed(action: str, args: object) -> bool:

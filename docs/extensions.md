@@ -18,9 +18,9 @@ See the sample [`agent.yaml`](../agent.yaml) and [configuration guide](configura
 
 The plugin lifecycle supports project Python extensions such as the sample `plugins/turn_logger.py`. Plugins execute Python in the agent process with its OS account's permissions. Read the implementation before loading a plugin; use an isolated test home and workspace when developing one. Hooks observe or extend defined runtime lifecycle points but cannot be assumed side-effect free. Record what data a hook can see and where it writes it, and test failure handling so a faulty extension does not mask task outcomes.
 
-## Dynamic tools
+## Tool registration and migration
 
-Runtime-created dynamic tools are a distinct feature from skills. They remain disabled unless the operator enables them with `KYROZEN_ALLOW_DYNAMIC_TOOLS` and all normal tool capability and approval checks still apply. Dynamic executors receive the declared object arguments (currently `{"args": "<string>"}`) and must return `ToolResult`; the restricted source namespace provides `ToolResult` and `ToolError` constructors. Review generated source and permissions before activation. A learning feature that observes successful tools does not silently switch this policy on.
+Model-generated `DefineTool` blocks and `KYROZEN_ALLOW_DYNAMIC_TOOLS` are removed. Older configuration may still contain that environment variable, but OpenKyrozen ignores it; a model response containing `DefineTool` is rejected without compiling or registering its code. For compatibility, an old `dynamic` capability label in `agent.yaml` is accepted but grants nothing. Custom tools must be registered by application composition with a complete `ToolSpec` through `ToolRegistry.register_spec`, including an object schema, an existing capability, side-effect classification, and executor. Existing Python plugins provide lifecycle hooks; they do not register tools. The legacy `AVAILABLE_TOOLS` mapping can replace or remove registered tools, but it rejects new untyped callables. Python plugins still execute in-process with the OS account's permissions; review their source and provenance before loading them.
 
 ## Learned policies and skills
 
@@ -39,17 +39,14 @@ remains a compatibility projection. MCP `inputSchema` and provider-neutral
 `parameters` are generated from the same defensive schema copy. Tool descriptions
 in prompts, discovery and generated inventory come from registered specs.
 
-`AVAILABLE_TOOLS` is a registry-backed compatibility mapping. Adding a callable
-registers a complete spec, replacing an executor retains its metadata, and
-removal removes its aliases and descriptors. Unknown legacy callables default to
-the restrictive `dynamic` capability, unknown side effects and no parallel
-safety. Explicit `register_spec` rejects duplicate names and alias collisions;
-replacement requires `replace=True`. Schemas and alias metadata are immutable,
-and snapshots preserve complete specs rather than only callables.
-
-Dynamic source registration retains its existing opt-in, capability, AST checks,
-confirmation and audit gates. Registry metadata does not grant capabilities or
-bypass approvals. Side effects are separate from capabilities: graph refresh can
+`AVAILABLE_TOOLS` is a registry-backed compatibility mapping. Replacing an
+executor retains its metadata, and removal removes its aliases and descriptors.
+Adding an unregistered callable through this mapping raises `ValueError`; use
+`register_spec` with complete metadata. Registration rejects duplicate names
+and alias collisions; replacement requires `replace=True`. Schemas and alias
+metadata are immutable, and snapshots preserve complete specs rather than only
+callables. Registry metadata does not grant capabilities or bypass approvals.
+Side effects are separate from capabilities: graph refresh can
 update derived state under its existing read capability and remains nonparallel.
 Browser and orchestration tools remain nonparallel. Only the pure calculator is
 currently declared parallel-safe; this catalog does not schedule parallel calls.

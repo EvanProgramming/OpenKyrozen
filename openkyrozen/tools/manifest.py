@@ -117,7 +117,7 @@ class ToolSpec:
                 raise ValueError(f"ToolSpec {label} must be a nonempty string")
         if not name.isidentifier() or not callable(executor):
             raise ValueError("ToolSpec requires an identifier and callable executor")
-        if capability not in {"read","write","shell","network","git","browser","destructive","dynamic"}:
+        if capability not in {"read","write","shell","network","git","browser","destructive"}:
             raise ValueError("Unknown tool capability")
         if side_effects not in {"none","read","mutation","external","stateful","internal_write","orchestration","unknown",
                                 "filesystem","process","remote","destructive","read_only","internal"}:
@@ -307,8 +307,9 @@ class ToolRegistry:
             updates.update({k:v for k,v in {'capability':capability,'risk':risk,'version':version,'source':source}.items() if v is not None})
             spec=old.replace(**updates)
         else:
-            metadata=builtin_metadata(name) or {'capability':'dynamic','side_effects':'unknown','parallel_safe':False,
-                'input_schema':{'type':'object','properties':{'args':{'type':'string'}},'additionalProperties':False},'source':'legacy'}
+            metadata=builtin_metadata(name)
+            if metadata is None:
+                raise ValueError('New tools require an explicit ToolSpec with complete policy and schema metadata')
             metadata.update({k:v for k,v in {'capability':capability,'risk':risk,'version':version,'source':source}.items() if v is not None})
             spec=ToolSpec(name,function,description=(function.__doc__ or '').strip() or f'Invoke {name}.',**metadata)
         self.register_spec(spec,replace=old is not None)

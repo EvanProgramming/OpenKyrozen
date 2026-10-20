@@ -17,17 +17,14 @@ class RegistryRegressions(unittest.TestCase):
             self.assertTrue(spec.side_effects)
             self.assertIsInstance(spec.parallel_safe,bool)
 
-    def test_compatibility_registration_has_restrictive_metadata(self):
+    def test_compatibility_mapping_rejects_untyped_new_tools(self):
         adapters = ToolAdapters()
-        adapters.AVAILABLE_TOOLS['new_helper'] = lambda args: ToolResult(text=args)
-        spec = adapters.tool_registry.get_spec('new_helper')
-        self.assertEqual(spec.capability,'dynamic')
-        self.assertFalse(spec.parallel_safe)
-        self.assertEqual(spec.input_schema['properties'],{'args':{'type':'string'}})
-        from openkyrozen.security.capabilities import issue_capability_token
-        result=adapters.tool_registry.invoke_result('new_helper', {'args':'x'}, issue_capability_token('test', {'dynamic'}))
-        self.assertFalse(result.success)
-        self.assertEqual(result.error.code, 'contract_error')
+        with self.assertRaises(ValueError):
+            adapters.AVAILABLE_TOOLS['new_helper'] = lambda args: ToolResult(text=args)
+        with self.assertRaises(ValueError):
+            adapters.tool_registry.register(
+                'new_helper', lambda args: ToolResult(text=args), capability='read',
+            )
 
     def test_replacing_legacy_mapping_preserves_typed_builtins(self):
         import tempfile
@@ -117,7 +114,7 @@ class RegistryContractTests(unittest.TestCase):
         schema['properties']['args']['type']='number'
         self.assertEqual(spec.input_schema['properties']['args']['type'],'string')
         with self.assertRaises(FrozenInstanceError):
-            spec.capability='dynamic'
+            spec.capability='write'
 
     def test_schema_conversion_examples_and_legacy_aliases(self):
         registry=ToolAdapters().tool_registry
@@ -168,7 +165,13 @@ class RuntimeCatalogTests(unittest.TestCase):
                 first=Path(home)/'first';second=Path(home)/'second';first.mkdir();second.mkdir()
                 runtime._set_workspace_root(first)
                 original=runtime.tool_registry
-                runtime.AVAILABLE_TOOLS['private_helper']=lambda args:ToolResult(text='first')
+                from openkyrozen.tools import ToolSpec
+                runtime.tool_registry.register_spec(ToolSpec(
+                    'private_helper', lambda args: ToolResult(text='first'),
+                    description='Workspace-scoped test plugin.',
+                    input_schema={'type':'object','properties':{},'additionalProperties':False},
+                    capability='read',side_effects='read',source='plugin',
+                ))
                 runtime._set_workspace_root(second)
                 self.assertNotIn('private_helper',runtime.AVAILABLE_TOOLS)
                 self.assertIsNot(runtime.tool_registry,original)
@@ -306,21 +309,9 @@ class ReviewRegressions(unittest.TestCase):
             with self.subTest(prop=prop),self.assertRaises(ValueError):
                 helper.make(input_schema={'type':'object','properties':{'args':prop},'additionalProperties':False})
 
-    def test_alias_collision_is_rejected_before_dynamic_approval(self):
-        from unittest.mock import Mock,patch
-        from types import SimpleNamespace as NS
-        from openkyrozen.tools.dynamic import _register_tool
-        from openkyrozen.security.capabilities import issue_capability_token
-        registry=ToolAdapters().tool_registry
-        rejected=Mock(return_value=False)
-        approved=Mock(return_value=True)
-        runtime=NS(ALLOW_DYNAMIC_TOOLS=True,tool_registry=registry,AVAILABLE_TOOLS=registry.tools,
-                   _get_workspace_root=lambda:'.',_execution_capability_token=issue_capability_token('test',{'dynamic'}),
-                   _reject_dynamic_tool=rejected,_confirm_tool_action=approved)
-        with patch('openkyrozen.tools.dynamic.effective_capabilities',return_value={'dynamic'}),patch('openkyrozen.tools.dynamic.load_agent_config'):
-            self.assertFalse(_register_tool(runtime,'bash','def bash(args):\n    return args'))
-        rejected.assert_called_once()
-        approved.assert_not_called()
+    def test_dynamic_capability_is_not_valid_tool_metadata(self):
+        with self.assertRaises(ValueError):
+            RegistryContractTests().make(capability='dynamic')
 
 class LiveInventoryRegressions(unittest.TestCase):
     def test_registered_names_and_aliases_immediately_parse(self):

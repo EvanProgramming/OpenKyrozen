@@ -19,7 +19,7 @@ def _observe_turn_response(self, turn, text: str, context: list[dict[str, str]])
             break
         if attempt == 2:
             preview.update(tool_calls=[], protocol_error="Delegation was combined with a sequential task list after two repairs; no action was executed.",
-                           define_tool_present=False, define_tool_registered=False)
+                           )
             return text, preview
         context = context + [{"role": "assistant", "content": text}, {"role": "user", "content":
             "Delegated assignments and reviews already have a durable lifecycle. No action was executed. "
@@ -92,7 +92,7 @@ def _observe_turn_response(self, turn, text: str, context: list[dict[str, str]])
             f"System: The interaction control was invalid ({parsed['protocol_error']}). "
             "Re-emit the same content as exactly one fenced JSON control in the shape below. "
             "Replace the example values, but preserve every key and JSON syntax. Output no Markdown outside "
-            f"this block, prose, Action, TaskList, TaskDone, or DefineTool.\n{example}"
+            f"this block, prose, Action, TaskList, or TaskDone.\n{example}"
         ),
     }]).strip()
     turn.turn_prompt_total += self._last_prompt_tokens
@@ -106,8 +106,6 @@ def _observe_turn_response(self, turn, text: str, context: list[dict[str, str]])
             candidate.get("question") is not None or candidate.get("plan_proposal") is not None):
         candidate["tool_calls"] = []
         candidate["protocol_error"] = "The model could not produce a valid interaction control; no action was executed."
-    candidate["define_tool_present"] = False
-    candidate["define_tool_registered"] = False
     return repaired, candidate
 
 
@@ -119,7 +117,7 @@ def _recover_plan_response(self, turn, text: str, parsed: dict[str, Any],
     def valid(candidate: dict[str, Any]) -> bool:
         if (candidate.get("protocol_error") or candidate.get("unknown_action")
                 or candidate.get("unsupported_action_protocol")
-                or candidate.get("define_tool_present")):
+                ):
             return False
         if candidate.get("question") is not None:
             return inspection_complete

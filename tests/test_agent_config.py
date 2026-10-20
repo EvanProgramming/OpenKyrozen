@@ -62,6 +62,15 @@ class AgentConfigTests(unittest.TestCase):
             self.assertEqual(config["instructions"], "environment instructions")
             self.assertEqual(config["capabilities"], ["read"])
 
+    def test_legacy_dynamic_capability_is_accepted_but_never_effective(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "agent.yaml").write_text(_config_text("legacy", "dynamic"), encoding="utf-8")
+
+            config = load_agent_config(root)
+
+        self.assertNotIn("dynamic", effective_capabilities(config))
+
     def test_schema_rejects_unknown_keys_bad_types_and_duplicate_yaml_keys(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

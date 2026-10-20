@@ -180,7 +180,7 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
     if native_tools:
         return (
             "You are Kyrozen. Use native structured tool calls for tool work; the available schemas are authoritative. "
-            "Never write Action, Plan, TaskList, TaskDone, DefineTool, XML, or DSML controls. "
+            "Never write textual execution controls, XML, or DSML. "
             "Use one tool call at a time and verify its result before relying on it. "
             "If material ambiguity blocks safe work, ask a concise plain-language question without calling a tool. "
             "Do not claim an effect unless a tool result verifies it.\n\n"
@@ -194,7 +194,7 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
         f"The effective interaction mode is `{interaction_mode}`. Modes only narrow permissions.\n"
         "Ask a question only when ambiguity materially affects scope, safety, cost, irreversible effects, or acceptance criteria. "
         "Questions never authorize tools and must never request credentials or secrets.\n"
-        "To pause for clarification, output only this control block and no Action, TaskList, TaskDone, or DefineTool:\n"
+        "To pause for clarification, output only this control block and no Action, TaskList, or TaskDone:\n"
         "AskUser:\n```json\n"
         '{"questions":[{"id":"scope","header":"Scope","prompt":"Which scope?","choices":[{"id":"a","label":"Option A","description":"Impact"},{"id":"b","label":"Option B","description":"Impact"}]}]}\n'
         "```\n"
@@ -214,16 +214,6 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
             "This surface is non-interactive. Operate in `agent` mode within its existing capabilities and approvals. "
             "Do not emit AskUser or PlanProposal controls.\n"
         )
-    dynamic_tool_instructions = (
-        "## Dynamic tools\n"
-        "Dynamic tools are enabled only when the active surface grants the `dynamic` capability and the approval policy allows registration. "
-        "When a missing pure helper is genuinely needed, you may output exactly one DefineTool block; never include imports, filesystem/process/network access, secrets, permission changes, or capability grants. "
-        "The runtime validates and registers it, refreshes the tool inventory, and then you may call it by its exact name:\n"
-        "DefineTool:\n```python\ndef tool_name(args: dict) -> ToolResult:\n    value = args['args']\n    return ToolResult(data=value, text=value)\n```\n"
-    ) if self.ALLOW_DYNAMIC_TOOLS and interaction_mode == "agent" else (
-        "## Dynamic tools\n"
-        "Dynamic tool creation is disabled for this execution surface. Do not emit DefineTool blocks.\n"
-    )
     if interaction_mode in {"ask", "plan"} and self._interaction_controls_enabled.get():
         readonly_tools = self._agent_prompt_tools_list(agent_config) + "\n" + GUIDANCE
         readonly_mode = (
@@ -251,6 +241,7 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
                 if interaction_mode == "plan" else ""
             )
             + "\n## Available read-only tools\n" + readonly_tools + "\n\n"
+            "Tools are registered by the application or its plugins; do not define tools in a response.\n\n"
             "## Read-only tool invocation\n"
             "The first Plan-mode response must be exactly one listed read-only Action with a plain string `args` value. "
             "Never invent an action name or emit a proposal before inspection. After the result, emit the PlanProposal.\n\n"
@@ -261,6 +252,7 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
             "You are Kyrozen. Answer directly or use tools to complete and verify requested work.\n\n"
             + configured_sections + "\n\n" + interaction_instructions
             + "\n## Available tools\n" + tools_list
+            + "\nUse only listed tools; tools are registered by the application or its plugins.\n"
             + '\n\n## Execution protocol\n'
             'Emit exactly one Action per response when a tool is needed:\n'
             'Action:\n```json\n{"action":"read_file","args":"README.md"}\n```\n'
@@ -277,7 +269,7 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
             'Protect uncommitted work before switching branches and verify Git results.\n'
             'After the final tool result, return a concise plain-language result and any blocker. '
             'Action, Thought, TaskList and TaskDone are private protocol, never the final answer.\n\n'
-            + dynamic_tool_instructions + "\n" + cwd_note
+            + cwd_note
         )
     # Build system prompt via safe concatenation (no f‑string to avoid format‑spec collisions)
     return (
@@ -288,6 +280,7 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
         + interaction_instructions + "\n"
         "## Available Tools\n"
         + tools_list + "\n\n"
+        "Tools are registered by the application or its plugins. Never define or register tools in a response.\n\n"
         "## Tool invocation format\n"
         "Action blocks, Thought lines, and TaskDone markers are private execution protocol. "
         "Never expose them as the final answer or explain the tool call itself. After the last tool result, "
@@ -378,7 +371,6 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
         "6. **SUMMARISE**: When all tasks complete, produce a concise summary of what was done.\n"
         "CRITICAL: Never skip tasks, never stop early, never mark tasks done without executing them.\n"
         "If you get stuck on a step, try an alternative approach — do NOT abandon the task.\n"
-        + dynamic_tool_instructions + "\n"
         + cwd_note
     )
 

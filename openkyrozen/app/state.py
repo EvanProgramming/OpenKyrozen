@@ -78,6 +78,7 @@ def initialise(self):
         r"(?is)<\s*ssai_action\b[^>]*>(?:[\s\S]*?</\s*ssai_action\s*>|[\s\S]*\Z)"
         r"|<\s*details\b[^>]*>\s*<\s*summary\b[^>]*>\s*Action\s*:[\s\S]*?(?:</\s*details\s*>|\Z)"
         r"|<\s*(tool_calls|function_calls|invoke)\b[^>]*>[\s\S]*?(?:</\s*\1\s*>|\Z)"
+        r"|(?:\A|\n)[ \t]*DefineTool\s*:[\s\S]*\Z"
     )
 
     self._UNSUPPORTED_ACTION_PROTOCOL_MESSAGE = (
@@ -115,8 +116,6 @@ def initialise(self):
 
     self._EXECUTION_SURFACE = self.surface
 
-    self._dynamic_tools_env = os.environ.get("KYROZEN_ALLOW_DYNAMIC_TOOLS")
-
     self._surface_capabilities = os.environ.get(
         f"KYROZEN_{self._EXECUTION_SURFACE.upper()}_CAPABILITIES", ""
     ).strip().lower()
@@ -127,12 +126,6 @@ def initialise(self):
             self._surface_capabilities or ("full" if self._EXECUTION_SURFACE == "cli" else "workspace"),
             default="workspace",
         ),
-    )
-
-    self.ALLOW_DYNAMIC_TOOLS = (
-        self._dynamic_tools_env.strip().lower() in {"1", "true", "yes"}
-        if self._dynamic_tools_env is not None
-        else self._EXECUTION_SURFACE == "cli" or self._surface_capabilities == "full"
     )
 
     self._provider_config: ProviderConfig | None = None
@@ -159,7 +152,6 @@ def initialise(self):
         "invent_skills",
         "context_compression",
         "outcome_verified_evolution",
-        "dynamic_tool_definition",
         "detect_user_preferences",
         "autonomous_inspection",
         "memory_importance_scoring",
@@ -464,10 +456,6 @@ def initialise(self):
         "outcome_verified_evolution": {
             "description": "Review verified trajectories and create at most one bounded canary",
             "executor": lambda _context: (self._review_evolution_runs() or self._learning_result()),
-        },
-        "dynamic_tool_definition": {
-            "description": "Observe the dynamic-tool inventory without granting new capability",
-            "executor": self._run_learning_dynamic_tools,
         },
         "detect_user_preferences": {
             "description": "Detect explicit preference signals during a user turn",

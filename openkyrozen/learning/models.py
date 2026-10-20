@@ -15,7 +15,7 @@ CAPSULE_PROTOCOL = "openkyrozen-experience-capsule-v1"
 
 
 DEFAULT_CONSTITUTION = {
-    "allowed_artifact_types": ["policy", "skill"], "allow_dynamic_tools": False,
+    "allowed_artifact_types": ["policy", "skill"],
     "allow_permission_expansion": False, "allow_harness_edits": False,
     "minimum_live_successes": 2, "require_shadow_replay": True,
 }

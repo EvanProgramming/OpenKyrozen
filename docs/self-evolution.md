@@ -6,8 +6,8 @@ small reusable improvement, tests that improvement against evidence, and keeps
 it only when the result is repeatably better or non-regressing.
 
 This is not autonomous source-code rewriting or model fine-tuning. Learning
-artifacts are bounded policies or skills. They cannot add capabilities, create
-dynamic tools, grant permissions, add provider credentials, or upload private
+artifacts are bounded policies or skills. They cannot add capabilities, register
+tools, grant permissions, add provider credentials, or upload private
 memory. Every activation, promotion, retirement, and rollback is recorded in
 the local SQLite event ledger.
 
@@ -57,8 +57,8 @@ Current repository test count at this snapshot: **453 unittest cases**.
 
 The implementation stores its durable evidence locally. It does not fine-tune
 weights, synchronize cloud memory, edit harness source, or grant capabilities.
-Dynamic tools are controlled by a separate operator setting and remain subject
-to capability and approval gates. See [security](security.md) and the current
+Model-generated tools are removed; custom tools require explicit application-composition registration.
+See [security](security.md) and the current
 [generated runtime inventory](tool-inventory.md) for tool names and counts.
 
 ## Terminal workflow
@@ -100,7 +100,7 @@ API below.
    run, or abstain. Feature switches are persisted in SQLite.
 3. Static validation requires the manifest, Markdown sections, size limits,
    secret redaction, workspace containment, and declared permissions. Learned
-   artifacts cannot add capabilities or dynamic tools.
+   artifacts cannot add capabilities or register tools.
 4. A matching canary is used at most once per run. Promotion requires two
    distinct verified successes, no correction or failed use, and a paired
    candidate-versus-predecessor replay that does not regress.

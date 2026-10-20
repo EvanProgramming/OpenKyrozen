@@ -7,8 +7,8 @@ from typing import Any
 _CAPABILITY_PROFILES: dict[str, frozenset[str]] = {
     # Rich local-workspace access: read/write files, shell, network and Git.
     "workspace": frozenset({"read", "write", "shell", "network", "git", "browser"}),
-    # Explicit opt-in for irreversible operations and user-defined tools.
-    "full": frozenset({"read", "write", "shell", "network", "git", "browser", "destructive", "dynamic"}),
+    # Explicit opt-in for irreversible operations.
+    "full": frozenset({"read", "write", "shell", "network", "git", "browser", "destructive"}),
     "readonly": frozenset({"read", "network"}),
 }
 
@@ -19,14 +19,13 @@ def resolve_capabilities(value: str | None, default: str = "readonly") -> frozen
     if raw in _CAPABILITY_PROFILES:
         return _CAPABILITY_PROFILES[raw]
     requested = {part.strip() for part in raw.split(",") if part.strip()}
-    return frozenset(requested & {"read", "write", "shell", "network", "git", "browser", "destructive", "dynamic"})
+    return frozenset(requested & {"read", "write", "shell", "network", "git", "browser", "destructive"})
 
 
 def allowed_tool_names(tools: dict[str, Any] | None = None, capabilities: str | None = None) -> set[str]:
     """Return tools allowed by a capability profile.
 
-    Unknown tools are treated as dynamic tools, so a newly registered tool
-    cannot silently bypass a restricted Web/MCP profile.
+    Unknown tools receive no capability and are never exposed.
     """
     from openkyrozen.tools.catalog import builtin_names
     available = tools if tools is not None else builtin_names()
@@ -35,13 +34,13 @@ def allowed_tool_names(tools: dict[str, Any] | None = None, capabilities: str | 
 
 
 def tool_capability(name: str, tools=None) -> str:
-    """Read active registry policy; unknown compatibility tools remain dynamic."""
+    """Read active registry policy; unknown names fail closed."""
     registry = getattr(tools, 'registry', None)
     if registry is not None and name in registry.specs:
         return registry.get_spec(name).capability
     from openkyrozen.tools.catalog import builtin_metadata
     metadata = builtin_metadata(name)
-    return metadata['capability'] if metadata else 'dynamic'
+    return metadata['capability'] if metadata else 'unknown'
 
 
 def tool_policy(name, tools=None):
@@ -58,8 +57,6 @@ def tool_risk(name, tools=None):
 
 
 def tool_confirmation_required(name, surface, tools=None):
-    if name == 'define_tool':
-        return True
     policy = tool_policy(name,tools)
     surfaces = policy.confirmation_surfaces if hasattr(policy,'confirmation_surfaces') else policy.get('confirmation_surfaces',()) if policy else ()
     return tool_risk(name,tools) == 'high' and surface in surfaces

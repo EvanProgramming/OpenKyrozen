@@ -163,10 +163,10 @@ class ApprovalRequestTests(unittest.TestCase):
                 app.runtime.tool_registry.register_spec(ToolSpec(
                     "authority_probe", lambda _args: calls.append("ran") or ToolResult(text="ran"),
                     description="Test authority.", input_schema={"type": "object", "properties": {}, "additionalProperties": False},
-                    capability="dynamic", side_effects="none",
+                    capability="destructive", side_effects="destructive",
                 ))
                 receipt = app.runtime.execute(
-                    app.runtime.current_session, "authority_probe", {}, capabilities={"dynamic"},
+                    app.runtime.current_session, "authority_probe", {}, capabilities={"destructive"},
                 )
                 self.assertFalse(receipt.success)
                 self.assertEqual(calls, [])
@@ -224,12 +224,12 @@ class ApprovalRequestTests(unittest.TestCase):
             try:
                 from openkyrozen.security.capabilities import issue_capability_token
                 app.runtime._execution_capability_token = issue_capability_token(
-                    "test", {"read", "write", "shell", "network", "git", "browser", "destructive", "dynamic"},
+                    "test", {"read", "write", "shell", "network", "git", "browser", "destructive"},
                 )
                 self.assertNotIn("destructive", app.runtime._effective_execution_capabilities())
                 self.assertEqual(app.runtime._effective_execution_capabilities(set()), frozenset())
                 surface = app.runtime._surface_capability_override.set(
-                    frozenset({"read", "write", "shell", "network", "git", "browser", "destructive", "dynamic"})
+                    frozenset({"read", "write", "shell", "network", "git", "browser", "destructive"})
                 )
                 try:
                     self.assertIn("destructive", app.runtime._effective_execution_capabilities("full"))
@@ -247,7 +247,7 @@ class ApprovalRequestTests(unittest.TestCase):
                     spec.replace(executor=lambda args: calls.append(args) or ToolResult(text="executed")),
                     replace=True,
                 )
-                requested = {"read", "write", "shell", "network", "git", "browser", "destructive", "dynamic"}
+                requested = {"read", "write", "shell", "network", "git", "browser", "destructive"}
                 denied = app.runtime.execute(app.runtime.current_session, "git_reset", "--hard HEAD", capabilities=requested)
                 self.assertFalse(denied.success)
                 self.assertEqual(calls, [])

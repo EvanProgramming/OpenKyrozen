@@ -285,6 +285,38 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
             json.dumps(receipt.arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest())
 
+    def test_legacy_action_adapts_json_arguments_for_typed_plugin_tool(self):
+        from openkyrozen.tools.manifest import ToolSpec
+
+        received = []
+        def echo(arguments):
+            received.append(arguments)
+            return ToolResult(data=arguments, text=arguments["value"])
+
+        self.app.runtime.tool_registry.register_spec(ToolSpec(
+            "plugin_echo", echo, description="Echo a value",
+            input_schema={"type": "object", "properties": {"value": {"type": "string"}},
+                          "required": ["value"], "additionalProperties": False},
+            capability="read", side_effects="none", source="plugin",
+        ))
+
+        receipt = self.app.runtime._execute_turn_action(
+            "plugin_echo", '{"value":"hello"}', operation_scope="legacy-plugin",
+            successful_operations=set(), call_id="legacy-plugin-call", call_id_source="legacy",
+        )
+
+        self.assertTrue(receipt.success, receipt.result)
+        self.assertEqual(received, [{"value": "hello"}])
+        self.assertEqual(receipt.arguments, {"value": "hello"})
+
+        rejected = self.app.runtime._execute_turn_action(
+            "plugin_echo", '{"value":7}', operation_scope="legacy-plugin",
+            successful_operations=set(), call_id="legacy-plugin-invalid", call_id_source="legacy",
+        )
+        self.assertFalse(rejected.success)
+        self.assertEqual(rejected.failure, "invalid_arguments")
+        self.assertEqual(received, [{"value": "hello"}])
+
     def test_invalid_native_arguments_publish_correlated_tool_call(self):
         from openkyrozen.agent.events import RuntimeEventPublisher
 

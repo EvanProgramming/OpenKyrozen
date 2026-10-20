@@ -359,8 +359,8 @@ def _delegation_tool_access(self, action, args):
         policy = tool_policy(action, tools)
         spec = getattr(getattr(self, "tool_registry", None), "specs", {}).get(action)
         capability = spec.capability if spec is not None else (
-            policy.get("capability", "dynamic") if isinstance(policy, dict)
-            else getattr(policy, "capability", "dynamic")
+            policy.get("capability", "unknown") if isinstance(policy, dict)
+            else getattr(policy, "capability", "unknown")
         )
         effects = spec.side_effects if spec is not None else (
             policy.get("side_effects", "unknown") if isinstance(policy, dict)
@@ -370,7 +370,7 @@ def _delegation_tool_access(self, action, args):
             "search_web", "read_webpage", "analyze_remote_repo", "github_status", "github_read",
         }
         if action not in {"write_file", "edit_file", "apply_patch"} and not read_only_network and (
-            capability in {"write", "shell", "git", "browser", "destructive", "dynamic"}
+            capability in {"write", "shell", "git", "browser", "destructive"}
             or effects not in {"none", "read", "read_only"}
         ):
             raise PermissionError(f"Sub-agent capability '{capability}' is not confined to assigned files")

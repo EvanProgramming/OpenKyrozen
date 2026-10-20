@@ -350,7 +350,7 @@ def _server_capabilities(self, surface: str) -> frozenset[str]:
     """Return the configured capability set for Web or MCP requests."""
     env_name = "KYROZEN_MCP_CAPABILITIES" if surface == "mcp" else "KYROZEN_WEB_CAPABILITIES"
     # workspace is intentionally rich: it includes file writes, shell, network
-    # and ordinary Git operations. `full` additionally enables reset/dynamic.
+    # and ordinary Git operations. `full` additionally enables reset.
     configured = os.environ.get(env_name, "workspace")
     if os.environ.get("KYROZEN_MCP_ALLOW_DANGEROUS", "").lower() in {"1", "true", "yes"}:
         configured = "full"

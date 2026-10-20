@@ -322,7 +322,7 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
     if len(set(normalised_paths)) != len(normalised_paths):
         raise InteractionError("workspace paths must be unique after normalization")
     capabilities = values("capabilities", {
-        "read", "write", "shell", "network", "git", "browser", "destructive", "dynamic",
+        "read", "write", "shell", "network", "git", "browser", "destructive",
     })
     effects = values("effects", {
         "read_only", "filesystem", "process", "remote", "destructive", "internal",

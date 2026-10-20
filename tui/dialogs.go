@@ -171,7 +171,7 @@ func (m model) modal(_ string) string {
 		body = strings.Join(lines, "\n")
 	case screenPermissions:
 		choices := []struct{ mode, title, detail string }{
-			{"ask", "Ask before changes", "Confirm writes, shell, Git, browser, dynamic tools, and sensitive reads."},
+			{"ask", "Ask before changes", "Confirm writes, shell, Git, browser, plugin tools, and sensitive reads."},
 			{"full_jev", "Full access with Jev detection", "Jev checks sensitive and high impact actions; uncertain checks ask you."},
 			{"full", "Full access without Jev protection", "Run within configured capability and workspace limits."},
 		}
