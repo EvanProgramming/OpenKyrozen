@@ -73,6 +73,17 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertIsNone(payload)
         self.assertIn("too long", error)
 
+    def test_plan_action_carries_the_reviewed_identity_into_the_worker(self):
+        plan = {"plan_id": "plan-123", "version": 4}
+        with patch.object(self.backend.agent._interaction_controller, "state", return_value={
+            "pending_plan": plan,
+        }), patch.object(self.backend, "submit") as submit:
+            self.backend._plan_action({
+                "action": "accept", "plan_id": plan["plan_id"], "version": plan["version"],
+            }, "accept-1")
+
+        submit.assert_called_once_with("accept plan", "accept-1", plan_acceptance=plan)
+
     def test_permissions_jev_alias_is_normalized_before_persistence(self):
         with patch.object(self.backend.agent.fast_mode, "jev_key", return_value="configured"), \
                 patch.object(self.backend.agent, "set_permission_mode", return_value={

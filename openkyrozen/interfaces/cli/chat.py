@@ -13,10 +13,13 @@ def _run_cli_chat(self, user_input, interaction_before):
         self.console.print(f"[{self._WARNING}]Prompt injection detected and filtered.[/{self._WARNING}]")
 
     try:
+        pending_plan = interaction_before.get("pending_plan")
         reply = self.chat(self.current_session, sanitized, clear_tasks=not bool(
             interaction_before["pending_question"] or interaction_before["pending_plan"]
             or is_plan_acceptance(sanitized)
-        ))
+        ), **({"plan_acceptance": {"plan_id": pending_plan["plan_id"],
+                                    "version": pending_plan["version"]}}
+              if pending_plan and is_plan_acceptance(sanitized) else {}))
     except Exception as e:
         import traceback as _tb
         self.console.print(f"[{self._ERROR}]=== EXCEPTION IN _chat_turn ===[/{self._ERROR}]")

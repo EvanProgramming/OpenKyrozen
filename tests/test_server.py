@@ -270,6 +270,9 @@ class ServerBoundaryTests(unittest.TestCase):
                         })
                     self.assertEqual(accepted.status_code, 200, accepted.text)
                     self.assertEqual(run.call_args.args[1], "accept plan")
+                    self.assertEqual(run.call_args.kwargs["plan_acceptance"], {
+                        "plan_id": plan["plan_id"], "version": plan["version"],
+                    })
                     restored = client.get("/api/v2/sessions/interaction-session")
                     self.assertEqual(restored.status_code, 200, restored.text)
                     self.assertIn("interaction", restored.json())

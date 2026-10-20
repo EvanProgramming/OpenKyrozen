@@ -287,7 +287,8 @@ def _apply_chat_controls(self, session: dict[str, Any], body: dict[str, Any], me
     return message, None
 
 
-def _run_session_chat(self, session: dict[str, Any], message: str, *, on_runtime_event=None) -> str:
+def _run_session_chat(self, session: dict[str, Any], message: str, *, on_runtime_event=None,
+                      plan_acceptance: dict[str, Any] | None = None) -> str:
     """Run a session without swapping process-global agent state."""
     with self._chat_lock:
         self._initialise_session_defaults(session)
@@ -310,6 +311,7 @@ def _run_session_chat(self, session: dict[str, Any], message: str, *, on_runtime
                 bound, message, clear_tasks=True, profile=session.get("profile", "auto"),
                 memory_context={key: session.get(key) for key in ("speaker", "audience", "channel", "authorized_speakers")},
                 on_runtime_event=on_runtime_event,
+                **({"plan_acceptance": plan_acceptance} if plan_acceptance is not None else {}),
             )
             reply = runtime._clean_final_response(reply)
             session["last_learning_run"] = bound.last_learning_run
@@ -401,12 +403,18 @@ async def api_chat(self, request: Request):
     msg, immediate_reply = (await asyncio.to_thread(service._apply_chat_controls, session, body, msg)
                             if "fast_backend" in body or "system_one_backend" in body or "decision_assist_backend" in body
                             else service._apply_chat_controls(session, body, msg))
+    plan_action = body.get("plan_action")
+    plan_acceptance = ({"plan_id": plan_action["plan_id"], "version": plan_action["version"]}
+                       if isinstance(plan_action, dict)
+                       and str(plan_action.get("action") or "").lower() == "accept" else None)
     if not msg and immediate_reply is None:
         raise HTTPException(400, "Empty message")
     service._audit("CHAT", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
 
     try:
-        reply = immediate_reply if immediate_reply is not None else service._run_session_chat(session, msg)
+        reply = immediate_reply if immediate_reply is not None else service._run_session_chat(
+            session, msg, plan_acceptance=plan_acceptance,
+        )
     except service._agent.ProviderUnavailableError as exc:
         service._audit("ERROR", service._agent.PROVIDER_UNAVAILABLE_CODE, session["user_id"])
         raise HTTPException(
@@ -438,6 +446,10 @@ async def api_chat_stream(self, request: Request):
     msg, immediate_reply = (await asyncio.to_thread(service._apply_chat_controls, session, body, msg)
                             if "fast_backend" in body or "system_one_backend" in body or "decision_assist_backend" in body
                             else service._apply_chat_controls(session, body, msg))
+    plan_action = body.get("plan_action")
+    plan_acceptance = ({"plan_id": plan_action["plan_id"], "version": plan_action["version"]}
+                       if isinstance(plan_action, dict)
+                       and str(plan_action.get("action") or "").lower() == "accept" else None)
     if not msg and immediate_reply is None:
         raise HTTPException(400, "Empty message")
     service._audit("CHAT_STREAM", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
@@ -508,7 +520,7 @@ async def api_chat_stream(self, request: Request):
     def run_streaming_turn() -> None:
         try:
             reply = immediate_reply if immediate_reply is not None else service._run_session_chat(
-                session, msg, on_runtime_event=projection,
+                session, msg, on_runtime_event=projection, plan_acceptance=plan_acceptance,
             )
             if str(reply).startswith("[LLM Error]"):
                 events.put({"event": "error", "error": str(reply)})

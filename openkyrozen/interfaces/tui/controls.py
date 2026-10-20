@@ -60,7 +60,9 @@ def _plan_action(self, payload: dict[str, Any], request_id: str) -> None:
         self.emit("error", request_id, code="plan_not_pending", error="plan is not pending at the requested version")
         return
     if action == "accept":
-        self.submit("accept plan", request_id)
+        self.submit("accept plan", request_id, plan_acceptance={
+            "plan_id": plan["plan_id"], "version": plan["version"],
+        })
     elif action == "cancel":
         runtime.cancel_interaction_plan(plan_id, version)
         self.emit("response", request_id, text="Pending plan cancelled.")
