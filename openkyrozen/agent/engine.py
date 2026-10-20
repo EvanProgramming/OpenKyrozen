@@ -4,6 +4,11 @@ from __future__ import annotations
 from openkyrozen.agent.turn import TurnContext
 from openkyrozen.providers.models import FinishReason, ToolReply
 
+_COMPACT_CORE_TOOLS = frozenset({
+    "list_dir", "find_files", "search_files", "read_file", "write_file", "edit_file",
+    "run_cmd", "discover_tools",
+})
+
 
 class AgentEngine:
     """Own the foreground turn lifecycle and select native or legacy transport."""
@@ -20,10 +25,9 @@ class AgentEngine:
             capabilities = get_capabilities(runtime.DEEPSEEK_MODEL) if callable(get_capabilities) else None
         except Exception:
             capabilities = None
-        tool_names = runtime._permitted_tool_names()
-        if (capabilities and capabilities.native_tools and tool_names
+        if (capabilities and capabilities.native_tools
                 and turn.interaction_mode in {"agent", "ask"}):
-            self._run_native(turn, tool_names)
+            self._run_native(turn)
             return runtime._complete_turn(turn)
         reply = runtime._initial_turn_response(turn)
         if reply is not None:
@@ -31,7 +35,17 @@ class AgentEngine:
         runtime._execute_action_rounds(turn)
         return runtime._complete_turn(turn)
 
-    def _run_native(self, turn: TurnContext, tool_names) -> None:
+    def _native_tool_names(self) -> set[str]:
+        runtime = self.runtime
+        permitted = runtime._permitted_tool_names()
+        if runtime._prompt_profile() != "compact":
+            return permitted
+        if "discover_tools" not in permitted:
+            return permitted
+        discovered = getattr(runtime.execution_context, "discovered_tools", frozenset())
+        return permitted & (_COMPACT_CORE_TOOLS | set(discovered))
+
+    def _run_native(self, turn: TurnContext) -> None:
         runtime = self.runtime
         from openkyrozen.agent.conversation import model_response_to_dict
         messages = runtime._build_messages(
@@ -44,13 +58,15 @@ class AgentEngine:
         operation_scope = str(turn.learning_run.get("run_id"))
         final_text = ""
         response = None
+        history_tool_names: set[str] = set()
 
         for step in range(runtime.MAX_STEPS_PER_TURN + 1):
+            tool_names = self._native_tool_names()
             token = runtime._record_foreground_model.set(False)
             try:
                 try:
                     response = runtime._get_model_response(
-                        messages, tool_names=tool_names, stream=False,
+                        messages, tool_names=tool_names, history_tool_names=history_tool_names, stream=False,
                     )
                 except Exception as exc:
                     runtime._turn_failed.set(True)
@@ -102,6 +118,7 @@ class AgentEngine:
                 turn.protocol_error_message = final_text
                 break
             messages.append(response)
+            history_tool_names.update(call.name for call in response.tool_calls)
             turn.tool_calls.extend({"action": call.name, "args": call.arguments, "call_id": call.id}
                                    for call in response.tool_calls)
             for call in response.tool_calls:

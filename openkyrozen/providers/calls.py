@@ -78,7 +78,7 @@ def _bounded_provider_stream(self, provider: Any, messages: list[dict[str, str]]
 
 
 def _get_model_response(self, messages: list[dict], model: str | None = None, *, tool_names=None,
-                        stream: bool = False, on_event=None) -> ModelResponse:
+                        history_tool_names=(), stream: bool = False, on_event=None) -> ModelResponse:
     """Receive the full response under existing deadline, usage and context scopes."""
     provider = self.execution_context.provider or self.llm_provider
     tools = None
@@ -87,13 +87,18 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
             raise TypeError("tool_names must be a collection of canonical tool names")
         registry = self.tool_registry
         allowed = self._effective_execution_capabilities()
-        names = set()
+        if isinstance(history_tool_names, str) or not isinstance(history_tool_names, (list, tuple, set, frozenset)):
+            raise TypeError("history_tool_names must be a collection of current-turn tool names")
+        history_names = set(history_tool_names)
+        if any(not isinstance(name, str) or not name for name in history_names):
+            raise TypeError("history_tool_names must contain nonempty tool names")
+        names = set(history_names)
         for requested in tool_names:
             canonical = registry.resolve_legacy_name(requested)
             if canonical in registry.specs:
                 names.add(canonical)
         tools = [item for item in registry.provider_schemas(names=names)
-                 if registry.get_spec(item["name"]).capability in allowed]
+                 if registry.get_spec(item["name"]).capability in allowed or item["name"] in history_names]
     self._last_prompt_tokens = self._last_completion_tokens = 0
     self._last_response_is_native.set(False)
     self._last_model_response.set(None)

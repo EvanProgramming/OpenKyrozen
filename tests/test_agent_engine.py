@@ -19,6 +19,133 @@ from openkyrozen.providers.models import validate_replied_tool_definitions, vali
 
 
 class AgentEngineTests(unittest.TestCase):
+    def test_compact_native_falls_back_to_permitted_inventory_without_discovery_access(self):
+        runtime = SimpleNamespace(
+            execution_context=SimpleNamespace(discovered_tools=frozenset()),
+            _prompt_profile=lambda: "compact",
+            _permitted_tool_names=lambda: {"github_read", "browser_open"},
+        )
+
+        self.assertEqual(AgentEngine(runtime)._native_tool_names(), {"github_read", "browser_open"})
+
+    def test_native_history_keeps_past_schema_but_rejects_revoked_new_calls(self):
+        provider = SimpleNamespace(name="native", _continuation_id="native-session")
+        provider.get_capabilities = lambda model: ProviderCapabilities(native_tools=True)
+        responses = [
+            ModelResponse(
+                tool_calls=(ToolCall("write-1", "write_file", {"path": "note.txt", "content": "saved"}),),
+                finish_reason=FinishReason.TOOL_REQUEST,
+                continuation=provider_continuation(provider, "model-1", "fake", {"id": "response-1"}),
+            ),
+            ModelResponse(
+                tool_calls=(ToolCall("write-2", "write_file", {"path": "other.txt", "content": "blocked"}),),
+                finish_reason=FinishReason.TOOL_REQUEST,
+                continuation=provider_continuation(provider, "model-1", "fake", {"id": "response-2"}),
+            ),
+        ]
+        runtime = SimpleNamespace(
+            execution_context=SimpleNamespace(provider=provider, discovered_tools=frozenset()), llm_provider=None,
+            DEEPSEEK_MODEL="model-1", MAX_STEPS_PER_TURN=3,
+            _record_foreground_model=contextvars.ContextVar("record", default=False),
+            _conversation_turn_id=contextvars.ContextVar("turn_id", default=None),
+            _last_response_is_native=contextvars.ContextVar("native", default=False),
+            _last_prompt_tokens=0, _last_completion_tokens=0,
+        )
+        runtime._prepare_turn = lambda turn: (
+            setattr(turn, "interaction_mode", "agent"), setattr(turn, "learning_run", {"run_id": "run-1"}),
+            setattr(turn, "learned_context", ""),
+        )
+        runtime._build_messages = lambda *args, **kwargs: [{"role": "user", "content": "Save this note"}]
+        current_tools = {"write_file"}
+        runtime._permitted_tool_names = lambda: current_tools.copy()
+        runtime._prompt_profile = lambda: "classic"
+        runtime._get_model_response = Mock(side_effect=responses)
+
+        def execute(action, arguments, **kwargs):
+            current_tools.clear()
+            return SimpleNamespace(
+                action=action, tool_result=ToolResult(text="saved"), result_data={}, result="saved",
+            )
+
+        runtime._execute_turn_action = Mock(side_effect=execute)
+        runtime._record_turn_receipt = Mock(return_value={"success": True})
+        runtime._tool_result_for_prompt = Mock(return_value="saved")
+        runtime._render_tool_result = Mock()
+        runtime._update_tasks_panel = Mock()
+        runtime._safe_fstring = str
+        runtime._deterministic_tool_summary = lambda records: "Saved note."
+        runtime.tasks = SimpleNamespace(tasks=[])
+        runtime._complete_turn = lambda turn: turn.protocol_error_message
+
+        result = AgentEngine(runtime).run(TurnContext("Save this note"))
+
+        self.assertEqual(result, "The provider returned an unknown tool call; no tool was run.")
+        self.assertEqual(runtime._execute_turn_action.call_count, 1)
+        second_request = runtime._get_model_response.call_args_list[1].kwargs
+        self.assertEqual(second_request["tool_names"], set())
+        self.assertEqual(second_request["history_tool_names"], {"write_file"})
+
+    def test_compact_native_discovery_adds_only_permitted_schemas_for_next_request(self):
+        provider = SimpleNamespace(name="native", _continuation_id="native-session")
+        provider.get_capabilities = lambda model: ProviderCapabilities(native_tools=True)
+        responses = [
+            ModelResponse(
+                tool_calls=(ToolCall("discover-1", "discover_tools", {"names": ["git_log"]}),),
+                finish_reason=FinishReason.TOOL_REQUEST,
+                continuation=provider_continuation(provider, "model-1", "fake", {"id": "response-1"}),
+            ),
+            ModelResponse(
+                tool_calls=(ToolCall("git-1", "git_log", {"options": ["-1"]}),),
+                finish_reason=FinishReason.TOOL_REQUEST,
+                continuation=provider_continuation(provider, "model-1", "fake", {"id": "response-2"}),
+            ),
+            ModelResponse(text="History checked.", finish_reason=FinishReason.FINAL),
+        ]
+        runtime = SimpleNamespace(
+            execution_context=SimpleNamespace(provider=provider, discovered_tools=set()), llm_provider=None,
+            DEEPSEEK_MODEL="model-1", MAX_STEPS_PER_TURN=3,
+            _record_foreground_model=contextvars.ContextVar("record", default=False),
+            _conversation_turn_id=contextvars.ContextVar("turn_id", default=None),
+            _last_response_is_native=contextvars.ContextVar("native", default=False),
+            _last_prompt_tokens=0, _last_completion_tokens=0,
+        )
+        runtime._prepare_turn = lambda turn: (
+            setattr(turn, "interaction_mode", "agent"), setattr(turn, "learning_run", {"run_id": "run-1"}),
+            setattr(turn, "learned_context", ""),
+        )
+        runtime._build_messages = lambda *args, **kwargs: [{"role": "user", "content": "Review Git history"}]
+        permitted = {"read_file", "list_dir", "discover_tools", "git_log", "github_read", "browser_open", "graph_query"}
+        runtime._permitted_tool_names = lambda: permitted
+        runtime._prompt_profile = lambda: "compact"
+        runtime._get_model_response = Mock(side_effect=responses)
+
+        def execute(action, arguments, **kwargs):
+            if action == "discover_tools":
+                runtime.execution_context.discovered_tools.update(arguments["names"])
+            return SimpleNamespace(
+                action=action, tool_result=ToolResult(text="discovered"), result_data={}, result="discovered",
+            )
+
+        runtime._execute_turn_action = Mock(side_effect=execute)
+        runtime._record_turn_receipt = Mock(return_value={"success": True})
+        runtime._tool_result_for_prompt = Mock(return_value="discovered")
+        runtime._render_tool_result = Mock()
+        runtime._update_tasks_panel = Mock()
+        runtime._safe_fstring = str
+        runtime._deterministic_tool_summary = lambda records: "tool summary"
+        runtime.tasks = SimpleNamespace(tasks=[])
+        runtime._complete_turn = Mock(side_effect=lambda turn: turn.final_answer)
+
+        result = AgentEngine(runtime).run(TurnContext("Review Git history"))
+
+        self.assertEqual(result, "History checked.")
+        calls = runtime._get_model_response.call_args_list
+        self.assertEqual(calls[0].kwargs["tool_names"], {"read_file", "list_dir", "discover_tools"})
+        self.assertEqual(calls[1].kwargs["tool_names"], {"read_file", "list_dir", "discover_tools", "git_log"})
+        self.assertNotIn("github_read", calls[1].kwargs["tool_names"])
+        self.assertNotIn("browser_open", calls[1].kwargs["tool_names"])
+        self.assertNotIn("graph_query", calls[1].kwargs["tool_names"])
+
     def test_native_loop_stops_at_engine_step_limit(self):
         provider = SimpleNamespace(name="native", _continuation_id="native-session")
         provider.get_capabilities = lambda model: ProviderCapabilities(native_tools=True)
@@ -40,6 +167,7 @@ class AgentEngineTests(unittest.TestCase):
         )
         runtime._build_messages = lambda *args, **kwargs: [{"role": "user", "content": "Read README"}]
         runtime._permitted_tool_names = lambda: {"read_file"}
+        runtime._prompt_profile = lambda: "classic"
         runtime._get_model_response = Mock(return_value=response)
         runtime._execute_turn_action = Mock(side_effect=AssertionError("step limit was bypassed"))
         runtime._deterministic_tool_summary = lambda records: "No tools were run."
@@ -71,6 +199,7 @@ class AgentEngineTests(unittest.TestCase):
         )
         runtime._build_messages = lambda *args, **kwargs: [{"role": "user", "content": "Use missing tool"}]
         runtime._permitted_tool_names = lambda: {"read_file"}
+        runtime._prompt_profile = lambda: "classic"
         runtime._get_model_response = Mock(return_value=response)
         runtime._execute_turn_action = Mock(side_effect=AssertionError("unknown tool was executed"))
         runtime._deterministic_tool_summary = lambda records: "No tools were run."
@@ -103,6 +232,7 @@ class AgentEngineTests(unittest.TestCase):
         )
         runtime._build_messages = lambda *args, **kwargs: [{"role": "user", "content": "Read README"}]
         runtime._permitted_tool_names = lambda: {"read_file"}
+        runtime._prompt_profile = lambda: "classic"
         runtime._get_model_response = Mock(side_effect=[call_response, final_response])
         runtime._execute_turn_action = Mock(return_value=SimpleNamespace(
             action="read_file", tool_result=ToolResult(data={"text": "contents"}, text="contents"),
