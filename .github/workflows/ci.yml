@@ -75,6 +75,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.python == 'true' || needs.changes.outputs.all == 'true'
     runs-on: ubuntu-latest
+    env:
+      KYROZEN_SANDBOX_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -88,6 +90,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y zsh bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           python -m pip install --upgrade pip
           pip install -e '.[all]'
       - name: Install Chromium and run the full test suite
@@ -112,6 +115,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.all == 'true'
     runs-on: ubuntu-latest
+    env:
+      KYROZEN_SANDBOX_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -125,6 +130,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y zsh bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           python -m pip install --upgrade pip
           pip install -e '.[all]'
       - name: Install Chromium and run the full test suite

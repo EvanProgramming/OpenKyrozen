@@ -28,6 +28,7 @@ class ProcessHandle:
     timeout_seconds: float
     sandbox_backend: str = "unavailable"
     temporary_directory: object | None = None
+    sandbox_reason: str | None = None
     started_at: float = field(default_factory=time.monotonic)
     stdout: str = ""
     stderr: str = ""
@@ -72,7 +73,7 @@ class SessionProcessManager:
             handle = ProcessHandle(
                 uuid.uuid4().hex, process, self.owner_id, self.workspace_id,
                 self.session_id, timeout_seconds, invocation.backend,
-                invocation.temporary_directory,
+                invocation.temporary_directory, invocation.unavailable_reason,
             )
             self._handles[handle.process_id] = handle
         for name in ("stdout", "stderr"):
@@ -129,6 +130,7 @@ class SessionProcessManager:
             "output": page, "next_offset": offset + len(page),
             "output_truncated": truncated, "timed_out": timed_out,
             "sandbox_backend": handle.sandbox_backend,
+            "sandbox_reason": handle.sandbox_reason,
             "duration_seconds": duration,
             "running": handle.process.poll() is None,
             "exit_code": handle.process.poll(),

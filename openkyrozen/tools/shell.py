@@ -107,25 +107,36 @@ def run_command(self, args: str | dict) -> CommandResult:
                         pass
                 out, err = process.communicate()
             elapsed = time.monotonic() - started
-            return CommandResult(f"Error: command timed out after {timeout}s", False,
+            message = f"Error: command timed out after {timeout}s"
+            if invocation.backend == "unavailable":
+                reason = f" Reason: {invocation.unavailable_reason}." if invocation.unavailable_reason else ""
+                message = "OS filesystem sandbox unavailable; command ran without filesystem protection." + reason + "\n" + message
+            return CommandResult(message, False,
                                  process.returncode, "timeout", out, err, elapsed, True,
-                                 sandbox_backend=invocation.backend)
+                                 sandbox_backend=invocation.backend,
+                                 sandbox_reason=invocation.unavailable_reason)
         elapsed = time.monotonic() - started
         message = ""
         if invocation.backend == "unavailable":
-            message = "OS filesystem sandbox unavailable; command ran without filesystem protection.\n"
+            message = "OS filesystem sandbox unavailable; command ran without filesystem protection."
+            if invocation.unavailable_reason:
+                message += f" Reason: {invocation.unavailable_reason}."
+            message += "\n"
         if process.returncode != 0:
             return CommandResult(
                 f"{message}Exit code {process.returncode}\nstdout:\n{out}\nstderr:\n{err}".strip(),
                 False, process.returncode, "nonzero_exit", out, err, elapsed,
                 sandbox_backend=invocation.backend,
+                sandbox_reason=invocation.unavailable_reason,
             )
         return CommandResult(message + (out.strip() or "(no output)"), True, process.returncode,
                              stdout=out, stderr=err, duration_seconds=elapsed,
-                             sandbox_backend=invocation.backend)
+                             sandbox_backend=invocation.backend,
+                             sandbox_reason=invocation.unavailable_reason)
     except SandboxUnavailableError as exc:
-        return CommandResult(f"Error: {exc}", False, failure="sandbox_unavailable",
-                             sandbox_backend="unavailable")
+        return CommandResult(f"Error: required OS filesystem sandbox unavailable: {exc}", False,
+                             failure="sandbox_unavailable", sandbox_backend="unavailable",
+                             sandbox_reason=exc.reason)
     except subprocess.TimeoutExpired as exc:
         elapsed = time.monotonic() - started if "started" in locals() else 0.0
         out = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
@@ -133,10 +144,12 @@ def run_command(self, args: str | dict) -> CommandResult:
         return CommandResult(f"Error: command timed out after {timeout}s", False,
                              failure="timeout", stdout=out, stderr=err,
                              duration_seconds=elapsed, timed_out=True,
-                             sandbox_backend=invocation.backend if invocation else "unavailable")
+                             sandbox_backend=invocation.backend if invocation else "unavailable",
+                             sandbox_reason=invocation.unavailable_reason if invocation else None)
     except Exception as e:
         return CommandResult(f"Error running command: {e}", False, failure="execution_error",
-                             sandbox_backend=invocation.backend if invocation else "unavailable")
+                             sandbox_backend=invocation.backend if invocation else "unavailable",
+                             sandbox_reason=invocation.unavailable_reason if invocation else None)
     finally:
         if process is not None and process.poll() is None:
             try:

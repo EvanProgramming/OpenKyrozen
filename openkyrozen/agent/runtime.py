@@ -535,12 +535,15 @@ class AgentRuntime:
                 )
                 message = f"Started background process {handle.process_id}"
                 if handle.sandbox_backend == "unavailable":
-                    message = "OS filesystem sandbox unavailable; process ran without filesystem protection.\n" + message
+                    reason = f" Reason: {handle.sandbox_reason}." if handle.sandbox_reason else ""
+                    message = "OS filesystem sandbox unavailable; process ran without filesystem protection." + reason + "\n" + message
                 return CommandResult(message, True, process_id=handle.process_id,
-                                     sandbox_backend=handle.sandbox_backend)
+                                     sandbox_backend=handle.sandbox_backend,
+                                     sandbox_reason=handle.sandbox_reason)
             except SandboxUnavailableError as exc:
-                return CommandResult(f"Error: {exc}", False, failure="sandbox_unavailable",
-                                     sandbox_backend="unavailable")
+                return CommandResult(f"Error: required OS filesystem sandbox unavailable: {exc}", False,
+                                     failure="sandbox_unavailable", sandbox_backend="unavailable",
+                                     sandbox_reason=exc.reason)
             except (OSError, RuntimeError, ValueError) as exc:
                 return CommandResult(f"Error starting background process: {exc}", False,
                                      failure="execution_error")

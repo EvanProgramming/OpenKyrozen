@@ -68,6 +68,45 @@ class OSSandboxTests(unittest.TestCase):
             self.assertIn('unavailable', result.output.lower())
             self.assertEqual(command_tool_result(result).data['sandbox_backend'], 'unavailable')
 
+    def test_installed_but_unusable_backend_is_reported_and_optional_mode_falls_back(self):
+        from openkyrozen.tools import ToolAdapters
+
+        with tempfile.TemporaryDirectory() as root, \
+                patch('openkyrozen.tools.sandbox.sys.platform', 'linux'), \
+                patch('openkyrozen.tools.sandbox.shutil.which', return_value='/usr/bin/bwrap'), \
+                patch('openkyrozen.tools.sandbox._probe_backend', return_value='uid map denied'), \
+                patch.dict(os.environ, {'KYROZEN_SANDBOX_REQUIRED': ''}):
+            workspace = Path(root) / 'workspace'
+            workspace.mkdir()
+            marker = Path(root) / 'fallback.txt'
+            result = ToolAdapters(workspace).run_command({
+                'command': f'echo ran > {shlex.quote(str(marker))}',
+            })
+            self.assertTrue(result.success)
+            self.assertEqual(result.sandbox_backend, 'unavailable')
+            self.assertEqual(result.sandbox_reason, 'bubblewrap could not enforce filesystem restrictions: uid map denied')
+            self.assertIn('without filesystem protection', result.output.lower())
+            self.assertTrue(marker.exists())
+
+    def test_installed_but_unusable_backend_blocks_when_sandbox_is_required(self):
+        from openkyrozen.tools import ToolAdapters
+
+        with tempfile.TemporaryDirectory() as root, \
+                patch('openkyrozen.tools.sandbox.sys.platform', 'linux'), \
+                patch('openkyrozen.tools.sandbox.shutil.which', return_value='/usr/bin/bwrap'), \
+                patch('openkyrozen.tools.sandbox._probe_backend', return_value='uid map denied'), \
+                patch.dict(os.environ, {'KYROZEN_SANDBOX_REQUIRED': '1'}):
+            workspace = Path(root) / 'workspace'
+            workspace.mkdir()
+            marker = Path(root) / 'blocked.txt'
+            result = ToolAdapters(workspace).run_command({
+                'command': f'echo blocked > {shlex.quote(str(marker))}',
+            })
+            self.assertFalse(result.success)
+            self.assertEqual(result.failure, 'sandbox_unavailable')
+            self.assertEqual(result.sandbox_reason, 'bubblewrap could not enforce filesystem restrictions: uid map denied')
+            self.assertFalse(marker.exists())
+
     @unittest.skipUnless(sys.platform == 'darwin', 'requires macOS sandbox-exec')
     def test_macos_sandbox_allows_workspace_writes_and_denies_sibling_writes(self):
         from openkyrozen.tools import ToolAdapters
@@ -116,7 +155,7 @@ class OSSandboxTests(unittest.TestCase):
     def test_linux_sandbox_allows_workspace_writes_and_denies_sibling_writes(self):
         from openkyrozen.tools import ToolAdapters
 
-        with tempfile.TemporaryDirectory(dir=Path.home()) as root:
+        with tempfile.TemporaryDirectory() as root:
             root = Path(root).resolve()
             workspace = root / 'workspace'
             workspace.mkdir()
@@ -127,7 +166,8 @@ class OSSandboxTests(unittest.TestCase):
             command = _filesystem_escape_probe(
                 workspace, sibling_file, workspace / 'escape-link' / 'link.txt',
             )
-            result = ToolAdapters(workspace).run_command({'command': command})
+            with patch.dict(os.environ, {'KYROZEN_SANDBOX_REQUIRED': '1'}):
+                result = ToolAdapters(workspace).run_command({'command': command})
             self.assertEqual(result.sandbox_backend, 'bubblewrap')
             self.assertTrue((workspace / 'inside.txt').is_file())
             self.assertFalse(sibling_file.exists())
@@ -145,10 +185,11 @@ class OSSandboxTests(unittest.TestCase):
             workspace.mkdir()
             outside = root / 'escaped.txt'
             manager = SessionProcessManager('actor', str(workspace), 'session')
-            handle = manager.start(
-                f'echo outside > {shlex.quote(str(outside))}; echo completed',
-                cwd=str(workspace), env=os.environ.copy(), timeout_seconds=10,
-            )
+            with patch.dict(os.environ, {'KYROZEN_SANDBOX_REQUIRED': '1'}):
+                handle = manager.start(
+                    f'echo outside > {shlex.quote(str(outside))}; echo completed',
+                    cwd=str(workspace), env=os.environ.copy(), timeout_seconds=10,
+                )
             try:
                 handle.process.wait(timeout=5)
                 self.assertEqual(handle.sandbox_backend, 'bubblewrap')
