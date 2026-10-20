@@ -31,8 +31,8 @@ names produce an error without revealing restricted tool descriptions.
 
 Discovery intersects the configured capability bound, active surface token, and
 interaction mode. Ask and Plan remain read-only. Tool execution retains its
-existing capability, approval, workspace, and receipt checks. Dynamic tools remain
-visible only with dynamic permission. MCP lists the new read-capability tool using
+existing capability, approval, workspace, and receipt checks. Plugin tools use
+their registered metadata and remain subject to the same permission intersection. MCP lists the new read-capability tool using
 the existing generic `{ "args": "..." }` input contract.
 
 Providers using native structured calls receive schemas for only the compact core

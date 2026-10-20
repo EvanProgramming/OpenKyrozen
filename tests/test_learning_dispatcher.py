@@ -79,8 +79,9 @@ class LearningDispatcherTests(unittest.TestCase):
         )
         main._set_workspace_root(root)
 
-    def test_registry_has_twenty_independent_callable_features(self):
-        self.assertEqual(len(main._LEARNING_FEATURE_ORDER), 20)
+    def test_registry_has_nineteen_independent_callable_features(self):
+        self.assertEqual(len(main._LEARNING_FEATURE_ORDER), 19)
+        self.assertNotIn("dynamic_tool_definition", main._LEARNING_FEATURE_ORDER)
         self.assertEqual(set(main._LEARNING_FEATURE_ORDER), set(main._LEARNING_FEATURE_REGISTRY))
         for name in main._LEARNING_FEATURE_ORDER:
             self.assertTrue(main._LEARNING_FEATURE_REGISTRY[name]["description"])
@@ -133,28 +134,6 @@ class LearningDispatcherTests(unittest.TestCase):
             after = main._build_memory_context("lantern configuration", n=1)
             self.assertIn("alpha", after)
             self.assertNotIn("beta", after)
-
-    def test_dynamic_tool_learning_never_grants_capability(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
-            stats = {"audit_probe": {"calls": 2, "successes": 2}}
-            with patch.dict(main.AVAILABLE_TOOLS, {"audit_probe": lambda _args: ToolResult(text="ok")}), \
-                    patch.object(main, "_tool_stats", stats), \
-                    patch.object(main, "ALLOW_DYNAMIC_TOOLS", True), \
-                    patch.object(main.learning_engine, "_review_claim_evidence", return_value=None):
-                def run():
-                    return main.dispatch_learning_cycle(surface="test", trigger="turn", max_features=1,
-                        feature_names=("dynamic_tool_definition",))
-
-                run()
-                self.assertEqual(main.learning_engine.status(1)[0]["status"], "candidate")
-                stats["audit_probe"] = {"calls": 3, "successes": 3}
-                run()
-                self.assertEqual(main.learning_engine.status(1)[0]["status"], "active")
-                self.assertIn("TOOL_GUIDE", main._build_memory_context("audit_probe"))
-                with patch.object(main, "_permitted_tool_names", return_value=set()):
-                    self.assertNotIn("TOOL_GUIDE", main._build_memory_context("audit_probe"))
-            self.assertNotIn("TOOL_GUIDE", main._build_memory_context("audit_probe"))
 
     def test_verified_correction_preflight_is_reused_on_matching_task(self):
         with tempfile.TemporaryDirectory() as directory:

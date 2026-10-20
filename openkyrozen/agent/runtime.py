@@ -110,14 +110,6 @@ class AgentRuntime:
         _get_fix_success_rate,
     )
 
-    # tools.dynamic
-    from openkyrozen.tools.dynamic import (
-        _record_dynamic_tool_event,
-        _reject_dynamic_tool,
-        _register_tool,
-        _attempt_define_tool,
-    )
-
     # memory.preferences
     from openkyrozen.memory.preferences import (
         _preference_fields,
@@ -270,7 +262,6 @@ class AgentRuntime:
         _learning_result,
         _run_learning_context_compression,
         _run_learning_technology,
-        _run_learning_dynamic_tools,
         _run_learning_preferences,
         _run_learning_memory_scoring,
         _run_learning_graph,

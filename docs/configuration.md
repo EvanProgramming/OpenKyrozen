@@ -35,14 +35,13 @@ Unknown keys, duplicate YAML mapping keys, invalid types, and out-of-range value
 | `KYROZEN_DECISION_ASSIST_BACKEND` | Set the optional Decision Assist default backend (`off`, `jev`, or `kev`). |
 | `KYROZEN_WEB_CAPABILITIES`, `KYROZEN_MCP_CAPABILITIES`, `KYROZEN_MCP_ALLOW_DANGEROUS` | Configure the server tool profiles; dangerous MCP opt-in selects the full profile. Read [security](security.md) before changing them. |
 | `KYROZEN_APPROVAL_MODE`, `KYROZEN_EXECUTION_SURFACE`, `KYROZEN_TUI_CAPABILITIES` | Runtime approval and UI surface controls. They do not change the OS account's permissions or turn off policy intersections. |
-| `KYROZEN_ALLOW_DYNAMIC_TOOLS` | Explicitly allow the separately gated dynamic tool feature. Review [extensions](extensions.md) before enabling it. |
 | `KYROZEN_LEARNING_WORKER`, `KYROZEN_LEARNING_OLLAMA_BASE_URL`, `KYROZEN_LEARNING_CONSTITUTION` | Learning worker/runtime configuration, local Ollama endpoint, and local learning policy input. |
 | `KYROZEN_PROMPT_PROFILE` | Select the optional compact prompt/discovery profile; default is `classic`. |
 | `KYROZEN_SKILLS_DIR`, `KYROZEN_BROWSER_PROFILES`, `KYROZEN_BROWSER_ALLOW_PRIVATE` | Select local skill and browser profile storage or explicitly permit private browser destinations. Treat those destinations and instructions as sensitive. |
 | `KYROZEN_GH_BINARY`, `KYROZEN_TUI_BINARY`, `KYROZEN_BACKEND_COMMAND`, `KYROZEN_BACKEND_PYTHON`, `KYROZEN_BACKEND_MODULE`, `KYROZEN_DISABLE_TUI` | Locate packaged/helper commands or force the Rich terminal fallback. These are mainly installer, test, and integration settings. |
 | `KYROZEN_TTS_TEXT`, `KYROZEN_MEMORY_MAX_LOGS` | Optional spoken text and bounded memory/log behavior. |
 
-The variable list is the supported, documented configuration surface at the v2.0.6 release snapshot. Variables marked as helper or test controls can change as implementations evolve; inspect the relevant entry point before building long-lived deployment tooling around them.
+The variable list is the supported, documented configuration surface at the v2.0.6 release snapshot. `KYROZEN_ALLOW_DYNAMIC_TOOLS` is no longer supported and is ignored; legacy `dynamic` capability labels are accepted but grant nothing. See the [tool registration migration](extensions.md#tool-registration-and-migration). Variables marked as helper or test controls can change as implementations evolve; inspect the relevant entry point before building long-lived deployment tooling around them.
 
 ## Provider selection
 

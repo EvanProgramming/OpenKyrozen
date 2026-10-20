@@ -21,7 +21,6 @@ from openkyrozen.skills.instructions import format_instructions
 from openkyrozen.app.config import AgentConfigError, effective_capabilities, load_agent_config
 from openkyrozen.agent.subagents import AgentProfile, SubAgentManager
 from openkyrozen.security.capabilities import issue_capability_token
-from openkyrozen.security.dynamic_tools import SAFE_BUILTINS, validate_tool_source
 from openkyrozen.workspace.context import LaunchContext, resolve_launch_context, source_scope_id
 from openkyrozen.workspace.history import HistoryError, HistoryManager, TurnToken
 from openkyrozen.tools import CommandResult, resolve_capabilities, tool_capability
@@ -72,8 +71,6 @@ def bind_services(runtime):
     runtime.AgentProfile = AgentProfile
     runtime.SubAgentManager = SubAgentManager
     runtime.issue_capability_token = issue_capability_token
-    runtime.SAFE_BUILTINS = SAFE_BUILTINS
-    runtime.validate_tool_source = validate_tool_source
     runtime.LaunchContext = LaunchContext
     runtime.resolve_launch_context = resolve_launch_context
     runtime.source_scope_id = source_scope_id

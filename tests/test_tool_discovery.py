@@ -26,7 +26,7 @@ class ToolDiscoveryTests(unittest.TestCase):
         self.agent = self.application.runtime
         self.agent._set_workspace_root(self.directory.name)
         self.agent._active_interaction_mode.set("agent")
-        self.agent._execution_capability_token = issue_capability_token("test", frozenset({"read", "write", "shell", "git", "dynamic"}))
+        self.agent._execution_capability_token = issue_capability_token("test", frozenset({"read", "write", "shell", "git"}))
         self.config = load_agent_config(self.directory.name)
 
     def test_compact_catalog_and_discovered_descriptions(self):
@@ -65,7 +65,7 @@ class ToolDiscoveryTests(unittest.TestCase):
             prompt = self.agent._system_prompt(catalog, self.config)
             self.assertIn("read-only", prompt)
 
-    def test_turn_and_session_isolation_and_dynamic_inventory(self):
+    def test_turn_and_session_isolation_and_typed_plugin_inventory(self):
         @scoped_turn
         def turn(runtime, name):
             self.assertEqual(runtime.execution_context.discovered_tools, frozenset())
@@ -78,7 +78,15 @@ class ToolDiscoveryTests(unittest.TestCase):
             self.assertNotIn("- git_log:", turn(self.agent, "git_show"))
         with self.agent.use_session(second):
             self.assertNotIn("- git_log:", turn(self.agent, "git_show"))
-        self.agent.AVAILABLE_TOOLS["pure_helper"] = lambda args: ToolResult(text=args.strip())
+        from openkyrozen.tools import ToolSpec
+        self.agent.tool_registry.register_spec(ToolSpec(
+            "pure_helper", lambda args: ToolResult(text=args["args"]),
+            description="A test plugin helper.",
+            input_schema={"type": "object", "properties": {"args": {"type": "string"}},
+                          "additionalProperties": False},
+            capability="write", side_effects="filesystem",
+            source="plugin",
+        ))
         self.assertIn("pure_helper", self.agent._agent_prompt_tools_list(self.config))
         self.assertIn("- pure_helper:", self.agent._discover_tools("pure_helper"))
         self.agent._execution_capability_token = issue_capability_token("test", frozenset({"read"}))

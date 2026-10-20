@@ -433,8 +433,7 @@ def _parse_legacy_model_response(self, text: str) -> dict[str, Any]:
             "raw": raw, "clean": raw, "has_plan": False, "has_tasklist": False,
             "tool_calls": [], "question": None, "plan_proposal": None,
             "unknown_action": None, "unsupported_action_protocol": False,
-            "protocol_error": None, "define_tool_present": False,
-            "define_tool_registered": False,
+            "protocol_error": None,
         }
     _unwrapped_calls, malformed_unwrapped = self._collect_unwrapped_tool_calls(raw)
     tool_calls = [] if malformed_unwrapped else self._collect_tool_calls(raw)
@@ -497,6 +496,7 @@ def _parse_legacy_model_response(self, text: str) -> dict[str, Any]:
             legacy_markers.append(marker)
     if legacy_markers:
         self._publish_runtime_event("legacy.protocol_used", {"markers": sorted(set(legacy_markers))})
+    define_tool_present = bool(re.search(r"^[ \t]*DefineTool\s*:", raw, re.IGNORECASE | re.MULTILINE))
     return {
         "raw": raw,
         "clean": self._clean_final_response(raw),
@@ -506,8 +506,10 @@ def _parse_legacy_model_response(self, text: str) -> dict[str, Any]:
         "question": question,
         "plan_proposal": plan_proposal,
         "unknown_action": self._detect_unknown_action(raw),
-        "unsupported_action_protocol": self._has_unsupported_action_protocol(raw),
+        "unsupported_action_protocol": define_tool_present or self._has_unsupported_action_protocol(raw),
         "protocol_error": control_error or (
+            "Textual tool creation is no longer supported."
+            if define_tool_present else
             "AskUser and PlanProposal must be the only control block in a response. "
             "No tool or task action was executed."
             if combined_control else
@@ -539,16 +541,8 @@ def _observe_model_response(self, text: str) -> dict[str, Any]:
     """Parse a response once and merge its durable task signals once."""
     if self._last_response_is_native.get():
         return self._parse_model_response(text)
-    define_tool_present = bool(re.search(r"^[ \t]*DefineTool\s*:", str(text or ""),
-                                         re.IGNORECASE | re.MULTILINE))
     parsed = self._parse_model_response(text)
     has_control = parsed["question"] is not None or parsed["plan_proposal"] is not None
-    define_tool_registered = (
-        self._attempt_define_tool(text)
-        if define_tool_present and not has_control and not parsed["protocol_error"] else False
-    )
-    parsed["define_tool_present"] = define_tool_present
-    parsed["define_tool_registered"] = define_tool_registered
     if (parsed["raw"] and not has_control and not parsed["protocol_error"]
             and self._active_interaction_mode.get() == "agent"):
         if not self._interaction_controller.state().get("executing_plan"):

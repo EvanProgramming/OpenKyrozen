@@ -155,7 +155,7 @@ the registered tool policy before asking the interface for approval. The executo
 rechecks registration, scope, and authority after an approval wait, then crosses an
 explicit legacy argument adapter only for tools not yet migrated to object arguments.
 Approval is not plan acceptance or effect evidence. Delegated children may write only
-their assigned files through workspace file tools; shell, Git, browser, dynamic, and
+their assigned files through workspace file tools; shell, Git, browser, plugin, and
 other unconfined mutation tools stay with the parent.
 
 `scripts/check_architecture.py` enforces the existing static import policy across

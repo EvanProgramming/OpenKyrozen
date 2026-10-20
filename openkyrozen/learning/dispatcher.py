@@ -90,28 +90,6 @@ def _run_learning_technology(self, context: dict[str, Any]) -> dict[str, Any]:
     return self._learning_result(detail="technology scan queued when a new library is mentioned")
 
 
-def _run_learning_dynamic_tools(self, _context: dict[str, Any]) -> dict[str, Any]:
-    dynamic_names = sorted(name for name in self.AVAILABLE_TOOLS if name not in self._BUILTIN_TOOL_NAMES)
-    if not self.ALLOW_DYNAMIC_TOOLS:
-        return self._learning_result(
-            detail="dynamic tools remain disabled; capability and approval gates are required",
-        )
-    for name in dynamic_names:
-        stats = self._learning_tool_stats().get(name, {})
-        calls, successes = int(stats.get("calls", 0)), int(stats.get("successes", 0))
-        if calls < 2 or successes < 2 or successes / calls < 0.8:
-            continue
-        result = self.learning_engine.submit(
-            "strategy", f"TOOL_GUIDE: {name} succeeded in repeated observed calls; "
-                        "use only when currently available and permitted.",
-            evidence_id=stable_hash(f"{name}:{calls}:{successes}"),
-            metadata={"learning_feature": "dynamic_tool_definition", "tool_name": name},
-        )
-        return self._learning_result(changed=result["status"] == "active",
-            detail=f"observed tool-use note {result['status']}")
-    return self._learning_result(detail=f"no eligible use among {len(dynamic_names)} dynamic tools")
-
-
 def _run_learning_preferences(self, context: dict[str, Any]) -> dict[str, Any]:
     user_input = str(context.get("user_input") or "").strip()
     if not user_input:

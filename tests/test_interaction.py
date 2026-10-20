@@ -1206,7 +1206,7 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(route_mode("auto", "Implement the fix and run tests"), "plan")
         self.assertEqual(route_mode("auto", "Please review this repository"), "plan")
         self.assertEqual(route_mode("agent", "What is this?"), "agent")
-        base = frozenset({"read", "write", "shell", "network", "git", "browser", "dynamic"})
+        base = frozenset({"read", "write", "shell", "network", "git", "browser"})
         self.assertEqual(mode_capabilities(base, "plan"), frozenset({"read", "network"}))
         self.assertEqual(mode_capabilities(frozenset({"read"}), "agent"), frozenset({"read"}))
 
@@ -1715,7 +1715,7 @@ class InteractionTests(unittest.TestCase):
         controls_token = self.agent._interaction_controls_enabled.set(True)
         previous_token = self.agent._execution_capability_token
         self.agent._execution_capability_token = issue_capability_token(
-            "test:plan-prompt", frozenset({"read", "write", "shell", "network", "git", "dynamic"}),
+            "test:plan-prompt", frozenset({"read", "write", "shell", "network", "git"}),
         )
         try:
             prompt = self.agent._system_prompt("deliberately ignored")
@@ -2075,7 +2075,7 @@ class InteractionTests(unittest.TestCase):
             self.agent._interaction_controller = previous_controller
             self.agent._interaction_controls_enabled.reset(token)
 
-    def test_read_only_modes_deny_mutating_and_dynamic_tools(self):
+    def test_read_only_modes_deny_mutating_and_typed_plugin_tools(self):
         previous_token = self.agent._execution_capability_token
         previous_root = self.agent._get_workspace_root()
         with tempfile.TemporaryDirectory() as directory:
@@ -2084,11 +2084,17 @@ class InteractionTests(unittest.TestCase):
             self.agent._set_workspace_root(root)
             self.agent._execution_capability_token = issue_capability_token(
                 "test:plan", mode_capabilities(
-                    frozenset({"read", "write", "shell", "network", "git", "browser", "dynamic"}),
+                    frozenset({"read", "write", "shell", "network", "git", "browser"}),
                     "plan",
                 ),
             )
-            self.agent.AVAILABLE_TOOLS["temporary_dynamic_tool"] = lambda args: ToolResult(text=f"ran:{args}")
+            from openkyrozen.tools import ToolSpec
+            self.agent.tool_registry.register_spec(ToolSpec(
+                "temporary_plugin_tool", lambda args: ToolResult(text="ran"),
+                description="A test plugin tool.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+                capability="write", side_effects="filesystem", source="plugin",
+            ))
             try:
                 self.assertIn("safe", self.agent._run_tool("read_file", "notes.txt"))
                 for action, args in (
@@ -2096,14 +2102,14 @@ class InteractionTests(unittest.TestCase):
                     ("run_cmd", "touch blocked-shell.txt"),
                     ("git_commit", "blocked"),
                     ("browser_click", "button"),
-                    ("temporary_dynamic_tool", "value"),
+                    ("temporary_plugin_tool", {}),
                 ):
                     result = self.agent._run_tool(action, args)
                     self.assertTrue(result.startswith("Error:"), (action, result))
                 self.assertFalse((root / "blocked.txt").exists())
                 self.assertFalse((root / "blocked-shell.txt").exists())
             finally:
-                self.agent.AVAILABLE_TOOLS.pop("temporary_dynamic_tool", None)
+                self.agent.tool_registry.unregister("temporary_plugin_tool")
                 self.agent._execution_capability_token = previous_token
                 self.agent._set_workspace_root(previous_root)
 
