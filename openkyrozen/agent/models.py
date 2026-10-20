@@ -33,3 +33,9 @@ class AgentSession:
     preference_scope: Any = None
     knowledge_graph: dict = field(default_factory=dict)
     ponytail_level: str = "full"
+    process_manager: Any = field(init=False, repr=False)
+
+    def __post_init__(self):
+        self.process_manager = self.workspace.adapters.new_process_manager(
+            self.memory.user_id, self.workspace.root, self.session_id,
+        )

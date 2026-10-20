@@ -60,6 +60,17 @@ class RegistryRegressions(unittest.TestCase):
         self.assertEqual(builtin_metadata('apply_patch')['side_effects'], 'filesystem')
         self.assertIn('apply_patch', allowed_tool_names(adapters.AVAILABLE_TOOLS, 'workspace'))
 
+    def test_shell_schema_exposes_bounded_typed_options(self):
+        registry = ToolAdapters().tool_registry
+        schema = registry.get_spec('run_cmd').input_schema
+        self.assertEqual(schema['required'], ['command'])
+        self.assertEqual(schema['properties']['cwd']['type'], 'string')
+        self.assertEqual(schema['properties']['timeout_seconds']['maximum'], 1800)
+        self.assertEqual(schema['properties']['env']['type'], 'object')
+        self.assertIsNone(registry._argument_error(schema, {
+            'command': 'echo ok', 'cwd': '.', 'timeout_seconds': 5, 'env': {'A': 'b'},
+        }))
+
 class RegistryContractTests(unittest.TestCase):
     def make(self,name='custom',**changes):
         from openkyrozen.tools import ToolSpec
@@ -141,7 +152,7 @@ class RuntimeCatalogTests(unittest.TestCase):
             finally:
                 app.close()
 
-    def test_all51_bound_tools_and_workspace_isolation(self):
+    def test_all53_bound_tools_and_workspace_isolation(self):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
@@ -150,7 +161,7 @@ class RuntimeCatalogTests(unittest.TestCase):
             app=build_application(memory=build_memory(Path(home)/'state.sqlite3'))
             try:
                 runtime=app.runtime
-                self.assertEqual(len(runtime.AVAILABLE_TOOLS),51)
+                self.assertEqual(len(runtime.AVAILABLE_TOOLS),53)
                 self.assertEqual(set(runtime.AVAILABLE_TOOLS),set(runtime.tool_registry.specs))
                 self.assertTrue(all(getattr(spec.executor, "__tool_result_executor__", None)
                                     for spec in runtime.tool_registry.specs.values()))

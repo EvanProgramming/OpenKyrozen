@@ -356,9 +356,8 @@ def git_status(self, args: str) -> str:
 
 
 @legacy_text_api
-def execute_terminal_command(self, args: str) -> str:
+def execute_terminal_command(self, args: str | dict) -> str:
     """
     Execute a terminal command. This is an alias for run_cmd.
     """
-    command = args.get('command', '') if isinstance(args, dict) else args
-    return command_tool_result(self.run_command(command))
+    return command_tool_result(self.run_command(args))

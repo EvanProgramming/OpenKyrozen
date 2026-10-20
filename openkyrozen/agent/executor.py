@@ -535,7 +535,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                 "tool.execution_started", {"tool_name": action}, call_id=_call_id, task_id=_task_id,
             )
             if action in {"run_cmd", "execute_terminal_command"}:
-                raw_result = self.run_command(execution_args['command'] if isinstance(execution_args, dict) else execution_args)
+                raw_result = self.run_command(execution_args)
                 outcome = command_tool_result(raw_result)
             else:
                 outcome = self.tool_registry._invoke_executor(approved_spec, execution_args)

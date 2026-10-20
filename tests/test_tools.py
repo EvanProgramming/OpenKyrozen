@@ -399,6 +399,60 @@ class WorkspaceToolTests(unittest.TestCase):
             result = run_cmd(f"{sys.executable} -c 'print(\"explicit\")'")
         self.assertEqual(result, "explicit")
 
+    def test_typed_shell_result_keeps_streams_and_honors_workspace_options(self):
+        from openkyrozen.tools.models import CommandResult
+        original_root = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "child").mkdir()
+            tools.set_workspace_root(root)
+            try:
+                result = tools.run_command({
+                    "command": "python -c 'import os,sys; print(os.getcwd()); print(os.environ[\"SHELL_TEST\"]); print(\"problem\", file=sys.stderr)'",
+                    "cwd": "child", "env": {"SHELL_TEST": "overlay"}, "timeout_seconds": 5,
+                })
+            finally:
+                tools.set_workspace_root(original_root)
+        self.assertIsInstance(result, CommandResult)
+        self.assertIn(str(root / "child"), result.stdout)
+        self.assertIn("overlay", result.stdout)
+        self.assertEqual(result.stderr.strip(), "problem")
+        self.assertGreaterEqual(result.duration_seconds, 0)
+        self.assertFalse(result.timed_out)
+        typed = invoke_tool_result(tools.run_cmd, {"command": "printf stdout; printf stderr >&2"})
+        self.assertEqual(typed.data["stdout"], "stdout")
+        self.assertEqual(typed.data["stderr"], "stderr")
+
+    def test_shell_options_reject_workspace_escape_and_non_string_environment(self):
+        original_root = tools._WORKSPACE_ROOT
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            root = Path(directory)
+            (root / "outside").symlink_to(outside, target_is_directory=True)
+            tools.set_workspace_root(root)
+            try:
+                escaped = tools.run_command({"command": "pwd", "cwd": "outside"})
+                malformed_env = tools.run_command({"command": "true", "env": {"VALUE": 1}})
+                malformed_key = tools.run_command({"command": "true", "env": {"BAD=KEY": "value"}})
+                malformed_command = tools.run_command({"command": "true\0false"})
+            finally:
+                tools.set_workspace_root(original_root)
+        self.assertFalse(escaped.success)
+        self.assertEqual(escaped.failure, "invalid_arguments")
+        self.assertFalse(malformed_env.success)
+        self.assertEqual(malformed_env.failure, "invalid_arguments")
+        self.assertFalse(malformed_key.success)
+        self.assertEqual(malformed_key.failure, "invalid_arguments")
+        self.assertFalse(malformed_command.success)
+        self.assertEqual(malformed_command.failure, "invalid_arguments")
+
+    def test_typed_shell_timeout_is_explicit_and_bounded(self):
+        result = tools.run_command({
+            "command": "python -c 'import time; time.sleep(2)'", "timeout_seconds": 0.05,
+        })
+        self.assertFalse(result.success)
+        self.assertTrue(result.timed_out)
+        self.assertEqual(result.failure, "timeout")
+
     def test_git_remote_add_list_and_remove_use_real_repository(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory)

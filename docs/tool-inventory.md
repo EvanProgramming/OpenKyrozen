@@ -7,7 +7,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 
 ## Runtime tools
 
-- Built-in runtime tools: **51**
+- Built-in runtime tools: **53**
 - Names with the `git_` prefix: **14**
 - The CLI Action contract is a plain string in the `args` field.
 - Web and MCP exposure is filtered by the configured capability profile.
@@ -26,7 +26,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `check_stored_data` | `read` | `read_only` | false | Return a categorized summary of stored memories. | `category`: string |
 | `discover_tools` | `read` | `read_only` | false | Discover permitted tools; args is empty for the catalog or comma-separated exact tool names for full descriptions. | `names`: array, `query`: string |
 | `edit_file` | `write` | `filesystem` | false | Replace one exact snippet only when the file still matches its read hash. | `expected_sha256`: string, `new_text`: string, `old_text`: string, `path`: string; required: `path`, `old_text`, `new_text`, `expected_sha256` |
-| `execute_terminal_command` | `shell` | `process` | false | Execute a terminal command. This is an alias for run_cmd. | `command`: string; required: `command` |
+| `execute_terminal_command` | `shell` | `process` | false | Execute a terminal command. This is an alias for run_cmd. | `background`: boolean, `command`: string, `cwd`: string, `env`: object, `timeout_seconds`: number; required: `command` |
 | `find_files` | `read` | `read_only` | false | Find files matching a pattern. Args format: "pattern" or "pattern\|directory". | `directory`: string, `pattern`: string; required: `pattern` |
 | `git_add` | `git` | `filesystem` | false | Stage files for commit. Args format: "file1 file2" or "." (stage all). | `paths`: array |
 | `git_branch` | `git` | `filesystem` | false | List or manage git branches. Args format: "" (list all), "branch_name" (create), | `options`: array |
@@ -54,14 +54,16 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `list_subagents` | `read` | `internal` | false | List agents or inspect one run_id from this chat/project; args is JSON. | `run_id`: string |
 | `list_tree` | `read` | `read_only` | false | Recursively list the directory tree of the given path. Args format: "path" (default "."). | `path`: string |
 | `read_file` | `read` | `read_only` | false | Read content from a file. Args format: "path". | `max_chars`: integer, `max_lines`: integer, `path`: string, `start_line`: integer; required: `path` |
+| `read_process` | `read` | `read_only` | false | Read a bounded page from a session-owned process stream. | `limit`: integer, `offset`: integer, `process_id`: string, `stream`: string; required: `process_id` |
 | `read_tool_artifact` | `read` | `read_only` | false | Read a session-owned tool artifact in pages up to 1,000 characters. | `artifact_id`: string, `limit`: integer, `offset`: integer; required: `artifact_id` |
 | `read_webpage` | `network` | `remote` | false | Fetch the content of a web page and return its plain‑text body. | `url`: string; required: `url` |
-| `run_cmd` | `shell` | `process` | false | Execute a shell command. Args: the full command string. | `command`: string; required: `command` |
+| `run_cmd` | `shell` | `process` | false | Execute a shell command. Args: the full command string. | `background`: boolean, `command`: string, `cwd`: string, `env`: object, `timeout_seconds`: number; required: `command` |
 | `search_files` | `read` | `read_only` | false | Search literal text with bounded, relative file-and-line results. | `glob`: string, `limit`: integer, `path`: string, `query`: string; required: `query` |
 | `search_memory` | `read` | `read_only` | false | Search stored memories for facts relevant to the query. Args: "query" | `query`: string; required: `query` |
 | `search_web` | `network` | `remote` | false | Search the internet for real-time information. | `query`: string; required: `query` |
 | `send_subagent` | `read` | `internal` | false | Reuse a finished sub-agent; args JSON contains run_id and a complete assignment. | `assignment`: object, `run_id`: string; required: `run_id`, `assignment` |
 | `spawn_agents` | `read` | `internal` | false | Automatically start parallel specialist assignments; args is a JSON assignment batch. | `assignments`: array |
+| `stop_process` | `shell` | `process` | false | Stop a process owned by the current actor, workspace, and session. | `process_id`: string; required: `process_id` |
 | `update_plan` | `write` | `internal` | false | Apply revision-checked ordered Working Plan edits or adapt the legacy task list. | `complexity`: string, `expected_revision`: integer, `operations`: array, `plan_id`: string, `tasks`: array; requires either `operations` and `expected_revision` or `complexity` and `tasks` |
 | `wait_subagents` | `read` | `internal` | false | Wait up to 60 seconds for delegated work and its mandatory reviews; args is JSON. | `run_ids`: array, `timeout`: number |
 | `write_file` | `write` | `filesystem` | false | Write content to a file. Args format: "path\|content". | `content`: string, `path`: string; required: `path`, `content` |
