@@ -13,6 +13,7 @@ from .memory import MemoryRepository
 from .learning import LearningRepository
 from .catalogs import CatalogsRepository
 from .deletion import DeletionRepository
+from .artifacts import ToolArtifactsRepository
 
 _UNSET = object()
 
@@ -30,6 +31,7 @@ class EventStore:
         self.learning = LearningRepository(self.database)
         self.catalogs = CatalogsRepository(self.database)
         self.deletion = DeletionRepository(self.database)
+        self.artifacts = ToolArtifactsRepository(self.database)
     _json = staticmethod(SQLiteDatabase._json)
     _loads = staticmethod(SQLiteDatabase._loads)
 

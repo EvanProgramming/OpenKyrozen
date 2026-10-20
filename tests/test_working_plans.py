@@ -733,7 +733,7 @@ class WorkingPlanModelTests(unittest.TestCase):
     def test_migration_version_includes_working_plan_schema(self):
         with tempfile.TemporaryDirectory() as directory:
             database = SQLiteDatabase(Path(directory) / "state.sqlite3")
-            self.assertEqual(database.SCHEMA_VERSION, 5)
+            self.assertEqual(database.SCHEMA_VERSION, 6)
             with database.connection() as db:
                 self.assertIsNotNone(db.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='working_plans'"
@@ -753,14 +753,14 @@ class WorkingPlanModelTests(unittest.TestCase):
             ])
             with store.database.connection() as db:
                 db.execute("ALTER TABLE working_plans DROP COLUMN revision")
-                db.execute("DELETE FROM schema_migrations WHERE version=5")
+                db.execute("DELETE FROM schema_migrations WHERE version>=5")
             migrated = SQLiteDatabase(path)
             recovered = TaskManager(EventStore(path), workspace_id="project", session_id="schema-four")
             recovered.recover()
             self.assertEqual(recovered.working_plan.id, plan.id)
             self.assertEqual(recovered.working_plan.revision, 0)
             self.assertEqual(recovered.tasks[0]["description"], "Preserve me")
-            self.assertEqual(migrated.SCHEMA_VERSION, 5)
+            self.assertEqual(migrated.SCHEMA_VERSION, 6)
 
     def test_update_plan_is_a_typed_registry_tool_with_object_arguments(self):
         with tempfile.TemporaryDirectory() as directory:

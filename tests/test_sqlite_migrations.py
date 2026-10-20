@@ -154,7 +154,7 @@ class SQLiteMigrationTests(unittest.TestCase):
                 with _sqlite(path) as db:
                     self.assertEqual(
                         [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
-                        [1, 2, 3, 4, 5],
+                        [1, 2, 3, 4, 5, 6],
                     )
                     self.assertEqual(
                         db.execute("SELECT description FROM tasks WHERE id='legacy-task'").fetchone()[0],
@@ -201,7 +201,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             with _sqlite(path) as db:
                 self.assertEqual(
                     [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
-                    [1, 2, 3, 4, 5],
+                    [1, 2, 3, 4, 5, 6],
                 )
 
     def test_compacted_prior_version_history_remains_valid_after_upgrade(self):
@@ -217,7 +217,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             with _sqlite(path) as db:
                 self.assertEqual(
                     [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
-                    [2, 3, 4, 5],
+                    [2, 3, 4, 5, 6],
                 )
 
     def test_upgrade_accepts_prior_current_version_marker_without_backfilled_history(self):
@@ -233,7 +233,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             with _sqlite(path) as db:
                 self.assertEqual(
                     [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
-                    [3, 4, 5],
+                    [3, 4, 5, 6],
                 )
 
     def test_sparse_legacy_history_is_valid_when_declared_schema_is_complete(self):
@@ -248,7 +248,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             with _sqlite(path) as db:
                 self.assertEqual(
                     [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
-                    [1, 3, 4, 5],
+                    [1, 3, 4, 5, 6],
                 )
 
     def test_missing_task_columns_are_rejected_before_startup_succeeds(self):
@@ -352,7 +352,7 @@ class SQLiteMigrationTests(unittest.TestCase):
 
             with _sqlite(path) as db:
                 self.assertIsNotNone(db.execute("SELECT name FROM sqlite_master WHERE name='learning_runtime'").fetchone())
-                self.assertEqual(db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 5)
+                self.assertEqual(db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 6)
             self.assertTrue(database.last_backup_path and database.last_backup_path.exists())
 
     def test_concurrent_initializers_apply_legacy_migrations_once(self):
@@ -381,7 +381,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             with _sqlite(path) as db:
                 self.assertEqual(
                     [row[0] for row in db.execute("SELECT version FROM schema_migrations ORDER BY version")],
-                    [1, 2, 3, 4, 5],
+                    [1, 2, 3, 4, 5, 6],
                 )
 
     def test_task_replacement_rolls_back_if_any_new_row_is_invalid(self):

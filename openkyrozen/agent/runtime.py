@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import copy
 import asyncio
+import json
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from .models import AgentSession, WorkspaceState
+from openkyrozen.tools.models import legacy_text_api
 from .turn import ExecutionContext
 from .ports import EventSink, RuntimeEventSink, Approval
 
@@ -517,6 +519,30 @@ class AgentRuntime:
 
     def run_command(self, args):
         return self.current_session.workspace.adapters.run_command(args)
+
+    @legacy_text_api
+    def _read_tool_artifact(self, args):
+        """Read a session-owned tool artifact in pages up to 1,000 characters."""
+        from openkyrozen.tools.models import ToolResult, tool_failure
+        artifact_id = args.get("artifact_id") if isinstance(args, dict) else None
+        offset = args.get("offset", 0) if isinstance(args, dict) else 0
+        limit = args.get("limit", 1000) if isinstance(args, dict) else 1000
+        if (not isinstance(artifact_id, str) or not artifact_id
+                or type(offset) is not int or offset < 0
+                or type(limit) is not int or not 1 <= limit <= 1000):
+            return tool_failure("invalid_arguments", "Error: artifact_id, nonnegative offset, and limit from 1 to 1000 are required.")
+        memory = self.memory_bank
+        task_owner = getattr(self.current_session, "_delegation_parent", None) or self
+        tasks = getattr(task_owner, "tasks", None)
+        page = memory.store.artifacts.read_page(
+            artifact_id, offset, limit,
+            user_id=getattr(tasks, "user_id", None) or memory.user_id,
+            workspace_id=getattr(tasks, "workspace_id", None) or memory.workspace_id,
+            session_id=getattr(tasks, "session_id", None) or memory.session_id,
+        )
+        if page is None:
+            return tool_failure("not_found", "Error: tool artifact not found in this session.")
+        return ToolResult(data=page, text=json.dumps(page, ensure_ascii=False))
 
     def _set_tools_workspace_root(self, root):
         self.current_session.workspace.adapters.set_workspace_root(root)

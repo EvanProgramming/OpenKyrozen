@@ -16,6 +16,9 @@ from openkyrozen.tools.models import (CommandResult, ToolError, ToolResult, comm
 from openkyrozen.security.tool_policy import tool_capability
 from openkyrozen.agent.types import ExecutionReceipt
 
+_TOOL_ARTIFACT_THRESHOLD = 12_000
+_TOOL_ARTIFACT_PREVIEW = 1_200
+
 
 def _legacy_object_arguments(args, spec):
     if not isinstance(args, str) or not spec or not getattr(spec, "legacy_fields", ()):
@@ -203,11 +206,56 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
     current_session = getattr(self, "current_session", None)
     task_owner = getattr(current_session, "_delegation_parent", None) or self
     task_manager = getattr(task_owner, "tasks", None)
-    result_text = self._fix_safe_text(result, max(2000, len(str(result))) if canonical in TOOLS else 200000 if canonical in {"read_file", "read_webpage", "git_diff", "git_show", "graph_query"} else 2000, preserve_lines=True)
+    result_limit = (max(2000, len(str(result))) if canonical in TOOLS else
+                    8000 if canonical == "read_tool_artifact" else
+                    200000 if canonical in {"read_file", "read_webpage", "git_diff", "git_show", "graph_query"} else 2000)
+    result_text = self._fix_safe_text(result, result_limit, preserve_lines=True)
     command = raw_result if isinstance(raw_result, CommandResult) else None
     if tool_result is None and isinstance(result, ToolResult):
         tool_result = result
         result = render_tool_result(tool_result)
+    elif tool_result is None and (tool_error is not None or result_data is not None
+                                  or len(str(result)) > _TOOL_ARTIFACT_THRESHOLD):
+        candidate = ToolResult(data=result_data, text=str(result), error=tool_error)
+        from openkyrozen.agent.conversation import tool_result_to_dict
+        candidate_json = json.dumps(tool_result_to_dict(candidate), ensure_ascii=False,
+                                    sort_keys=True, separators=(",", ":"))
+        if len(candidate_json) > _TOOL_ARTIFACT_THRESHOLD:
+            tool_result = candidate
+    # Keep large outputs out of provider messages and the conversation journal.
+    if tool_result is not None and canonical != "read_tool_artifact":
+        from openkyrozen.agent.conversation import tool_result_to_dict
+        full_output = json.dumps(tool_result_to_dict(tool_result), ensure_ascii=False,
+                                 sort_keys=True, separators=(",", ":"))
+        if len(full_output) > _TOOL_ARTIFACT_THRESHOLD:
+            memory = getattr(self, "memory_bank", None)
+            store = getattr(memory, "store", None)
+            user_id = getattr(task_manager, "user_id", None) or getattr(memory, "user_id", None)
+            workspace_id = getattr(task_manager, "workspace_id", None) or getattr(memory, "workspace_id", None)
+            session_id = getattr(task_manager, "session_id", None) or getattr(memory, "session_id", None)
+            artifacts = getattr(store, "artifacts", None)
+            if artifacts is None or not all((user_id, workspace_id, session_id)):
+                raise RuntimeError("Cannot retain oversized tool output without a session-scoped artifact store")
+            artifact_id = artifacts.create(full_output, user_id=user_id, workspace_id=workspace_id,
+                                           session_id=session_id)
+            preview = tool_result.text[:_TOOL_ARTIFACT_PREVIEW]
+            suffix = " …" if len(tool_result.text) > len(preview) else ""
+            bounded_error = (ToolError(
+                tool_result.error.code, tool_result.error.message[:_TOOL_ARTIFACT_PREVIEW],
+                tool_result.error.retriable, {"artifact_id": artifact_id},
+            ) if tool_result.error else None)
+            summary = {"artifact_id": artifact_id, "total_chars": len(full_output),
+                       "preview": f"{preview}{suffix}"}
+            tool_result = ToolResult(
+                data=summary,
+                text=json.dumps(summary, ensure_ascii=False),
+                error=bounded_error,
+                metadata={"artifact_id": artifact_id},
+            )
+            tool_error = bounded_error
+            result = render_tool_result(tool_result)
+            result_text = self._fix_safe_text(result, 2000, preserve_lines=True)
+            result_data = tool_result.data
     success = tool_result.success if tool_result is not None else bool(success)
     canonical_arguments = receipt_arguments if receipt_arguments is not None else args if isinstance(args, dict) else None
     evidence_arguments = canonical_arguments if canonical_arguments is not None else args

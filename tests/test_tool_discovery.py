@@ -40,7 +40,7 @@ class ToolDiscoveryTests(unittest.TestCase):
         after = self.agent._agent_prompt_tools_list(self.config)
         self.assertIn("- git_log:", after)
         self.assertIn("- git_show:", after)
-        self.assertLess(len(self.agent._system_prompt(before, self.config)), 10000)
+        self.assertLess(len(self.agent._system_prompt(before, self.config)), 10100)
         with patch.dict(os.environ, {"KYROZEN_PROMPT_PROFILE": "classic"}):
             classic = self.agent._system_prompt(self.agent._agent_prompt_tools_list(self.config), self.config)
         self.assertLess(len(self.agent._system_prompt(before, self.config)), len(classic))

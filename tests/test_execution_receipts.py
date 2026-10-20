@@ -333,6 +333,61 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         )
         self.assertEqual(receipt.workspace_id, "project-workspace")
 
+    def test_oversized_tool_result_is_paged_and_never_embedded_in_receipt(self):
+        from openkyrozen.agent.conversation import tool_result_to_dict
+
+        runtime = self.app.runtime
+        original = ToolResult(data={"records": ["東京" * 5000]}, text="東京" * 10_000)
+        receipt = runtime._make_execution_receipt(
+            action="read_file", args={"path": "large.txt"}, authorized=True,
+            started_at="start", success=True, result=original.text, operation_scope="test",
+            tool_result=original,
+        )
+        artifact_id = receipt.tool_result.data["artifact_id"]
+        read_artifact = runtime.tool_registry.get_spec("read_tool_artifact").executor
+        self.assertLess(len(receipt.result), 2_000)
+        self.assertLess(len(receipt.tool_result.text), 1_500)
+        first = read_artifact({"artifact_id": artifact_id, "limit": 1000})
+        second = read_artifact({"artifact_id": artifact_id, "offset": 1000, "limit": 1000})
+        self.assertEqual(first.data["content"] + second.data["content"],
+                         runtime.memory_bank.store.artifacts.read_page(
+                             artifact_id, 0, 2000, user_id=receipt.user_id,
+                             workspace_id=receipt.workspace_id, session_id=receipt.session_id,
+                         )["content"])
+        self.assertIsNotNone(first.data["next_offset"])
+        content = []
+        offset = 0
+        while True:
+            page = read_artifact({"artifact_id": artifact_id, "offset": offset}).data
+            content.append(page["content"])
+            if page["next_offset"] is None:
+                break
+            offset = page["next_offset"]
+        self.assertEqual(json.loads("".join(content)), tool_result_to_dict(original))
+        for scope in (
+            {"user_id": "bob", "workspace_id": receipt.workspace_id, "session_id": receipt.session_id},
+            {"user_id": receipt.user_id, "workspace_id": "other", "session_id": receipt.session_id},
+            {"user_id": receipt.user_id, "workspace_id": receipt.workspace_id, "session_id": "other"},
+        ):
+            self.assertIsNone(runtime.memory_bank.store.artifacts.read_page(artifact_id, 0, 10, **scope))
+        invalid = read_artifact({"artifact_id": artifact_id, "limit": 4001})
+        self.assertEqual(invalid.error.code, "invalid_arguments")
+        data_receipt = runtime._make_execution_receipt(
+            action="read_file", args={"path": "large-data.json"}, authorized=True,
+            started_at="start", success=True, result="structured output", result_data={"rows": ["x" * 20_000]},
+            operation_scope="test",
+        )
+        self.assertIn("artifact_id", data_receipt.tool_result.data)
+        from openkyrozen.tools.models import ToolError
+        error_receipt = runtime._make_execution_receipt(
+            action="read_file", args={"path": "large-error.txt"}, authorized=True,
+            started_at="start", success=False, result="Error: failed", failure="large_error",
+            tool_error=ToolError("large_error", "x" * 20_000), operation_scope="test",
+        )
+        self.assertFalse(error_receipt.success)
+        self.assertLess(len(json.dumps(error_receipt.as_dict())), 5_000)
+        self.assertIn("artifact_id", error_receipt.tool_result.data)
+
     def test_strategic_criterion_coverage_requires_receipt_verification(self):
         def verified(receipt, status):
             return ExecutionReceipt.from_dict({
