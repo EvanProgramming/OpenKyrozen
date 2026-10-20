@@ -264,6 +264,17 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         self.assertEqual(task["evidence"], [])
         self.assertEqual(task["status"], "pending")
 
+    def test_native_foreground_call_executes_structured_arguments_and_keeps_call_id(self):
+        receipt = self.app.runtime._execute_turn_action(
+            "calculate", {"expression": "2+2"}, operation_scope="native-turn",
+            successful_operations=set(), call_id="provider-call-1", call_id_source="native",
+        )
+        self.assertTrue(receipt.success, receipt.result)
+        self.assertEqual(receipt.call_id, "provider-call-1")
+        self.assertEqual(receipt.call_id_source, "native")
+        self.assertEqual(receipt.arguments, {"expression": "2+2"})
+        self.assertIn("4", receipt.result)
+
     def test_legacy_tool_receipt_uses_canonical_arguments_for_matching(self):
         receipt = self.app.runtime._run_tool(
             "write_file", "notes.txt|legacy pipe content", return_receipt=True,
@@ -274,7 +285,7 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
             json.dumps(receipt.arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest())
 
-    def test_early_legacy_rejection_publishes_correlated_tool_call(self):
+    def test_invalid_native_arguments_publish_correlated_tool_call(self):
         from openkyrozen.agent.events import RuntimeEventPublisher
 
         runtime = self.app.runtime
@@ -285,18 +296,31 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         ))
         try:
             receipt = runtime._execute_turn_action(
-                "write_file", {"path": "note.txt", "content": "x"},
+                "write_file", {"path": "note.txt"},
                 operation_scope="test", successful_operations=set(),
+                call_id="native-invalid", call_id_source="native",
             )
             runtime._record_turn_receipt(receipt)
         finally:
             runtime._runtime_event_publisher.reset(token)
 
         self.assertFalse(receipt.success)
+        self.assertEqual(receipt.failure, "invalid_arguments")
+        self.assertEqual(receipt.call_id, "native-invalid")
+        self.assertEqual(receipt.call_id_source, "native")
         call = next(event for event in events if event.kind == "tool.call")
         result = next(event for event in events if event.kind == "tool.result")
         self.assertEqual(call.call_id, receipt.call_id)
         self.assertEqual(result.call_id, receipt.call_id)
+
+    def test_legacy_protocol_object_arguments_remain_rejected(self):
+        receipt = self.app.runtime._execute_turn_action(
+            "write_file", {"path": "note.txt", "content": "x"},
+            operation_scope="legacy-test", successful_operations=set(),
+        )
+        self.assertFalse(receipt.success)
+        self.assertEqual(receipt.failure, "invalid_arguments")
+        self.assertEqual(receipt.call_id_source, "synthetic")
 
     def test_receipt_workspace_uses_project_task_scope(self):
         runtime = self.app.runtime

@@ -14,12 +14,7 @@ def _chat_turn_impl(self, user_input: str, clear_tasks: bool = False, profile: s
                     plan_acceptance: dict[str, Any] | None = None) -> str:
     """Coordinate context, protocol recovery, execution and completion for one turn."""
     turn = TurnContext(user_input, clear_tasks, profile, memory_context, inspection_complete)
-    self._prepare_turn(turn)
-    reply = self._initial_turn_response(turn)
-    if reply is not None:
-        return reply
-    self._execute_action_rounds(turn)
-    return self._complete_turn(turn)
+    return self._agent_engine.run(turn)
 
 
 @scoped_turn

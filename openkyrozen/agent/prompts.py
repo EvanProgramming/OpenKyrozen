@@ -141,7 +141,8 @@ def _refresh_tool_inventory(self, messages: list[dict[str, Any]]) -> None:
     })
 
 
-def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = None) -> str:
+def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = None,
+                   *, native_tools: bool = False) -> str:
     from openkyrozen.agent.delegation import GUIDANCE
     tools_list += "\n\n## Automatic sub-agent delegation\n" + GUIDANCE
     agent_config = agent_config or load_agent_config(self._get_workspace_root())
@@ -176,6 +177,18 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
         "Use `analyze_remote_repo` only when an external repository is explicitly intended."
     )
     interaction_mode = self._active_interaction_mode.get()
+    if native_tools:
+        return (
+            "You are Kyrozen. Use native structured tool calls for tool work; the available schemas are authoritative. "
+            "Never write Action, Plan, TaskList, TaskDone, DefineTool, XML, or DSML controls. "
+            "Use one tool call at a time and verify its result before relying on it. "
+            "If material ambiguity blocks safe work, ask a concise plain-language question without calling a tool. "
+            "Do not claim an effect unless a tool result verifies it.\n\n"
+            + configured_sections + "\n\n"
+            + f"## Interaction mode\nThe effective interaction mode is `{interaction_mode}`; obey its capability and approval bounds.\n\n"
+            + "## Available tools\nUse only tools and argument schemas supplied with the provider request.\n\n"
+            + cwd_note
+        )
     interaction_instructions = (
         "## Interaction mode\n"
         f"The effective interaction mode is `{interaction_mode}`. Modes only narrow permissions.\n"
@@ -370,13 +383,16 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
 
 
 def _build_messages(self, user_input: str, learned_context: str = "",
-                    memory_context: dict[str, Any] | None = None) -> list[dict[str, str]]:
+                    memory_context: dict[str, Any] | None = None, *,
+                    native_tools: bool = False) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
 
     agent_config = load_agent_config(self._get_workspace_root())
     messages.append({
         "role": "system",
-        "content": self._system_prompt(self._agent_prompt_tools_list(agent_config), agent_config),
+        "content": self._system_prompt(
+            self._agent_prompt_tools_list(agent_config), agent_config, native_tools=native_tools,
+        ),
     })
 
     messages.append({

@@ -511,11 +511,12 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
 
 
 def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
-                         successful_operations: set[str]) -> ExecutionReceipt:
+                         successful_operations: set[str], call_id: str | None = None,
+                         call_id_source: str = "synthetic") -> ExecutionReceipt:
     """Execute one model action, refusing a duplicate successful mutation."""
     canonical = self._operation_action(action)
     started_at = utc_now()
-    call_id = f"synthetic_{uuid.uuid4().hex}"
+    call_id = call_id or f"synthetic_{uuid.uuid4().hex}"
     expected_spec = self.tool_registry.specs.get(canonical)
     def emit_rejected_call():
         self._publish_runtime_event(
@@ -524,7 +525,8 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             call_id=call_id,
         )
 
-    if isinstance(args, dict):
+    native_arguments = isinstance(args, dict) and call_id_source == "native"
+    if isinstance(args, dict) and not native_arguments:
         emit_rejected_call()
         result = (
             f"Error: `{action}` requires a plain string as the `args` field.\n"
@@ -537,12 +539,11 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
         return self._make_execution_receipt(
             action=canonical, args=args, authorized=False, started_at=started_at, success=False,
             result=result, operation_scope=operation_scope, failure=outcome.error.code, tool_error=outcome.error,
-            tool_result=outcome, call_id=call_id, call_id_source="synthetic",
+            tool_result=outcome, call_id=call_id, call_id_source=call_id_source,
             expected_spec=expected_spec,
         )
-    args = str(args)
-    structured = None
-    if args.lstrip().startswith("{"):
+    structured = args if native_arguments else None
+    if not native_arguments and isinstance(args, str) and args.lstrip().startswith("{"):
         try:
             parsed = json.loads(args)
         except (json.JSONDecodeError, TypeError):
@@ -553,7 +554,23 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
     interaction_state = self._interaction_controller.state()
     spec = expected_spec
     typed_arguments = None
-    if interaction_state.get("executing_plan") and spec and spec.source != "legacy" and spec.legacy_fields:
+    if native_arguments:
+        schema_error = (self.tool_registry._argument_error(spec.input_schema, args)
+                        if spec is not None else "unknown tool")
+        if schema_error is not None:
+            emit_rejected_call()
+            result = f"Error: invalid arguments for `{action}`: {schema_error}."
+            outcome = tool_failure("invalid_arguments", result)
+            self._notify_tool_execute(action, args, outcome)
+            return self._make_execution_receipt(
+                action=canonical, args=args, authorized=False, started_at=started_at, success=False,
+                result=result, operation_scope=operation_scope, failure=outcome.error.code,
+                tool_error=outcome.error, tool_result=outcome, call_id=call_id,
+                call_id_source=call_id_source, expected_spec=expected_spec,
+            )
+        typed_arguments = args
+    if (not native_arguments and interaction_state.get("executing_plan") and spec
+            and spec.source != "legacy" and spec.legacy_fields):
         parts = args.split("|", len(spec.legacy_fields) - 1)
         if len(parts) == len(spec.legacy_fields):
             candidate = dict(zip(spec.legacy_fields, parts))
@@ -581,7 +598,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             action=canonical, args=args, authorized=False, started_at=started_at, success=False,
             result=result, operation_scope=operation_scope, failure=outcome.error.code,
             tool_error=outcome.error, tool_result=outcome, call_id=call_id,
-            call_id_source="synthetic", expected_spec=expected_spec,
+            call_id_source=call_id_source, expected_spec=expected_spec,
         )
     active_plan = interaction_state.get("executing_plan")
     if is_mutation and active_plan and canonical not in {"cancel_subagent", "update_plan"}:
@@ -613,7 +630,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                 authorized=False, started_at=started_at,
                 success=False, result=result, operation_scope=operation_scope,
                 failure=outcome.error.code, tool_error=outcome.error,
-                tool_result=outcome, call_id=call_id, call_id_source="synthetic",
+                tool_result=outcome, call_id=call_id, call_id_source=call_id_source,
                 expected_spec=expected_spec,
             )
     if (canonical != "run_cmd" and self._is_state_changing_action(canonical, args)
@@ -627,13 +644,13 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             receipt_arguments=operation_arguments if isinstance(operation_arguments, dict) else None,
             authorized=True, started_at=started_at, success=False,
             result=result, operation_scope=operation_scope, failure=outcome.error.code, tool_error=outcome.error,
-            tool_result=outcome, call_id=call_id, call_id_source="synthetic",
+            tool_result=outcome, call_id=call_id, call_id_source=call_id_source,
             expected_spec=expected_spec,
         )
     receipt = self._run_tool(canonical, args, return_receipt=True, operation_scope=operation_scope,
                              _typed_arguments=typed_arguments,
                              _expected_spec=spec if typed_arguments is not None else None,
-                             _call_id=call_id, _call_id_source="synthetic")
+                             _call_id=call_id, _call_id_source=call_id_source)
     assert isinstance(receipt, ExecutionReceipt)
     if (receipt.success and receipt.action != "run_cmd"
             and self._is_state_changing_action(receipt.action, args)):

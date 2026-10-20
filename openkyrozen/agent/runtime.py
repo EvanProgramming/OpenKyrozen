@@ -300,6 +300,10 @@ class AgentRuntime:
         self._conversation_expected_head = ContextVar("conversation_expected_head", default=None)
         self._sessions = {}
         self._workspaces = {workspace.root: workspace}
+        from openkyrozen.agent.engine import AgentEngine
+        from openkyrozen.agent.protocol import LegacyProtocolAdapter
+        self._agent_engine = AgentEngine(self)
+        self.legacy_protocol = LegacyProtocolAdapter(self)
 
     @property
     def current_session(self):

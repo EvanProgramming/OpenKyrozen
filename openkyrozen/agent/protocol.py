@@ -425,7 +425,7 @@ def _legacy_plan_value(self, text: str, *, allow_unheaded: bool = False) -> dict
     }
 
 
-def _parse_model_response(self, text: str) -> dict[str, Any]:
+def _parse_legacy_model_response(self, text: str) -> dict[str, Any]:
     """Parse one model response exactly once for the turn state machine."""
     raw = str(text or "").strip()
     if self._last_response_is_native.get():
@@ -485,6 +485,18 @@ def _parse_model_response(self, text: str) -> dict[str, Any]:
     )
     if disallowed_plan_action:
         tool_calls = []
+    legacy_markers = []
+    if tool_calls:
+        legacy_markers.append("text_tool_call")
+    if re.search(r"^[ \t]*Action\s*:", raw, re.IGNORECASE | re.MULTILINE):
+        legacy_markers.append("Action")
+    if re.search(r"DSML", raw, re.IGNORECASE):
+        legacy_markers.append("DSML")
+    for marker in ("Plan", "TaskList", "TaskDone", "DefineTool", "AskUser", "PlanProposal"):
+        if re.search(rf"^[ \t]*{marker}\s*:", raw, re.IGNORECASE | re.MULTILINE):
+            legacy_markers.append(marker)
+    if legacy_markers:
+        self._publish_runtime_event("legacy.protocol_used", {"markers": sorted(set(legacy_markers))})
     return {
         "raw": raw,
         "clean": self._clean_final_response(raw),
@@ -506,6 +518,21 @@ def _parse_model_response(self, text: str) -> dict[str, Any]:
             if malformed_unwrapped else None
         ),
     }
+
+
+class LegacyProtocolAdapter:
+    """Contain textual V2 controls at the compatibility boundary."""
+
+    def __init__(self, runtime):
+        self.runtime = runtime
+
+    def parse_response(self, text: str) -> dict[str, Any]:
+        return _parse_legacy_model_response(self.runtime, text)
+
+
+def _parse_model_response(self, text: str) -> dict[str, Any]:
+    """Compatibility method; all textual parsing is delegated to the adapter."""
+    return self.legacy_protocol.parse_response(text)
 
 
 def _observe_model_response(self, text: str) -> dict[str, Any]:
