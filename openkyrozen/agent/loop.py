@@ -130,7 +130,7 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
                     plan_acceptance=plan_acceptance,
                 )
             if backend := self._fast_used_backend.get():
-                reply = f"Made a decision with {'Jev' if backend == 'jev' else 'Kev'}.\n\n{reply}"
+                reply = f"Applied routing advice from {'Jev' if backend == 'jev' else 'Kev'}.\n\n{reply}"
         except Exception as exc:
             self._record_conversation_entry("turn.outcome", {
                 "status": "failed", "error_type": type(exc).__name__,

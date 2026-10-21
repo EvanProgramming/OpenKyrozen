@@ -63,6 +63,12 @@ content-free component attribution, a stable-prefix fingerprint, newly introduce
 history, retransmission and duplicate-entry counts; provider-reported input totals
 remain separate from those estimates.
 
+`routing.router` resolves one immutable `RoutingDecision` for each turn. Local
+classification and optional System One advice can select only configured models,
+the existing `coder`/`researcher` profiles, and planning needs derived from valid
+complexity. The decision has no capability or protocol fields; a routing-advice
+failure falls back to normal local selection.
+
 Under context pressure, older complete native call/result groups keep their call
 identity while oversized result strings are shortened; the newest group remains
 intact. An accepted plan summary bound to the active Working Plan lives in fixed

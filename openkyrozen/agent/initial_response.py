@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import time
 import re
-from openkyrozen.tasks.models import requires_working_plan
 
 def _initial_turn_response(self, turn):
     from openkyrozen.agent.delegation import TOOLS
@@ -89,7 +88,7 @@ def _initial_turn_response(self, turn):
                 r"\b(?:spawn_agents|send_subagent|wait_subagents)\b|\b(?:spawn|delegate)\b[^\n]*\b(?:agents?|specialists?|assignments?|workers?)\b",
                 turn.response_text, re.IGNORECASE))
     delegated = has_delegation()
-    if turn.interaction_mode == "agent" and requires_working_plan(turn.complexity) and not delegated:
+    if turn.planning_required and not delegated:
         if self.tasks.working_plan is None:
             self.tasks.recover()
         plan_attempts = 0
@@ -124,7 +123,7 @@ def _initial_turn_response(self, turn):
 
     # ---- TaskList enforcement: COMPLEX only ----
     _llm_has_tasklist = response_meta["has_tasklist"] or self.tasks.working_plan is not None
-    if turn.interaction_mode == "agent" and turn.complexity == "complex" and turn.tool_calls and not delegated:
+    if turn.planning_required and turn.tool_calls and not delegated:
         if not _llm_has_tasklist and _llm_has_plan:
             self._tasks_from_plan(turn.response_text)
             if self.tasks.tasks:

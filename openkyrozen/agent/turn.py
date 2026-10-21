@@ -13,6 +13,7 @@ class TurnContext:
     turn_prompt_total: int = 0
     turn_completion_total: int = 0
     complexity: Any = None
+    routing_decision: Any = None
     fast_backend: Any = None
     final_answer: Any = None
     fix_workflow: Any = None
@@ -28,6 +29,13 @@ class TurnContext:
     tool_results_text: Any = None
     turn_start: Any = None
     runtime_status: str = "completed"
+
+    @property
+    def planning_required(self) -> bool:
+        if self.routing_decision is not None:
+            return self.routing_decision.planning_required
+        from openkyrozen.tasks.models import requires_working_plan
+        return self.interaction_mode == "agent" and requires_working_plan(self.complexity)
 
 @dataclass
 class ExecutionContext:
