@@ -333,17 +333,24 @@ class ServerBoundaryTests(unittest.TestCase):
             root = Path(directory).resolve()
             original_root = runtime._get_workspace_root()
             runtime._set_workspace_root(root)
-            responses = [
-                'Action: {"action":"write_file","args":"allowed.txt|created"}',
-                json.dumps(result("Created allowed.txt")),
-                'Action: {"action":"read_file","args":"allowed.txt"}',
-                json.dumps(reviewed()),
-                'Action: {"action":"write_file","args":"denied.txt|must not write"}',
-                json.dumps(result("Write denied", status="blocked")),
-            ]
+            class FixtureProvider:
+                def get_capabilities(self, model):
+                    from openkyrozen.providers.models import ProviderCapabilities
+                    return ProviderCapabilities(native_tools=True)
+
+            from openkyrozen.providers.models import FinishReason, ModelResponse, ToolCall
+            responses = iter([
+                ModelResponse(tool_calls=(ToolCall("write", "write_file", {"path": "allowed.txt", "content": "created"}),), finish_reason=FinishReason.TOOL_REQUEST),
+                ModelResponse(text=json.dumps(result("Created allowed.txt"))),
+                ModelResponse(tool_calls=(ToolCall("review-read", "read_file", {"path": "allowed.txt"}),), finish_reason=FinishReason.TOOL_REQUEST),
+                ModelResponse(text=json.dumps(reviewed())),
+                ModelResponse(tool_calls=(ToolCall("deny-write", "write_file", {"path": "denied.txt", "content": "must not write"}),), finish_reason=FinishReason.TOOL_REQUEST),
+                ModelResponse(text=json.dumps(result("Write denied", status="blocked"))),
+            ])
+            provider = FixtureProvider()
             try:
-                with (patch.object(runtime, "_get_llm_response", side_effect=responses),
-                      patch.object(runtime, "get_provider", return_value=object()),
+                with (patch.object(runtime, "get_provider", return_value=provider),
+                      patch.object(runtime, "_get_model_response", side_effect=lambda *args, **kwargs: next(responses)),
                       patch.object(runtime, "_provider_config", ProviderConfig(provider="deepseek", api_key="fixture-key"))):
                     allowed = client.post("/api/v2/agents/run", json={
                         "profile": "coder", "task": "Create allowed.txt", "session_id": "delegation-api-test",
@@ -354,13 +361,13 @@ class ServerBoundaryTests(unittest.TestCase):
                         "assignment": brief(1, scope=["denied.txt"]),
                     })
                     self.assertEqual(allowed.status_code, 200, allowed.text)
-                    self.assertEqual(allowed.json()["status"], "succeeded")
+                    self.assertEqual(allowed.json()["status"], "succeeded", allowed.json())
                     self.assertTrue((root / "allowed.txt").is_file())
                     self.assertTrue(allowed.json()["tool_receipts"][0]["success"])
                     self.assertEqual(denied.status_code, 200, denied.text)
                     self.assertFalse((root / "denied.txt").exists())
                     self.assertEqual(denied.json()["status"], "blocked")
-                    self.assertFalse(denied.json()["tool_receipts"][0]["authorized"])
+                    self.assertEqual(denied.json()["tool_receipts"], [])
                     runs = client.get("/api/v2/agents/runs", params={"session_id": "delegation-api-test"})
                     self.assertEqual(len(runs.json()["agents"]), 2)
                     url = "/api/v2/agents/runs/" + allowed.json()["run_id"]

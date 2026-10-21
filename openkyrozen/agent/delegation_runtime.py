@@ -7,6 +7,7 @@ import json
 import os
 import time
 import uuid
+from pathlib import Path
 from contextlib import contextmanager
 from contextvars import copy_context
 from dataclasses import replace
@@ -144,7 +145,7 @@ def spawn_agents(self, args):
             task_id = assignment.get("task_id") if isinstance(assignment, dict) else None
             if task_id is not None and not self._valid_receipt_task_binding(self.current_session, task_id):
                 return tool_failure("invalid_arguments", "Error: assignment task_id must identify a pending task in the active Working Plan.")
-    data = {"agents": self.delegation().spawn(assignments)}
+    data = {"agents": self.delegation().spawn(assignments, budget=self.execution_context.delegation_budget)}
     return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
 
 
@@ -158,7 +159,8 @@ def send_subagent(self, args):
     task_id = assignment.get("task_id") if isinstance(assignment, dict) else None
     if task_id is not None and not self._valid_receipt_task_binding(self.current_session, task_id):
         return tool_failure("invalid_arguments", "Error: assignment task_id must identify a pending task in the active Working Plan.")
-    data = self.delegation().send(value.get("run_id"), assignment)
+    data = self.delegation().send(value.get("run_id"), assignment,
+                                  budget=self.execution_context.delegation_budget)
     return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
 
 
@@ -195,7 +197,7 @@ def cancel_subagent(self, args):
     return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
 
 
-def _invoke_delegated(self, run, *, review, feedback, coordinator):
+def _invoke_delegated(self, run, *, review, feedback, coordinator, report_repair=False):
     parent = self.current_session
     brief = run["assignment"]
     role = "reviewer" if review else run["profile"]
@@ -242,7 +244,7 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
             run["provider_model"] = f"{provider_name}:{model}"
         coordinator._publish(run)
     provider = self.get_provider(config)  # No implicit cross-provider fallback.
-    child_id = run["run_id"] + ("_review_" + uuid.uuid4().hex if review else "")
+    child_id = run.get("budget_id", run["run_id"]) + ("_review_" + uuid.uuid4().hex if review else "")
     adapters = self.workspace_factory(root=coordinator.root)
     workspace = WorkspaceState(str(coordinator.root), adapters, parent.workspace.launch_context,
                                parent.workspace.graph, parent.workspace.github)
@@ -254,13 +256,40 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
     capabilities &= effective_capabilities(load_agent_config(coordinator.root))
     if review or self._active_interaction_mode.get() in {"ask", "plan"}:
         capabilities &= resolve_capabilities("readonly")
-    tools = allowed_tool_names(adapters.AVAILABLE_TOOLS, ",".join(capabilities)) - set(TOOLS)
+    tools = (allowed_tool_names(adapters.AVAILABLE_TOOLS, ",".join(capabilities)) - set(TOOLS)) if not report_repair else set()
     child._delegation_parent = parent
     child._delegation_task_id = brief.get("task_id") if not review else None
     profile = replace(profile, metadata={**profile.metadata, "structured": True, "review": review,
         "display_name": run["reviewer"] if review else run["name"], "assignment": brief,
         "artifacts": copy.deepcopy(run.get("report", {}).get("artifacts", [])) if review else []})
-    task = ("Independently verify this assignment and submitted result. Read actual evidence with tools. "
+    allowed_artifacts = {(coordinator.root / path).resolve() for path in run["assignment"]["scope"]}
+    for record in run.get("result", {}).get("tool_records", []):
+        if record.get("success") and record.get("action") == "read_file":
+            args = record.get("arguments") or record.get("args") or {}
+            if isinstance(args, str):
+                try: args = json.loads(args)
+                except json.JSONDecodeError: args = {"path": args.split("|", 1)[0]}
+            path = args.get("path") if isinstance(args, dict) else None
+            if path:
+                allowed_artifacts.add((coordinator.root / path).resolve())
+        if record.get("success") and record.get("action") in {"write_file", "edit_file", "apply_patch"}:
+            args = record.get("args") or {}
+            if isinstance(args, str):
+                try: args = json.loads(args)
+                except json.JSONDecodeError: args = {"path": args.split("|", 1)[0]}
+            path = args.get("path") if isinstance(args, dict) else None
+            if path:
+                allowed_artifacts.add((coordinator.root / path).resolve())
+    child._delegation_review_artifacts = [
+        item if isinstance(item, str) else item.get("path", "")
+        for item in profile.metadata["artifacts"]
+        if isinstance(item, str) or isinstance(item, dict) and item.get("path")
+    ] if review else []
+    child._delegation_review_artifacts = [path for path in child._delegation_review_artifacts
+        if any((coordinator.root / path).resolve() == allowed or
+               (coordinator.root / path).resolve().is_relative_to(allowed)
+               for allowed in allowed_artifacts)]
+    task = ("Independently verify this assignment and submitted result. Read actual source evidence and every declared artifact with tools. "
             "Independently read every declared artifact, including references outside the assignment's scope. "
             "Find incorrect claims, missing acceptance checks, and regressions. Do not trust an author's success claim. "
             "Check each asserted affected input against the source and language/library semantics; a plausible example is not a reproduced check. "
@@ -268,13 +297,31 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
             + json.dumps({"assignment": brief, "submitted": run.get("report"),
                           "receipts": [{key: item for key, item in receipt.items() if key != "result"}
                               for receipt in run.get("result", {}).get("tool_records", [])]}, ensure_ascii=False)) if review else json.dumps(brief, ensure_ascii=False)
+    if report_repair:
+        task = ("Convert the previous response into the required JSON report. Do not call tools or add claims.\n"
+                + json.dumps({"assignment": brief,
+                              "previous_response": feedback.get("invalid_response", "") if isinstance(feedback, dict) else ""},
+                             ensure_ascii=False))
     if feedback:
-        task += "\nCorrect these review findings and return an updated report:\n" + json.dumps(feedback, ensure_ascii=False)
-    if not review:
-        child.messages = copy.deepcopy(coordinator.messages.get(run["run_id"], []))
+        task += ("\nReturn a corrected JSON report using only the supplied response.\n" if report_repair else
+                 "\nCorrect these review findings and return an updated report:\n") + json.dumps(feedback, ensure_ascii=False)
+    task = (
+        f"You are the {role} sub-agent. {profile.system_prompt}\n\n"
+        + task + "\n\n"
+        + ("Return only a JSON review with verdict (verified|changes_requested|unverifiable), summary, findings, and evidence. "
+           "A verified verdict requires independent tool inspection and evidence bound to actual receipts."
+           if review else
+           "Return only a JSON report with status (completed|partial|blocked|failed), summary, findings, evidence, "
+           "artifacts, checks, uncertainties, and suggested_followups. Completed requires checked acceptance criteria; "
+           "cite actual tool receipt IDs. Do not claim unsupported results.")
+    )
+    child.interaction.set_mode("ask" if review or report_repair else "agent")
     context = ExecutionContext(model=model, provider=provider, provider_config=config,
         capability_token=issue_capability_token("subagent:" + child_id, capabilities),
-        child_run_id=run["run_id"], coordinator=coordinator)
+        child_run_id=run["run_id"], coordinator=coordinator,
+        delegation_budget=coordinator.budgets.get(run["run_id"]),
+        delegation_budget_run_id=run.get("budget_id", run["run_id"]),
+        delegation_tools=frozenset(tools), max_steps=profile.max_steps)
     turn_token = self._turn_context.set(context)
     state_token = self._active_context_state.set(ContextState(model, config.context_window_tokens))
     usage_token = self._active_usage_run_id.set(child_id)
@@ -285,29 +332,38 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
         event_token = self._runtime_event_publisher.set(child_publisher)
     conversation_token = self._conversation_turn_id.set(f"turn_{child_id}_{uuid.uuid4().hex}")
     record_token = self._record_foreground_model.set(True)
-    conversation_head_token = None
     started = time.monotonic()
     try:
         with self.use_session(child):
-            conversation = self.conversation_history
-            conversation_head_token = self._conversation_expected_head.set(conversation.head)
-            self._record_conversation_entry("user.input", {"text": task})
-            try:
-                result = self._run_subagent_llm_result(profile, task, [], tools)
-            except Exception as exc:
-                self._record_conversation_entry("turn.outcome", {
-                    "status": "failed", "error_type": type(exc).__name__,
-                })
-                raise
-            result["session_id"] = child_id
-            result["metrics"] = self._subagent_usage_metrics(child_id, result.pop("started"))
-            self._record_conversation_entry("turn.outcome", {
-                "status": "completed", "text": result.get("result", ""),
-            })
+            before_receipts = {
+                event["payload"].get("receipt_id")
+                for event in child.memory.store.list_events(
+                    "execution.receipt", limit=None, user_id=child.memory.user_id,
+                    workspace_id=child.tasks.workspace_id, session_id=child.memory.session_id,
+                )
+            }
+            answer = self.chat(child, task, profile=role, approve=self._approval_callback.get())
+            answer = answer.split("\n\nTool status:", 1)[0].split("\n\nPlan status:", 1)[0]
+            receipt_events = child.memory.store.list_events(
+                "execution.receipt", limit=None, user_id=child.memory.user_id,
+                workspace_id=child.tasks.workspace_id, session_id=child.memory.session_id,
+            )
+            tool_records = [event["payload"] for event in receipt_events
+                            if event["payload"].get("receipt_id") not in before_receipts]
+            for receipt in tool_records:
+                coordinator.record_receipt(run["run_id"], child_id, receipt)
+            if answer.startswith("Native model request failed:"):
+                raise RuntimeError(answer)
+            result = {
+                "result": answer,
+                "session_id": child_id,
+                "tool_records": tool_records,
+                "evidence": [{"receipt_id": item["receipt_id"], "action": item["action"],
+                              "success": True} for item in tool_records if item.get("success")],
+                "metrics": self._subagent_usage_metrics(child_id, started),
+            }
             return result
     finally:
-        if conversation_head_token is not None:
-            self._conversation_expected_head.reset(conversation_head_token)
         self._record_foreground_model.reset(record_token)
         self._conversation_turn_id.reset(conversation_token)
         with coordinator.lock:
@@ -337,21 +393,28 @@ def _delegation_tool_access(self, action, args):
         str(self._get_workspace_root().resolve()), WorkspaceAccess(),
     )
     path = None
-    if action in {"write_file", "edit_file", "apply_patch", "read_file", "search_files"}:
-        raw = args.get('path', '') if isinstance(args, dict) else str(args).split("|", 1)[0].strip()
-        if action in {"edit_file", "apply_patch", "read_file", "search_files"} and raw.startswith("{"):
+    path_fields = {
+        "write_file": ("path", ""), "edit_file": ("path", ""), "apply_patch": ("path", ""),
+        "read_file": ("path", ""), "search_files": ("path", "."),
+        "list_dir": ("path", "."), "list_tree": ("path", "."), "find_files": ("directory", "."),
+    }
+    if action in path_fields:
+        field, default = path_fields[action]
+        parts = str(args).split("|", 1) if not isinstance(args, dict) else []
+        raw = args.get(field, default) if isinstance(args, dict) else (
+            parts[1].strip() if action == "find_files" and len(parts) > 1 else parts[0].strip()
+        )
+        if isinstance(args, str) and (action in {"edit_file", "apply_patch", "read_file", "search_files",
+                                                 "list_dir", "list_tree", "find_files"}) and raw.startswith("{"):
             try:
                 request = json.loads(str(args))
                 if isinstance(request, dict):
-                    default = "." if action == "search_files" else ""
-                    raw = request.get("path", default)
+                    raw = request.get(field, default)
                 else:
-                    raw = "." if action == "search_files" else ""
+                    raw = default
             except json.JSONDecodeError:
-                raw = "." if action == "search_files" else ""
-        if action == "search_files" and not raw:
-            raw = "."
-        path = str(self.current_session.workspace.adapters._resolve_workspace_path(raw))
+                raw = default
+        path = Path(self.current_session.workspace.adapters._resolve_workspace_path(raw or default)).resolve()
     if coordinator:
         coordinator.check_cancelled(context.child_run_id)
         from openkyrozen.security.tool_policy import tool_policy
@@ -374,11 +437,23 @@ def _delegation_tool_access(self, action, args):
             or effects not in {"none", "read", "read_only"}
         ):
             raise PermissionError(f"Sub-agent capability '{capability}' is not confined to assigned files")
-        if action in {"write_file", "edit_file", "apply_patch"}:
-            brief = coordinator.runs[context.child_run_id]["assignment"]
-            owned = {str(coordinator.root / p) for p in brief["scope"]}
-            if path not in owned:
-                raise ValueError("Sub-agent write is outside its assigned files")
+        run = coordinator.runs[context.child_run_id]
+        brief = run["assignment"]
+        writing = action in {"write_file", "edit_file", "apply_patch"}
+        reading = action in {"read_file", "search_files", "list_dir", "list_tree", "find_files"}
+        if writing or reading:
+            scopes = [Path(coordinator.root / item) for item in brief["scope"]]
+            if reading:
+                scopes.extend(Path(coordinator.root / item)
+                              for item in getattr(self.current_session, "_delegation_review_artifacts", []))
+            within_scope = any(path == scope or (scope.is_dir() and path.is_relative_to(scope)) for scope in scopes)
+            if not within_scope:
+                raise ValueError("Sub-agent read is outside its assigned scope" if reading else
+                                 "Sub-agent write is outside its assigned files")
+        workspace_wide_reads = {"git_status", "git_diff", "git_log", "git_show",
+                                 "graph_query", "graph_explain", "graph_path", "graph_status"}
+        if action in workspace_wide_reads and "." not in brief["scope"]:
+            raise ValueError("Sub-agent workspace-wide read is outside its assigned scope")
         parent = getattr(self.current_session, "_delegation_parent", None)
         parent_state = parent.interaction.state() if parent else {}
         parent_plan = parent_state.get("executing_plan") if parent_state else None
@@ -408,12 +483,12 @@ def _delegation_tool_access(self, action, args):
                 allowed, reason = parent.tasks.mutation_matches_current_task(action, match_args)
                 if not allowed:
                     raise ValueError("Sub-agent action does not match accepted plan: " + reason)
-    guarded = action in {"read_file", "write_file", "edit_file", "apply_patch", "search_files"} or self._is_state_changing_action(action, args) or action in {"git_diff", "git_show"}
+    guarded = action in path_fields or self._is_state_changing_action(action, args) or action in {"git_diff", "git_show"}
     if access and guarded:
         cancelled = (lambda: coordinator.cancelled[context.child_run_id].is_set()) if coordinator else (lambda: False)
-        with access.acquire(path, cancelled, context.child_run_id,
-                            reading=action in {"read_file", "search_files"},
-                            recursive=action == "search_files"):
+        with access.acquire(str(path) if path is not None else None, cancelled, context.child_run_id,
+                            reading=action in path_fields and action not in {"write_file", "edit_file", "apply_patch"},
+                            recursive=action in {"search_files", "find_files", "list_tree"}):
             yield
     else:
         yield

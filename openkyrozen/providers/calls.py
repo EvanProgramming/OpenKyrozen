@@ -15,6 +15,14 @@ from openkyrozen.providers.retry import provider_request_scope, bounded_call, bo
 from openkyrozen.agent.types import ContextOverflowError, ProviderUnavailableError
 
 
+def _delegation_budget(self):
+    budget = self.execution_context.delegation_budget
+    run_id = self.execution_context.delegation_budget_run_id
+    if budget is not None and run_id and not budget.can_continue(run_id, cost_picos=0):
+        raise RuntimeError("Delegated model budget is exhausted or usage is unknown")
+    return budget, run_id
+
+
 def _provider_timeout_seconds(self) -> float:
     default = 180.0 if self.execution_context.child_run_id else 90.0
     try:
@@ -151,9 +159,12 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
             except Exception:
                 pass
 
+    delegation_budget, delegation_budget_run_id = _delegation_budget(self)
     with usage_scope(store=self.memory_bank.store, user_id=self.memory_bank.user_id,
                      workspace_id=self.memory_bank.workspace_id, session_id=self.memory_bank.session_id,
-                     run_id=self._active_usage_run_id.get(), surface=self._EXECUTION_SURFACE):
+                     run_id=self._active_usage_run_id.get(), surface=self._EXECUTION_SURFACE,
+                     delegation_budget=delegation_budget,
+                     delegation_budget_run_id=delegation_budget_run_id):
         try:
             if provider is None:
                 raise ProviderUnavailableError(self.PROVIDER_UNAVAILABLE_MESSAGE)
@@ -177,6 +188,9 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     "response": model_response_to_dict(response),
                 }, request_id=request_id)
         except Exception as exc:
+            from openkyrozen.providers.usage import _track_cost
+            _track_cost(getattr(provider, "name", "unknown"), None, model=selected_model,
+                        completion_state="failed")
             self._turn_failed.set(True)
             self._publish_runtime_event("model.failed", {
                 "error_type": type(exc).__name__,
@@ -262,10 +276,13 @@ def _get_llm_response(self, messages: list[dict[str, str]], model: str | None = 
             session_id=self.memory_bank.session_id, run_id=self._active_usage_run_id.get(),
         )
         try:
+            delegation_budget, delegation_budget_run_id = _delegation_budget(self)
             with usage_scope(
                     store=self.memory_bank.store, user_id=self.memory_bank.user_id,
                     workspace_id=self.memory_bank.workspace_id, session_id=self.memory_bank.session_id,
-                    run_id=self._active_usage_run_id.get(), surface=self._EXECUTION_SURFACE):
+                    run_id=self._active_usage_run_id.get(), surface=self._EXECUTION_SURFACE,
+                    delegation_budget=delegation_budget,
+                    delegation_budget_run_id=delegation_budget_run_id):
                 text = self._bounded_provider_stream(provider, messages, model or self.DEEPSEEK_MODEL, on_chunk)
             if text.startswith(("[Ollama Error]", "[LLM Error]")) and self._is_context_overflow_error(RuntimeError(text)):
                 raise ContextOverflowError(text)

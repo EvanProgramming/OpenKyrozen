@@ -37,6 +37,15 @@ class AgentEngineTests(unittest.TestCase):
         self.assertEqual(result, "finished")
         self.assertEqual(events, ["work", "complete", ("queued", "Use Orion")])
 
+    def test_delegated_child_turn_does_not_queue_parent_learning(self):
+        scheduled = Mock()
+        runtime = SimpleNamespace(
+            execution_context=SimpleNamespace(child_run_id="child"),
+            _schedule_post_turn_learning=scheduled,
+        )
+        self.assertEqual(AgentEngine(runtime)._finish_turn(TurnContext("inspect"), "done"), "done")
+        scheduled.assert_not_called()
+
     def test_learning_queue_failure_does_not_fail_completed_turn(self):
         provider = SimpleNamespace(get_capabilities=lambda _model: ProviderCapabilities(native_tools=True))
         events = []
@@ -203,8 +212,8 @@ class AgentEngineTests(unittest.TestCase):
             continuation=provider_continuation(provider, "model-1", "fake", {"id": "response-1"}),
         )
         runtime = SimpleNamespace(
-            execution_context=SimpleNamespace(provider=provider), llm_provider=None, DEEPSEEK_MODEL="model-1",
-            MAX_STEPS_PER_TURN=0, _record_foreground_model=contextvars.ContextVar("record", default=False),
+            execution_context=SimpleNamespace(provider=provider, max_steps=0), llm_provider=None, DEEPSEEK_MODEL="model-1",
+            MAX_STEPS_PER_TURN=2, _record_foreground_model=contextvars.ContextVar("record", default=False),
             _conversation_turn_id=contextvars.ContextVar("turn_id", default=None),
             _last_response_is_native=contextvars.ContextVar("native", default=False),
             _last_prompt_tokens=0, _last_completion_tokens=0,

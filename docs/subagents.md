@@ -33,13 +33,15 @@ it is scoped in the event store. Closely related helpers share an investigation.
 Simple requests stay direct, and accepted plans retain their existing task
 contract. Invalid decisions get two repair attempts before ordinary continuation.
 
-Each worker has a separate provider instance, session, messages, execution
-context, compaction state, capability token and usage ledger. Agents share the
-workspace and scoped SQLite services. Structured writes require ownership of
-exact assigned files: disjoint writes can overlap, overlapping ownership waits,
-and opaque commands/repository mutations serialize against active workspace
-reads and writes. The same coordination guards main-agent actions. Capability
-labels and ownership checks are application policy, not an OS sandbox.
+Each worker runs through the canonical AgentEngine with a separate provider
+instance, session, messages, execution context, compaction state, capability
+token and usage ledger. File reads, searches, listings and writes are limited to
+the assigned paths. Reviewers may additionally read declared artifacts so they
+can inspect a result outside the worker's write scope. Disjoint writes can
+overlap, overlapping ownership waits, and opaque commands/repository mutations
+serialize against active workspace reads and writes. The same coordination
+guards main-agent actions. Capability labels and ownership checks are
+application policy, not an OS sandbox.
 
 ## Assignment and result contracts
 
@@ -62,11 +64,17 @@ and arrays `findings`, `evidence`, `artifacts`, `checks`, `uncertainties`,
 visibly. Model reports are kept separate from runtime-owned execution receipts
 and provider usage.
 
-Every completed or partial substantive report enters a fresh read-only review context.
-Batches use reciprocal/ring peer identities; a singleton gets a reviewer. The
-reviewer receives the assignment, submitted result and receipt references, and
-must independently inspect evidence. A `verified` report without a successful
-inspection tool receipt and supporting evidence becomes `unverifiable`.
+Mutating, broad-scope, and explicitly high-risk assignments enter a fresh
+read-only review context. Narrow read-only assignments skip the extra provider
+call; the parent verifies that the completed report cites successful scoped
+read receipts. Reviewed batches use reciprocal/ring peer identities; a
+singleton gets a reviewer. The reviewer receives the assignment, submitted
+result and receipt references, and must independently inspect evidence. A
+`verified` report without a successful inspection tool receipt and supporting
+evidence becomes `unverifiable`.
+Reviewer access to declared file artifacts is limited to the worker's assigned
+paths and paths covered by successful worker write receipts. A report cannot
+grant review access to arbitrary workspace files by naming them as artifacts.
 Review verdicts are `verified`, `changes_requested`, or `unverifiable`.
 Reviewers must independently read every declared artifact. A missed read gets
 two bounded inspection reminders in that review context before the runtime
@@ -99,6 +107,13 @@ calls use 90 seconds. `KYROZEN_PROVIDER_TIMEOUT_SECONDS` overrides both (1–600
 seconds). Reasoning reviews exceeded the earlier 90-second deadline in live
 acceptance; those failures are retained in the acceptance record.
 Restart marks unfinished jobs interrupted without replaying mutations.
+
+Delegation reserves $0.10 per child and an additional $0.25 when independent
+review is required, with a $1 aggregate limit per parent turn. Assignments that
+cannot reserve this amount are rejected before they start. Known usage settles
+against the reservation; unknown usage retains the full reservation for that
+turn. Cost accounting uses the provider usage ledger, so calls with unknown
+pricing or usage cannot free reserved capacity.
 
 Assignments, messages, receipts, state snapshots, results and reviews persist
 with actor, project, parent-chat and run identifiers. Names are unique within

@@ -36,6 +36,8 @@ class AgentEngine:
         return self._finish_turn(turn, runtime._complete_turn(turn))
 
     def _finish_turn(self, turn: TurnContext, result: str) -> str:
+        if getattr(self.runtime.execution_context, "child_run_id", None):
+            return result
         schedule = getattr(self.runtime, "_schedule_post_turn_learning", None)
         if callable(schedule):
             try:
@@ -74,7 +76,10 @@ class AgentEngine:
         response = None
         history_tool_names: set[str] = set()
 
-        for step in range(runtime.MAX_STEPS_PER_TURN + 1):
+        max_steps = getattr(runtime.execution_context, "max_steps", None)
+        if max_steps is None:
+            max_steps = runtime.MAX_STEPS_PER_TURN
+        for step in range(max_steps + 1):
             tool_names = self._native_tool_names()
             token = runtime._record_foreground_model.set(False)
             try:
@@ -84,7 +89,9 @@ class AgentEngine:
                     )
                 except Exception as exc:
                     runtime._turn_failed.set(True)
-                    turn.protocol_error_message = f"Native model request failed ({type(exc).__name__}); no further tools were run."
+                    from openkyrozen.providers.errors import ProviderError
+                    detail = str(exc) if isinstance(exc, ProviderError) else type(exc).__name__
+                    turn.protocol_error_message = f"Native model request failed: {detail}; no further tools were run."
                     if runtime._conversation_turn_id.get() is not None:
                         runtime._record_conversation_entry("model.failure", {
                             "error_type": type(exc).__name__,
@@ -105,7 +112,7 @@ class AgentEngine:
                         "error_type": "invalid_native_tool_call",
                     }, request_id=runtime._last_model_request_id.get())
                 break
-            if response.tool_calls and step >= runtime.MAX_STEPS_PER_TURN:
+            if response.tool_calls and step >= max_steps:
                 turn.protocol_error_message = "The tool-call step limit was reached; remaining work was not run."
                 if runtime._conversation_turn_id.get() is not None:
                     runtime._record_conversation_entry("model.failure", {
@@ -134,7 +141,9 @@ class AgentEngine:
             messages.append(response)
             history_tool_names.update(call.name for call in response.tool_calls)
             calls = [{"action": call.name, "args": call.arguments, "call_id": call.id,
-                      "call_id_source": "native"} for call in response.tool_calls]
+                      "call_id_source": "native",
+                      "task_id": getattr(getattr(runtime, "current_session", None), "_delegation_task_id", None)}
+                     for call in response.tool_calls]
             turn.tool_calls.extend(calls)
 
             def record_native_call(call, receipt):

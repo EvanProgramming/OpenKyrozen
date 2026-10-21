@@ -19,6 +19,8 @@ class UsageScope:
     session_id: str | None = None
     run_id: str | None = None
     surface: str = "cli"
+    delegation_budget: Any = None
+    delegation_budget_run_id: str | None = None
 
 
 _usage_scope: ContextVar[UsageScope | None] = ContextVar("usage_scope", default=None)
@@ -27,11 +29,13 @@ _usage_scope: ContextVar[UsageScope | None] = ContextVar("usage_scope", default=
 @contextmanager
 def usage_scope(*, store: EventStore, user_id: str = "local", workspace_id: str = "default",
                 session_id: str | None = None, run_id: str | None = None,
-                surface: str | None = None) -> Iterator[None]:
+                surface: str | None = None, delegation_budget: Any = None,
+                delegation_budget_run_id: str | None = None) -> Iterator[None]:
     """Attribute all provider calls in this execution context to one durable scope."""
     token = _usage_scope.set(UsageScope(
         store=store, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
         run_id=run_id, surface=surface or os.environ.get("KYROZEN_EXECUTION_SURFACE", "cli"),
+        delegation_budget=delegation_budget, delegation_budget_run_id=delegation_budget_run_id,
     ))
     try:
         yield
@@ -198,6 +202,8 @@ def _track_cost(provider: str, usage: dict | None, *, model: str = "unknown",
         usage_status=usage_status,
         cost_picos=cost_picos, pricing_snapshot=pricing_snapshot,
     )
+    if scope.delegation_budget is not None and scope.delegation_budget_run_id:
+        scope.delegation_budget.record_cost(scope.delegation_budget_run_id, cost_picos)
     return attempt_id
 
 

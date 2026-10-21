@@ -208,7 +208,8 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
     canonical = self._operation_action(action)
     from openkyrozen.agent.delegation import TOOLS
     current_session = getattr(self, "current_session", None)
-    task_owner = getattr(current_session, "_delegation_parent", None) or self
+    delegated_parent = getattr(current_session, "_delegation_parent", None)
+    task_owner = delegated_parent or self
     task_manager = getattr(task_owner, "tasks", None)
     result_limit = (max(2000, len(str(result))) if canonical in TOOLS else
                     8000 if canonical == "read_tool_artifact" else
@@ -338,7 +339,9 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         tool_result=tool_result,
         user_id=getattr(task_manager, "user_id", None) or getattr(getattr(self, "memory_bank", None), "user_id", None),
         workspace_id=getattr(task_manager, "workspace_id", None) or getattr(getattr(self, "memory_bank", None), "workspace_id", None),
-        session_id=getattr(task_manager, "session_id", None) or getattr(getattr(self, "memory_bank", None), "session_id", None),
+        session_id=(getattr(current_session, "session_id", None) if delegated_parent else None)
+        or getattr(task_manager, "session_id", None)
+        or getattr(getattr(self, "memory_bank", None), "session_id", None),
         plan_id=getattr(getattr(task_manager, "working_plan", None), "id", None),
         task_id=task_id,
         tool_version=getattr(expected_spec, "version", None),
@@ -585,8 +588,9 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
 
 def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                          successful_operations: set[str], call_id: str | None = None,
-                         call_id_source: str = "synthetic") -> ExecutionReceipt:
+                         call_id_source: str = "synthetic", task_id: str | None = None) -> ExecutionReceipt:
     """Execute one model action, refusing a duplicate successful mutation."""
+    task_id = task_id or getattr(getattr(self, "current_session", None), "_delegation_task_id", None)
     canonical = self._operation_action(action)
     started_at = utc_now()
     call_id = call_id or f"synthetic_{uuid.uuid4().hex}"
@@ -738,7 +742,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
     receipt = self._run_tool(canonical, args, return_receipt=True, operation_scope=operation_scope,
                              _typed_arguments=typed_arguments,
                              _expected_spec=spec if typed_arguments is not None else None,
-                             _call_id=call_id, _call_id_source=call_id_source)
+                             _call_id=call_id, _call_id_source=call_id_source, _task_id=task_id)
     assert isinstance(receipt, ExecutionReceipt)
     if (receipt.success and receipt.action != "run_cmd"
             and self._is_state_changing_action(receipt.action, args)):
@@ -761,7 +765,7 @@ def _execute_tool_batch(self, calls: list[dict[str, Any]], *, operation_scope: s
         return self._execute_turn_action(
             call.get("action", ""), call.get("args", ""), operation_scope=operation_scope,
             successful_operations=successful_operations, call_id=call.get("call_id"),
-            call_id_source=call.get("call_id_source", call_id_source),
+            call_id_source=call.get("call_id_source", call_id_source), task_id=call.get("task_id"),
         )
 
     index = 0
@@ -789,8 +793,13 @@ def _execute_tool_batch(self, calls: list[dict[str, Any]], *, operation_scope: s
 def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_matching: bool = False) -> dict[str, Any]:
     """Persist a receipt and reconcile the current planned task from verified evidence."""
     from openkyrozen.agent.delegation import TOOLS
-    active_task = self.tasks.active_working_task(receipt.task_id) if receipt.task_id else None
-    explicit_task_id = receipt.task_id if active_task is not None else None
+    current_session = getattr(self, "current_session", None)
+    delegated_parent = getattr(current_session, "_delegation_parent", None)
+    task_manager = delegated_parent.tasks if delegated_parent else self.tasks
+    active_task = task_manager.active_working_task(receipt.task_id) if receipt.task_id else None
+    explicit_task_id = receipt.task_id if active_task is not None and (
+        not delegated_parent or self._valid_receipt_task_binding(current_session, receipt.task_id)
+    ) else None
     receipt_projection = receipt.as_dict()
     task_acceptance = receipt.acceptance
     if explicit_task_id and receipt.action == "run_cmd" and task_acceptance:
@@ -818,7 +827,7 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
                      json.dumps(receipt.arguments, ensure_ascii=False, allow_nan=False,
                                 sort_keys=True, separators=(",", ":"))
                      if receipt.arguments is not None else receipt.args)
-    evidence = {} if receipt.action in TOOLS or not should_reconcile else self.tasks.record_evidence(
+    evidence = {} if delegated_parent or receipt.action in TOOLS or not should_reconcile else self.tasks.record_evidence(
         task_id=explicit_task_id, action=receipt.action, args=matching_args,
         args_projection=receipt_projection["args"],
         args_fingerprint=None if legacy_contract else receipt.args_sha256,
@@ -828,7 +837,7 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
         verification_result=(receipt.tool_result.text if receipt.action == "read_file"
                              and receipt.tool_result is not None else None),
     )
-    task_id = evidence.get("task_id")
+    task_id = explicit_task_id if delegated_parent else evidence.get("task_id")
     effective_acceptance = evidence.get("acceptance") or (
         receipt_projection["acceptance"] if receipt.task_id is None else None
     )
@@ -855,7 +864,7 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
         receipt_payload["unmatched_reason"] = evidence["unmatched_reason"]
     self.tasks.store.append_event(
         "execution.receipt", {**receipt_payload, "task_id": task_id}, user_id=self.tasks.user_id,
-        workspace_id=self.tasks.workspace_id, session_id=self.tasks.session_id, task_id=task_id,
+        workspace_id=self.tasks.workspace_id, session_id=receipt.session_id or self.tasks.session_id, task_id=task_id,
     )
     result = {
         "receipt_id": receipt.receipt_id, "operation_id": receipt.operation_id,

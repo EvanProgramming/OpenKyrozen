@@ -24,6 +24,118 @@ from openkyrozen.agent.delegation import WorkspaceAccess
 
 
 class SubAgentTests(unittest.TestCase):
+    def test_nested_directory_claims_serialize(self):
+        from openkyrozen.agent.delegation import WorkspaceAccess
+
+        access = WorkspaceAccess()
+        parent = threading.Event()
+        nested = threading.Event()
+        release = threading.Event()
+
+        def hold_parent():
+            with access.claim(["/workspace/src"], "parent", lambda: False):
+                parent.set()
+                release.wait(2)
+
+        def claim_nested():
+            with access.claim(["/workspace/src/pkg"], "nested", lambda: False):
+                nested.set()
+
+        first = threading.Thread(target=hold_parent)
+        second = threading.Thread(target=claim_nested)
+        first.start()
+        self.assertTrue(parent.wait(1))
+        second.start()
+        self.assertFalse(nested.wait(.05))
+        release.set()
+        first.join(1)
+        second.join(1)
+        self.assertTrue(nested.is_set())
+
+    def test_directory_claim_waits_for_exclusive_workspace_access(self):
+        access = WorkspaceAccess()
+        exclusive = threading.Event()
+        claimed = threading.Event()
+        release = threading.Event()
+
+        def hold_workspace():
+            with access.acquire(cancelled=lambda: False):
+                exclusive.set()
+                release.wait(2)
+
+        def claim_path():
+            with access.claim(["/workspace/src"], "child", lambda: False):
+                claimed.set()
+
+        first = threading.Thread(target=hold_workspace)
+        second = threading.Thread(target=claim_path)
+        first.start()
+        self.assertTrue(exclusive.wait(1))
+        second.start()
+        self.assertFalse(claimed.wait(.05))
+        release.set()
+        first.join(1)
+        second.join(1)
+        self.assertTrue(claimed.is_set())
+
+    def test_delegation_budget_reserves_children_and_reviewers_within_turn_cap(self):
+        from openkyrozen.agent.delegation import DelegationBudget
+
+        budget = DelegationBudget()
+        budget.reserve("child-a", review=True)
+        budget.reserve("child-b", review=True)
+        with self.assertRaisesRegex(ValueError, "budget"):
+            budget.reserve("child-c", review=True)
+
+        budget.settle("child-a", cost_picos=50_000_000_000)
+        budget.reserve("child-c", review=True)
+        self.assertEqual(budget.remaining_picos, 250_000_000_000)
+
+    def test_unknown_subagent_usage_keeps_its_full_reservation(self):
+        from openkyrozen.agent.delegation import DelegationBudget
+
+        budget = DelegationBudget()
+        budget.reserve("child-a", review=False)
+        budget.settle("child-a", cost_picos=None)
+        self.assertEqual(budget.remaining_picos, 900_000_000_000)
+        self.assertTrue(budget.can_continue("child-a", cost_picos=0))
+
+    def test_unused_blocked_assignment_releases_reservation(self):
+        from openkyrozen.agent.delegation import DelegationBudget
+
+        budget = DelegationBudget()
+        budget.reserve("child-a", review=True)
+        budget.settle("child-a", cost_picos=0)
+        self.assertEqual(budget.remaining_picos, budget.TURN_LIMIT)
+
+    def test_review_policy_requires_review_for_mutations_broad_scope_and_high_risk(self):
+        from openkyrozen.agent.delegation import Delegation
+
+        with tempfile.TemporaryDirectory() as directory:
+            policy = object.__new__(Delegation)
+            policy.root = Path(directory).resolve()
+            policy.profiles = {
+                "researcher": AgentProfile("researcher", "research", "readonly"),
+                "coder": AgentProfile("coder", "code", "workspace"),
+            }
+            self.assertFalse(policy._requires_review({"profile": "researcher", "scope": ["one.py"]}))
+            self.assertTrue(policy._requires_review({"profile": "coder", "scope": ["one.py"]}))
+            self.assertTrue(policy._requires_review({"profile": "researcher", "scope": ["one.py", "two.py"]}))
+            self.assertTrue(policy._requires_review({"profile": "researcher", "scope": ["one.py"], "risk": "high"}))
+
+    def test_parent_verification_requires_read_evidence_bound_to_successful_receipts(self):
+        from openkyrozen.agent.delegation import Delegation
+
+        run = {"assignment": {"scope": ["source.py"]}}
+        report = {"status": "completed", "artifacts": [], "evidence": [{"receipt_id": "read-1"}]}
+        result = {"tool_records": [{"receipt_id": "read-1", "action": "read_file", "args": {"path": "source.py"}, "success": True}]}
+        report["checks"] = ["source.py inspected"]
+        policy = object.__new__(Delegation)
+        policy.root = Path.cwd()
+        self.assertTrue(policy._verify_read_only_result(run, report, result))
+        result["tool_records"][0]["success"] = False
+        self.assertFalse(policy._verify_read_only_result(run, report, result))
+
     def test_rejected_subagent_record_uses_persisted_receipt_id(self):
         profile = AgentProfile("coder", "test", "full")
         for args, tools in [({"path": "safe.txt"}, set()), ("path-only", {"write_file"})]:
@@ -125,6 +237,90 @@ class SubAgentTests(unittest.TestCase):
                 with _delegation_tool_access(agent, "edit_file", args):
                     self.fail("out-of-scope edit entered the guarded operation")
 
+    def test_subagent_read_file_is_limited_to_assigned_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            coordinator = SimpleNamespace(
+                root=root, access=None, check_cancelled=lambda _run: None,
+                runs={"child": {"assignment": {"scope": ["allowed.py"]}}},
+                cancelled={"child": threading.Event()},
+            )
+            adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: str((root / raw).resolve()))
+            child = SimpleNamespace(workspace=SimpleNamespace(adapters=adapters), _delegation_parent=SimpleNamespace(
+                interaction=SimpleNamespace(state=lambda: {})))
+            agent = SimpleNamespace(
+                execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
+                current_session=child, _workspace_access={}, _get_workspace_root=lambda: root,
+                _is_state_changing_action=lambda *_args: False,
+            )
+
+            with self.assertRaisesRegex(ValueError, "outside its assigned scope"):
+                with _delegation_tool_access(agent, "read_file", {"path": "private.txt"}):
+                    self.fail("out-of-scope file read entered the guarded operation")
+
+    def test_subagent_directory_enumeration_is_limited_to_assigned_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            coordinator = SimpleNamespace(
+                root=root, access=None, check_cancelled=lambda _run: None,
+                runs={"child": {"assignment": {"scope": ["src/allowed.py"]}}},
+                cancelled={"child": threading.Event()},
+            )
+            adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: (root / raw).resolve())
+            child = SimpleNamespace(workspace=SimpleNamespace(adapters=adapters), _delegation_parent=SimpleNamespace(
+                interaction=SimpleNamespace(state=lambda: {})))
+            agent = SimpleNamespace(
+                execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
+                current_session=child, _workspace_access={}, _get_workspace_root=lambda: root,
+                _is_state_changing_action=lambda *_args: False,
+            )
+            with self.assertRaisesRegex(ValueError, "outside its assigned scope"):
+                with _delegation_tool_access(agent, "list_tree", {"path": "."}):
+                    self.fail("out-of-scope directory enumeration entered the guarded operation")
+
+    def test_legacy_find_files_checks_its_directory_against_assigned_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            coordinator = SimpleNamespace(
+                root=root, access=None, check_cancelled=lambda _run: None,
+                runs={"child": {"assignment": {"scope": ["src"]}}},
+                cancelled={"child": threading.Event()},
+            )
+            adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: (root / raw).resolve())
+            child = SimpleNamespace(workspace=SimpleNamespace(adapters=adapters), _delegation_parent=SimpleNamespace(
+                interaction=SimpleNamespace(state=lambda: {})))
+            agent = SimpleNamespace(
+                execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
+                current_session=child, _workspace_access={}, _get_workspace_root=lambda: root,
+                _is_state_changing_action=lambda *_args: False,
+            )
+
+            with _delegation_tool_access(agent, "find_files", "*.py|src"):
+                pass
+
+    def test_reviewer_can_read_declared_artifact_outside_worker_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            coordinator = SimpleNamespace(
+                root=root, access=None, check_cancelled=lambda _run: None,
+                runs={"child": {"assignment": {"scope": ["src/worker.py"]}}},
+                cancelled={"child": threading.Event()},
+            )
+            adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: str((root / raw).resolve()))
+            child = SimpleNamespace(
+                workspace=SimpleNamespace(adapters=adapters),
+                _delegation_parent=SimpleNamespace(interaction=SimpleNamespace(state=lambda: {})),
+                _delegation_review_artifacts=["dist/result.txt"],
+            )
+            agent = SimpleNamespace(
+                execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
+                current_session=child, _workspace_access={}, _get_workspace_root=lambda: root,
+                _is_state_changing_action=lambda *_args: False,
+            )
+
+            with _delegation_tool_access(agent, "read_file", {"path": "dist/result.txt"}):
+                pass
+
     def test_delegated_write_pauses_while_parent_revision_awaits_approval(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -181,7 +377,8 @@ class SubAgentTests(unittest.TestCase):
                     yield
 
             coordinator = SimpleNamespace(access=Access(), check_cancelled=lambda _run: None,
-                                          cancelled={"child": threading.Event()})
+                                          cancelled={"child": threading.Event()}, root=root,
+                                          runs={"child": {"assignment": {"scope": ["."]}}})
             adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: (root / raw).resolve())
             agent = SimpleNamespace(
                 execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),
@@ -206,7 +403,8 @@ class SubAgentTests(unittest.TestCase):
                     yield
 
             coordinator = SimpleNamespace(access=Access(), check_cancelled=lambda _run: None,
-                                          cancelled={"child": threading.Event()})
+                                          cancelled={"child": threading.Event()}, root=root,
+                                          runs={"child": {"assignment": {"scope": ["docs"]}}})
             adapters = SimpleNamespace(_resolve_workspace_path=lambda raw: (root / raw).resolve())
             agent = SimpleNamespace(
                 execution_context=SimpleNamespace(coordinator=coordinator, child_run_id="child"),

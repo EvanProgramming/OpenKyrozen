@@ -88,7 +88,8 @@ def _complete_turn(self, turn):
         )
         turn.final_answer = f"{turn.final_answer.rstrip()}\n\nTool status: incomplete; failed operations were not verified.\n{failures}"
     plan = getattr(self.tasks, "working_plan", None)
-    if (turn.interaction_mode == "agent" and getattr(turn, "complexity", None) == "complex"
+    if (not self.execution_context.child_run_id
+            and turn.interaction_mode == "agent" and getattr(turn, "complexity", None) == "complex"
             and plan is not None and plan.status in {"active", "completed", "cancelled"}):
         plan_tasks = [task for task in self.tasks.tasks if task.get("id") in plan.task_ids]
         succeeded = [task for task in plan_tasks if is_complete(task)]

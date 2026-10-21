@@ -104,6 +104,7 @@ class WorkspaceAccess:
     @contextmanager
     def acquire(self, path=None, cancelled=lambda: False, owner=None, reading=False, recursive=False):
         with self.condition:
+            overlaps = lambda left, right: Path(left).is_relative_to(Path(right)) or Path(right).is_relative_to(Path(left))
             while (self.exclusive or (path is None and (self.paths or self.readers)) or path in self.paths
                    or (not reading and self.readers.get(path, 0))
                    or (path is None and self.recursive_readers)
@@ -111,7 +112,8 @@ class WorkspaceAccess:
                                            for scope in self.recursive_readers))
                    or (reading and recursive and any(Path(active).is_relative_to(Path(path))
                                                      for active in self.paths))
-                   or (not reading and path in self.owners and self.owners[path] != owner)):
+                   or (path is not None and any(overlaps(path, active) and active_owner != owner
+                                                 for active, active_owner in self.owners.items()))):
                 if cancelled():
                     raise RuntimeError("Sub-agent cancelled")
                 self.condition.wait(0.1)
@@ -145,9 +147,12 @@ class WorkspaceAccess:
 
     @contextmanager
     def claim(self, paths, owner, cancelled):
+        overlaps = lambda left, right: Path(left).is_relative_to(Path(right)) or Path(right).is_relative_to(Path(left))
         with self.condition:
-            while any(
-                path in self.owners or path in self.paths or self.readers.get(path, 0)
+            while self.exclusive or any(
+                any(overlaps(path, active) for active in self.owners)
+                or any(overlaps(path, active) for active in self.paths)
+                or any(count and overlaps(path, active) for active, count in self.readers.items())
                 or any(Path(path).is_relative_to(Path(scope)) for scope in self.recursive_readers)
                 for path in paths
             ):
@@ -167,6 +172,65 @@ class WorkspaceAccess:
                 self.condition.notify_all()
 
 
+class DelegationBudget:
+    """Reserve a bounded share of one parent turn for child and review work."""
+
+    CHILD_RESERVATION = 100_000_000_000
+    REVIEW_RESERVATION = 250_000_000_000
+    TURN_LIMIT = 1_000_000_000_000
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._commitments: dict[str, int] = {}
+        self._unknown: set[str] = set()
+        self._spent: dict[str, int] = {}
+
+    @property
+    def remaining_picos(self) -> int:
+        with self._lock:
+            return self.TURN_LIMIT - sum(self._commitments.values())
+
+    def reserve(self, run_id: str, *, review: bool) -> None:
+        amount = self.CHILD_RESERVATION + (self.REVIEW_RESERVATION if review else 0)
+        with self._lock:
+            if run_id in self._commitments or amount > self.TURN_LIMIT - sum(self._commitments.values()):
+                raise ValueError("Delegation budget is unavailable for this assignment")
+            self._commitments[run_id] = amount
+
+    def settle(self, run_id: str, *, cost_picos: int | None) -> None:
+        with self._lock:
+            if run_id not in self._commitments:
+                return
+            if cost_picos is None:
+                self._unknown.add(run_id)
+                return
+            self._commitments[run_id] = max(0, int(cost_picos))
+
+    def record_cost(self, run_id: str, cost_picos: int | None) -> None:
+        with self._lock:
+            if run_id not in self._commitments:
+                return
+            if cost_picos is None:
+                self._unknown.add(run_id)
+            else:
+                self._spent[run_id] = self._spent.get(run_id, 0) + max(0, int(cost_picos))
+
+    def can_continue(self, run_id: str, *, cost_picos: int | None) -> bool:
+        with self._lock:
+            if run_id not in self._commitments:
+                return False
+            # Unknown pricing consumes the reservation for the turn but cannot meter individual calls.
+            if run_id in self._unknown or cost_picos is None:
+                return True
+            return self._spent.get(run_id, int(cost_picos)) < self._commitments[run_id]
+
+    def release(self, run_id: str) -> None:
+        with self._lock:
+            self._commitments.pop(run_id, None)
+            self._unknown.discard(run_id)
+            self._spent.pop(run_id, None)
+
+
 class Delegation:
     def __init__(self, memory, invoke, *, profiles, root, concurrency=4, emit=None, access=None, capture_context=copy_context, redact=str, on_verified=None):
         self.memory, self.invoke, self.profiles = memory, invoke, profiles
@@ -181,6 +245,7 @@ class Delegation:
         self.pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="kyrozen-agent")
         self.runs, self.messages, self.cancelled, self.futures = {}, {}, {}, {}
         self.contexts = {}
+        self.budgets = {}
         self.names = set()
         self._restore()
 
@@ -279,6 +344,8 @@ class Delegation:
             raise ValueError("Acceptance and deliverables cannot be empty")
         if brief.get("profile", "researcher") not in self.profiles:
             raise ValueError("Unknown sub-agent profile")
+        if brief.get("risk", "normal") not in {"low", "normal", "high"}:
+            raise ValueError("risk must be low, normal, or high")
         for key in ("provider", "model", "custom_profile", "id"):
             if key in brief and (not isinstance(brief[key], str) or not brief[key].strip()):
                 raise ValueError(key + " must be nonempty text")
@@ -294,9 +361,17 @@ class Delegation:
         brief["scope"] = list(dict.fromkeys(paths))
         return brief
 
-    def spawn(self, assignments):
+    def _requires_review(self, brief):
+        profile = self.profiles[brief.get("profile", "researcher")]
+        broad_scope = len(brief["scope"]) > 1 or "." in brief["scope"] or any(
+            (self.root / path).is_dir() for path in brief["scope"]
+        )
+        return profile.capabilities != "readonly" or broad_scope or brief.get("risk", "normal") == "high"
+
+    def spawn(self, assignments, *, budget=None):
         if not isinstance(assignments, list) or not assignments:
             raise ValueError("assignments must be a nonempty array")
+        budget = budget or DelegationBudget()
         briefs = [self._brief(item) for item in assignments]
         with self.lock:
             ids = [b.get("id", uuid.uuid4().hex) for b in briefs]
@@ -325,11 +400,22 @@ class Delegation:
                 if not ready:
                     raise ValueError("Cyclic dependencies")
                 pending -= ready
+            reserved = []
+            try:
+                for key, brief in zip(ids, briefs):
+                    run_id = mapping[key]
+                    budget.reserve(run_id, review=self._requires_review(brief))
+                    reserved.append(run_id)
+            except Exception:
+                for run_id in reserved:
+                    budget.release(run_id)
+                raise
             runs = []
             for key, brief in zip(ids, briefs):
                 run_id = mapping[key]
                 run = {"run_id": run_id, "assignment_id": key, "name": self._name(),
                        "profile": brief.get("profile", "researcher"), "assignment": brief,
+                       "budget_id": run_id,
                        "dependencies": [mapping.get(dep, dep) for dep in brief["dependencies"]],
                        "status": "queued", "signature": json.dumps([brief["objective"].strip().lower(), sorted(brief["scope"]), brief["context"]]),
                        "parent_session_id": self.memory.session_id, "source_scope_id": self.memory.file_scope_id,
@@ -337,6 +423,7 @@ class Delegation:
                 run["icon"] = identicon(run_id)
                 self.runs[run_id] = run
                 self.contexts[run_id] = self.capture_context()
+                self.budgets[run_id] = budget
                 self.cancelled[run_id] = threading.Event()
                 runs.append(run)
             # Peer identities are fixed before any work starts; review contexts remain independent.
@@ -359,6 +446,9 @@ class Delegation:
             for run in blocked:
                 run.update(status="blocked", error="Dependency did not pass independent verification")
                 run["review_agent"]["status"] = "blocked"
+                budget = self.budgets.get(run["run_id"])
+                if budget is not None:
+                    budget.settle(run.get("budget_id", run["run_id"]), cost_picos=0)
                 self._publish(run)
         for run_id, run in self.runs.items():
             if run["status"] != "queued" or run_id in self.futures:
@@ -366,7 +456,9 @@ class Delegation:
             dependencies = [self.runs[dep]["status"] for dep in run["dependencies"]]
             if all(state == "succeeded" for state in dependencies):
                 paths = self._owned_paths(run)
-                if any(paths & self._owned_paths(self.runs[other]) for other, future in self.futures.items() if not future.done()):
+                if any(any(Path(left).is_relative_to(Path(right)) or Path(right).is_relative_to(Path(left))
+                           for left in paths for right in self._owned_paths(self.runs[other]))
+                       for other, future in self.futures.items() if not future.done()):
                     continue  # Queue overlapping ownership without occupying an execution slot.
                 self.futures[run_id] = self.pool.submit(self.contexts[run_id].copy().run, self._work, run_id)
                 self.futures[run_id].add_done_callback(lambda future: self._job_done())
@@ -381,8 +473,8 @@ class Delegation:
             self._schedule()
             self.changed.notify_all()
 
-    def _invoke(self, run, *, review=False, feedback=None):
-        return self.invoke(run, review=review, feedback=feedback, coordinator=self)
+    def _invoke(self, run, *, review=False, feedback=None, report_repair=False):
+        return self.invoke(run, review=review, feedback=feedback, report_repair=report_repair, coordinator=self)
 
     def _work(self, run_id):
         run = self.runs[run_id]
@@ -395,6 +487,11 @@ class Delegation:
         except Exception as exc:
             with self.lock:
                 run.update(status="cancelled" if self.cancelled[run_id].is_set() else "failed", error=str(exc))
+                budget = self.budgets.get(run_id)
+                if budget is not None:
+                    costs = [item.get("cost_picos") for item in run.get("usage", {}).values()]
+                    budget.settle(run.get("budget_id", run_id),
+                                  cost_picos=sum(costs) if costs and all(value is not None for value in costs) else (0 if not costs else None))
                 self._publish(run)
                 self._schedule()
 
@@ -408,11 +505,22 @@ class Delegation:
                 self._publish(run)
             for cycle in range(3):
                 self.check_cancelled(run_id)
-                result = self._invoke(run, feedback=run["reviews"][-1] if cycle else None)
-                self.check_cancelled(run_id)
-                worker_report = report(result["result"])
+                feedback = run["reviews"][-1] if cycle else None
+                report_attempts = []
+                for repair in range(3):
+                    result = self._invoke(run, feedback=feedback, report_repair=repair > 0)
+                    report_attempts.append(copy.deepcopy(result))
+                    self.check_cancelled(run_id)
+                    try:
+                        worker_report = report(result["result"])
+                        break
+                    except (ValueError, json.JSONDecodeError) as exc:
+                        if repair == 2:
+                            raise ValueError("Malformed delegated report after two repairs") from exc
+                        feedback = {"instruction": "Return only a valid JSON report with every required field. Do not call tools.",
+                                    "invalid_response": result.get("result", "")[:4000]}
                 with self.lock:
-                    run.setdefault("attempts", []).append(copy.deepcopy(result))
+                    run.setdefault("attempts", []).extend(report_attempts)
                     result["tool_records"] = [receipt for attempt in run["attempts"] for receipt in attempt.get("tool_records", [])]
                     result["evidence"] = [evidence for attempt in run["attempts"] for evidence in attempt.get("evidence", [])]
                     run.update(result=result, report=worker_report,
@@ -424,16 +532,40 @@ class Delegation:
                     with self.lock:
                         run["status"] = worker_report["status"]
                     break
-                review_result = self._invoke(run, review=True)
-                self.check_cancelled(run_id)
-                verdict = report(review_result["result"], review=True)
-                # A model's agreement is insufficient: the reviewer must actually inspect evidence.
-                checked = any(r.get("success") and r.get("action") in {
-                    "read_file", "read_webpage", "search_web", "git_diff", "git_show", "graph_query"
-                } for r in review_result.get("tool_records", []))
-                if verdict["verdict"] == "verified" and (not checked or not verdict["evidence"]):
-                    verdict.update(verdict="unverifiable", summary="Reviewer supplied no independent inspection evidence")
-                artifact_findings, artifact_checks = self._inspect_artifacts(run, review_result)
+                if not self._requires_review(run["assignment"]):
+                    verified = self._verify_read_only_result(run, worker_report, result)
+                    with self.lock:
+                        run["reviews"].append({
+                            "verdict": "verified" if verified else "unverifiable",
+                            "summary": "Parent validated scoped read receipts" if verified else
+                                "Read-only result did not bind its evidence to successful scoped receipts",
+                            "findings": [] if verified else ["Evidence was not independently bound to tool receipts"],
+                            "evidence": worker_report["evidence"] if verified else [],
+                            "reviewer": "parent-runtime",
+                            "verification": "receipt-bound-read-only",
+                        })
+                        if verified and worker_report["status"] == "completed":
+                            run["parent_receipts"] = self.on_verified(run)
+                            run["status"] = "succeeded"
+                        else:
+                            run.update(status="unverified", error="Read-only result did not pass parent verification")
+                        run["review_agent"]["status"] = "skipped" if verified else "unverifiable"
+                        self._publish(run)
+                    break
+                for inspection_attempt in range(3):
+                    review_result = self._invoke(run, review=True, feedback=feedback if inspection_attempt else None)
+                    self.check_cancelled(run_id)
+                    verdict = report(review_result["result"], review=True)
+                    checked = any(r.get("success") and r.get("action") in {
+                        "read_file",
+                    } for r in review_result.get("tool_records", []))
+                    if verdict["verdict"] == "verified" and (not checked or not verdict["evidence"]):
+                        verdict.update(verdict="unverifiable", summary="Reviewer supplied no independent inspection evidence")
+                    artifact_findings, artifact_checks = self._inspect_artifacts(run, review_result)
+                    if not artifact_findings or inspection_attempt == 2:
+                        break
+                    feedback = {"findings": artifact_findings,
+                                "instruction": "Verification requires independent tool inspection. Read every declared artifact and return a JSON review."}
                 if artifact_findings and verdict["verdict"] == "verified":
                     verdict.update(verdict="changes_requested", summary="Runtime artifact checks did not pass")
                     verdict["findings"].extend(artifact_findings)
@@ -460,17 +592,44 @@ class Delegation:
             with self.lock:
                 run = self.runs[run_id]
                 from .types import ProviderUnavailableError
+                error = (f"Malformed delegated report after two repairs: {exc}"
+                         if isinstance(exc, json.JSONDecodeError) else f"{type(exc).__name__}: {exc}")
                 run.update(status="cancelled" if self.cancelled[run_id].is_set() else
                            "blocked" if isinstance(exc, ProviderUnavailableError) else "failed",
-                           error=f"{type(exc).__name__}: {exc}")
+                           error=error)
                 if run["review_agent"]["status"] == "reviewing":
                     run["review_agent"].update(status=run["status"], error=run["error"])
         finally:
             with self.lock:
                 if self.cancelled[run_id].is_set():
                     run["status"] = "cancelled"
+                budget = self.budgets.get(run_id)
+                if budget is not None:
+                    costs = [item.get("cost_picos") for item in run.get("usage", {}).values()]
+                    total_cost = sum(costs) if costs and all(value is not None for value in costs) else None
+                    budget.settle(run.get("budget_id", run_id), cost_picos=total_cost)
                 self._publish(run)
                 self._schedule()
+
+    def _verify_read_only_result(self, run, worker_report, result):
+        if worker_report["status"] != "completed" or worker_report["artifacts"]:
+            return False
+        receipts = [item for item in result.get("tool_records", []) if item.get("success")]
+        scopes = [(self.root / value).resolve() for value in run["assignment"]["scope"]]
+        def in_scope(raw):
+            try:
+                path = Path(raw)
+                path = (path if path.is_absolute() else self.root / path).resolve()
+                return any(path == scope or path.is_relative_to(scope) for scope in scopes)
+            except (OSError, TypeError, ValueError):
+                return False
+        inspected = {item.get("receipt_id") for item in receipts if item.get("action") == "read_file"
+                     and in_scope((item.get("args") or {}).get("path") if isinstance(item.get("args"), dict) else
+                                  str(item.get("args", "")).split("|", 1)[0])}
+        evidence = worker_report["evidence"]
+        if not inspected or not evidence or not worker_report.get("checks"):
+            return False
+        return all(isinstance(item, dict) and item.get("receipt_id") in inspected for item in evidence)
 
     def _inspect_artifacts(self, run, review_result):
         findings, checks = [], []
@@ -534,6 +693,21 @@ class Delegation:
             review_messages = {review["session_id"]: [event["payload"]["message"] for event in message_events
                 if event["payload"].get("run_id") == review["session_id"]]
                 for review in self.runs[run_id]["reviews"] if review.get("session_id")}
+            child_sessions = {run_id, self.runs[run_id].get("budget_id", run_id)}
+            child_sessions.update(item.get("session_id") for item in self.runs[run_id].get("attempts", [])
+                                  if item.get("session_id"))
+            child_sessions.update(review.get("session_id") for review in self.runs[run_id]["reviews"]
+                                  if review.get("session_id"))
+            for child_session in child_sessions:
+                from .conversation import ConversationHistory
+                child_messages = ConversationHistory(
+                    self.memory.store, user_id=self.memory.user_id,
+                    workspace_id=self.memory.file_scope_id, session_id=child_session,
+                ).display_messages()
+                if child_session in {run_id, self.runs[run_id].get("budget_id", run_id)}:
+                    messages = child_messages
+                else:
+                    review_messages[child_session] = child_messages
             # ponytail: scan scoped events; add an indexed projection when long chats justify it.
             receipts = [event["payload"] for event in reversed(self.memory.store.list_events(
                 "subagent.receipt", limit=None, user_id=self.memory.user_id,
@@ -568,8 +742,9 @@ class Delegation:
                 self._schedule()
             return copy.deepcopy(self.runs[run_id])
 
-    def send(self, run_id, assignment):
+    def send(self, run_id, assignment, *, budget=None):
         brief = self._brief(assignment)
+        budget = budget or DelegationBudget()
         with self.lock:
             if run_id not in self.runs or self.runs[run_id]["status"] not in TERMINAL:
                 raise ValueError("Reuse requires a finished agent in this chat")
@@ -586,15 +761,20 @@ class Delegation:
             if any(assignment_key(other["assignment"]) == assignment_key(brief) and other["status"] not in TERMINAL
                    for key, other in self.runs.items() if key != run_id):
                 raise ValueError("Duplicate active assignment")
+            budget_id = f"{run_id}_followup_{uuid.uuid4().hex}"
+            budget.reserve(budget_id, review=self._requires_review(brief))
             run.update(assignment=brief, profile=brief.get("profile", run["profile"]),
+                       budget_id=budget_id,
                        assignment_id=brief.get("id", uuid.uuid4().hex),
                        status="queued", dependencies=[], corrections=0, reviews=[], attempts=[], parent_receipts=[])
+            run["usage"] = {}
             for field in ("report", "result", "progress"):
                 run.pop(field, None)
             run.pop("error", None)
             run["signature"] = signature
             run["review_agent"]["status"] = "waiting"
             self.contexts[run_id] = self.capture_context()
+            self.budgets[run_id] = budget
             if run_id not in self.messages:
                 self.messages[run_id] = self.detail(run_id)["messages"]
             self.cancelled[run_id].clear()
@@ -606,4 +786,4 @@ class Delegation:
     def close(self):
         for run in self.list():
             self.cancel(run["run_id"])
-        self.pool.shutdown(wait=False, cancel_futures=True)
+        self.pool.shutdown(wait=True, cancel_futures=True)

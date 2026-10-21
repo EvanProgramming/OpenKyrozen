@@ -30,11 +30,32 @@ def backend_fixture():
 
     class Provider(LLMProvider):
         def chat(self, messages, model=None):
-            from scripts.subagent_workflow_acceptance import Fixture, assignment
-            if messages[0]['content'].startswith('You are the specialised'):
-                if len(messages) == 2 and 'wait-for-cancellation' in messages[1]['content']:
+            from scripts.subagent_workflow_acceptance import assignment
+            delegated_task = next((str(item.get('content', '')) for item in messages
+                if 'sub-agent.' in str(item.get('content', '')).lower()), None)
+            if delegated_task is not None:
+                task_message = next((str(item.get('content', '')) for item in messages
+                    if item.get('role') == 'user' and '"objective"' in str(item.get('content', ''))
+                    and '"scope"' in str(item.get('content', ''))), delegated_task)
+                if 'wait-for-cancellation' in task_message:
                     time.sleep(8)
-                return Fixture().chat(messages, model)
+                value, _ = json.JSONDecoder().raw_decode(task_message[task_message.find('{'):])
+                review = 'Independently verify' in task_message
+                brief = value['assignment'] if review else value
+                path = brief['scope'][0]
+                inspected = any(f"read_file('{path}')" in str(item.get('content', ''))
+                                and ' returned:' in str(item.get('content', '')) for item in messages)
+                if not inspected:
+                    text = 'Action: ' + json.dumps({'action': 'read_file', 'args': path})
+                elif review:
+                    text = json.dumps({'verdict': 'verified', 'summary': 'Implementation independently inspected',
+                        'findings': [], 'evidence': ['Actual read_file receipt and invariant inspection']})
+                else:
+                    text = json.dumps({'status': 'completed', 'summary': 'Function preserves its invariant',
+                        'findings': ['Implementation matches specification'],
+                        'evidence': ['Actual read_file receipt and invariant inspection'], 'artifacts': [],
+                        'checks': ['Inspected actual implementation'], 'uncertainties': [], 'suggested_followups': []})
+                return text, None
             latest = next(item['content'] for item in reversed(messages) if item['role'] == 'user')
             if messages[0]['content'].startswith('Synthesize'):
                 text = 'Both delegated investigations have independent verification.'
