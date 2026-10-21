@@ -34,9 +34,16 @@ def _provider_timeout_seconds(self) -> float:
 
 def _child_cancellation(self):
     context = self.execution_context
+    cancelled = getattr(context, "cancelled", None)
+    child = None
     if context.child_run_id and context.coordinator:
-        return context.coordinator.cancelled.get(context.child_run_id)
-    return None
+        child = context.coordinator.cancelled.get(context.child_run_id)
+    if cancelled is not None and child is not None:
+        from openkyrozen.agent.turn import CancellationEvents
+        return CancellationEvents(cancelled, child)
+    if child is not None:
+        return child
+    return cancelled
 
 
 def _bounded_provider_call(self, callback: Any) -> Any:

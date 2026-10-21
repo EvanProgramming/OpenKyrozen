@@ -545,6 +545,9 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         while True:
             attempt += 1
             with self._delegation_tool_access(action, execution_args):
+                if self.execution_context.cancelled is not None and self.execution_context.cancelled.is_set():
+                    outcome = tool_failure("cancelled", "Tool call was cancelled before execution.")
+                    break
                 if callable(_pre_execution_check) and not _pre_execution_check():
                     outcome = tool_failure("cancelled", "Tool retry stopped because its task is no longer active.")
                     break

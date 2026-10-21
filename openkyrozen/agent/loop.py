@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from typing import Any
 from openkyrozen.tasks.engine import is_complete, is_terminal
 from openkyrozen.agent.modes import InteractionError, is_plan_acceptance
@@ -131,9 +132,31 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
                 )
             if backend := self._fast_used_backend.get():
                 reply = f"Applied routing advice from {'Jev' if backend == 'jev' else 'Kev'}.\n\n{reply}"
-        except Exception as exc:
+        except (Exception, KeyboardInterrupt, asyncio.CancelledError) as exc:
+            from openkyrozen.providers.errors import ProviderError, ProviderErrorKind
+            cancelled = (self.execution_context.cancelled is not None
+                         and self.execution_context.cancelled.is_set()) or isinstance(
+                             exc, (KeyboardInterrupt, asyncio.CancelledError)
+                         ) or (isinstance(exc, ProviderError) and exc.kind == ProviderErrorKind.CANCELLED)
+            if cancelled and active_plan:
+                for task_id in active_plan.get("working_task_ids", []):
+                    index = next((i for i, task in enumerate(self.tasks.tasks)
+                                  if task.get("id") == task_id), None)
+                    if index is not None and self.tasks.tasks[index].get("status") not in {"succeeded", "cancelled"}:
+                        self.tasks.set_status(index, "cancelled")
+                try:
+                    self._interaction_controller.complete_plan(
+                        active_plan, status="cancelled", task_manager=self.tasks,
+                    )
+                except Exception:
+                    pass
+            if cancelled:
+                self._publish_runtime_event("turn.effect_uncertain", {
+                    "reason": "cancelled_during_execution",
+                    "message": "Remote or already-dispatched side effects may still complete.",
+                })
             self._record_conversation_entry("turn.outcome", {
-                "status": "failed", "error_type": type(exc).__name__,
+                "status": "cancelled" if cancelled else "failed", "error_type": type(exc).__name__,
             })
             from openkyrozen.agent.compaction import is_context_digest, retain_context_digests
             display = conversation.display_messages()
@@ -142,9 +165,10 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
             projected = ([digest] if digest else []) + display
             self.short_term_memory = retain_context_digests(projected, limit)
             self.current_session.messages_compacted = bool(digest) or len(projected) > limit
-            if active_plan:
+            if active_plan and not cancelled:
                 self._interaction_controller.complete_plan(active_plan, status="failed")
-            self._track_fix_outcome(original_user_input, f"Turn failed: {type(exc).__name__}: {exc}")
+            if not cancelled:
+                self._track_fix_outcome(original_user_input, f"Turn failed: {type(exc).__name__}: {exc}")
             runtime.turn_end(reply="", success=False,
                              error=f"{type(exc).__name__}: {exc}", **context)
             raise

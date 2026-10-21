@@ -43,6 +43,8 @@ The success body contains `reply`, `session_id`, `profile`, `decision_assist`, `
 
 `POST /api/chat/stream` takes the same body and authorization as `/api/chat` and returns `text/event-stream`. Each event is one `data: <JSON>\n\n` record. Implementations may receive:
 
+An active foreground turn can be cancelled with `POST /api/chat/{session_id}/cancel`. The response reports whether an active turn accepted the cancellation request. Already-dispatched remote or external side effects may still complete; the session event journal records cancellation and that uncertainty.
+
 | `event` | Key data | Meaning |
 |---|---|---|
 | `content` | `chunk` | Plain response text delta; control/tool prefixes are filtered from user-visible chunks. |

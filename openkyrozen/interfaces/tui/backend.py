@@ -158,6 +158,8 @@ class Backend:
         if self._stopping.is_set():
             return
         self._stopping.set()
+        session = runtime.current_session
+        runtime.cancel_turn(session.session_id, user_id=session.memory.user_id)
         coordinator = getattr(runtime.subagent_manager, "coordinator", None)
         if coordinator:
             coordinator.close()

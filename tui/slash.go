@@ -19,6 +19,7 @@ var commands = []command{
 	{name: "agent", aliases: nil, description: "Switch auto, coder, or researcher mode"},
 	{name: "permissions", aliases: []string{"permission"}, description: "Choose Ask, protected full access, or full access"},
 	{name: "agents", description: "Inspect parallel agents, results, and independent reviews"},
+	{name: "cancel", aliases: nil, description: "Cancel the active foreground turn"},
 	{name: "new", aliases: nil, description: "Start a new chat in the current project"},
 	{name: "project", aliases: nil, description: "Create or open a directory as a new project chat"},
 	{name: "sessions", aliases: nil, description: "Show project and chat navigation"},

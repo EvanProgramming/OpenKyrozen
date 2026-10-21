@@ -316,12 +316,15 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator, report_repair
            "cite actual tool receipt IDs. Do not claim unsupported results.")
     )
     child.interaction.set_mode("ask" if review or report_repair else "agent")
+    from openkyrozen.agent.turn import CancellationEvents
     context = ExecutionContext(model=model, provider=provider, provider_config=config,
         capability_token=issue_capability_token("subagent:" + child_id, capabilities),
         child_run_id=run["run_id"], coordinator=coordinator,
         delegation_budget=coordinator.budgets.get(run["run_id"]),
         delegation_budget_run_id=run.get("budget_id", run["run_id"]),
-        delegation_tools=frozenset(tools), max_steps=profile.max_steps)
+        delegation_tools=frozenset(tools), max_steps=profile.max_steps,
+        cancelled=CancellationEvents(self.execution_context.cancelled,
+                                     coordinator.cancelled.get(run["run_id"])))
     turn_token = self._turn_context.set(context)
     state_token = self._active_context_state.set(ContextState(model, config.context_window_tokens))
     usage_token = self._active_usage_run_id.set(child_id)
