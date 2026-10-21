@@ -45,6 +45,13 @@ class ToolDiscoveryTests(unittest.TestCase):
             classic = self.agent._system_prompt(self.agent._agent_prompt_tools_list(self.config), self.config)
         self.assertLess(len(self.agent._system_prompt(before, self.config)), len(classic))
 
+    def test_native_prompt_allows_independent_calls_and_describes_ordering(self):
+        prompt = self.agent._system_prompt("read_file, list_dir, write_file", self.config, native_tools=True)
+        self.assertIn("multiple tool calls in one response", prompt)
+        self.assertIn("catalog-marked safe reads concurrently", prompt)
+        self.assertIn("other calls run in response order", prompt)
+        self.assertNotIn("Use one tool call at a time", prompt)
+
     def test_discovery_and_repairs_respect_config_token_and_modes(self):
         self.agent._execution_capability_token = issue_capability_token("test", frozenset({"read"}))
         catalog = self.agent._discover_tools("")
