@@ -1028,6 +1028,7 @@ class DelegationTests(unittest.TestCase):
             runtime._active_interaction_mode.reset(token)
         self.assertEqual([run["status"] for run in finished], ["succeeded", "blocked"], finished)
         self.assertIsNone(finished[0]["result"]["tool_records"][0]["task_id"])
+        self.assertEqual(finished[0]["result"]["tool_records"][0]["session_id"], finished[0]["run_id"])
         self.assertFalse((self.root/"second.txt").exists())
 
     def test_explicit_working_plan_task_id_reconciles_only_after_independent_review(self):

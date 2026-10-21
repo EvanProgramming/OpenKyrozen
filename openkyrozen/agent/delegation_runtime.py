@@ -311,7 +311,7 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
                 event["payload"].get("receipt_id")
                 for event in child.memory.store.list_events(
                     "execution.receipt", limit=None, user_id=child.memory.user_id,
-                    workspace_id=child.memory.workspace_id, session_id=child.memory.session_id,
+                    workspace_id=child.tasks.workspace_id, session_id=child.memory.session_id,
                 )
             }
             answer = self.chat(child, task, profile=role, approve=self._approval_callback.get())
@@ -320,7 +320,7 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
                 raise RuntimeError(answer)
             receipt_events = child.memory.store.list_events(
                 "execution.receipt", limit=None, user_id=child.memory.user_id,
-                workspace_id=child.memory.workspace_id, session_id=child.memory.session_id,
+                workspace_id=child.tasks.workspace_id, session_id=child.memory.session_id,
             )
             tool_records = [event["payload"] for event in receipt_events
                             if event["payload"].get("receipt_id") not in before_receipts]
