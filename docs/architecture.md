@@ -63,6 +63,11 @@ content-free component attribution, a stable-prefix fingerprint, newly introduce
 history, retransmission and duplicate-entry counts; provider-reported input totals
 remain separate from those estimates.
 
+Under context pressure, older complete native call/result groups keep their call
+identity while oversized result strings are shortened; the newest group remains
+intact. An accepted plan summary bound to the active Working Plan lives in fixed
+prompt state, so conversation compaction cannot discard its current bounds or tasks.
+
 ## Package responsibilities
 
 | Package | Responsibility |

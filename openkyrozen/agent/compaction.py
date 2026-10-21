@@ -234,6 +234,16 @@ def _tool_parts(message: dict[str, Any]) -> tuple[str, list[str]] | None:
     return prefix + marker, trailing.splitlines()
 
 
+def _compact_output(value: Any) -> Any:
+    if isinstance(value, str):
+        return value[:560] + " … [older tool output compacted] … " + value[-560:] if len(value) > 1_200 else value
+    if isinstance(value, dict):
+        return {key: _compact_output(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_compact_output(item) for item in value]
+    return value
+
+
 def compact_for_pressure(messages: list[Any], state: ContextState, summarize: Summarizer,
                          *, force: bool = False) -> CompactionResult:
     """Compact only under a declared-window pressure or an explicit overflow retry."""
@@ -250,17 +260,60 @@ def compact_for_pressure(messages: list[Any], state: ContextState, summarize: Su
         return CompactionResult(working)
 
     from openkyrozen.providers.models import ModelResponse, ToolReply
+
     if any(isinstance(item, (ModelResponse, ToolReply)) for item in working):
-        first_native = next(index for index, item in enumerate(working)
-                            if isinstance(item, (ModelResponse, ToolReply)))
+        # Compact old outputs in complete native call/result groups. Replacing only
+        # the payload preserves provider continuation structure and call correlation.
+        native_groups: list[list[int]] = []
+        pending: list[int] | None = None
+        for index, item in enumerate(working):
+            if isinstance(item, ModelResponse) and item.tool_calls:
+                # An unfinished earlier group is not safe to compact.
+                pending = [index]
+            elif isinstance(item, ToolReply) and pending is not None:
+                pending.append(index)
+                expected = working[pending[0]]
+                if len(pending) - 1 == len(expected.tool_calls):
+                    replies = [working[position] for position in pending[1:]]
+                    expected_names = {call.id: call.name for call in expected.tool_calls}
+                    if ({reply.call_id for reply in replies} == set(expected_names)
+                            and len(replies) == len({reply.call_id for reply in replies})
+                            and all(expected_names[reply.call_id] == reply.name for reply in replies)):
+                        native_groups.append(pending)
+                    pending = None
+        if pending:
+            native_groups.append(pending)
+
+        compacted = False
+        details: dict[str, Any] = {"status": "not_needed"}
+        for group in native_groups[:-1]:
+            if not all(isinstance(working[index], (ModelResponse, ToolReply)) for index in group):
+                continue
+            for index in group:
+                item = working[index]
+                if not isinstance(item, ToolReply):
+                    continue
+                output = item.output
+                if len(str(output)) <= 1_200:
+                    continue
+                working[index] = ToolReply(item.call_id, item.name, _compact_output(output), item.is_error)
+                compacted = True
+        if compacted:
+            details = {"status": "trimmed", "kind": "tool_results"}
+
+        # Preserve legacy text history ahead of native groups, but first shrink old
+        # oversized tool receipts so recent reasoning has the available budget.
+        first_native = next((index for index, item in enumerate(working)
+                             if isinstance(item, (ModelResponse, ToolReply))), len(working))
         prefix = compact_for_pressure(working[:first_native], state, summarize, force=force)
         working = prefix.messages + working[first_native:]
-        status = state.update(working, compaction=state.status.get("compaction"))
-        if prefix.impossible or under_pressure(status):
-            status["compaction"] = {"status": "native_history_cannot_be_compacted_safely"}
-            return CompactionResult(working, compacted=prefix.compacted,
+        status = state.update(working, compaction=details)
+        if under_pressure(status):
+            status["compaction"] = {"status": "fixed_context_too_large"}
+            return CompactionResult(working, compacted=compacted or prefix.compacted,
                                     history_digest=prefix.history_digest, impossible=True)
-        return CompactionResult(working, compacted=prefix.compacted, history_digest=prefix.history_digest)
+        return CompactionResult(working, compacted=compacted or prefix.compacted,
+                                history_digest=prefix.history_digest)
 
     non_system = [item for item in working if item.get("role") != "system" and not is_context_digest(item)]
     tracked_history = [item for item in non_system if id(item) in state.history_message_ids]
