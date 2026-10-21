@@ -557,17 +557,24 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                             document["status"] = "blocked_budget_reservation"
                             _write_checkpoint(output, budget_path, document)
                             break
-                    if relay.budget_blocked:
+                        if relay.provider_error:
+                            document["status"] = "blocked_provider_error"
+                            document["provider_error"] = relay.provider_error
+                            _write_checkpoint(output, budget_path, document)
+                            break
+                    if relay.budget_blocked or relay.provider_error:
                         break
-                if relay.budget_blocked:
+                if relay.budget_blocked or relay.provider_error:
                     break
         finally:
             relay.close()
     summary = summarize(rows)
     report = {"protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
               "baseline_sha": BASELINE, "model": MODEL, "pricing": PRICING,
-              "status": "blocked_budget_reservation" if relay.budget_blocked else
+              "status": "blocked_provider_error" if relay.provider_error else
+                        "blocked_budget_reservation" if relay.budget_blocked else
                         "complete" if summary["complete"] and summary["accounting_complete"] else "incomplete",
+              "provider_error": relay.provider_error,
               "summary": summary,
               "rows": rows, "budget": {"spent_rmb": str(budget.spent_rmb),
                                       "remaining_rmb": str(budget.remaining_rmb),

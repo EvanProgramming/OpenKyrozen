@@ -27,6 +27,7 @@ class ResponsesRelay:
         self.label = ("", "", -1)
         self.rows: list[dict] = []
         self.budget_blocked = False
+        self.provider_error: str | None = None
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -85,6 +86,9 @@ class ResponsesRelay:
                 if self.headers.get("Authorization") != "Bearer " + relay.client_key:
                     self._json(401, {"error": {"message": "invalid benchmark relay credential"}})
                     return
+                if relay.provider_error:
+                    self._json(503, {"error": {"message": "benchmark provider is disabled after an upstream error"}})
+                    return
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     if not 0 < length <= MAX_REQUEST_BYTES:
@@ -131,6 +135,7 @@ class ResponsesRelay:
                     if upstream.status_code != 200:
                         relay.budget.settle(attempt_id, None)
                         row["status"] = "unknown"
+                        relay.provider_error = f"upstream_http_{upstream.status_code}"
                         upstream.close()
                         self._json(upstream.status_code if 400 <= upstream.status_code < 600 else 502,
                                    {"error": {"message": f"benchmark upstream returned HTTP {upstream.status_code}"}})

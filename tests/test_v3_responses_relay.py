@@ -27,6 +27,7 @@ class V3ResponsesRelayTests(unittest.TestCase):
             usage = {"input_tokens": 12, "output_tokens": 4,
                      "input_tokens_details": {"cached_tokens": 3},
                      "cache_creation_input_tokens": 2}
+            http_status = 200
 
             def log_message(self, *_args):
                 pass
@@ -43,7 +44,7 @@ class V3ResponsesRelayTests(unittest.TestCase):
                     }) + delimiter[0]).encode()
                 else:
                     payload = json.dumps({"id": "response-fixture", "output": [], "usage": self.usage}).encode()
-                self.send_response(200)
+                self.send_response(self.http_status)
                 self.send_header("Content-Type", "text/event-stream" if request.get("stream") else "application/json")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
@@ -91,6 +92,23 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(self.received, [])
         self.assertEqual(self.budget.spent_rmb, 0)
+
+    def test_upstream_error_holds_reservation_and_disables_further_forwarding(self):
+        self.upstream.RequestHandlerClass.http_status = 400
+        headers = {"Authorization": "Bearer " + self.relay.client_key}
+        response = requests.post(self.relay.url + "/responses", json={
+            "model": MODEL, "input": [{"role": "user", "content": "fixture"}],
+        }, headers=headers, timeout=3)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.relay.provider_error, "upstream_http_400")
+        self.assertEqual(self.relay.rows[0]["status"], "unknown")
+        remaining = self.budget.remaining_rmb
+        blocked = requests.post(self.relay.url + "/responses", json={
+            "model": MODEL, "input": [{"role": "user", "content": "retry"}],
+        }, headers=headers, timeout=3)
+        self.assertEqual(blocked.status_code, 503)
+        self.assertEqual(len(self.received), 1)
+        self.assertEqual(self.budget.remaining_rmb, remaining)
 
     def test_preserves_nonstreaming_native_tool_request_shape(self):
         response = requests.post(self.relay.url + "/responses", json={
