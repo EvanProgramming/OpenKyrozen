@@ -26,7 +26,9 @@ def _execute_action_rounds(self, turn):
     turn.tool_results_text = "\n".join(all_tool_result_lines)
 
     # Unified multi-step loop - always runs, can handle early errors
-    round_limit = self.MAX_STEPS_PER_TURN
+    round_limit = getattr(self.execution_context, "max_steps", None)
+    if round_limit is None:
+        round_limit = self.MAX_STEPS_PER_TURN
     round_count = 0
     turn.final_answer: str | None = None
     turn.pending_interaction_reply: str | None = None

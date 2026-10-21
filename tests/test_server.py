@@ -366,7 +366,7 @@ class ServerBoundaryTests(unittest.TestCase):
                     self.assertTrue(allowed.json()["tool_receipts"][0]["success"])
                     self.assertEqual(denied.status_code, 200, denied.text)
                     self.assertFalse((root / "denied.txt").exists())
-                    self.assertEqual(denied.json()["status"], "failed")
+                    self.assertEqual(denied.json()["status"], "blocked")
                     self.assertEqual(denied.json()["tool_receipts"], [])
                     runs = client.get("/api/v2/agents/runs", params={"session_id": "delegation-api-test"})
                     self.assertEqual(len(runs.json()["agents"]), 2)

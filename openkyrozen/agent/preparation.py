@@ -106,7 +106,8 @@ def _prepare_turn(self, turn):
     if turn.clear_tasks and turn.interaction_mode == "agent":
         self.tasks.clear()
 
-    turn.fix_workflow = self._prepare_fix_workflow(turn.user_input) if turn.interaction_mode == "agent" else None
+    turn.fix_workflow = (self._prepare_fix_workflow(turn.user_input)
+                         if turn.interaction_mode == "agent" and not self.execution_context.child_run_id else None)
 
     if self.llm_provider is not None:
         turn.memory_packet = self._build_memory_context(

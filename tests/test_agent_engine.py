@@ -212,8 +212,8 @@ class AgentEngineTests(unittest.TestCase):
             continuation=provider_continuation(provider, "model-1", "fake", {"id": "response-1"}),
         )
         runtime = SimpleNamespace(
-            execution_context=SimpleNamespace(provider=provider), llm_provider=None, DEEPSEEK_MODEL="model-1",
-            MAX_STEPS_PER_TURN=0, _record_foreground_model=contextvars.ContextVar("record", default=False),
+            execution_context=SimpleNamespace(provider=provider, max_steps=0), llm_provider=None, DEEPSEEK_MODEL="model-1",
+            MAX_STEPS_PER_TURN=2, _record_foreground_model=contextvars.ContextVar("record", default=False),
             _conversation_turn_id=contextvars.ContextVar("turn_id", default=None),
             _last_response_is_native=contextvars.ContextVar("native", default=False),
             _last_prompt_tokens=0, _last_completion_tokens=0,

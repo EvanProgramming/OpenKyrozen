@@ -197,7 +197,7 @@ def cancel_subagent(self, args):
     return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
 
 
-def _invoke_delegated(self, run, *, review, feedback, coordinator):
+def _invoke_delegated(self, run, *, review, feedback, coordinator, report_repair=False):
     parent = self.current_session
     brief = run["assignment"]
     role = "reviewer" if review else run["profile"]
@@ -244,7 +244,7 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
             run["provider_model"] = f"{provider_name}:{model}"
         coordinator._publish(run)
     provider = self.get_provider(config)  # No implicit cross-provider fallback.
-    child_id = run["run_id"] + ("_review_" + uuid.uuid4().hex if review else "")
+    child_id = run.get("budget_id", run["run_id"]) + ("_review_" + uuid.uuid4().hex if review else "")
     adapters = self.workspace_factory(root=coordinator.root)
     workspace = WorkspaceState(str(coordinator.root), adapters, parent.workspace.launch_context,
                                parent.workspace.graph, parent.workspace.github)
@@ -256,18 +256,40 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
     capabilities &= effective_capabilities(load_agent_config(coordinator.root))
     if review or self._active_interaction_mode.get() in {"ask", "plan"}:
         capabilities &= resolve_capabilities("readonly")
-    tools = allowed_tool_names(adapters.AVAILABLE_TOOLS, ",".join(capabilities)) - set(TOOLS)
+    tools = (allowed_tool_names(adapters.AVAILABLE_TOOLS, ",".join(capabilities)) - set(TOOLS)) if not report_repair else set()
     child._delegation_parent = parent
     child._delegation_task_id = brief.get("task_id") if not review else None
     profile = replace(profile, metadata={**profile.metadata, "structured": True, "review": review,
         "display_name": run["reviewer"] if review else run["name"], "assignment": brief,
         "artifacts": copy.deepcopy(run.get("report", {}).get("artifacts", [])) if review else []})
+    allowed_artifacts = {(coordinator.root / path).resolve() for path in run["assignment"]["scope"]}
+    for record in run.get("result", {}).get("tool_records", []):
+        if record.get("success") and record.get("action") == "read_file":
+            args = record.get("arguments") or record.get("args") or {}
+            if isinstance(args, str):
+                try: args = json.loads(args)
+                except json.JSONDecodeError: args = {"path": args.split("|", 1)[0]}
+            path = args.get("path") if isinstance(args, dict) else None
+            if path:
+                allowed_artifacts.add((coordinator.root / path).resolve())
+        if record.get("success") and record.get("action") in {"write_file", "edit_file", "apply_patch"}:
+            args = record.get("args") or {}
+            if isinstance(args, str):
+                try: args = json.loads(args)
+                except json.JSONDecodeError: args = {"path": args.split("|", 1)[0]}
+            path = args.get("path") if isinstance(args, dict) else None
+            if path:
+                allowed_artifacts.add((coordinator.root / path).resolve())
     child._delegation_review_artifacts = [
         item if isinstance(item, str) else item.get("path", "")
         for item in profile.metadata["artifacts"]
         if isinstance(item, str) or isinstance(item, dict) and item.get("path")
     ] if review else []
-    task = ("Independently verify this assignment and submitted result. Read actual evidence with tools. "
+    child._delegation_review_artifacts = [path for path in child._delegation_review_artifacts
+        if any((coordinator.root / path).resolve() == allowed or
+               (coordinator.root / path).resolve().is_relative_to(allowed)
+               for allowed in allowed_artifacts)]
+    task = ("Independently verify this assignment and submitted result. Read actual source evidence and every declared artifact with tools. "
             "Independently read every declared artifact, including references outside the assignment's scope. "
             "Find incorrect claims, missing acceptance checks, and regressions. Do not trust an author's success claim. "
             "Check each asserted affected input against the source and language/library semantics; a plausible example is not a reproduced check. "
@@ -275,8 +297,14 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
             + json.dumps({"assignment": brief, "submitted": run.get("report"),
                           "receipts": [{key: item for key, item in receipt.items() if key != "result"}
                               for receipt in run.get("result", {}).get("tool_records", [])]}, ensure_ascii=False)) if review else json.dumps(brief, ensure_ascii=False)
+    if report_repair:
+        task = ("Convert the previous response into the required JSON report. Do not call tools or add claims.\n"
+                + json.dumps({"assignment": brief,
+                              "previous_response": feedback.get("invalid_response", "") if isinstance(feedback, dict) else ""},
+                             ensure_ascii=False))
     if feedback:
-        task += "\nCorrect these review findings and return an updated report:\n" + json.dumps(feedback, ensure_ascii=False)
+        task += ("\nReturn a corrected JSON report using only the supplied response.\n" if report_repair else
+                 "\nCorrect these review findings and return an updated report:\n") + json.dumps(feedback, ensure_ascii=False)
     task = (
         f"You are the {role} sub-agent. {profile.system_prompt}\n\n"
         + task + "\n\n"
@@ -287,13 +315,13 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
            "artifacts, checks, uncertainties, and suggested_followups. Completed requires checked acceptance criteria; "
            "cite actual tool receipt IDs. Do not claim unsupported results.")
     )
-    child.interaction.set_mode("ask" if review else "agent")
+    child.interaction.set_mode("ask" if review or report_repair else "agent")
     context = ExecutionContext(model=model, provider=provider, provider_config=config,
         capability_token=issue_capability_token("subagent:" + child_id, capabilities),
         child_run_id=run["run_id"], coordinator=coordinator,
         delegation_budget=coordinator.budgets.get(run["run_id"]),
         delegation_budget_run_id=run.get("budget_id", run["run_id"]),
-        delegation_tools=frozenset(tools))
+        delegation_tools=frozenset(tools), max_steps=profile.max_steps)
     turn_token = self._turn_context.set(context)
     state_token = self._active_context_state.set(ContextState(model, config.context_window_tokens))
     usage_token = self._active_usage_run_id.set(child_id)
@@ -316,8 +344,6 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
             }
             answer = self.chat(child, task, profile=role, approve=self._approval_callback.get())
             answer = answer.split("\n\nTool status:", 1)[0].split("\n\nPlan status:", 1)[0]
-            if answer.startswith("Native model request failed:"):
-                raise RuntimeError(answer)
             receipt_events = child.memory.store.list_events(
                 "execution.receipt", limit=None, user_id=child.memory.user_id,
                 workspace_id=child.tasks.workspace_id, session_id=child.memory.session_id,
@@ -326,6 +352,8 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator):
                             if event["payload"].get("receipt_id") not in before_receipts]
             for receipt in tool_records:
                 coordinator.record_receipt(run["run_id"], child_id, receipt)
+            if answer.startswith("Native model request failed:"):
+                raise RuntimeError(answer)
             result = {
                 "result": answer,
                 "session_id": child_id,

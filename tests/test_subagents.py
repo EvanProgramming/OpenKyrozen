@@ -24,6 +24,60 @@ from openkyrozen.agent.delegation import WorkspaceAccess
 
 
 class SubAgentTests(unittest.TestCase):
+    def test_nested_directory_claims_serialize(self):
+        from openkyrozen.agent.delegation import WorkspaceAccess
+
+        access = WorkspaceAccess()
+        parent = threading.Event()
+        nested = threading.Event()
+        release = threading.Event()
+
+        def hold_parent():
+            with access.claim(["/workspace/src"], "parent", lambda: False):
+                parent.set()
+                release.wait(2)
+
+        def claim_nested():
+            with access.claim(["/workspace/src/pkg"], "nested", lambda: False):
+                nested.set()
+
+        first = threading.Thread(target=hold_parent)
+        second = threading.Thread(target=claim_nested)
+        first.start()
+        self.assertTrue(parent.wait(1))
+        second.start()
+        self.assertFalse(nested.wait(.05))
+        release.set()
+        first.join(1)
+        second.join(1)
+        self.assertTrue(nested.is_set())
+
+    def test_directory_claim_waits_for_exclusive_workspace_access(self):
+        access = WorkspaceAccess()
+        exclusive = threading.Event()
+        claimed = threading.Event()
+        release = threading.Event()
+
+        def hold_workspace():
+            with access.acquire(cancelled=lambda: False):
+                exclusive.set()
+                release.wait(2)
+
+        def claim_path():
+            with access.claim(["/workspace/src"], "child", lambda: False):
+                claimed.set()
+
+        first = threading.Thread(target=hold_workspace)
+        second = threading.Thread(target=claim_path)
+        first.start()
+        self.assertTrue(exclusive.wait(1))
+        second.start()
+        self.assertFalse(claimed.wait(.05))
+        release.set()
+        first.join(1)
+        second.join(1)
+        self.assertTrue(claimed.is_set())
+
     def test_delegation_budget_reserves_children_and_reviewers_within_turn_cap(self):
         from openkyrozen.agent.delegation import DelegationBudget
 
@@ -44,7 +98,7 @@ class SubAgentTests(unittest.TestCase):
         budget.reserve("child-a", review=False)
         budget.settle("child-a", cost_picos=None)
         self.assertEqual(budget.remaining_picos, 900_000_000_000)
-        self.assertFalse(budget.can_continue("child-a", cost_picos=0))
+        self.assertTrue(budget.can_continue("child-a", cost_picos=0))
 
     def test_unused_blocked_assignment_releases_reservation(self):
         from openkyrozen.agent.delegation import DelegationBudget
@@ -74,10 +128,13 @@ class SubAgentTests(unittest.TestCase):
 
         run = {"assignment": {"scope": ["source.py"]}}
         report = {"status": "completed", "artifacts": [], "evidence": [{"receipt_id": "read-1"}]}
-        result = {"tool_records": [{"receipt_id": "read-1", "action": "read_file", "success": True}]}
-        self.assertTrue(Delegation._verify_read_only_result(run, report, result))
+        result = {"tool_records": [{"receipt_id": "read-1", "action": "read_file", "args": {"path": "source.py"}, "success": True}]}
+        report["checks"] = ["source.py inspected"]
+        policy = object.__new__(Delegation)
+        policy.root = Path.cwd()
+        self.assertTrue(policy._verify_read_only_result(run, report, result))
         result["tool_records"][0]["success"] = False
-        self.assertFalse(Delegation._verify_read_only_result(run, report, result))
+        self.assertFalse(policy._verify_read_only_result(run, report, result))
 
     def test_rejected_subagent_record_uses_persisted_receipt_id(self):
         profile = AgentProfile("coder", "test", "full")

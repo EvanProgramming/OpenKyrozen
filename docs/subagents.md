@@ -72,6 +72,9 @@ singleton gets a reviewer. The reviewer receives the assignment, submitted
 result and receipt references, and must independently inspect evidence. A
 `verified` report without a successful inspection tool receipt and supporting
 evidence becomes `unverifiable`.
+Reviewer access to declared file artifacts is limited to the worker's assigned
+paths and paths covered by successful worker write receipts. A report cannot
+grant review access to arbitrary workspace files by naming them as artifacts.
 Review verdicts are `verified`, `changes_requested`, or `unverifiable`.
 Reviewers must independently read every declared artifact. A missed read gets
 two bounded inspection reminders in that review context before the runtime

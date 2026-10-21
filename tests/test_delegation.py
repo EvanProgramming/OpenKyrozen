@@ -285,7 +285,7 @@ class DelegationTests(unittest.TestCase):
                 return json.dumps(reviewed()), None
         runtime.get_provider = lambda _: Provider()
         coordinator = runtime.delegation()
-        coordinator.spawn([brief()])
+        coordinator.spawn([brief(scope=["marker.txt", "delivered.txt"])])
         finished = coordinator.wait(timeout=5)[0]
         self.assertEqual(finished["status"], "succeeded", {key: finished.get(key) for key in
             ("status", "error", "progress", "reviews", "report")})
@@ -336,7 +336,8 @@ class DelegationTests(unittest.TestCase):
             if not review and int(run["assignment_id"]) < 4:
                 barrier.wait(timeout=3)
             return {"result": reviewed() if review else result(evidence=[{"receipt_id": run["run_id"]}]),
-                    "tool_records": [{"receipt_id": run["run_id"], "action": "read_file", "success": True}]}
+                    "tool_records": [{"receipt_id": run["run_id"], "action": "read_file",
+                                      "args": {"path": run["assignment"]["scope"][0]}, "success": True}]}
         coordinator = self.manager(invoke)
         agents, finished = [], []
         for start in range(0, 25, 10):
@@ -362,7 +363,8 @@ class DelegationTests(unittest.TestCase):
             if review:
                 completed.add(run["assignment_id"])
             return {"result": reviewed() if review else result(evidence=[{"receipt_id": run["run_id"]}]),
-                    "tool_records": [{"receipt_id": run["run_id"], "action": "read_file", "success": True}]}
+                    "tool_records": [{"receipt_id": run["run_id"], "action": "read_file",
+                                      "args": {"path": "marker.txt"}, "success": True}]}
         coordinator = self.manager(invoke, 1)
         with self.assertRaisesRegex(ValueError, "Cyclic"):
             coordinator.spawn([brief(0, dependencies=["1"]), brief(1, dependencies=["0"])])
@@ -717,12 +719,30 @@ class DelegationTests(unittest.TestCase):
         run = coordinator.wait(timeout=5)[0]
         self.assertEqual(run["status"], "failed")
         self.assertIn("two repairs", run["error"])
-        self.assertEqual(len(self.calls), 4)
+        self.assertEqual(len(self.calls), 6)
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "", "KYROZEN_API_KEY": "main-only"}):
             run = coordinator.spawn([brief(1, provider="anthropic")])[0]
             finished = coordinator.wait([run["run_id"]], 5)[0]
         self.assertEqual(finished["status"], "blocked")
         self.assertIn("Missing credentials", finished["error"])
+
+    def test_report_repair_keeps_receipts_from_the_malformed_response(self):
+        def invoke(run, review, report_repair=False, **kwargs):
+            if review:
+                return {"result": json.dumps(reviewed()), "tool_records": [
+                    {"receipt_id": "review-read", "action": "read_file", "args": {"path": "marker.txt"}, "success": True}]}
+            if report_repair:
+                return {"result": json.dumps(result(evidence=[{"receipt_id": "repair-read"}])), "tool_records": [
+                    {"receipt_id": "repair-read", "action": "read_file", "args": {"path": "marker.txt"}, "success": True}]}
+            return {"result": "not json", "tool_records": [
+                {"receipt_id": "first-read", "action": "read_file", "args": {"path": "marker.txt"}, "success": True}]}
+
+        coordinator = self.manager(invoke)
+        coordinator.spawn([brief(profile="coder")])
+        run = coordinator.wait(timeout=5)[0]
+        self.assertEqual(run["status"], "succeeded", run)
+        self.assertEqual({item["receipt_id"] for item in run["result"]["tool_records"]},
+                         {"first-read", "repair-read"})
 
     def test_cancel_during_provider_call_prevents_late_write(self):
         entered, release = threading.Event(), threading.Event()
@@ -815,7 +835,8 @@ class DelegationTests(unittest.TestCase):
             if not review and run["assignment_id"] == "2":
                 independent.set()
             return {"result": reviewed() if review else result(evidence=[{"receipt_id": run["run_id"]}]),
-                    "tool_records": [{"receipt_id": run["run_id"], "action": "read_file", "success": True}]}
+                    "tool_records": [{"receipt_id": run["run_id"], "action": "read_file",
+                                      "args": {"path": run["assignment"]["scope"][0]}, "success": True}]}
         coordinator = self.manager(invoke, concurrency=2)
         try:
             runs = coordinator.spawn([brief(0, profile="coder"), brief(1, profile="coder"),

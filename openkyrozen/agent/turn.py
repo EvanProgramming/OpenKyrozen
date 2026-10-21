@@ -52,6 +52,7 @@ class ExecutionContext:
     delegation_budget: Any = None
     delegation_budget_run_id: str | None = None
     delegation_tools: frozenset[str] | None = None
+    max_steps: int | None = None
 
 
 def scoped_turn(function):
