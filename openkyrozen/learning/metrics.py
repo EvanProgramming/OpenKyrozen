@@ -14,10 +14,18 @@ def status(self, limit: int = 100, *, profile: str | None = None,
         proposals = [item for item in proposals if item.get("validation", {}).get("profile") == profile]
     enriched = []
     skills = self.registry.list() if self.registry else []
+    completed = {event["payload"].get("run_id"): event["payload"] for event in self.store.list_events(
+        "learning.run_completed", limit=10000, workspace_id=self.memory.workspace_id)}
     for proposal in proposals:
         skill_id = proposal.get("validation", {}).get("skill_id")
         skill = next((item for item in skills if item["id"] == skill_id), None)
         outcomes = self._artifact_outcomes(skill_id) if skill_id else []
+        verified = [item for item in outcomes if item.get("verified")]
+        successful = [item for item in verified if item.get("success")]
+        measured = [completed[item.get("run_id")] for item in outcomes
+                    if item.get("run_id") in completed]
+        token_values = [int(item["tokens"]) for item in measured if item.get("tokens") is not None]
+        latency_values = [float(item["latency"]) for item in measured if item.get("latency") is not None]
         enriched.append({**proposal,
                          "profile": proposal.get("validation", {}).get("profile"),
                          "lifecycle_stage": skill.get("status") if skill else proposal.get("status"),
@@ -27,12 +35,23 @@ def status(self, limit: int = 100, *, profile: str | None = None,
                                                 "correction": item.get("correction"),
                                                 "source": item.get("source")} for item in outcomes[-5:]],
                          "artifact_metrics": {
-                             "verified_uses": len([item for item in outcomes if item.get("verified")]),
-                             "successful_uses": len([item for item in outcomes
-                                                     if item.get("verified") and item.get("success")]),
-                             "failed_uses": len([item for item in outcomes
-                                                 if item.get("verified") and not item.get("success")]),
+                             "uses": len(outcomes),
+                             "verified_uses": len(verified),
+                             "verification_rate": len(verified) / len(outcomes) if outcomes else None,
+                             "successful_uses": len(successful),
+                             "task_success_rate": len(successful) / len(verified) if verified else None,
+                             "failed_uses": len([item for item in verified if not item.get("success")]),
                              "corrections": len([item for item in outcomes if item.get("correction")]),
+                             "regression_rate": (len([item for item in verified if not item.get("success")])
+                                                 / len(verified) if verified else None),
+                             "measured_runs": len(measured), "eligible_runs": sum(bool(item.get("eligible")) for item in measured),
+                             "tokens": sum(token_values),
+                             "mean_tokens": sum(token_values) / len(token_values) if token_values else None,
+                             "mean_latency_seconds": (sum(latency_values) / len(latency_values)
+                                                      if latency_values else None),
+                             "tool_calls": sum(int(item.get("tool_calls", 0)) for item in measured),
+                             "repeated_error_rate": (sum(int(item.get("errors", 0)) > 1 for item in measured)
+                                                     / len(measured) if measured else None),
                          }})
     return enriched
 

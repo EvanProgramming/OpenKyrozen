@@ -194,6 +194,7 @@ class AgentRuntime:
         _research_acceptance,
         _with_learning_notices,
         _finish_learning_run,
+        _schedule_post_turn_learning,
         _review_evolution_runs,
     )
 

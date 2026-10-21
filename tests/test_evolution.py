@@ -2,10 +2,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from openkyrozen.learning.engine import LearningEngine
 from openkyrozen.app.bootstrap import build_memory as MemoryBank
 from openkyrozen.skills.registry import SkillRegistry
+from openkyrozen.learning.evolution import _schedule_post_turn_learning
 
 
 BODY = """# Pytest recovery
@@ -33,6 +36,59 @@ class EvolutionTests(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
+    def test_post_turn_dispatch_uses_background_executor_and_records_failure(self):
+        dispatch = Mock()
+        record = Mock()
+        runtime = SimpleNamespace(
+            _technology_executor=SimpleNamespace(submit=Mock()),
+            _EXECUTION_SURFACE="test", dispatch_learning_cycle=dispatch,
+            _record_learning_event=record,
+        )
+
+        _schedule_post_turn_learning(runtime, "use Orionlib")
+
+        args, kwargs = runtime._technology_executor.submit.call_args
+        dispatch.assert_not_called()
+        args[0](args[1])
+        dispatch.assert_called_once_with(
+            surface="test", trigger="post-turn", max_features=3, user_input="use Orionlib",
+            feature_names=(
+                "detect_user_preferences", "auto_patch_technology", "skill_composition",
+            ),
+        )
+        self.assertEqual(kwargs, {})
+
+    def test_post_turn_dispatch_failure_is_recorded(self):
+        dispatch = Mock(side_effect=RuntimeError("background failure"))
+        record = Mock()
+        runtime = SimpleNamespace(
+            _technology_executor=SimpleNamespace(submit=Mock()),
+            _EXECUTION_SURFACE="test", dispatch_learning_cycle=dispatch,
+            _record_learning_event=record,
+        )
+
+        _schedule_post_turn_learning(runtime, "use Orionlib")
+        args, _ = runtime._technology_executor.submit.call_args
+        args[0](args[1])
+
+        record.assert_called_once_with("learning.dispatch_failed", {
+            "trigger": "post-turn", "reason": "RuntimeError",
+        })
+
+    def test_post_turn_dispatch_submission_failure_is_recorded(self):
+        record = Mock()
+        runtime = SimpleNamespace(
+            _technology_executor=SimpleNamespace(submit=Mock(side_effect=RuntimeError)),
+            _EXECUTION_SURFACE="test", dispatch_learning_cycle=Mock(),
+            _record_learning_event=record,
+        )
+
+        _schedule_post_turn_learning(runtime, "use Orionlib")
+
+        record.assert_called_once_with("learning.dispatch_failed", {
+            "trigger": "post-turn", "reason": "RuntimeError",
+        })
+
     def _candidate(self):
         return self.engine.propose_artifact("source-run", {
             "name": "pytest-recovery", "description": "Recover recurring Python test failures",
@@ -52,14 +108,32 @@ class EvolutionTests(unittest.TestCase):
         self._pass_replay(candidate)
         self.assertEqual(self.registry.match("researcher", "research pytest history"), [])
 
-        for _ in range(2):
+        for index in range(2):
             run = self.engine.begin_run("coder", "run pytest tests")
             _, receipts = self.engine.artifact_context(run)
             self.assertEqual([item["skill_id"] for item in receipts], [candidate["skill_id"]])
+            self.engine.complete_run(run, result="tests passed", receipts=receipts,
+                                     tools=[{"success": True}], tokens=100 + index,
+                                     latency=0.5 + index, eligible=True)
             changes = self.engine.record_outcome(run, receipts, verified=True, success=True)
 
         self.assertIn("Promoted", changes[0])
         self.assertEqual(next(item for item in self.registry.list() if item["id"] == candidate["skill_id"])["status"], "active")
+        card = self.engine.evidence_card(candidate["proposal_id"])
+        artifact = next(item for item in self.registry.list() if item["id"] == candidate["skill_id"])
+        self.assertEqual(card["source_evidence"], ["source-run"])
+        self.assertEqual(card["confidence"], 0.9)
+        self.assertEqual(card["artifact"], {
+            "skill_id": candidate["skill_id"], "version": artifact["version"],
+            "content_hash": receipts[0]["content_hash"], "status": "active",
+        })
+        self.assertEqual(card["metrics"]["verified_uses"], 2)
+        self.assertEqual(card["metrics"]["successful_uses"], 2)
+        self.assertEqual(card["metrics"]["verification_rate"], 1.0)
+        self.assertEqual(card["metrics"]["task_success_rate"], 1.0)
+        self.assertEqual(card["metrics"]["tokens"], 201)
+        self.assertEqual(card["metrics"]["mean_latency_seconds"], 1.0)
+        self.assertEqual(card["metrics"]["regression_rate"], 0.0)
 
         run = self.engine.begin_run("coder", "run pytest tests")
         _, receipts = self.engine.artifact_context(run)
@@ -73,6 +147,10 @@ class EvolutionTests(unittest.TestCase):
             "verification": ["tests pass"], "body": BODY + "\napi_key=supersecretvalue",
         })
         self.assertEqual(rejected["status"], "rejected")
+
+        candidate = self._candidate()
+        learned = next(item for item in self.registry.list() if item["id"] == candidate["skill_id"])
+        self.assertEqual(learned["manifest"]["permissions"], [])
 
         source = Path(self.directory.name) / "local"
         source.mkdir()
@@ -141,6 +219,22 @@ class EvolutionTests(unittest.TestCase):
         self.assertIn("Promoted", changes[0])
         card = self.engine.evidence_card(candidate["proposal_id"])
         self.assertEqual(card["revalidation_status"], "valid")
+
+    def test_active_turn_keeps_its_learned_snapshot_after_rollback(self):
+        candidate = self._candidate()
+        self._pass_replay(candidate)
+        for _ in range(2):
+            run = self.engine.begin_run("coder", "run pytest tests")
+            _, receipts = self.engine.artifact_context(run)
+            self.engine.record_outcome(run, receipts, verified=True, success=True)
+
+        run = self.engine.begin_run("coder", "run pytest tests")
+        context, receipts = self.engine.artifact_context(run)
+        artifact = next(item for item in self.registry.list() if item["id"] == candidate["skill_id"])
+        self.assertIn("Reproduce the failing test.", context)
+        self.assertTrue(self.registry.rollback_learned(candidate["skill_id"]))
+        self.assertIn("Reproduce the failing test.", context)
+        self.assertEqual(receipts[0]["version"], artifact["version"])
 
     def test_environment_drift_requires_revalidation(self):
         candidate = self._candidate()
