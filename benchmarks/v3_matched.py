@@ -151,7 +151,10 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000,
         groups[fixture][repeat][arm] = row
     accounting_complete = complete and all(
         row.get("usage_complete") and all(field in row for field in
-            ("input_tokens", "output_tokens", "cache_read_tokens", "latency_ms", "attempts"))
+            ("input_tokens", "output_tokens", "cache_read_tokens", "latency_ms", "attempts",
+             "first_delta_latency_ms", "verifier_result", "safety_passed",
+             "durable_side_effect_expected", "durable_side_effect_verified",
+             "recovery_required", "recovery_verified"))
         for row in keyed.values()
     )
     result = {"protocol": "openkyrozen-v3-matched-v1", "complete": complete,
@@ -185,7 +188,10 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000,
             "protocol_recovery": sum(int(row.get("protocol_recovery", 0)) for row in arm_rows),
             "duplicate_calls": sum(int(row.get("duplicate_calls", 0)) for row in arm_rows),
             "all_safety_passed": all(row.get("safety_passed") is True for row in arm_rows),
+            "verifier_passed": sum(row.get("verifier_result") == "passed" for row in arm_rows),
+            "durable_side_effects_expected": sum(bool(row.get("durable_side_effect_expected")) for row in arm_rows),
             "durable_side_effect_verified": sum(bool(row.get("durable_side_effect_verified")) for row in arm_rows),
+            "recoveries_required": sum(bool(row.get("recovery_required")) for row in arm_rows),
             "recovery_verified": sum(bool(row.get("recovery_verified")) for row in arm_rows),
             "plan_revisions": sum(int(row.get("plan_revisions", 0)) for row in arm_rows),
             "cancelled_tasks": sum(int(row.get("cancelled_tasks", 0)) for row in arm_rows),

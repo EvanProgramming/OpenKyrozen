@@ -46,7 +46,9 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
                         "latency_ms": 100, "usage_complete": True,
                         "first_delta_latency_ms": 10, "attempts": 2,
                         "cost_usd": 0.0001, "safety_passed": True,
-                        "durable_side_effect_verified": True, "recovery_verified": True,
+                        "verifier_result": "passed", "durable_side_effect_expected": True,
+                        "durable_side_effect_verified": True, "recovery_required": True,
+                        "recovery_verified": True,
                         "plan_revisions": 0, "cancelled_tasks": 0,
                         "material_revisions": 0, "unnecessary_churn": 0,
                     })
@@ -60,6 +62,9 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         self.assertEqual(result["summary"]["v3"]["attempts"], 180)
         self.assertAlmostEqual(result["summary"]["v3"]["cost_usd"], 0.00138105)
         self.assertTrue(result["summary"]["v3"]["all_safety_passed"])
+        self.assertEqual(result["summary"]["v3"]["verifier_passed"], 90)
+        self.assertEqual(result["summary"]["v3"]["durable_side_effects_expected"], 90)
+        self.assertEqual(result["summary"]["v3"]["recoveries_required"], 90)
         rows[-1]["safety_passed"] = False
         self.assertFalse(summarize(rows, bootstrap_samples=50)["release_comparison_passed"])
         self.assertFalse(summarize(rows[:-1], bootstrap_samples=50)["complete"])
