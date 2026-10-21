@@ -36,6 +36,56 @@ class TaskManager:
             user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id, limit=10000,
         ) if item["id"] == task_id), None)
 
+    def working_plan_snapshot(self) -> dict[str, Any] | None:
+        """Return the ordered, user-visible Working Plan projection."""
+        plan = self.working_plan
+        if plan is None:
+            plan = self.store.get_working_plan(
+                user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id or "",
+            )
+            if plan is None:
+                return None
+            task_rows = self.store.list_working_plan_tasks(
+                plan["id"], user_id=self.user_id, workspace_id=self.workspace_id,
+                session_id=self.session_id or "",
+            )
+            plan_id, revision, status, updated_at = (
+                plan["id"], int(plan.get("revision", 0)), plan["status"], plan["updated_at"],
+            )
+            task_ids = [task["id"] for task in task_rows]
+            tasks_by_id = {task["id"]: task for task in task_rows}
+        else:
+            plan_id, revision, status, updated_at = plan.id, plan.revision, plan.status, plan.updated_at
+            task_ids = plan.task_ids
+            tasks_by_id = {task["id"]: task for task in self.tasks}
+        tasks = []
+        for task_id in task_ids:
+            task = tasks_by_id.get(task_id)
+            if task is None:
+                continue
+            checkpoint = task.get("checkpoint") or {}
+            block = checkpoint.get("plan_block") if isinstance(checkpoint, dict) else None
+            tasks.append({
+                "id": task_id,
+                "description": str(task.get("description", "")),
+                "status": str(task.get("status", "pending")),
+                "supersedes": list(checkpoint.get("supersedes", [])) if isinstance(checkpoint, dict) else [],
+                "superseded_by": list(checkpoint.get("superseded_by", [])) if isinstance(checkpoint, dict) else [],
+                "reason": str(block.get("reason", "")) if isinstance(block, dict) else "",
+            })
+        reason = ""
+        events = self.store.list_events(
+            "working_plan.updated", limit=20, user_id=self.user_id,
+            workspace_id=self.workspace_id, session_id=self.session_id,
+        )
+        for event in events:
+            payload = event.get("payload", {})
+            if payload.get("plan_id") == plan_id and payload.get("revision") == revision:
+                reason = str(payload.get("reason", ""))
+                break
+        return {"plan_id": plan_id, "revision": revision, "status": status,
+                "updated_at": updated_at, "reason": reason, "tasks": tasks}
+
     @staticmethod
     def _dependencies_succeeded(task: dict[str, Any], tasks: list[dict[str, Any]]) -> bool:
         statuses = {item["id"]: canonical_status(item.get("status", "pending")) for item in tasks}
@@ -151,9 +201,9 @@ class TaskManager:
                     revision=self.working_plan.revision,
                 )
                 if plan_status == "completed":
-                    self._event(task, "working_plan.completed", {"plan_id": self.working_plan.id})
+                    self._event(task, "working_plan.completed", self.working_plan_snapshot())
                 else:
-                    self._event(task, "working_plan.cancelled", {"plan_id": self.working_plan.id})
+                    self._event(task, "working_plan.cancelled", self.working_plan_snapshot())
         return True
 
     @staticmethod
@@ -582,13 +632,19 @@ class TaskManager:
         self.tasks = tasks + [task for task in self.tasks if task["id"] not in original_ids]
         payload = {"plan_id": plan_id, "revision": revision, "task_ids": list(working_plan.task_ids),
                    "status": plan_status}
+        snapshot = self.working_plan_snapshot() or {
+            "plan_id": plan_id, "revision": revision, "status": plan_status,
+            "reason": "", "tasks": [],
+        }
+        if reason:
+            snapshot["reason"] = reason.strip()
         callback = self._runtime_event_callback.get()
         if callable(callback):
             try:
                 event_type = ("working_plan.completed" if plan_status == "completed"
                               else "working_plan.cancelled" if plan_status == "cancelled"
                               else "working_plan.updated")
-                callback(event_type, payload, tasks[-1]["id"] if tasks else None)
+                callback(event_type, snapshot, tasks[-1]["id"] if tasks else None)
             except Exception:
                 pass
         return {**payload, "complexity": complexity, "tasks": deepcopy(tasks),
@@ -1046,7 +1102,7 @@ class TaskManager:
             ):
                 plan_task = next((task for task in self.tasks if task["id"] in plan_ids), None)
                 if plan_task is not None:
-                    self._event(plan_task, "working_plan.cancelled", {"plan_id": plan.id})
+                    self._event(plan_task, "working_plan.cancelled", self.working_plan_snapshot())
             elif plan.status == "active":
                 return
             self.working_plan = None

@@ -885,7 +885,7 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
     self._emit_stream_event({"event": "tasks", "tasks": [
         {"id": item["id"], "description": item["description"], "status": item["status"]}
         for item in self.tasks.tasks
-    ]})
+    ], "working_plan": self.tasks.working_plan_snapshot()})
     return result
 
 

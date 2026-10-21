@@ -13,6 +13,17 @@ func stringValue(event map[string]any, key string) string {
 	return value
 }
 
+func stringList(value any) []string {
+	items, _ := value.([]any)
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok {
+			result = append(result, text)
+		}
+	}
+	return result
+}
+
 func (m *model) handleBackendEvent(event backendEvent) {
 	switch stringValue(event, "event") {
 	case "update_available":
@@ -179,11 +190,43 @@ func (m *model) handleBackendEvent(event backendEvent) {
 			previous[task.id] = task.status
 		}
 		m.tasks = parseTasks(event["tasks"])
+		m.workingPlan = parseWorkingPlan(event["working_plan"])
 		if !m.reducedMotion {
 			for _, task := range m.tasks {
 				if previous[task.id] == "running" && task.status == "succeeded" {
 					m.taskFlashID, m.taskFlashTick = task.id, 8
 					break
+				}
+			}
+		}
+	case "working_plan":
+		if sessionID := stringValue(event, "session_id"); sessionID != "" && m.activeSessionID != "" && sessionID != m.activeSessionID {
+			return
+		}
+		incoming := parseWorkingPlan(event["working_plan"])
+		if m.workingPlan != nil && incoming != nil && incoming.updatedAt < m.workingPlan.updatedAt {
+			return
+		}
+		m.workingPlan = incoming
+	case "task_update":
+		if sessionID := stringValue(event, "session_id"); sessionID != "" && m.activeSessionID != "" && sessionID != m.activeSessionID {
+			return
+		}
+		taskID, status := stringValue(event, "task_id"), stringValue(event, "status")
+		for index := range m.tasks {
+			if m.tasks[index].id == taskID && status != "" {
+				m.tasks[index].status = status
+			}
+		}
+		if m.workingPlan != nil {
+			for index := range m.workingPlan.tasks {
+				if m.workingPlan.tasks[index].id == taskID {
+					if status != "" {
+						m.workingPlan.tasks[index].status = status
+					}
+					if reason := stringValue(event, "reason"); reason != "" {
+						m.workingPlan.tasks[index].reason = reason
+					}
 				}
 			}
 		}
@@ -345,15 +388,36 @@ func parseTasks(value any) []taskItem {
 		if !ok {
 			continue
 		}
-		tasks = append(tasks, taskItem{id: stringValue(item, "id"), description: stringValue(item, "description"), status: stringValue(item, "status")})
+		tasks = append(tasks, taskItem{
+			id: stringValue(item, "id"), description: stringValue(item, "description"),
+			status: stringValue(item, "status"), reason: stringValue(item, "reason"),
+			supersedes: stringList(item["supersedes"]), supersededBy: stringList(item["superseded_by"]),
+		})
 	}
 	return tasks
+}
+
+func parseWorkingPlan(value any) *workingPlanView {
+	if value == nil {
+		return nil
+	}
+	item, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return &workingPlanView{
+		planID: stringValue(item, "plan_id"), revision: numberValue(item["revision"]),
+		status: stringValue(item, "status"), reason: stringValue(item, "reason"),
+		updatedAt: stringValue(item, "updated_at"),
+		tasks:     parseTasks(item["tasks"]),
+	}
 }
 
 func (m *model) applyNavigation(event backendEvent) {
 	if stringValue(event, "active_session_id") != m.activeSessionID || stringValue(event, "active_scope_id") != m.activeScopeID {
 		m.agents = nil
 		m.agentSelected, m.agentScroll = 0, 0
+		m.workingPlan = nil
 	}
 	m.activeSessionID = stringValue(event, "active_session_id")
 	m.activeScopeID = stringValue(event, "active_scope_id")

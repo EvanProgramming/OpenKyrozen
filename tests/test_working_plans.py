@@ -16,6 +16,42 @@ from openkyrozen.tools.models import ToolResult
 
 
 class WorkingPlanModelTests(unittest.TestCase):
+    def test_working_plan_snapshot_is_ordered_redacted_and_includes_revision_reason(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, workspace_id="project", session_id="plan-snapshot")
+            plan = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "broad", "task": {"description": "Investigate all", "acceptance": ["result"]}},
+            ], reason="Start with a broad inspection")
+            broad = plan["tasks"][0]["id"]
+            revised = manager.edit_plan(plan_id=plan["plan_id"], expected_revision=1, operations=[
+                {"op": "split", "task": broad, "children": [
+                    {"ref": "inspect", "task": {"description": "Inspect source", "acceptance": ["source checked"]}},
+                    {"ref": "verify", "task": {"description": "Verify behavior", "acceptance": ["behavior checked"]}},
+                ]},
+            ], reason="Separate inspection from verification")
+
+            snapshot = manager.working_plan_snapshot()
+
+            self.assertEqual(snapshot["plan_id"], plan["plan_id"])
+            self.assertEqual(snapshot["revision"], 2)
+            self.assertEqual(snapshot["reason"], "Separate inspection from verification")
+            self.assertEqual([task["description"] for task in snapshot["tasks"]], [
+                "Investigate all", "Inspect source", "Verify behavior",
+            ])
+            self.assertEqual(snapshot["tasks"][0]["superseded_by"], [
+                revised["references"]["inspect"], revised["references"]["verify"],
+            ])
+            self.assertEqual(snapshot["tasks"][1]["supersedes"], [broad])
+            self.assertEqual(set(snapshot["tasks"][0]), {
+                "id", "description", "status", "supersedes", "superseded_by", "reason",
+            })
+            reopened = TaskManager(store, workspace_id="project", session_id="plan-snapshot")
+            restored = reopened.working_plan_snapshot()
+            self.assertEqual(restored["revision"], snapshot["revision"])
+            self.assertEqual(restored["reason"], snapshot["reason"])
+            self.assertEqual(restored["tasks"], snapshot["tasks"])
+
     def test_plan_supersession_blocking_and_revision_history_survive_recovery(self):
         with tempfile.TemporaryDirectory() as directory:
             store = EventStore(Path(directory) / "state.sqlite3")

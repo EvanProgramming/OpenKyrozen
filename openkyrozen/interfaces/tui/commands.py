@@ -133,7 +133,7 @@ def _command(self, name: str, args: Any, request_id: str) -> None:
         self.emit("tasks", request_id, tasks=[
             {"id": task["id"], "description": task["description"], "status": task["status"]}
             for task in runtime.tasks.tasks
-        ])
+        ], working_plan=runtime.tasks.working_plan_snapshot())
         self.emit("response", request_id, text=runtime.tasks.format())
     elif command in {"/agents", "agents"}:
         coordinator = runtime.delegation()

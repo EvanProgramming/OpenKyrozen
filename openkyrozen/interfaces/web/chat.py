@@ -555,7 +555,9 @@ async def api_chat_stream(self, request: Request):
             elif kind == "tool_receipt":
                 yield f"data: {json.dumps({'event': 'tool_receipt', 'tool_receipt': event.get('tool_receipt')}, ensure_ascii=False)}\n\n"
             elif kind == "tasks":
-                yield f"data: {json.dumps({'event': 'tasks', 'tasks': event.get('tasks', [])}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'event': 'tasks', 'tasks': event.get('tasks', []), 'working_plan': event.get('working_plan')}, ensure_ascii=False)}\n\n"
+            elif kind in {"working_plan", "task_update"}:
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             elif kind == "subagent":
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             elif kind == "runtime_event":

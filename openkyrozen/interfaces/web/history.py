@@ -79,5 +79,8 @@ async def api_v2_session(self, session_id: str):
     session_id = service._normalise_session_id(session_id)
     with service._chat_lock:
         session = service._get_or_create_session(session_id, service._SERVER_ACTOR_ID)
+        bound = service._agent.open_session(session_id, user_id=service._SERVER_ACTOR_ID)
+        working_plan = bound.tasks.working_plan_snapshot()
     return {"session_id": session_id, "messages": session["messages"], "updated": session.get("updated"),
-            "interaction": service._interaction_for_session(session).envelope(), "context": session.get("context")}
+            "interaction": service._interaction_for_session(session).envelope(), "context": session.get("context"),
+            "working_plan": working_plan}

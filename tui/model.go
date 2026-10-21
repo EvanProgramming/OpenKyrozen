@@ -58,9 +58,18 @@ type chatMessage struct {
 }
 
 type taskItem struct {
-	id          string
-	description string
-	status      string
+	id           string
+	description  string
+	status       string
+	reason       string
+	supersedes   []string
+	supersededBy []string
+}
+
+type workingPlanView struct {
+	planID, status, reason, updatedAt string
+	revision                          int
+	tasks                             []taskItem
 }
 
 type navigationChat struct{ id, title, updatedAt string }
@@ -145,6 +154,7 @@ type model struct {
 	pendingDeleteTitle        string
 	messages                  []chatMessage
 	tasks                     []taskItem
+	workingPlan               *workingPlanView
 	agents                    []map[string]any
 	agentSelected             int
 	agentScroll               int
