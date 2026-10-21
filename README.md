@@ -52,7 +52,11 @@ The interaction modes make authority visible: Ask and Plan are read/network-only
 - Records outcome evidence and promotes bounded learning proposals only after validation. Learning does not fine-tune model weights or grant new capabilities.
 - Provides terminal and optional web/API/MCP interfaces over the shared runtime.
 
-Jev Decision is an optional judgment service for bounded routing and evidence checks. It may abstain or fall back; it never executes tools or approves work. Local Kev requires explicit consent. Compact prompts and tool discovery remain optional; the recorded pilot was inconclusive and the default profile is `classic`.
+Jev Decision is an optional judgment service for bounded routing and evidence checks.
+It may abstain or fall back; it never executes tools or approves work. Local Kev
+requires explicit consent. Compact tool discovery remains optional; prompt execution
+semantics are shared across profiles. The recorded pilot was inconclusive and the
+default profile is `classic`.
 
 ## Documentation
 

@@ -107,8 +107,9 @@ class AgentConfigTests(unittest.TestCase):
                 system_prompt = messages[0]["content"]
                 self.assertIn("Name: reviewer", system_prompt)
                 self.assertIn("Follow the reviewer instructions", system_prompt)
+
                 available_tools = system_prompt.split("## Available Tools\n", 1)[1].split(
-                    "## Tool invocation format", 1
+                    "## Execution", 1
                 )[0]
                 self.assertIn("read_file", available_tools)
                 self.assertNotIn("write_file", available_tools)
@@ -119,6 +120,29 @@ class AgentConfigTests(unittest.TestCase):
             finally:
                 main.memory_bank = original_memory
                 main._set_workspace_root(original_root)
+
+    def test_legacy_prompt_profile_does_not_change_execution_semantics(self):
+        prompts, native_prompts = [], []
+        for profile in ("classic", "compact"):
+            with patch.dict(os.environ, {"KYROZEN_PROMPT_PROFILE": profile}):
+                prompts.append(main._system_prompt("- read_file: read a file"))
+                native_prompts.append(main._system_prompt("", native_tools=True))
+        self.assertEqual(prompts[0], prompts[1])
+        self.assertEqual(native_prompts[0], native_prompts[1])
+        self.assertNotIn("TaskList", prompts[0])
+        self.assertNotIn("TaskDone:", prompts[0])
+        self.assertIn("approval", prompts[0].lower())
+        self.assertIn("untrusted", native_prompts[0])
+        self.assertIn("approval checks", native_prompts[0])
+
+    def test_specialized_workflows_are_not_injected_as_global_prompt_blocks(self):
+        with patch.object(main, "_retrieve_failure", return_value=[]):
+            messages = [main._build_messages(query) for query in (
+                "Fix this bug and traceback", "Please git commit this change",
+            )]
+        prompt_text = "\n".join(item["content"] for group in messages for item in group)
+        self.assertNotIn("BUG-FIX WORKFLOW ACTIVE", prompt_text)
+        self.assertNotIn("GIT WORKFLOW ACTIVE", prompt_text)
 
     def test_installed_wheel_contains_config_and_templates_and_loads_custom_role(self):
         with tempfile.TemporaryDirectory() as directory:

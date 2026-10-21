@@ -8,6 +8,8 @@
 - Ponytail guidance is adapted from Ponytail v4.10.0 by Dietrich Gebert,
   distributed under the MIT License; see
   <https://github.com/DietrichGebert/ponytail>.
+- Root-cause bug-fix and safe Git workflow guidance are original OpenKyrozen
+  instructions.
 
 The bundled text contains no upstream executable hooks. OpenKyrozen's own MIT
 license continues to cover its integration code.

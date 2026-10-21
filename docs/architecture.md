@@ -67,6 +67,13 @@ Preparation retrieves one bounded default memory packet after learning updates a
 freezes it for the turn. Initial prompts and action-round continuations reuse that
 packet; an explicit `search_memory` call remains an additional retrieval.
 
+Prompt profiles share execution and safety instructions; compact mode changes only
+tool-description discovery. Native providers receive typed schemas, while text-only
+providers retain the Action compatibility adapter. Triggered bug-fix and Git
+workflows are versioned built-in skills selected during preparation and frozen in
+the turn's learned-guidance snapshot. Runtime capability and approval checks remain
+authoritative even when no skill matches.
+
 `routing.router` resolves one immutable `RoutingDecision` for each turn. Local
 classification and optional System One advice can select only configured models,
 the existing `coder`/`researcher` profiles, and planning needs derived from valid

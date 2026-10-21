@@ -1,0 +1,22 @@
+{
+  "name": "git-workflow",
+  "version": "1.0.0",
+  "description": "Safe, reviewable guidance for requested Git operations.",
+  "source": "builtin",
+  "permissions": [],
+  "profiles": [
+    "coder",
+    "researcher"
+  ],
+  "triggers": [
+    "git",
+    "commit",
+    "push",
+    "pull",
+    "merge",
+    "rebase",
+    "branch",
+    "checkout"
+  ],
+  "checksum": "sha256:1f82056f7862374bfa300140b0fd608e10a9f61fdfac5fee5030327419d386a1"
+}

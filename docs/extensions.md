@@ -8,6 +8,12 @@ Use `/skills` to inspect available skill versions and `/api/v2/skills` in the au
 
 Before installation or activation, review the source, publisher, requested behavior, license, and external commands. Pin or record the source when repeatable deployments matter. Skills inform how the agent approaches a request; they do not override user intent, mode restrictions, capability policy, approvals, or the tool executor. Roll back a skill if the active version is harmful or no longer appropriate.
 
+The bundled `bug-fix` and `git-workflow` skills replace task-specific workflow
+blocks in the global prompt. Matching skill content and version receipts are loaded
+once during turn preparation, so activation or rollback changes affect later turns.
+Prompt profile selection changes tool discovery detail only; native schemas and
+the legacy text adapter remain separate invocation boundaries.
+
 ## Project instructions and examples
 
 `agent.yaml` can set a role, system text, examples, and an upper-bound capability profile. A project-local configuration overlays packaged defaults; an explicitly selected configuration file overlays that; recognized `KYROZEN_AGENT_*` and related environment values apply last. The loader rejects unknown fields and malformed shapes. The effective capabilities are still intersected with the active runtime policy. Never store credentials in `agent.yaml`.

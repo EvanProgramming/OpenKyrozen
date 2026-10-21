@@ -1,8 +1,8 @@
 # Native project intelligence and built-in skills
 
-OpenKyrozen ships Graphify 0.9.64, GitHub CLI 2.101.0 integration, and
-Ponytail 4.10.0 as versioned built-in skills. `/skills` reports their installed
-versions and lifecycle state. They are seeded from the installed OpenKyrozen
+OpenKyrozen ships Graphify 0.9.64, GitHub CLI 2.101.0 integration, Ponytail
+4.10.0, and versioned `bug-fix` and `git-workflow` skills. `/skills` reports their
+installed versions and lifecycle state. They are seeded from the installed OpenKyrozen
 package and change only through `/update`; local skills and Python plugins are
 never replaced by that process.
 
