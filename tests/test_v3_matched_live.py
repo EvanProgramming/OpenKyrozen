@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 
 from benchmarks.v3_fixtures import FIXTURES
-from benchmarks.v3_matched_live import (_run_fixture_tests, _worker_env, prepare_fixture,
-                                         snapshot_workspace, verify_fixture)
+from benchmarks.v3_matched_live import (_run_fixture_tests, _worker_env, _workflow_state_correct,
+                                         prepare_fixture, snapshot_workspace, verify_fixture)
 
 
 class V3MatchedLiveTests(unittest.TestCase):
@@ -107,6 +107,12 @@ class V3MatchedLiveTests(unittest.TestCase):
                 "processes_cancelled": 1, "processes_alive": 0}, prepared)
         self.assertEqual(idle["result"], "failed")
         self.assertEqual(stopped["result"], "passed")
+
+    def test_required_plan_cannot_pass_with_missing_or_unfinished_tasks(self):
+        fixture = next(item for item in FIXTURES if item.get("plan_tasks"))
+        self.assertFalse(_workflow_state_correct(fixture, {"tasks": []}))
+        self.assertFalse(_workflow_state_correct(fixture, {"tasks": ["succeeded", "running"]}))
+        self.assertTrue(_workflow_state_correct(fixture, {"tasks": ["succeeded", "cancelled"]}))
 
     def test_snapshot_excludes_git_metadata_but_tracks_workspace_files(self):
         fixture = next(item for item in FIXTURES if item["fixture_id"] == "investigation-1")

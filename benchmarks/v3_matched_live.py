@@ -248,6 +248,16 @@ def _empty_row(fixture_id: str, repeat: int, arm: str) -> dict:
             "plan_scenario": None, "plan_scenario_passed": True}
 
 
+def _workflow_state_correct(fixture: dict, worker: dict) -> bool:
+    tasks = worker.get("tasks")
+    plan_required = bool(fixture.get("plan_tasks")) or fixture.get("plan_scenario") in {
+        "scope_preserving", "material_revision",
+    }
+    return (bool(tasks) if plan_required else True) and all(
+        status in {"succeeded", "cancelled"} for status in (tasks or [])
+    )
+
+
 def _initial_plan(fixture: dict) -> list[str] | dict:
     if fixture.get("plan_scenario") == "scope_preserving":
         step = {"id": "objective", "title": "Refactor labels",
@@ -351,8 +361,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                                     "recovery_required": fixture["category"] == "error_recovery",
                                     "recovery_verified": bool(verified["verified_success"] and fixture["category"] == "error_recovery"),
                                     "verified_success": bool(code == 0 and verified["verified_success"]),
-                                    "workflow_state_correct": all(status == "succeeded" for status in worker.get("tasks", []))
-                                        if worker.get("tasks") else True,
+                                    "workflow_state_correct": _workflow_state_correct(fixture, worker),
                                     "requests": len(calls), "protocol_recovery": int(worker.get("protocol_recovery", 0)),
                                     "duplicate_calls": int(worker.get("duplicate_calls", 0)),
                                     "plan_revisions": int(worker.get("plan_revisions", 0)),
@@ -416,7 +425,9 @@ def main() -> None:
     report = run(source=args.source, repo=args.repo, output=args.output,
                  budget_path=args.budget_db, limit_usd=args.limit_usd, repeats=args.repeats)
     print(json.dumps(report["summary"], indent=2, sort_keys=True))
-    raise SystemExit(0 if report["summary"]["complete"] else 1)
+    summary = report["summary"]
+    raise SystemExit(0 if (summary["complete"] and summary["accounting_complete"]
+                          and summary["comparison_thresholds_met"]) else 1)
 
 
 if __name__ == "__main__":
