@@ -398,6 +398,33 @@ def _build_messages(self, user_input: str, learned_context: str = "",
         "content": self._workspace_info()
     })
 
+    # Keep only the accepted plan bound to the current Working Plan in fixed
+    # prompt state, where conversation compaction cannot evict it.
+    if self._active_interaction_mode.get() == "agent":
+        active = self._interaction_controller.state().get("executing_plan")
+        working = self.tasks.working_plan
+        if (isinstance(active, dict) and working is not None
+                and active.get("working_plan_id") == working.id):
+            task_ids = set(active.get("working_task_ids") or working.task_ids)
+            tasks = [
+                {"status": task.get("status"), "description": str(task.get("description", ""))[:160]}
+                for task in self.tasks.tasks if task.get("id") in task_ids
+            ]
+            steps = [
+                {key: step.get(key) for key in ("id", "title", "description", "acceptance")}
+                for step in active.get("steps", []) if isinstance(step, dict)
+            ]
+            summary = {
+                "plan_id": active.get("plan_id"), "version": active.get("version"),
+                "summary": str(active.get("summary", ""))[:500],
+                "bounds": active.get("bounds"), "steps": steps[:10], "tasks": tasks[:10],
+            }
+            import json
+            messages.append({"role": "system", "content": (
+                "## Pinned accepted plan state\nTreat these accepted objectives and bounds as authoritative; "
+                "do not expand scope.\n" + json.dumps(summary, ensure_ascii=False)
+            )})
+
     project_instructions = format_instructions(self._get_workspace_root())
     if project_instructions and self._active_interaction_mode.get() == "agent":
         messages.append({"role": "system", "content": project_instructions})

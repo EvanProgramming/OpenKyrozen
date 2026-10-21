@@ -64,6 +64,56 @@ class ContextCompactionTests(unittest.TestCase):
         self.assertIs(result.messages[1], response)
         self.assertIs(result.messages[2], reply)
 
+    def test_native_old_tool_outputs_shrink_as_complete_correlated_groups(self):
+        from openkyrozen.providers.models import FinishReason, ModelResponse, ToolCall, ToolReply
+
+        old = ModelResponse("", tool_calls=(
+            ToolCall("old", "read_file", {"path": "old"}),
+            ToolCall("old-2", "read_file", {"path": "old-2"}),
+        ),
+                            finish_reason=FinishReason.TOOL_REQUEST)
+        recent = ModelResponse("", tool_calls=(ToolCall("new", "read_file", {"path": "new"}),),
+                               finish_reason=FinishReason.TOOL_REQUEST)
+        messages = [
+            {"role": "user", "content": "request"}, old,
+            ToolReply("old", "read_file", {"text": "x" * 4_000}),
+            ToolReply("old-2", "read_file", {"text": "y" * 4_000}), recent,
+            ToolReply("new", "read_file", {"text": "latest"}),
+        ]
+        result = compact_for_pressure(
+            messages, ContextState("custom", configured_window=900, reserve_tokens=20),
+            lambda *_: None,
+        )
+        self.assertTrue(result.compacted)
+        self.assertFalse(result.impossible)
+        self.assertEqual(result.messages[1], old)
+        self.assertIn("[older tool output compacted]", result.messages[2].output["text"])
+        self.assertIn("[older tool output compacted]", result.messages[3].output["text"])
+        self.assertEqual(result.messages[4:], messages[4:])
+        self.assertEqual(result.messages[2].call_id, old.tool_calls[0].id)
+
+    def test_accepted_plan_summary_is_pinned_in_fixed_prompt(self):
+        from openkyrozen.tasks.models import WorkingPlan
+
+        mode_token = main._active_interaction_mode.set("agent")
+        try:
+            with patch.object(main._interaction_controller, "state", return_value={
+                    "executing_plan": {
+                        "plan_id": "plan-1", "version": 2, "working_plan_id": "wp-1",
+                        "summary": "Upgrade the service safely", "bounds": {"workspace_paths": ["src"]},
+                        "steps": [{"id": "one", "title": "Inspect"}],
+                    }}), patch.object(main.tasks, "working_plan", WorkingPlan(
+                        "wp-1", "complex", "active", ("task-1",), "now", "now")), \
+                    patch.object(main.tasks, "tasks", [{"id": "task-1", "status": "pending",
+                                                          "description": "Inspect service"}]):
+                messages = main._build_messages("continue")
+        finally:
+            main._active_interaction_mode.reset(mode_token)
+        pinned = next(item["content"] for item in messages
+                      if item["role"] == "system" and "Pinned accepted plan state" in item["content"])
+        self.assertIn("Upgrade the service safely", pinned)
+        self.assertIn("Inspect service", pinned)
+
     def test_compaction_can_summarize_legacy_prefix_before_native_history(self):
         from openkyrozen.providers.models import FinishReason, ModelResponse, ToolCall, ToolReply
 
