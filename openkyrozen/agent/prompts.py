@@ -54,7 +54,11 @@ def _permitted_tool_names(self, agent_config: dict[str, Any] | None = None) -> s
     active = getattr(self, "_execution_capability_token", None)
     capabilities = configured & active.capabilities if active else configured
     capabilities = mode_capabilities(capabilities, self._active_interaction_mode.get())
-    return {name for name in self.AVAILABLE_TOOLS if name != "update_plan" and self.tool_registry.get_spec(name).visibility == 'public' and tool_capability(name,self.AVAILABLE_TOOLS) in capabilities}
+    permitted = {name for name in self.AVAILABLE_TOOLS if name != "update_plan" and self.tool_registry.get_spec(name).visibility == 'public' and tool_capability(name,self.AVAILABLE_TOOLS) in capabilities}
+    delegated = self.execution_context.delegation_tools
+    if self.execution_context.child_run_id and delegated is not None:
+        permitted &= set(delegated)
+    return permitted
 
 
 @legacy_text_api

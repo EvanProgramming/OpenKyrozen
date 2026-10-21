@@ -10,6 +10,9 @@ class Application:
     store: Any
 
     def close(self):
+        coordinator = getattr(self.runtime.subagent_manager, "coordinator", None)
+        if coordinator:
+            coordinator.close()
         sessions = [self.runtime._default_session, *self.runtime._sessions.values()]
         for session in sessions:
             coordinator = getattr(session.subagents, "coordinator", None)

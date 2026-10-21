@@ -59,8 +59,13 @@ def _prepare_turn(self, turn):
     automatic_profile = self.learning_engine.route_profile(
         turn.user_input, turn.profile or self._agent_profile_mode,
     )
+    if not self.execution_context.child_run_id:
+        from openkyrozen.agent.delegation import DelegationBudget
+        self.execution_context.delegation_budget = DelegationBudget()
+    provider_config = self.execution_context.provider_config or self._provider_config
+    select_model = (lambda _text: self.execution_context.model) if self.execution_context.child_run_id else self._select_model
     decision, turn.complexity = decide_request(
-        self._provider_config, fast_route, turn.user_input, self._select_model,
+        provider_config, fast_route, turn.user_input, select_model,
         self._classify_complexity, automatic_profile,
         turn.profile or self._agent_profile_mode, turn.interaction_mode,
     )
@@ -69,13 +74,14 @@ def _prepare_turn(self, turn):
     self.DEEPSEEK_MODEL = decision.model
     context_state = ContextState(
         self.DEEPSEEK_MODEL,
-        self._provider_config.context_window_tokens if self._provider_config else None,
+        provider_config.context_window_tokens if provider_config else None,
     )
     context_state.history_message_ids = {id(item) for item in self.short_term_memory}
     self._active_context_state.set(context_state)
-    provider_model = f"{self._provider_config.provider}:{self.DEEPSEEK_MODEL}" if self._provider_config else f"unknown:{self.DEEPSEEK_MODEL}"
+    provider_model = f"{provider_config.provider}:{self.DEEPSEEK_MODEL}" if provider_config else f"unknown:{self.DEEPSEEK_MODEL}"
     turn.learning_run = self.learning_engine.begin_run(resolved_profile, turn.user_input, provider_model=provider_model)
-    self._active_usage_run_id.set(turn.learning_run["run_id"])
+    if not self.execution_context.child_run_id:
+        self._active_usage_run_id.set(turn.learning_run["run_id"])
     turn.learned_context, turn.learning_receipts = self.learning_engine.artifact_context(turn.learning_run)
     ponytail_context = self._ponytail_context(resolved_profile)
     if ponytail_context:
@@ -87,9 +93,14 @@ def _prepare_turn(self, turn):
         self._surface_capabilities or default_surface_capabilities,
         default="workspace",
     )
+    granted_capabilities = mode_capabilities(base_capabilities, turn.interaction_mode)
+    current_capability = self._execution_capability_token
+    if self.execution_context.child_run_id and current_capability is not None:
+        granted_capabilities &= current_capability.capabilities
     self._execution_capability_token = issue_capability_token(
-        f"surface:{self._EXECUTION_SURFACE}",
-        mode_capabilities(base_capabilities, turn.interaction_mode),
+        current_capability.subject if self.execution_context.child_run_id and current_capability else
+            f"surface:{self._EXECUTION_SURFACE}",
+        granted_capabilities,
     )
 
     if turn.clear_tasks and turn.interaction_mode == "agent":

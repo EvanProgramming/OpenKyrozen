@@ -30,30 +30,47 @@ def assignment(path):
     return {"profile": "researcher", "objective": "Inspect " + path,
         "context": "Check the function against its documented invariant; cite the actual file",
         "scope": [path], "dependencies": [], "acceptance": ["Inspect implementation and independently check invariant"],
-        "deliverables": ["Evidence-backed structured findings"], "reason": "Independent subsystem audit"}
+        "deliverables": ["Evidence-backed structured findings"], "reason": "Independent subsystem audit",
+        "risk": "high"}
 
 
 class Fixture:
+    def __init__(self, runtime=None):
+        self.runtime = runtime
+
     def chat(self, messages, model=None):
-        specialist = messages[0]["content"].startswith("You are the specialised")
+        usage = {"prompt_tokens": 16, "completion_tokens": 8}
+        def answer(text):
+            from openkyrozen.providers.usage import _track_cost
+            _track_cost("deepseek", usage, model=model or "fixture")
+            return text, usage
+        task_message = next((str(message.get("content", "")) for message in messages
+            if message.get("role") == "user" and "sub-agent." in str(message.get("content", "")).lower()), None)
+        specialist = task_message is not None
         if specialist:
-            review = "Independently verify" in messages[1]["content"]
-            if len(messages) == 2:
-                brief = json.loads(messages[1]["content"].split("\n", 1)[-1]) if review else json.loads(messages[1]["content"])
-                path = (brief["assignment"] if review else brief)["scope"][0]
-                return "Action: " + json.dumps({"action": "read_file", "args": path}), None
+            review = "Independently verify" in task_message
+            receipts = self.runtime.memory_bank.store.list_events(
+                "execution.receipt", limit=None, session_id=self.runtime.current_session.session_id,
+            ) if self.runtime is not None else []
+            inspected = any(event["payload"].get("action") == "read_file"
+                            and event["payload"].get("success") for event in receipts)
+            if not inspected:
+                payload = task_message[task_message.find("{"):]
+                value, _ = json.JSONDecoder().raw_decode(payload)
+                path = (value["assignment"] if review else value)["scope"][0]
+                return answer("Action: " + json.dumps({"action": "read_file", "args": path}))
             evidence = ["Actual read_file receipt and invariant inspection"]
             if review:
-                return json.dumps({"verdict": "verified", "summary": "Implementation independently inspected",
-                    "findings": [], "evidence": evidence}), None
-            return json.dumps({"status": "completed", "summary": "Function preserves its invariant",
+                return answer(json.dumps({"verdict": "verified", "summary": "Implementation independently inspected",
+                    "findings": [], "evidence": evidence}))
+            return answer(json.dumps({"status": "completed", "summary": "Function preserves its invariant",
                 "findings": ["Implementation matches specification"], "evidence": evidence,
-                "artifacts": [], "checks": ["Inspected actual implementation"], "uncertainties": [], "suggested_followups": []}), None
+                "artifacts": [], "checks": ["Inspected actual implementation"], "uncertainties": [], "suggested_followups": []}))
         if messages[0]["content"].startswith("Synthesize"):
-            return "Both implementations were inspected and independently verified.", None
+            return answer("Both implementations were inspected and independently verified.")
         if any("spawn_agents(" in message["content"] for message in messages):
-            return "Inspection is ready for synthesis.", None
-        return 'Action: ' + json.dumps({"action": "spawn_agents", "args": json.dumps({"assignments": [assignment("alpha.py"), assignment("beta.py")]})}), None
+            return answer("Inspection is ready for synthesis.")
+        return answer('Action: ' + json.dumps({"action": "spawn_agents", "args": json.dumps({"assignments": [assignment("alpha.py"), assignment("beta.py")]})}))
 
 
 def acceptance(*, live=False):
@@ -75,8 +92,9 @@ def acceptance(*, live=False):
             runtime = app.runtime
             runtime._provider_config = config
             runtime.DEEPSEEK_MODEL = config.model_complex or config.model_simple
-            runtime.llm_provider = get_provider(config) if live else Fixture()
-            runtime.get_provider = get_provider if live else lambda _: Fixture()
+            fixture = Fixture(runtime)
+            runtime.llm_provider = get_provider(config) if live else fixture
+            runtime.get_provider = get_provider if live else lambda _: fixture
             runtime.console = __import__("rich.console", fromlist=["Console"]).Console(file=io.StringIO())
             runtime._execution_capability_token = issue_capability_token("acceptance", frozenset({"read"}))
             runtime._surface_capabilities = "read"

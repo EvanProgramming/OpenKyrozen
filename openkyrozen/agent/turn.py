@@ -49,6 +49,9 @@ class ExecutionContext:
     provider_config: Any = None
     child_run_id: str | None = None
     coordinator: Any = None
+    delegation_budget: Any = None
+    delegation_budget_run_id: str | None = None
+    delegation_tools: frozenset[str] | None = None
 
 
 def scoped_turn(function):

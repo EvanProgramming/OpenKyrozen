@@ -36,6 +36,8 @@ class AgentEngine:
         return self._finish_turn(turn, runtime._complete_turn(turn))
 
     def _finish_turn(self, turn: TurnContext, result: str) -> str:
+        if getattr(self.runtime.execution_context, "child_run_id", None):
+            return result
         schedule = getattr(self.runtime, "_schedule_post_turn_learning", None)
         if callable(schedule):
             try:
@@ -84,7 +86,9 @@ class AgentEngine:
                     )
                 except Exception as exc:
                     runtime._turn_failed.set(True)
-                    turn.protocol_error_message = f"Native model request failed ({type(exc).__name__}); no further tools were run."
+                    from openkyrozen.providers.errors import ProviderError
+                    detail = str(exc) if isinstance(exc, ProviderError) else type(exc).__name__
+                    turn.protocol_error_message = f"Native model request failed: {detail}; no further tools were run."
                     if runtime._conversation_turn_id.get() is not None:
                         runtime._record_conversation_entry("model.failure", {
                             "error_type": type(exc).__name__,
@@ -134,7 +138,9 @@ class AgentEngine:
             messages.append(response)
             history_tool_names.update(call.name for call in response.tool_calls)
             calls = [{"action": call.name, "args": call.arguments, "call_id": call.id,
-                      "call_id_source": "native"} for call in response.tool_calls]
+                      "call_id_source": "native",
+                      "task_id": getattr(getattr(runtime, "current_session", None), "_delegation_task_id", None)}
+                     for call in response.tool_calls]
             turn.tool_calls.extend(calls)
 
             def record_native_call(call, receipt):

@@ -37,6 +37,15 @@ class AgentEngineTests(unittest.TestCase):
         self.assertEqual(result, "finished")
         self.assertEqual(events, ["work", "complete", ("queued", "Use Orion")])
 
+    def test_delegated_child_turn_does_not_queue_parent_learning(self):
+        scheduled = Mock()
+        runtime = SimpleNamespace(
+            execution_context=SimpleNamespace(child_run_id="child"),
+            _schedule_post_turn_learning=scheduled,
+        )
+        self.assertEqual(AgentEngine(runtime)._finish_turn(TurnContext("inspect"), "done"), "done")
+        scheduled.assert_not_called()
+
     def test_learning_queue_failure_does_not_fail_completed_turn(self):
         provider = SimpleNamespace(get_capabilities=lambda _model: ProviderCapabilities(native_tools=True))
         events = []

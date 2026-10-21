@@ -398,7 +398,9 @@ def _subagent_usage_metrics(self, run_id: str, started: float) -> dict[str, Any]
     )
 
     def known_total(field: str) -> int | None:
-        if not attempts or any(item.get(field) is None for item in attempts):
+        if not attempts:
+            return 0 if field == "cost_picos" else None
+        if any(item.get(field) is None for item in attempts):
             return None
         return int(totals[field])
 
