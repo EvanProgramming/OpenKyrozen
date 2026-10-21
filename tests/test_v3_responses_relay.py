@@ -1,4 +1,6 @@
 import json
+import socket
+import struct
 import tempfile
 import threading
 import time
@@ -28,6 +30,7 @@ class V3ResponsesRelayTests(unittest.TestCase):
             usage = {"input_tokens": 12, "output_tokens": 4,
                      "input_tokens_details": {"cached_tokens": 3},
                      "cache_creation_input_tokens": 2}
+            response_payload = None
             http_status = 200
 
             def log_message(self, *_args):
@@ -45,6 +48,8 @@ class V3ResponsesRelayTests(unittest.TestCase):
                     }) + delimiter[0]).encode()
                 else:
                     payload = json.dumps({"id": "response-fixture", "output": [], "usage": self.usage}).encode()
+                    if self.response_payload is not None:
+                        payload = self.response_payload
                 self.send_response(self.http_status)
                 self.send_header("Content-Type", "text/event-stream" if request.get("stream") else "application/json")
                 self.send_header("Content-Length", str(len(payload)))
@@ -175,6 +180,28 @@ class V3ResponsesRelayTests(unittest.TestCase):
 
         self.assertEqual(sorted(response.status_code for response in responses), [400, 503])
         self.assertEqual(len(self.received), 1)
+
+    def test_local_client_disconnect_does_not_latch_provider_failure(self):
+        handler_class = self.upstream.RequestHandlerClass
+        original_payload = handler_class.response_payload
+        handler_class.response_payload = json.dumps({"output": "x" * 8_000_000,
+                                                     "usage": handler_class.usage}).encode()
+        body = json.dumps({"input": [{"role": "user", "content": "fixture"}]}).encode()
+        client = socket.create_connection(("127.0.0.1", self.relay._server.server_port), timeout=3)
+        try:
+            client.sendall((f"POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                            f"Authorization: Bearer {self.relay.client_key}\r\n"
+                            f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode() + body)
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        finally:
+            client.close()
+
+        deadline = time.monotonic() + 5
+        while (not self.relay.rows or "latency_ms" not in self.relay.rows[0]) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        handler_class.response_payload = original_payload
+        self.assertEqual(self.relay.rows[0]["status"], "settled")
+        self.assertIsNone(self.relay.provider_error)
 
     def test_preserves_nonstreaming_native_tool_request_shape(self):
         response = requests.post(self.relay.url + "/responses", json={

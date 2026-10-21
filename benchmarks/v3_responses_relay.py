@@ -198,7 +198,8 @@ class ResponsesRelay:
                                                                      usage["cache_read_tokens"], usage["cache_write_tokens"]))
                                                           if usage is not None else None)
                 except (requests.RequestException, OSError) as exc:
-                    relay.provider_error = f"upstream_transport_{type(exc).__name__}"
+                    if isinstance(exc, requests.RequestException):
+                        relay.provider_error = f"upstream_transport_{type(exc).__name__}"
                     if row["status"] == "unknown":
                         relay.budget.settle(attempt_id, None)
                         row["transport_error"] = type(exc).__name__
