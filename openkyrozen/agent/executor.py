@@ -6,6 +6,8 @@ import json
 import re
 import uuid
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from pathlib import Path
 from typing import Any
 from openkyrozen.persistence.models import stable_hash, utc_now
@@ -711,6 +713,46 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             and self._is_state_changing_action(receipt.action, args)):
         successful_operations.add(receipt.operation_id)
     return receipt
+
+
+def _execute_tool_batch(self, calls: list[dict[str, Any]], *, operation_scope: str,
+                        successful_operations: set[str], call_id_source: str = "synthetic",
+                        on_receipt) -> None:
+    """Run consecutive catalog-approved reads concurrently and deliver in call order."""
+    def is_parallel_read(call):
+        action = self._operation_action(call.get("action", ""))
+        spec = self.tool_registry.specs.get(action)
+        return bool(spec and spec.parallel_safe and spec.side_effects == "read_only"
+                    and spec.capability == "read" and spec.risk == "normal"
+                    and not call.get("task_id"))
+
+    def execute(call):
+        return self._execute_turn_action(
+            call.get("action", ""), call.get("args", ""), operation_scope=operation_scope,
+            successful_operations=successful_operations, call_id=call.get("call_id"),
+            call_id_source=call.get("call_id_source", call_id_source),
+        )
+
+    index = 0
+    while index < len(calls):
+        if not is_parallel_read(calls[index]):
+            call = calls[index]
+            on_receipt(call, execute(call))
+            index += 1
+            continue
+
+        end = index + 1
+        while end < len(calls) and is_parallel_read(calls[end]):
+            end += 1
+        group = calls[index:end]
+        if len(group) == 1:
+            on_receipt(group[0], execute(group[0]))
+        else:
+            with ThreadPoolExecutor(max_workers=min(4, len(group))) as executor:
+                futures = [executor.submit(copy_context().run, execute, call) for call in group]
+                for call, future in zip(group, futures):
+                    on_receipt(call, future.result())
+        index = end
 
 
 def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_matching: bool = False) -> dict[str, Any]:

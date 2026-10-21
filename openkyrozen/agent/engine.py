@@ -119,14 +119,11 @@ class AgentEngine:
                 break
             messages.append(response)
             history_tool_names.update(call.name for call in response.tool_calls)
-            turn.tool_calls.extend({"action": call.name, "args": call.arguments, "call_id": call.id}
-                                   for call in response.tool_calls)
-            for call in response.tool_calls:
-                receipt = runtime._execute_turn_action(
-                    call.name, call.arguments, operation_scope=operation_scope,
-                    successful_operations=successful_operations, call_id=call.id,
-                    call_id_source="native",
-                )
+            calls = [{"action": call.name, "args": call.arguments, "call_id": call.id,
+                      "call_id_source": "native"} for call in response.tool_calls]
+            turn.tool_calls.extend(calls)
+
+            def record_native_call(call, receipt):
                 record = runtime._record_turn_receipt(receipt, allow_legacy_task_matching=False)
                 turn.tool_records.append(record)
                 prompt_result = runtime._tool_result_for_prompt(receipt)
@@ -135,8 +132,13 @@ class AgentEngine:
                 from openkyrozen.agent.conversation import tool_result_to_dict
                 outcome = receipt.tool_result or ToolResult(data=receipt.result_data, text=receipt.result)
                 reply_data = tool_result_to_dict(outcome)
-                messages.append(ToolReply(call.id, call.name, reply_data, not outcome.success))
-                turn.tool_results_text += f"- `{call.name}` returned:\n{runtime._safe_fstring(prompt_result)}\n"
+                messages.append(ToolReply(call["call_id"], call["action"], reply_data, not outcome.success))
+                turn.tool_results_text += f"- `{call['action']}` returned:\n{runtime._safe_fstring(prompt_result)}\n"
                 runtime._update_tasks_panel()
+
+            runtime._execute_tool_batch(
+                calls, operation_scope=operation_scope, successful_operations=successful_operations,
+                call_id_source="native", on_receipt=record_native_call,
+            )
 
         turn.final_answer = final_text or runtime._deterministic_tool_summary(turn.tool_records)

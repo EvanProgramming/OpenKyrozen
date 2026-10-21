@@ -207,6 +207,7 @@ class AgentRuntime:
         _make_execution_receipt,
         _run_tool,
         _execute_turn_action,
+        _execute_tool_batch,
         _record_turn_receipt,
         _tool_result_for_prompt,
     )

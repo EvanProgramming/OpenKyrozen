@@ -11,17 +11,17 @@ def _execute_action_rounds(self, turn):
     turn.tool_records: list[dict[str, Any]] = []
     successful_operations: set[str] = set()
     operation_scope = str(turn.learning_run.get("run_id") or uuid.uuid4().hex)
-    for tc in turn.tool_calls:
-        receipt = self._execute_turn_action(
-            tc.get("action", ""), tc.get("args", ""), operation_scope=operation_scope,
-            successful_operations=successful_operations,
-        )
+    def record_initial_call(tc, receipt):
         turn.tool_records.append(self._record_turn_receipt(receipt, allow_legacy_task_matching=True))
         prompt_result = self._tool_result_for_prompt(receipt)
         self._render_tool_result(receipt.action, prompt_result)
         results.append(f"- `{receipt.action}({receipt.args!r})` returned:\n{self._safe_fstring(prompt_result)}")
         if self.tasks.tasks:
             self._update_tasks_panel()
+    self._execute_tool_batch(
+        turn.tool_calls, operation_scope=operation_scope, successful_operations=successful_operations,
+        on_receipt=record_initial_call,
+    )
     all_tool_result_lines = list(results)
     turn.tool_results_text = "\n".join(all_tool_result_lines)
 
@@ -149,7 +149,8 @@ def _execute_action_rounds(self, turn):
                     "Choose the next work distribution from the discovered targets. For a review covering independent subsystems, "
                     "the next Action should be spawn_agents with focused assignment briefs, before inspecting each subsystem serially. "
                     "Keep a single lookup or tightly coupled operation direct. The user need not ask for delegation. "
-                    'Output one canonical Action: {"action":"tool_name","args":"plain string"}, '
+                    'Output one or more canonical Action blocks for independent reads or ordered operations: '
+                    '{"action":"tool_name","args":"plain string"}, '
                     "or the completed answer; a progress announcement does not complete the request.\n"
                     "Please continue if there are remaining steps, or respond with the final answer.\n"
                     + ("After evidence for a listed parent task, output `TaskDone: <index>` before the next Action.\n"
@@ -179,7 +180,7 @@ def _execute_action_rounds(self, turn):
                 {"role": "assistant", "content": current_reply},
                 {"role": "user", "content": (
                     f"Read-only inspection results:\n{turn.tool_results_text}\n\n"
-                    "Continue with one listed inspection Action, ask a material clarification, "
+                    "Continue with one or more independent listed inspection Actions, ask a material clarification, "
                     f"{completion_instruction}. No changes have been authorized."
                 )},
             ]
@@ -194,7 +195,7 @@ def _execute_action_rounds(self, turn):
                     (self._build_task_progress_hint() if turn.interaction_mode == "agent" else "")
                     + f"Tool results:\n{turn.tool_results_text}\n"
                     + error_hint + search_throttle
-                    + "Continue with one Action if necessary; otherwise return the result using the current mode's protocol."
+                    + "Continue with one or more independent read Actions if necessary; otherwise return the result using the current mode's protocol."
                 )},
             ]
             memory = self._build_memory_context(turn.user_input, context=turn.memory_context)
@@ -374,11 +375,8 @@ def _execute_action_rounds(self, turn):
         round_count += 1
         next_results: list[str] = []
         has_errors = False
-        for tc2 in next_tool_calls:
-            receipt = self._execute_turn_action(
-                tc2.get("action", ""), tc2.get("args", ""), operation_scope=operation_scope,
-                successful_operations=successful_operations,
-            )
+        def record_followup_call(tc2, receipt):
+            nonlocal has_errors, consecutive_search_failures, total_search_calls
             turn.tool_records.append(self._record_turn_receipt(receipt, allow_legacy_task_matching=True))
             prompt_result = self._tool_result_for_prompt(receipt)
             self._render_tool_result(receipt.action, prompt_result)
@@ -394,6 +392,10 @@ def _execute_action_rounds(self, turn):
                     consecutive_search_failures += 1
                 else:
                     consecutive_search_failures = 0  # reset on success
+        self._execute_tool_batch(
+            next_tool_calls, operation_scope=operation_scope, successful_operations=successful_operations,
+            on_receipt=record_followup_call,
+        )
         all_tool_result_lines.extend(next_results)
         turn.tool_results_text = "\n".join(all_tool_result_lines)
         _has_args_missing = any(
