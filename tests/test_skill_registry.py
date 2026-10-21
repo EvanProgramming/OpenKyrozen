@@ -18,12 +18,24 @@ class SkillRegistryTests(unittest.TestCase):
             root = Path(directory)
             registry = SkillRegistry(EventStore(root / "state.sqlite3"), root=root / "installed")
             seeded = registry.seed_builtins()
-            self.assertEqual({item["manifest"]["name"] for item in seeded}, {"graphify", "github-cli", "ponytail"})
+            self.assertEqual({item["manifest"]["name"] for item in seeded}, {
+                "bug-fix", "git-workflow", "graphify", "github-cli", "ponytail",
+            })
             versions = {item["name"]: item["version"] for item in registry.list("active")}
-            self.assertEqual(versions, {"graphify": "0.9.64", "github-cli": "2.101.0", "ponytail": "4.10.0"})
-            matched = {item["name"] for item in registry.match("coder", "implement a GitHub repository fix")}
+            self.assertEqual(versions, {
+                "bug-fix": "1.0.0", "git-workflow": "1.0.0", "graphify": "0.9.64",
+                "github-cli": "2.101.0", "ponytail": "4.10.0",
+            })
+            matched = {item["name"] for item in registry.match("coder", "fix the traceback")}
             self.assertIn("graphify", matched)
             self.assertIn("ponytail", matched)
+            self.assertIn("bug-fix", matched)
+            git_matched = {item["name"] for item in registry.match("coder", "prepare a git commit")}
+            self.assertIn("git-workflow", git_matched)
+            self.assertNotIn("bug-fix", git_matched)
+            unrelated = {item["name"] for item in registry.match("coder", "what is today's weather")}
+            self.assertNotIn("bug-fix", unrelated)
+            self.assertNotIn("git-workflow", unrelated)
 
             installed = root / "installed" / "graphify" / "0.9.64" / "SKILL.md"
             installed.write_text("corrupt", encoding="utf-8")
@@ -132,6 +144,22 @@ Confirm the test result before reporting success.
             self.assertEqual(receipts[0]["source"], "local")
             self.assertEqual(registry.match("researcher", "run pytest"), [])
 
+            updated = root / "updated"
+            updated.mkdir()
+            updated_body = body.replace("Local pytest guidance", "Updated pytest guidance")
+            (updated / "SKILL.md").write_text(updated_body, encoding="utf-8")
+            (updated / "skill.json").write_text(json.dumps({
+                "name": "local-pytest-guide", "version": "2.0.0",
+                "description": "Updated local runtime guide", "permissions": [],
+                "profiles": ["coder"], "triggers": ["pytest"],
+            }), encoding="utf-8")
+            registry.install(updated, activate=True)
+            registry.rollback(installed["id"])
+            next_run = engine.begin_run("coder", "run pytest for this change")
+            next_context, next_receipts = engine.artifact_context(next_run)
+            self.assertIn(updated_body, next_context)
+            self.assertEqual(next_receipts[0]["version"], "2.0.0")
+
             main.memory_bank = memory
             main.skill_registry = registry
             main.learning_engine = engine
@@ -145,11 +173,12 @@ Confirm the test result before reporting success.
                 main._set_workspace_root(original_root)
             prompt = "\n".join(item["content"] for item in messages)
             self.assertIn(body, prompt)
+            self.assertNotIn(updated_body, prompt)
             self.assertIn("cannot grant permissions", prompt)
             events = memory.store.list_events(
                 "learning.artifact_used", workspace_id="skill-workspace", session_id="skill-session"
             )
-            self.assertEqual(len(events), 1)
+            self.assertEqual(len(events), 2)
             self.assertEqual(events[0]["payload"]["source"], "local")
 
 

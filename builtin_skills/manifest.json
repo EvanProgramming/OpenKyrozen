@@ -1,5 +1,11 @@
 {
   "schema_version": 1,
   "update_policy": "openkyrozen-release-only",
-  "skills": ["graphify", "github-cli", "ponytail"]
+  "skills": [
+    "graphify",
+    "github-cli",
+    "ponytail",
+    "bug-fix",
+    "git-workflow"
+  ]
 }

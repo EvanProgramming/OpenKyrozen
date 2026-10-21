@@ -1,0 +1,20 @@
+{
+  "name": "bug-fix",
+  "version": "1.0.0",
+  "description": "Root-cause-first workflow for reported bugs and regressions.",
+  "source": "builtin",
+  "permissions": [],
+  "profiles": [
+    "coder",
+    "researcher"
+  ],
+  "triggers": [
+    "bug",
+    "error",
+    "failure",
+    "traceback",
+    "regression",
+    "fix"
+  ],
+  "checksum": "sha256:2df217246458dfa40fd8d4a43be87553cab8f09e581f3714d64852cb37ab9118"
+}

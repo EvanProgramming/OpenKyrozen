@@ -36,7 +36,7 @@ Unknown keys, duplicate YAML mapping keys, invalid types, and out-of-range value
 | `KYROZEN_WEB_CAPABILITIES`, `KYROZEN_MCP_CAPABILITIES`, `KYROZEN_MCP_ALLOW_DANGEROUS` | Configure the server tool profiles; dangerous MCP opt-in selects the full profile. Read [security](security.md) before changing them. |
 | `KYROZEN_APPROVAL_MODE`, `KYROZEN_EXECUTION_SURFACE`, `KYROZEN_TUI_CAPABILITIES` | Runtime approval and UI surface controls. They do not change the OS account's permissions or turn off policy intersections. |
 | `KYROZEN_LEARNING_WORKER`, `KYROZEN_LEARNING_OLLAMA_BASE_URL`, `KYROZEN_LEARNING_CONSTITUTION` | Learning worker/runtime configuration, local Ollama endpoint, and local learning policy input. |
-| `KYROZEN_PROMPT_PROFILE` | Select the optional compact prompt/discovery profile; default is `classic`. |
+| `KYROZEN_PROMPT_PROFILE` | Select tool-description discovery detail (`classic` or `compact`); execution semantics are shared, and the default is `classic`. |
 | `KYROZEN_SKILLS_DIR`, `KYROZEN_BROWSER_PROFILES`, `KYROZEN_BROWSER_ALLOW_PRIVATE` | Select local skill and browser profile storage or explicitly permit private browser destinations. Treat those destinations and instructions as sensitive. |
 | `KYROZEN_GH_BINARY`, `KYROZEN_TUI_BINARY`, `KYROZEN_BACKEND_COMMAND`, `KYROZEN_BACKEND_PYTHON`, `KYROZEN_BACKEND_MODULE`, `KYROZEN_DISABLE_TUI` | Locate packaged/helper commands or force the Rich terminal fallback. These are mainly installer, test, and integration settings. |
 | `KYROZEN_TTS_TEXT`, `KYROZEN_MEMORY_MAX_LOGS` | Optional spoken text and bounded memory/log behavior. |

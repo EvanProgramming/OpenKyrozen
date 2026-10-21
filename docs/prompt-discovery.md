@@ -13,6 +13,11 @@ KYROZEN_PROMPT_PROFILE=classic kyrozen --project .
 The same environment variable applies to TUI and web processes. Invalid values
 raise an explicit configuration error when the runtime builds the prompt.
 
+`classic` and `compact` use the same execution and safety instructions. Compact
+changes the initial tool-description inventory and supports on-demand discovery;
+it does not select another protocol or execution engine. Native providers use
+their typed tool schemas. Text-only providers use the compatibility Action adapter.
+
 Compact mode keeps full descriptions for `list_dir`, `find_files`, `search_files`,
 `read_file`, `write_file`, `edit_file`, `apply_patch`, `run_cmd`, and `discover_tools`. Other
 permitted tools appear by exact name, grouped by capability. The agent can request
@@ -44,13 +49,15 @@ inventory so it cannot strand a capability that lacks the read permission used b
 discovery. Discovery changes which schemas are presented, not what the agent is
 authorized to execute. Declarations for tools already called remain available to
 complete current-turn provider history after a permission change, but new calls are
-checked against the current permitted set. The `classic` profile and providers
-without native tool support retain their existing inventory behavior.
+checked against the current permitted set. `classic` retains the full permitted
+inventory; compact inventory details apply through the same capability filters to
+native schemas and the legacy text adapter.
 
-Compact mode removes repeated workflow text and duplicate continuation guidance.
-It preserves role configuration, untrusted-input handling, mode controls, the
-Action protocol, durable task completion, and verification requirements. It does
-not use another model or grant additional permissions.
+The release-pinned `bug-fix` and `git-workflow` skills supply specialized guidance
+only for matching tasks. OpenKyrozen selects their versions once during turn
+preparation and keeps that content and its version receipts for the whole turn;
+later skill changes apply to subsequent turns. Skills cannot change the runtime's
+capability, workspace, approval, or verification checks.
 
 ## Live pilot: 2026-10-01
 
