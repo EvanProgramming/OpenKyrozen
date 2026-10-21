@@ -20,6 +20,9 @@ from openkyrozen.agent.types import ExecutionReceipt
 
 _TOOL_ARTIFACT_THRESHOLD = 12_000
 _TOOL_ARTIFACT_PREVIEW = 1_200
+_RETRYABLE_NETWORK_LOOKUPS = frozenset({
+    "search_web", "read_webpage", "analyze_remote_repo", "github_status", "github_read",
+})
 
 
 def _legacy_object_arguments(args, spec):
@@ -514,6 +517,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         return finish(outcome)
     start = time.time()
     raw_result = None
+    attempt = 0
     try:
         execution_args = args
         if _typed_arguments is not None:
@@ -522,17 +526,44 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                 self._notify_tool_execute(action, args, outcome)
                 return finish(outcome)
             execution_args = _typed_arguments
-        with self._delegation_tool_access(action, execution_args):
-            if callable(_on_dispatch):
-                _on_dispatch()
-            self._publish_runtime_event(
-                "tool.execution_started", {"tool_name": action}, call_id=_call_id, task_id=_task_id,
+        retry_safe = bool(
+            approved_spec
+            and approved_spec.risk == "normal"
+            and not self._is_state_changing_action(action, execution_args)
+            and (
+                (approved_spec.capability == "read"
+                 and approved_spec.side_effects in {"none", "read", "read_only"})
+                or (action in _RETRYABLE_NETWORK_LOOKUPS
+                    and approved_spec.source == "builtin"
+                    and approved_spec.capability == "network"
+                    and approved_spec.side_effects == "remote")
             )
-            if action in {"run_cmd", "execute_terminal_command"}:
-                raw_result = self.run_command(execution_args)
-                outcome = command_tool_result(raw_result)
-            else:
-                outcome = self.tool_registry._invoke_executor(approved_spec, execution_args)
+        )
+        while True:
+            attempt += 1
+            with self._delegation_tool_access(action, execution_args):
+                if callable(_pre_execution_check) and not _pre_execution_check():
+                    outcome = tool_failure("cancelled", "Tool retry stopped because its task is no longer active.")
+                    break
+                if (self.tool_registry.specs.get(action) is not approved_spec
+                        or not self._execution_capability_token.allows(approved_spec.capability)):
+                    outcome = tool_failure("permission_denied", "Tool retry stopped because its authority changed.")
+                    break
+                if callable(_on_dispatch):
+                    _on_dispatch()
+                self._publish_runtime_event(
+                    "tool.execution_started", {"tool_name": action, "attempt": attempt},
+                    call_id=_call_id, task_id=_task_id,
+                )
+                if action in {"run_cmd", "execute_terminal_command"}:
+                    raw_result = self.run_command(execution_args)
+                    outcome = command_tool_result(raw_result)
+                else:
+                    outcome = self.tool_registry._invoke_executor(approved_spec, execution_args)
+            if (attempt == 1 and retry_safe and outcome.error is not None
+                    and outcome.error.retriable):
+                continue
+            break
     except KeyboardInterrupt:
         outcome = tool_failure("cancelled", "Tool execution interrupted by user (Ctrl+C).")
     except Exception as exc:
