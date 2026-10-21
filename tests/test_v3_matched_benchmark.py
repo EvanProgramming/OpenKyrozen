@@ -6,6 +6,11 @@ from benchmarks.v3_matched import BudgetLedger, summarize
 
 
 class V3MatchedBenchmarkTests(unittest.TestCase):
+    def test_default_budget_matches_approved_five_dollar_cap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            budget = BudgetLedger(Path(directory) / "budget.sqlite3")
+            self.assertEqual(budget.remaining_usd, 5)
+
     def test_dollar_reservations_persist_and_unknown_usage_remains_reserved(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "budget.sqlite3"
@@ -49,6 +54,7 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
                         "verifier_result": "passed", "durable_side_effect_expected": True,
                         "durable_side_effect_verified": True, "recovery_required": True,
                         "recovery_verified": True,
+                        "protocol_recovery": 0, "duplicate_calls": 0,
                         "plan_revisions": 0, "cancelled_tasks": 0,
                         "material_revisions": 0, "unnecessary_churn": 0,
                     })
@@ -69,6 +75,9 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         self.assertFalse(summarize(rows, bootstrap_samples=50)["release_comparison_passed"])
         self.assertFalse(summarize(rows[:-1], bootstrap_samples=50)["complete"])
         rows[0]["usage_complete"] = False
+        self.assertFalse(summarize(rows, bootstrap_samples=50)["accounting_complete"])
+        rows[0]["usage_complete"] = True
+        del rows[0]["unnecessary_churn"]
         self.assertFalse(summarize(rows, bootstrap_samples=50)["accounting_complete"])
 
 

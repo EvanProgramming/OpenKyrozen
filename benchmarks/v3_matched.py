@@ -32,7 +32,7 @@ def _picodollars(amount: Decimal) -> int:
 class BudgetLedger:
     """Atomically reserve worst-case API spend and retain unknown attempts."""
 
-    def __init__(self, path: Path, *, limit_usd: str | Decimal = "20"):
+    def __init__(self, path: Path, *, limit_usd: str | Decimal = "5"):
         self.path = Path(path)
         self.limit_picodollars = _picodollars(Decimal(limit_usd))
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,7 +154,9 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000,
             ("input_tokens", "output_tokens", "cache_read_tokens", "latency_ms", "attempts",
              "first_delta_latency_ms", "verifier_result", "safety_passed",
              "durable_side_effect_expected", "durable_side_effect_verified",
-             "recovery_required", "recovery_verified"))
+             "recovery_required", "recovery_verified", "verified_success",
+             "workflow_state_correct", "requests", "protocol_recovery", "duplicate_calls",
+             "plan_revisions", "cancelled_tasks", "material_revisions", "unnecessary_churn"))
         for row in keyed.values()
     )
     result = {"protocol": "openkyrozen-v3-matched-v1", "complete": complete,
