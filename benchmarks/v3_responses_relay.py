@@ -81,8 +81,7 @@ class ResponsesRelay:
                 self.wfile.write(payload)
 
             def do_POST(self):
-                with relay._upstream_lock:
-                    self._forward_post()
+                self._forward_post()
 
             def _forward_post(self):
                 if self.path.split("?", 1)[0] not in {"/v1/responses", "/responses"}:
@@ -90,9 +89,6 @@ class ResponsesRelay:
                     return
                 if self.headers.get("Authorization") != "Bearer " + relay.client_key:
                     self._json(401, {"error": {"message": "invalid benchmark relay credential"}})
-                    return
-                if relay.provider_error:
-                    self._json(503, {"error": {"message": "benchmark provider is disabled after an upstream error"}})
                     return
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -119,41 +115,53 @@ class ResponsesRelay:
                        "model": MODEL, "max_output_tokens": MAX_OUTPUT_TOKENS,
                        "reserved_rmb": str(_cost(input_bound, MAX_OUTPUT_TOKENS)),
                        "status": "unknown", "usage": None}
-                if not relay.budget.reserve(attempt_id, input_token_bound=input_bound,
-                                            output_token_bound=MAX_OUTPUT_TOKENS, metadata=row):
-                    relay.budget_blocked = True
-                    self._json(402, {"error": {"message": "benchmark spend cap reached"}})
-                    return
-                with relay._lock:
-                    relay.rows.append(row)
-
                 started = time.monotonic()
                 stream_started = False
                 try:
-                    upstream = requests.post(
-                        relay.endpoint + "/responses", data=encoded,
-                        headers={"Authorization": "Bearer " + relay.api_key,
-                                 "Content-Type": "application/json"},
-                        timeout=180, allow_redirects=False, stream=wants_stream,
-                    )
-                    row["http_status"] = upstream.status_code
-                    if upstream.status_code != 200:
-                        relay.budget.settle(attempt_id, None)
-                        row["status"] = "unknown"
-                        relay.provider_error = f"upstream_http_{upstream.status_code}"
-                        upstream.close()
-                        self._json(upstream.status_code if 400 <= upstream.status_code < 600 else 502,
-                                   {"error": {"message": f"benchmark upstream returned HTTP {upstream.status_code}"}})
-                        return
-                    if not wants_stream:
-                        try:
-                            response_body = upstream.json()
-                        except ValueError:
-                            response_body = None
-                        if not isinstance(response_body, dict):
-                            relay.budget.settle(attempt_id, None)
-                            self._json(502, {"error": {"message": "benchmark upstream returned invalid JSON"}})
+                    with relay._upstream_lock:
+                        if relay.provider_error:
+                            self._json(503, {"error": {"message": "benchmark provider is disabled after an upstream error"}})
                             return
+                        if not relay.budget.reserve(attempt_id, input_token_bound=input_bound,
+                                                    output_token_bound=MAX_OUTPUT_TOKENS, metadata=row):
+                            relay.budget_blocked = True
+                            self._json(402, {"error": {"message": "benchmark spend cap reached"}})
+                            return
+                        with relay._lock:
+                            relay.rows.append(row)
+                        try:
+                            upstream = requests.post(
+                                relay.endpoint + "/responses", data=encoded,
+                                headers={"Authorization": "Bearer " + relay.api_key,
+                                         "Content-Type": "application/json"},
+                                timeout=180, allow_redirects=False, stream=wants_stream,
+                            )
+                        except requests.RequestException as exc:
+                            relay.provider_error = f"upstream_transport_{type(exc).__name__}"
+                            relay.budget.settle(attempt_id, None)
+                            row["transport_error"] = type(exc).__name__
+                            self._json(502, {"error": {"message": "benchmark upstream transport failed"}})
+                            return
+                        row["http_status"] = upstream.status_code
+                        if upstream.status_code != 200:
+                            relay.budget.settle(attempt_id, None)
+                            row["status"] = "unknown"
+                            relay.provider_error = f"upstream_http_{upstream.status_code}"
+                            upstream.close()
+                            self._json(upstream.status_code if 400 <= upstream.status_code < 600 else 502,
+                                       {"error": {"message": f"benchmark upstream returned HTTP {upstream.status_code}"}})
+                            return
+                        if not wants_stream:
+                            try:
+                                response_body = upstream.json()
+                            except ValueError:
+                                response_body = None
+                            if not isinstance(response_body, dict):
+                                relay.provider_error = "upstream_invalid_json"
+                                relay.budget.settle(attempt_id, None)
+                                self._json(502, {"error": {"message": "benchmark upstream returned invalid JSON"}})
+                                return
+                    if not wants_stream:
                         usage = relay._usage(response_body)
                         relay.budget.settle(attempt_id, usage)
                         row["usage"] = usage
@@ -199,7 +207,8 @@ class ResponsesRelay:
                                                           if usage is not None else None)
                 except (requests.RequestException, OSError) as exc:
                     if isinstance(exc, requests.RequestException):
-                        relay.provider_error = f"upstream_transport_{type(exc).__name__}"
+                        with relay._upstream_lock:
+                            relay.provider_error = f"upstream_transport_{type(exc).__name__}"
                     if row["status"] == "unknown":
                         relay.budget.settle(attempt_id, None)
                         row["transport_error"] = type(exc).__name__

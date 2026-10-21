@@ -21,9 +21,12 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.received = []
         self.remaining_at_forward = []
         self.stream_delimiter = ["\n\n"]
+        self.stream_control = {"enabled": False, "first_entered": threading.Event(),
+                               "release_first": threading.Event(), "second_arrived": threading.Event()}
         received = self.received
         remaining_at_forward = self.remaining_at_forward
         delimiter = self.stream_delimiter
+        stream_control = self.stream_control
         budget_ref = {}
 
         class Upstream(BaseHTTPRequestHandler):
@@ -39,6 +42,11 @@ class V3ResponsesRelayTests(unittest.TestCase):
             def do_POST(self):
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 received.append(request)
+                if request.get("stream") and stream_control["enabled"]:
+                    if len(received) == 1:
+                        stream_control["first_entered"].set()
+                    else:
+                        stream_control["second_arrived"].set()
                 remaining_at_forward.append(budget_ref["ledger"].remaining_rmb)
                 if request.get("stream"):
                     payload = ("event: response.completed\ndata: " + json.dumps({
@@ -54,6 +62,8 @@ class V3ResponsesRelayTests(unittest.TestCase):
                 self.send_header("Content-Type", "text/event-stream" if request.get("stream") else "application/json")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
+                if request.get("stream") and stream_control["enabled"] and len(received) == 1:
+                    stream_control["release_first"].wait(3)
                 self.wfile.write(payload)
 
         self.upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
@@ -180,6 +190,32 @@ class V3ResponsesRelayTests(unittest.TestCase):
 
         self.assertEqual(sorted(response.status_code for response in responses), [400, 503])
         self.assertEqual(len(self.received), 1)
+
+    def test_streaming_responses_do_not_serialize_independent_requests(self):
+        control = self.stream_control
+        control["enabled"] = True
+        responses = []
+        headers = {"Authorization": "Bearer " + self.relay.client_key}
+
+        def request():
+            response = requests.post(self.relay.url + "/responses", json={
+                "input": [{"role": "user", "content": "fixture"}], "stream": True,
+            }, headers=headers, timeout=5)
+            responses.append((response.status_code, response.content))
+
+        first = threading.Thread(target=request)
+        second = threading.Thread(target=request)
+        first.start()
+        self.assertTrue(control["first_entered"].wait(2))
+        second.start()
+        second_arrived_before_release = control["second_arrived"].wait(2)
+        control["release_first"].set()
+        first.join(5)
+        second.join(5)
+
+        self.assertTrue(second_arrived_before_release)
+        self.assertEqual(sorted(status for status, _ in responses), [200, 200])
+        self.assertEqual(len(self.received), 2)
 
     def test_local_client_disconnect_does_not_latch_provider_failure(self):
         handler_class = self.upstream.RequestHandlerClass
