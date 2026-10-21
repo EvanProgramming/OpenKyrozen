@@ -29,6 +29,7 @@ class ResponsesRelay:
         self.budget_blocked = False
         self.provider_error: str | None = None
         self._lock = threading.Lock()
+        self._upstream_lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
@@ -80,6 +81,10 @@ class ResponsesRelay:
                 self.wfile.write(payload)
 
             def do_POST(self):
+                with relay._upstream_lock:
+                    self._forward_post()
+
+            def _forward_post(self):
                 if self.path.split("?", 1)[0] not in {"/v1/responses", "/responses"}:
                     self._json(404, {"error": {"message": "unsupported benchmark route"}})
                     return
@@ -193,6 +198,7 @@ class ResponsesRelay:
                                                                      usage["cache_read_tokens"], usage["cache_write_tokens"]))
                                                           if usage is not None else None)
                 except (requests.RequestException, OSError) as exc:
+                    relay.provider_error = f"upstream_transport_{type(exc).__name__}"
                     if row["status"] == "unknown":
                         relay.budget.settle(attempt_id, None)
                         row["transport_error"] = type(exc).__name__

@@ -1,6 +1,7 @@
 import json
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -109,6 +110,71 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.assertEqual(blocked.status_code, 503)
         self.assertEqual(len(self.received), 1)
         self.assertEqual(self.budget.remaining_rmb, remaining)
+
+    def test_upstream_transport_error_disables_further_forwarding(self):
+        headers = {"Authorization": "Bearer " + self.relay.client_key}
+        original_post = requests.post
+        calls = []
+
+        def fail_transport(*_args, **_kwargs):
+            calls.append(True)
+            raise requests.ConnectionError("private upstream detail")
+
+        requests.post = fail_transport
+        try:
+            response = requests.Session().post(self.relay.url + "/responses", json={
+                "input": [{"role": "user", "content": "fixture"}],
+            }, headers=headers, timeout=3)
+        finally:
+            requests.post = original_post
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(self.relay.provider_error, "upstream_transport_ConnectionError")
+        self.assertNotIn("private upstream detail", self.relay.provider_error)
+        self.assertEqual(self.relay.rows[0]["status"], "unknown")
+        self.assertEqual(self.relay.rows[0]["transport_error"], "ConnectionError")
+        blocked = requests.post(self.relay.url + "/responses", json={"input": []},
+                                headers=headers, timeout=3)
+        self.assertEqual(blocked.status_code, 503)
+        self.assertEqual(len(calls), 1)
+
+    def test_concurrent_requests_do_not_bypass_provider_fail_stop(self):
+        entered = threading.Event()
+        release = threading.Event()
+        original = self.upstream.RequestHandlerClass.do_POST
+        handler_class = self.upstream.RequestHandlerClass
+        handler_class.http_status = 400
+
+        def delayed_error(handler):
+            entered.set()
+            release.wait(3)
+            original(handler)
+
+        handler_class.do_POST = delayed_error
+        headers = {"Authorization": "Bearer " + self.relay.client_key}
+        responses = []
+
+        def request():
+            responses.append(requests.post(self.relay.url + "/responses", json={
+                "input": [{"role": "user", "content": "fixture"}],
+            }, headers=headers, timeout=5))
+
+        try:
+            first = threading.Thread(target=request)
+            second = threading.Thread(target=request)
+            first.start()
+            self.assertTrue(entered.wait(2))
+            second.start()
+            time.sleep(0.1)
+            release.set()
+            first.join(5)
+            second.join(5)
+        finally:
+            release.set()
+            handler_class.do_POST = original
+
+        self.assertEqual(sorted(response.status_code for response in responses), [400, 503])
+        self.assertEqual(len(self.received), 1)
 
     def test_preserves_nonstreaming_native_tool_request_shape(self):
         response = requests.post(self.relay.url + "/responses", json={
