@@ -63,7 +63,7 @@ def _validated_shell_options(self, args: str | dict):
     return cmd, timeout, str(working_directory), env, background
 
 
-def run_command(self, args: str | dict) -> CommandResult:
+def run_command(self, args: str | dict, *, cancelled=None) -> CommandResult:
     """
     Execute a shell command and retain its machine-readable outcome.
     """
@@ -87,7 +87,38 @@ def run_command(self, args: str | dict) -> CommandResult:
             start_new_session=(os.name != "nt"),
         )
         try:
-            out, err = process.communicate(timeout=timeout)
+            deadline = started + timeout
+            while True:
+                if cancelled is not None and cancelled.is_set():
+                    raise InterruptedError
+                try:
+                    out, err = process.communicate(timeout=min(0.1, max(0.01, deadline - time.monotonic())))
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() >= deadline:
+                        raise
+        except InterruptedError:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                               capture_output=True, timeout=5, check=False)
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            try:
+                out, err = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                if os.name != "nt":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                out, err = process.communicate()
+            return CommandResult("Error: command cancelled", False, process.returncode,
+                                 "cancelled", out, err, time.monotonic() - started, True,
+                                 sandbox_backend=invocation.backend,
+                                 sandbox_reason=invocation.unavailable_reason)
         except subprocess.TimeoutExpired:
             if os.name == "nt":
                 subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],

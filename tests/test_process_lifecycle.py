@@ -3,9 +3,27 @@ import time
 import unittest
 import shlex
 import tempfile
+import threading
 
 
 class ProcessLifecycleTests(unittest.TestCase):
+    def test_foreground_shell_cancellation_terminates_process_group(self):
+        from openkyrozen.tools import ToolAdapters
+        with tempfile.TemporaryDirectory() as root:
+            adapters = ToolAdapters(root)
+            cancelled = threading.Event()
+            result = []
+            worker = threading.Thread(target=lambda: result.append(adapters.run_command({
+                "command": shlex.join([sys.executable, "-c", "import time; time.sleep(30)"]),
+                "timeout_seconds": 30,
+            }, cancelled=cancelled)))
+            worker.start()
+            time.sleep(.2)
+            cancelled.set()
+            worker.join(5)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result[0].failure, "cancelled")
+
     def test_runtime_exposes_session_process_tools_and_application_close_stops_process(self):
         from pathlib import Path
         from unittest.mock import patch

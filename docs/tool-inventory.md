@@ -80,6 +80,7 @@ Parameterized names are part of the contract; clients may substitute a value for
 | `POST` | `/api/auth/session` |
 | `POST` | `/api/chat` |
 | `POST` | `/api/chat/stream` |
+| `POST` | `/api/chat/{session_id}/cancel` |
 | `GET` | `/api/cost` |
 | `POST` | `/api/cost/reset` |
 | `GET` | `/api/health` |

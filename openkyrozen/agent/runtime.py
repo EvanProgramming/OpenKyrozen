@@ -5,6 +5,7 @@ import copy
 import asyncio
 import json
 import uuid
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from .models import AgentSession, WorkspaceState
@@ -283,6 +284,8 @@ class AgentRuntime:
         self._default_session = AgentSession(memory.session_id or "surface:cli", memory, tasks, interaction, workspace)
         self._default_turn = ExecutionContext()
         self._turn_context = ContextVar("agent_turn", default=None)
+        self._active_turns = {}
+        self._active_turns_lock = threading.Lock()
         self._session_context = ContextVar("agent_session", default=None)
         self._surface_capability_override = ContextVar("agent_surface_capabilities", default=None)
         self._conversation_turn_id = ContextVar("conversation_turn_id", default=None)
@@ -405,6 +408,14 @@ class AgentRuntime:
                     kind, payload if isinstance(payload, dict) else {"data": payload}, task_id=task_id,
                 )
             ) if task_event_context is not None else None
+            cancellation = threading.Event()
+            turn_context = copy.copy(self.execution_context)
+            from openkyrozen.agent.turn import CancellationEvents
+            turn_context.cancelled = CancellationEvents(turn_context.cancelled, cancellation)
+            turn_context_token = self._turn_context.set(turn_context)
+            session_key = (str(getattr(getattr(session, "memory", None), "user_id", "local")), str(session.session_id))
+            with self._active_turns_lock:
+                self._active_turns.setdefault(session_key, set()).add(cancellation)
             try:
                 publisher.publish("turn.started", {})
                 try:
@@ -428,6 +439,13 @@ class AgentRuntime:
                     publisher.publish("turn.completed", {"status": self._turn_completion_status.get()})
                 return reply
             finally:
+                with self._active_turns_lock:
+                    active = self._active_turns.get(session_key)
+                    if active is not None:
+                        active.discard(cancellation)
+                        if not active:
+                            self._active_turns.pop(session_key, None)
+                self._turn_context.reset(turn_context_token)
                 self._stream_event_callback.reset(events)
                 self._last_response_is_native.reset(native_response)
                 self._turn_failed.reset(turn_failed)
@@ -441,6 +459,16 @@ class AgentRuntime:
                 self._conversation_expected_head.reset(conversation_head)
                 self._context_history_seen.reset(history_seen)
                 self._context_history_projection_ids.reset(history_projection)
+
+    def cancel_turn(self, session_id: str, *, user_id: str = "local") -> bool:
+        """Request cancellation of the active foreground turn for one session."""
+        with self._active_turns_lock:
+            active = tuple(self._active_turns.get((str(user_id), str(session_id)), ()))
+        if not active:
+            return False
+        for cancellation in active:
+            cancellation.set()
+        return True
 
     @property
     def conversation_history(self):
@@ -543,7 +571,10 @@ class AgentRuntime:
             except (OSError, RuntimeError, ValueError) as exc:
                 return CommandResult(f"Error starting background process: {exc}", False,
                                      failure="execution_error")
-        return self.current_session.workspace.adapters.run_command(args)
+        if self.execution_context.cancelled is not None and self.execution_context.cancelled.is_set():
+            from openkyrozen.tools.models import CommandResult
+            return CommandResult("Command cancelled before it started.", False, failure="cancelled")
+        return self.current_session.workspace.adapters.run_command(args, cancelled=self.execution_context.cancelled)
 
     @legacy_text_api
     def _read_process(self, args):

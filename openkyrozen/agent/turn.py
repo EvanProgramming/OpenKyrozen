@@ -1,5 +1,13 @@
 """State shared by the phases of a single turn."""
 from dataclasses import dataclass
+
+
+class CancellationEvents:
+    def __init__(self, *events):
+        self.events = tuple(event for event in events if event is not None)
+
+    def is_set(self):
+        return any(event.is_set() for event in self.events)
 from typing import Any
 
 @dataclass
@@ -53,6 +61,7 @@ class ExecutionContext:
     delegation_budget_run_id: str | None = None
     delegation_tools: frozenset[str] | None = None
     max_steps: int | None = None
+    cancelled: Any = None
 
 
 def scoped_turn(function):

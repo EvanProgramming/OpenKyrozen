@@ -229,6 +229,39 @@ class RuntimeEventChatTests(unittest.TestCase):
                 runtime.chat(runtime.current_session, "hi", on_runtime_event=events.append)
         self.assertEqual([event.kind for event in events], ["turn.started", "turn.cancelled"])
 
+    def test_cancel_turn_sets_only_the_active_session_signal(self):
+        import threading
+        runtime = self.app.runtime
+        session = runtime.current_session
+        entered = threading.Event()
+        observed = []
+
+        def blocked_turn(*_args, **_kwargs):
+            entered.set()
+            cancellation = runtime.execution_context.cancelled
+            while not cancellation.is_set():
+                time.sleep(.01)
+            observed.append(cancellation.is_set())
+            from openkyrozen.providers.errors import ProviderError, ProviderErrorKind
+            raise ProviderError(ProviderErrorKind.CANCELLED)
+
+        def run_chat():
+            try:
+                runtime.chat(session, "hi")
+            except Exception:
+                pass
+
+        with patch.object(runtime, "_chat_turn", side_effect=blocked_turn):
+            worker = threading.Thread(target=run_chat)
+            worker.start()
+            self.assertTrue(entered.wait(2))
+            self.assertFalse(runtime.cancel_turn("other-session", user_id=session.memory.user_id))
+            self.assertTrue(runtime.cancel_turn(session.session_id, user_id=session.memory.user_id))
+            worker.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(observed, [True])
+
+
     def test_native_response_text_does_not_enter_legacy_control_parser(self):
         runtime = self.app.runtime
         text = "Action: ordinary prose\nTaskList: ordinary prose"

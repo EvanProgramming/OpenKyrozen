@@ -18,7 +18,11 @@ def _command(self, name: str, args: Any, request_id: str) -> None:
     else:
         command = raw.lower().replace("-", "_")
         arg_text = args if isinstance(args, str) else ""
-    if command in {"/quit", "/exit", "quit", "exit", "shutdown"}:
+    if command in {"/cancel", "cancel"}:
+        session = runtime.current_session
+        cancelled = runtime.cancel_turn(session.session_id, user_id=session.memory.user_id)
+        self.emit("response", request_id, text="Cancellation requested." if cancelled else "No active turn to cancel.")
+    elif command in {"/quit", "/exit", "quit", "exit", "shutdown"}:
         self.stop()
     elif command in {"/provider", "provider"}:
         if isinstance(args, Mapping) and args.get("provider"):

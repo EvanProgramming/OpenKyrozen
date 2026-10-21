@@ -434,6 +434,14 @@ async def api_chat(self, request: Request):
             "interaction": session["interaction"], "context": session.get("context")}
 
 
+async def api_cancel_chat(self, session_id: str, request: Request):
+    service = self
+    session_id = service._normalise_session_id(session_id)
+    user_id = service._actor_for_request(request)
+    return {"session_id": session_id,
+            "cancelled": service._agent.cancel_turn(session_id, user_id=user_id)}
+
+
 async def api_chat_stream(self, request: Request):
     service = self
     """SSE streaming chat endpoint."""

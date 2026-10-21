@@ -68,6 +68,7 @@ class WebService:
         self.app.get('/api/v2/decision-assist', dependencies=[Depends(self.require_api_access)])(self.decision_assist_status)
         self.app.post('/api/chat', dependencies=[Depends(self.require_api_access)])(self.api_chat)
         self.app.post('/api/chat/stream', dependencies=[Depends(self.require_api_access)])(self.api_chat_stream)
+        self.app.post('/api/chat/{session_id}/cancel', dependencies=[Depends(self.require_api_access)])(self.api_cancel_chat)
         self.app.get('/api/memory', dependencies=[Depends(self.require_api_access)])(self.api_memory)
         self.app.get('/api/v2/memory', dependencies=[Depends(self.require_api_access)])(self.api_v2_memory)
         self.app.get('/api/v2/memory/claims', dependencies=[Depends(self.require_api_access)])(self.api_v2_memory_claims)
@@ -147,7 +148,7 @@ class WebService:
 
     from openkyrozen.interfaces.web.tasks import (_execute_durable_task, _task_manager, _task_worker, _task_scopes, _recover_task_scopes, _run_task_worker_cycle, _run_scheduled_job, api_v2_tasks, api_v2_create_task, api_v2_resume_task, api_v2_schedules, api_v2_create_schedule, api_v2_disable_schedule)
 
-    from openkyrozen.interfaces.web.chat import (_normalise_session_id, _normalise_profile, _normalise_memory_actor, _normalise_memory_context, _initialise_session_defaults, _set_memory_context, _actor_for_request, _get_or_create_session, _interaction_for_session, _history_for_session, _ensure_history_baseline, _public_history_node, _apply_chat_controls, _run_session_chat, _validate_message, _server_capabilities, _allowed_server_tools, _cost_summary, _cost_report, _json_object, api_chat, api_chat_stream)
+    from openkyrozen.interfaces.web.chat import (_normalise_session_id, _normalise_profile, _normalise_memory_actor, _normalise_memory_context, _initialise_session_defaults, _set_memory_context, _actor_for_request, _get_or_create_session, _interaction_for_session, _history_for_session, _ensure_history_baseline, _public_history_node, _apply_chat_controls, _run_session_chat, _validate_message, _server_capabilities, _allowed_server_tools, _cost_summary, _cost_report, _json_object, api_chat, api_chat_stream, api_cancel_chat)
 
     from openkyrozen.interfaces.web.pages import (chat_page, fast_diagnostics, decision_assist_status, pwa_manifest)
 
