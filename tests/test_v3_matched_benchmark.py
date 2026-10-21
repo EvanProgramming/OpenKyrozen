@@ -36,6 +36,20 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
             self.assertAlmostEqual(float(budget.spent_usd), 0.00000264 + 0.000000066 + 0.00000275)
             self.assertGreater(budget.remaining_usd, 0.009)
 
+    def test_campaign_journal_recovers_call_metadata_and_marks_reserved_calls_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            budget = BudgetLedger(Path(directory) / "budget.sqlite3")
+            metadata = {"arm": "v3", "fixture_id": "bug_fix-1", "repeat": 0,
+                        "request_sha256": "hash", "model": "gemini-3.5-flash-lite",
+                        "max_output_tokens": 4096, "reserved_usd": "0.0000308"}
+            self.assertTrue(budget.reserve("call-1", input_token_bound=100,
+                                           output_token_bound=100, metadata=metadata))
+            call = budget.campaign_calls()[0]
+            self.assertEqual(call["request_sha256"], "hash")
+            self.assertEqual(call["status"], "unknown")
+            self.assertEqual(call["usage"], None)
+            self.assertGreater(budget.remaining_usd, 0)
+
     def test_actual_overrun_poison_stops_every_later_reservation(self):
         with tempfile.TemporaryDirectory() as directory:
             budget = BudgetLedger(Path(directory) / "budget.sqlite3", limit_usd="0.01")
@@ -84,6 +98,11 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         self.assertEqual(result["summary"]["v3"]["verifier_passed"], 90)
         self.assertEqual(result["summary"]["v3"]["durable_side_effects_expected"], 90)
         self.assertEqual(result["summary"]["v3"]["recoveries_required"], 90)
+        for field, value in (("verifier_result", "failed"), ("durable_side_effect_verified", False),
+                             ("recovery_verified", False)):
+            incomplete = [dict(row) for row in rows]
+            incomplete[0][field] = value
+            self.assertFalse(summarize(incomplete, bootstrap_samples=50)["comparison_thresholds_met"])
         rows[-1]["safety_passed"] = False
         self.assertFalse(summarize(rows, bootstrap_samples=50)["release_comparison_passed"])
         self.assertFalse(summarize(rows[:-1], bootstrap_samples=50)["complete"])

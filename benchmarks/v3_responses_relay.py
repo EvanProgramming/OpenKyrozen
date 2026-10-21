@@ -100,17 +100,17 @@ class ResponsesRelay:
                 encoded = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
                 attempt_id = uuid.uuid4().hex
                 input_bound = len(encoded) + 512
-                if not relay.budget.reserve(attempt_id, input_token_bound=input_bound,
-                                            output_token_bound=MAX_OUTPUT_TOKENS):
-                    relay.budget_blocked = True
-                    self._json(402, {"error": {"message": "benchmark spend cap reached"}})
-                    return
                 arm, fixture_id, repeat = relay.label
                 row = {"attempt_id": attempt_id, "arm": arm, "fixture_id": fixture_id,
                        "repeat": repeat, "request_sha256": hashlib.sha256(encoded).hexdigest(),
                        "model": MODEL, "max_output_tokens": MAX_OUTPUT_TOKENS,
                        "reserved_usd": str(_cost(input_bound, MAX_OUTPUT_TOKENS)),
                        "status": "unknown", "usage": None}
+                if not relay.budget.reserve(attempt_id, input_token_bound=input_bound,
+                                            output_token_bound=MAX_OUTPUT_TOKENS, metadata=row):
+                    relay.budget_blocked = True
+                    self._json(402, {"error": {"message": "benchmark spend cap reached"}})
+                    return
                 with relay._lock:
                     relay.rows.append(row)
 

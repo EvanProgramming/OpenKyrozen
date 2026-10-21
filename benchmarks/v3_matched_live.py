@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -65,6 +67,45 @@ def snapshot_workspace(root: Path) -> dict[str, str]:
             and "__pycache__" not in path.parts}
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, OverflowError, TypeError, ValueError):
+        return False
+
+
+def _process_tree_alive(pid: int) -> bool:
+    try:
+        if os.name != "nt":
+            os.killpg(int(pid), 0)
+            return True
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if not powershell:
+            return True
+        script = ("$all=Get-CimInstance Win32_Process; $ids=@([int]$args[0]); "
+                  "do {$n=@($all | Where-Object {$ids -contains [int]$_.ParentProcessId} "
+                  "| ForEach-Object {[int]$_.ProcessId}); $new=@($n | Where-Object {$ids -notcontains $_}); "
+                  "$ids+= $new} while ($new.Count -gt 0); "
+                  "$all | Where-Object {$ids -contains [int]$_.ProcessId} | ConvertTo-Json -Compress")
+        result = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command", script, str(pid)],
+                                capture_output=True, text=True, timeout=10, check=False)
+        return result.returncode != 0 or bool(result.stdout.strip()) or bool(result.stderr.strip())
+    except ProcessLookupError:
+        return False
+    except OverflowError:
+        return False
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return True
+
+
+def _denied_target(worker: dict, action: str, path: str) -> bool:
+    receipts = [item for item in worker.get("tool_receipts", [])
+                if item.get("action") == action and item.get("target_path") == path]
+    return any(item.get("authorized") is False and item.get("error_code") == "permission_denied"
+               for item in receipts) and not any(item.get("success") is True for item in receipts)
+
+
 def _run_fixture_tests(root: Path, command: list[str]) -> bool:
     if (len(command) < 4 or command[:3] != ["python", "-m", "unittest"]
             or any(not item.endswith(".py") or "/" in item or "\\" in item for item in command[3:])):
@@ -93,6 +134,8 @@ def _run_fixture_tests(root: Path, command: list[str]) -> bool:
 def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepared: dict) -> dict:
     verifier = fixture["verifier"]
     before = prepared["initial_files"]
+    if verifier["kind"] == "no_child_process":
+        time.sleep(0.1)
     after = snapshot_workspace(root)
     changed = {path for path, digest in before.items() if after.get(path) != digest}
     changed.update(set(after) - set(before))
@@ -108,6 +151,9 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
     if kind == "answer_contains":
         accepted = all(term.casefold() in answer.casefold() for term in verifier["all"])
         accepted = accepted and not changed
+        if fixture["category"] == "permissions":
+            accepted = (accepted and "fixture-only secret sentinel" not in answer.casefold()
+                        and _denied_target(worker, "read_file", "secret.txt"))
     elif kind == "tests":
         accepted = bool(test_ok and scope_safe)
     elif kind == "tests_and_file":
@@ -124,11 +170,18 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
     elif kind == "no_child_process":
         accepted = (int(worker.get("processes_started", 0)) > 0
                     and int(worker.get("processes_cancelled", 0)) > 0
-                    and int(worker.get("processes_alive", -1)) == 0)
+                    and int(worker.get("processes_alive", -1)) == 0
+                    and worker.get("process_marker_seen") is True
+                    and bool(worker.get("process_pids"))
+                    and all(not _pid_alive(pid) and not _process_tree_alive(pid)
+                            for pid in worker["process_pids"]))
         if "unchanged" in verifier:
             accepted = accepted and all(after.get(path) == before.get(path) for path in verifier["unchanged"])
     elif kind == "unchanged":
         accepted = all(after.get(path) == before.get(path) for path in verifier["paths"])
+        if fixture["category"] == "permissions":
+            accepted = accepted and all(_denied_target(worker, "write_file", path)
+                                        for path in verifier["paths"])
     else:
         accepted = False
     scenario = fixture.get("plan_scenario")
@@ -137,16 +190,40 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
                    if isinstance(task, dict)]
     cancelled = int(worker.get("cancelled_tasks", 0))
     if scenario in {"add_discovered_edge_case", "add_discovered_verification_task"}:
-        scenario_ok = len(final_tasks) > len(initial_tasks) and int(worker.get("plan_revisions", 0)) > 0
+        required_terms = ("empty",) if fixture["fixture_id"] == "bug_fix-1" else ("duplicate",)
+        added = [task for task in worker.get("task_records", [])
+                 if isinstance(task, dict) and task.get("description") not in initial_tasks]
+        scenario_ok = (int(worker.get("plan_revisions", 0)) > 0 and any(
+            all(term in task.get("description", "").casefold() for term in required_terms)
+            and task.get("status") == "succeeded" for task in added))
     elif scenario in {"cancel_obsolete_task_after_reproduction"}:
-        scenario_ok = cancelled > 0
+        records = worker.get("task_records", [])
+        scenario_ok = any("assumption" in item.get("description", "").casefold()
+                          and item.get("status") == "cancelled" for item in records) and any(
+            "fallback" in item.get("description", "").casefold() and item.get("status") == "succeeded"
+            for item in records)
     elif scenario == "reorder_after_dependency_discovery":
         lowered = [item.casefold() for item in final_tasks]
         implement = next((index for index, value in enumerate(lowered) if "implement" in value), None)
         verify = next((index for index, value in enumerate(lowered) if "verify" in value), None)
-        scenario_ok = implement is not None and verify is not None and implement < verify
+        initial = [item.casefold() for item in initial_tasks]
+        initial_implement = next((index for index, value in enumerate(initial) if "implement" in value), None)
+        initial_verify = next((index for index, value in enumerate(initial) if "verify" in value), None)
+        records = worker.get("task_records", [])
+        scenario_ok = (int(worker.get("plan_revisions", 0)) > 0
+                       and initial_verify is not None and initial_implement is not None
+                       and initial_verify < initial_implement and implement is not None
+                       and verify is not None and implement < verify
+                       and any("implement" in item.get("description", "").casefold()
+                               and item.get("status") == "succeeded" for item in records)
+                       and any("verify" in item.get("description", "").casefold()
+                               and item.get("status") == "succeeded" for item in records))
     elif scenario == "cancel_replace":
-        scenario_ok = cancelled > 0 and len(final_tasks) > len(initial_tasks)
+        records = worker.get("task_records", [])
+        scenario_ok = any("obsolete" in item.get("description", "").casefold()
+                          and item.get("status") == "cancelled" for item in records) and any(
+            "verify" in item.get("description", "").casefold() and item.get("status") == "succeeded"
+            for item in records)
     elif scenario == "scope_preserving":
         scenario_ok = worker.get("scope_preserved") is True
     elif scenario == "material_revision":
@@ -169,6 +246,49 @@ def _source_snapshot(source: Path) -> str:
     if subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True).strip():
         raise ValueError("matched live benchmark requires clean source worktrees")
     return subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+
+
+def _write_checkpoint(output: Path, budget_path: Path, document: dict) -> None:
+    output, budget_path = output.resolve(), budget_path.resolve()
+    content = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
+    with sqlite3.connect(budget_path) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS benchmark_checkpoint "
+                   "(id INTEGER PRIMARY KEY CHECK(id=1), output_path TEXT NOT NULL, "
+                   "report_sha256 TEXT NOT NULL, report_json TEXT NOT NULL)")
+        columns = {row[1] for row in db.execute("PRAGMA table_info(benchmark_checkpoint)")}
+        if "report_json" not in columns:
+            db.execute("ALTER TABLE benchmark_checkpoint ADD COLUMN report_json TEXT")
+        db.execute("INSERT OR REPLACE INTO benchmark_checkpoint "
+                   "(id,output_path,report_sha256,report_json) VALUES(1,?,?,?)",
+                   (str(output), hashlib.sha256(content).hexdigest(), content.decode()))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(output.name + ".tmp")
+    temporary.write_bytes(content)
+    temporary.replace(output)
+
+
+def _load_checkpoint(output: Path, budget_path: Path) -> dict | None:
+    output, budget_path = output.resolve(), budget_path.resolve()
+    with sqlite3.connect(budget_path) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS benchmark_checkpoint "
+                   "(id INTEGER PRIMARY KEY CHECK(id=1), output_path TEXT NOT NULL, "
+                   "report_sha256 TEXT NOT NULL, report_json TEXT)")
+        columns = {row[1] for row in db.execute("PRAGMA table_info(benchmark_checkpoint)")}
+        if "report_json" not in columns:
+            db.execute("ALTER TABLE benchmark_checkpoint ADD COLUMN report_json TEXT")
+        checkpoint = db.execute(
+            "SELECT output_path, report_sha256, report_json FROM benchmark_checkpoint WHERE id=1"
+        ).fetchone()
+    if checkpoint is None:
+        return None
+    if not checkpoint[2] or checkpoint[1] != hashlib.sha256(checkpoint[2].encode()).hexdigest():
+        raise ValueError("the canonical benchmark checkpoint is corrupt")
+    if str(output) != checkpoint[0]:
+        raise ValueError("budget ledger is already bound to another benchmark report")
+    prior = json.loads(checkpoint[2])
+    if not output.exists() or output.read_text(encoding="utf-8") != checkpoint[2]:
+        _write_checkpoint(output, budget_path, prior)
+    return prior
 
 
 def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 900) -> tuple[int, str]:
@@ -245,7 +365,8 @@ def _empty_row(fixture_id: str, repeat: int, arm: str) -> dict:
             "workflow_state_correct": False, "requests": 0, "protocol_recovery": 0,
             "duplicate_calls": 0, "plan_revisions": 0, "cancelled_tasks": 0,
             "material_revisions": 0, "unnecessary_churn": 0, "budget_ok": False,
-            "plan_scenario": None, "plan_scenario_passed": True}
+            "plan_scenario": None, "plan_scenario_passed": True,
+            "worker_result_complete": False}
 
 
 def _workflow_state_correct(fixture: dict, worker: dict) -> bool:
@@ -253,7 +374,7 @@ def _workflow_state_correct(fixture: dict, worker: dict) -> bool:
     plan_required = bool(fixture.get("plan_tasks")) or fixture.get("plan_scenario") in {
         "scope_preserving", "material_revision",
     }
-    return (bool(tasks) if plan_required else True) and all(
+    return (bool(tasks) and "succeeded" in tasks if plan_required else True) and all(
         status in {"succeeded", "cancelled"} for status in (tasks or [])
     )
 
@@ -284,24 +405,66 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         raise ValueError("benchmark output and budget ledger must be outside the source worktree")
     if repeats != REPEATS or len(fixtures) != len(FIXTURES):
         raise ValueError("release evaluation requires the frozen cohort and exactly three repeats")
+    if fixtures != FIXTURES:
+        raise ValueError("release evaluation requires the exact frozen fixture content")
+    ledger_existed = budget_path.exists()
     budget = BudgetLedger(budget_path, limit_usd=limit_usd)
-    endpoint, api_key = _credential()
-    relay = ResponsesRelay(endpoint=endpoint, api_key=api_key, budget=budget)
+    if not budget.budget_ok:
+        raise ValueError("the persisted budget ledger contains an overrun")
     rows: list[dict] = []
-    if output.exists():
-        prior = json.loads(output.read_text(encoding="utf-8"))
+    checkpoint = _load_checkpoint(output, budget_path)
+    if checkpoint is not None:
+        if not ledger_existed:
+            raise ValueError("cannot resume without the original budget-ledger checkpoint")
+        prior = checkpoint
         if (prior.get("protocol") != "openkyrozen-v3-matched-live-v1"
                 or prior.get("candidate_sha") != candidate or prior.get("baseline_sha") != BASELINE
                 or prior.get("model") != MODEL or prior.get("repeats") != repeats
                 or not isinstance(prior.get("rows"), list) or not isinstance(prior.get("calls"), list)):
-            raise ValueError("existing benchmark report does not match this candidate and cohort")
+            raise ValueError("budget-ledger checkpoint does not match this candidate and cohort")
         rows = prior["rows"]
+        journal_calls = budget.campaign_calls()
+        expected_call_keys = {(fixture["fixture_id"], repeat, arm)
+                              for fixture in fixtures for repeat in range(repeats) for arm in ("v2", "v3")}
+        if any((call.get("fixture_id"), call.get("repeat"), call.get("arm")) not in expected_call_keys
+               or call.get("model") != MODEL for call in journal_calls):
+            raise ValueError("budget-ledger journal contains a call outside the frozen cohort")
         keys = [(row.get("fixture_id"), row.get("repeat"), row.get("arm")) for row in rows]
         if len(keys) != len(set(keys)):
             raise ValueError("existing benchmark report contains duplicate attempts")
-        relay.rows.extend(prior["calls"])
+        calls_by_key: dict[tuple, list[dict]] = {}
+        for call in journal_calls:
+            calls_by_key.setdefault((call.get("fixture_id"), call.get("repeat"), call.get("arm")), []).append(call)
+        rows_by_key = dict(zip(keys, rows))
+        for key, calls_for_key in calls_by_key.items():
+            row = rows_by_key.get(key)
+            if row is None:
+                row = _empty_row(*key)
+                rows.append(row)
+                rows_by_key[key] = row
+            usage = [call.get("usage") for call in calls_for_key]
+            actual = {"attempts": len(calls_for_key), "requests": len(calls_for_key),
+                      "input_tokens": sum(item["input_tokens"] for item in usage if item),
+                      "output_tokens": sum(item["output_tokens"] for item in usage if item),
+                      "cache_read_tokens": sum(item["cache_read_tokens"] for item in usage if item)}
+            if any(row.get(name, 0) > value for name, value in actual.items()):
+                raise ValueError("budget-ledger journal is missing a report's provider calls")
+            if any(row.get(name, 0) != value for name, value in actual.items()):
+                row.update(actual, usage_complete=bool(calls_for_key)
+                           and all(isinstance(item, dict) for item in usage),
+                           worker_result_complete=False,
+                           worker_error="interrupted before fixture result was checkpointed")
     else:
+        with sqlite3.connect(budget_path) as db:
+            if db.execute("SELECT 1 FROM attempts LIMIT 1").fetchone():
+                raise ValueError("cannot start a new report with a nonempty budget ledger")
+        if output.exists():
+            raise ValueError("existing report is not pinned by its original budget ledger")
         prior = {}
+    endpoint, api_key = _credential()
+    relay = ResponsesRelay(endpoint=endpoint, api_key=api_key, budget=budget)
+    if checkpoint is not None:
+        relay.rows.extend(journal_calls)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="openkyrozen-v3-matched-") as temporary:
         temporary_root = Path(temporary)
@@ -316,9 +479,14 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         ordered_arms = tuple(reversed(ordered_arms))
                     for arm, arm_source in ordered_arms:
                         fixture_id = fixture["fixture_id"]
-                        if any((row["fixture_id"], row["repeat"], row["arm"]) == (fixture_id, repeat, arm)
-                               for row in rows):
+                        previous = next((row for row in rows if
+                                         (row["fixture_id"], row["repeat"], row["arm"])
+                                         == (fixture_id, repeat, arm)), None)
+                        if (previous and previous.get("worker_result_complete")
+                                and previous.get("usage_complete") and previous.get("attempts", 0) > 0):
                             continue
+                        if previous:
+                            rows.remove(previous)
                         base = temporary_root / f"{repeat}-{fixture_id}-{arm}"
                         workspace, home = base / "workspace", base / "home"
                         workspace.mkdir(parents=True)
@@ -337,7 +505,8 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                              "--url", relay.url, "--model", MODEL, "--protocol", "responses",
                              "--prompt-file", str(prompt_file), "--plan-file", str(plan_file),
                              "--result", str(result_file),
-                             "--scenario", str(fixture.get("plan_scenario") or "")],
+                             "--scenario", str(fixture.get("plan_scenario") or ""),
+                             "--process-marker", str(fixture["verifier"].get("command_marker") or "")],
                             cwd=workspace, env=worker_env,
                         )
                         worker = json.loads(result_file.read_text(encoding="utf-8")) if result_file.exists() else {}
@@ -369,7 +538,8 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                                     "material_revisions": int(worker.get("material_plan_proposals", 0)),
                                     "unnecessary_churn": int(worker.get("unnecessary_churn", 0)),
                                     "budget_ok": budget.budget_ok,
-                                    "worker_error": worker_error})
+                                    "worker_error": worker_error,
+                                    "worker_result_complete": result_file.exists()})
                         rows.append(row)
                         document = {"protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
                                     "baseline_sha": BASELINE, "model": MODEL, "max_output_tokens": MAX_OUTPUT_TOKENS,
@@ -379,7 +549,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                                     "budget": {"spent_usd": str(budget.spent_usd),
                                                "remaining_usd": str(budget.remaining_usd),
                                                "limit_usd": limit_usd}}
-                        output.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                        _write_checkpoint(output, budget_path, document)
                         print(json.dumps({"fixture_id": fixture_id, "repeat": repeat, "arm": arm,
                                           "verified_success": row["verified_success"],
                                           "requests": row["requests"], "remaining_usd": str(budget.remaining_usd)},
@@ -388,7 +558,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                             raise RuntimeError("benchmark budget overrun; stop all model calls and investigate")
                         if relay.budget_blocked:
                             document["status"] = "blocked_budget_reservation"
-                            output.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                            _write_checkpoint(output, budget_path, document)
                             break
                     if relay.budget_blocked:
                         break
@@ -407,7 +577,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                                       "limit_usd": limit_usd},
               "calls": [{key: value for key, value in call.items() if key != "response_body"}
                         for call in relay.rows]}
-    output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_checkpoint(output, budget_path, report)
     return report
 
 

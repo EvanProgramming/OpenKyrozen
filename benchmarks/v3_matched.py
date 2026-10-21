@@ -42,8 +42,11 @@ class BudgetLedger:
             db.execute("""CREATE TABLE IF NOT EXISTS attempts (
                 id TEXT PRIMARY KEY, reserved_microdollars INTEGER NOT NULL,
                 actual_microdollars INTEGER, status TEXT NOT NULL,
-                usage_json TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                usage_json TEXT, metadata_json TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )""")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(attempts)")}
+            if "metadata_json" not in columns:
+                db.execute("ALTER TABLE attempts ADD COLUMN metadata_json TEXT")
             current = db.execute("SELECT limit_picodollars FROM budget_config WHERE id=1").fetchone()
             if current is None:
                 db.execute("INSERT INTO budget_config VALUES(1,?)", (self.limit_picodollars,))
@@ -75,7 +78,8 @@ class BudgetLedger:
             return Decimal(0)
         return Decimal(max(0, self.limit_picodollars - spent - held)) / _PICODOLLARS
 
-    def reserve(self, attempt_id: str, *, input_token_bound: int, output_token_bound: int) -> bool:
+    def reserve(self, attempt_id: str, *, input_token_bound: int, output_token_bound: int,
+                metadata: dict | None = None) -> bool:
         if not attempt_id or min(input_token_bound, output_token_bound) < 0:
             raise ValueError("attempt ID and nonnegative token bounds are required")
         reserve = _picodollars(_cost(input_token_bound, output_token_bound))
@@ -91,13 +95,36 @@ class BudgetLedger:
                 db.rollback()
                 return False
             try:
-                db.execute("INSERT INTO attempts(id,reserved_microdollars,status) VALUES(?,?,'reserved')",
-                           (attempt_id, reserve))
+                db.execute("INSERT INTO attempts(id,reserved_microdollars,status,metadata_json) "
+                           "VALUES(?,?,'reserved',?)",
+                           (attempt_id, reserve, json.dumps(metadata, sort_keys=True) if metadata is not None else None))
             except sqlite3.IntegrityError:
                 db.rollback()
                 raise ValueError("attempt ID has already been reserved") from None
             db.commit()
         return True
+
+    def campaign_calls(self) -> list[dict]:
+        with sqlite3.connect(self.path) as db:
+            attempts = db.execute(
+                "SELECT id,reserved_microdollars,actual_microdollars,status,usage_json,metadata_json "
+                "FROM attempts ORDER BY created_at,id"
+            ).fetchall()
+        calls = []
+        for attempt_id, reserved, actual, status, usage_json, metadata_json in attempts:
+            if not metadata_json:
+                raise ValueError("budget ledger contains an attempt without its campaign journal")
+            if status == "reserved":
+                self.settle(attempt_id, None)
+                status, actual = "unknown", None
+            call = json.loads(metadata_json)
+            if Decimal(reserved) / _PICODOLLARS != Decimal(call.get("reserved_usd", "-1")):
+                raise ValueError("campaign journal reservation does not match budget ledger")
+            call.update(attempt_id=attempt_id, status=status,
+                        usage=json.loads(usage_json) if usage_json else None,
+                        actual_usd=(str(Decimal(actual) / _PICODOLLARS) if actual is not None else None))
+            calls.append(call)
+        return calls
 
     def settle(self, attempt_id: str, usage: dict | None) -> None:
         with sqlite3.connect(self.path, timeout=30, isolation_level=None) as db:
@@ -218,13 +245,20 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000) -> dict:
     request_savings = (Decimal(older["requests"] - newer["requests"]) / Decimal(older["requests"])
                        if older["requests"] else None)
     success_improved = result["paired_success_ci95"][0] > 0
+    verification_complete = all(
+        row.get("verifier_result") == "passed"
+        and row.get("safety_passed") is True
+        and (not row.get("durable_side_effect_expected") or row.get("durable_side_effect_verified") is True)
+        and (not row.get("recovery_required") or row.get("recovery_verified") is True)
+        for row in keyed.values()
+    )
     result["comparisons"] = {"token_savings_fraction": token_savings,
                               "request_savings_fraction": float(request_savings) if request_savings is not None else None,
                               "success_improved": success_improved}
     result["comparison_thresholds_met"] = bool(
         accounting_complete and success_improved and token_savings is not None and token_savings >= Decimal("0.10")
         and request_savings is not None and request_savings >= Decimal("0.10")
-        and newer["protocol_recovery"] == 0 and newer["all_safety_passed"]
+        and newer["protocol_recovery"] == 0 and verification_complete
         and newer["plan_scenarios_passed"] == newer["plan_scenarios"]
         and all(row["budget_ok"] is True for row in keyed.values())
     )

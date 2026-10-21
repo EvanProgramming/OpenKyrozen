@@ -19,10 +19,12 @@ def main():
     parser.add_argument("--model", default="deepseek-v4-flash")
     parser.add_argument("--protocol", choices=("chat", "responses"), default="chat")
     parser.add_argument("--scenario", default="")
+    parser.add_argument("--process-marker", default="")
     parser.add_argument("--prompt-file", required=True)
     parser.add_argument("--plan-file")
     parser.add_argument("--result", required=True)
     args = parser.parse_args()
+    workspace_root = Path(args.workspace).resolve()
     sys.path.insert(0, args.source)
     from openkyrozen.app.bootstrap import build_application
     from openkyrozen.providers import ProviderConfig
@@ -67,9 +69,17 @@ def main():
                 receipt = event.get("tool_receipt", {})
                 args = receipt.get("args") or {}
                 args_hash = hashlib.sha256(json.dumps(args, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+                path = args.get("path") or args.get("file_path") if isinstance(args, dict) else None
+                try:
+                    target_path = Path(str(path)).resolve().relative_to(workspace_root).as_posix()
+                except (OSError, ValueError):
+                    target_path = None
                 receipts.append({"action": receipt.get("action"), "args_hash": args_hash,
+                                 "target_path": target_path,
                                  "background": isinstance(args, dict) and args.get("background") is True,
-                                 "success": receipt.get("success") is True})
+                                 "success": receipt.get("success") is True,
+                                 "authorized": receipt.get("authorized") is True,
+                                 "error_code": (receipt.get("tool_error") or {}).get("code")})
                 events.append({"event": "tool_receipt", "action": receipt.get("action"),
                                "success": receipt.get("success") is True})
             elif event.get("event") in {"tasks", "task_update", "working_plan", "subagent"}:
@@ -114,8 +124,7 @@ def main():
         if accepted_fingerprint:
             prompt = ("A Strategic Plan has already been accepted. Preserve its approved scope; use the working plan "
                       "for implementation changes, and request renewed approval for material scope changes.\n\n" + prompt)
-        answer = runtime.chat(runtime.current_session, prompt, clear_tasks=False,
-                              profile="auto", on_event=on_event)
+        answer = runtime.chat(runtime.current_session, prompt, clear_tasks=False, profile="auto")
         manager = runtime.current_session.process_manager
         handles = tuple(manager._handles.values())
         cancellations = sum(item["action"] == "stop_process" and item["success"] for item in receipts)
@@ -164,6 +173,7 @@ def main():
         pending_material = (interaction_state.get("pending_plan") or {}).get("revision_materiality") == "material"
         result = {"answer": answer, "tool_calls": sum(e.get("event") == "tool_receipt" for e in events),
                   "tool_actions": [e.get("action") for e in events if e.get("event") == "tool_receipt"],
+                  "tool_receipts": receipts,
                   "tool_successes": sum(e.get("event") == "tool_receipt" and e.get("success") is True for e in events),
                   "tasks": [t["status"] for t in runtime.tasks.tasks],
                   "task_records": [{"id": t["id"], "description": t["description"],
@@ -187,6 +197,9 @@ def main():
                                            for item in receipts),
                   "processes_cancelled": cancellations,
                   "processes_alive": sum(handle.process.poll() is None for handle in handles),
+                  "process_pids": [handle.process.pid for handle in handles],
+                  "process_marker_seen": any(args.process_marker and args.process_marker in handle.stdout
+                                              for handle in handles),
                   "first_delta_latency_ms": first_delta_ms,
                   "provider_error": "[LLM Error]" in answer}
         bound_scope_active = bool(accepted_fingerprint and any(
