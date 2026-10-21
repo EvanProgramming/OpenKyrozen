@@ -180,7 +180,7 @@ def _emit_bound_state(self, request_id: str) -> None:
     self.emit("tasks", request_id, tasks=[
         {"id": item["id"], "description": item["description"], "status": item["status"]}
         for item in runtime.tasks.tasks
-    ])
+    ], working_plan=runtime.tasks.working_plan_snapshot())
     self.interaction(request_id)
     self.graph_state(request_id)
     self.emit("ready", request_id, configured=runtime.llm_provider is not None,

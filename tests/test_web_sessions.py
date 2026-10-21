@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from openkyrozen.persistence.store import EventStore
+from openkyrozen.tasks.engine import TaskManager
 from openkyrozen.workspace.context import source_scope_id
 
 
@@ -92,6 +93,18 @@ class WebSessionBrowserTests(unittest.TestCase):
                         "session.message", {"role": role, "content": content},
                         user_id="local", workspace_id="default", session_id=session_id,
                     )
+            tasks = TaskManager(store, workspace_id=interaction_workspace_id, session_id="session-one")
+            first = tasks.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "broad", "task": {
+                    "description": "Investigate all", "acceptance": ["Source is inspected"],
+                }},
+            ], reason="Start with a broad inspection")
+            tasks.edit_plan(plan_id=first["plan_id"], expected_revision=1, operations=[
+                {"op": "split", "task": first["tasks"][0]["id"], "children": [
+                    {"ref": "inspect", "task": {"description": "Inspect source", "acceptance": ["Source checked"]}},
+                    {"ref": "verify", "task": {"description": "Verify behavior", "acceptance": ["Behavior checked"]}},
+                ]},
+            ], reason="Separate inspection from verification")
             store.append_event(
                 "interaction.question_requested", {
                     "request_id": "browser-question", "original_input": "Implement the feature",
@@ -121,6 +134,11 @@ class WebSessionBrowserTests(unittest.TestCase):
                 page.goto(base_url, wait_until="domcontentloaded")
                 page.wait_for_function("document.body.innerText.includes('UI_你好_✅')")
                 page.wait_for_function("document.body.innerText.includes('Which browser target?')")
+                page.wait_for_function("document.body.innerText.includes('Working Plan · revision 2 · active')")
+                self.assertIn("Separate inspection from verification", page.locator("#working-plan").inner_text())
+                self.assertIn("Inspect source", page.locator("#working-plan").inner_text())
+                self.assertIn("Verify behavior", page.locator("#working-plan").inner_text())
+                self.assertIn("superseded by", page.locator("#working-plan").inner_text())
                 self.assertEqual(page.locator('#interaction-card input[type="radio"]').count(), 2)
                 self.assertEqual(page.locator('#interaction-card input[placeholder="Other (optional)"]').count(), 1)
                 self.assertEqual(page.get_by_role("button", name="Submit answers").count(), 1)

@@ -144,7 +144,15 @@ def _stream_projection(self, request_id: str):
         elif kind == "tool_receipt":
             self.emit("tool_receipt", request_id, receipt=event.get("tool_receipt", {}))
         elif kind == "tasks":
-            self.emit("tasks", request_id, tasks=event.get("tasks", []))
+            self.emit("tasks", request_id, tasks=event.get("tasks", []),
+                      working_plan=event.get("working_plan"))
+        elif kind == "working_plan":
+            self.emit("working_plan", request_id, session_id=event.get("session_id"),
+                      working_plan=event.get("working_plan"))
+        elif kind == "task_update":
+            self.emit("task_update", request_id, session_id=event.get("session_id"),
+                      task_id=event.get("task_id"),
+                      status=event.get("status"), reason=event.get("reason", ""))
         elif kind == "interaction":
             self.emit("interaction", request_id, interaction=event.get("interaction", {}))
         elif kind == "permission_check":
@@ -310,7 +318,7 @@ def _run_submit(self, text: str, request_id: str, plan_acceptance: dict[str, Any
         self.emit("tasks", request_id, tasks=[
             {"id": task["id"], "description": task["description"], "status": task["status"]}
             for task in runtime.tasks.tasks
-        ])
+        ], working_plan=runtime.tasks.working_plan_snapshot())
         self.interaction(request_id)
         self.usage(request_id)
         self.status("ready", "Ready", request_id)

@@ -385,12 +385,24 @@ func (m model) activityRail() string {
 	if height >= 22 {
 		mapHeight = 5
 	}
+	taskList := m.tasks
+	planTitle := fmt.Sprintf("TASKS  %d", len(m.tasks))
+	if m.workingPlan != nil {
+		taskList = m.workingPlan.tasks
+		planTitle = fmt.Sprintf("WORKING PLAN  v%d · %s", m.workingPlan.revision, m.workingPlan.status)
+	}
 	lines := []string{
 		sectionStyle.Render("PROJECT GRAPH") + "  " + graphStatusStyle(graphStatus).Render(strings.ToUpper(graphStatus)),
 		m.graphMini(minInt(22, textWidth), mapHeight),
 		mutedStyle.Render(fmt.Sprintf("%d nodes · %d edges", m.graph.nodes, m.graph.edges)),
 		"",
-		sectionStyle.Render(fmt.Sprintf("TASKS  %d", len(m.tasks))),
+		sectionStyle.Render(planTitle),
+	}
+	if m.workingPlan != nil && m.workingPlan.reason != "" {
+		reason := lipgloss.NewStyle().Width(textWidth).MaxWidth(textWidth).Render("Reason: " + m.workingPlan.reason)
+		for _, line := range strings.Split(reason, "\n") {
+			lines = append(lines, mutedStyle.Render(line))
+		}
 	}
 	if len(m.agents) > 0 {
 		agents := m.activityAgents()
@@ -407,21 +419,45 @@ func (m model) activityRail() string {
 		}
 		lines = append(agentLines, append([]string{""}, lines...)...)
 	}
-	if len(m.tasks) == 0 {
+	if len(taskList) == 0 {
 		lines = append(lines, mutedStyle.Render("No active tasks"))
 	}
 	maxTasks := maxInt(1, height-mapHeight-12)
-	for index, task := range m.tasks {
+	planTaskNames := make(map[string]string, len(taskList))
+	for _, task := range taskList {
+		planTaskNames[task.id] = task.description
+	}
+	for index, task := range taskList {
 		if index >= maxTasks {
-			lines = append(lines, mutedStyle.Render(fmt.Sprintf("+%d more", len(m.tasks)-index)))
+			lines = append(lines, mutedStyle.Render(fmt.Sprintf("+%d more", len(taskList)-index)))
 			break
 		}
 		icon, stateStyle, label := taskState(task.status, m.motionFrame)
+		if task.status == "succeeded" {
+			label = "verified"
+		}
+		if task.status == "cancelled" && len(task.supersededBy) > 0 {
+			label = "superseded"
+		}
 		if task.id == m.taskFlashID && m.taskFlashTick > 0 && task.status == "succeeded" {
-			label = "completed ·"
+			label = "verified ·"
 		}
 		row := stateStyle.Render(icon) + " " + softStyle.Render(compactText(task.description, maxInt(4, textWidth-lipgloss.Width(label)-4))) + " " + stateStyle.Render(label)
 		lines = append(lines, row)
+		if len(task.supersededBy) > 0 {
+			replacements := make([]string, 0, len(task.supersededBy))
+			for _, replacement := range task.supersededBy {
+				if description := planTaskNames[replacement]; description != "" {
+					replacements = append(replacements, description)
+				}
+			}
+			if len(replacements) > 0 {
+				lines = append(lines, mutedStyle.Render(compactText("  Replaced by: "+strings.Join(replacements, ", "), textWidth)))
+			}
+		}
+		if task.status == "blocked" && task.reason != "" {
+			lines = append(lines, mutedStyle.Render(compactText("  "+task.reason, textWidth)))
+		}
 	}
 	workspace := "global workspace"
 	if m.workspace != "" {

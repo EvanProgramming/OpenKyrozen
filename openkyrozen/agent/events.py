@@ -35,7 +35,19 @@ def runtime_event_as_legacy(event: "RuntimeEvent") -> dict[str, Any] | None:
     if event.kind == "tool.result":
         return {"event": "tool_receipt", "tool_receipt": payload}
     if event.kind == "task.snapshot":
-        return {"event": "tasks", "tasks": payload.get("tasks", [])}
+        return {"event": "tasks", "tasks": payload.get("tasks", []),
+                "working_plan": payload.get("working_plan")}
+    if event.kind.startswith("working_plan."):
+        return {"event": "working_plan", "session_id": event.session_id, "working_plan": payload}
+    if event.kind.startswith("task.") and event.task_id:
+        name = event.kind.partition(".")[2]
+        status = {"created": "pending", "claimed": "running", "recovered": "pending",
+                  "resumed": "pending"}.get(name, name)
+        if status not in {"pending", "running", "succeeded", "failed", "blocked", "cancelled"}:
+            status = None
+        return {"event": "task_update", "task_id": event.task_id,
+                "session_id": event.session_id, "status": status, "description": payload.get("description"),
+                "reason": payload.get("reason", "")}
     if event.kind == "interaction.updated":
         return {"event": "interaction", "interaction": payload.get("interaction", payload)}
     if event.kind == "security.permission_check":
@@ -199,6 +211,9 @@ class RuntimeEventPublisher:
             from .types import _bounded_redacted
             payload = _bounded_redacted(dict(fields.get("tool_receipt") or {}), budget=12_000)
             legacy_event = {"event": "tool_receipt", "tool_receipt": payload}
+        elif name == "tasks":
+            legacy_event = {"event": "tasks", "tasks": fields.get("tasks", []),
+                            "working_plan": fields.get("working_plan")}
         call_id = payload.get("call_id") if isinstance(payload.get("call_id"), str) else None
         task_id = payload.get("task_id") if isinstance(payload.get("task_id"), str) else None
         event = self.publish(kind_map.get(name, f"legacy.{name}"), payload,

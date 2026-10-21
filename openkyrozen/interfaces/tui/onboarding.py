@@ -56,7 +56,7 @@ def start(self, payload: dict[str, Any], request_id: str) -> None:
         self.emit("tasks", request_id, tasks=[
             {"id": item["id"], "description": item["description"], "status": item["status"]}
             for item in runtime.tasks.tasks
-        ])
+        ], working_plan=runtime.tasks.working_plan_snapshot())
         self.emit(
             "ready", request_id, configured=configured,
             provider=getattr(config, "provider", ""),

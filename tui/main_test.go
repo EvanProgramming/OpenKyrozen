@@ -93,6 +93,30 @@ func TestReducerProjectsStreamingResponseTasksAndApproval(t *testing.T) {
 	}
 }
 
+func TestWorkingPlanRevisionsRenderRationaleSupersessionAndVerifiedProgress(t *testing.T) {
+	m := initialModel(".", false)
+	m.width, m.height, m.screen = 120, 40, screenChat
+	m.workingPlan = parseWorkingPlan(map[string]any{
+		"plan_id": "plan-1", "revision": 2, "status": "active",
+		"reason": "Separate inspection from verification",
+		"tasks": []any{
+			map[string]any{"id": "old", "description": "Investigate all", "status": "cancelled", "superseded_by": []any{"inspect", "verify"}},
+			map[string]any{"id": "inspect", "description": "Inspect source", "status": "pending", "supersedes": []any{"old"}},
+			map[string]any{"id": "verify", "description": "Verify behavior", "status": "pending", "supersedes": []any{"old"}},
+		},
+	})
+	view := m.activityRail()
+	for _, want := range []string{"WORKING PLAN", "Separate", "verification", "superseded", "Replaced by", "Inspect", "Verify"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("working plan view omitted %q: %s", want, view)
+		}
+	}
+	m.handleBackendEvent(backendEvent{"event": "task_update", "task_id": "inspect", "status": "succeeded"})
+	if view = m.activityRail(); !strings.Contains(view, "verified") {
+		t.Fatalf("successful task was not presented as verified: %s", view)
+	}
+}
+
 func TestApprovalModalKeepsStructuredArgumentsScrollable(t *testing.T) {
 	m := initialModel(".", false)
 	m.width, m.height = 100, 30

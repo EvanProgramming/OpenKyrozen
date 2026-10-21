@@ -22,6 +22,7 @@ header span{font-size:12px;color:var(--muted)}
 #chat:empty::before{content:'Start a conversation or type / for commands.';display:block;color:var(--muted);text-align:center;padding:12vh 0}
 #interaction-card{width:min(100%,1024px);margin:14px auto 0;padding:14px 17px;background:var(--surface-hi);border:1px solid var(--brand);border-radius:10px}
 #interaction-card[hidden]{display:none}#interaction-card h2{font-size:15px;color:var(--brand);margin-bottom:8px}#interaction-card fieldset{border:0;margin:12px 0}#interaction-card legend{font-weight:700;margin-bottom:6px}#interaction-card label{display:block;margin:6px 0;color:var(--text)}#interaction-card input[type=text]{width:100%;background:var(--ink);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:8px;margin-top:5px}#interaction-card ol{padding-left:22px;margin:8px 0}#interaction-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+#working-plan{width:min(100%,1024px);margin:14px auto 0;padding:14px 17px;background:var(--surface);border:1px solid var(--line);border-radius:10px}#working-plan[hidden]{display:none}#working-plan h2{font-size:15px;color:var(--brand)}#working-plan p{color:var(--muted);margin:5px 0}#working-plan ol{padding-left:24px;margin-top:8px}#working-plan li{padding:3px 0}#working-plan li.cancelled,#working-plan li.superseded{color:var(--muted);text-decoration:line-through}#working-plan .plan-status{font-size:12px;color:var(--muted)}
 .msg{margin-bottom:22px;max-width:min(88%,860px)}
 .msg.user{margin-left:auto}
 .msg .role{font-size:11px;letter-spacing:.08em;color:var(--muted);margin-bottom:6px}
@@ -95,6 +96,7 @@ button:disabled{opacity:.45;cursor:default}
 </div>
 <div id="chat" aria-live="polite" aria-label="Conversation"></div>
 <section id="interaction-card" aria-live="polite" hidden></section>
+<section id="working-plan" aria-live="polite" aria-label="Current Working Plan" hidden></section>
 <div id="input-area">
   <textarea id="user-input" placeholder="Type your message..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}"></textarea>
   <button onclick="sendMessage()" id="send-btn">Send</button>
@@ -111,6 +113,7 @@ let authInFlight = false;
 let interactionState = {preference_mode: 'auto', effective_mode: 'ask', system_one_backend: 'off', fast_backend: 'off', pending_question: null, pending_plan: null};
 let decisionAssistState = {backend: 'off', kev_private_consent: false};
 let systemOneStatus = {system_one_backend: 'off'};
+let workingPlan = null;
 
 class AuthRequiredError extends Error {}
 
@@ -220,6 +223,44 @@ function renderInteraction(value) {
   }
 }
 
+function renderWorkingPlan(value) {
+  if (value && workingPlan && value.plan_id === workingPlan.plan_id && value.revision < workingPlan.revision) return;
+  if (value && workingPlan && value.updated_at && workingPlan.updated_at && value.updated_at < workingPlan.updated_at) return;
+  workingPlan = value && typeof value === 'object' ? value : null;
+  const panel = document.getElementById('working-plan');
+  panel.replaceChildren();
+  panel.hidden = !workingPlan;
+  if (!workingPlan) return;
+  const title = document.createElement('h2');
+  title.textContent = `Working Plan · revision ${workingPlan.revision} · ${workingPlan.status}`;
+  panel.appendChild(title);
+  if (workingPlan.reason) {
+    const reason = document.createElement('p');
+    reason.textContent = `Revision reason: ${workingPlan.reason}`;
+    panel.appendChild(reason);
+  }
+  const list = document.createElement('ol');
+  for (const task of workingPlan.tasks || []) {
+    const item = document.createElement('li');
+    const links = task.superseded_by?.length
+      ? ` · superseded by ${task.superseded_by.map(id => (workingPlan.tasks || []).find(other => other.id === id)?.description || id).join(', ')}` : '';
+    const blocker = task.status === 'blocked' && task.reason ? ` · ${task.reason}` : '';
+    item.textContent = `${task.description} · ${task.status}${links}${blocker}`;
+    if (task.status === 'cancelled') item.classList.add(task.superseded_by?.length ? 'superseded' : 'cancelled');
+    list.appendChild(item);
+  }
+  panel.appendChild(list);
+}
+
+function updateWorkingPlanTask(value) {
+  if (!workingPlan || !value || typeof value.task_id !== 'string') return;
+  const task = (workingPlan.tasks || []).find(item => item.id === value.task_id);
+  if (!task) return;
+  if (typeof value.status === 'string') task.status = value.status;
+  if (typeof value.reason === 'string' && value.reason) task.reason = value.reason;
+  renderWorkingPlan(workingPlan);
+}
+
 function renderSystemOneStatus(value) {
   systemOneStatus = value || systemOneStatus;
   const backend = systemOneStatus.system_one_backend || systemOneStatus.fast_backend || 'off';
@@ -265,6 +306,7 @@ async function submitControl(control, label) {
     if (data.interaction) renderSystemOneStatus({...systemOneStatus, system_one_backend: data.interaction.system_one_backend,
       decision_assist: data.decision_assist || decisionAssistState});
     renderInteraction(data.interaction);
+    renderWorkingPlan(data.working_plan);
     renderContext(data.context);
     document.getElementById('status').textContent = 'Ready';
   } catch (error) { addMessage('assistant', 'Error: ' + error.message, false); renderInteraction(interactionState); document.getElementById('status').textContent = 'Error'; }
@@ -436,6 +478,7 @@ async function restoreSession(nextSessionId) {
     clearChat();
     messages.forEach(message => addMessage(message.role, String(message.content), false));
     renderInteraction(data.interaction);
+    renderWorkingPlan(data.working_plan);
     renderContext(data.context);
     renderSessionList(recentSessions);
     document.getElementById('status').textContent = messages.length
@@ -454,6 +497,7 @@ function startNewSession() {
   saveActiveSession();
   clearChat();
   renderInteraction({preference_mode: 'auto', effective_mode: 'ask', system_one_backend: 'off', fast_backend: 'off', pending_question: null, pending_plan: null});
+  renderWorkingPlan(null);
   renderContext(null);
   renderSessionList(recentSessions);
   document.getElementById('status').textContent = 'New conversation ready.';
@@ -578,6 +622,7 @@ async function sendMessage() {
       }
       try {
         const parsed = JSON.parse(data);
+        if (parsed.session_id && parsed.session_id !== sessionId) return;
         if (parsed.event === 'completion' && Object.prototype.hasOwnProperty.call(parsed, 'reply')) {
           const finalReply = String(parsed.reply);
           if (full !== finalReply) {
@@ -593,6 +638,9 @@ async function sendMessage() {
           const name = parsed.backend === 'jev' ? 'Jev' : 'Kev';
           addMessage('assistant', `Routing advice from ${name}.`, false);
         }
+        if (parsed.event === 'working_plan') renderWorkingPlan(parsed.working_plan);
+        if (parsed.event === 'tasks') renderWorkingPlan(parsed.working_plan);
+        if (parsed.event === 'task_update') updateWorkingPlanTask(parsed);
         if (parsed.event === 'subagent' && parsed.agent) {
           const agent = parsed.agent;
           addMessage('assistant', `${agent.name} · ${agent.profile} · ${agent.status}: ${agent.assignment.objective}`, false);

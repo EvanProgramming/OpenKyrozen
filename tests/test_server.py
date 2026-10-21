@@ -276,6 +276,17 @@ class ServerBoundaryTests(unittest.TestCase):
                     restored = client.get("/api/v2/sessions/interaction-session")
                     self.assertEqual(restored.status_code, 200, restored.text)
                     self.assertIn("interaction", restored.json())
+                    bound = server._agent.open_session("interaction-session", user_id=server._SERVER_ACTOR_ID)
+                    bound.tasks.edit_plan(complexity="complex", expected_revision=0, operations=[
+                        {"op": "add", "ref": "inspect", "task": {
+                            "description": "Inspect restored plan", "acceptance": ["Source checked"],
+                        }},
+                    ], reason="Restore the current strategy")
+                    restored = client.get("/api/v2/sessions/interaction-session")
+                    self.assertEqual(restored.status_code, 200, restored.text)
+                    self.assertEqual(restored.json()["working_plan"]["revision"], 1)
+                    self.assertEqual(restored.json()["working_plan"]["tasks"][0]["description"],
+                                     "Inspect restored plan")
             finally:
                 server._sessions = original_sessions
 

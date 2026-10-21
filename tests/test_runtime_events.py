@@ -6,10 +6,28 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-from openkyrozen.agent.events import RuntimeEvent, RuntimeEventPublisher
+from openkyrozen.agent.events import RuntimeEvent, RuntimeEventPublisher, runtime_event_as_legacy
 
 
 class RuntimeEventContractTests(unittest.TestCase):
+    def test_working_plan_and_task_events_project_only_user_visible_fields(self):
+        plan = RuntimeEvent(
+            kind="working_plan.updated", user_id="u", workspace_id="w", session_id="s",
+            sequence=1, payload={"plan_id": "plan-1", "revision": 2, "reason": "Split the work", "tasks": []},
+        )
+        task = RuntimeEvent(
+            kind="task.succeeded", user_id="u", workspace_id="w", session_id="s",
+            sequence=2, task_id="task-1", payload={"evidence": {"private": "not for observers"}},
+        )
+
+        self.assertEqual(runtime_event_as_legacy(plan), {
+            "event": "working_plan", "session_id": "s", "working_plan": plan.payload,
+        })
+        projected = runtime_event_as_legacy(task)
+        self.assertEqual(projected["event"], "task_update")
+        self.assertEqual(projected["status"], "succeeded")
+        self.assertNotIn("evidence", projected)
+
     def test_event_payload_is_validated_and_defensively_snapshotted(self):
         payload = {"nested": {"value": "before"}}
         event = RuntimeEvent(
