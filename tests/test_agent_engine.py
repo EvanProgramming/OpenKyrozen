@@ -20,6 +20,41 @@ from openkyrozen.providers.models import validate_replied_tool_definitions, vali
 
 
 class AgentEngineTests(unittest.TestCase):
+    def test_turn_learning_is_queued_only_after_completion(self):
+        events = []
+        provider = SimpleNamespace(get_capabilities=lambda _model: ProviderCapabilities(native_tools=True))
+        runtime = SimpleNamespace(
+            execution_context=SimpleNamespace(provider=provider), llm_provider=None, DEEPSEEK_MODEL="model",
+        )
+        runtime._prepare_turn = lambda turn: setattr(turn, "interaction_mode", "agent")
+        runtime._complete_turn = lambda _turn: events.append("complete") or "finished"
+        runtime._schedule_post_turn_learning = lambda task: events.append(("queued", task))
+        engine = AgentEngine(runtime)
+        engine._run_native = lambda _turn: events.append("work")
+
+        result = engine.run(TurnContext("Use Orion"))
+
+        self.assertEqual(result, "finished")
+        self.assertEqual(events, ["work", "complete", ("queued", "Use Orion")])
+
+    def test_learning_queue_failure_does_not_fail_completed_turn(self):
+        provider = SimpleNamespace(get_capabilities=lambda _model: ProviderCapabilities(native_tools=True))
+        events = []
+        runtime = SimpleNamespace(
+            execution_context=SimpleNamespace(provider=provider), llm_provider=None, DEEPSEEK_MODEL="model",
+            _record_learning_event=lambda *args: events.append(args),
+        )
+        runtime._prepare_turn = lambda turn: setattr(turn, "interaction_mode", "agent")
+        runtime._complete_turn = lambda _turn: "finished"
+        runtime._schedule_post_turn_learning = Mock(side_effect=RuntimeError("closed"))
+        engine = AgentEngine(runtime)
+        engine._run_native = lambda _turn: None
+
+        self.assertEqual(engine.run(TurnContext("Use Orion")), "finished")
+        self.assertEqual(events, [("learning.dispatch_failed", {
+            "trigger": "post-turn", "reason": "RuntimeError",
+        })])
+
     def test_turn_context_keeps_legacy_positional_inspection_argument(self):
         turn = TurnContext("Plan the change", False, None, None, True)
         self.assertTrue(turn.inspection_complete)
@@ -351,7 +386,8 @@ class AgentEngineTests(unittest.TestCase):
             runtime._default_turn.provider = provider
             runtime.set_interaction_mode("agent")
             packet = "<memory_context>frozen packet</memory_context>"
-            with patch.object(runtime, "_build_memory_context", return_value=packet) as retrieve_memory, \
+            with patch.object(runtime, "_schedule_post_turn_learning"), \
+                    patch.object(runtime, "_build_memory_context", return_value=packet) as retrieve_memory, \
                     patch.object(runtime, "_collect_tool_calls", side_effect=AssertionError("legacy parser used")), \
                     patch.object(runtime, "_collect_unwrapped_tool_calls", side_effect=AssertionError("legacy parser used")):
                 answer = runtime.chat(runtime.current_session, "Read note.txt")

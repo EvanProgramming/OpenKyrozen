@@ -13,6 +13,12 @@ the local SQLite event ledger.
 
 ## The learning loop
 
+Periodic learning runs in the detached worker; input-dependent learning is
+submitted to the existing executor after turn completion. Foreground preparation
+only freezes the matching guidance and records the run, and background failures
+cannot delay or fail the user turn. Each turn keeps its selected artifact text,
+version, and content hash stable for that turn.
+
 1. **Observe:** completed multi-step work, explicit corrections, and verified
    failures produce outcome evidence. Routine one-step work, provider
    failures, secret-bearing runs, and indexing are excluded.
@@ -47,6 +53,7 @@ Current repository test count at this snapshot: **453 unittest cases**.
 | --- | --- | --- |
 | Profile routing | `auto` routes normal requests to `coder` or `researcher`; an explicit profile wins. | `tests/test_evolution.py` |
 | Evidence ledger | Runs, actual provider/model, ledger-backed token usage, measured latency, tool/error receipts, acceptance evidence, and artifact hashes are durable SQLite events. | `tests/test_evolution.py`, `tests/test_evolution_robustness.py`, `tests/test_subagents.py` |
+| Promotion evidence | Proof cards link source run IDs, artifact version and content hash, verified outcomes, replay, confidence, token use, latency, task success, and regression measurements. These measurements are attributable evidence; activation retains the paired replay and two-success gates. | `tests/test_evolution.py` |
 | Canary lifecycle | A learned artifact stays a canary until two distinct verified successes and a non-regressing paired replay; correction or repeated verified failures rolls it back. | `tests/test_evolution.py` |
 | Deterministic selection | Matching is profile- and trigger-scoped, with at most three artifacts and 8,000 body characters, including at most one canary. | `tests/test_causal_selection.py` |
 | Retirement | A paired omission trial can retire an artifact only when completion does not regress; restore keeps the pre-image recoverable. | `tests/test_causal_selection.py` |

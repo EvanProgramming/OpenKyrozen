@@ -28,12 +28,25 @@ class AgentEngine:
         if (capabilities and capabilities.native_tools
                 and turn.interaction_mode in {"agent", "ask"}):
             self._run_native(turn)
-            return runtime._complete_turn(turn)
+            return self._finish_turn(turn, runtime._complete_turn(turn))
         reply = runtime._initial_turn_response(turn)
         if reply is not None:
-            return reply
+            return self._finish_turn(turn, reply)
         runtime._execute_action_rounds(turn)
-        return runtime._complete_turn(turn)
+        return self._finish_turn(turn, runtime._complete_turn(turn))
+
+    def _finish_turn(self, turn: TurnContext, result: str) -> str:
+        schedule = getattr(self.runtime, "_schedule_post_turn_learning", None)
+        if callable(schedule):
+            try:
+                schedule(turn.user_input)
+            except Exception as exc:
+                record = getattr(self.runtime, "_record_learning_event", None)
+                if callable(record):
+                    record("learning.dispatch_failed", {
+                        "trigger": "post-turn", "reason": type(exc).__name__,
+                    })
+        return result
 
     def _native_tool_names(self) -> set[str]:
         runtime = self.runtime

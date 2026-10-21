@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from contextvars import copy_context
 from typing import Any
 from openkyrozen.tasks.engine import canonical_status
 
@@ -46,6 +47,30 @@ def _with_learning_notices(self, answer: str) -> str:
         return answer
     notices, self._learning_notices = self._learning_notices, []
     return answer.rstrip() + "\n\nLearning: " + " ".join(notices)
+
+
+def _schedule_post_turn_learning(self, user_input: str) -> None:
+    """Run input-dependent learning after the user-facing turn has completed."""
+    context = copy_context()
+
+    def dispatch() -> None:
+        try:
+            self.dispatch_learning_cycle(
+                surface=self._EXECUTION_SURFACE, trigger="post-turn", max_features=3,
+                user_input=user_input,
+                feature_names=("detect_user_preferences", "auto_patch_technology", "skill_composition"),
+            )
+        except Exception as exc:
+            self._record_learning_event("learning.dispatch_failed", {
+                "trigger": "post-turn", "reason": type(exc).__name__,
+            })
+
+    try:
+        self._technology_executor.submit(context.run, dispatch)
+    except Exception as exc:
+        self._record_learning_event("learning.dispatch_failed", {
+            "trigger": "post-turn", "reason": type(exc).__name__,
+        })
 
 
 def _finish_learning_run(self, run: dict[str, str], receipts: list[dict[str, Any]], task: str, result: str,

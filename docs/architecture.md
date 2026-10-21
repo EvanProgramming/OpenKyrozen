@@ -63,9 +63,12 @@ content-free component attribution, a stable-prefix fingerprint, newly introduce
 history, retransmission and duplicate-entry counts; provider-reported input totals
 remain separate from those estimates.
 
-Preparation retrieves one bounded default memory packet after learning updates and
-freezes it for the turn. Initial prompts and action-round continuations reuse that
-packet; an explicit `search_memory` call remains an additional retrieval.
+Preparation freezes the learned-artifact snapshot and one bounded default memory
+packet for the turn. Periodic learning runs in the detached worker; input-dependent
+learning is queued on the existing executor after turn completion. Neither runs
+during foreground preparation. Initial prompts and action-round continuations reuse
+the frozen snapshots; an explicit `search_memory` call remains an additional
+retrieval.
 
 Prompt profiles share execution and safety instructions; compact mode changes only
 tool-description discovery. Native providers receive typed schemas, while text-only

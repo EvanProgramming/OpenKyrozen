@@ -97,15 +97,6 @@ def _prepare_turn(self, turn):
 
     turn.fix_workflow = self._prepare_fix_workflow(turn.user_input) if turn.interaction_mode == "agent" else None
 
-    # Input-dependent learning belongs to the same durable dispatcher as idle
-    # and scheduled work.  It is still bounded and cannot grant capabilities:
-    # preference detection records scoped signals, while technology discovery
-    # only queues the existing background documentation fetch.
-    self.dispatch_learning_cycle(
-        surface=self._EXECUTION_SURFACE, trigger="turn", max_features=3,
-        user_input=turn.user_input,
-        feature_names=("detect_user_preferences", "auto_patch_technology", "skill_composition"),
-    )
     if self.llm_provider is not None:
         turn.memory_packet = self._build_memory_context(
             turn.user_input, context=turn.memory_context, profile=resolved_profile,

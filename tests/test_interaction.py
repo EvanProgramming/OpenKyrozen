@@ -1196,6 +1196,9 @@ class InteractionTests(unittest.TestCase):
         self.application = build_application(surface="cli", memory=MemoryBank(self.store.path, store=self.store))
         self.agent = self.application.runtime
         self.addCleanup(self.application.close)
+        self.post_turn_learning = patch.object(self.agent, "_schedule_post_turn_learning")
+        self.post_turn_learning_mock = self.post_turn_learning.start()
+        self.addCleanup(self.post_turn_learning.stop)
         self.controller = InteractionController(
             self.store, workspace_id="workspace", session_id="session",
         )
@@ -1689,17 +1692,23 @@ class InteractionTests(unittest.TestCase):
                 '"assumptions":[],"steps":[{"id":"write","title":"Write file",'
                 '"description":"Create the requested file.","acceptance":["File exists"]}]}\n```',
             ]
+            def next_response(*_args):
+                self.post_turn_learning_mock.assert_not_called()
+                return responses.pop(0)
+
             try:
                 with patch.object(self.agent, "_plugin_runtime_for_surface", return_value=RuntimeStub()), \
                         patch.object(self.agent, "_touch_detached_learning_heartbeat"), \
-                        patch.object(self.agent, "dispatch_learning_cycle"), \
+                        patch.object(self.agent, "dispatch_learning_cycle") as learning_dispatch, \
                         patch.object(self.agent, "_build_messages", return_value=[]), \
                         patch.object(self.agent, "_build_memory_context", return_value=""), \
                         patch.object(self.agent, "_classify_complexity", return_value="simple"), \
-                        patch.object(self.agent, "_call_llm_with_spinner", side_effect=responses), \
+                        patch.object(self.agent, "_call_llm_with_spinner", side_effect=next_response), \
                         patch.object(self.agent, "_finish_learning_run", side_effect=lambda run, receipts, task,
                                      result, records, tokens, started: result):
                     reply = self.agent._chat_turn("Create the file")
+                    learning_dispatch.assert_not_called()
+                    self.post_turn_learning_mock.assert_called_once_with("Create the file")
                 self.assertIn("Safe plan (v1)", reply)
                 self.assertFalse((root / "unsafe.txt").exists())
                 self.assertEqual(

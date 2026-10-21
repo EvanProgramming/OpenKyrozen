@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+from openkyrozen.persistence.models import stable_hash
 
 from .models import CAPSULE_PROTOCOL, DEFAULT_CONSTITUTION, EVOLUTION_PROFILES, NEGATIVE_FEEDBACK, POSITIVE_FEEDBACK
 from openkyrozen.memory.models import _SECRET_RE
@@ -51,14 +53,24 @@ def evidence_card(self, proposal_id: str) -> dict[str, Any] | None:
     if not proposal:
         return None
     validation = proposal.get("validation", {})
+    skill = next((item for item in self.registry.list() if item["id"] == validation.get("skill_id")), None) \
+        if self.registry else None
+    try:
+        content_hash = stable_hash((Path(skill["path"]) / "SKILL.md").read_text(encoding="utf-8")) if skill else None
+    except OSError:
+        content_hash = None
     return {
         "proposal_id": proposal_id, "profile": proposal.get("profile"),
+        "confidence": proposal.get("confidence"),
         "stage": proposal.get("lifecycle_stage"), "source_evidence": proposal.get("evidence", []),
+        "artifact": ({"skill_id": skill["id"], "version": skill["version"],
+                      "content_hash": content_hash, "status": skill["status"]}
+                     if skill else None),
+        "metrics": proposal.get("artifact_metrics", {}),
         "verification_contract": validation.get("verification_contract"),
         "applicability": validation.get("applicability"),
         "revalidation_status": validation.get("revalidation_status"),
         "shadow_replay": validation.get("shadow_replay"),
         "outcomes": proposal.get("evidence_receipts", []),
-        "metrics": proposal.get("artifact_metrics", {}),
         "predecessor": proposal.get("predecessor"),
     }
