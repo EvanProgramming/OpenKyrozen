@@ -514,6 +514,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         return finish(outcome)
     start = time.time()
     raw_result = None
+    attempt = 0
     try:
         execution_args = args
         if _typed_arguments is not None:
@@ -522,17 +523,36 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                 self._notify_tool_execute(action, args, outcome)
                 return finish(outcome)
             execution_args = _typed_arguments
-        with self._delegation_tool_access(action, execution_args):
-            if callable(_on_dispatch):
-                _on_dispatch()
-            self._publish_runtime_event(
-                "tool.execution_started", {"tool_name": action}, call_id=_call_id, task_id=_task_id,
+        retry_safe = bool(
+            approved_spec
+            and approved_spec.risk == "normal"
+            and not self._is_state_changing_action(action, execution_args)
+            and (
+                (approved_spec.capability == "read"
+                 and approved_spec.side_effects in {"none", "read", "read_only"})
+                or (approved_spec.source == "builtin"
+                    and approved_spec.capability == "network"
+                    and approved_spec.side_effects == "remote")
             )
-            if action in {"run_cmd", "execute_terminal_command"}:
-                raw_result = self.run_command(execution_args)
-                outcome = command_tool_result(raw_result)
-            else:
-                outcome = self.tool_registry._invoke_executor(approved_spec, execution_args)
+        )
+        with self._delegation_tool_access(action, execution_args):
+            while True:
+                attempt += 1
+                if callable(_on_dispatch):
+                    _on_dispatch()
+                self._publish_runtime_event(
+                    "tool.execution_started", {"tool_name": action, "attempt": attempt},
+                    call_id=_call_id, task_id=_task_id,
+                )
+                if action in {"run_cmd", "execute_terminal_command"}:
+                    raw_result = self.run_command(execution_args)
+                    outcome = command_tool_result(raw_result)
+                else:
+                    outcome = self.tool_registry._invoke_executor(approved_spec, execution_args)
+                if (attempt == 1 and retry_safe and outcome.error is not None
+                        and outcome.error.retriable):
+                    continue
+                break
     except KeyboardInterrupt:
         outcome = tool_failure("cancelled", "Tool execution interrupted by user (Ctrl+C).")
     except Exception as exc:

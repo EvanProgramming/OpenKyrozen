@@ -2,6 +2,7 @@ import dataclasses
 import json
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from openkyrozen.agent.types import ExecutionReceipt
 from openkyrozen.tools.models import ToolError, ToolResult
@@ -274,6 +275,65 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         self.assertEqual(receipt.call_id_source, "native")
         self.assertEqual(receipt.arguments, {"expression": "2+2"})
         self.assertIn("4", receipt.result)
+
+    def test_typed_retryable_read_failure_retries_once_and_preserves_call_identity(self):
+        from openkyrozen.tools.models import tool_failure, tool_success
+
+        with patch.object(self.app.runtime.tool_registry, "_invoke_executor", side_effect=[
+            tool_failure("network_error", "temporary", retriable=True),
+            tool_success("found it"),
+        ]) as execute:
+            receipt = self.app.runtime._execute_turn_action(
+                "search_web", {"query": "retry test"}, operation_scope="retry-read",
+                successful_operations=set(), call_id="search-call", call_id_source="native",
+            )
+
+        self.assertTrue(receipt.success)
+        self.assertEqual(receipt.result, "found it")
+        self.assertEqual(execute.call_count, 2)
+        self.assertEqual(receipt.call_id, "search-call")
+
+    def test_mutation_is_never_retried_even_when_error_is_typed_retriable(self):
+        from openkyrozen.tools.models import tool_failure
+
+        with patch.object(self.app.runtime.tool_registry, "_invoke_executor", return_value=tool_failure(
+                "execution_error", "effect unknown", retriable=True)) as execute:
+            receipt = self.app.runtime._execute_turn_action(
+                "write_file", {"path": "note.txt", "content": "new"}, operation_scope="retry-write",
+                successful_operations=set(), call_id="write-call", call_id_source="native",
+            )
+
+        self.assertFalse(receipt.success)
+        self.assertEqual(receipt.failure, "execution_error")
+        self.assertEqual(execute.call_count, 1)
+
+    def test_retryable_read_exhaustion_is_bounded_to_two_attempts(self):
+        from openkyrozen.tools.models import tool_failure
+
+        failure = tool_failure("network_error", "still unavailable", retriable=True)
+        with patch.object(self.app.runtime.tool_registry, "_invoke_executor", return_value=failure) as execute:
+            receipt = self.app.runtime._execute_turn_action(
+                "search_web", {"query": "bounded retry"}, operation_scope="retry-exhaustion",
+                successful_operations=set(), call_id="search-retry-call", call_id_source="native",
+            )
+
+        self.assertFalse(receipt.success)
+        self.assertEqual(receipt.failure, "network_error")
+        self.assertEqual(execute.call_count, 2)
+
+    def test_non_retriable_read_failure_is_not_retried(self):
+        from openkyrozen.tools.models import tool_failure
+
+        failure = tool_failure("not_found", "no result", retriable=False)
+        with patch.object(self.app.runtime.tool_registry, "_invoke_executor", return_value=failure) as execute:
+            receipt = self.app.runtime._execute_turn_action(
+                "search_web", {"query": "not retriable"}, operation_scope="non-retry-read",
+                successful_operations=set(), call_id="search-no-retry-call", call_id_source="native",
+            )
+
+        self.assertFalse(receipt.success)
+        self.assertEqual(receipt.failure, "not_found")
+        self.assertEqual(execute.call_count, 1)
 
     def test_legacy_tool_receipt_uses_canonical_arguments_for_matching(self):
         receipt = self.app.runtime._run_tool(
