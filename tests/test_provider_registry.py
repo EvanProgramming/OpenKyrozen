@@ -6,7 +6,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, ANY
 
 import openkyrozen.providers as providers
-from openkyrozen.routing.router import model_for_request
+from openkyrozen.agent.turn import TurnContext
+from openkyrozen.routing.router import RoutingDecision, decide_request, model_for_request
+
+
 class ProviderRegistryTests(unittest.TestCase):
     def test_main_model_override_applies_to_both_complexity_routes(self):
         config = providers.ProviderConfig(provider="deepseek", model_simple="quick", model_complex="reasoning", model_main="pinned")
@@ -32,6 +35,46 @@ class ProviderRegistryTests(unittest.TestCase):
         self.assertEqual(providers.model_for_complexity(config, False), "quick")
         self.assertEqual(providers.model_for_complexity(config, True), "reasoning")
         self.assertEqual(model_for_request(config, {}, "task", lambda _: "automatic"), "automatic")
+
+    def test_routing_decision_bounds_advice_and_derives_plan_need(self):
+        config = providers.ProviderConfig(
+            provider="deepseek", model_simple="quick", model_complex="reasoning",
+        )
+        decision, complexity = decide_request(
+            config, {"model": "reasoning", "complexity": "invalid", "profile": "admin",
+                     "capabilities": ["full"], "protocol": "invented"},
+            "implement a feature", lambda _: "quick", lambda _: "complex",
+            "coder", "auto", "agent",
+        )
+        self.assertEqual(complexity, "complex")
+        self.assertEqual(decision.provider, "deepseek")
+        self.assertEqual(decision.model, "reasoning")
+        self.assertEqual(decision.reasoning, "extended")
+        self.assertEqual(decision.profile, "coder")
+        self.assertTrue(decision.planning_required)
+        self.assertIsNone(decision.budget_tokens)
+        self.assertFalse(hasattr(decision, "capabilities"))
+        self.assertFalse(hasattr(decision, "protocol"))
+
+    def test_pinned_model_and_profile_override_beat_advisory_routes(self):
+        config = providers.ProviderConfig(
+            provider="openai", model_simple="quick", model_complex="reasoning", model_main="pinned",
+        )
+        decision, complexity = decide_request(
+            config, {"model": "reasoning", "complexity": "simple", "profile": "researcher"},
+            "say hi", lambda _: "quick", lambda _: "medium", "coder", "researcher", "ask",
+        )
+        self.assertEqual(decision.model, "pinned")
+        self.assertEqual(decision.profile, "researcher")
+        self.assertEqual(decision.reasoning, "standard")
+        self.assertFalse(decision.planning_required)
+        self.assertEqual(complexity, "simple")
+
+    def test_plan_execution_uses_the_resolved_routing_decision(self):
+        decision = RoutingDecision("deepseek", "reasoning", "extended", None, "coder", True)
+        turn = TurnContext("request", complexity="simple", interaction_mode="agent",
+                           routing_decision=decision)
+        self.assertTrue(turn.planning_required)
 
     def test_ollama_requires_explicit_model_instead_of_choosing_installed(self):
         response = MagicMock()

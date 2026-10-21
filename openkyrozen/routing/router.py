@@ -1,8 +1,21 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from collections.abc import Callable, Mapping
+from typing import Any
 from openkyrozen.providers import ProviderConfig, model_for_complexity, resolve_ollama_models
+from openkyrozen.tasks.models import requires_working_plan
+
+
+@dataclass(frozen=True)
+class RoutingDecision:
+    provider: str
+    model: str
+    reasoning: str
+    budget_tokens: int | None
+    profile: str
+    planning_required: bool
 
 
 def model_for_request(
@@ -19,6 +32,33 @@ def model_for_request(
     if config and fast_route.get("model") == "reasoning":
         return config.model_complex
     return automatic_selector(user_input)
+
+
+def decide_request(config: ProviderConfig | None, advice: Mapping[str, Any], user_input: str,
+                   automatic_model: Callable[[str], str], classify: Callable[[str], str],
+                   automatic_profile: str, profile_override: str, interaction_mode: str
+                   ) -> tuple[RoutingDecision, str]:
+    """Resolve advisory signals once into bounded runtime routing state."""
+    complexity = advice.get("complexity")
+    if complexity not in {"simple", "medium", "complex"}:
+        complexity = classify(user_input)
+    profile = profile_override if profile_override in {"coder", "researcher"} else automatic_profile
+    if profile_override == "auto" and advice.get("profile") in {"coder", "researcher"}:
+        profile = advice["profile"]
+    model = model_for_request(config, advice, user_input, automatic_model)
+    extended = bool(config and config.model_complex and model == config.model_complex
+                    and model != config.model_simple)
+    if advice.get("model") == "reasoning" and config and not (config.model_main and config.model_main != "auto"):
+        extended = True
+    decision = RoutingDecision(
+        provider=config.provider if config else "unknown",
+        model=model,
+        reasoning="extended" if extended else "standard",
+        budget_tokens=None,
+        profile=profile,
+        planning_required=(interaction_mode == "agent" and requires_working_plan(complexity)),
+    )
+    return decision, complexity
 
 
 def _select_model(self, user_input: str) -> str:

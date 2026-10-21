@@ -6,7 +6,7 @@ from openkyrozen.agent.modes import mode_capabilities
 from openkyrozen.security.capabilities import issue_capability_token
 from openkyrozen.security.tool_policy import resolve_capabilities
 from openkyrozen.agent.compaction import ContextState
-from openkyrozen.routing.router import model_for_request
+from openkyrozen.routing.router import decide_request
 
 def _prepare_turn(self, turn):
     """One user turn: build context, get LLM reply, execute tool calls
@@ -56,12 +56,17 @@ def _prepare_turn(self, turn):
             success=feedback == "success", correction=feedback == "failure", source="user_feedback",
         ))
         self._last_learning_run = None
-    resolved_profile = self.learning_engine.route_profile(turn.user_input, turn.profile or self._agent_profile_mode)
-    if fast_route.get("profile") and (turn.profile or self._agent_profile_mode) == "auto":
-        resolved_profile = fast_route["profile"]
-    self.DEEPSEEK_MODEL = model_for_request(
-        self._provider_config, fast_route, turn.user_input, self._select_model,
+    automatic_profile = self.learning_engine.route_profile(
+        turn.user_input, turn.profile or self._agent_profile_mode,
     )
+    decision, turn.complexity = decide_request(
+        self._provider_config, fast_route, turn.user_input, self._select_model,
+        self._classify_complexity, automatic_profile,
+        turn.profile or self._agent_profile_mode, turn.interaction_mode,
+    )
+    turn.routing_decision = decision
+    resolved_profile = decision.profile
+    self.DEEPSEEK_MODEL = decision.model
     context_state = ContextState(
         self.DEEPSEEK_MODEL,
         self._provider_config.context_window_tokens if self._provider_config else None,
@@ -101,6 +106,3 @@ def _prepare_turn(self, turn):
         user_input=turn.user_input,
         feature_names=("detect_user_preferences", "auto_patch_technology", "skill_composition"),
     )
-
-    # Auto-select the best model for this turn based on task complexity
-    turn.complexity = fast_route.get("complexity") or self._classify_complexity(turn.user_input)

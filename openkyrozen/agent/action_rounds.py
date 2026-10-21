@@ -327,8 +327,7 @@ def _execute_action_rounds(self, turn):
                 break
 
             plan = self.tasks.working_plan
-            planned_turn = (turn.interaction_mode == "agent" and turn.complexity == "complex"
-                            and plan is not None and plan.status == "active")
+            planned_turn = (turn.planning_required and plan is not None and plan.status == "active")
             plan_tasks = ([task for task in self.tasks.tasks if task.get("id") in plan.task_ids]
                           if planned_turn else [])
             all_terminal = not plan_tasks or all(is_terminal(task) for task in plan_tasks)
