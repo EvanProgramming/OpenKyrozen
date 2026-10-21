@@ -13,7 +13,7 @@ import requests
 
 from benchmarks.v3_matched import BudgetLedger, _cost
 
-MODEL = "gemini-3.5-flash-lite"
+MODEL = "gemini-flash-3.6"
 MAX_OUTPUT_TOKENS = 4096
 MAX_REQUEST_BYTES = 20_000_000
 
@@ -52,12 +52,16 @@ class ResponsesRelay:
         output_tokens = usage.get("output_tokens")
         details = usage.get("input_tokens_details") or {}
         cached = details.get("cached_tokens", 0) if isinstance(details, dict) else 0
-        if not all(isinstance(value, int) and value >= 0 for value in (input_tokens, output_tokens, cached)):
+        cache_write = (usage.get("cache_write_tokens", usage.get("cache_creation_input_tokens", 0)))
+        if isinstance(details, dict):
+            cache_write = details.get("cache_write_tokens", details.get("cache_creation_tokens", cache_write))
+        if not all(isinstance(value, int) and value >= 0
+                   for value in (input_tokens, output_tokens, cached, cache_write)):
             return None
-        if cached > input_tokens:
+        if cached + cache_write > input_tokens:
             return None
         return {"input_tokens": input_tokens, "output_tokens": output_tokens,
-                "cache_read_tokens": cached}
+                "cache_read_tokens": cached, "cache_write_tokens": cache_write}
 
     def _handler(self):
         relay = self
@@ -104,7 +108,7 @@ class ResponsesRelay:
                 row = {"attempt_id": attempt_id, "arm": arm, "fixture_id": fixture_id,
                        "repeat": repeat, "request_sha256": hashlib.sha256(encoded).hexdigest(),
                        "model": MODEL, "max_output_tokens": MAX_OUTPUT_TOKENS,
-                       "reserved_usd": str(_cost(input_bound, MAX_OUTPUT_TOKENS)),
+                       "reserved_rmb": str(_cost(input_bound, MAX_OUTPUT_TOKENS)),
                        "status": "unknown", "usage": None}
                 if not relay.budget.reserve(attempt_id, input_token_bound=input_bound,
                                             output_token_bound=MAX_OUTPUT_TOKENS, metadata=row):
@@ -144,8 +148,8 @@ class ResponsesRelay:
                         relay.budget.settle(attempt_id, usage)
                         row["usage"] = usage
                         row["status"] = "settled" if usage is not None else "unknown"
-                        row["actual_usd"] = (str(_cost(usage["input_tokens"], usage["output_tokens"],
-                                                         usage["cache_read_tokens"]))
+                        row["actual_rmb"] = (str(_cost(usage["input_tokens"], usage["output_tokens"],
+                                                         usage["cache_read_tokens"], usage["cache_write_tokens"]))
                                               if usage is not None else None)
                         self._json(200, response_body)
                         return
@@ -180,8 +184,8 @@ class ResponsesRelay:
                                     relay.budget.settle(attempt_id, usage)
                                     row["usage"] = usage
                                     row["status"] = "settled" if usage is not None else "unknown"
-                                    row["actual_usd"] = (str(_cost(usage["input_tokens"], usage["output_tokens"],
-                                                                     usage["cache_read_tokens"]))
+                                    row["actual_rmb"] = (str(_cost(usage["input_tokens"], usage["output_tokens"],
+                                                                     usage["cache_read_tokens"], usage["cache_write_tokens"]))
                                                           if usage is not None else None)
                 except (requests.RequestException, OSError) as exc:
                     if row["status"] == "unknown":

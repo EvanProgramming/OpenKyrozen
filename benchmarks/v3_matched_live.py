@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 from benchmarks.v3_fixtures import FIXTURES
-from benchmarks.v3_matched import BudgetLedger, _cost, summarize
+from benchmarks.v3_matched import BudgetLedger, PRICING, _cost, summarize
 from benchmarks.v3_responses_relay import MODEL, MAX_OUTPUT_TOKENS, ResponsesRelay
 
 BASELINE = "1bfc82c793df49e76097061ec5adfef0e4e2e883"
@@ -330,17 +330,10 @@ def _extract_baseline(root: Path, repo: Path, commit: str) -> None:
 
 
 def _credential() -> tuple[str, str]:
-    from openkyrozen.providers.custom import load_custom_provider_profile
-
-    endpoint = os.environ.get("PANSTAR_BASE_URL", "https://ai.panstar.ai/v1")
-    key = os.environ.get("PANSTAR_API_KEY", "")
+    endpoint = os.environ.get("KYROZEN_BENCHMARK_BASE_URL", "https://api.oproxy.world/v1")
+    key = os.environ.get("KYROZEN_BENCHMARK_API_KEY", "")
     if not key:
-        profile = load_custom_provider_profile("Panster")
-        if profile.base_url.rstrip("/") != endpoint.rstrip("/"):
-            raise ValueError("Panster profile endpoint does not match PANSTAR_BASE_URL")
-        key = profile.api_key
-    if not key:
-        raise ValueError("Panstar API key is unavailable")
+        raise ValueError("benchmark provider API key is unavailable")
     return endpoint, key
 
 
@@ -357,7 +350,8 @@ def _worker_env(base: Path, fixture: dict, relay: ResponsesRelay) -> dict[str, s
 
 def _empty_row(fixture_id: str, repeat: int, arm: str) -> dict:
     return {"fixture_id": fixture_id, "repeat": repeat, "arm": arm, "usage_complete": False,
-            "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "latency_ms": 0,
+            "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
+            "cache_write_tokens": 0, "latency_ms": 0,
             "attempts": 0, "first_delta_latency_ms": None, "verifier_result": "incomplete",
             "safety_passed": False, "durable_side_effect_expected": False,
             "durable_side_effect_verified": False, "recovery_required": False,
@@ -397,7 +391,7 @@ def _initial_plan(fixture: dict) -> list[str] | dict:
 
 
 def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
-        limit_usd: str = "20", repeats: int = REPEATS, fixtures: tuple[dict, ...] = FIXTURES) -> dict:
+        limit_rmb: str = "49", repeats: int = REPEATS, fixtures: tuple[dict, ...] = FIXTURES) -> dict:
     source, repo = source.resolve(), repo.resolve()
     candidate = _source_snapshot(source)
     output, budget_path = output.resolve(), budget_path.resolve()
@@ -408,7 +402,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
     if fixtures != FIXTURES:
         raise ValueError("release evaluation requires the exact frozen fixture content")
     ledger_existed = budget_path.exists()
-    budget = BudgetLedger(budget_path, limit_usd=limit_usd)
+    budget = BudgetLedger(budget_path, limit_rmb=limit_rmb)
     if not budget.budget_ok:
         raise ValueError("the persisted budget ledger contains an overrun")
     rows: list[dict] = []
@@ -446,7 +440,8 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             actual = {"attempts": len(calls_for_key), "requests": len(calls_for_key),
                       "input_tokens": sum(item["input_tokens"] for item in usage if item),
                       "output_tokens": sum(item["output_tokens"] for item in usage if item),
-                      "cache_read_tokens": sum(item["cache_read_tokens"] for item in usage if item)}
+                      "cache_read_tokens": sum(item["cache_read_tokens"] for item in usage if item),
+                      "cache_write_tokens": sum(item.get("cache_write_tokens", 0) for item in usage if item)}
             if any(row.get(name, 0) > value for name, value in actual.items()):
                 raise ValueError("budget-ledger journal is missing a report's provider calls")
             if any(row.get(name, 0) != value for name, value in actual.items()):
@@ -520,6 +515,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                                     "input_tokens": sum(item["input_tokens"] for item in usage if item),
                                     "output_tokens": sum(item["output_tokens"] for item in usage if item),
                                     "cache_read_tokens": sum(item["cache_read_tokens"] for item in usage if item),
+                                    "cache_write_tokens": sum(item.get("cache_write_tokens", 0) for item in usage if item),
                                     "latency_ms": round((time.monotonic() - started) * 1000, 2),
                                     "attempts": len(calls), "first_delta_latency_ms": worker.get("first_delta_latency_ms"),
                                     "verifier_result": verified["result"], "safety_passed": verified["safety_passed"],
@@ -543,16 +539,17 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         rows.append(row)
                         document = {"protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
                                     "baseline_sha": BASELINE, "model": MODEL, "max_output_tokens": MAX_OUTPUT_TOKENS,
-                                    "repeats": repeats, "status": "running", "rows": rows,
+                                    "repeats": repeats, "pricing": PRICING,
+                                    "status": "running", "rows": rows,
                                     "calls": [{key: value for key, value in call.items() if key != "response_body"}
                                               for call in relay.rows],
-                                    "budget": {"spent_usd": str(budget.spent_usd),
-                                               "remaining_usd": str(budget.remaining_usd),
-                                               "limit_usd": limit_usd}}
+                                    "budget": {"spent_rmb": str(budget.spent_rmb),
+                                               "remaining_rmb": str(budget.remaining_rmb),
+                                               "limit_rmb": limit_rmb}}
                         _write_checkpoint(output, budget_path, document)
                         print(json.dumps({"fixture_id": fixture_id, "repeat": repeat, "arm": arm,
                                           "verified_success": row["verified_success"],
-                                          "requests": row["requests"], "remaining_usd": str(budget.remaining_usd)},
+                                          "requests": row["requests"], "remaining_rmb": str(budget.remaining_rmb)},
                                          sort_keys=True), flush=True)
                         if not budget.budget_ok:
                             raise RuntimeError("benchmark budget overrun; stop all model calls and investigate")
@@ -568,13 +565,13 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             relay.close()
     summary = summarize(rows)
     report = {"protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
-              "baseline_sha": BASELINE, "model": MODEL,
+              "baseline_sha": BASELINE, "model": MODEL, "pricing": PRICING,
               "status": "blocked_budget_reservation" if relay.budget_blocked else
                         "complete" if summary["complete"] and summary["accounting_complete"] else "incomplete",
               "summary": summary,
-              "rows": rows, "budget": {"spent_usd": str(budget.spent_usd),
-                                      "remaining_usd": str(budget.remaining_usd),
-                                      "limit_usd": limit_usd},
+              "rows": rows, "budget": {"spent_rmb": str(budget.spent_rmb),
+                                      "remaining_rmb": str(budget.remaining_rmb),
+                                      "limit_rmb": limit_rmb},
               "calls": [{key: value for key, value in call.items() if key != "response_body"}
                         for call in relay.rows]}
     _write_checkpoint(output, budget_path, report)
@@ -587,13 +584,13 @@ def main() -> None:
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--budget-db", type=Path, required=True)
-    parser.add_argument("--limit-usd", default="20")
+    parser.add_argument("--limit-rmb", default="49")
     parser.add_argument("--repeats", type=int, default=REPEATS)
     args = parser.parse_args()
     if args.repeats != REPEATS:
         parser.error("release evaluation requires exactly three matched repeats")
     report = run(source=args.source, repo=args.repo, output=args.output,
-                 budget_path=args.budget_db, limit_usd=args.limit_usd, repeats=args.repeats)
+                 budget_path=args.budget_db, limit_rmb=args.limit_rmb, repeats=args.repeats)
     print(json.dumps(report["summary"], indent=2, sort_keys=True))
     summary = report["summary"]
     raise SystemExit(0 if (summary["complete"] and summary["accounting_complete"]

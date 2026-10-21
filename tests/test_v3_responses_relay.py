@@ -25,7 +25,8 @@ class V3ResponsesRelayTests(unittest.TestCase):
 
         class Upstream(BaseHTTPRequestHandler):
             usage = {"input_tokens": 12, "output_tokens": 4,
-                     "input_tokens_details": {"cached_tokens": 3}}
+                     "input_tokens_details": {"cached_tokens": 3},
+                     "cache_creation_input_tokens": 2}
 
             def log_message(self, *_args):
                 pass
@@ -33,7 +34,7 @@ class V3ResponsesRelayTests(unittest.TestCase):
             def do_POST(self):
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 received.append(request)
-                remaining_at_forward.append(budget_ref["ledger"].remaining_usd)
+                remaining_at_forward.append(budget_ref["ledger"].remaining_rmb)
                 if request.get("stream"):
                     payload = ("event: response.completed\ndata: " + json.dumps({
                         "type": "response.completed", "response": {
@@ -52,7 +53,7 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.upstream_thread = threading.Thread(target=self.upstream.serve_forever, daemon=True)
         self.upstream_thread.start()
         self.tempdir = tempfile.TemporaryDirectory()
-        self.budget = BudgetLedger(Path(self.tempdir.name) / "budget.sqlite3", limit_usd="0.01")
+        self.budget = BudgetLedger(Path(self.tempdir.name) / "budget.sqlite3", limit_rmb="0.1")
         budget_ref["ledger"] = self.budget
         self.relay = ResponsesRelay(
             endpoint=f"http://127.0.0.1:{self.upstream.server_port}/v1",
@@ -78,17 +79,18 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.assertEqual(self.received[0]["max_output_tokens"], MAX_OUTPUT_TOKENS)
         self.assertTrue(self.received[0]["stream"])
         self.assertIn("event: response.completed", response.text)
-        self.assertLess(self.remaining_at_forward[0], self.budget.limit_picodollars / 1_000_000_000_000)
-        self.assertAlmostEqual(float(self.budget.spent_usd), 0.0000014069)
+        self.assertLess(self.remaining_at_forward[0], self.budget.limit_picormb / 1_000_000_000_000)
+        self.assertAlmostEqual(float(self.budget.spent_rmb), 0.0000204)
         self.assertEqual(self.relay.rows[0]["status"], "settled")
         self.assertEqual(self.relay.rows[0]["usage"]["cache_read_tokens"], 3)
+        self.assertEqual(self.relay.rows[0]["usage"]["cache_write_tokens"], 2)
 
     def test_rejects_unauthenticated_local_requests_without_spending(self):
         response = requests.post(self.relay.url + "/responses", json={"input": []}, timeout=3)
 
         self.assertEqual(response.status_code, 401)
         self.assertEqual(self.received, [])
-        self.assertEqual(self.budget.spent_usd, 0)
+        self.assertEqual(self.budget.spent_rmb, 0)
 
     def test_preserves_nonstreaming_native_tool_request_shape(self):
         response = requests.post(self.relay.url + "/responses", json={

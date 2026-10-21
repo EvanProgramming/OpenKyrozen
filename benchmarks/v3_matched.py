@@ -1,6 +1,7 @@
 """Budgeted analysis primitives for the matched OpenKyrozen V2/V3 evaluation."""
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import sqlite3
@@ -10,92 +11,112 @@ from pathlib import Path
 from statistics import mean, median
 from benchmarks.v3_fixtures import FIXTURES
 
-INPUT_RATE = Decimal("0.033")
-OUTPUT_RATE = Decimal("0.275")
-CACHE_READ_RATE = Decimal("0.0033")
+INPUT_RATE = Decimal("0.7")
+OUTPUT_RATE = Decimal("3.7")
+CACHE_WRITE_RATE = Decimal("0.2")
+CACHE_READ_RATE = Decimal("0.1")
 _MILLION = Decimal(1_000_000)
-_PICODOLLARS = Decimal(1_000_000_000_000)
+_PICORMB = Decimal(1_000_000_000_000)
+PRICING = {"currency": "CNY", "input_per_million": str(INPUT_RATE),
+           "output_per_million": str(OUTPUT_RATE), "cache_write_per_million": str(CACHE_WRITE_RATE),
+           "cache_read_per_million": str(CACHE_READ_RATE)}
+PRICING_SHA256 = hashlib.sha256(json.dumps(PRICING, sort_keys=True).encode()).hexdigest()
 
 
-def _cost(input_tokens: int, output_tokens: int, cache_read_tokens: int = 0) -> Decimal:
-    if min(input_tokens, output_tokens, cache_read_tokens) < 0 or cache_read_tokens > input_tokens:
+def _cost(input_tokens: int, output_tokens: int, cache_read_tokens: int = 0,
+          cache_write_tokens: int = 0) -> Decimal:
+    if (min(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens) < 0
+            or cache_read_tokens + cache_write_tokens > input_tokens):
         raise ValueError("usage token counts are invalid")
-    return ((input_tokens - cache_read_tokens) * INPUT_RATE
+    return ((input_tokens - cache_read_tokens - cache_write_tokens) * INPUT_RATE
+            + cache_write_tokens * CACHE_WRITE_RATE
             + cache_read_tokens * CACHE_READ_RATE
             + output_tokens * OUTPUT_RATE) / _MILLION
 
 
-def _picodollars(amount: Decimal) -> int:
-    return int((amount * _PICODOLLARS).to_integral_value(rounding=ROUND_CEILING))
+def _picormb(amount: Decimal) -> int:
+    return int((amount * _PICORMB).to_integral_value(rounding=ROUND_CEILING))
 
 
 class BudgetLedger:
     """Atomically reserve worst-case API spend and retain unknown attempts."""
 
-    def __init__(self, path: Path, *, limit_usd: str | Decimal = "20"):
+    def __init__(self, path: Path, *, limit_rmb: str | Decimal = "49"):
         self.path = Path(path)
-        self.limit_picodollars = _picodollars(Decimal(limit_usd))
+        limit = Decimal(limit_rmb)
+        if not Decimal(0) < limit < Decimal(50):
+            raise ValueError("the cumulative benchmark cap must be greater than zero and below CNY 50")
+        self.limit_picormb = _picormb(limit)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.path) as db:
             db.execute("PRAGMA journal_mode=WAL")
-            db.execute("CREATE TABLE IF NOT EXISTS budget_config (id INTEGER PRIMARY KEY CHECK(id=1), limit_picodollars INTEGER NOT NULL)")
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "budget_config" in tables:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(budget_config)")}
+                if "limit_picodollars" in columns or "currency_code" not in columns or "pricing_sha256" not in columns:
+                    raise ValueError("legacy USD budget ledger cannot be reused under the RMB cap")
+            if "attempts" in tables:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(attempts)")}
+                if "reserved_microdollars" in columns:
+                    raise ValueError("legacy USD budget ledger cannot be reused under the RMB cap")
+            db.execute("CREATE TABLE IF NOT EXISTS budget_config (id INTEGER PRIMARY KEY CHECK(id=1), currency_code TEXT NOT NULL, limit_picormb INTEGER NOT NULL, pricing_sha256 TEXT NOT NULL)")
             db.execute("""CREATE TABLE IF NOT EXISTS attempts (
-                id TEXT PRIMARY KEY, reserved_microdollars INTEGER NOT NULL,
-                actual_microdollars INTEGER, status TEXT NOT NULL,
+                id TEXT PRIMARY KEY, reserved_picormb INTEGER NOT NULL,
+                actual_picormb INTEGER, status TEXT NOT NULL,
                 usage_json TEXT, metadata_json TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(attempts)")}
             if "metadata_json" not in columns:
                 db.execute("ALTER TABLE attempts ADD COLUMN metadata_json TEXT")
-            current = db.execute("SELECT limit_picodollars FROM budget_config WHERE id=1").fetchone()
+            current = db.execute("SELECT currency_code,limit_picormb,pricing_sha256 FROM budget_config WHERE id=1").fetchone()
             if current is None:
-                db.execute("INSERT INTO budget_config VALUES(1,?)", (self.limit_picodollars,))
-            elif int(current[0]) != self.limit_picodollars:
-                raise ValueError("the persisted benchmark budget limit cannot be changed")
+                db.execute("INSERT INTO budget_config VALUES(1,'CNY',?,?)", (self.limit_picormb, PRICING_SHA256))
+            elif current[0] != "CNY" or int(current[1]) != self.limit_picormb or current[2] != PRICING_SHA256:
+                raise ValueError("the persisted RMB benchmark cap and pricing cannot be changed")
 
     def _totals(self) -> tuple[int, int, bool]:
         with sqlite3.connect(self.path) as db:
             spent, held, overruns = db.execute(
-                "SELECT COALESCE(SUM(actual_microdollars), 0), "
+                "SELECT COALESCE(SUM(actual_picormb), 0), "
                 "COALESCE(SUM(CASE WHEN status IN ('reserved','unknown') "
-                "THEN reserved_microdollars ELSE 0 END), 0), "
+                "THEN reserved_picormb ELSE 0 END), 0), "
                 "SUM(CASE WHEN status='overrun' THEN 1 ELSE 0 END) FROM attempts"
             ).fetchone()
         return int(spent), int(held), bool(overruns)
 
     @property
-    def spent_usd(self) -> Decimal:
-        return Decimal(self._totals()[0]) / _PICODOLLARS
+    def spent_rmb(self) -> Decimal:
+        return Decimal(self._totals()[0]) / _PICORMB
 
     @property
     def budget_ok(self) -> bool:
         return not self._totals()[2]
 
     @property
-    def remaining_usd(self) -> Decimal:
+    def remaining_rmb(self) -> Decimal:
         spent, held, overrun = self._totals()
         if overrun:
             return Decimal(0)
-        return Decimal(max(0, self.limit_picodollars - spent - held)) / _PICODOLLARS
+        return Decimal(max(0, self.limit_picormb - spent - held)) / _PICORMB
 
     def reserve(self, attempt_id: str, *, input_token_bound: int, output_token_bound: int,
                 metadata: dict | None = None) -> bool:
         if not attempt_id or min(input_token_bound, output_token_bound) < 0:
             raise ValueError("attempt ID and nonnegative token bounds are required")
-        reserve = _picodollars(_cost(input_token_bound, output_token_bound))
+        reserve = _picormb(_cost(input_token_bound, output_token_bound))
         with sqlite3.connect(self.path, timeout=30, isolation_level=None) as db:
             db.execute("BEGIN IMMEDIATE")
             spent, held, overruns = db.execute(
-                "SELECT COALESCE(SUM(actual_microdollars), 0), "
+                "SELECT COALESCE(SUM(actual_picormb), 0), "
                 "COALESCE(SUM(CASE WHEN status IN ('reserved','unknown') "
-                "THEN reserved_microdollars ELSE 0 END), 0), "
+                "THEN reserved_picormb ELSE 0 END), 0), "
                 "SUM(CASE WHEN status='overrun' THEN 1 ELSE 0 END) FROM attempts"
             ).fetchone()
-            if overruns or spent + held + reserve > self.limit_picodollars:
+            if overruns or spent + held + reserve > self.limit_picormb:
                 db.rollback()
                 return False
             try:
-                db.execute("INSERT INTO attempts(id,reserved_microdollars,status,metadata_json) "
+                db.execute("INSERT INTO attempts(id,reserved_picormb,status,metadata_json) "
                            "VALUES(?,?,'reserved',?)",
                            (attempt_id, reserve, json.dumps(metadata, sort_keys=True) if metadata is not None else None))
             except sqlite3.IntegrityError:
@@ -107,7 +128,7 @@ class BudgetLedger:
     def campaign_calls(self) -> list[dict]:
         with sqlite3.connect(self.path) as db:
             attempts = db.execute(
-                "SELECT id,reserved_microdollars,actual_microdollars,status,usage_json,metadata_json "
+                "SELECT id,reserved_picormb,actual_picormb,status,usage_json,metadata_json "
                 "FROM attempts ORDER BY created_at,id"
             ).fetchall()
         calls = []
@@ -118,18 +139,18 @@ class BudgetLedger:
                 self.settle(attempt_id, None)
                 status, actual = "unknown", None
             call = json.loads(metadata_json)
-            if Decimal(reserved) / _PICODOLLARS != Decimal(call.get("reserved_usd", "-1")):
+            if Decimal(reserved) / _PICORMB != Decimal(call.get("reserved_rmb", "-1")):
                 raise ValueError("campaign journal reservation does not match budget ledger")
             call.update(attempt_id=attempt_id, status=status,
                         usage=json.loads(usage_json) if usage_json else None,
-                        actual_usd=(str(Decimal(actual) / _PICODOLLARS) if actual is not None else None))
+                        actual_rmb=(str(Decimal(actual) / _PICORMB) if actual is not None else None))
             calls.append(call)
         return calls
 
     def settle(self, attempt_id: str, usage: dict | None) -> None:
         with sqlite3.connect(self.path, timeout=30, isolation_level=None) as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT reserved_microdollars,status FROM attempts WHERE id=?",
+            row = db.execute("SELECT reserved_picormb,status FROM attempts WHERE id=?",
                              (attempt_id,)).fetchone()
             if row is None or row[1] != "reserved":
                 db.rollback()
@@ -140,9 +161,10 @@ class BudgetLedger:
                 input_tokens = int(usage.get("input_tokens", 0))
                 output_tokens = int(usage.get("output_tokens", 0))
                 cached = int(usage.get("cache_read_tokens", 0))
-                actual = _picodollars(_cost(input_tokens, output_tokens, cached))
+                cache_write = int(usage.get("cache_write_tokens", 0))
+                actual = _picormb(_cost(input_tokens, output_tokens, cached, cache_write))
                 status = "settled" if actual <= row[0] else "overrun"
-                db.execute("UPDATE attempts SET status=?,actual_microdollars=?,usage_json=? WHERE id=?",
+                db.execute("UPDATE attempts SET status=?,actual_picormb=?,usage_json=? WHERE id=?",
                            (status, actual, json.dumps(usage, sort_keys=True), attempt_id))
             db.commit()
 
@@ -185,7 +207,7 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000) -> dict:
         groups[fixture][repeat][arm] = row
     accounting_complete = complete and all(
         row.get("usage_complete") and all(field in row for field in
-            ("input_tokens", "output_tokens", "cache_read_tokens", "latency_ms", "attempts",
+            ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "latency_ms", "attempts",
              "first_delta_latency_ms", "verifier_result", "safety_passed",
              "durable_side_effect_expected", "durable_side_effect_verified",
              "recovery_required", "recovery_verified", "verified_success",
@@ -209,14 +231,17 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000) -> dict:
         input_tokens = sum(int(row.get("input_tokens", 0)) for row in arm_rows)
         output_tokens = sum(int(row.get("output_tokens", 0)) for row in arm_rows)
         cache_read_tokens = sum(int(row.get("cache_read_tokens", 0)) for row in arm_rows)
+        cache_write_tokens = sum(int(row.get("cache_write_tokens", 0)) for row in arm_rows)
         cost = sum((_cost(int(row["input_tokens"]), int(row["output_tokens"]),
-                           int(row["cache_read_tokens"])) for row in arm_rows), Decimal(0))
+                           int(row["cache_read_tokens"]), int(row["cache_write_tokens"]))
+                    for row in arm_rows), Decimal(0))
         result["summary"][arm] = {
             "verified_success": sum(bool(row.get("verified_success")) for row in arm_rows),
             "workflow_state_correct": sum(bool(row.get("workflow_state_correct")) for row in arm_rows),
             "requests": request_count, "input_tokens": input_tokens,
             "output_tokens": output_tokens, "cache_read_tokens": cache_read_tokens,
-            "tokens": input_tokens + output_tokens, "cost_usd": float(cost),
+            "cache_write_tokens": cache_write_tokens,
+            "tokens": input_tokens + output_tokens, "cost_rmb": float(cost),
             "attempts": sum(int(row["attempts"]) for row in arm_rows),
             "median_first_delta_latency_ms": round(median(
                 float(row["first_delta_latency_ms"]) for row in arm_rows

@@ -6,56 +6,75 @@ from benchmarks.v3_matched import BudgetLedger, summarize
 
 
 class V3MatchedBenchmarkTests(unittest.TestCase):
-    def test_default_budget_matches_approved_twenty_dollar_cap(self):
+    def test_default_budget_is_below_the_approved_fifty_rmb_cap(self):
         with tempfile.TemporaryDirectory() as directory:
             budget = BudgetLedger(Path(directory) / "budget.sqlite3")
-            self.assertEqual(budget.remaining_usd, 20)
+            self.assertEqual(budget.remaining_rmb, 49)
+            for limit in ("0", "50", "51"):
+                with self.assertRaises(ValueError):
+                    BudgetLedger(Path(directory) / f"{limit}.sqlite3", limit_rmb=limit)
 
-    def test_dollar_reservations_persist_and_unknown_usage_remains_reserved(self):
+    def test_old_usd_ledger_is_preserved_and_refused_under_new_rmb_pricing(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old.sqlite3"
+            with sqlite3.connect(path) as db:
+                db.execute("CREATE TABLE budget_config (id INTEGER PRIMARY KEY, limit_picodollars INTEGER)")
+                db.execute("INSERT INTO budget_config VALUES (1, 20000000000000)")
+                db.execute("CREATE TABLE attempts (id TEXT, reserved_microdollars INTEGER)")
+                db.execute("INSERT INTO attempts VALUES ('old', 123)")
+            with self.assertRaisesRegex(ValueError, "legacy USD"):
+                BudgetLedger(path)
+            with sqlite3.connect(path) as db:
+                self.assertEqual(db.execute("SELECT * FROM attempts").fetchall(), [("old", 123)])
+
+    def test_rmb_reservations_persist_and_unknown_usage_remains_reserved(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "budget.sqlite3"
-            budget = BudgetLedger(path, limit_usd="0.005")
+            budget = BudgetLedger(path, limit_rmb="0.1")
 
             self.assertTrue(budget.reserve("attempt-1", input_token_bound=100_000, output_token_bound=1_000))
             budget.settle("attempt-1", None)
             with self.assertRaises(ValueError):
-                BudgetLedger(path, limit_usd="0.01")
-            resumed = BudgetLedger(path, limit_usd="0.005")
-            self.assertAlmostEqual(float(resumed.remaining_usd), 0.001425)
+                BudgetLedger(path, limit_rmb="0.2")
+            resumed = BudgetLedger(path, limit_rmb="0.1")
+            self.assertAlmostEqual(float(resumed.remaining_rmb), 0.0263)
             self.assertFalse(resumed.reserve("attempt-2", input_token_bound=50_000, output_token_bound=0))
 
     def test_known_usage_releases_unused_reservation_at_user_rates(self):
         with tempfile.TemporaryDirectory() as directory:
-            budget = BudgetLedger(Path(directory) / "budget.sqlite3", limit_usd="0.01")
+            budget = BudgetLedger(Path(directory) / "budget.sqlite3", limit_rmb="0.1")
 
             self.assertTrue(budget.reserve("attempt-1", input_token_bound=100_000, output_token_bound=1_000))
             budget.settle("attempt-1", {
                 "input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 20,
+                "cache_write_tokens": 30,
             })
 
-            self.assertAlmostEqual(float(budget.spent_usd), 0.00000264 + 0.000000066 + 0.00000275)
-            self.assertGreater(budget.remaining_usd, 0.009)
+            self.assertAlmostEqual(float(budget.spent_rmb), 0.00008)
+            self.assertGreater(budget.remaining_rmb, 0.09)
 
     def test_campaign_journal_recovers_call_metadata_and_marks_reserved_calls_unknown(self):
         with tempfile.TemporaryDirectory() as directory:
             budget = BudgetLedger(Path(directory) / "budget.sqlite3")
             metadata = {"arm": "v3", "fixture_id": "bug_fix-1", "repeat": 0,
-                        "request_sha256": "hash", "model": "gemini-3.5-flash-lite",
-                        "max_output_tokens": 4096, "reserved_usd": "0.0000308"}
+                        "request_sha256": "hash", "model": "gemini-flash-3.6",
+                        "max_output_tokens": 4096, "reserved_rmb": "0.00044"}
             self.assertTrue(budget.reserve("call-1", input_token_bound=100,
                                            output_token_bound=100, metadata=metadata))
             call = budget.campaign_calls()[0]
             self.assertEqual(call["request_sha256"], "hash")
             self.assertEqual(call["status"], "unknown")
             self.assertEqual(call["usage"], None)
-            self.assertGreater(budget.remaining_usd, 0)
+            self.assertGreater(budget.remaining_rmb, 0)
 
     def test_actual_overrun_poison_stops_every_later_reservation(self):
         with tempfile.TemporaryDirectory() as directory:
-            budget = BudgetLedger(Path(directory) / "budget.sqlite3", limit_usd="0.01")
+            budget = BudgetLedger(Path(directory) / "budget.sqlite3", limit_rmb="0.01")
             self.assertTrue(budget.reserve("attempt-1", input_token_bound=1, output_token_bound=1))
             budget.settle("attempt-1", {"input_tokens": 100_000, "output_tokens": 0})
-            self.assertEqual(budget.remaining_usd, 0)
+            self.assertEqual(budget.remaining_rmb, 0)
             self.assertFalse(budget.reserve("attempt-2", input_token_bound=1, output_token_bound=1))
 
     def test_summary_requires_all_matched_rows_and_known_usage(self):
@@ -71,10 +90,10 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
                         "requests": 2 if arm == "v3" else 3,
                         "input_tokens": 90 if arm == "v3" else 100,
                         "output_tokens": 45 if arm == "v3" else 50,
-                        "cache_read_tokens": 0,
+                        "cache_read_tokens": 0, "cache_write_tokens": 0,
                         "latency_ms": 100, "usage_complete": True,
                         "first_delta_latency_ms": 10, "attempts": 2,
-                        "cost_usd": 0.0001, "safety_passed": True,
+                        "cost_rmb": 0.0001, "safety_passed": True,
                         "verifier_result": "passed", "durable_side_effect_expected": True,
                         "durable_side_effect_verified": True, "recovery_required": True,
                         "recovery_verified": True,
@@ -93,7 +112,7 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         self.assertFalse(result["release_comparison_passed"])
         self.assertEqual(result["summary"]["v3"]["workflow_state_correct"], 90)
         self.assertEqual(result["summary"]["v3"]["attempts"], 180)
-        self.assertAlmostEqual(result["summary"]["v3"]["cost_usd"], 0.00138105)
+        self.assertAlmostEqual(result["summary"]["v3"]["cost_rmb"], 0.020655)
         self.assertTrue(result["summary"]["v3"]["all_safety_passed"])
         self.assertEqual(result["summary"]["v3"]["verifier_passed"], 90)
         self.assertEqual(result["summary"]["v3"]["durable_side_effects_expected"], 90)

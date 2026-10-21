@@ -165,7 +165,7 @@ class V3MatchedLiveTests(unittest.TestCase):
                     usage = {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0}
                     metadata = {"attempt_id": attempt, "fixture_id": fixture_id, "repeat": repeat,
                                 "arm": arm, "request_sha256": attempt, "model": MODEL,
-                                "max_output_tokens": 4096, "reserved_usd": "0.0000308"}
+                                "max_output_tokens": 4096, "reserved_rmb": "0.00044"}
                     self.assertTrue(budget.reserve(attempt, input_token_bound=100, output_token_bound=100,
                                                    metadata=metadata))
                     budget.settle(attempt, usage)
