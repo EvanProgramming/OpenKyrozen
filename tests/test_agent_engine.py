@@ -354,20 +354,33 @@ class AgentEngineTests(unittest.TestCase):
                 from openkyrozen.providers.models import provider_identity
                 validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=True)
                 validate_replied_tool_definitions(messages, tools)
-                self.requests.append((messages, tools))
+                self.requests.append((list(messages), tools))
                 system_prompt = messages[0]["content"]
                 if any(marker in system_prompt for marker in ("Action:", "TaskList:", "TaskDone:", "DefineTool:")):
                     raise AssertionError("native prompt includes legacy control syntax")
                 if len(self.requests) == 1:
-                    self.assert_tool_schema(tools, "read_file")
+                    self.assert_tool_schema(tools, "update_plan")
                     return ModelResponse(
-                        tool_calls=(ToolCall("read-1", "read_file", {"path": "note.txt"}),),
+                        tool_calls=(ToolCall("plan-1", "update_plan", {
+                            "complexity": "complex",
+                            "tasks": [{"description": "Read note.txt", "acceptance": ["contents verified"]}],
+                        }),),
                         finish_reason=FinishReason.TOOL_REQUEST,
                         continuation=provider_continuation(self, model, "fixture", {"id": "response-1"}),
                         metadata={"provider": self.name, "model": model},
                     )
+                if len(self.requests) == 2:
+                    self.assert_tool_schema(tools, "update_plan")
+                    if not isinstance(messages[-1], ToolReply) or messages[-1].call_id != "plan-1":
+                        raise AssertionError("native plan result was not correlated to its call")
+                    return ModelResponse(
+                        tool_calls=(ToolCall("read-1", "read_file", {"path": "note.txt"}),),
+                        finish_reason=FinishReason.TOOL_REQUEST,
+                        continuation=provider_continuation(self, model, "fixture", {"id": "response-2"}),
+                        metadata={"provider": self.name, "model": model},
+                    )
                 if not isinstance(messages[-1], ToolReply) or messages[-1].call_id != "read-1":
-                    raise AssertionError("native tool result was not correlated to its call")
+                    raise AssertionError("native read result was not correlated to its call")
                 return ModelResponse(
                     text="The file contains verified text.", finish_reason=FinishReason.FINAL,
                     metadata={"provider": self.name, "model": model},
@@ -403,11 +416,14 @@ class AgentEngineTests(unittest.TestCase):
 
         self.assertIn("verified text", answer)
         retrieve_memory.assert_called_once()
-        self.assertEqual(provider.calls_attempted, 2)
-        self.assertEqual(len(provider.requests), 2)
+        self.assertEqual(provider.calls_attempted, 3)
+        self.assertEqual(len(provider.requests), 3)
         self.assertTrue(all(any(packet in item.get("content", "") for item in request[0]
                                 if isinstance(item, dict)) for request in provider.requests))
-        self.assertEqual(provider.requests[1][0][-1].call_id, "read-1")
+        self.assertEqual(provider.requests[1][0][-1].call_id, "plan-1")
+        self.assertEqual(provider.requests[2][0][-1].call_id, "read-1")
+        self.assertEqual(app.runtime.tasks.working_plan.complexity, "complex")
+        self.assertEqual(app.runtime.tasks.tasks[0]["description"], "Read note.txt")
 
 
 if __name__ == "__main__":

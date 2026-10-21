@@ -1023,16 +1023,28 @@ class WorkingPlanModelTests(unittest.TestCase):
             finally:
                 app.close()
 
-    def test_structured_update_plan_is_not_advertised_as_a_legacy_text_action(self):
+    def test_structured_update_plan_is_agent_only_and_not_a_legacy_text_action(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"
             memory = build_memory(path, user_id="alice", index=None)
             app = build_application(memory=memory, tools=ToolAdapters(directory), user_id="alice")
             try:
+                app.runtime._active_interaction_mode.set("agent")
                 prompt_tools = app.runtime._agent_prompt_tools_list({"capabilities": ["read", "write"]})
-                self.assertNotIn("update_plan", prompt_tools)
+                self.assertIn("update_plan", prompt_tools)
+                self.assertIn("update_plan", app.runtime._permitted_tool_names({"capabilities": ["read", "write"]}))
+                self.assertNotIn("update_plan", app.runtime._permitted_tool_names({"capabilities": ["read"]}))
+                from openkyrozen.agent.engine import AgentEngine
+                native_names = AgentEngine(app.runtime)._native_tool_names()
+                self.assertIn("update_plan", native_names)
+                native_schema = next(schema for schema in app.runtime.tool_registry.provider_schemas(names=native_names)
+                                     if schema["name"] == "update_plan")
+                self.assertIn("operations", native_schema["parameters"]["properties"])
+                app.runtime._active_interaction_mode.set("ask")
                 self.assertNotIn("update_plan", app.runtime._permitted_tool_names({"capabilities": ["read", "write"]}))
-                self.assertTrue(app.runtime._discover_tools("update_plan").startswith("Error:"))
+                app.runtime._active_interaction_mode.set("agent")
+                self.assertTrue(app.runtime._discover_tools("update_plan").startswith("- update_plan:"))
+                self.assertNotIn("update_plan", app.runtime._build_tools_list(frozenset({"read", "write"})))
                 self.assertIn("update_plan", app.runtime.tool_registry.specs)
             finally:
                 app.close()
