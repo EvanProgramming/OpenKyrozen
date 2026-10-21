@@ -26,6 +26,7 @@ This index covers the current product guides, developer references, and dated en
 ## Build, contribute, and review evidence
 
 - [Development guide](development.md) and [contributor guide](../CONTRIBUTING.md) cover setup, layout, checks, and pull requests.
+- [V3 matched evaluation](v3-evaluation.md) documents the frozen cohort, independent checks, and spend controls.
 - [Reports index](reports.md) explains the dates, scope, and limits of recorded audits, validation runs, and benchmarks.
 - [Modular refactor validation](modular-refactor-validation.md), [production audit](production-audit-2026-10-04.md), [shipping audit](production-shipping-audit-2026-10-04.md), and [self-learning audit](self-learning-audit-2026-10-03.md) preserve historical evidence.
 - [V3 architecture ownership plan](superpowers/plans/2026-10-07-v3-issue-227.md) records the scoped implementation and verification for issue #227.

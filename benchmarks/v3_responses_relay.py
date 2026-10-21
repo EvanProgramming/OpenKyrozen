@@ -26,6 +26,7 @@ class ResponsesRelay:
         self.budget = budget
         self.label = ("", "", -1)
         self.rows: list[dict] = []
+        self.budget_blocked = False
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -94,12 +95,14 @@ class ResponsesRelay:
 
                 body["model"] = MODEL
                 body["max_output_tokens"] = MAX_OUTPUT_TOKENS
-                body["stream"] = False
+                wants_stream = body.get("stream") is True
+                body["stream"] = wants_stream
                 encoded = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
                 attempt_id = uuid.uuid4().hex
                 input_bound = len(encoded) + 512
                 if not relay.budget.reserve(attempt_id, input_token_bound=input_bound,
                                             output_token_bound=MAX_OUTPUT_TOKENS):
+                    relay.budget_blocked = True
                     self._json(402, {"error": {"message": "benchmark spend cap reached"}})
                     return
                 arm, fixture_id, repeat = relay.label
@@ -112,19 +115,31 @@ class ResponsesRelay:
                     relay.rows.append(row)
 
                 started = time.monotonic()
+                stream_started = False
                 try:
                     upstream = requests.post(
                         relay.endpoint + "/responses", data=encoded,
                         headers={"Authorization": "Bearer " + relay.api_key,
                                  "Content-Type": "application/json"},
-                        timeout=180, allow_redirects=False,
+                        timeout=180, allow_redirects=False, stream=wants_stream,
                     )
-                    try:
-                        response_body = upstream.json()
-                    except ValueError:
-                        response_body = None
                     row["http_status"] = upstream.status_code
-                    if upstream.status_code == 200 and isinstance(response_body, dict):
+                    if upstream.status_code != 200:
+                        relay.budget.settle(attempt_id, None)
+                        row["status"] = "unknown"
+                        upstream.close()
+                        self._json(upstream.status_code if 400 <= upstream.status_code < 600 else 502,
+                                   {"error": {"message": f"benchmark upstream returned HTTP {upstream.status_code}"}})
+                        return
+                    if not wants_stream:
+                        try:
+                            response_body = upstream.json()
+                        except ValueError:
+                            response_body = None
+                        if not isinstance(response_body, dict):
+                            relay.budget.settle(attempt_id, None)
+                            self._json(502, {"error": {"message": "benchmark upstream returned invalid JSON"}})
+                            return
                         usage = relay._usage(response_body)
                         relay.budget.settle(attempt_id, usage)
                         row["usage"] = usage
@@ -133,16 +148,50 @@ class ResponsesRelay:
                                                          usage["cache_read_tokens"]))
                                               if usage is not None else None)
                         self._json(200, response_body)
-                    else:
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    stream_started = True
+                    frame = bytearray()
+                    for chunk in upstream.iter_content(chunk_size=4096):
+                        if not chunk:
+                            continue
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                        frame.extend(chunk)
+                        while True:
+                            normalized = bytes(frame).replace(b"\r\n", b"\n")
+                            if b"\n\n" not in normalized:
+                                break
+                            event, _, remainder = normalized.partition(b"\n\n")
+                            frame = bytearray(remainder)
+                            data = b"\n".join(line[5:].lstrip() for line in event.splitlines()
+                                              if line.startswith(b"data:"))
+                            if data and data != b"[DONE]":
+                                try:
+                                    message = json.loads(data)
+                                except (ValueError, json.JSONDecodeError):
+                                    continue
+                                if message.get("type") in {
+                                        "response.completed", "response.incomplete", "response.failed"}:
+                                    usage = relay._usage(message.get("response", {}))
+                                    relay.budget.settle(attempt_id, usage)
+                                    row["usage"] = usage
+                                    row["status"] = "settled" if usage is not None else "unknown"
+                                    row["actual_usd"] = (str(_cost(usage["input_tokens"], usage["output_tokens"],
+                                                                     usage["cache_read_tokens"]))
+                                                          if usage is not None else None)
+                except (requests.RequestException, OSError) as exc:
+                    if row["status"] == "unknown":
                         relay.budget.settle(attempt_id, None)
-                        row["status"] = "unknown"
-                        self._json(upstream.status_code if 400 <= upstream.status_code < 600 else 502,
-                                   {"error": {"message": f"benchmark upstream returned HTTP {upstream.status_code}"}})
-                except requests.RequestException as exc:
-                    relay.budget.settle(attempt_id, None)
-                    row["status"] = "unknown"
-                    row["transport_error"] = type(exc).__name__
-                    self._json(502, {"error": {"message": "benchmark upstream transport failed"}})
+                        row["transport_error"] = type(exc).__name__
+                    if not stream_started:
+                        try:
+                            self._json(502, {"error": {"message": "benchmark upstream transport failed"}})
+                        except (OSError, BrokenPipeError):
+                            pass
                 finally:
                     row["latency_ms"] = round((time.monotonic() - started) * 1000, 2)
 

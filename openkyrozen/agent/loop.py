@@ -104,6 +104,8 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
             f"Revision feedback:\n{user_input}"
         )
         clear_tasks = False
+    elif mode_override is None and executing_plan:
+        clear_tasks = False
 
     mode_token = self._active_interaction_mode.set(
         mode_override or self._interaction_controller.state(user_input)["effective_mode"]

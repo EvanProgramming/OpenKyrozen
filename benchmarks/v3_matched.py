@@ -8,7 +8,7 @@ from collections import defaultdict
 from decimal import Decimal, ROUND_CEILING
 from pathlib import Path
 from statistics import mean, median
-from typing import Iterable
+from benchmarks.v3_fixtures import FIXTURES
 
 INPUT_RATE = Decimal("0.033")
 OUTPUT_RATE = Decimal("0.275")
@@ -32,7 +32,7 @@ def _picodollars(amount: Decimal) -> int:
 class BudgetLedger:
     """Atomically reserve worst-case API spend and retain unknown attempts."""
 
-    def __init__(self, path: Path, *, limit_usd: str | Decimal = "5"):
+    def __init__(self, path: Path, *, limit_usd: str | Decimal = "20"):
         self.path = Path(path)
         self.limit_picodollars = _picodollars(Decimal(limit_usd))
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -50,22 +50,29 @@ class BudgetLedger:
             elif int(current[0]) != self.limit_picodollars:
                 raise ValueError("the persisted benchmark budget limit cannot be changed")
 
-    def _totals(self) -> tuple[int, int]:
+    def _totals(self) -> tuple[int, int, bool]:
         with sqlite3.connect(self.path) as db:
-            spent, held = db.execute(
+            spent, held, overruns = db.execute(
                 "SELECT COALESCE(SUM(actual_microdollars), 0), "
                 "COALESCE(SUM(CASE WHEN status IN ('reserved','unknown') "
-                "THEN reserved_microdollars ELSE 0 END), 0) FROM attempts"
+                "THEN reserved_microdollars ELSE 0 END), 0), "
+                "SUM(CASE WHEN status='overrun' THEN 1 ELSE 0 END) FROM attempts"
             ).fetchone()
-        return int(spent), int(held)
+        return int(spent), int(held), bool(overruns)
 
     @property
     def spent_usd(self) -> Decimal:
         return Decimal(self._totals()[0]) / _PICODOLLARS
 
     @property
+    def budget_ok(self) -> bool:
+        return not self._totals()[2]
+
+    @property
     def remaining_usd(self) -> Decimal:
-        spent, held = self._totals()
+        spent, held, overrun = self._totals()
+        if overrun:
+            return Decimal(0)
         return Decimal(max(0, self.limit_picodollars - spent - held)) / _PICODOLLARS
 
     def reserve(self, attempt_id: str, *, input_token_bound: int, output_token_bound: int) -> bool:
@@ -74,12 +81,13 @@ class BudgetLedger:
         reserve = _picodollars(_cost(input_token_bound, output_token_bound))
         with sqlite3.connect(self.path, timeout=30, isolation_level=None) as db:
             db.execute("BEGIN IMMEDIATE")
-            spent, held = db.execute(
+            spent, held, overruns = db.execute(
                 "SELECT COALESCE(SUM(actual_microdollars), 0), "
                 "COALESCE(SUM(CASE WHEN status IN ('reserved','unknown') "
-                "THEN reserved_microdollars ELSE 0 END), 0) FROM attempts"
+                "THEN reserved_microdollars ELSE 0 END), 0), "
+                "SUM(CASE WHEN status='overrun' THEN 1 ELSE 0 END) FROM attempts"
             ).fetchone()
-            if spent + held + reserve > self.limit_picodollars:
+            if overruns or spent + held + reserve > self.limit_picodollars:
                 db.rollback()
                 return False
             try:
@@ -130,12 +138,11 @@ def _paired_success_interval(groups: dict[str, dict[int, dict[str, dict]]],
     return [round(_percentile(samples, .025), 6), round(_percentile(samples, .975), 6)]
 
 
-def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000,
-              expected_fixture_ids: Iterable[str] | None = None) -> dict:
+def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000) -> dict:
     """Summarize complete paired runs; do not turn missing evidence into success."""
     if bootstrap_samples < 1:
         raise ValueError("bootstrap_samples must be positive")
-    fixture_ids = sorted(set(expected_fixture_ids or (row.get("fixture_id") for row in rows)))
+    fixture_ids = sorted(fixture["fixture_id"] for fixture in FIXTURES)
     expected = {(fixture, repeat, arm) for fixture in fixture_ids for repeat in range(3)
                 for arm in ("v2", "v3")}
     keyed = {}
@@ -156,14 +163,16 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000,
              "durable_side_effect_expected", "durable_side_effect_verified",
              "recovery_required", "recovery_verified", "verified_success",
              "workflow_state_correct", "requests", "protocol_recovery", "duplicate_calls",
-             "plan_revisions", "cancelled_tasks", "material_revisions", "unnecessary_churn"))
+             "plan_revisions", "cancelled_tasks", "material_revisions", "unnecessary_churn",
+             "budget_ok", "plan_scenario", "plan_scenario_passed"))
         for row in keyed.values()
     )
     result = {"protocol": "openkyrozen-v3-matched-v1", "complete": complete,
               "accounting_complete": accounting_complete, "fixtures": len(fixture_ids), "repeats": 3,
               "paired_success_ci95": None, "summary": {}, "comparisons": {},
-              "release_comparison_passed": False}
-    if not complete:
+              "comparison_thresholds_met": False, "release_comparison_passed": False,
+              "release_evidence_status": "blocked: live fixture runner evidence is not attached"}
+    if not complete or not accounting_complete:
         return result
 
     result["paired_success_ci95"] = _paired_success_interval(groups, fixture_ids, bootstrap_samples)
@@ -199,6 +208,9 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000,
             "cancelled_tasks": sum(int(row.get("cancelled_tasks", 0)) for row in arm_rows),
             "material_revisions": sum(int(row.get("material_revisions", 0)) for row in arm_rows),
             "unnecessary_churn": sum(int(row.get("unnecessary_churn", 0)) for row in arm_rows),
+            "plan_scenarios": sum(bool(row.get("plan_scenario")) for row in arm_rows),
+            "plan_scenarios_passed": sum(row.get("plan_scenario_passed") is True for row in arm_rows
+                                           if row.get("plan_scenario")),
         }
     older, newer = result["summary"]["v2"], result["summary"]["v3"]
     token_savings = (Decimal(older["tokens"] - newer["tokens"]) / Decimal(older["tokens"])
@@ -209,9 +221,14 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000,
     result["comparisons"] = {"token_savings_fraction": token_savings,
                               "request_savings_fraction": float(request_savings) if request_savings is not None else None,
                               "success_improved": success_improved}
-    result["release_comparison_passed"] = bool(
+    result["comparison_thresholds_met"] = bool(
         accounting_complete and success_improved and token_savings is not None and token_savings >= Decimal("0.10")
         and request_savings is not None and request_savings >= Decimal("0.10")
         and newer["protocol_recovery"] == 0 and newer["all_safety_passed"]
+        and newer["plan_scenarios_passed"] == newer["plan_scenarios"]
+        and all(row["budget_ok"] is True for row in keyed.values())
     )
+    # Descriptive rows alone are not independently verified release evidence.
+    result["release_comparison_passed"] = False
+    result["release_evidence_status"] = "blocked: live fixture runner evidence is not attached"
     return result
