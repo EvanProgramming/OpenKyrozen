@@ -178,22 +178,28 @@ def read_webpage(self, args: str) -> str:
             status, location, body = self._read_pinned_web_response(parsed, hostname, port, address)
             if status in {301, 302, 303, 307, 308}:
                 if not location:
-                    return tool_failure('network_error', f"Error fetching webpage: HTTP {status} redirect has no Location header", retriable=True)
+                    return tool_failure('network_error', f"Error fetching webpage: HTTP {status} redirect has no Location header")
                 if redirect_count >= _MAX_WEBPAGE_REDIRECTS:
-                    return tool_failure('network_error', f"Error fetching webpage: too many redirects (maximum {_MAX_WEBPAGE_REDIRECTS})", retriable=True)
+                    return tool_failure('network_error', f"Error fetching webpage: too many redirects (maximum {_MAX_WEBPAGE_REDIRECTS})")
                 current_url = urljoin(current_url, location)
                 continue
             if status < 200 or status >= 400:
-                return tool_failure('network_error', f"Error fetching webpage: HTTP {status}", retriable=True)
+                retriable = status in {408, 425, 429} or 500 <= status < 600
+                return tool_failure('network_error', f"Error fetching webpage: HTTP {status}", retriable=retriable)
             text = re.sub(r"<[^>]*>", "", body)
             text = html.unescape(text)
             text = re.sub(r"\s+", " ", text).strip()
             if len(text) > 5000:
                 text = text[:5000] + "\n[...truncated...]"
             return tool_success(str(text))
-        return tool_failure('network_error', f"Error fetching webpage: too many redirects (maximum {_MAX_WEBPAGE_REDIRECTS})", retriable=True)
-    except (OSError, http.client.HTTPException, ValueError) as e:
+        return tool_failure('network_error', f"Error fetching webpage: too many redirects (maximum {_MAX_WEBPAGE_REDIRECTS})")
+    except (OSError, http.client.HTTPException) as e:
         message = str(e)
         if "blocked address" in message or "only http" in message or "credentials in URLs" in message:
             return tool_failure('permission_denied', f"Error: URL blocked: {message}", retriable=False)
         return tool_failure('network_error', f"Error fetching webpage: {message}", retriable=True)
+    except ValueError as e:
+        message = str(e)
+        if "blocked address" in message or "only http" in message or "credentials in URLs" in message:
+            return tool_failure('permission_denied', f"Error: URL blocked: {message}", retriable=False)
+        return tool_failure('network_error', f"Error fetching webpage: {message}", retriable=False)

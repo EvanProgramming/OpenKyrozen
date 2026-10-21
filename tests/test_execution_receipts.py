@@ -1,8 +1,9 @@
 import dataclasses
 import json
 import unittest
+from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from openkyrozen.agent.types import ExecutionReceipt
 from openkyrozen.tools.models import ToolError, ToolResult
@@ -333,6 +334,72 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
 
         self.assertFalse(receipt.success)
         self.assertEqual(receipt.failure, "not_found")
+        self.assertEqual(execute.call_count, 1)
+
+    def test_custom_network_tool_is_not_retried_based_on_source_label(self):
+        from openkyrozen.tools.manifest import ToolSpec
+        from openkyrozen.tools.models import tool_failure
+
+        self.app.runtime.tool_registry.register_spec(ToolSpec(
+            "custom_lookup", lambda _arguments: tool_failure("network_error", "temporary", retriable=True),
+            description="Custom lookup", input_schema={"type": "object", "properties": {},
+                                                        "additionalProperties": False},
+            capability="network", side_effects="remote", source="builtin",
+        ))
+        with patch.object(self.app.runtime.tool_registry, "_invoke_executor", return_value=tool_failure(
+                "network_error", "temporary", retriable=True)) as execute:
+            receipt = self.app.runtime._execute_turn_action(
+                "custom_lookup", {}, operation_scope="custom-network", successful_operations=set(),
+                call_id="custom-network-call", call_id_source="native",
+            )
+
+        self.assertFalse(receipt.success)
+        self.assertEqual(execute.call_count, 1)
+
+    def test_retry_rechecks_task_binding_before_second_dispatch(self):
+        from openkyrozen.tools.models import tool_failure, tool_success
+
+        spec = self.app.runtime.tool_registry.specs["search_web"]
+        binding_check = Mock(side_effect=[True, True, False])
+        with patch.object(self.app.runtime.tool_registry, "_invoke_executor", side_effect=[
+            tool_failure("network_error", "temporary", retriable=True), tool_success("unexpected"),
+        ]) as execute:
+            receipt = self.app.runtime._run_tool(
+                "search_web", {"query": "cancel after failure"}, return_receipt=True,
+                operation_scope="retry-cancelled", _typed_arguments={"query": "cancel after failure"},
+                _expected_spec=spec, _pre_execution_check=binding_check,
+            )
+
+        self.assertFalse(receipt.success)
+        self.assertEqual(binding_check.call_count, 3)
+        self.assertEqual(execute.call_count, 1)
+
+    def test_retry_reenters_delegation_guard_before_second_dispatch(self):
+        from openkyrozen.tools.models import tool_failure, tool_success
+
+        spec = self.app.runtime.tool_registry.specs["search_web"]
+        entries = 0
+
+        @contextmanager
+        def guard(_action, _arguments):
+            nonlocal entries
+            entries += 1
+            if entries == 2:
+                raise RuntimeError("Sub-agent cancelled")
+            yield
+
+        with patch.object(self.app.runtime, "_delegation_tool_access", side_effect=guard), \
+                patch.object(self.app.runtime.tool_registry, "_invoke_executor", side_effect=[
+                    tool_failure("network_error", "temporary", retriable=True), tool_success("unexpected"),
+                ]) as execute:
+            receipt = self.app.runtime._run_tool(
+                "search_web", {"query": "cancel sub-agent retry"}, return_receipt=True,
+                operation_scope="retry-subagent-cancel", _typed_arguments={"query": "cancel sub-agent retry"},
+                _expected_spec=spec,
+            )
+
+        self.assertFalse(receipt.success)
+        self.assertEqual(entries, 2)
         self.assertEqual(execute.call_count, 1)
 
     def test_legacy_tool_receipt_uses_canonical_arguments_for_matching(self):

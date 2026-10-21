@@ -556,6 +556,15 @@ class WorkspaceToolTests(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertIn("URL blocked", read_webpage(url))
 
+    def test_read_webpage_marks_only_transient_http_statuses_retriable(self):
+        for status, expected in ((404, False), (403, False), (429, True), (503, True)):
+            with self.subTest(status=status):
+                with patch.object(tools, "_resolve_web_destination", return_value=(None, "example.test", 80, "192.0.2.1")), \
+                        patch.object(tools, "_read_pinned_web_response", return_value=(status, "", b"failure")):
+                    result = invoke_tool_result(read_webpage, "http://example.test/page")
+                self.assertIsNotNone(result.error)
+                self.assertEqual(result.error.retriable, expected)
+
     def test_hostname_resolution_to_private_address_is_blocked(self):
         with patch("openkyrozen.tools.web.socket.getaddrinfo", return_value=[(
             tools.socket.AF_INET, tools.socket.SOCK_STREAM, tools.socket.IPPROTO_TCP,

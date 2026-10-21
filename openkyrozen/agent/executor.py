@@ -20,6 +20,9 @@ from openkyrozen.agent.types import ExecutionReceipt
 
 _TOOL_ARTIFACT_THRESHOLD = 12_000
 _TOOL_ARTIFACT_PREVIEW = 1_200
+_RETRYABLE_NETWORK_LOOKUPS = frozenset({
+    "search_web", "read_webpage", "analyze_remote_repo", "github_status", "github_read",
+})
 
 
 def _legacy_object_arguments(args, spec):
@@ -530,14 +533,22 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
             and (
                 (approved_spec.capability == "read"
                  and approved_spec.side_effects in {"none", "read", "read_only"})
-                or (approved_spec.source == "builtin"
+                or (action in _RETRYABLE_NETWORK_LOOKUPS
+                    and approved_spec.source == "builtin"
                     and approved_spec.capability == "network"
                     and approved_spec.side_effects == "remote")
             )
         )
-        with self._delegation_tool_access(action, execution_args):
-            while True:
-                attempt += 1
+        while True:
+            attempt += 1
+            with self._delegation_tool_access(action, execution_args):
+                if callable(_pre_execution_check) and not _pre_execution_check():
+                    outcome = tool_failure("cancelled", "Tool retry stopped because its task is no longer active.")
+                    break
+                if (self.tool_registry.specs.get(action) is not approved_spec
+                        or not self._execution_capability_token.allows(approved_spec.capability)):
+                    outcome = tool_failure("permission_denied", "Tool retry stopped because its authority changed.")
+                    break
                 if callable(_on_dispatch):
                     _on_dispatch()
                 self._publish_runtime_event(
@@ -549,10 +560,10 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                     outcome = command_tool_result(raw_result)
                 else:
                     outcome = self.tool_registry._invoke_executor(approved_spec, execution_args)
-                if (attempt == 1 and retry_safe and outcome.error is not None
-                        and outcome.error.retriable):
-                    continue
-                break
+            if (attempt == 1 and retry_safe and outcome.error is not None
+                    and outcome.error.retriable):
+                continue
+            break
     except KeyboardInterrupt:
         outcome = tool_failure("cancelled", "Tool execution interrupted by user (Ctrl+C).")
     except Exception as exc:
