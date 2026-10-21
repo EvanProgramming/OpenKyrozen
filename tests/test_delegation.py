@@ -943,6 +943,7 @@ class DelegationTests(unittest.TestCase):
             self.assertIsNotNone(runs[1]["result"]["metrics"]["cost_picos"])
             self.assertTrue(all(run["reviews"][0]["metrics"]["provider_model"] == "openai:gpt-fixture-actual" for run in runs))
             for url, headers, body in requests:
+                headers = {name.lower(): value for name, value in headers.items()}
                 if url.path == "/v1/messages":
                     self.assertEqual(url.host, "api.anthropic.com")
                     self.assertEqual(headers["x-api-key"], "fixture-claude")
