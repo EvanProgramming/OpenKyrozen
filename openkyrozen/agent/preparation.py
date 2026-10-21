@@ -106,3 +106,7 @@ def _prepare_turn(self, turn):
         user_input=turn.user_input,
         feature_names=("detect_user_preferences", "auto_patch_technology", "skill_composition"),
     )
+    if self.llm_provider is not None:
+        turn.memory_packet = self._build_memory_context(
+            turn.user_input, context=turn.memory_context, profile=resolved_profile,
+        )

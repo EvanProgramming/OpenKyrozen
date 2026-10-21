@@ -382,6 +382,7 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
 
 def _build_messages(self, user_input: str, learned_context: str = "",
                     memory_context: dict[str, Any] | None = None, *,
+                    memory_packet: str | None = None,
                     native_tools: bool = False) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
 
@@ -496,8 +497,12 @@ def _build_messages(self, user_input: str, learned_context: str = "",
     if pref_ctx:
         messages.append({"role": "system", "content": pref_ctx})
 
-    mem_ctx = (self._build_memory_context(user_input, context=memory_context)
-               if self.llm_provider is not None else "")
+    if memory_packet is not None:
+        mem_ctx = memory_packet
+    elif self.llm_provider is not None:
+        mem_ctx = self._build_memory_context(user_input, context=memory_context)
+    else:
+        mem_ctx = ""
     if mem_ctx:
         messages.append({"role": "system", "content": mem_ctx})
 

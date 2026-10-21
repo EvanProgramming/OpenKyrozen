@@ -49,7 +49,8 @@ class AgentEngine:
         runtime = self.runtime
         from openkyrozen.agent.conversation import model_response_to_dict
         messages = runtime._build_messages(
-            turn.user_input, turn.learned_context, turn.memory_context, native_tools=True,
+            turn.user_input, turn.learned_context, turn.memory_context,
+            memory_packet=turn.memory_packet, native_tools=True,
         )
         turn.tool_calls = []
         turn.tool_records = []

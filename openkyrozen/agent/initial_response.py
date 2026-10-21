@@ -7,7 +7,9 @@ def _initial_turn_response(self, turn):
     from openkyrozen.agent.delegation import TOOLS
     MAX_RETRIES = 3
     turn.auto_clarified = False
-    messages = self._build_messages(turn.user_input, turn.learned_context, turn.memory_context)
+    messages = self._build_messages(
+        turn.user_input, turn.learned_context, turn.memory_context, memory_packet=turn.memory_packet,
+    )
     turn.response_text = self._call_llm_with_spinner(messages).strip()
     turn.turn_prompt_total += self._last_prompt_tokens
     turn.turn_completion_total += self._last_completion_tokens

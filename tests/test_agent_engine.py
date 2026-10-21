@@ -20,6 +20,11 @@ from openkyrozen.providers.models import validate_replied_tool_definitions, vali
 
 
 class AgentEngineTests(unittest.TestCase):
+    def test_turn_context_keeps_legacy_positional_inspection_argument(self):
+        turn = TurnContext("Plan the change", False, None, None, True)
+        self.assertTrue(turn.inspection_complete)
+        self.assertEqual(turn.memory_packet, "")
+
     def bind_tool_batch(self, runtime, specs=None):
         runtime.tool_registry = SimpleNamespace(specs=specs or {})
         runtime._operation_action = lambda name: name
@@ -345,13 +350,18 @@ class AgentEngineTests(unittest.TestCase):
             runtime.llm_provider = provider
             runtime._default_turn.provider = provider
             runtime.set_interaction_mode("agent")
-            with patch.object(runtime, "_collect_tool_calls", side_effect=AssertionError("legacy parser used")), \
+            packet = "<memory_context>frozen packet</memory_context>"
+            with patch.object(runtime, "_build_memory_context", return_value=packet) as retrieve_memory, \
+                    patch.object(runtime, "_collect_tool_calls", side_effect=AssertionError("legacy parser used")), \
                     patch.object(runtime, "_collect_unwrapped_tool_calls", side_effect=AssertionError("legacy parser used")):
                 answer = runtime.chat(runtime.current_session, "Read note.txt")
 
         self.assertIn("verified text", answer)
+        retrieve_memory.assert_called_once()
         self.assertEqual(provider.calls_attempted, 2)
         self.assertEqual(len(provider.requests), 2)
+        self.assertTrue(all(any(packet in item.get("content", "") for item in request[0]
+                                if isinstance(item, dict)) for request in provider.requests))
         self.assertEqual(provider.requests[1][0][-1].call_id, "read-1")
 
 

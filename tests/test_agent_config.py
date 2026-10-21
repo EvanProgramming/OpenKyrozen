@@ -99,6 +99,11 @@ class AgentConfigTests(unittest.TestCase):
                 with patch.object(main, "_retrieve_failure", return_value=[]), \
                      patch.object(main, "_build_memory_context", return_value=""):
                     messages = main._build_messages("review this file")
+                frozen_packet = "<memory_context>frozen</memory_context>"
+                with patch.object(main, "_retrieve_failure", return_value=[]), \
+                     patch.object(main, "_build_memory_context", side_effect=AssertionError("must reuse packet")):
+                    frozen_messages = main._build_messages("review this file", memory_packet=frozen_packet)
+                self.assertIn(frozen_packet, [item["content"] for item in frozen_messages])
                 system_prompt = messages[0]["content"]
                 self.assertIn("Name: reviewer", system_prompt)
                 self.assertIn("Follow the reviewer instructions", system_prompt)

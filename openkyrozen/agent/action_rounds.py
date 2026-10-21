@@ -120,7 +120,7 @@ def _execute_action_rounds(self, turn):
             {"role": "system", "content": self._workspace_info()},
             {
                 "role": "system",
-                "content": self._build_memory_context(turn.user_input, context=turn.memory_context),
+                "content": turn.memory_packet,
             },
             {
                 "role": "system",
@@ -198,7 +198,7 @@ def _execute_action_rounds(self, turn):
                     + "Continue with one or more independent read Actions if necessary; otherwise return the result using the current mode's protocol."
                 )},
             ]
-            memory = self._build_memory_context(turn.user_input, context=turn.memory_context)
+            memory = turn.memory_packet
             if memory:
                 summary_messages.insert(2, {"role": "system", "content": memory})
         if evolving_messages is not None:

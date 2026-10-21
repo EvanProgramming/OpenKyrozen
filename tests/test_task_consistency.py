@@ -255,7 +255,8 @@ class TaskConsistencyTests(unittest.TestCase):
                 self.assertNotIn("All tasks complete", panel)
                 with patch.object(main, "_classify_complexity", return_value="simple"), \
                      patch.object(main, "_build_messages", return_value=[]), \
-                     patch.object(main, "_build_memory_context", return_value=""), \
+                     patch.object(main, "_build_memory_context", return_value="") as retrieve_memory, \
+                     patch.object(main, "llm_provider", object()), \
                      patch.object(main, "_call_llm_with_spinner", side_effect=[
                          'Action: {"action":"read_file","args":"first.txt"}\n'
                          'Action: {"action":"read_file","args":"second.txt"}',
@@ -266,6 +267,7 @@ class TaskConsistencyTests(unittest.TestCase):
                      patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
                                   result, records, tokens, started: result):
                     reply = main._chat_turn("continue the work", clear_tasks=False)
+                retrieve_memory.assert_called_once()
             finally:
                 main._set_workspace_root(original_root)
                 main.tasks = original_tasks

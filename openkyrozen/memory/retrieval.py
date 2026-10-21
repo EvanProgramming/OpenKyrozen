@@ -215,11 +215,12 @@ def _search_memory(self, args: str) -> str:
         return tool_failure('execution_error', f"Error searching memory: {e}", retriable=False)
 
 
-def _build_memory_context(self, query: str, n: int = 3, context: dict[str, Any] | None = None) -> str:
+def _build_memory_context(self, query: str, n: int = 3, context: dict[str, Any] | None = None,
+                          profile: str | None = None) -> str:
     """Return bounded, explicitly untrusted memory data for the model."""
     fast_mode = self.fast_mode
     context = context or {}
-    profile = self.learning_engine.route_profile(query, self._agent_profile_mode)
+    profile = profile or self.learning_engine.route_profile(query, self._agent_profile_mode)
     candidate_limit = max(n, 16)
     recalled = self.memory_bank.recall_records(
         query, n_results=candidate_limit, profile=profile,

@@ -63,6 +63,10 @@ content-free component attribution, a stable-prefix fingerprint, newly introduce
 history, retransmission and duplicate-entry counts; provider-reported input totals
 remain separate from those estimates.
 
+Preparation retrieves one bounded default memory packet after learning updates and
+freezes it for the turn. Initial prompts and action-round continuations reuse that
+packet; an explicit `search_memory` call remains an additional retrieval.
+
 `routing.router` resolves one immutable `RoutingDecision` for each turn. Local
 classification and optional System One advice can select only configured models,
 the existing `coder`/`researcher` profiles, and planning needs derived from valid

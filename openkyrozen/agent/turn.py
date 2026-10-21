@@ -29,6 +29,7 @@ class TurnContext:
     tool_results_text: Any = None
     turn_start: Any = None
     runtime_status: str = "completed"
+    memory_packet: str = ""
 
     @property
     def planning_required(self) -> bool:
