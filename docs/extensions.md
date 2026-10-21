@@ -48,13 +48,16 @@ metadata are immutable, and snapshots preserve complete specs rather than only
 callables. Registry metadata does not grant capabilities or bypass approvals.
 Side effects are separate from capabilities: graph refresh can
 update derived state under its existing read capability and remains nonparallel.
-Browser and orchestration tools remain nonparallel. Only the pure calculator is
-currently declared parallel-safe; this catalog does not schedule parallel calls.
+Browser, orchestration, memory, and process tools remain nonparallel. The pure
+calculator and selected filesystem/Git reads are declared parallel-safe. The
+foreground scheduler runs only consecutive catalog-approved, read-only calls
+concurrently; every other call is a response-order barrier, and task receipts
+are reconciled in that same order.
 
-Existing string executors and MCP compatibility argument conversion remain in
-use. The native typed invocation migration belongs to V3 issue #233. Tool
-inventory is generated with `scripts/generate_tool_inventory.py --write` and
-checked by `make docs-check`.
+Typed invocation is canonical for native provider calls; legacy string
+executors and MCP compatibility argument conversion remain at compatibility
+boundaries. Tool inventory is generated with
+`scripts/generate_tool_inventory.py --write` and checked by `make docs-check`.
 
 Registration validates the supported object-schema vocabulary, including nested
 properties/items/combinators and scalar constraints. Unsupported keywords are

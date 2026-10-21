@@ -254,7 +254,8 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
             + "\n## Available tools\n" + tools_list
             + "\nUse only listed tools; tools are registered by the application or its plugins.\n"
             + '\n\n## Execution protocol\n'
-            'Emit exactly one Action per response when a tool is needed:\n'
+            'Emit one or more Action blocks when tools are needed. Group independent reads together; '
+            'the runtime executes only catalog-approved safe reads concurrently and keeps other calls in response order:\n'
             'Action:\n```json\n{"action":"read_file","args":"README.md"}\n```\n'
             'args is a plain string. write_file uses path|content; run_cmd uses the full command. '
             'Use exact listed names. Discover unfamiliar tool descriptions before using them. '
@@ -286,7 +287,8 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
         "Never expose them as the final answer or explain the tool call itself. After the last tool result, "
         "always return a concise plain-language report of what was done, the important result, and any remaining issue. "
         "Never finish with only an Action, TaskDone, or other protocol block.\n\n"
-        "When work requires a tool, output exactly one Action per response:\n\n"
+        "When work requires tools, output one or more Action blocks. Group independent reads together; "
+        "the runtime executes only catalog-approved safe reads concurrently and keeps all other calls in response order:\n\n"
         "Action:\n"
         "```json\n"
         "{\"action\": \"tool_name\", \"args\": \"arguments\"}\n"

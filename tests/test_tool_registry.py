@@ -57,6 +57,16 @@ class RegistryRegressions(unittest.TestCase):
         self.assertEqual(builtin_metadata('apply_patch')['side_effects'], 'filesystem')
         self.assertIn('apply_patch', allowed_tool_names(adapters.AVAILABLE_TOOLS, 'workspace'))
 
+    def test_parallel_safety_is_limited_to_read_only_tools(self):
+        from openkyrozen.tools.catalog import builtin_metadata
+        for name in ("read_file", "search_files", "list_dir", "list_tree", "find_files",
+                     "git_status", "git_diff", "git_log", "git_show", "calculate"):
+            metadata = builtin_metadata(name)
+            self.assertTrue(metadata["parallel_safe"], name)
+            self.assertEqual(metadata["side_effects"], "read_only", name)
+        for name in ("write_file", "edit_file", "apply_patch", "run_cmd", "search_web", "browser_open"):
+            self.assertFalse(builtin_metadata(name)["parallel_safe"], name)
+
     def test_shell_schema_exposes_bounded_typed_options(self):
         registry = ToolAdapters().tool_registry
         schema = registry.get_spec('run_cmd').input_schema

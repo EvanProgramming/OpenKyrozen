@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from openkyrozen.agent.engine import AgentEngine
+from openkyrozen.agent.executor import _execute_tool_batch
 from openkyrozen.agent.turn import TurnContext
 from openkyrozen.providers.models import (
     FinishReason, ModelResponse, ProviderCapabilities, ToolCall, ToolReply,
@@ -19,6 +20,11 @@ from openkyrozen.providers.models import validate_replied_tool_definitions, vali
 
 
 class AgentEngineTests(unittest.TestCase):
+    def bind_tool_batch(self, runtime, specs=None):
+        runtime.tool_registry = SimpleNamespace(specs=specs or {})
+        runtime._operation_action = lambda name: name
+        runtime._execute_tool_batch = lambda calls, **kwargs: _execute_tool_batch(runtime, calls, **kwargs)
+
     def test_compact_native_falls_back_to_permitted_inventory_without_discovery_access(self):
         runtime = SimpleNamespace(
             execution_context=SimpleNamespace(discovered_tools=frozenset()),
@@ -68,6 +74,7 @@ class AgentEngineTests(unittest.TestCase):
             )
 
         runtime._execute_turn_action = Mock(side_effect=execute)
+        self.bind_tool_batch(runtime)
         runtime._record_turn_receipt = Mock(return_value={"success": True})
         runtime._tool_result_for_prompt = Mock(return_value="saved")
         runtime._render_tool_result = Mock()
@@ -127,6 +134,7 @@ class AgentEngineTests(unittest.TestCase):
             )
 
         runtime._execute_turn_action = Mock(side_effect=execute)
+        self.bind_tool_batch(runtime)
         runtime._record_turn_receipt = Mock(return_value={"success": True})
         runtime._tool_result_for_prompt = Mock(return_value="discovered")
         runtime._render_tool_result = Mock()
@@ -214,7 +222,10 @@ class AgentEngineTests(unittest.TestCase):
         provider = SimpleNamespace(name="native", _continuation_id="native-session")
         provider.get_capabilities = lambda model: ProviderCapabilities(native_tools=True)
         call_response = ModelResponse(
-            text="", tool_calls=(ToolCall("call-1", "read_file", {"path": "README.md"}),),
+            text="", tool_calls=(
+                ToolCall("call-1", "read_file", {"path": "README.md"}),
+                ToolCall("call-2", "read_file", {"path": "CONTRIBUTING.md"}),
+            ),
             finish_reason=FinishReason.TOOL_REQUEST,
             continuation=provider_continuation(provider, "model-1", "fake", {"id": "response-1"}),
         )
@@ -234,10 +245,14 @@ class AgentEngineTests(unittest.TestCase):
         runtime._permitted_tool_names = lambda: {"read_file"}
         runtime._prompt_profile = lambda: "classic"
         runtime._get_model_response = Mock(side_effect=[call_response, final_response])
-        runtime._execute_turn_action = Mock(return_value=SimpleNamespace(
-            action="read_file", tool_result=ToolResult(data={"text": "contents"}, text="contents"),
+        runtime._execute_turn_action = Mock(side_effect=lambda action, _args, **kwargs: SimpleNamespace(
+            action=action, call_id=kwargs["call_id"],
+            tool_result=ToolResult(data={"text": "contents"}, text="contents"),
             result_data={"text": "contents"}, result="contents",
         ))
+        self.bind_tool_batch(runtime, specs={"read_file": SimpleNamespace(
+            parallel_safe=True, side_effects="read_only", capability="read", risk="normal",
+        )})
         runtime._record_turn_receipt = Mock(return_value={"success": True})
         runtime._tool_result_for_prompt = Mock(return_value="contents")
         runtime._render_tool_result = Mock()
@@ -254,12 +269,15 @@ class AgentEngineTests(unittest.TestCase):
 
         self.assertEqual(result, "Read the file successfully.")
         self.assertEqual(runtime._get_model_response.call_args_list[0].kwargs["tool_names"], {"read_file"})
-        self.assertEqual(runtime._execute_turn_action.call_args.kwargs["call_id"], "call-1")
-        self.assertEqual(runtime._execute_turn_action.call_args.kwargs["call_id_source"], "native")
+        self.assertEqual(runtime._execute_turn_action.call_count, 2)
+        self.assertEqual({call.kwargs["call_id"] for call in runtime._execute_turn_action.call_args_list},
+                         {"call-1", "call-2"})
+        self.assertTrue(all(call.kwargs["call_id_source"] == "native"
+                            for call in runtime._execute_turn_action.call_args_list))
         messages = runtime._get_model_response.call_args_list[1].args[0]
-        self.assertIs(messages[-2], call_response)
-        self.assertIsInstance(messages[-1], ToolReply)
-        self.assertEqual(messages[-1].call_id, "call-1")
+        self.assertIs(messages[-3], call_response)
+        self.assertEqual([item.call_id for item in messages[-2:]], ["call-1", "call-2"])
+        self.assertTrue(all(isinstance(item, ToolReply) for item in messages[-2:]))
         runtime._initial_turn_response.assert_not_called()
         runtime._execute_action_rounds.assert_not_called()
 

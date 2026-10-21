@@ -27,21 +27,21 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `discover_tools` | `read` | `read_only` | false | Discover permitted tools; args is empty for the catalog or comma-separated exact tool names for full descriptions. | `names`: array, `query`: string |
 | `edit_file` | `write` | `filesystem` | false | Replace one exact snippet only when the file still matches its read hash. | `expected_sha256`: string, `new_text`: string, `old_text`: string, `path`: string; required: `path`, `old_text`, `new_text`, `expected_sha256` |
 | `execute_terminal_command` | `shell` | `process` | false | Execute a terminal command. This is an alias for run_cmd. | `background`: boolean, `command`: string, `cwd`: string, `env`: object, `timeout_seconds`: number; required: `command` |
-| `find_files` | `read` | `read_only` | false | Find files matching a pattern. Args format: "pattern" or "pattern\|directory". | `directory`: string, `pattern`: string; required: `pattern` |
+| `find_files` | `read` | `read_only` | true | Find files matching a pattern. Args format: "pattern" or "pattern\|directory". | `directory`: string, `pattern`: string; required: `pattern` |
 | `git_add` | `git` | `filesystem` | false | Stage files for commit. Args format: "file1 file2" or "." (stage all). | `paths`: array |
 | `git_branch` | `git` | `filesystem` | false | List or manage git branches. Args format: "" (list all), "branch_name" (create), | `options`: array |
 | `git_checkout` | `git` | `filesystem` | false | Switch branches or restore files. Args format: "branch_name" (switch), | `arguments`: array |
 | `git_clone` | `git` | `remote` | false | Clone a git repository. Args format: "url" or "url\|destination". | `destination`: string, `url`: string; required: `url` |
 | `git_commit` | `git` | `filesystem` | false | Commit staged changes. Args format: '"commit message"' (quotes recommended). | `message`: string; required: `message` |
-| `git_diff` | `read` | `read_only` | false | Show git diff (unstaged, staged, or between commits). | `options`: array |
-| `git_log` | `read` | `read_only` | false | Show git commit log. Args format: "-5" or "--since='2 days ago' --author='Name'" | `options`: array |
+| `git_diff` | `read` | `read_only` | true | Show git diff (unstaged, staged, or between commits). | `options`: array |
+| `git_log` | `read` | `read_only` | true | Show git commit log. Args format: "-5" or "--since='2 days ago' --author='Name'" | `options`: array |
 | `git_pull` | `git` | `remote` | false | Pull changes from remote. Args format: "" (pull current branch), | `arguments`: array |
 | `git_push` | `git` | `remote` | false | Push commits to remote. Args format: "" (push current branch), | `arguments`: array |
 | `git_remote` | `git` | `filesystem` | false | Manage remote repositories. Args format: "" (list remotes), | `name`: string, `operation`: string, `url`: string; required: `operation` |
 | `git_reset` | `destructive` | `destructive` | false | Reset current HEAD to a specified state. | `arguments`: array |
-| `git_show` | `read` | `read_only` | false | Show details of a git object (commit, tag, etc). Args format: "HEAD" or commit hash. | `reference`: string |
+| `git_show` | `read` | `read_only` | true | Show details of a git object (commit, tag, etc). Args format: "HEAD" or commit hash. | `reference`: string |
 | `git_stash` | `git` | `filesystem` | false | Stash or unstash working directory changes. | `arguments`: array |
-| `git_status` | `read` | `read_only` | false | Show git status of a repository. Args format: "path" (default "."). | `path`: string |
+| `git_status` | `read` | `read_only` | true | Show git status of a repository. Args format: "path" (default "."). | `path`: string |
 | `github_cli` | `git` | `remote` | false | Run GitHub CLI arguments directly without a shell. Agent mode and approval are required. | `arguments`: array |
 | `github_read` | `network` | `remote` | false | Run an allowlisted read-only GitHub CLI command. | `arguments`: array |
 | `github_status` | `network` | `remote` | false | Inspect GitHub CLI installation and authentication without exposing tokens. | `query`: string |
@@ -50,15 +50,15 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `graph_query` | `read` | `read_only` | false | Query the private Graphify index. Args: a project question. | `question`: string; required: `question` |
 | `graph_refresh` | `read` | `internal` | false | Refresh the private local code graph. Pass --full for a clean rebuild. | `full`: boolean |
 | `graph_status` | `read` | `read_only` | false | Return the private Graphify index state and a bounded mini graph. | none |
-| `list_dir` | `read` | `read_only` | false | List contents of a directory. Args format: "path" (default "."). | `path`: string |
+| `list_dir` | `read` | `read_only` | true | List contents of a directory. Args format: "path" (default "."). | `path`: string |
 | `list_subagents` | `read` | `internal` | false | List agents or inspect one run_id from this chat/project; args is JSON. | `run_id`: string |
-| `list_tree` | `read` | `read_only` | false | Recursively list the directory tree of the given path. Args format: "path" (default "."). | `path`: string |
-| `read_file` | `read` | `read_only` | false | Read content from a file. Args format: "path". | `max_chars`: integer, `max_lines`: integer, `path`: string, `start_line`: integer; required: `path` |
+| `list_tree` | `read` | `read_only` | true | Recursively list the directory tree of the given path. Args format: "path" (default "."). | `path`: string |
+| `read_file` | `read` | `read_only` | true | Read content from a file. Args format: "path". | `max_chars`: integer, `max_lines`: integer, `path`: string, `start_line`: integer; required: `path` |
 | `read_process` | `read` | `read_only` | false | Read a bounded page from a session-owned process stream. | `limit`: integer, `offset`: integer, `process_id`: string, `stream`: string; required: `process_id` |
 | `read_tool_artifact` | `read` | `read_only` | false | Read a session-owned tool artifact in pages up to 1,000 characters. | `artifact_id`: string, `limit`: integer, `offset`: integer; required: `artifact_id` |
 | `read_webpage` | `network` | `remote` | false | Fetch the content of a web page and return its plain‑text body. | `url`: string; required: `url` |
 | `run_cmd` | `shell` | `process` | false | Execute a shell command. Args: the full command string. | `background`: boolean, `command`: string, `cwd`: string, `env`: object, `timeout_seconds`: number; required: `command` |
-| `search_files` | `read` | `read_only` | false | Search literal text with bounded, relative file-and-line results. | `glob`: string, `limit`: integer, `path`: string, `query`: string; required: `query` |
+| `search_files` | `read` | `read_only` | true | Search literal text with bounded, relative file-and-line results. | `glob`: string, `limit`: integer, `path`: string, `query`: string; required: `query` |
 | `search_memory` | `read` | `read_only` | false | Search stored memories for facts relevant to the query. Args: "query" | `query`: string; required: `query` |
 | `search_web` | `network` | `remote` | false | Search the internet for real-time information. | `query`: string; required: `query` |
 | `send_subagent` | `read` | `internal` | false | Reuse a finished sub-agent; args JSON contains run_id and a complete assignment. | `assignment`: object, `run_id`: string; required: `run_id`, `assignment` |
