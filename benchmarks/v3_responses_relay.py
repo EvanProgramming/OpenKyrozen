@@ -198,6 +198,9 @@ class ResponsesRelay:
                                     continue
                                 if message.get("type") in {
                                         "response.completed", "response.incomplete", "response.failed"}:
+                                    if message["type"] == "response.failed":
+                                        with relay._upstream_lock:
+                                            relay.provider_error = "upstream_response_failed"
                                     usage = relay._usage(message.get("response", {}))
                                     relay.budget.settle(attempt_id, usage)
                                     row["usage"] = usage

@@ -21,11 +21,13 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.received = []
         self.remaining_at_forward = []
         self.stream_delimiter = ["\n\n"]
+        self.stream_terminal_type = ["response.completed"]
         self.stream_control = {"enabled": False, "first_entered": threading.Event(),
                                "release_first": threading.Event(), "second_arrived": threading.Event()}
         received = self.received
         remaining_at_forward = self.remaining_at_forward
         delimiter = self.stream_delimiter
+        stream_terminal_type = self.stream_terminal_type
         stream_control = self.stream_control
         budget_ref = {}
 
@@ -50,7 +52,7 @@ class V3ResponsesRelayTests(unittest.TestCase):
                 remaining_at_forward.append(budget_ref["ledger"].remaining_rmb)
                 if request.get("stream"):
                     payload = ("event: response.completed\ndata: " + json.dumps({
-                        "type": "response.completed", "response": {
+                        "type": stream_terminal_type[0], "response": {
                             "id": "response-fixture", "output": [], "usage": self.usage,
                         },
                     }) + delimiter[0]).encode()
@@ -152,6 +154,21 @@ class V3ResponsesRelayTests(unittest.TestCase):
                                 headers=headers, timeout=3)
         self.assertEqual(blocked.status_code, 503)
         self.assertEqual(len(calls), 1)
+
+    def test_provider_failed_stream_event_disables_subsequent_requests(self):
+        self.stream_terminal_type[0] = "response.failed"
+        headers = {"Authorization": "Bearer " + self.relay.client_key}
+        response = requests.post(self.relay.url + "/responses", json={
+            "input": [{"role": "user", "content": "fixture"}], "stream": True,
+        }, headers=headers, timeout=3)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.relay.provider_error, "upstream_response_failed")
+        self.assertEqual(self.relay.rows[0]["status"], "settled")
+        blocked = requests.post(self.relay.url + "/responses", json={"input": []},
+                                headers=headers, timeout=3)
+        self.assertEqual(blocked.status_code, 503)
+        self.assertEqual(len(self.received), 1)
 
     def test_concurrent_requests_do_not_bypass_provider_fail_stop(self):
         entered = threading.Event()
