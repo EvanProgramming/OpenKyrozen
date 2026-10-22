@@ -102,6 +102,26 @@ class ResponsesRelay:
                     self._json(400, {"error": {"message": "invalid benchmark request"}})
                     return
 
+                # Panstar rejects system-role input items; normalize here so V2 and V3 share one wire shape.
+                input_items = body.get("input")
+                if isinstance(input_items, list):
+                    system_messages = []
+                    forwarded_items = []
+                    for item in input_items:
+                        if (isinstance(item, dict) and item.get("role") == "system"
+                                and isinstance(item.get("content"), str)):
+                            system_messages.append(item["content"])
+                        else:
+                            forwarded_items.append(item)
+                    if system_messages:
+                        instructions = body.get("instructions", "")
+                        if not isinstance(instructions, str):
+                            self._json(400, {"error": {"message": "invalid benchmark instructions"}})
+                            return
+                        body["instructions"] = "\n\n".join(
+                            ([instructions] if instructions else []) + system_messages)
+                        body["input"] = forwarded_items or "Continue."
+
                 body["model"] = MODEL
                 body["max_output_tokens"] = MAX_OUTPUT_TOKENS
                 wants_stream = body.get("stream") is True

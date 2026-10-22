@@ -266,6 +266,42 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.assertEqual(response.json()["id"], "response-fixture")
         self.assertEqual(self.relay.rows[0]["status"], "settled")
 
+    def test_system_messages_are_normalized_for_every_benchmark_arm(self):
+        user_message = {"role": "user", "content": "fixture"}
+        response = requests.post(self.relay.url + "/responses", json={
+            "instructions": "base instructions",
+            "input": [
+                {"role": "system", "content": "system guidance"},
+                user_message,
+                {"role": "system", "content": "workspace guidance"},
+            ],
+        }, headers={"Authorization": "Bearer " + self.relay.client_key}, timeout=3)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.received[0]["instructions"],
+                         "base instructions\n\nsystem guidance\n\nworkspace guidance")
+        self.assertEqual(self.received[0]["input"], [user_message])
+
+    def test_system_only_requests_become_an_instruction_and_continue_input(self):
+        response = requests.post(self.relay.url + "/responses", json={
+            "input": [{"role": "system", "content": "Summarize the available state."}],
+        }, headers={"Authorization": "Bearer " + self.relay.client_key}, timeout=3)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.received[0]["instructions"], "Summarize the available state.")
+        self.assertEqual(self.received[0]["input"], "Continue.")
+
+    def test_malformed_existing_instructions_are_rejected_without_spending(self):
+        response = requests.post(self.relay.url + "/responses", json={
+            "instructions": ["invalid"],
+            "input": [{"role": "system", "content": "system guidance"}],
+        }, headers={"Authorization": "Bearer " + self.relay.client_key}, timeout=3)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.received, [])
+        self.assertEqual(self.relay.rows, [])
+        self.assertEqual(self.budget.spent_rmb, 0)
+
     def test_openai_responses_provider_uses_the_authenticated_relay(self):
         provider = OpenAIResponsesProvider(ProviderConfig(
             provider="openai", api_key=self.relay.client_key, base_url=self.relay.url,

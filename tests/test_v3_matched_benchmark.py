@@ -28,10 +28,10 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
     def test_prior_unknown_campaign_reservations_are_imported_once(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "budget.sqlite3"
-            budget = BudgetLedger(path, prior_hold_rmb="0.139775387869")
+            budget = BudgetLedger(path, prior_hold_rmb="0.170979896352")
             self.assertEqual(budget.campaign_calls(), [])
-            self.assertAlmostEqual(float(budget.remaining_rmb), 133.518 - 0.139775387869)
-            BudgetLedger(path, prior_hold_rmb="0.139775387869")
+            self.assertAlmostEqual(float(budget.remaining_rmb), 133.518 - 0.170979896352)
+            BudgetLedger(path, prior_hold_rmb="0.170979896352")
             with self.assertRaisesRegex(ValueError, "missing the prior campaign reservation"):
                 BudgetLedger(path, limit_rmb="133.518", prior_hold_rmb="0.2")
 

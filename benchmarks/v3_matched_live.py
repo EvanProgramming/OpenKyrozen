@@ -425,7 +425,7 @@ def _initial_plan(fixture: dict) -> list[str] | dict:
                        "effects": ["read_only", "filesystem", "internal"], "risk_ceiling": "normal"}}
 
 
-PRIOR_CAMPAIGN_HOLD_RMB = "0.139775387869"
+PRIOR_CAMPAIGN_HOLD_RMB = "0.170979896352"
 
 
 def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
