@@ -17,11 +17,100 @@ import sys
 import tempfile
 import time
 import unittest
-import psutil
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
 from test_durable_tasks_gateway import DurableTaskGatewayTests
+
+
+def _parse_process_table(output: str) -> dict[int, int]:
+    parents = {}
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) >= 2:
+            try:
+                parents[int(fields[0])] = int(fields[1])
+            except ValueError:
+                continue
+    return parents
+
+
+def _powershell(script: str) -> str:
+    shell = shutil.which('powershell') or shutil.which('pwsh')
+    if not shell:
+        raise RuntimeError('PowerShell is required for Windows process evidence')
+    return subprocess.run([shell, '-NoProfile', '-NonInteractive', '-Command', script],
+                          capture_output=True, text=True, timeout=15, check=True).stdout
+
+
+def _process_output(command: list[str]) -> tuple[str, int]:
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        stdout, stderr = process.communicate(timeout=15)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        raise
+    if process.returncode:
+        raise subprocess.CalledProcessError(process.returncode, command, stdout, stderr)
+    return stdout, process.pid
+
+
+def _process_table() -> dict[int, int]:
+    if platform.system() == 'Windows':
+        shell = shutil.which('powershell') or shutil.which('pwsh')
+        if not shell:
+            raise RuntimeError('PowerShell is required for Windows process evidence')
+        output, probe_pid = _process_output([shell, '-NoProfile', '-NonInteractive', '-Command',
+            "Get-CimInstance Win32_Process | Select-Object "
+            "@{Name='pid';Expression={$_.ProcessId}},@{Name='ppid';Expression={$_.ParentProcessId}} "
+            "| ConvertTo-Json -Compress"])
+        rows = json.loads(output) if output.strip() else []
+        if isinstance(rows, dict):
+            rows = [rows]
+        parents = {int(row['pid']): int(row['ppid']) for row in rows}
+    else:
+        output, probe_pid = _process_output(['ps', '-axo', 'pid=,ppid='])
+        parents = _parse_process_table(output)
+    parents.pop(probe_pid, None)
+    return parents
+
+
+def _descendants(pid: int, parents: dict[int, int] | None = None) -> set[int]:
+    parents = _process_table() if parents is None else parents
+    children = {}
+    for child, parent in parents.items():
+        children.setdefault(parent, []).append(child)
+    found, pending = set(), list(children.get(pid, ()))
+    while pending:
+        child = pending.pop()
+        if child not in found:
+            found.add(child)
+            pending.extend(children.get(child, ()))
+    return found
+
+
+def _process_snapshot(pid: int) -> dict[str, int]:
+    if platform.system() == 'Windows':
+        script = (f"$p=Get-Process -Id {int(pid)} -ErrorAction Stop; "
+                  "[pscustomobject]@{rssBytes=[long]$p.WorkingSet64;threads=[int]$p.Threads.Count;"
+                  "openHandles=[int]$p.HandleCount}|ConvertTo-Json -Compress")
+        result = json.loads(_powershell(script))
+        return {'rss_bytes': int(result['rssBytes']), 'threads': int(result['threads']),
+                'open_handles': int(result['openHandles'])}
+    proc = Path('/proc') / str(pid)
+    if platform.system() == 'Linux' and proc.is_dir():
+        status = dict(line.split(':', 1) for line in (proc / 'status').read_text().splitlines()
+                      if ':' in line)
+        return {'rss_bytes': int(status['VmRSS'].split()[0]) * 1024,
+                'threads': int(status['Threads']), 'open_handles': len(list((proc / 'fd').iterdir()))}
+    rss = int(subprocess.run(['ps', '-p', str(pid), '-o', 'rss='], capture_output=True,
+                             text=True, timeout=15, check=True).stdout.strip()) * 1024
+    threads = max(0, len(subprocess.run(['ps', '-M', '-p', str(pid)], capture_output=True,
+                                        text=True, timeout=15, check=True).stdout.splitlines()) - 1)
+    handles = max(0, len(subprocess.run(['lsof', '-nP', '-p', str(pid)], capture_output=True,
+                                        text=True, timeout=15, check=True).stdout.splitlines()) - 1)
+    return {'rss_bytes': rss, 'threads': threads, 'open_handles': handles}
 
 
 def candidate_identity() -> dict:
@@ -36,7 +125,7 @@ def candidate_identity() -> dict:
             "candidate_source_sha256": digest.hexdigest(), "python": sys.version,
             "python_executable": sys.executable, "platform": platform.platform(),
             "dependencies": {name: metadata.version(name) for name in
-                             ("psutil", "fastapi", "uvicorn", "pydantic", "chromadb")}}
+                             ("fastapi", "uvicorn", "pydantic", "chromadb")}}
 
 
 def run(seconds: float, log_dir: Path) -> dict:
@@ -59,11 +148,11 @@ def run(seconds: float, log_dir: Path) -> dict:
         db = root / 'state.sqlite3'
         os.environ['KYROZEN_DB_PATH'] = str(root / 'test-driver.sqlite3')
         os.environ['KYROZEN_BROWSER_PROFILES'] = str(root / 'browser-profiles')
+        baseline_children = _descendants(os.getpid())
         try:
             process, url = start_gateway(workspace, db, root / 'skills',
                                                  log_path=log_dir / f'gateway-{restarts:03d}.log')
-            baseline_children = {p.pid for p in psutil.Process().children(recursive=True)}
-            initial_rss = psutil.Process(process.pid).memory_info().rss
+            initial_rss = _process_snapshot(process.pid)['rss_bytes']
             generation_rss = initial_rss
             def task(session):
                 marker = f'{session}-{cycles}.txt'
@@ -89,13 +178,12 @@ def run(seconds: float, log_dir: Path) -> dict:
                     assert count == unique == (cycles + 1) * 2, (count, unique, cycles)
                     assert connection.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
                     assert not connection.execute('PRAGMA foreign_key_check').fetchall()
-                current = psutil.Process(process.pid)
-                rss = current.memory_info().rss
+                current = _process_snapshot(process.pid)
+                rss = current['rss_bytes']
                 assert rss <= generation_rss + 256 * 1024 * 1024, 'gateway grew by more than 256 MiB in one generation'
-                measurements.append({'cycle': cycles, 'rss_bytes': rss, 'threads': current.num_threads(),
-                                     'open_files': len(current.open_files())})
-                assert current.num_threads() < 80, 'unbounded gateway thread growth'
-                assert len(current.open_files()) < 100, 'unbounded gateway file descriptor growth'
+                measurements.append({'cycle': cycles, **current})
+                assert current['threads'] < 80, 'unbounded gateway thread growth'
+                assert current['open_handles'] < 100, 'unbounded gateway handle growth'
                 cycles += 1
                 if cycles % 6 == 0:
                     suite = unittest.defaultTestLoader.loadTestsFromNames([
@@ -106,12 +194,12 @@ def run(seconds: float, log_dir: Path) -> dict:
                     result = unittest.TextTestRunner(stream=io.StringIO()).run(suite)
                     assert result.wasSuccessful(), (result.errors, result.failures)
                 if cycles % 12 == 0:
-                    tracked = current.children(recursive=True)
+                    tracked = _descendants(process.pid)
                     gateway._stop_server(process)
-                    assert all(not child.is_running() for child in tracked), 'orphan gateway child'
+                    assert not tracked & set(_process_table()), 'orphan gateway child'
                     process, url = start_gateway(workspace, db, root / 'skills',
                                                          log_path=log_dir / f'gateway-{restarts + 1:03d}.log')
-                    generation_rss = psutil.Process(process.pid).memory_info().rss
+                    generation_rss = _process_snapshot(process.pid)['rss_bytes']
                     restarts += 1
                     for session in ('soak-a', 'soak-b'):
                         tasks = gateway._request(url, f'/api/v2/tasks?session_id={session}')['tasks']
@@ -119,10 +207,11 @@ def run(seconds: float, log_dir: Path) -> dict:
                 print(json.dumps({'cycles': cycles, 'restarts': restarts, 'elapsed_seconds': round(time.monotonic()-started),
                                   'rss_bytes': rss}), flush=True)
                 time.sleep(min(5, max(0, seconds - (time.monotonic() - started))))
+            tracked = _descendants(process.pid)
             gateway._stop_server(process)
             process = None
-            children = psutil.Process().children(recursive=True)
-            assert not [p.pid for p in children if p.pid not in baseline_children], 'orphan audit child'
+            assert not tracked & set(_process_table()), 'orphan gateway child'
+            assert not (_descendants(os.getpid()) - baseline_children), 'orphan audit child'
         except Exception as exc:
             # Retain disposable state and progress so a timeout is diagnosable.
             evidence = log_dir / 'failed-state'

@@ -6,6 +6,8 @@ R266 carries the supported-environment matrix: Linux, macOS, and Windows on Pyth
 
 The CI workflow runs the R266 matrix for pull requests or pushes that change its command set, fixture set, collector, or soak script. For an explicit run, dispatch `.github/workflows/ci.yml` with `v3_release_candidate_sha` set to the full candidate commit SHA. It checks out that exact SHA, runs the full Python suite, gateway integration checks, agent/sub-agent and TUI acceptance, and a 30-minute production soak on all six platform/Python combinations. It uploads per-platform logs even on failure for diagnosis; it emits an R266 bundle only after every matrix job passes. The collector copies and hashes the command workflow, frozen fixture set, platform metadata, test logs, and soak results. The bundle is intentionally unsigned because the release-owner private key must stay off CI. Download it, place it in the evidence directory outside the candidate checkout, inspect the evidence, and sign `R266.json` with the pinned release-owner key before validating the complete release bundle:
 
+The soak runner gathers memory, thread, handle, and descendant-process evidence through Linux `/proc`, macOS `ps`/`lsof`, and Windows PowerShell. It uses only the Python standard library and platform tools; it does not add a Python dependency.
+
 ```sh
 gpg --batch --local-user D3897E8FF704149D609ACF878C118C04263D2A4C \
   --armor --detach-sign --output R266.json.asc R266.json
