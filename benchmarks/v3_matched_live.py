@@ -12,10 +12,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from decimal import Decimal
 from pathlib import Path
 
 from benchmarks.v3_fixtures import FIXTURES
-from benchmarks.v3_matched import BudgetLedger, PRICING, _cost, summarize
+from benchmarks.v3_matched import BudgetLedger, MAX_LIMIT_USD, PRICING, USD_CNY, _cost, summarize
 from benchmarks.v3_responses_relay import MODEL, MAX_OUTPUT_TOKENS, ResponsesRelay
 
 BASELINE = "1bfc82c793df49e76097061ec5adfef0e4e2e883"
@@ -364,7 +365,7 @@ def _extract_baseline(root: Path, repo: Path, commit: str) -> None:
 
 
 def _credential() -> tuple[str, str]:
-    endpoint = os.environ.get("KYROZEN_BENCHMARK_BASE_URL", "https://api.oproxy.world/v1")
+    endpoint = os.environ.get("KYROZEN_BENCHMARK_BASE_URL", "https://ai.panstar.ai/v1")
     key = os.environ.get("KYROZEN_BENCHMARK_API_KEY", "")
     if not key:
         raise ValueError("benchmark provider API key is unavailable")
@@ -424,8 +425,12 @@ def _initial_plan(fixture: dict) -> list[str] | dict:
                        "effects": ["read_only", "filesystem", "internal"], "risk_ceiling": "normal"}}
 
 
+PRIOR_CAMPAIGN_HOLD_RMB = "0.1377115"
+
+
 def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
-        limit_rmb: str = "49", repeats: int = REPEATS, fixtures: tuple[dict, ...] = FIXTURES) -> dict:
+        limit_usd: str = str(MAX_LIMIT_USD), repeats: int = REPEATS,
+        fixtures: tuple[dict, ...] = FIXTURES) -> dict:
     source, repo = source.resolve(), repo.resolve()
     candidate = _source_snapshot(source)
     output, budget_path = output.resolve(), budget_path.resolve()
@@ -436,11 +441,38 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
     if fixtures != FIXTURES:
         raise ValueError("release evaluation requires the exact frozen fixture content")
     ledger_existed = budget_path.exists()
-    budget = BudgetLedger(budget_path, limit_rmb=limit_rmb)
+    limit = Decimal(limit_usd)
+    if not Decimal(0) < limit <= MAX_LIMIT_USD:
+        raise ValueError("the cumulative benchmark cap cannot exceed USD 10")
+    limit_rmb = str(limit * USD_CNY)
+    checkpoint = _load_checkpoint(output, budget_path)
+    if checkpoint is None:
+        if output.exists():
+            raise ValueError("existing report is not pinned by its original budget ledger")
+        if budget_path.exists():
+            with sqlite3.connect(budget_path) as db:
+                has_attempts = db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='attempts'"
+                ).fetchone()
+                if has_attempts and db.execute(
+                        "SELECT 1 FROM attempts WHERE id!='prior-campaign-reservations' LIMIT 1").fetchone():
+                    raise ValueError("cannot start a new report with a nonempty budget ledger")
+    from openkyrozen.tools.sandbox import SandboxUnavailableError, sandbox_command
+    probe_env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR") if key in os.environ}
+    try:
+        probe = sandbox_command("true", workspace=str(source), cwd=str(source), env=probe_env)
+    except SandboxUnavailableError as exc:
+        raise ValueError("V3 matched evaluation requires an available OS filesystem sandbox") from exc
+    try:
+        if probe.backend == "unavailable":
+            raise ValueError("V3 matched evaluation requires an available OS filesystem sandbox")
+    finally:
+        probe.close()
+    budget = BudgetLedger(budget_path, limit_rmb=limit_rmb,
+                          prior_hold_rmb=PRIOR_CAMPAIGN_HOLD_RMB)
     if not budget.budget_ok:
         raise ValueError("the persisted budget ledger contains an overrun")
     rows: list[dict] = []
-    checkpoint = _load_checkpoint(output, budget_path)
     if checkpoint is not None:
         if not ledger_existed:
             raise ValueError("cannot resume without the original budget-ledger checkpoint")
@@ -486,23 +518,12 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                            worker_error="interrupted before fixture result was checkpointed")
     else:
         with sqlite3.connect(budget_path) as db:
-            if db.execute("SELECT 1 FROM attempts LIMIT 1").fetchone():
+            if db.execute("SELECT 1 FROM attempts WHERE id!='prior-campaign-reservations' LIMIT 1").fetchone():
                 raise ValueError("cannot start a new report with a nonempty budget ledger")
         if output.exists():
             raise ValueError("existing report is not pinned by its original budget ledger")
         prior = {}
         held_reservations = []
-    from openkyrozen.tools.sandbox import SandboxUnavailableError, sandbox_command
-    probe_env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR") if key in os.environ}
-    try:
-        probe = sandbox_command("true", workspace=str(source), cwd=str(source), env=probe_env)
-    except SandboxUnavailableError as exc:
-        raise ValueError("V3 matched evaluation requires an available OS filesystem sandbox") from exc
-    try:
-        if probe.backend == "unavailable":
-            raise ValueError("V3 matched evaluation requires an available OS filesystem sandbox")
-    finally:
-        probe.close()
     endpoint, api_key = _credential()
     relay = ResponsesRelay(endpoint=endpoint, api_key=api_key, budget=budget)
     if checkpoint is not None:
@@ -593,13 +614,13 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                                     "held_reservations": held_reservations,
                                     "calls": [{key: value for key, value in call.items() if key != "response_body"}
                                               for call in relay.rows],
-                                    "budget": {"spent_rmb": str(budget.spent_rmb),
-                                               "remaining_rmb": str(budget.remaining_rmb),
-                                               "limit_rmb": limit_rmb}}
+                                    "budget": {"spent_usd": str(budget.spent_rmb / USD_CNY),
+                                               "remaining_usd": str(budget.remaining_rmb / USD_CNY),
+                                               "limit_usd": str(limit), "usd_cny": str(USD_CNY)}}
                         _write_checkpoint(output, budget_path, document)
                         print(json.dumps({"fixture_id": fixture_id, "repeat": repeat, "arm": arm,
                                           "verified_success": row["verified_success"],
-                                          "requests": row["requests"], "remaining_rmb": str(budget.remaining_rmb)},
+                                          "requests": row["requests"], "remaining_usd": str(budget.remaining_rmb / USD_CNY)},
                                          sort_keys=True), flush=True)
                         if not budget.budget_ok:
                             raise RuntimeError("benchmark budget overrun; stop all model calls and investigate")
@@ -627,9 +648,9 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
               "provider_error": relay.provider_error,
               "summary": summary,
               "rows": rows, "held_reservations": held_reservations,
-              "budget": {"spent_rmb": str(budget.spent_rmb),
-                                      "remaining_rmb": str(budget.remaining_rmb),
-                                      "limit_rmb": limit_rmb},
+              "budget": {"spent_usd": str(budget.spent_rmb / USD_CNY),
+                         "remaining_usd": str(budget.remaining_rmb / USD_CNY),
+                         "limit_usd": str(limit), "usd_cny": str(USD_CNY)},
               "calls": [{key: value for key, value in call.items() if key != "response_body"}
                         for call in relay.rows]}
     _write_checkpoint(output, budget_path, report)
@@ -642,13 +663,13 @@ def main() -> None:
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--budget-db", type=Path, required=True)
-    parser.add_argument("--limit-rmb", default="49")
+    parser.add_argument("--limit-usd", default=str(MAX_LIMIT_USD))
     parser.add_argument("--repeats", type=int, default=REPEATS)
     args = parser.parse_args()
     if args.repeats != REPEATS:
         parser.error("release evaluation requires exactly three matched repeats")
     report = run(source=args.source, repo=args.repo, output=args.output,
-                 budget_path=args.budget_db, limit_rmb=args.limit_rmb, repeats=args.repeats)
+                 budget_path=args.budget_db, limit_usd=args.limit_usd, repeats=args.repeats)
     print(json.dumps(report["summary"], indent=2, sort_keys=True))
     summary = report["summary"]
     raise SystemExit(0 if (summary["complete"] and summary["accounting_complete"]

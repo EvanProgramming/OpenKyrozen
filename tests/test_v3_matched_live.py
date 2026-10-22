@@ -9,7 +9,7 @@ from benchmarks.v3_matched_live import (BASELINE, MODEL, _load_checkpoint, _run_
                                          _extract_baseline, _initial_plan, _workflow_state_correct,
                                          _write_checkpoint, prepare_fixture, run, snapshot_workspace,
                                          verify_fixture)
-from benchmarks.v3_matched import BudgetLedger
+from benchmarks.v3_matched import BudgetLedger, _cost
 
 
 class V3MatchedLiveTests(unittest.TestCase):
@@ -282,7 +282,7 @@ class V3MatchedLiveTests(unittest.TestCase):
             with self.subTest(include_completed_row=include_completed_row), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 report, ledger_path = root / "report.json", root / "budget.sqlite3"
-                budget = BudgetLedger(ledger_path)
+                budget = BudgetLedger(ledger_path, prior_hold_rmb="0.1377115")
                 first_key = (fixtures[0]["fixture_id"], 0, "v2")
                 orphan_key = (fixtures[1]["fixture_id"], 0, "v3")
                 keys = [first_key, orphan_key] if include_completed_row else [orphan_key]
@@ -291,7 +291,7 @@ class V3MatchedLiveTests(unittest.TestCase):
                     usage = {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0}
                     metadata = {"attempt_id": attempt, "fixture_id": fixture_id, "repeat": repeat,
                                 "arm": arm, "request_sha256": attempt, "model": MODEL,
-                                "max_output_tokens": 4096, "reserved_rmb": "0.00003"}
+                                "max_output_tokens": 4096, "reserved_rmb": str(_cost(100, 100))}
                     self.assertTrue(budget.reserve(attempt, input_token_bound=100, output_token_bound=100,
                                                    metadata=metadata))
                     budget.settle(attempt, usage)

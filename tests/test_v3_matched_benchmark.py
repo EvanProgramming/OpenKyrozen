@@ -4,22 +4,36 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from benchmarks.v3_matched import BudgetLedger, PRICING, summarize
+from benchmarks.v3_matched import BudgetLedger, PRICING, _cost, summarize
 
 
 class V3MatchedBenchmarkTests(unittest.TestCase):
-    def test_pricing_matches_the_approved_gpt6_luna_rates(self):
-        self.assertEqual(PRICING, {"currency": "CNY", "input_per_million": "0.05",
-                                   "output_per_million": "0.25", "cache_write_per_million": "0.01",
-                                   "cache_read_per_million": "0.005"})
+    def test_pricing_matches_the_approved_panstar_rates_at_recorded_fx(self):
+        self.assertEqual(PRICING["source_currency"], "USD")
+        self.assertEqual(PRICING["input_usd_per_million"], "0.033")
+        self.assertEqual(PRICING["output_usd_per_million"], "0.275")
+        self.assertEqual(PRICING["cache_read_usd_per_million"], "0.0033")
+        self.assertEqual(PRICING["usd_cny"], "6.6759")
 
-    def test_default_budget_is_below_the_approved_fifty_rmb_cap(self):
+    def test_default_budget_is_the_ten_dollar_cap_at_recorded_fx(self):
+        from benchmarks.v3_matched import MAX_LIMIT_RMB
+
         with tempfile.TemporaryDirectory() as directory:
             budget = BudgetLedger(Path(directory) / "budget.sqlite3")
-            self.assertEqual(budget.remaining_rmb, 49)
-            for limit in ("0", "50", "51"):
+            self.assertEqual(budget.remaining_rmb, MAX_LIMIT_RMB)
+            for limit in ("0", "66.76", "67"):
                 with self.assertRaises(ValueError):
                     BudgetLedger(Path(directory) / f"{limit}.sqlite3", limit_rmb=limit)
+
+    def test_prior_unknown_campaign_reservations_are_imported_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "budget.sqlite3"
+            budget = BudgetLedger(path, prior_hold_rmb="0.1377115")
+            self.assertEqual(budget.campaign_calls(), [])
+            self.assertAlmostEqual(float(budget.remaining_rmb), 66.759 - 0.1377115)
+            BudgetLedger(path, prior_hold_rmb="0.1377115")
+            with self.assertRaisesRegex(ValueError, "missing the prior campaign reservation"):
+                BudgetLedger(path, limit_rmb="66.759", prior_hold_rmb="0.2")
 
     def test_old_usd_ledger_is_preserved_and_refused_under_new_rmb_pricing(self):
         import sqlite3
@@ -46,7 +60,7 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 BudgetLedger(path, limit_rmb="0.2")
             resumed = BudgetLedger(path, limit_rmb="0.1")
-            self.assertAlmostEqual(float(resumed.remaining_rmb), 0.09475)
+            self.assertAlmostEqual(float(resumed.remaining_rmb), 0.1 - float(_cost(100_000, 1_000)))
             self.assertFalse(resumed.reserve("attempt-2", input_token_bound=2_000_000, output_token_bound=0))
 
     def test_known_usage_releases_unused_reservation_at_user_rates(self):
@@ -59,15 +73,15 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
                 "cache_write_tokens": 30,
             })
 
-            self.assertAlmostEqual(float(budget.spent_rmb), 0.0000054)
+            self.assertAlmostEqual(float(budget.spent_rmb), float(_cost(100, 10, 20, 30)))
             self.assertGreater(budget.remaining_rmb, 0.09)
 
     def test_campaign_journal_recovers_call_metadata_and_marks_reserved_calls_unknown(self):
         with tempfile.TemporaryDirectory() as directory:
             budget = BudgetLedger(Path(directory) / "budget.sqlite3")
             metadata = {"arm": "v3", "fixture_id": "bug_fix-1", "repeat": 0,
-                        "request_sha256": "hash", "model": "gpt-6-luna",
-                        "max_output_tokens": 4096, "reserved_rmb": "0.00003"}
+                        "request_sha256": "hash", "model": "gemini-3.5-flash-lite",
+                        "max_output_tokens": 4096, "reserved_rmb": str(_cost(100, 100))}
             self.assertTrue(budget.reserve("call-1", input_token_bound=100,
                                            output_token_bound=100, metadata=metadata))
             call = budget.campaign_calls()[0]
@@ -135,7 +149,7 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         self.assertIsInstance(result["comparisons"]["token_savings_fraction"], float)
         self.assertEqual(result["summary"]["v3"]["workflow_state_correct"], 90)
         self.assertEqual(result["summary"]["v3"]["attempts"], 180)
-        self.assertAlmostEqual(result["summary"]["v3"]["cost_rmb"], 0.0014175)
+        self.assertAlmostEqual(result["summary"]["v3"]["cost_rmb"], float(90 * _cost(90, 45)))
         self.assertTrue(result["summary"]["v3"]["all_safety_passed"])
         self.assertEqual(result["summary"]["v3"]["verifier_passed"], 90)
         self.assertEqual(result["summary"]["v3"]["durable_side_effects_expected"], 90)

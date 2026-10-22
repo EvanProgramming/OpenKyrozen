@@ -11,13 +11,20 @@ from pathlib import Path
 from statistics import mean, median
 from benchmarks.v3_fixtures import FIXTURES
 
-INPUT_RATE = Decimal("0.05")
-OUTPUT_RATE = Decimal("0.25")
-CACHE_WRITE_RATE = Decimal("0.01")
-CACHE_READ_RATE = Decimal("0.005")
+USD_CNY = Decimal("6.6759")  # Wise USD/CNY rate, 2026-10-22.
+INPUT_RATE = Decimal("0.033") * USD_CNY
+OUTPUT_RATE = Decimal("0.275") * USD_CNY
+CACHE_WRITE_RATE = INPUT_RATE  # No separate cache-write rate is quoted by Panstar.
+CACHE_READ_RATE = Decimal("0.0033") * USD_CNY
+MAX_LIMIT_USD = Decimal("10")
+MAX_LIMIT_RMB = MAX_LIMIT_USD * USD_CNY
 _MILLION = Decimal(1_000_000)
 _PICORMB = Decimal(1_000_000_000_000)
-PRICING = {"currency": "CNY", "input_per_million": str(INPUT_RATE),
+PRICING = {"currency": "CNY", "source_currency": "USD", "usd_cny": str(USD_CNY),
+           "fx_source": "Wise USD/CNY historical rate 2026-10-22",
+           "input_usd_per_million": "0.033", "output_usd_per_million": "0.275",
+           "cache_write_usd_per_million": "same_as_input", "cache_read_usd_per_million": "0.0033",
+           "input_per_million": str(INPUT_RATE),
            "output_per_million": str(OUTPUT_RATE), "cache_write_per_million": str(CACHE_WRITE_RATE),
            "cache_read_per_million": str(CACHE_READ_RATE)}
 PRICING_SHA256 = hashlib.sha256(json.dumps(PRICING, sort_keys=True).encode()).hexdigest()
@@ -41,11 +48,13 @@ def _picormb(amount: Decimal) -> int:
 class BudgetLedger:
     """Atomically reserve worst-case API spend and retain unknown attempts."""
 
-    def __init__(self, path: Path, *, limit_rmb: str | Decimal = "49"):
+    def __init__(self, path: Path, *, limit_rmb: str | Decimal = MAX_LIMIT_RMB,
+                 prior_hold_rmb: str | Decimal = "0"):
         self.path = Path(path)
         limit = Decimal(limit_rmb)
-        if not Decimal(0) < limit < Decimal(50):
-            raise ValueError("the cumulative benchmark cap must be greater than zero and below CNY 50")
+        prior_hold = Decimal(prior_hold_rmb)
+        if not Decimal(0) < limit <= MAX_LIMIT_RMB or not Decimal(0) <= prior_hold < limit:
+            raise ValueError("the cumulative benchmark cap must be at most USD 10 at the recorded exchange rate")
         self.limit_picormb = _picormb(limit)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.path) as db:
@@ -71,8 +80,17 @@ class BudgetLedger:
             current = db.execute("SELECT currency_code,limit_picormb,pricing_sha256 FROM budget_config WHERE id=1").fetchone()
             if current is None:
                 db.execute("INSERT INTO budget_config VALUES(1,'CNY',?,?)", (self.limit_picormb, PRICING_SHA256))
+                if prior_hold:
+                    db.execute("INSERT INTO attempts(id,reserved_picormb,status,metadata_json) VALUES(?,?,'unknown',?)",
+                               ("prior-campaign-reservations", _picormb(prior_hold),
+                                json.dumps({"archived_reservation": True,
+                                            "prior_cny_reservations": str(prior_hold)}, sort_keys=True)))
             elif current[0] != "CNY" or int(current[1]) != self.limit_picormb or current[2] != PRICING_SHA256:
                 raise ValueError("the persisted RMB benchmark cap and pricing cannot be changed")
+            elif prior_hold and db.execute(
+                    "SELECT reserved_picormb FROM attempts WHERE id='prior-campaign-reservations'"
+            ).fetchone() != (_picormb(prior_hold),):
+                raise ValueError("the persisted ledger is missing the prior campaign reservation")
 
     def _totals(self) -> tuple[int, int, bool]:
         with sqlite3.connect(self.path) as db:
@@ -140,8 +158,8 @@ class BudgetLedger:
                 status, actual = "unknown", None
             call = json.loads(metadata_json)
             if call.get("archived_reservation"):
-                if status != "unknown":
-                    raise ValueError("only unknown attempts can be archived as held reservations")
+                if status not in ("unknown", "settled"):
+                    raise ValueError("archived attempts must remain settled or held as unknown")
                 continue
             if Decimal(reserved) / _PICORMB != Decimal(call.get("reserved_rmb", "-1")):
                 raise ValueError("campaign journal reservation does not match budget ledger")
