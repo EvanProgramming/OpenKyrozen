@@ -437,7 +437,7 @@ def _initial_plan(fixture: dict) -> list[str] | dict:
                        "effects": ["read_only", "filesystem", "internal"], "risk_ceiling": "normal"}}
 
 
-PRIOR_CAMPAIGN_HOLD_RMB = "6.620338468746"
+PRIOR_CAMPAIGN_HOLD_RMB = "6.652729942234"
 
 
 def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
@@ -455,7 +455,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
     ledger_existed = budget_path.exists()
     limit = Decimal(limit_usd)
     if not Decimal(0) < limit <= MAX_LIMIT_USD:
-        raise ValueError("the cumulative benchmark cap cannot exceed USD 20")
+        raise ValueError("the cumulative benchmark cap cannot exceed USD 10")
     limit_rmb = str(limit * USD_CNY)
     checkpoint = _load_checkpoint(output, budget_path)
     if checkpoint is None:
