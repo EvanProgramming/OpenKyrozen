@@ -4,6 +4,8 @@ The frozen cohort contains 30 fixtures across ten task categories, with three ma
 
 The local authenticated Responses relay pins `gemini-flash-3.6`, caps output at 4,096 tokens, reserves worst-case spend before forwarding, and stores request hashes and usage rather than prompts or answers. The SQLite ledger uses the supplied proxy settings and defaults to a cumulative ¥49 cap, below the approved ¥50 ceiling. Accounting uses ¥0.7/1M input, ¥3.7/1M output, ¥0.2/1M cache-write, and ¥0.1/1M cache-read tokens. Unknown usage retains its reservation. Set `KYROZEN_BENCHMARK_API_KEY` and `KYROZEN_BENCHMARK_BASE_URL` from the approved provider configuration; the default endpoint is `https://api.oproxy.world/v1`.
 
+Before reading provider credentials or starting campaign requests, the runner probes the OS filesystem sandbox. The cohort requires working filesystem restrictions for its permission and scope checks, so an unavailable backend blocks the campaign without provider spend. This benchmark prerequisite does not change the application's best-effort sandbox default.
+
 Run the complete cohort from a clean candidate checkout, writing the report and budget ledger outside it:
 
 ```sh

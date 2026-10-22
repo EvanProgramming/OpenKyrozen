@@ -456,6 +456,17 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         if output.exists():
             raise ValueError("existing report is not pinned by its original budget ledger")
         prior = {}
+    from openkyrozen.tools.sandbox import SandboxUnavailableError, sandbox_command
+    probe_env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR") if key in os.environ}
+    try:
+        probe = sandbox_command("true", workspace=str(source), cwd=str(source), env=probe_env)
+    except SandboxUnavailableError as exc:
+        raise ValueError("V3 matched evaluation requires an available OS filesystem sandbox") from exc
+    try:
+        if probe.backend == "unavailable":
+            raise ValueError("V3 matched evaluation requires an available OS filesystem sandbox")
+    finally:
+        probe.close()
     endpoint, api_key = _credential()
     relay = ResponsesRelay(endpoint=endpoint, api_key=api_key, budget=budget)
     if checkpoint is not None:

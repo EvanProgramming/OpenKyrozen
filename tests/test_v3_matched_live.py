@@ -48,7 +48,34 @@ class V3MatchedLiveTests(unittest.TestCase):
             root = Path(directory)
             prepare_fixture(root, fixture)
             (root / "stats.py").write_text("def mean(values):\n    return 0 if not values else sum(values) / len(values)\n")
+            from openkyrozen.tools.sandbox import SandboxUnavailableError, sandbox_command
+            try:
+                probe = sandbox_command("true", workspace=str(root), cwd=str(root), env={})
+            except SandboxUnavailableError:
+                available = False
+            else:
+                available = probe.backend != "unavailable"
+                probe.close()
+            if not available:
+                self.skipTest("no OS filesystem sandbox is available")
             self.assertTrue(_run_fixture_tests(root, fixture["verifier"]["command"]))
+
+    def test_live_runner_blocks_on_unavailable_sandbox_before_credentials(self):
+        from unittest.mock import Mock
+        from openkyrozen.tools.sandbox import SandboxedCommand
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            probe = SandboxedCommand("true", True, {}, "unavailable", unavailable_reason="probe failed")
+            probe.close = Mock()
+            with patch("benchmarks.v3_matched_live._source_snapshot", return_value="candidate"), \
+                    patch("openkyrozen.tools.sandbox.sandbox_command", return_value=probe), \
+                    patch("benchmarks.v3_matched_live._credential", side_effect=AssertionError("credential read")) as credential:
+                with self.assertRaisesRegex(ValueError, "requires an available"):
+                    run(source=root / "src", repo=root, output=root / "report.json",
+                        budget_path=root / "budget.sqlite3")
+            credential.assert_not_called()
+            probe.close.assert_called_once()
 
     def test_plan_fixture_catalog_covers_scope_reapproval_and_churn(self):
         scenarios = {fixture["plan_scenario"] for fixture in FIXTURES if fixture["plan_scenario"]}
@@ -178,8 +205,11 @@ class V3MatchedLiveTests(unittest.TestCase):
                     "candidate_sha": "candidate", "baseline_sha": BASELINE, "model": MODEL,
                     "repeats": 3, "rows": rows, "calls": []})
                 relay = type("Relay", (), {"rows": []})()
+                from openkyrozen.tools.sandbox import SandboxedCommand
+                probe = SandboxedCommand("true", False, {}, "test")
                 with patch("benchmarks.v3_matched_live._source_snapshot", return_value="candidate"), \
                         patch("benchmarks.v3_matched_live._credential", return_value=("https://example.invalid", "key")), \
+                        patch("openkyrozen.tools.sandbox.sandbox_command", return_value=probe), \
                         patch("benchmarks.v3_matched_live.ResponsesRelay", return_value=relay), \
                         patch("benchmarks.v3_matched_live._extract_baseline", side_effect=RuntimeError("stop")):
                     with self.assertRaisesRegex(RuntimeError, "stop"):

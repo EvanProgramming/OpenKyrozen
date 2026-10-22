@@ -277,7 +277,7 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000) -> dict:
         and (not row.get("recovery_required") or row.get("recovery_verified") is True)
         for row in keyed.values()
     )
-    result["comparisons"] = {"token_savings_fraction": token_savings,
+    result["comparisons"] = {"token_savings_fraction": float(token_savings) if token_savings is not None else None,
                               "request_savings_fraction": float(request_savings) if request_savings is not None else None,
                               "success_improved": success_improved}
     result["comparison_thresholds_met"] = bool(

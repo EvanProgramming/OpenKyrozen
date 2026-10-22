@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -110,6 +111,8 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         self.assertGreater(result["paired_success_ci95"][0], 0)
         self.assertTrue(result["comparison_thresholds_met"])
         self.assertFalse(result["release_comparison_passed"])
+        json.dumps(result)
+        self.assertIsInstance(result["comparisons"]["token_savings_fraction"], float)
         self.assertEqual(result["summary"]["v3"]["workflow_state_correct"], 90)
         self.assertEqual(result["summary"]["v3"]["attempts"], 180)
         self.assertAlmostEqual(result["summary"]["v3"]["cost_rmb"], 0.020655)
