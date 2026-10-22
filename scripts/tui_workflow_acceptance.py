@@ -198,10 +198,14 @@ def acceptance(binary: Path):
             return sum(r.get('event') == 'response' for r in rows)
 
         def submit(text):
-            count = response_count(events())
+            rows = events()
+            count = response_count(rows)
+            ready_count = sum(r.get('event') == 'status' and r.get('state') == 'ready' for r in rows)
             send(text.encode() + b'\r')
             wait(lambda rows: response_count(rows) > count, 'chat response')
-            wait(lambda rows: rows[-1].get('event') != 'status' or not rows[-1].get('busy'), 'turn completion')
+            if not text.startswith('/'):
+                wait(lambda rows: sum(r.get('event') == 'status' and r.get('state') == 'ready'
+                                      for r in rows) > ready_count, 'turn completion')
 
         try:
             wait(prompt('onboarding'), 'onboarding')
@@ -258,7 +262,9 @@ def acceptance(binary: Path):
             drain(0.3)
             send(b'q')
             drain(0.5)
-            count = response_count(events())
+            rows = events()
+            count = response_count(rows)
+            ready_count = sum(r.get('event') == 'status' and r.get('state') == 'ready' for r in rows)
             send(b'cancel audit\r')
             wait(lambda rows: any(r.get('event') == 'subagent' and r.get('agent', {}).get('status') == 'running'
                                  and r.get('agent', {}).get('assignment', {}).get('objective') == 'wait-for-cancellation' for r in rows), 'cancellable running agent')
@@ -268,6 +274,8 @@ def acceptance(binary: Path):
             wait(lambda rows: any(r.get('event') == 'subagent' and r.get('agent', {}).get('status') == 'cancelled' for r in rows), 'agent cancellation')
             send(b'q')
             wait(lambda rows: response_count(rows) > count, 'cancelled work retained in final report')
+            wait(lambda rows: sum(r.get('event') == 'status' and r.get('state') == 'ready'
+                                  for r in rows) > ready_count, 'cancelled turn completion')
             for width, height in ((60, 20), (160, 45), (80, 24)):
                 previous = len(terminal)
                 fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', height, width, 0, 0))
@@ -285,7 +293,10 @@ def acceptance(binary: Path):
             print('TUI acceptance passed: startup update notice and command, onboarding, chat isolation, approvals, sub-agent updates/inspection/scrolling/cancellation, and 3 terminal sizes.')
         finally:
             if process.poll() is None:
-                process.kill()
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 process.wait()
             os.close(master)
 
