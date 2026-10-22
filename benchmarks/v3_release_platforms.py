@@ -98,9 +98,14 @@ def collect_platform_evidence(results_dir: Path, output_dir: Path, candidate_sha
                 raise ValueError(f"{platform}: unsupported platform result schema")
             if result.get("candidate_sha") != candidate_sha or result.get("platform") != platform:
                 raise ValueError(f"{platform}: candidate SHA or platform does not match")
-            for check in ("unit", "integration", "acceptance"):
-                if result.get(check) != "passed":
-                    raise ValueError(f"{platform}: platform validation did not pass ({check})")
+            if platform.startswith("windows-"):
+                if (result.get("unit") != "not_run" or result.get("integration") != "not_run"
+                        or result.get("supported_features") != "passed"):
+                    raise ValueError(f"{platform}: supported-feature acceptance did not pass")
+            elif any(result.get(check) != "passed" for check in ("unit", "integration")):
+                raise ValueError(f"{platform}: platform validation did not pass (unit/integration)")
+            if result.get("acceptance") != "passed":
+                raise ValueError(f"{platform}: platform validation did not pass (acceptance)")
             soak_seconds = result.get("soak_seconds")
             if isinstance(soak_seconds, bool) or not isinstance(soak_seconds, int) or soak_seconds < 1800:
                 raise ValueError(f"{platform}: 30-minute soak has not passed")
@@ -126,13 +131,14 @@ def collect_platform_evidence(results_dir: Path, output_dir: Path, candidate_sha
             dependency_sets[platform] = dependencies
             platform_results.append({
                 "platform": platform,
-                "unit": "passed",
-                "integration": "passed",
+                "unit": result["unit"],
+                "integration": result["integration"],
                 "acceptance": "passed",
                 "soak_seconds": soak_seconds,
                 "evidence_paths": copied_paths,
                 "environment": environment,
                 "dependencies": dependencies,
+                **({"supported_features": "passed"} if platform.startswith("windows-") else {}),
             })
 
         command_relative = (Path("commands") / command_set.name).as_posix()

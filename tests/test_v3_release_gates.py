@@ -45,11 +45,15 @@ class V3ReleaseGateTests(unittest.TestCase):
                         "path": platform_artifact.name,
                         "sha256": hashlib.sha256(platform_artifact.read_bytes()).hexdigest(),
                     })
-                    record["platform_results"].append({
+                    platform_result = {
                         "platform": platform, "unit": "passed", "integration": "passed",
                         "acceptance": "passed", "soak_seconds": 1800,
                         "evidence_paths": [platform_artifact.name],
-                    })
+                    }
+                    if platform.startswith("windows-"):
+                        platform_result.update(unit="not_run", integration="not_run",
+                                                supported_features="passed")
+                    record["platform_results"].append(platform_result)
             if mutate:
                 mutate(gate_id, record, artifact)
             record_path = records / f"{gate_id}.json"
@@ -215,6 +219,23 @@ class V3ReleaseGateTests(unittest.TestCase):
                                                         if gate == "R266" else None)
                 with self.assertRaisesRegex(ValueError, expected):
                     validate_evidence_bundle(records, candidate, verify_signature=lambda *_: True)
+
+    def test_production_gate_allows_windows_supported_feature_acceptance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            records, candidate = self.create_bundle(
+                Path(directory),
+                mutate=lambda gate, record, _: [
+                    item.update(unit="not_run", integration="not_run", supported_features="passed")
+                    for item in record["platform_results"] if item["platform"].startswith("windows-")
+                ] if gate == "R266" else None,
+            )
+            manifest = validate_evidence_bundle(records, candidate, verify_signature=lambda *_: True)
+        windows = [item for item in manifest["gates"]["R266"]["platform_results"]
+                   if item["platform"].startswith("windows-")]
+        self.assertTrue(all(item["unit"] == "not_run"
+                            and item["integration"] == "not_run"
+                            and item["supported_features"] == "passed"
+                            for item in windows))
 
     def test_each_production_platform_requires_linked_hashed_evidence(self):
         for mutation in (

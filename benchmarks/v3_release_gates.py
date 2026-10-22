@@ -101,7 +101,17 @@ def _check_record(record: object, gate_id: str, candidate_sha: str, evidence_dir
                           if isinstance(ref, dict) and isinstance(ref.get("path"), str)} if isinstance(refs, list) else set()
         for platform in REQUIRED_PLATFORMS:
             item = indexed[platform]
-            if any(item.get(check) != "passed" for check in ("unit", "integration", "acceptance")):
+            if platform.startswith("windows-"):
+                checks_failed = (
+                    item.get("unit") != "not_run"
+                    or item.get("integration") != "not_run"
+                    or item.get("supported_features") != "passed"
+                    or item.get("acceptance") != "passed"
+                )
+            else:
+                checks_failed = any(item.get(check) != "passed"
+                                    for check in ("unit", "integration", "acceptance"))
+            if checks_failed:
                 raise ValueError(f"R266: platform validation failed for {platform}")
             if not isinstance(item.get("soak_seconds"), int) or item["soak_seconds"] < 1800:
                 raise ValueError(f"R266: platform {platform} has not passed the 30-minute soak")

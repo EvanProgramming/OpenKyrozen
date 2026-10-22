@@ -16,7 +16,10 @@ class V3ReleasePlatformsTests(unittest.TestCase):
         for platform in REQUIRED_PLATFORMS:
             directory = results / f"v3-platform-{platform}"
             directory.mkdir()
-            for name in ("unit.log", "acceptance.log", "soak.json"):
+            names = ("unit.log", "acceptance.log", "soak.json")
+            if platform.startswith("windows-"):
+                names = ("acceptance.log", "soak.json", "supported-features.log")
+            for name in names:
                 (directory / name).write_text(f"{platform}:{name}\n", encoding="utf-8")
             record = {
                 "schema_version": 1,
@@ -31,6 +34,9 @@ class V3ReleasePlatformsTests(unittest.TestCase):
                 "dependencies": {"python": f"3.{platform[-2:]}.0"},
                 "evidence_paths": ["unit.log", "acceptance.log", "soak.json"],
             }
+            if platform.startswith("windows-"):
+                record["evidence_paths"] = ["acceptance.log", "soak.json", "supported-features.log"]
+                record.update(unit="not_run", integration="not_run", supported_features="passed")
             if mutate:
                 mutate(platform, record)
             (directory / "platform.json").write_text(json.dumps(record), encoding="utf-8")
@@ -56,6 +62,25 @@ class V3ReleasePlatformsTests(unittest.TestCase):
             self.assertTrue((output / "R266.json").is_file())
             self.assertFalse((output / "R266.json.asc").exists())
             self.assertEqual(len(_check_record(record, "R266", candidate, output.resolve())), 24)
+
+    def test_windows_uses_supported_feature_acceptance_without_full_python_suites(self):
+        def supported_windows(platform, record):
+            if platform.startswith("windows-"):
+                record["unit"] = "not_run"
+                record["integration"] = "not_run"
+                record["supported_features"] = "passed"
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            results, commands, candidate = self._matrix(root, mutate=supported_windows)
+            record = collect_platform_evidence(results, root / "evidence", candidate, commands)
+            windows = [row for row in record["platform_results"]
+                       if row["platform"].startswith("windows-")]
+            self.assertEqual(len(windows), 2)
+            self.assertTrue(all(row["unit"] == "not_run"
+                                and row["integration"] == "not_run"
+                                and row["supported_features"] == "passed"
+                                for row in windows))
 
     def test_rejects_incomplete_or_stale_platform_results(self):
         for mutate, expected in (
