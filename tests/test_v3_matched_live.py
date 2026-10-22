@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from benchmarks.v3_fixtures import FIXTURES
-from benchmarks.v3_matched_live import (BASELINE, MODEL, _load_checkpoint, _run_fixture_tests, _worker_env,
+from benchmarks.v3_matched_live import (BASELINE, MODEL, PRIOR_CAMPAIGN_HOLD_RMB, _load_checkpoint, _run_fixture_tests, _worker_env,
                                          _extract_baseline, _initial_plan, _run_worker, _workflow_state_correct,
                                          _write_checkpoint, prepare_fixture, run, snapshot_workspace,
                                          verify_fixture)
@@ -295,7 +295,7 @@ class V3MatchedLiveTests(unittest.TestCase):
             with self.subTest(include_completed_row=include_completed_row), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 report, ledger_path = root / "report.json", root / "budget.sqlite3"
-                budget = BudgetLedger(ledger_path, prior_hold_rmb="2.020002495068")
+                budget = BudgetLedger(ledger_path, prior_hold_rmb=PRIOR_CAMPAIGN_HOLD_RMB)
                 first_key = (fixtures[0]["fixture_id"], 0, "v2")
                 orphan_key = (fixtures[1]["fixture_id"], 0, "v3")
                 keys = [first_key, orphan_key] if include_completed_row else [orphan_key]
