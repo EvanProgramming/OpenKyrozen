@@ -334,7 +334,7 @@ def _run_submit(self, text: str, request_id: str, plan_acceptance: dict[str, Any
         with self._state_lock:
             self._busy = False
             self._workers.discard(threading.current_thread())
-        self.status(final_state, final_message, request_id)
+            self.status(final_state, final_message, request_id)
 
 
 def _features(self) -> list[dict[str, Any]]:

@@ -54,6 +54,8 @@ class BugFixWorkflowTests(unittest.TestCase):
         self.tempdirs = []
 
     def tearDown(self):
+        if main.memory_bank is not self.original_memory:
+            main.memory_bank.close()
         main.memory_bank = self.original_memory
         main.tasks = self.original_tasks
         main.learning_engine = self.original_learning
