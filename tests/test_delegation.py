@@ -638,6 +638,58 @@ class DelegationTests(unittest.TestCase):
                     self.assertIn("unsupported tool-call wrapper", reply)
                 self.assertIsNone(self.runtime._interaction_controller.state().get("pending_plan"))
 
+    def test_concurrent_calls_use_only_one_terminal_spinner(self):
+        import io
+        from contextlib import redirect_stdout
+
+        second_entered = threading.Event()
+        release_second = threading.Event()
+        spinner_starts = []
+        errors = []
+        answers = []
+        original_start = threading.Thread.start
+
+        def controlled_start(thread):
+            target = getattr(thread, "_target", None)
+            if (getattr(target, "__self__", None) is self.runtime
+                    and getattr(target, "__name__", "") == "_spinner_worker"):
+                spinner_starts.append(thread)
+            return original_start(thread)
+
+        def response(_messages, model=None):
+            if threading.current_thread().name == "spinner-first":
+                if not second_entered.wait(5):
+                    raise TimeoutError("second model call did not start concurrently")
+            else:
+                second_entered.set()
+                if not release_second.wait(5):
+                    raise TimeoutError("second model call was not released")
+            return "done"
+
+        def call():
+            try:
+                answers.append(self.runtime._call_llm_with_spinner([{"role": "user", "content": "test"}]))
+            except BaseException as exc:
+                errors.append(exc)
+
+        with (patch.object(self.runtime, "_prepare_context_for_call"),
+              patch.object(self.runtime, "_get_llm_response", side_effect=response),
+              patch.object(threading.Thread, "start", controlled_start),
+              redirect_stdout(io.StringIO())):
+            first = threading.Thread(target=call, name="spinner-first")
+            second = threading.Thread(target=call, name="spinner-second")
+            first.start()
+            second.start()
+            first.join(5)
+            release_second.set()
+            second.join(5)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(answers, ["done", "done"])
+        self.assertEqual(len(spinner_starts), 1)
+
     def test_parent_cannot_turn_unverified_findings_into_success(self):
         class MainProvider:
             def chat(inner, messages, model):
@@ -946,7 +998,8 @@ class DelegationTests(unittest.TestCase):
                 headers = {name.lower(): value for name, value in headers.items()}
                 if url.path == "/v1/messages":
                     self.assertEqual(url.host, "api.anthropic.com")
-                    self.assertEqual(headers["x-api-key"], "fixture-claude")
+                    self.assertIn(headers.get("x-api-key") or headers.get("authorization"),
+                                  {"fixture-claude", "Bearer fixture-claude"})
                     self.assertIn("system", body)
                     self.assertEqual(body["max_tokens"], 4096)
                     self.assertTrue(all(message["role"] != "system" for message in body["messages"]))

@@ -290,18 +290,22 @@ def _call_llm_with_spinner(self, messages: list[dict], model: str | None = None,
 
     if streaming or private:
         return call_with_one_overflow_recovery()
-    self._SPINNER_STOP.clear()
-    self._SPINNER_THREAD = threading.Thread(target=self._spinner_worker, args=(self._SPINNER_STOP,), daemon=True)
-    self._SPINNER_THREAD.start()
+    if not self._SPINNER_DISPLAY_LOCK.acquire(blocking=False):
+        return call_with_one_overflow_recovery()
+    stop_event = threading.Event()
+    spinner_thread = threading.Thread(target=self._spinner_worker, args=(stop_event,), daemon=True)
     try:
-        result = call_with_one_overflow_recovery()
+        spinner_thread.start()
+        try:
+            result = call_with_one_overflow_recovery()
+        finally:
+            stop_event.set()
+            spinner_thread.join(timeout=2)
+            sys.stdout.write("\r" + " " * 70 + "\r")
+            sys.stdout.flush()
+        return result
     finally:
-        self._SPINNER_STOP.set()
-        if self._SPINNER_THREAD:
-            self._SPINNER_THREAD.join(timeout=2)
-        sys.stdout.write("\r" + " " * 70 + "\r")
-        sys.stdout.flush()
-    return result
+        self._SPINNER_DISPLAY_LOCK.release()
 
 
 def _render_tool_result(self, action: str, result: str) -> None:

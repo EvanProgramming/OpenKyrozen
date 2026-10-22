@@ -38,6 +38,8 @@ def initialise(self):
 
     self.UTC = datetime.timezone.utc
 
+    self._SPINNER_DISPLAY_LOCK = threading.Lock()
+
     self.RELEASE_VERSION = "2.0.8"
 
     self.RELEASE_TAG = f"v{self.RELEASE_VERSION}"
@@ -282,10 +284,6 @@ def initialise(self):
     self._technology_in_flight: set[str] = set()
 
     self._technology_lock = threading.Lock()
-
-    self._SPINNER_STOP = threading.Event()
-
-    self._SPINNER_THREAD: threading.Thread | None = None
 
     self._active_context_state: ContextVar[ContextState | None] = ContextVar("active_context_state", default=None)
 
