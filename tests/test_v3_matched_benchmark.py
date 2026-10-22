@@ -16,27 +16,65 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         self.assertEqual(PRICING["cache_read_usd_per_million"], "0.0033")
         self.assertEqual(PRICING["usd_cny"], "6.6759")
 
-    def test_default_budget_is_the_ten_dollar_cap_at_recorded_fx(self):
+    def test_default_budget_is_the_twenty_dollar_cap_at_recorded_fx(self):
         from benchmarks.v3_matched import MAX_LIMIT_RMB, MAX_LIMIT_USD
 
         with tempfile.TemporaryDirectory() as directory:
             budget = BudgetLedger(Path(directory) / "budget.sqlite3")
             self.assertEqual(budget.remaining_rmb, MAX_LIMIT_RMB)
-            self.assertEqual(MAX_LIMIT_USD, Decimal("10"))
-            self.assertEqual(budget.remaining_rmb, 10 * Decimal("6.6759"))
-            for limit in ("0", "66.7591", "67"):
+            self.assertEqual(MAX_LIMIT_USD, Decimal("20"))
+            self.assertEqual(budget.remaining_rmb, 20 * Decimal("6.6759"))
+            for limit in ("0", "133.5181", "134"):
                 with self.assertRaises(ValueError):
                     BudgetLedger(Path(directory) / f"{limit}.sqlite3", limit_rmb=limit)
 
+    def test_approved_cap_increase_preserves_existing_reservations(self):
+        from benchmarks.v3_matched import MAX_LIMIT_RMB
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "budget.sqlite3"
+            budget = BudgetLedger(path, limit_rmb="66.759", prior_hold_rmb="6.652729942234")
+            budget.reserve("unknown-attempt", input_token_bound=100_000, output_token_bound=1_000,
+                           metadata={"fixture_id": "test", "arm": "v3",
+                                     "reserved_rmb": str(_cost(100_000, 1_000))})
+            budget.settle("unknown-attempt", None)
+
+            with self.assertRaisesRegex(ValueError, "cannot be changed"):
+                BudgetLedger(path, limit_rmb=MAX_LIMIT_RMB)
+            increased = BudgetLedger(path, limit_rmb=MAX_LIMIT_RMB, allow_limit_increase=True,
+                                     prior_hold_rmb="6.652729942234")
+
+            self.assertEqual(increased.campaign_calls()[0]["status"], "unknown")
+            self.assertAlmostEqual(float(increased.remaining_rmb),
+                                   float(MAX_LIMIT_RMB - Decimal("6.652729942234")
+                                         - _cost(100_000, 1_000)))
+
+    def test_cap_increase_rejects_a_missing_prior_reservation_atomically(self):
+        from benchmarks.v3_matched import MAX_LIMIT_RMB
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "budget.sqlite3"
+            BudgetLedger(path, limit_rmb="66.759")
+
+            with self.assertRaisesRegex(ValueError, "missing the prior campaign reservation"):
+                BudgetLedger(path, limit_rmb=MAX_LIMIT_RMB, allow_limit_increase=True,
+                             prior_hold_rmb="6.652729942234")
+
+            with sqlite3.connect(path) as db:
+                persisted_limit = db.execute("SELECT limit_picormb FROM budget_config").fetchone()[0]
+            self.assertEqual(persisted_limit, 66_759_000_000_000)
+
     def test_prior_unknown_campaign_reservations_are_imported_once(self):
+        from benchmarks.v3_matched import MAX_LIMIT_RMB
+
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "budget.sqlite3"
             budget = BudgetLedger(path, prior_hold_rmb="2.020002495068")
             self.assertEqual(budget.campaign_calls(), [])
-            self.assertAlmostEqual(float(budget.remaining_rmb), 66.759 - 2.020002495068)
+            self.assertAlmostEqual(float(budget.remaining_rmb), float(MAX_LIMIT_RMB) - 2.020002495068)
             BudgetLedger(path, prior_hold_rmb="2.020002495068")
             with self.assertRaisesRegex(ValueError, "missing the prior campaign reservation"):
-                BudgetLedger(path, limit_rmb="66.759", prior_hold_rmb="0.2")
+                BudgetLedger(path, prior_hold_rmb="0.2")
 
     def test_old_usd_ledger_is_preserved_and_refused_under_new_rmb_pricing(self):
         import sqlite3
