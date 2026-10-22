@@ -110,12 +110,12 @@ class V3ReleaseGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             manifest = Path(directory).resolve() / "manifest.json"
             signature = manifest.with_name("manifest.json.asc")
-            real_replace = os.replace
+            real_link = os.link
 
-            def fail_signature_replace(source, destination):
-                if Path(destination) == signature:
-                    raise OSError("signature destination is locked")
-                return real_replace(source, destination)
+            def fail_manifest_link(source, destination):
+                if Path(destination) == manifest:
+                    raise OSError("manifest destination is locked")
+                return real_link(source, destination)
 
             def create_signature(command, **_kwargs):
                 Path(command[command.index("--output") + 1]).write_text("signature", encoding="utf-8")
@@ -123,11 +123,32 @@ class V3ReleaseGateTests(unittest.TestCase):
 
             with patch("benchmarks.v3_release_gates.subprocess.run", side_effect=create_signature), \
                     patch("benchmarks.v3_release_gates._gpg_verify", return_value=True), \
-                    patch("benchmarks.v3_release_gates.os.replace", side_effect=fail_signature_replace):
-                with self.assertRaisesRegex(OSError, "signature destination is locked"):
+                    patch("benchmarks.v3_release_gates.os.link", side_effect=fail_manifest_link):
+                with self.assertRaisesRegex(OSError, "manifest destination is locked"):
                     _write_signed_manifest({"result": "passed"}, manifest)
             self.assertFalse(manifest.exists())
             self.assertFalse(signature.exists())
+
+    def test_manifest_writer_does_not_replace_outputs_created_after_preflight(self):
+        from types import SimpleNamespace
+        from benchmarks.v3_release_gates import _write_signed_manifest
+
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "manifest.json"
+            signature = manifest.with_name("manifest.json.asc")
+
+            def concurrent_publish(command, **_kwargs):
+                Path(command[command.index("--output") + 1]).write_text("new signature", encoding="utf-8")
+                manifest.write_text("other manifest", encoding="utf-8")
+                signature.write_text("other signature", encoding="utf-8")
+                return SimpleNamespace(returncode=0)
+
+            with patch("benchmarks.v3_release_gates.subprocess.run", side_effect=concurrent_publish), \
+                    patch("benchmarks.v3_release_gates._gpg_verify", return_value=True):
+                with self.assertRaises(FileExistsError):
+                    _write_signed_manifest({"result": "passed"}, manifest)
+            self.assertEqual(manifest.read_text(encoding="utf-8"), "other manifest")
+            self.assertEqual(signature.read_text(encoding="utf-8"), "other signature")
 
     def test_manifest_writer_preserves_existing_output_pair(self):
         from benchmarks.v3_release_gates import _write_signed_manifest

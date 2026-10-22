@@ -214,9 +214,9 @@ def _write_signed_manifest(manifest: dict, destination: Path) -> None:
             raise ValueError(f"could not sign release manifest: {exc}") from None
         if result.returncode or not signature.is_file() or not _gpg_verify(record, signature):
             raise ValueError("release manifest GPG signing or fingerprint verification failed")
-        os.replace(signature, signature_destination)
+        os.link(signature, signature_destination)
         try:
-            os.replace(record, destination)
+            os.link(record, destination)
         except OSError:
             try:
                 signature_destination.unlink()
