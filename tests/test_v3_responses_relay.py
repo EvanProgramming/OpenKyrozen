@@ -132,6 +132,38 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.assertEqual(len(self.received), 1)
         self.assertEqual(self.budget.remaining_rmb, remaining)
 
+    def test_upstream_http_error_persists_only_a_bounded_safe_error_code(self):
+        upstream = self.upstream.RequestHandlerClass
+        upstream.http_status = 502
+        upstream.response_payload = json.dumps({
+            "error": {"code": "AI_UPSTREAM_BUSY", "message": "secret diagnostic text"},
+        }).encode()
+        headers = {"Authorization": "Bearer " + self.relay.client_key}
+
+        response = requests.post(self.relay.url + "/responses", json={
+            "input": [{"role": "user", "content": "fixture"}],
+        }, headers=headers, timeout=3)
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(self.relay.provider_error, "upstream_http_502:AI_UPSTREAM_BUSY")
+        self.assertNotIn("secret diagnostic text", self.relay.provider_error)
+        self.assertEqual(self.relay.rows[0]["status"], "unknown")
+
+    def test_oversized_upstream_http_error_body_is_not_parsed_or_persisted(self):
+        upstream = self.upstream.RequestHandlerClass
+        upstream.http_status = 502
+        upstream.response_payload = json.dumps({
+            "error": {"code": "AI_UPSTREAM_BUSY", "message": "x" * 70_000},
+        }).encode()
+        headers = {"Authorization": "Bearer " + self.relay.client_key}
+
+        response = requests.post(self.relay.url + "/responses", json={
+            "input": [{"role": "user", "content": "fixture"}],
+        }, headers=headers, timeout=3)
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(self.relay.provider_error, "upstream_http_502")
+
     def test_upstream_transport_error_disables_further_forwarding(self):
         headers = {"Authorization": "Bearer " + self.relay.client_key}
         original_post = requests.post

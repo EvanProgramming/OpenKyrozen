@@ -17,6 +17,14 @@ from benchmarks.v3_matched import BudgetLedger, _cost
 MODEL = "gemini-3.5-flash-lite"
 MAX_OUTPUT_TOKENS = 4096
 MAX_REQUEST_BYTES = 20_000_000
+MAX_ERROR_BODY_BYTES = 65_536
+
+
+def _safe_error_code(error: object) -> str | None:
+    if not isinstance(error, dict):
+        return None
+    code = error.get("code")
+    return code if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", code) else None
 
 
 class ResponsesRelay:
@@ -167,7 +175,25 @@ class ResponsesRelay:
                         if upstream.status_code != 200:
                             relay.budget.settle(attempt_id, None)
                             row["status"] = "unknown"
-                            relay.provider_error = f"upstream_http_{upstream.status_code}"
+                            error_body = bytearray()
+                            try:
+                                for chunk in upstream.iter_content(chunk_size=4096):
+                                    if not chunk:
+                                        continue
+                                    error_body.extend(chunk[:MAX_ERROR_BODY_BYTES - len(error_body) + 1])
+                                    if len(error_body) > MAX_ERROR_BODY_BYTES:
+                                        error_body.clear()
+                                        break
+                            except requests.RequestException:
+                                error_body.clear()
+                            try:
+                                error_response = json.loads(error_body)
+                            except (ValueError, json.JSONDecodeError):
+                                error_response = None
+                            error = error_response.get("error") if isinstance(error_response, dict) else None
+                            code = _safe_error_code(error)
+                            suffix = f":{code}" if code else ""
+                            relay.provider_error = f"upstream_http_{upstream.status_code}{suffix}"
                             upstream.close()
                             self._json(upstream.status_code if 400 <= upstream.status_code < 600 else 502,
                                        {"error": {"message": f"benchmark upstream returned HTTP {upstream.status_code}"}})
@@ -223,9 +249,8 @@ class ResponsesRelay:
                                     if message["type"] == "response.failed":
                                         response = message.get("response")
                                         error = response.get("error") if isinstance(response, dict) else None
-                                        code = error.get("code") if isinstance(error, dict) else None
-                                        suffix = f":{code}" if isinstance(code, str) and re.fullmatch(
-                                            r"[A-Za-z0-9_.-]{1,80}", code) else ""
+                                        code = _safe_error_code(error)
+                                        suffix = f":{code}" if code else ""
                                         with relay._upstream_lock:
                                             relay.provider_error = f"upstream_response_failed{suffix}"
                                     usage = relay._usage(message.get("response", {}))
