@@ -191,6 +191,29 @@ class TUIProtocolTests(unittest.TestCase):
             self.backend._run_submit("   ", "blank-chat")
         chat.assert_not_called()
 
+    def test_completed_turn_emits_ready_after_busy_clears(self):
+        self.backend._busy = True
+        with patch.object(self.backend.agent, "llm_provider", object()), \
+                patch.object(self.backend.agent, "_sanitize_input", return_value=("question", False)), \
+                patch.object(self.backend.agent, "interaction_envelope", return_value={
+                    "pending_question": None, "pending_plan": None,
+                }), \
+                patch.object(self.backend.agent, "is_plan_acceptance", return_value=False), \
+                patch.object(self.backend.agent, "chat", return_value="answer"), \
+                patch.object(self.backend.agent, "_clean_final_response", return_value="answer"), \
+                patch.object(self.backend.agent, "_split_reply", return_value=("", "answer")), \
+                patch.object(self.backend.agent.memory_bank, "add_log"), \
+                patch.object(self.backend, "interaction"), \
+                patch.object(self.backend, "usage"), \
+                patch.object(self.backend, "navigation"):
+            self.backend._run_submit("question", "turn-ready")
+
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        ready = [event for event in events if event.get("event") == "status"
+                 and event.get("state") == "ready"]
+        self.assertTrue(ready)
+        self.assertFalse(ready[-1]["busy"])
+
     def test_delete_chat_requires_confirmation_and_keeps_workspace_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
