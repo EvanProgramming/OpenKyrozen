@@ -222,6 +222,10 @@ class V3MatchedLiveTests(unittest.TestCase):
             source, workspace, home = base / "baseline", base / "workspace", base / "home"
             workspace.mkdir()
             home.mkdir()
+            baseline = subprocess.run(["git", "-C", str(Path.cwd()), "cat-file", "-e",
+                                       f"{BASELINE}^{{commit}}"], capture_output=True)
+            if baseline.returncode:
+                self.skipTest("immutable V2 baseline is absent from this shallow checkout")
             _extract_baseline(source, Path.cwd(), BASELINE)
             prepare_fixture(workspace, fixture)
             prompt_file, plan_file, result_file = base / "prompt.txt", base / "plan.json", base / "result.json"
