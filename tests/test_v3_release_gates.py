@@ -102,6 +102,46 @@ class V3ReleaseGateTests(unittest.TestCase):
                 self.assertFalse(manifest.exists())
                 self.assertFalse(manifest.with_name("manifest.json.asc").exists())
 
+    def test_failed_manifest_publish_leaves_no_unsigned_manifest(self):
+        from types import SimpleNamespace
+        import os
+        from benchmarks.v3_release_gates import _write_signed_manifest
+
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory).resolve() / "manifest.json"
+            signature = manifest.with_name("manifest.json.asc")
+            real_replace = os.replace
+
+            def fail_signature_replace(source, destination):
+                if Path(destination) == signature:
+                    raise OSError("signature destination is locked")
+                return real_replace(source, destination)
+
+            def create_signature(command, **_kwargs):
+                Path(command[command.index("--output") + 1]).write_text("signature", encoding="utf-8")
+                return SimpleNamespace(returncode=0)
+
+            with patch("benchmarks.v3_release_gates.subprocess.run", side_effect=create_signature), \
+                    patch("benchmarks.v3_release_gates._gpg_verify", return_value=True), \
+                    patch("benchmarks.v3_release_gates.os.replace", side_effect=fail_signature_replace):
+                with self.assertRaisesRegex(OSError, "signature destination is locked"):
+                    _write_signed_manifest({"result": "passed"}, manifest)
+            self.assertFalse(manifest.exists())
+            self.assertFalse(signature.exists())
+
+    def test_manifest_writer_preserves_existing_output_pair(self):
+        from benchmarks.v3_release_gates import _write_signed_manifest
+
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "manifest.json"
+            signature = manifest.with_name("manifest.json.asc")
+            manifest.write_text("old manifest", encoding="utf-8")
+            signature.write_text("old signature", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                _write_signed_manifest({"result": "passed"}, manifest)
+            self.assertEqual(manifest.read_text(encoding="utf-8"), "old manifest")
+            self.assertEqual(signature.read_text(encoding="utf-8"), "old signature")
+
     def test_rejects_stale_candidate_failed_gate_or_bad_signature(self):
         for mutate, expected, verifier in (
             (lambda gate, record, _: record.update(candidate_sha="b" * 40), "candidate SHA", lambda *_: True),

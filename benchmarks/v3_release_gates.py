@@ -194,6 +194,9 @@ def _require_outside_checkout(path: Path, repo: Path, label: str) -> None:
 
 def _write_signed_manifest(manifest: dict, destination: Path) -> None:
     destination = destination.resolve()
+    signature_destination = destination.with_name(destination.name + ".asc")
+    if destination.exists() or signature_destination.exists():
+        raise ValueError("manifest output already exists; choose a new path")
     destination.parent.mkdir(parents=True, exist_ok=True)
     payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
     with tempfile.TemporaryDirectory(prefix="v3-release-evidence-", dir=destination.parent) as temporary:
@@ -211,8 +214,15 @@ def _write_signed_manifest(manifest: dict, destination: Path) -> None:
             raise ValueError(f"could not sign release manifest: {exc}") from None
         if result.returncode or not signature.is_file() or not _gpg_verify(record, signature):
             raise ValueError("release manifest GPG signing or fingerprint verification failed")
-        os.replace(record, destination)
-        os.replace(signature, destination.with_name(destination.name + ".asc"))
+        os.replace(signature, signature_destination)
+        try:
+            os.replace(record, destination)
+        except OSError:
+            try:
+                signature_destination.unlink()
+            except OSError:
+                pass
+            raise
 
 
 def main(argv: list[str] | None = None) -> int:
