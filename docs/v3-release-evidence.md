@@ -4,6 +4,17 @@ Release publication is blocked until signed records for R250–R266 all pass aga
 
 R266 carries the supported-environment matrix: Linux, macOS, and Windows on Python 3.12 and 3.13. Each of its six platform records must show passing unit, integration, and acceptance checks plus at least 1,800 seconds of soak evidence. Each platform entry names nonempty `evidence_paths`, and every path must reference a hashed artifact in the enclosing record.
 
+To collect R266 evidence, dispatch `.github/workflows/v3-release-platforms.yml` with the full candidate commit SHA. The workflow checks out that exact SHA, runs the full Python suite, gateway integration checks, agent/sub-agent and TUI acceptance, and a 30-minute production soak on all six platform/Python combinations. It uploads per-platform logs even on failure for diagnosis; it emits an R266 bundle only after every matrix job passes. The collector copies and hashes the command workflow, frozen fixture set, platform metadata, test logs, and soak results. The bundle is intentionally unsigned because the release-owner private key must stay off CI. Download it, place it in the evidence directory outside the candidate checkout, inspect the evidence, and sign `R266.json` with the pinned release-owner key before validating the complete release bundle:
+
+```sh
+gpg --batch --local-user D3897E8FF704149D609ACF878C118C04263D2A4C \
+  --armor --detach-sign --output R266.json.asc R266.json
+```
+
+The collector rejects stale candidate SHAs, missing artifacts, failed checks, short soaks, unexpected platform artifacts, and existing output directories.
+
+The dispatch workflow is evidence collection, not a substitute for inspecting its result. A failed matrix run produces diagnostic artifacts but no passing R266 record; rerun only after classifying the failure as product or runner/infrastructure.
+
 Store each record and its artifacts under one evidence directory, using these names:
 
 ```text

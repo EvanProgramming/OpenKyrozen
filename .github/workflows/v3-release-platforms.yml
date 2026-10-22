@@ -1,0 +1,185 @@
+name: V3 release platform evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full commit SHA to validate on all supported platforms
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v3-release-platforms-${{ inputs.candidate_sha }}
+  cancel-in-progress: false
+
+jobs:
+  platform-validation:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-py312, os: ubuntu-latest, python: '3.12' }
+          - { platform: linux-py313, os: ubuntu-latest, python: '3.13' }
+          - { platform: macos-py312, os: macos-latest, python: '3.12' }
+          - { platform: macos-py313, os: macos-latest, python: '3.13' }
+          - { platform: windows-py312, os: windows-latest, python: '3.12' }
+          - { platform: windows-py313, os: windows-latest, python: '3.13' }
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      PLATFORM_ID: ${{ matrix.platform }}
+      KYROZEN_BROWSER_TESTS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+      - name: Verify exact candidate
+        shell: bash
+        run: |
+          [[ "$CANDIDATE_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: tui/go.sum
+      - name: Install Linux sandbox and browser system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          python -m pip install playwright
+          python -m playwright install-deps chromium
+      - name: Install project and browser dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[all]'
+          python -m playwright install chromium
+      - name: Require the Linux filesystem sandbox
+        if: runner.os == 'Linux'
+        shell: bash
+        run: echo 'KYROZEN_SANDBOX_REQUIRED=1' >> "$GITHUB_ENV"
+      - name: Run complete unit suite
+        shell: bash
+        run: python -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee unit.log
+      - name: Run integration suite
+        shell: bash
+        run: |
+          python -m unittest tests.test_durable_tasks_gateway tests.test_gateway_startup_logging -v 2>&1 | tee integration.log
+      - name: Run workflow and TUI acceptance
+        shell: bash
+        run: |
+          python scripts/agent_workflow_acceptance.py 2>&1 | tee agent-acceptance.log
+          python scripts/subagent_workflow_acceptance.py 2>&1 | tee subagent-acceptance.log
+          binary="../kyrozen-tui"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            binary="../kyrozen-tui.exe"
+          fi
+          (cd tui && go test ./... && go build -o "$binary" .) 2>&1 | tee tui-tests.log
+          python scripts/tui_workflow_acceptance.py "${binary#../}" 2>&1 | tee tui-acceptance.log
+      - name: Run 30-minute production soak
+        shell: bash
+        run: |
+          python scripts/production_soak.py --seconds 1800 \
+            --output soak.json --log-dir soak-logs 2>&1 | tee soak.log
+      - name: Record platform result
+        if: success()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib.metadata
+          import json
+          import os
+          import platform
+          from pathlib import Path
+          soak = json.loads(Path("soak.json").read_text(encoding="utf-8"))
+          dependencies = {
+              distribution.metadata["Name"]: distribution.version
+              for distribution in importlib.metadata.distributions()
+              if distribution.metadata.get("Name")
+          }
+          result = {
+              "schema_version": 1,
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "platform": os.environ["PLATFORM_ID"],
+              "unit": "passed",
+              "integration": "passed",
+              "acceptance": "passed",
+              "soak_seconds": int(soak["elapsed_seconds"]),
+              "environment": {
+                  "runner": os.environ["ImageOS"] if "ImageOS" in os.environ else os.environ["RUNNER_OS"],
+                  "os": platform.platform(),
+                  "python": platform.python_version(),
+              },
+              "dependencies": dependencies,
+              "evidence_paths": [
+                  "unit.log", "integration.log", "agent-acceptance.log",
+                  "subagent-acceptance.log", "tui-tests.log", "tui-acceptance.log",
+                  "soak.log", "soak.json",
+              ],
+          }
+          Path("platform.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+          PY
+      - name: Upload platform logs and result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-platform-${{ matrix.platform }}
+          path: |
+            platform.json
+            unit.log
+            integration.log
+            agent-acceptance.log
+            subagent-acceptance.log
+            tui-acceptance.log
+            tui-tests.log
+            soak.log
+            soak.json
+            soak-logs/
+          if-no-files-found: warn
+          retention-days: 30
+
+  collect-r266:
+    needs: platform-validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v3-platform-*
+          path: platform-results
+          merge-multiple: false
+      - name: Collect unsigned exact-candidate R266 record
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: >-
+          python scripts/v3_release_platforms.py
+          --results-dir platform-results
+          --output-dir v3-r266-evidence
+          --candidate-sha "$CANDIDATE_SHA"
+          --command-set .github/workflows/v3-release-platforms.yml
+      - name: Upload unsigned R266 evidence bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-r266-${{ inputs.candidate_sha }}
+          path: v3-r266-evidence/
+          if-no-files-found: error
+          retention-days: 30
