@@ -285,6 +285,8 @@ def acceptance(binary: Path):
             assert 'APPROVAL REQUIRED' in plain and 'Choose a provider' in plain
             assert 'first conversation' in plain and 'second conversation' in plain
             assert '2.0.5 available' in plain and 'Run /update' in plain
+            send(b'\x1b')  # Dismiss the expected error/agent dialog before the next command.
+            drain(0.3)
             send(b'/update\r')
             wait(lambda rows: any(r.get('event') == 'restart' for r in rows), 'update command requests restart')
             process.wait(timeout=10)
