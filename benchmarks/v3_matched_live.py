@@ -451,6 +451,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                 or not isinstance(prior.get("rows"), list) or not isinstance(prior.get("calls"), list)):
             raise ValueError("budget-ledger checkpoint does not match this candidate and cohort")
         rows = prior["rows"]
+        held_reservations = prior.get("held_reservations", [])
         journal_calls = budget.campaign_calls()
         expected_call_keys = {(fixture["fixture_id"], repeat, arm)
                               for fixture in fixtures for repeat in range(repeats) for arm in ("v2", "v3")}
@@ -490,6 +491,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         if output.exists():
             raise ValueError("existing report is not pinned by its original budget ledger")
         prior = {}
+        held_reservations = []
     from openkyrozen.tools.sandbox import SandboxUnavailableError, sandbox_command
     probe_env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR") if key in os.environ}
     try:
@@ -588,6 +590,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                                     "baseline_sha": BASELINE, "model": MODEL, "max_output_tokens": MAX_OUTPUT_TOKENS,
                                     "repeats": repeats, "pricing": PRICING,
                                     "status": "running", "rows": rows,
+                                    "held_reservations": held_reservations,
                                     "calls": [{key: value for key, value in call.items() if key != "response_body"}
                                               for call in relay.rows],
                                     "budget": {"spent_rmb": str(budget.spent_rmb),
@@ -623,7 +626,8 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         "complete" if summary["complete"] and summary["accounting_complete"] else "incomplete",
               "provider_error": relay.provider_error,
               "summary": summary,
-              "rows": rows, "budget": {"spent_rmb": str(budget.spent_rmb),
+              "rows": rows, "held_reservations": held_reservations,
+              "budget": {"spent_rmb": str(budget.spent_rmb),
                                       "remaining_rmb": str(budget.remaining_rmb),
                                       "limit_rmb": limit_rmb},
               "calls": [{key: value for key, value in call.items() if key != "response_body"}
