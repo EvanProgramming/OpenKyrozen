@@ -69,7 +69,8 @@ class BugFixWorkflowTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.tempdirs.append(directory)
         root = Path(directory.name)
-        main.memory_bank = MemoryBank(root / "state.sqlite3", workspace_id="bugfix", session_id="turn")
+        with patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
+            main.memory_bank = MemoryBank(root / "state.sqlite3", workspace_id="bugfix", session_id="turn")
         main.tasks = TaskManager(main.memory_bank.store, workspace_id="bugfix", session_id="turn")
         main._interaction_controller = InteractionController(
             main.memory_bank.store, workspace_id="bugfix", session_id="turn",
