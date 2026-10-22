@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import threading
 import time
@@ -220,8 +221,13 @@ class ResponsesRelay:
                                 if message.get("type") in {
                                         "response.completed", "response.incomplete", "response.failed"}:
                                     if message["type"] == "response.failed":
+                                        response = message.get("response")
+                                        error = response.get("error") if isinstance(response, dict) else None
+                                        code = error.get("code") if isinstance(error, dict) else None
+                                        suffix = f":{code}" if isinstance(code, str) and re.fullmatch(
+                                            r"[A-Za-z0-9_.-]{1,80}", code) else ""
                                         with relay._upstream_lock:
-                                            relay.provider_error = "upstream_response_failed"
+                                            relay.provider_error = f"upstream_response_failed{suffix}"
                                     usage = relay._usage(message.get("response", {}))
                                     relay.budget.settle(attempt_id, usage)
                                     row["usage"] = usage
