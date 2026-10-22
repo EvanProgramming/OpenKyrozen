@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -69,6 +70,20 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
             self.assertEqual(call["status"], "unknown")
             self.assertEqual(call["usage"], None)
             self.assertGreater(budget.remaining_rmb, 0)
+
+    def test_archived_unknown_attempt_keeps_its_reservation_out_of_the_new_cohort(self):
+        with tempfile.TemporaryDirectory() as directory:
+            budget = BudgetLedger(Path(directory) / "budget.sqlite3")
+            metadata = {"arm": "v3", "fixture_id": "investigation-1", "repeat": 0,
+                        "model": "gemini-flash-3.6", "reserved_rmb": "0.00044",
+                        "archived_reservation": True}
+            self.assertTrue(budget.reserve("old-call", input_token_bound=100,
+                                           output_token_bound=100, metadata=metadata))
+            self.assertEqual(budget.campaign_calls(), [])
+            self.assertGreater(budget.remaining_rmb, 0)
+            with sqlite3.connect(budget.path) as db:
+                self.assertEqual(db.execute("SELECT status FROM attempts WHERE id='old-call'").fetchone()[0],
+                                 "unknown")
 
     def test_actual_overrun_poison_stops_every_later_reservation(self):
         with tempfile.TemporaryDirectory() as directory:

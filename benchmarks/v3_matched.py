@@ -139,6 +139,10 @@ class BudgetLedger:
                 self.settle(attempt_id, None)
                 status, actual = "unknown", None
             call = json.loads(metadata_json)
+            if call.get("archived_reservation"):
+                if status != "unknown":
+                    raise ValueError("only unknown attempts can be archived as held reservations")
+                continue
             if Decimal(reserved) / _PICORMB != Decimal(call.get("reserved_rmb", "-1")):
                 raise ValueError("campaign journal reservation does not match budget ledger")
             call.update(attempt_id=attempt_id, status=status,
