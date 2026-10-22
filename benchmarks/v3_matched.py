@@ -174,7 +174,13 @@ class BudgetLedger:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT reserved_picormb,status FROM attempts WHERE id=?",
                              (attempt_id,)).fetchone()
-            if row is None or row[1] != "reserved":
+            if row is None:
+                db.rollback()
+                raise ValueError("attempt is missing or already settled")
+            if row[1] != "reserved":
+                if usage is None and row[1] in {"unknown", "settled", "overrun"}:
+                    db.rollback()
+                    return
                 db.rollback()
                 raise ValueError("attempt is missing or already settled")
             if usage is None:

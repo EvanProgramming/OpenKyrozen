@@ -65,6 +65,32 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
             self.assertAlmostEqual(float(resumed.remaining_rmb), 0.1 - float(_cost(100_000, 1_000)))
             self.assertFalse(resumed.reserve("attempt-2", input_token_bound=2_000_000, output_token_bound=0))
 
+    def test_marking_an_attempt_unknown_twice_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            budget = BudgetLedger(Path(directory) / "budget.sqlite3", limit_rmb="0.1")
+            budget.reserve("attempt-1", input_token_bound=100, output_token_bound=100)
+
+            budget.settle("attempt-1", None)
+            budget.settle("attempt-1", None)
+
+            with sqlite3.connect(budget.path) as db:
+                self.assertEqual(db.execute("SELECT status FROM attempts WHERE id='attempt-1'").fetchone()[0],
+                                 "unknown")
+
+    def test_unknown_settlement_does_not_replace_known_usage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            budget = BudgetLedger(Path(directory) / "budget.sqlite3", limit_rmb="0.1")
+            budget.reserve("attempt-1", input_token_bound=100, output_token_bound=100)
+            usage = {"input_tokens": 10, "output_tokens": 2,
+                     "cache_read_tokens": 0, "cache_write_tokens": 0}
+
+            budget.settle("attempt-1", usage)
+            budget.settle("attempt-1", None)
+
+            with sqlite3.connect(budget.path) as db:
+                actual = db.execute("SELECT status,usage_json FROM attempts WHERE id='attempt-1'").fetchone()
+            self.assertEqual(actual, ("settled", json.dumps(usage, sort_keys=True)))
+
     def test_known_usage_releases_unused_reservation_at_user_rates(self):
         with tempfile.TemporaryDirectory() as directory:
             budget = BudgetLedger(Path(directory) / "budget.sqlite3", limit_rmb="0.1")
