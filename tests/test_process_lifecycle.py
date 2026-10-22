@@ -30,6 +30,23 @@ class ProcessLifecycleTests(unittest.TestCase):
             app.close()
             self.assertTrue(index.closed)
 
+    def test_unowned_chroma_index_releases_its_client(self):
+        import gc
+        from openkyrozen.memory.vector import ChromaIndex
+
+        class Client:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        index = ChromaIndex.__new__(ChromaIndex)
+        index.client = Client()
+        client = index.client
+        del index
+        gc.collect()
+        self.assertTrue(client.closed)
+
     def test_foreground_shell_cancellation_terminates_process_group(self):
         from openkyrozen.tools import ToolAdapters
         with tempfile.TemporaryDirectory() as root:

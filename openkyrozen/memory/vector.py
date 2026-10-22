@@ -14,3 +14,8 @@ class ChromaIndex:
 
     def close(self):
         self.client.close()
+
+    def __del__(self):
+        client = getattr(self, "client", None)
+        if client is not None:
+            client.close()
