@@ -11,3 +11,6 @@ class ChromaIndex:
             name="agent_logs", metadata={"description": "Derived index for durable OpenKyrozen memories"})
         self.files = self.client.get_or_create_collection(
             name="agent_files", metadata={"description": "Derived index for workspace source files"})
+
+    def close(self):
+        self.client.close()
