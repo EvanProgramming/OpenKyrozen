@@ -16,7 +16,7 @@ INPUT_RATE = Decimal("0.033") * USD_CNY
 OUTPUT_RATE = Decimal("0.275") * USD_CNY
 CACHE_WRITE_RATE = INPUT_RATE  # No separate cache-write rate is quoted by Panstar.
 CACHE_READ_RATE = Decimal("0.0033") * USD_CNY
-MAX_LIMIT_USD = Decimal("20")
+MAX_LIMIT_USD = Decimal("10")
 MAX_LIMIT_RMB = MAX_LIMIT_USD * USD_CNY
 _MILLION = Decimal(1_000_000)
 _PICORMB = Decimal(1_000_000_000_000)
@@ -54,7 +54,7 @@ class BudgetLedger:
         limit = Decimal(limit_rmb)
         prior_hold = Decimal(prior_hold_rmb)
         if not Decimal(0) < limit <= MAX_LIMIT_RMB or not Decimal(0) <= prior_hold < limit:
-            raise ValueError("the cumulative benchmark cap must be at most USD 20 at the recorded exchange rate")
+            raise ValueError("the cumulative benchmark cap must be at most USD 10 at the recorded exchange rate")
         self.limit_picormb = _picormb(limit)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.path) as db:
@@ -88,8 +88,18 @@ class BudgetLedger:
             elif current[0] != "CNY" or current[2] != PRICING_SHA256:
                 raise ValueError("the persisted RMB benchmark cap and pricing cannot be changed")
             elif int(current[1]) != self.limit_picormb:
-                if not allow_limit_increase or int(current[1]) > self.limit_picormb:
-                    raise ValueError("the persisted RMB benchmark cap and pricing cannot be changed")
+                if int(current[1]) < self.limit_picormb:
+                    if not allow_limit_increase:
+                        raise ValueError("the persisted RMB benchmark cap and pricing cannot be changed")
+                else:
+                    spent, held, overruns = db.execute(
+                        "SELECT COALESCE(SUM(actual_picormb), 0), "
+                        "COALESCE(SUM(CASE WHEN status IN ('reserved','unknown') "
+                        "THEN reserved_picormb ELSE 0 END), 0), "
+                        "SUM(CASE WHEN status='overrun' THEN 1 ELSE 0 END) FROM attempts"
+                    ).fetchone()
+                    if overruns or int(spent) + int(held) > self.limit_picormb:
+                        raise ValueError("existing benchmark commitments exceed the requested cap")
                 db.execute("UPDATE budget_config SET limit_picormb=? WHERE id=1", (self.limit_picormb,))
             if prior_hold and db.execute(
                     "SELECT reserved_picormb FROM attempts WHERE id='prior-campaign-reservations'"
