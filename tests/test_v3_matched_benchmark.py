@@ -4,10 +4,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from benchmarks.v3_matched import BudgetLedger, summarize
+from benchmarks.v3_matched import BudgetLedger, PRICING, summarize
 
 
 class V3MatchedBenchmarkTests(unittest.TestCase):
+    def test_pricing_matches_the_approved_gpt6_luna_rates(self):
+        self.assertEqual(PRICING, {"currency": "CNY", "input_per_million": "0.05",
+                                   "output_per_million": "0.25", "cache_write_per_million": "0.01",
+                                   "cache_read_per_million": "0.005"})
+
     def test_default_budget_is_below_the_approved_fifty_rmb_cap(self):
         with tempfile.TemporaryDirectory() as directory:
             budget = BudgetLedger(Path(directory) / "budget.sqlite3")
@@ -41,8 +46,8 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 BudgetLedger(path, limit_rmb="0.2")
             resumed = BudgetLedger(path, limit_rmb="0.1")
-            self.assertAlmostEqual(float(resumed.remaining_rmb), 0.0263)
-            self.assertFalse(resumed.reserve("attempt-2", input_token_bound=50_000, output_token_bound=0))
+            self.assertAlmostEqual(float(resumed.remaining_rmb), 0.09475)
+            self.assertFalse(resumed.reserve("attempt-2", input_token_bound=2_000_000, output_token_bound=0))
 
     def test_known_usage_releases_unused_reservation_at_user_rates(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -54,15 +59,15 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
                 "cache_write_tokens": 30,
             })
 
-            self.assertAlmostEqual(float(budget.spent_rmb), 0.00008)
+            self.assertAlmostEqual(float(budget.spent_rmb), 0.0000054)
             self.assertGreater(budget.remaining_rmb, 0.09)
 
     def test_campaign_journal_recovers_call_metadata_and_marks_reserved_calls_unknown(self):
         with tempfile.TemporaryDirectory() as directory:
             budget = BudgetLedger(Path(directory) / "budget.sqlite3")
             metadata = {"arm": "v3", "fixture_id": "bug_fix-1", "repeat": 0,
-                        "request_sha256": "hash", "model": "gemini-3.6-flash-low",
-                        "max_output_tokens": 4096, "reserved_rmb": "0.00044"}
+                        "request_sha256": "hash", "model": "gpt-6-luna",
+                        "max_output_tokens": 4096, "reserved_rmb": "0.00003"}
             self.assertTrue(budget.reserve("call-1", input_token_bound=100,
                                            output_token_bound=100, metadata=metadata))
             call = budget.campaign_calls()[0]
@@ -130,7 +135,7 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         self.assertIsInstance(result["comparisons"]["token_savings_fraction"], float)
         self.assertEqual(result["summary"]["v3"]["workflow_state_correct"], 90)
         self.assertEqual(result["summary"]["v3"]["attempts"], 180)
-        self.assertAlmostEqual(result["summary"]["v3"]["cost_rmb"], 0.020655)
+        self.assertAlmostEqual(result["summary"]["v3"]["cost_rmb"], 0.0014175)
         self.assertTrue(result["summary"]["v3"]["all_safety_passed"])
         self.assertEqual(result["summary"]["v3"]["verifier_passed"], 90)
         self.assertEqual(result["summary"]["v3"]["durable_side_effects_expected"], 90)

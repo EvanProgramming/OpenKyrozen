@@ -11,10 +11,10 @@ from pathlib import Path
 from statistics import mean, median
 from benchmarks.v3_fixtures import FIXTURES
 
-INPUT_RATE = Decimal("0.7")
-OUTPUT_RATE = Decimal("3.7")
-CACHE_WRITE_RATE = Decimal("0.2")
-CACHE_READ_RATE = Decimal("0.1")
+INPUT_RATE = Decimal("0.05")
+OUTPUT_RATE = Decimal("0.25")
+CACHE_WRITE_RATE = Decimal("0.01")
+CACHE_READ_RATE = Decimal("0.005")
 _MILLION = Decimal(1_000_000)
 _PICORMB = Decimal(1_000_000_000_000)
 PRICING = {"currency": "CNY", "input_per_million": str(INPUT_RATE),

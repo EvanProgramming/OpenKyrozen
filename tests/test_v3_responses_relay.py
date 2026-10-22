@@ -99,7 +99,7 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.assertTrue(self.received[0]["stream"])
         self.assertIn("event: response.completed", response.text)
         self.assertLess(self.remaining_at_forward[0], self.budget.limit_picormb / 1_000_000_000_000)
-        self.assertAlmostEqual(float(self.budget.spent_rmb), 0.0000204)
+        self.assertAlmostEqual(float(self.budget.spent_rmb), 0.000001385)
         self.assertEqual(self.relay.rows[0]["status"], "settled")
         self.assertEqual(self.relay.rows[0]["usage"]["cache_read_tokens"], 3)
         self.assertEqual(self.relay.rows[0]["usage"]["cache_write_tokens"], 2)

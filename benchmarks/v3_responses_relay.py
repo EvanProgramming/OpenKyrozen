@@ -13,7 +13,7 @@ import requests
 
 from benchmarks.v3_matched import BudgetLedger, _cost
 
-MODEL = "gemini-3.6-flash-low"
+MODEL = "gpt-6-luna"
 MAX_OUTPUT_TOKENS = 4096
 MAX_REQUEST_BYTES = 20_000_000
 
