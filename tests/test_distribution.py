@@ -123,6 +123,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("v3_release_candidate_sha", workflow)
         self.assertIn("v3-platform-validation:", workflow)
         self.assertIn("collect-r266:", workflow)
+        self.assertIn("PYTHONPATH=tests python -m unittest tests.test_durable_tasks_gateway", workflow)
         self.assertNotIn("matrix:\n      python-version: [\"3.12\", \"3.13\"]", workflow)
 
     def test_one_shot_release_workflow_is_retired_after_v2_release(self):

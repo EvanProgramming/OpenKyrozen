@@ -332,7 +332,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m unittest tests.test_durable_tasks_gateway tests.test_gateway_startup_logging -v 2>&1 | tee integration.log
+          PYTHONPATH=tests python -m unittest tests.test_durable_tasks_gateway tests.test_gateway_startup_logging -v 2>&1 | tee integration.log
       - name: Run workflow and TUI acceptance
         shell: bash
         run: |

@@ -31,7 +31,8 @@ class DurableTaskGatewayTests(unittest.TestCase):
             method=method,
             headers={"Content-Type": "application/json", "Authorization": "Bearer durable-test-token"},
         )
-        with urllib.request.urlopen(request, timeout=5) as response:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def _start_server(self, workspace: Path, db_path: Path, skills_path: Path, *, log_path: Path | None = None, startup_timeout: float = 20) -> tuple[subprocess.Popen, str]:
