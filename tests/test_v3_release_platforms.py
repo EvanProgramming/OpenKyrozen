@@ -96,6 +96,22 @@ class V3ReleasePlatformsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "escapes"):
                 collect_platform_evidence(results, root / "evidence", candidate, commands)
 
+    def test_rejects_symlinked_platform_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            results, commands, candidate = self._matrix(root)
+            platform_dir = results / f"v3-platform-{REQUIRED_PLATFORMS[0]}"
+            metadata = platform_dir / "platform.json"
+            external = root / "external.json"
+            external.write_text(metadata.read_text(encoding="utf-8"), encoding="utf-8")
+            metadata.unlink()
+            try:
+                metadata.symlink_to(external)
+            except OSError as exc:
+                self.skipTest(f"platform does not permit symlink creation: {exc}")
+            with self.assertRaisesRegex(ValueError, "cannot be a symlink"):
+                collect_platform_evidence(results, root / "evidence", candidate, commands)
+
 
 if __name__ == "__main__":
     unittest.main()

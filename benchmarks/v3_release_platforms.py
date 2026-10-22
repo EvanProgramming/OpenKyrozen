@@ -88,6 +88,8 @@ def collect_platform_evidence(results_dir: Path, output_dir: Path, candidate_sha
         for platform in REQUIRED_PLATFORMS:
             result_dir = results_dir / f"v3-platform-{platform}"
             result_path = result_dir / "platform.json"
+            if result_dir.is_symlink() or not result_dir.is_dir() or result_path.is_symlink():
+                raise ValueError(f"{platform}: platform result directory or metadata cannot be a symlink")
             try:
                 result = json.loads(result_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):

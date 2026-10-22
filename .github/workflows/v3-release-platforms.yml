@@ -1,6 +1,14 @@
 name: V3 release platform evidence
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/v3-release-platforms.yml
+      - benchmarks/v3_fixtures.py
+      - benchmarks/v3_release_platforms.py
+      - scripts/production_soak.py
+      - tests/**
   workflow_dispatch:
     inputs:
       candidate_sha:
@@ -12,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: v3-release-platforms-${{ inputs.candidate_sha }}
+  group: v3-release-platforms-${{ github.event.pull_request.head.sha || inputs.candidate_sha }}
   cancel-in-progress: false
 
 jobs:
@@ -31,13 +39,13 @@ jobs:
           - { platform: windows-py312, os: windows-latest, python: '3.12' }
           - { platform: windows-py313, os: windows-latest, python: '3.13' }
     env:
-      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || inputs.candidate_sha }}
       PLATFORM_ID: ${{ matrix.platform }}
       KYROZEN_BROWSER_TESTS: '1'
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.candidate_sha }}
+          ref: ${{ github.event.pull_request.head.sha || inputs.candidate_sha }}
       - name: Verify exact candidate
         shell: bash
         run: |
@@ -158,7 +166,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.candidate_sha }}
+          ref: ${{ github.event.pull_request.head.sha || inputs.candidate_sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -169,7 +177,7 @@ jobs:
           merge-multiple: false
       - name: Collect unsigned exact-candidate R266 record
         env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || inputs.candidate_sha }}
         run: >-
           python scripts/v3_release_platforms.py
           --results-dir platform-results
@@ -179,7 +187,7 @@ jobs:
       - name: Upload unsigned R266 evidence bundle
         uses: actions/upload-artifact@v4
         with:
-          name: v3-r266-${{ inputs.candidate_sha }}
+          name: v3-r266-${{ github.event.pull_request.head.sha || inputs.candidate_sha }}
           path: v3-r266-evidence/
           if-no-files-found: error
           retention-days: 30
