@@ -197,6 +197,7 @@ class ResponsesRelay:
                     self.end_headers()
                     stream_started = True
                     frame = bytearray()
+                    terminal = False
                     for chunk in upstream.iter_content(chunk_size=4096):
                         if not chunk:
                             continue
@@ -228,6 +229,11 @@ class ResponsesRelay:
                                     row["actual_rmb"] = (str(_cost(usage["input_tokens"], usage["output_tokens"],
                                                                      usage["cache_read_tokens"], usage["cache_write_tokens"]))
                                                           if usage is not None else None)
+                                    upstream.close()
+                                    terminal = True
+                                    break
+                        if terminal:
+                            break
                 except (requests.RequestException, OSError) as exc:
                     if isinstance(exc, requests.RequestException):
                         with relay._upstream_lock:

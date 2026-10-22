@@ -7,6 +7,7 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 import requests
 
@@ -323,6 +324,35 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.relay.rows[0]["status"], "settled")
         self.assertEqual(self.relay.rows[0]["usage"]["input_tokens"], 12)
+
+    def test_missing_usage_terminal_event_is_held_once_without_reading_past_terminal(self):
+        upstream_url = self.relay.endpoint + "/responses"
+        original_post = requests.post
+
+        class IncompleteStream:
+            status_code = 200
+
+            def close(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                yield ("event: response.completed\ndata: " + json.dumps({
+                    "type": "response.completed", "response": {"id": "missing-usage"},
+                }) + "\n\n").encode()
+                raise requests.ReadTimeout("stream remained open after terminal event")
+
+        def post(url, *args, **kwargs):
+            return IncompleteStream() if url == upstream_url else original_post(url, *args, **kwargs)
+
+        with patch("benchmarks.v3_responses_relay.requests.post", side_effect=post):
+            response = requests.post(self.relay.url + "/responses", json={
+                "input": [{"role": "user", "content": "fixture"}], "stream": True,
+            }, headers={"Authorization": "Bearer " + self.relay.client_key}, timeout=3)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.relay.rows[0]["status"], "unknown")
+        self.assertIsNone(self.relay.provider_error)
+        self.assertEqual(self.budget.campaign_calls()[0]["status"], "unknown")
 
 
 if __name__ == "__main__":
