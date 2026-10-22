@@ -124,19 +124,21 @@ def main():
                           + prompt)
         else:
             raise ValueError("benchmark initial plan must be a plan object or an array of task descriptions")
-        if runtime.tasks.working_plan_snapshot():
-            events.append({"event": "working_plan", "working_plan": runtime.tasks.working_plan_snapshot()})
+        snapshot_working_plan = getattr(runtime.tasks, "working_plan_snapshot", None)
+        initial_working_plan = snapshot_working_plan() if callable(snapshot_working_plan) else None
+        if initial_working_plan:
+            events.append({"event": "working_plan", "working_plan": initial_working_plan})
         if runtime.tasks.tasks:
             events.append({"event": "tasks", "tasks": list(runtime.tasks.tasks)})
         if accepted_fingerprint:
             prompt = ("A Strategic Plan has already been accepted. Preserve its approved scope; use the working plan "
                       "for implementation changes, and request renewed approval for material scope changes.\n\n" + prompt)
         answer = runtime.chat(runtime.current_session, prompt, clear_tasks=False, profile="auto")
-        manager = runtime.current_session.process_manager
-        handles = tuple(manager._handles.values())
+        manager = getattr(runtime.current_session, "process_manager", None)
+        handles = tuple(getattr(manager, "_handles", {}).values())
         cancellations = sum(item["action"] == "stop_process" and item["success"] for item in receipts)
         unique_calls = {(item["action"], item["args_hash"]) for item in receipts}
-        working_plan = runtime.tasks.working_plan_snapshot()
+        working_plan = snapshot_working_plan() if callable(snapshot_working_plan) else None
         plan_snapshots = []
         for event in events:
             snapshot = event.get("working_plan")

@@ -617,7 +617,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             relay.close()
     summary = summarize(rows)
     report = {"protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
-              "baseline_sha": BASELINE, "model": MODEL, "pricing": PRICING,
+              "baseline_sha": BASELINE, "model": MODEL, "pricing": PRICING, "repeats": repeats,
               "status": "blocked_provider_error" if relay.provider_error else
                         "blocked_budget_reservation" if relay.budget_blocked else
                         "complete" if summary["complete"] and summary["accounting_complete"] else "incomplete",

@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 from benchmarks.v3_fixtures import FIXTURES
 from benchmarks.v3_matched_live import (BASELINE, MODEL, _load_checkpoint, _run_fixture_tests, _worker_env,
-                                         _workflow_state_correct, _write_checkpoint, prepare_fixture, run, snapshot_workspace,
+                                         _extract_baseline, _initial_plan, _workflow_state_correct,
+                                         _write_checkpoint, prepare_fixture, run, snapshot_workspace,
                                          verify_fixture)
 from benchmarks.v3_matched import BudgetLedger
 
@@ -210,6 +211,34 @@ class V3MatchedLiveTests(unittest.TestCase):
             prepared = prepare_fixture(root, fixture)
             result = verify_fixture(fixture, root, "Read only and unchanged.", {}, prepared)
         self.assertTrue(result["verified_success"])
+
+    def test_frozen_v2_worker_runs_without_v3_plan_snapshot_api(self):
+        import subprocess
+        import sys
+
+        fixture = FIXTURES[0]
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source, workspace, home = base / "baseline", base / "workspace", base / "home"
+            workspace.mkdir()
+            home.mkdir()
+            _extract_baseline(source, Path.cwd(), BASELINE)
+            prepare_fixture(workspace, fixture)
+            prompt_file, plan_file, result_file = base / "prompt.txt", base / "plan.json", base / "result.json"
+            prompt_file.write_text(fixture["prompt"], encoding="utf-8")
+            plan_file.write_text(json.dumps(_initial_plan(fixture)), encoding="utf-8")
+            env = _worker_env(base, fixture, type("Relay", (), {"client_key": "local"})())
+            completed = subprocess.run(
+                [sys.executable, str(Path.cwd() / "benchmarks/prompt_worker.py"),
+                 "--source", str(source), "--workspace", str(workspace),
+                 "--url", "http://127.0.0.1:1/v1", "--model", MODEL,
+                 "--protocol", "responses", "--prompt-file", str(prompt_file),
+                 "--plan-file", str(plan_file), "--result", str(result_file)],
+                cwd=workspace, env=env, capture_output=True, text=True, timeout=30)
+            result_data = json.loads(result_file.read_text(encoding="utf-8")) if result_file.exists() else None
+        self.assertEqual(completed.returncode, 0, completed.stderr[-1000:])
+        self.assertIsNotNone(result_data)
+        self.assertTrue(result_data["provider_error"])
 
     def test_live_runner_rejects_same_ids_with_changed_fixture_content(self):
         fixture = dict(FIXTURES[0], prompt="altered prompt")

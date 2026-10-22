@@ -60,7 +60,7 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             budget = BudgetLedger(Path(directory) / "budget.sqlite3")
             metadata = {"arm": "v3", "fixture_id": "bug_fix-1", "repeat": 0,
-                        "request_sha256": "hash", "model": "gemini-flash-3.6",
+                        "request_sha256": "hash", "model": "gemini-3.6-flash-low",
                         "max_output_tokens": 4096, "reserved_rmb": "0.00044"}
             self.assertTrue(budget.reserve("call-1", input_token_bound=100,
                                            output_token_bound=100, metadata=metadata))
