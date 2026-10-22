@@ -228,14 +228,16 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000) -> dict:
     for (fixture, repeat, arm), row in keyed.items():
         groups[fixture][repeat][arm] = row
     accounting_complete = complete and all(
-        row.get("usage_complete") and all(field in row for field in
+        row.get("usage_complete") and row.get("worker_result_complete") is True
+        and isinstance(row.get("worker_exit_code"), int) and all(field in row for field in
             ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "latency_ms", "attempts",
              "first_delta_latency_ms", "verifier_result", "safety_passed",
              "durable_side_effect_expected", "durable_side_effect_verified",
              "recovery_required", "recovery_verified", "verified_success",
              "workflow_state_correct", "requests", "protocol_recovery", "duplicate_calls",
              "plan_revisions", "cancelled_tasks", "material_revisions", "unnecessary_churn",
-             "budget_ok", "plan_scenario", "plan_scenario_passed"))
+             "budget_ok", "plan_scenario", "plan_scenario_passed", "worker_result_complete",
+             "worker_exit_code"))
         for row in keyed.values()
     )
     result = {"protocol": "openkyrozen-v3-matched-v1", "complete": complete,

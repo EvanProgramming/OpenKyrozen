@@ -312,8 +312,15 @@ def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: 
     except OSError as exc:
         return -1, type(exc).__name__
     try:
-        process.communicate(timeout=timeout)
-        return process.returncode, ""
+        _, stderr = process.communicate(timeout=timeout)
+        if process.returncode == 0:
+            return 0, ""
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        error_type = next((line.split(":", 1)[0] for line in reversed(stderr.splitlines())
+                           if ":" in line and line.split(":", 1)[0].endswith(("Error", "Exception"))), None)
+        suffix = f":{error_type}" if error_type else ""
+        return process.returncode, f"worker_exit_{process.returncode}{suffix}"
     except subprocess.TimeoutExpired:
         if os.name == "nt":
             subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
@@ -394,7 +401,7 @@ def _empty_row(fixture_id: str, repeat: int, arm: str) -> dict:
             "workflow_state_correct": False, "requests": 0, "protocol_recovery": 0,
             "duplicate_calls": 0, "plan_revisions": 0, "cancelled_tasks": 0,
             "material_revisions": 0, "unnecessary_churn": 0, "budget_ok": False,
-            "plan_scenario": None, "plan_scenario_passed": True,
+            "plan_scenario": None, "plan_scenario_passed": True, "worker_exit_code": None,
             "worker_result_complete": False}
 
 
@@ -425,7 +432,7 @@ def _initial_plan(fixture: dict) -> list[str] | dict:
                        "effects": ["read_only", "filesystem", "internal"], "risk_ceiling": "normal"}}
 
 
-PRIOR_CAMPAIGN_HOLD_RMB = "1.108758315578"
+PRIOR_CAMPAIGN_HOLD_RMB = "2.020002495068"
 
 
 def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
@@ -605,7 +612,10 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                                     "unnecessary_churn": int(worker.get("unnecessary_churn", 0)),
                                     "budget_ok": budget.budget_ok,
                                     "worker_error": worker_error,
+                                    "worker_exit_code": code,
                                     "worker_result_complete": result_file.exists()})
+                        if not result_file.exists() and not worker_error:
+                            row["worker_error"] = "missing_result"
                         rows.append(row)
                         document = {"protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
                                     "baseline_sha": BASELINE, "model": MODEL, "max_output_tokens": MAX_OUTPUT_TOKENS,

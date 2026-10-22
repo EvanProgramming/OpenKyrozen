@@ -28,10 +28,10 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
     def test_prior_unknown_campaign_reservations_are_imported_once(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "budget.sqlite3"
-            budget = BudgetLedger(path, prior_hold_rmb="1.108758315578")
+            budget = BudgetLedger(path, prior_hold_rmb="2.020002495068")
             self.assertEqual(budget.campaign_calls(), [])
-            self.assertAlmostEqual(float(budget.remaining_rmb), 133.518 - 1.108758315578)
-            BudgetLedger(path, prior_hold_rmb="1.108758315578")
+            self.assertAlmostEqual(float(budget.remaining_rmb), 133.518 - 2.020002495068)
+            BudgetLedger(path, prior_hold_rmb="2.020002495068")
             with self.assertRaisesRegex(ValueError, "missing the prior campaign reservation"):
                 BudgetLedger(path, limit_rmb="133.518", prior_hold_rmb="0.2")
 
@@ -136,6 +136,7 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
                         "budget_ok": True,
                         "plan_revisions": 0, "cancelled_tasks": 0,
                         "material_revisions": 0, "unnecessary_churn": 0,
+                        "worker_result_complete": True, "worker_exit_code": 0,
                         "plan_scenario": fixture.get("plan_scenario"), "plan_scenario_passed": True,
                     })
 
@@ -168,6 +169,13 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         self.assertFalse(summarize(rows[:-1], bootstrap_samples=50)["complete"])
         rows[0]["usage_complete"] = False
         self.assertFalse(summarize(rows, bootstrap_samples=50)["accounting_complete"])
+        incomplete_worker = [dict(row) for row in rows]
+        incomplete_worker[0].update(usage_complete=True, worker_result_complete=False)
+        self.assertFalse(summarize(incomplete_worker, bootstrap_samples=50)["accounting_complete"])
+        missing_exit = [dict(row) for row in rows]
+        missing_exit[0]["usage_complete"] = True
+        missing_exit[0].pop("worker_exit_code")
+        self.assertFalse(summarize(missing_exit, bootstrap_samples=50)["accounting_complete"])
 
     def test_summary_rejects_arbitrary_fixture_ids_and_overbudget_rows(self):
         from benchmarks.v3_fixtures import FIXTURES

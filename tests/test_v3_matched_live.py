@@ -6,13 +6,26 @@ from unittest.mock import patch
 
 from benchmarks.v3_fixtures import FIXTURES
 from benchmarks.v3_matched_live import (BASELINE, MODEL, _load_checkpoint, _run_fixture_tests, _worker_env,
-                                         _extract_baseline, _initial_plan, _workflow_state_correct,
+                                         _extract_baseline, _initial_plan, _run_worker, _workflow_state_correct,
                                          _write_checkpoint, prepare_fixture, run, snapshot_workspace,
                                          verify_fixture)
 from benchmarks.v3_matched import BudgetLedger, _cost
 
 
 class V3MatchedLiveTests(unittest.TestCase):
+    def test_worker_failure_records_exit_and_exception_type_without_stderr(self):
+        import os
+        import sys
+
+        with tempfile.TemporaryDirectory() as directory:
+            code, error = _run_worker(
+                [sys.executable, "-c", "raise RuntimeError('private provider detail')"],
+                cwd=Path(directory), env=os.environ.copy(), timeout=5)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(error, "worker_exit_1:RuntimeError")
+        self.assertNotIn("private provider detail", error)
+
     def test_fixture_setup_reconstructs_git_history_for_independent_verification(self):
         fixture = next(item for item in FIXTURES if item["fixture_id"] == "git_history-2")
         with tempfile.TemporaryDirectory() as directory:
@@ -282,7 +295,7 @@ class V3MatchedLiveTests(unittest.TestCase):
             with self.subTest(include_completed_row=include_completed_row), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 report, ledger_path = root / "report.json", root / "budget.sqlite3"
-                budget = BudgetLedger(ledger_path, prior_hold_rmb="1.108758315578")
+                budget = BudgetLedger(ledger_path, prior_hold_rmb="2.020002495068")
                 first_key = (fixtures[0]["fixture_id"], 0, "v2")
                 orphan_key = (fixtures[1]["fixture_id"], 0, "v3")
                 keys = [first_key, orphan_key] if include_completed_row else [orphan_key]
