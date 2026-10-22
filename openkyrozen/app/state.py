@@ -38,8 +38,6 @@ def initialise(self):
 
     self.UTC = datetime.timezone.utc
 
-    self._SPINNER_DISPLAY_LOCK = threading.Lock()
-
     self.RELEASE_VERSION = "2.0.8"
 
     self.RELEASE_TAG = f"v{self.RELEASE_VERSION}"

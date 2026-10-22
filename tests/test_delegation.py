@@ -642,6 +642,9 @@ class DelegationTests(unittest.TestCase):
         import io
         from contextlib import redirect_stdout
 
+        second_app = build_application(memory=build_memory(self.root / "state-second.sqlite3"),
+                                      tools=ToolAdapters(self.root))
+        second_runtime = second_app.runtime
         second_entered = threading.Event()
         release_second = threading.Event()
         spinner_starts = []
@@ -651,7 +654,7 @@ class DelegationTests(unittest.TestCase):
 
         def controlled_start(thread):
             target = getattr(thread, "_target", None)
-            if (getattr(target, "__self__", None) is self.runtime
+            if (getattr(target, "__self__", None) in {self.runtime, second_runtime}
                     and getattr(target, "__name__", "") == "_spinner_worker"):
                 spinner_starts.append(thread)
             return original_start(thread)
@@ -668,12 +671,15 @@ class DelegationTests(unittest.TestCase):
 
         def call():
             try:
-                answers.append(self.runtime._call_llm_with_spinner([{"role": "user", "content": "test"}]))
+                runtime = second_runtime if threading.current_thread().name == "spinner-second" else self.runtime
+                answers.append(runtime._call_llm_with_spinner([{"role": "user", "content": "test"}]))
             except BaseException as exc:
                 errors.append(exc)
 
         with (patch.object(self.runtime, "_prepare_context_for_call"),
               patch.object(self.runtime, "_get_llm_response", side_effect=response),
+              patch.object(second_runtime, "_prepare_context_for_call"),
+              patch.object(second_runtime, "_get_llm_response", side_effect=response),
               patch.object(threading.Thread, "start", controlled_start),
               redirect_stdout(io.StringIO())):
             first = threading.Thread(target=call, name="spinner-first")
@@ -683,6 +689,7 @@ class DelegationTests(unittest.TestCase):
             first.join(5)
             release_second.set()
             second.join(5)
+        second_app.close()
 
         self.assertFalse(first.is_alive())
         self.assertFalse(second.is_alive())

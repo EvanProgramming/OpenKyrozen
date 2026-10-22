@@ -13,6 +13,8 @@ import openkyrozen.routing.system_one as fast_mode
 from openkyrozen.workspace.context import LaunchContext
 from openkyrozen.agent.types import ContextOverflowError, ContextTooLargeError
 
+_SPINNER_DISPLAY_LOCK = threading.Lock()
+
 
 def _terminal_supports_unicode(self) -> bool:
     """Return True if the terminal can render Unicode box-drawing and special chars."""
@@ -290,7 +292,7 @@ def _call_llm_with_spinner(self, messages: list[dict], model: str | None = None,
 
     if streaming or private:
         return call_with_one_overflow_recovery()
-    if not self._SPINNER_DISPLAY_LOCK.acquire(blocking=False):
+    if not _SPINNER_DISPLAY_LOCK.acquire(blocking=False):
         return call_with_one_overflow_recovery()
     stop_event = threading.Event()
     spinner_thread = threading.Thread(target=self._spinner_worker, args=(stop_event,), daemon=True)
@@ -305,7 +307,7 @@ def _call_llm_with_spinner(self, messages: list[dict], model: str | None = None,
             sys.stdout.flush()
         return result
     finally:
-        self._SPINNER_DISPLAY_LOCK.release()
+        _SPINNER_DISPLAY_LOCK.release()
 
 
 def _render_tool_result(self, action: str, result: str) -> None:
