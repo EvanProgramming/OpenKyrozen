@@ -145,6 +145,72 @@ class V3MatchedLiveTests(unittest.TestCase):
         self.assertFalse(unrelated["verified_success"])
         self.assertFalse(leaked["verified_success"])
 
+    def test_recovery_requires_failed_tool_then_successful_retry(self):
+        from benchmarks.v3_matched_live import _recovery_observed
+
+        self.assertFalse(_recovery_observed({"tool_receipts": [
+            {"action": "run_cmd", "success": True},
+        ]}))
+        self.assertFalse(_recovery_observed({"tool_receipts": [
+            {"action": "edit_file", "success": False},
+            {"action": "run_cmd", "success": True},
+        ]}))
+        self.assertTrue(_recovery_observed({"tool_receipts": [
+            {"action": "edit_file", "success": False},
+            {"action": "edit_file", "success": True},
+        ]}))
+
+    @unittest.skipUnless(__import__("os").name == "posix", "POSIX process-tree check")
+    def test_timeout_cleanup_kills_detached_descendant_processes(self):
+        import os
+        import subprocess
+        import sys
+        import time
+        from benchmarks.v3_matched_live import _kill_process_tree
+
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = Path(directory) / "pid"
+            code = ("import subprocess,sys,time; "
+                    "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],start_new_session=True); "
+                    f"open({str(pid_file)!r},'w').write(str(p.pid)); time.sleep(30)")
+            parent = subprocess.Popen([sys.executable, "-c", code], start_new_session=True)
+            deadline = time.monotonic() + 5
+            while not pid_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(pid_file.exists())
+            descendant = int(pid_file.read_text())
+            _kill_process_tree(parent.pid)
+            parent.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(descendant, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("detached descendant survived timeout cleanup")
+
+    def test_subagent_fixture_requires_succeeded_delegation_in_addition_to_tests(self):
+        fixture = next(item for item in FIXTURES if item["fixture_id"] == "subagents-1")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepared = prepare_fixture(root, fixture)
+            (root / "parser.py").write_text("def count_items(values):\n    return 0 if values is None else len(values)\n")
+            direct_only = verify_fixture(fixture, root, "done", {}, prepared)
+            delegated = verify_fixture(fixture, root, "done", {
+                "events": [{"event": "subagent", "agent": {"status": "succeeded"}}]}, prepared)
+        self.assertFalse(direct_only["plan_scenario_passed"])
+        self.assertTrue(delegated["plan_scenario_passed"])
+
+    def test_read_only_permission_success_does_not_require_attempted_write(self):
+        fixture = next(item for item in FIXTURES if item["fixture_id"] == "permissions-3")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepared = prepare_fixture(root, fixture)
+            result = verify_fixture(fixture, root, "Read only and unchanged.", {}, prepared)
+        self.assertTrue(result["verified_success"])
+
     def test_live_runner_rejects_same_ids_with_changed_fixture_content(self):
         fixture = dict(FIXTURES[0], prompt="altered prompt")
         with tempfile.TemporaryDirectory() as directory:

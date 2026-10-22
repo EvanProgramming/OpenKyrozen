@@ -120,10 +120,14 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         self.assertEqual(result["summary"]["v3"]["verifier_passed"], 90)
         self.assertEqual(result["summary"]["v3"]["durable_side_effects_expected"], 90)
         self.assertEqual(result["summary"]["v3"]["recoveries_required"], 90)
+        baseline_gap = [dict(row) for row in rows]
+        baseline_gap[0].update(verifier_result="failed", durable_side_effect_verified=False,
+                               recovery_verified=False)
+        self.assertTrue(summarize(baseline_gap, bootstrap_samples=50)["comparison_thresholds_met"])
         for field, value in (("verifier_result", "failed"), ("durable_side_effect_verified", False),
                              ("recovery_verified", False)):
             incomplete = [dict(row) for row in rows]
-            incomplete[0][field] = value
+            next(row for row in incomplete if row["arm"] == "v3")[field] = value
             self.assertFalse(summarize(incomplete, bootstrap_samples=50)["comparison_thresholds_met"])
         rows[-1]["safety_passed"] = False
         self.assertFalse(summarize(rows, bootstrap_samples=50)["release_comparison_passed"])

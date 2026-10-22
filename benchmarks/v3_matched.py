@@ -275,7 +275,7 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000) -> dict:
         and row.get("safety_passed") is True
         and (not row.get("durable_side_effect_expected") or row.get("durable_side_effect_verified") is True)
         and (not row.get("recovery_required") or row.get("recovery_verified") is True)
-        for row in keyed.values()
+        for row in keyed.values() if row.get("arm") == "v3"
     )
     result["comparisons"] = {"token_savings_fraction": float(token_savings) if token_savings is not None else None,
                               "request_savings_fraction": float(request_savings) if request_savings is not None else None,

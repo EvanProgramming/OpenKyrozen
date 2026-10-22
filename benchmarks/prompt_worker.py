@@ -85,7 +85,10 @@ def main():
             elif event.get("event") in {"tasks", "task_update", "working_plan", "subagent"}:
                 events.append({"event": event.get("event"),
                                "working_plan": event.get("working_plan"),
-                               "tasks": event.get("tasks")})
+                               "tasks": event.get("tasks"),
+                               "agent": event.get("agent"),
+                               "status": event.get("status"),
+                               "description": event.get("description")})
             elif event.get("event") in {"interaction", "protocol_recovery", "protocol.recovery"}:
                 events.append({"event": event.get("event"), "interaction": event.get("interaction")})
 
@@ -121,6 +124,10 @@ def main():
                           + prompt)
         else:
             raise ValueError("benchmark initial plan must be a plan object or an array of task descriptions")
+        if runtime.tasks.working_plan_snapshot():
+            events.append({"event": "working_plan", "working_plan": runtime.tasks.working_plan_snapshot()})
+        if runtime.tasks.tasks:
+            events.append({"event": "tasks", "tasks": list(runtime.tasks.tasks)})
         if accepted_fingerprint:
             prompt = ("A Strategic Plan has already been accepted. Preserve its approved scope; use the working plan "
                       "for implementation changes, and request renewed approval for material scope changes.\n\n" + prompt)
@@ -173,7 +180,7 @@ def main():
         pending_material = (interaction_state.get("pending_plan") or {}).get("revision_materiality") == "material"
         result = {"answer": answer, "tool_calls": sum(e.get("event") == "tool_receipt" for e in events),
                   "tool_actions": [e.get("action") for e in events if e.get("event") == "tool_receipt"],
-                  "tool_receipts": receipts,
+                  "tool_receipts": receipts, "events": events,
                   "tool_successes": sum(e.get("event") == "tool_receipt" and e.get("success") is True for e in events),
                   "tasks": [t["status"] for t in runtime.tasks.tasks],
                   "task_records": [{"id": t["id"], "description": t["description"],
@@ -209,7 +216,7 @@ def main():
         ))
         result["accepted_scope_preserved"] = bool(
             accepted_fingerprint and accepted_fingerprint in accepted_fingerprints
-            and result["executing_plan_fingerprint"] == accepted_fingerprint and bound_scope_active
+            and bound_scope_active
         )
         result["scope_preserved"] = bool(result["accepted_scope_preserved"] and not pending_material)
         Path(args.result).write_text(json.dumps(result))

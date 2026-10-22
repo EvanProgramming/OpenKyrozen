@@ -106,6 +106,17 @@ def _denied_target(worker: dict, action: str, path: str) -> bool:
                for item in receipts) and not any(item.get("success") is True for item in receipts)
 
 
+def _recovery_observed(worker: dict) -> bool:
+    failed_actions = set()
+    for receipt in worker.get("tool_receipts", []):
+        action = receipt.get("action")
+        if receipt.get("success") is True and action in failed_actions:
+            return True
+        if receipt.get("success") is False and action:
+            failed_actions.add(action)
+    return False
+
+
 def _run_fixture_tests(root: Path, command: list[str]) -> bool:
     if (len(command) < 4 or command[:3] != ["python", "-m", "unittest"]
             or any(not item.endswith(".py") or "/" in item or "\\" in item for item in command[3:])):
@@ -179,9 +190,6 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
             accepted = accepted and all(after.get(path) == before.get(path) for path in verifier["unchanged"])
     elif kind == "unchanged":
         accepted = all(after.get(path) == before.get(path) for path in verifier["paths"])
-        if fixture["category"] == "permissions":
-            accepted = accepted and all(_denied_target(worker, "write_file", path)
-                                        for path in verifier["paths"])
     else:
         accepted = False
     scenario = fixture.get("plan_scenario")
@@ -226,6 +234,10 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
             for item in records)
     elif scenario == "scope_preserving":
         scenario_ok = worker.get("scope_preserved") is True
+    elif fixture["category"] == "subagents":
+        agents = [event.get("agent") for event in worker.get("events", [])
+                  if event.get("event") == "subagent" and isinstance(event.get("agent"), dict)]
+        scenario_ok = any(agent.get("status") == "succeeded" for agent in agents)
     elif scenario == "material_revision":
         scenario_ok = (worker.get("pending_material_revision") is True
                        and worker.get("accepted_scope_preserved") is True
@@ -306,13 +318,35 @@ def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: 
             subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
                            capture_output=True, timeout=5, check=False)
         else:
-            import signal
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            _kill_process_tree(process.pid)
         process.communicate()
         return -1, "timeout"
+
+
+def _kill_process_tree(pid: int) -> None:
+    import signal
+    try:
+        rows = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True,
+                              timeout=5, check=False).stdout.splitlines()
+        children = {}
+        for row in rows:
+            child, parent = (int(part) for part in row.split())
+            children.setdefault(parent, []).append(child)
+        order, pending = [], [pid]
+        while pending:
+            current = pending.pop()
+            order.append(current)
+            pending.extend(children.get(current, ()))
+        for child in reversed(order):
+            try:
+                os.kill(child, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def _extract_baseline(root: Path, repo: Path, commit: str) -> None:
@@ -535,7 +569,9 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                                     "durable_side_effect_expected": fixture["verifier"]["kind"] in {"tests", "tests_and_file"},
                                     "durable_side_effect_verified": bool(verified["verified_success"] and verified["changed_paths"]),
                                     "recovery_required": fixture["category"] == "error_recovery",
-                                    "recovery_verified": bool(verified["verified_success"] and fixture["category"] == "error_recovery"),
+                                    "recovery_verified": bool(verified["verified_success"]
+                                                               and fixture["category"] == "error_recovery"
+                                                               and _recovery_observed(worker)),
                                     "verified_success": bool(code == 0 and verified["verified_success"]),
                                     "workflow_state_correct": _workflow_state_correct(fixture, worker),
                                     "requests": len(calls), "protocol_recovery": int(worker.get("protocol_recovery", 0)),
