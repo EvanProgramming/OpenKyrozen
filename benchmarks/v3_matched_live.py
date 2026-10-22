@@ -405,6 +405,11 @@ def _empty_row(fixture_id: str, repeat: int, arm: str) -> dict:
             "worker_result_complete": False}
 
 
+def _row_can_resume_as_complete(row: dict) -> bool:
+    return (row.get("worker_result_complete") and row.get("usage_complete")
+            and row.get("attempts", 0) > 0 and row.get("worker_exit_code") == 0)
+
+
 def _workflow_state_correct(fixture: dict, worker: dict) -> bool:
     tasks = worker.get("tasks")
     plan_required = bool(fixture.get("plan_tasks")) or fixture.get("plan_scenario") in {
@@ -432,7 +437,7 @@ def _initial_plan(fixture: dict) -> list[str] | dict:
                        "effects": ["read_only", "filesystem", "internal"], "risk_ceiling": "normal"}}
 
 
-PRIOR_CAMPAIGN_HOLD_RMB = "3.663439787872"
+PRIOR_CAMPAIGN_HOLD_RMB = "4.417018480593"
 
 
 def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
@@ -552,8 +557,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         previous = next((row for row in rows if
                                          (row["fixture_id"], row["repeat"], row["arm"])
                                          == (fixture_id, repeat, arm)), None)
-                        if (previous and previous.get("worker_result_complete")
-                                and previous.get("usage_complete") and previous.get("attempts", 0) > 0):
+                        if previous and _row_can_resume_as_complete(previous):
                             continue
                         if previous:
                             rows.remove(previous)

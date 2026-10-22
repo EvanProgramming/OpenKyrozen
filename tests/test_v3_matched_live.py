@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from benchmarks.v3_fixtures import FIXTURES
-from benchmarks.v3_matched_live import (BASELINE, MODEL, PRIOR_CAMPAIGN_HOLD_RMB, _load_checkpoint, _run_fixture_tests, _worker_env,
+from benchmarks.v3_matched_live import (BASELINE, MODEL, PRIOR_CAMPAIGN_HOLD_RMB, _load_checkpoint, _row_can_resume_as_complete, _run_fixture_tests, _worker_env,
                                          _extract_baseline, _initial_plan, _run_worker, _workflow_state_correct,
                                          _write_checkpoint, prepare_fixture, run, snapshot_workspace,
                                          verify_fixture)
@@ -13,6 +13,14 @@ from benchmarks.v3_matched import BudgetLedger, _cost
 
 
 class V3MatchedLiveTests(unittest.TestCase):
+    def test_resume_retries_worker_failures_even_with_complete_usage(self):
+        failed = {"worker_result_complete": True, "usage_complete": True,
+                  "attempts": 3, "worker_exit_code": 1}
+        succeeded = {**failed, "worker_exit_code": 0}
+
+        self.assertFalse(_row_can_resume_as_complete(failed))
+        self.assertTrue(_row_can_resume_as_complete(succeeded))
+
     def test_worker_failure_records_exit_and_exception_type_without_stderr(self):
         import os
         import sys
