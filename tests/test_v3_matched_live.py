@@ -282,7 +282,7 @@ class V3MatchedLiveTests(unittest.TestCase):
             with self.subTest(include_completed_row=include_completed_row), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 report, ledger_path = root / "report.json", root / "budget.sqlite3"
-                budget = BudgetLedger(ledger_path, prior_hold_rmb="0.1377115")
+                budget = BudgetLedger(ledger_path, prior_hold_rmb="0.139775387869")
                 first_key = (fixtures[0]["fixture_id"], 0, "v2")
                 orphan_key = (fixtures[1]["fixture_id"], 0, "v3")
                 keys = [first_key, orphan_key] if include_completed_row else [orphan_key]
