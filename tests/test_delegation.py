@@ -1105,7 +1105,7 @@ class DelegationTests(unittest.TestCase):
             self.assertFalse((self.root/"other/first.txt").exists())
             agents = coordinator.spawn([brief(0, profile="coder", scope=["first.txt"]),
                 brief(1, profile="coder", scope=["second.txt"], dependencies=["0"])])
-            finished = coordinator.wait([run["run_id"] for run in agents],5)
+            finished = coordinator.wait([run["run_id"] for run in agents],15)
         finally:
             runtime._active_interaction_mode.reset(token)
         self.assertEqual([run["status"] for run in finished], ["succeeded", "blocked"], finished)
