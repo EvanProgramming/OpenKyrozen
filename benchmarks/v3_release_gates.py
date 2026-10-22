@@ -184,6 +184,14 @@ def _current_candidate(repo: Path) -> str:
     return head
 
 
+def _require_outside_checkout(path: Path, repo: Path, label: str) -> None:
+    try:
+        path.relative_to(repo)
+    except ValueError:
+        return
+    raise ValueError(f"{label} must be outside the candidate checkout")
+
+
 def _write_signed_manifest(manifest: dict, destination: Path) -> None:
     destination = destination.resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -214,9 +222,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        candidate = _current_candidate(args.repo.resolve())
-        manifest = validate_evidence_bundle(args.evidence_dir, candidate, verify_signature=_gpg_verify)
-        _write_signed_manifest(manifest, args.manifest)
+        repo = args.repo.resolve(strict=True)
+        evidence_dir = args.evidence_dir.resolve(strict=True)
+        manifest_path = args.manifest.resolve()
+        _require_outside_checkout(evidence_dir, repo, "evidence directory")
+        _require_outside_checkout(manifest_path, repo, "manifest")
+        candidate = _current_candidate(repo)
+        manifest = validate_evidence_bundle(evidence_dir, candidate, verify_signature=_gpg_verify)
+        _write_signed_manifest(manifest, manifest_path)
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         print(f"release blocked: {exc}", file=sys.stderr)
         return 1

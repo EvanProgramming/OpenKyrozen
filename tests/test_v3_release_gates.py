@@ -84,6 +84,24 @@ class V3ReleaseGateTests(unittest.TestCase):
             self.assertFalse(manifest.exists())
             self.assertFalse(manifest.with_name("manifest.json.asc").exists())
 
+    def test_main_rejects_evidence_and_manifest_paths_inside_candidate_checkout(self):
+        for evidence_inside in (True, False):
+            with self.subTest(evidence_inside=evidence_inside), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                repo = root / "repo"
+                repo.mkdir()
+                records, candidate = self.create_bundle(repo if evidence_inside else root)
+                evidence_dir = records
+                manifest = (root / "manifest.json") if evidence_inside else (repo / "manifest.json")
+                with patch("benchmarks.v3_release_gates._current_candidate", return_value=candidate), \
+                        patch("benchmarks.v3_release_gates._gpg_verify", return_value=True), \
+                        redirect_stderr(io.StringIO()):
+                    status = main(["--repo", str(repo), "--evidence-dir", str(evidence_dir),
+                                   "--manifest", str(manifest)])
+                self.assertEqual(status, 1)
+                self.assertFalse(manifest.exists())
+                self.assertFalse(manifest.with_name("manifest.json.asc").exists())
+
     def test_rejects_stale_candidate_failed_gate_or_bad_signature(self):
         for mutate, expected, verifier in (
             (lambda gate, record, _: record.update(candidate_sha="b" * 40), "candidate SHA", lambda *_: True),
