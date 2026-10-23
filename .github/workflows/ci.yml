@@ -336,6 +336,8 @@ jobs:
           set -euo pipefail
           PYTHONPATH=tests python -m unittest tests.test_durable_tasks_gateway tests.test_gateway_startup_logging -v 2>&1 | tee integration.log
       - name: Run supported-feature workflow and TUI acceptance
+        env:
+          PYTHONIOENCODING: utf-8
         shell: bash
         run: |
           set -euo pipefail
