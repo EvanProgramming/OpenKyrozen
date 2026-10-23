@@ -438,7 +438,7 @@ def _initial_plan(fixture: dict) -> list[str] | dict:
 
 
 # The prior campaign ledger is unavailable, so retain its full US$10 cap.
-PRIOR_CAMPAIGN_HOLD_RMB = "66.759"
+PRIOR_CAMPAIGN_HOLD_RMB = "66.7135"
 
 
 def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
