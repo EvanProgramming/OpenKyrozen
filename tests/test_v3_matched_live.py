@@ -13,8 +13,8 @@ from benchmarks.v3_matched import BudgetLedger, _cost
 
 
 class V3MatchedLiveTests(unittest.TestCase):
-    def test_prior_campaign_hold_includes_latest_unknown_usage_reservations(self):
-        self.assertEqual(PRIOR_CAMPAIGN_HOLD_RMB, "6.880523966708")
+    def test_prior_campaign_hold_reserves_full_missing_ledger_cap(self):
+        self.assertEqual(PRIOR_CAMPAIGN_HOLD_RMB, "66.759")
 
     def test_resume_retries_worker_failures_even_with_complete_usage(self):
         failed = {"worker_result_complete": True, "usage_complete": True,

@@ -437,7 +437,8 @@ def _initial_plan(fixture: dict) -> list[str] | dict:
                        "effects": ["read_only", "filesystem", "internal"], "risk_ceiling": "normal"}}
 
 
-PRIOR_CAMPAIGN_HOLD_RMB = "6.880523966708"
+# The prior campaign ledger is unavailable, so retain its full US$10 cap.
+PRIOR_CAMPAIGN_HOLD_RMB = "66.759"
 
 
 def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
