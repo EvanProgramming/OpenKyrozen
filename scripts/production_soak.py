@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import io
 import hashlib
 from importlib import metadata
@@ -113,6 +114,11 @@ def _process_snapshot(pid: int) -> dict[str, int]:
     return {'rss_bytes': rss, 'threads': threads, 'open_handles': handles}
 
 
+def _handle_limit(initial_handles: int) -> int:
+    # Windows starts with more runtime handles; bound growth rather than its baseline.
+    return initial_handles + 100 if platform.system() == 'Windows' else 99
+
+
 def candidate_identity() -> dict:
     tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).split(b"\0")
     tracked = sorted(set(tracked) | {b"tests/test_gateway_startup_logging.py", b"scripts/production_soak.py"})
@@ -152,8 +158,10 @@ def run(seconds: float, log_dir: Path) -> dict:
         try:
             process, url = start_gateway(workspace, db, root / 'skills',
                                                  log_path=log_dir / f'gateway-{restarts:03d}.log')
-            initial_rss = _process_snapshot(process.pid)['rss_bytes']
+            initial = _process_snapshot(process.pid)
+            initial_rss = initial['rss_bytes']
             generation_rss = initial_rss
+            generation_handles = initial['open_handles']
             def task(session):
                 marker = f'{session}-{cycles}.txt'
                 created = gateway._request(url, '/api/v2/tasks', method='POST', body={
@@ -173,17 +181,21 @@ def run(seconds: float, log_dir: Path) -> dict:
             while time.monotonic() - started < seconds:
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     list(pool.map(task, ('soak-a', 'soak-b')))
-                with sqlite3.connect(db) as connection:
-                    count, unique = connection.execute('SELECT count(*), count(DISTINCT id) FROM tasks').fetchone()
-                    assert count == unique == (cycles + 1) * 2, (count, unique, cycles)
-                    assert connection.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
-                    assert not connection.execute('PRAGMA foreign_key_check').fetchall()
+                with closing(sqlite3.connect(db)) as connection:
+                    with connection:
+                        count, unique = connection.execute('SELECT count(*), count(DISTINCT id) FROM tasks').fetchone()
+                        assert count == unique == (cycles + 1) * 2, (count, unique, cycles)
+                        assert connection.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+                        assert not connection.execute('PRAGMA foreign_key_check').fetchall()
                 current = _process_snapshot(process.pid)
                 rss = current['rss_bytes']
                 assert rss <= generation_rss + 256 * 1024 * 1024, 'gateway grew by more than 256 MiB in one generation'
-                measurements.append({'cycle': cycles, **current})
+                measurements.append({'cycle': cycles, 'handle_baseline': generation_handles, **current})
                 assert current['threads'] < 80, 'unbounded gateway thread growth'
-                assert current['open_handles'] < 100, 'unbounded gateway handle growth'
+                assert current['open_handles'] <= _handle_limit(generation_handles), (
+                    f"gateway handle growth exceeded its bound: baseline={generation_handles}, "
+                    f"current={current['open_handles']}"
+                )
                 cycles += 1
                 if cycles % 6 == 0:
                     suite = unittest.defaultTestLoader.loadTestsFromNames([
@@ -199,7 +211,9 @@ def run(seconds: float, log_dir: Path) -> dict:
                     assert not tracked & set(_process_table()), 'orphan gateway child'
                     process, url = start_gateway(workspace, db, root / 'skills',
                                                          log_path=log_dir / f'gateway-{restarts + 1:03d}.log')
-                    generation_rss = _process_snapshot(process.pid)['rss_bytes']
+                    initial = _process_snapshot(process.pid)
+                    generation_rss = initial['rss_bytes']
+                    generation_handles = initial['open_handles']
                     restarts += 1
                     for session in ('soak-a', 'soak-b'):
                         tasks = gateway._request(url, f'/api/v2/tasks?session_id={session}')['tasks']

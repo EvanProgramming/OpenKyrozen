@@ -31,6 +31,12 @@ class ProductionSoakProcessTests(unittest.TestCase):
             self.assertEqual(production_soak._process_snapshot(10),
                              {"rss_bytes": 4096, "threads": 3, "open_handles": 8})
 
+    def test_handle_bound_uses_windows_growth_and_preserves_posix_cap(self):
+        with patch("scripts.production_soak.platform.system", return_value="Windows"):
+            self.assertEqual(production_soak._handle_limit(125), 225)
+        with patch("scripts.production_soak.platform.system", return_value="Linux"):
+            self.assertEqual(production_soak._handle_limit(125), 99)
+
     def test_current_platform_process_probe_returns_bounded_resource_counts(self):
         snapshot = production_soak._process_snapshot(os.getpid())
 
