@@ -576,7 +576,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         started = time.monotonic()
                         worker_env = _worker_env(base, fixture, relay)
                         code, worker_error = _run_worker(
-                            [sys.executable, str(repo / "benchmarks" / "prompt_worker.py"),
+                            [sys.executable, str(source / "benchmarks" / "prompt_worker.py"),
                              "--source", str(arm_source), "--workspace", str(workspace),
                              "--url", relay.url, "--model", MODEL, "--protocol", "responses",
                              "--prompt-file", str(prompt_file), "--plan-file", str(plan_file),

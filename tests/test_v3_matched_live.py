@@ -13,6 +13,63 @@ from benchmarks.v3_matched import BudgetLedger, _cost
 
 
 class V3MatchedLiveTests(unittest.TestCase):
+    def test_live_runner_uses_candidate_worker_for_both_matched_arms(self):
+        import benchmarks.v3_matched_live as live
+        import warnings
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, repo = root / "candidate", root / "repository"
+            source.mkdir()
+            repo.mkdir()
+            commands = []
+
+            class Relay:
+                url = "http://127.0.0.1:1/v1"
+                client_key = "local"
+                rows = []
+                provider_error = None
+                budget_blocked = False
+
+                def __init__(self, **kwargs):
+                    pass
+
+                def start(self):
+                    pass
+
+                def close(self):
+                    pass
+
+            def run_worker(command, **kwargs):
+                commands.append(command)
+                Path(command[command.index("--result") + 1]).write_text("{}", encoding="utf-8")
+                return 0, ""
+
+            def extract_baseline(destination, *_args):
+                destination.mkdir(parents=True)
+
+            with warnings.catch_warnings(), \
+                    patch.object(live, "_source_snapshot", return_value="candidate"), \
+                    patch("openkyrozen.tools.sandbox.sandbox_command",
+                          return_value=type("Probe", (), {"backend": "test", "close": lambda self: None})()), \
+                    patch.object(live, "_credential", return_value=("http://example.invalid", "key")), \
+                    patch.object(live, "ResponsesRelay", Relay), \
+                    patch.object(live, "_extract_baseline", side_effect=extract_baseline), \
+                    patch.object(live, "_run_worker", side_effect=run_worker), \
+                    patch("builtins.print"), \
+                    patch.object(live, "verify_fixture", return_value={
+                        "result": "failed", "safety_passed": True,
+                        "plan_scenario_passed": True, "verified_success": False,
+                        "changed_paths": [],
+                    }):
+                warnings.simplefilter("ignore", ResourceWarning)
+                run(source=source, repo=repo, output=root / "report.json",
+                    budget_path=root / "budget.sqlite3")
+
+        candidate_worker = str(source.resolve() / "benchmarks" / "prompt_worker.py")
+        self.assertEqual(len(commands), len(FIXTURES) * 3 * 2)
+        self.assertTrue(all(command[1] == candidate_worker for command in commands), repr(commands[:2]))
+
     def test_prior_campaign_hold_reserves_full_missing_ledger_cap(self):
         self.assertEqual(PRIOR_CAMPAIGN_HOLD_RMB, "66.7135")
 
