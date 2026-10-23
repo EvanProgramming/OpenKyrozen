@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -36,6 +38,24 @@ class ProductionSoakProcessTests(unittest.TestCase):
             self.assertEqual(production_soak._handle_limit(125), 225)
         with patch("scripts.production_soak.platform.system", return_value="Linux"):
             self.assertEqual(production_soak._handle_limit(125), 99)
+
+    def test_durable_task_wait_allows_sqlite_busy_timeout_under_load(self):
+        class Gateway:
+            statuses = iter(("running", "succeeded"))
+
+            def _request(self, *_args, **_kwargs):
+                return {"tasks": [{"id": "task-1", "session_id": "soak-a",
+                                   "status": next(self.statuses)}]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            (workspace / "soak-a-29.txt").write_text("soak-a:29")
+            with patch("scripts.production_soak.time.monotonic", side_effect=(0, 16, 17)), \
+                 patch("scripts.production_soak.time.sleep"):
+                production_soak._wait_for_task_completion(
+                    Gateway(), "http://localhost", workspace, "soak-a", 29,
+                    "soak-a-29.txt", "task-1",
+                )
 
     def test_current_platform_process_probe_returns_bounded_resource_counts(self):
         snapshot = production_soak._process_snapshot(os.getpid())

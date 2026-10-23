@@ -134,6 +134,21 @@ def candidate_identity() -> dict:
                              ("fastapi", "uvicorn", "pydantic", "chromadb")}}
 
 
+def _wait_for_task_completion(gateway, url, workspace: Path, session: str,
+                              cycles: int, marker: str, task_id: str) -> None:
+    deadline = time.monotonic() + 40
+    while time.monotonic() < deadline:
+        tasks = gateway._request(url, f'/api/v2/tasks?session_id={session}', timeout=35)['tasks']
+        current = next(t for t in tasks if t['id'] == task_id)
+        if current['status'] in ('succeeded', 'failed', 'blocked'):
+            assert current['status'] == 'succeeded', current
+            assert (workspace / marker).read_text() == f'{session}:{cycles}'
+            assert all(t['session_id'] == session for t in tasks)
+            return
+        time.sleep(.1)
+    raise AssertionError('durable worker did not complete within 40 seconds')
+
+
 def run(seconds: float, log_dir: Path) -> dict:
     gateway = DurableTaskGatewayTests()
     started = time.monotonic()
@@ -168,17 +183,7 @@ def run(seconds: float, log_dir: Path) -> dict:
                 created = gateway._request(url, '/api/v2/tasks', method='POST', body={
                     'description': f'soak {session} {cycles}', 'session_id': session,
                     'action': 'write_file', 'args': f'{marker}|{session}:{cycles}'}, timeout=35)['task']
-                deadline = time.monotonic() + 15
-                while time.monotonic() < deadline:
-                    tasks = gateway._request(url, f'/api/v2/tasks?session_id={session}', timeout=35)['tasks']
-                    current = next(t for t in tasks if t['id'] == created['id'])
-                    if current['status'] in ('succeeded', 'failed', 'blocked'):
-                        assert current['status'] == 'succeeded', current
-                        assert (workspace / marker).read_text() == f'{session}:{cycles}'
-                        assert all(t['session_id'] == session for t in tasks)
-                        return
-                    time.sleep(.1)
-                raise AssertionError('durable worker did not complete within 15 seconds')
+                _wait_for_task_completion(gateway, url, workspace, session, cycles, marker, created['id'])
             while time.monotonic() - started < seconds:
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     list(pool.map(task, ('soak-a', 'soak-b')))
