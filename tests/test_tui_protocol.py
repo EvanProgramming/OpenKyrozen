@@ -490,10 +490,11 @@ class TUIProtocolTests(unittest.TestCase):
         thread = threading.Thread(target=lambda: result.setdefault("approved", self.backend._approval(request)))
         thread.start()
         deadline = time.monotonic() + 1
-        while "request_id" not in self.output.getvalue() and time.monotonic() < deadline:
+        while "approval_detail_complete" not in self.output.getvalue() and time.monotonic() < deadline:
             time.sleep(0.005)
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
         event = events[0]
+        self.assertTrue(any(item.get("event") == "approval_detail_complete" for item in events))
         self.assertEqual(event["request_id"], request.request_id)
         encoded = event["args"] + "".join(item.get("text", "") for item in events[1:])
         displayed = json.loads(encoded)

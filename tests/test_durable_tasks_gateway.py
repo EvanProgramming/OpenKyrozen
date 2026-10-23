@@ -23,7 +23,8 @@ class DurableTaskGatewayTests(unittest.TestCase):
             return int(sock.getsockname()[1])
 
     @staticmethod
-    def _request(base_url: str, path: str, *, method: str = "GET", body: dict | None = None) -> dict:
+    def _request(base_url: str, path: str, *, method: str = "GET", body: dict | None = None,
+                 timeout: float = 5) -> dict:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         request = urllib.request.Request(
             base_url + path,
@@ -32,7 +33,7 @@ class DurableTaskGatewayTests(unittest.TestCase):
             headers={"Content-Type": "application/json", "Authorization": "Bearer durable-test-token"},
         )
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(request, timeout=5) as response:
+        with opener.open(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def _start_server(self, workspace: Path, db_path: Path, skills_path: Path, *, log_path: Path | None = None, startup_timeout: float = 20) -> tuple[subprocess.Popen, str]:

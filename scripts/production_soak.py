@@ -164,12 +164,13 @@ def run(seconds: float, log_dir: Path) -> dict:
             generation_handles = initial['open_handles']
             def task(session):
                 marker = f'{session}-{cycles}.txt'
+                # Match SQLite's 30-second busy timeout, with a small HTTP margin.
                 created = gateway._request(url, '/api/v2/tasks', method='POST', body={
                     'description': f'soak {session} {cycles}', 'session_id': session,
-                    'action': 'write_file', 'args': f'{marker}|{session}:{cycles}'})['task']
+                    'action': 'write_file', 'args': f'{marker}|{session}:{cycles}'}, timeout=35)['task']
                 deadline = time.monotonic() + 15
                 while time.monotonic() < deadline:
-                    tasks = gateway._request(url, f'/api/v2/tasks?session_id={session}')['tasks']
+                    tasks = gateway._request(url, f'/api/v2/tasks?session_id={session}', timeout=35)['tasks']
                     current = next(t for t in tasks if t['id'] == created['id'])
                     if current['status'] in ('succeeded', 'failed', 'blocked'):
                         assert current['status'] == 'succeeded', current
