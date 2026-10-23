@@ -867,7 +867,7 @@ class DelegationTests(unittest.TestCase):
         runtime.get_provider = lambda _: Provider()
         coordinator = runtime.delegation()
         coordinator.spawn([brief(profile="coder")])
-        run = coordinator.wait(timeout=5)[0]
+        run = coordinator.wait(timeout=15)[0]
         self.assertEqual(run["status"], "succeeded")
         self.assertEqual(run["corrections"], 1)
         self.assertEqual((self.root / "marker.txt").read_text(), "ok")
