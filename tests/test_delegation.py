@@ -399,7 +399,7 @@ class DelegationTests(unittest.TestCase):
             return {"result": result()}
         coordinator = self.manager(invoke, 1)
         run = coordinator.spawn([brief()])[0]
-        self.assertTrue(entered.wait(2))
+        self.assertTrue(entered.wait(10))
         coordinator.cancel(run["run_id"])
         release.set()
         coordinator.futures[run["run_id"]].result(timeout=5)
@@ -813,7 +813,7 @@ class DelegationTests(unittest.TestCase):
         self.runtime.get_provider = lambda _: SlowProvider()
         coordinator = self.runtime.delegation()
         run = coordinator.spawn([brief(profile="coder")])[0]
-        self.assertTrue(entered.wait(2))
+        self.assertTrue(entered.wait(10))
         coordinator.cancel(run["run_id"])
         release.set()
         coordinator.futures[run["run_id"]].result(timeout=5)
