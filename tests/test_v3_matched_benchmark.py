@@ -16,17 +16,17 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         self.assertEqual(PRICING["cache_read_usd_per_million"], "0.0033")
         self.assertEqual(PRICING["usd_cny"], "6.67135")
 
-    def test_default_budget_is_the_ten_dollar_cap_at_recorded_fx(self):
+    def test_default_budget_is_the_twenty_dollar_cap_at_recorded_fx(self):
         from benchmarks.v3_matched import MAX_LIMIT_RMB, MAX_LIMIT_USD, USD_CNY
 
         with tempfile.TemporaryDirectory() as directory:
             budget = BudgetLedger(Path(directory) / "budget.sqlite3")
             self.assertEqual(budget.remaining_rmb, MAX_LIMIT_RMB)
-            self.assertEqual(MAX_LIMIT_USD, Decimal("10"))
-            self.assertEqual(budget.remaining_rmb, 10 * USD_CNY)
+            self.assertEqual(MAX_LIMIT_USD, Decimal("20"))
+            self.assertEqual(budget.remaining_rmb, 20 * USD_CNY)
             self.assertEqual(BudgetLedger(Path(directory) / "limit.sqlite3", limit_rmb="33.3795").remaining_rmb,
                              Decimal("33.3795"))
-            for limit in ("0", "66.7591", "67"):
+            for limit in ("0", "133.4271", "134"):
                 with self.assertRaises(ValueError):
                     BudgetLedger(Path(directory) / f"{limit}.sqlite3", limit_rmb=limit)
 
@@ -39,11 +39,13 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
             self.assertEqual(budget.remaining_rmb, 0)
             self.assertFalse(budget.reserve("new-attempt", input_token_bound=1, output_token_bound=1))
 
-    def test_missing_prior_campaign_ledger_reserves_its_entire_ten_dollar_cap(self):
+    def test_missing_prior_campaign_ledger_reserves_all_accounted_prior_spend(self):
         from benchmarks.v3_matched_live import PRIOR_CAMPAIGN_HOLD_RMB
-
-        from benchmarks.v3_matched import MAX_LIMIT_RMB
-        self.assertEqual(Decimal(PRIOR_CAMPAIGN_HOLD_RMB), MAX_LIMIT_RMB)
+        from benchmarks.v3_matched import MAX_LIMIT_RMB, USD_CNY
+        prior_spend = Decimal("10.20")
+        self.assertEqual(Decimal(PRIOR_CAMPAIGN_HOLD_RMB), prior_spend * USD_CNY)
+        self.assertEqual(MAX_LIMIT_RMB - Decimal(PRIOR_CAMPAIGN_HOLD_RMB),
+                         (Decimal("20") - prior_spend) * USD_CNY)
 
     def test_cap_reduction_preserves_existing_reservations(self):
         with tempfile.TemporaryDirectory() as directory:

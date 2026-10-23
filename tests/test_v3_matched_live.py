@@ -70,9 +70,10 @@ class V3MatchedLiveTests(unittest.TestCase):
         self.assertEqual(len(commands), len(FIXTURES) * 3 * 2)
         self.assertTrue(all(command[1] == candidate_worker for command in commands), repr(commands[:2]))
 
-    def test_prior_campaign_hold_reserves_full_missing_ledger_cap(self):
-        from benchmarks.v3_matched import MAX_LIMIT_RMB
-        self.assertEqual(PRIOR_CAMPAIGN_HOLD_RMB, str(MAX_LIMIT_RMB))
+    def test_prior_campaign_hold_reserves_all_accounted_prior_spend(self):
+        from decimal import Decimal
+        from benchmarks.v3_matched import USD_CNY
+        self.assertEqual(Decimal(PRIOR_CAMPAIGN_HOLD_RMB), Decimal("10.20") * USD_CNY)
 
     def test_resume_retries_worker_failures_even_with_complete_usage(self):
         failed = {"worker_result_complete": True, "usage_complete": True,
