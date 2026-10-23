@@ -240,6 +240,19 @@ class V3ReleaseGateTests(unittest.TestCase):
                             and item["tui_interactive_acceptance"] == "not_run_posix_pty_unavailable"
                             for item in windows))
 
+    def test_production_gate_requires_explicit_windows_tui_unavailable_status(self):
+        for mutation in (
+            lambda item: item.pop("tui_interactive_acceptance"),
+            lambda item: item.update(tui_interactive_acceptance="failed"),
+        ):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                records, candidate = self.create_bundle(Path(directory), mutate=lambda gate, record, _: [
+                    mutation(item) for item in record["platform_results"]
+                    if item["platform"].startswith("windows-")
+                ] if gate == "R266" else None)
+                with self.assertRaisesRegex(ValueError, "platform validation failed"):
+                    validate_evidence_bundle(records, candidate, verify_signature=lambda *_: True)
+
     def test_each_production_platform_requires_linked_hashed_evidence(self):
         for mutation in (
             lambda record: record["platform_results"][0].pop("evidence_paths"),

@@ -107,6 +107,7 @@ def _check_record(record: object, gate_id: str, candidate_sha: str, evidence_dir
                     or item.get("integration") != "not_run"
                     or item.get("supported_features") != "passed"
                     or item.get("acceptance") != "passed"
+                    or item.get("tui_interactive_acceptance") != "not_run_posix_pty_unavailable"
                 )
             else:
                 checks_failed = any(item.get(check) != "passed"
