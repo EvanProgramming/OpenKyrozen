@@ -100,10 +100,13 @@ def collect_platform_evidence(results_dir: Path, output_dir: Path, candidate_sha
                 raise ValueError(f"{platform}: candidate SHA or platform does not match")
             if platform.startswith("windows-"):
                 if (result.get("unit") != "not_run" or result.get("integration") != "not_run"
-                        or result.get("supported_features") != "passed"):
+                        or result.get("supported_features") != "passed"
+                        or result.get("tui_interactive_acceptance") != "not_run_posix_pty_unavailable"):
                     raise ValueError(f"{platform}: supported-feature acceptance did not pass")
             elif any(result.get(check) != "passed" for check in ("unit", "integration")):
                 raise ValueError(f"{platform}: platform validation did not pass (unit/integration)")
+            elif result.get("tui_interactive_acceptance") != "passed":
+                raise ValueError(f"{platform}: interactive TUI acceptance did not pass")
             if result.get("acceptance") != "passed":
                 raise ValueError(f"{platform}: platform validation did not pass (acceptance)")
             soak_seconds = result.get("soak_seconds")
@@ -139,6 +142,7 @@ def collect_platform_evidence(results_dir: Path, output_dir: Path, candidate_sha
                 "environment": environment,
                 "dependencies": dependencies,
                 **({"supported_features": "passed"} if platform.startswith("windows-") else {}),
+                "tui_interactive_acceptance": result["tui_interactive_acceptance"],
             })
 
         command_relative = (Path("commands") / command_set.name).as_posix()

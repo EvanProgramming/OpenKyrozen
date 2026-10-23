@@ -346,7 +346,11 @@ jobs:
           binary="../kyrozen-tui"
           if [[ "$RUNNER_OS" == Windows ]]; then binary="../kyrozen-tui.exe"; fi
           (cd tui && go test ./... && go build -o "$binary" .) 2>&1 | tee tui-tests.log
-          python scripts/tui_workflow_acceptance.py "${binary#../}" 2>&1 | tee tui-acceptance.log
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            echo 'not_run: interactive PTY acceptance requires POSIX fcntl/pty; Windows Go TUI tests/build and agent workflow acceptance are required.' | tee tui-acceptance.log
+          else
+            python scripts/tui_workflow_acceptance.py "${binary#../}" 2>&1 | tee tui-acceptance.log
+          fi
       - name: Run 30-minute production soak
         shell: bash
         run: |
@@ -376,6 +380,7 @@ jobs:
               "unit": "not_run" if os.environ["RUNNER_OS"] == "Windows" else "passed",
               "integration": "not_run" if os.environ["RUNNER_OS"] == "Windows" else "passed",
               "acceptance": "passed",
+              "tui_interactive_acceptance": "not_run_posix_pty_unavailable" if os.environ["RUNNER_OS"] == "Windows" else "passed",
               "soak_seconds": int(soak["elapsed_seconds"]),
               "environment": {
                   "runner": os.environ["ImageOS"] if "ImageOS" in os.environ else os.environ["RUNNER_OS"],

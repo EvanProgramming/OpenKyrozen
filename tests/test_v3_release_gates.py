@@ -48,11 +48,13 @@ class V3ReleaseGateTests(unittest.TestCase):
                     platform_result = {
                         "platform": platform, "unit": "passed", "integration": "passed",
                         "acceptance": "passed", "soak_seconds": 1800,
+                        "tui_interactive_acceptance": "passed",
                         "evidence_paths": [platform_artifact.name],
                     }
                     if platform.startswith("windows-"):
                         platform_result.update(unit="not_run", integration="not_run",
-                                                supported_features="passed")
+                                                supported_features="passed",
+                                                tui_interactive_acceptance="not_run_posix_pty_unavailable")
                     record["platform_results"].append(platform_result)
             if mutate:
                 mutate(gate_id, record, artifact)
@@ -235,6 +237,7 @@ class V3ReleaseGateTests(unittest.TestCase):
         self.assertTrue(all(item["unit"] == "not_run"
                             and item["integration"] == "not_run"
                             and item["supported_features"] == "passed"
+                            and item["tui_interactive_acceptance"] == "not_run_posix_pty_unavailable"
                             for item in windows))
 
     def test_each_production_platform_requires_linked_hashed_evidence(self):

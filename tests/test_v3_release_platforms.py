@@ -16,9 +16,9 @@ class V3ReleasePlatformsTests(unittest.TestCase):
         for platform in REQUIRED_PLATFORMS:
             directory = results / f"v3-platform-{platform}"
             directory.mkdir()
-            names = ("unit.log", "acceptance.log", "soak.json")
+            names = ("unit.log", "acceptance.log", "soak.json", "tui-acceptance.log")
             if platform.startswith("windows-"):
-                names = ("acceptance.log", "soak.json", "supported-features.log")
+                names = ("acceptance.log", "soak.json", "supported-features.log", "tui-acceptance.log")
             for name in names:
                 (directory / name).write_text(f"{platform}:{name}\n", encoding="utf-8")
             record = {
@@ -28,15 +28,17 @@ class V3ReleasePlatformsTests(unittest.TestCase):
                 "unit": "passed",
                 "integration": "passed",
                 "acceptance": "passed",
+                "tui_interactive_acceptance": "passed",
                 "soak_seconds": 1800,
                 "environment": {"runner": "github", "os": platform.split("-")[0],
                                 "python": f"3.{platform[-2:]}.0"},
                 "dependencies": {"python": f"3.{platform[-2:]}.0"},
-                "evidence_paths": ["unit.log", "acceptance.log", "soak.json"],
+                "evidence_paths": ["unit.log", "acceptance.log", "tui-acceptance.log", "soak.json"],
             }
             if platform.startswith("windows-"):
-                record["evidence_paths"] = ["acceptance.log", "soak.json", "supported-features.log"]
-                record.update(unit="not_run", integration="not_run", supported_features="passed")
+                record["evidence_paths"] = ["acceptance.log", "soak.json", "supported-features.log", "tui-acceptance.log"]
+                record.update(unit="not_run", integration="not_run", supported_features="passed",
+                              tui_interactive_acceptance="not_run_posix_pty_unavailable")
             if mutate:
                 mutate(platform, record)
             (directory / "platform.json").write_text(json.dumps(record), encoding="utf-8")
@@ -54,14 +56,14 @@ class V3ReleasePlatformsTests(unittest.TestCase):
             self.assertEqual(record["candidate_sha"], candidate)
             self.assertEqual({row["platform"] for row in record["platform_results"]},
                              set(REQUIRED_PLATFORMS))
-            self.assertEqual(len(record["evidence"]), 24)
+            self.assertEqual(len(record["evidence"]), 30)
             self.assertEqual(record["command_set_sha256"], hashlib.sha256(
                 (output / record["command_set_path"]).read_bytes()).hexdigest())
             self.assertEqual(record["fixture_set_sha256"], hashlib.sha256(
                 (output / record["fixture_set_path"]).read_bytes()).hexdigest())
             self.assertTrue((output / "R266.json").is_file())
             self.assertFalse((output / "R266.json.asc").exists())
-            self.assertEqual(len(_check_record(record, "R266", candidate, output.resolve())), 24)
+            self.assertEqual(len(_check_record(record, "R266", candidate, output.resolve())), 30)
 
     def test_windows_uses_supported_feature_acceptance_without_full_python_suites(self):
         def supported_windows(platform, record):
@@ -80,6 +82,7 @@ class V3ReleasePlatformsTests(unittest.TestCase):
             self.assertTrue(all(row["unit"] == "not_run"
                                 and row["integration"] == "not_run"
                                 and row["supported_features"] == "passed"
+                                and row["tui_interactive_acceptance"] == "not_run_posix_pty_unavailable"
                                 for row in windows))
 
     def test_rejects_incomplete_or_stale_platform_results(self):
@@ -87,6 +90,8 @@ class V3ReleasePlatformsTests(unittest.TestCase):
             (lambda platform, record: record.update(candidate_sha="b" * 40), "candidate SHA"),
             (lambda platform, record: record.update(soak_seconds=1799), "30-minute soak"),
             (lambda platform, record: record.update(unit="failed"), "platform validation"),
+            (lambda platform, record: record.pop("tui_interactive_acceptance")
+             if platform.startswith("windows-") else None, "supported-feature acceptance"),
             (lambda platform, record: record["environment"].update(os="Windows"), "OS or Python"),
         ):
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
