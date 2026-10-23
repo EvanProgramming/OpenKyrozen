@@ -440,7 +440,7 @@ jobs:
           merge-multiple: false
       - name: Collect unsigned exact-candidate R266 record
         run: >-
-          python scripts/v3_release_platforms.py
+          python -m benchmarks.v3_release_platforms
           --results-dir platform-results
           --output-dir v3-r266-evidence
           --candidate-sha "$CANDIDATE_SHA"
