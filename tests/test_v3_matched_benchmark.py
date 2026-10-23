@@ -14,19 +14,36 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         self.assertEqual(PRICING["input_usd_per_million"], "0.033")
         self.assertEqual(PRICING["output_usd_per_million"], "0.275")
         self.assertEqual(PRICING["cache_read_usd_per_million"], "0.0033")
-        self.assertEqual(PRICING["usd_cny"], "6.6759")
+        self.assertEqual(PRICING["usd_cny"], "6.67135")
 
     def test_default_budget_is_the_ten_dollar_cap_at_recorded_fx(self):
-        from benchmarks.v3_matched import MAX_LIMIT_RMB, MAX_LIMIT_USD
+        from benchmarks.v3_matched import MAX_LIMIT_RMB, MAX_LIMIT_USD, USD_CNY
 
         with tempfile.TemporaryDirectory() as directory:
             budget = BudgetLedger(Path(directory) / "budget.sqlite3")
             self.assertEqual(budget.remaining_rmb, MAX_LIMIT_RMB)
             self.assertEqual(MAX_LIMIT_USD, Decimal("10"))
-            self.assertEqual(budget.remaining_rmb, 10 * Decimal("6.6759"))
-            for limit in ("0", "66.7591", "134"):
+            self.assertEqual(budget.remaining_rmb, 10 * USD_CNY)
+            self.assertEqual(BudgetLedger(Path(directory) / "limit.sqlite3", limit_rmb="33.3795").remaining_rmb,
+                             Decimal("33.3795"))
+            for limit in ("0", "66.7591", "67"):
                 with self.assertRaises(ValueError):
                     BudgetLedger(Path(directory) / f"{limit}.sqlite3", limit_rmb=limit)
+
+    def test_full_prior_cap_reservation_blocks_additional_requests(self):
+        from benchmarks.v3_matched import MAX_LIMIT_RMB
+
+        with tempfile.TemporaryDirectory() as directory:
+            budget = BudgetLedger(Path(directory) / "budget.sqlite3",
+                                  limit_rmb=MAX_LIMIT_RMB, prior_hold_rmb=MAX_LIMIT_RMB)
+            self.assertEqual(budget.remaining_rmb, 0)
+            self.assertFalse(budget.reserve("new-attempt", input_token_bound=1, output_token_bound=1))
+
+    def test_missing_prior_campaign_ledger_reserves_its_entire_ten_dollar_cap(self):
+        from benchmarks.v3_matched_live import PRIOR_CAMPAIGN_HOLD_RMB
+
+        from benchmarks.v3_matched import MAX_LIMIT_RMB
+        self.assertEqual(Decimal(PRIOR_CAMPAIGN_HOLD_RMB), MAX_LIMIT_RMB)
 
     def test_cap_reduction_preserves_existing_reservations(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -36,12 +53,10 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
                            metadata={"fixture_id": "test", "arm": "v3",
                                      "reserved_rmb": str(_cost(100_000, 1_000))})
             budget.settle("unknown-attempt", None)
-            with sqlite3.connect(path) as db:
-                db.execute("UPDATE budget_config SET limit_picormb=133518000000000 WHERE id=1")
-            reduced = BudgetLedger(path, prior_hold_rmb="6.652729942234")
+            reduced = BudgetLedger(path, limit_rmb="66.7135", prior_hold_rmb="6.652729942234")
             self.assertEqual(reduced.campaign_calls()[0]["status"], "unknown")
             self.assertAlmostEqual(float(reduced.remaining_rmb),
-                                   float(Decimal("66.759") - Decimal("6.652729942234")
+                                   float(Decimal("66.7135") - Decimal("6.652729942234")
                                          - _cost(100_000, 1_000)))
 
     def test_cap_reduction_rejects_commitments_above_new_cap_atomically(self):
@@ -49,14 +64,14 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
             path = Path(directory) / "budget.sqlite3"
             BudgetLedger(path)
             with sqlite3.connect(path) as db:
-                db.execute("UPDATE budget_config SET limit_picormb=133518000000000 WHERE id=1")
+                db.execute("UPDATE budget_config SET limit_picormb=133427000000000 WHERE id=1")
                 db.execute("INSERT INTO attempts(id,reserved_picormb,status) VALUES('held',66760000000000,'unknown')")
             with self.assertRaisesRegex(ValueError, "commitments exceed the requested cap"):
-                BudgetLedger(path)
+                BudgetLedger(path, limit_rmb="66.7135")
 
             with sqlite3.connect(path) as db:
                 persisted_limit = db.execute("SELECT limit_picormb FROM budget_config").fetchone()[0]
-            self.assertEqual(persisted_limit, 133_518_000_000_000)
+            self.assertEqual(persisted_limit, 133_427_000_000_000)
 
     def test_prior_unknown_campaign_reservations_are_imported_once(self):
         from benchmarks.v3_matched import MAX_LIMIT_RMB

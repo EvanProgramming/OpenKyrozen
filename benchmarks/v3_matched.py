@@ -11,7 +11,7 @@ from pathlib import Path
 from statistics import mean, median
 from benchmarks.v3_fixtures import FIXTURES
 
-USD_CNY = Decimal("6.6759")  # Wise USD/CNY rate, 2026-10-22.
+USD_CNY = Decimal("6.67135")  # Wise USD/CNY rate, 2026-10-23.
 INPUT_RATE = Decimal("0.033") * USD_CNY
 OUTPUT_RATE = Decimal("0.275") * USD_CNY
 CACHE_WRITE_RATE = INPUT_RATE  # No separate cache-write rate is quoted by Panstar.
@@ -21,7 +21,7 @@ MAX_LIMIT_RMB = MAX_LIMIT_USD * USD_CNY
 _MILLION = Decimal(1_000_000)
 _PICORMB = Decimal(1_000_000_000_000)
 PRICING = {"currency": "CNY", "source_currency": "USD", "usd_cny": str(USD_CNY),
-           "fx_source": "Wise USD/CNY historical rate 2026-10-22",
+           "fx_source": "Wise USD/CNY historical rate 2026-10-23",
            "input_usd_per_million": "0.033", "output_usd_per_million": "0.275",
            "cache_write_usd_per_million": "same_as_input", "cache_read_usd_per_million": "0.0033",
            "input_per_million": str(INPUT_RATE),
@@ -53,7 +53,7 @@ class BudgetLedger:
         self.path = Path(path)
         limit = Decimal(limit_rmb)
         prior_hold = Decimal(prior_hold_rmb)
-        if not Decimal(0) < limit <= MAX_LIMIT_RMB or not Decimal(0) <= prior_hold < limit:
+        if not Decimal(0) < limit <= MAX_LIMIT_RMB or not Decimal(0) <= prior_hold <= limit:
             raise ValueError("the cumulative benchmark cap must be at most USD 10 at the recorded exchange rate")
         self.limit_picormb = _picormb(limit)
         self.path.parent.mkdir(parents=True, exist_ok=True)
