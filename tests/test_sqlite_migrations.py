@@ -110,6 +110,15 @@ def _sqlite(path):
 
 
 class SQLiteMigrationTests(unittest.TestCase):
+    def test_each_runtime_connection_uses_the_configured_wal_sync_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = SQLiteDatabase(Path(directory) / "sync.sqlite3")
+
+            with database.connection() as connection:
+                synchronous = connection.execute("PRAGMA synchronous").fetchone()[0]
+
+        self.assertEqual(synchronous, 1)  # NORMAL is configured by SQLiteDatabase initialization.
+
     def _historical_database(self, path: Path, version: int, *, malformed: bool = False) -> None:
         db = sqlite3.connect(path)
         try:

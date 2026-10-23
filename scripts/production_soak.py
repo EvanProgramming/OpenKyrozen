@@ -229,10 +229,25 @@ def run(seconds: float, log_dir: Path) -> dict:
         except Exception as exc:
             # Retain disposable state and progress so a timeout is diagnosable.
             evidence = log_dir / 'failed-state'
-            shutil.copytree(root, evidence)
+            if process is not None:
+                try:
+                    gateway._stop_server(process)
+                except Exception as cleanup_error:
+                    exc.add_note(f'gateway cleanup failed: {type(cleanup_error).__name__}')
+                else:
+                    process = None
+            failed_state = None
+            try:
+                shutil.copytree(root, evidence)
+                failed_state = str(evidence)
+            except OSError as copy_error:
+                exc.add_note(f'failed-state copy failed: {type(copy_error).__name__}')
             exc.soak_report = {'elapsed_seconds': round(time.monotonic()-started, 2),
                                'cycles': cycles, 'tasks': cycles * 2, 'restarts': restarts,
-                               'samples': measurements, 'startup_seconds': startup_seconds, 'startup_timeout_seconds': 60, 'failed_state': str(evidence)}
+                               'samples': measurements, 'startup_seconds': startup_seconds,
+                               'startup_timeout_seconds': 60}
+            if failed_state:
+                exc.soak_report['failed_state'] = failed_state
             raise
         finally:
             if process is not None:
