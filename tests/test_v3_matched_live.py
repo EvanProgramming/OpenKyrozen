@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,7 +65,16 @@ class V3MatchedLiveTests(unittest.TestCase):
                     }):
                 warnings.simplefilter("ignore", ResourceWarning)
                 run(source=source, repo=repo, output=root / "report.json",
-                    budget_path=root / "budget.sqlite3")
+                    budget_path=root / "budget.sqlite3", prior_hold_usd="10.25")
+            with sqlite3.connect(root / "budget.sqlite3") as db:
+                hold = json.loads(db.execute(
+                    "SELECT metadata_json FROM attempts WHERE id='prior-campaign-reservations'"
+                ).fetchone()[0])["prior_cny_reservations"]
+            from benchmarks.v3_matched import USD_CNY
+            from decimal import Decimal
+            self.assertEqual(Decimal(hold), Decimal("10.25") * USD_CNY)
+            self.assertEqual(json.loads((root / "report.json").read_text())[
+                "budget"]["prior_campaign_hold_usd"], "10.25")
 
         candidate_worker = str(source.resolve() / "benchmarks" / "prompt_worker.py")
         self.assertEqual(len(commands), len(FIXTURES) * 3 * 2)
@@ -74,6 +84,15 @@ class V3MatchedLiveTests(unittest.TestCase):
         from decimal import Decimal
         from benchmarks.v3_matched import USD_CNY
         self.assertEqual(Decimal(PRIOR_CAMPAIGN_HOLD_RMB), Decimal("10.20") * USD_CNY)
+
+    def test_invalid_prior_campaign_hold_is_rejected_before_ledger_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("benchmarks.v3_matched_live._source_snapshot", return_value="candidate"):
+                with self.assertRaisesRegex(ValueError, "valid USD amount"):
+                    run(source=root / "src", repo=root, output=root / "report.json",
+                        budget_path=root / "budget.sqlite3", prior_hold_usd="not-money")
+            self.assertFalse((root / "budget.sqlite3").exists())
 
     def test_resume_retries_worker_failures_even_with_complete_usage(self):
         failed = {"worker_result_complete": True, "usage_complete": True,
@@ -365,7 +384,7 @@ class V3MatchedLiveTests(unittest.TestCase):
             with self.subTest(include_completed_row=include_completed_row), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 report, ledger_path = root / "report.json", root / "budget.sqlite3"
-                budget = BudgetLedger(ledger_path, prior_hold_rmb="1")
+                budget = BudgetLedger(ledger_path, prior_hold_rmb=PRIOR_CAMPAIGN_HOLD_RMB)
                 first_key = (fixtures[0]["fixture_id"], 0, "v2")
                 orphan_key = (fixtures[1]["fixture_id"], 0, "v3")
                 keys = [first_key, orphan_key] if include_completed_row else [orphan_key]
@@ -385,12 +404,12 @@ class V3MatchedLiveTests(unittest.TestCase):
                         "cache_read_tokens": 0, "usage_complete": True, "worker_result_complete": True})
                 _write_checkpoint(report, ledger_path, {"protocol": "openkyrozen-v3-matched-live-v1",
                     "candidate_sha": "candidate", "baseline_sha": BASELINE, "model": MODEL,
-                    "repeats": 3, "rows": rows, "calls": []})
+                    "repeats": 3, "prior_campaign_hold_usd": "10.20",
+                    "rows": rows, "calls": []})
                 relay = type("Relay", (), {"rows": []})()
                 from openkyrozen.tools.sandbox import SandboxedCommand
                 probe = SandboxedCommand("true", False, {}, "test")
-                with patch("benchmarks.v3_matched_live.PRIOR_CAMPAIGN_HOLD_RMB", "1"), \
-                     patch("benchmarks.v3_matched_live._source_snapshot", return_value="candidate"), \
+                with patch("benchmarks.v3_matched_live._source_snapshot", return_value="candidate"), \
                         patch("benchmarks.v3_matched_live._credential", return_value=("https://example.invalid", "key")), \
                         patch("openkyrozen.tools.sandbox.sandbox_command", return_value=probe), \
                         patch("benchmarks.v3_matched_live.ResponsesRelay", return_value=relay), \
