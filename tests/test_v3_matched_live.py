@@ -432,7 +432,7 @@ class V3MatchedLiveTests(unittest.TestCase):
                         "cache_read_tokens": 0, "usage_complete": True, "worker_result_complete": True})
                 _write_checkpoint(report, ledger_path, {"protocol": "openkyrozen-v3-matched-live-v1",
                     "candidate_sha": "candidate", "baseline_sha": BASELINE, "model": MODEL,
-                    "repeats": 3, "prior_campaign_hold_usd": "10.22060426",
+                    "repeats": 3, "budget": {"prior_campaign_hold_usd": "10.22060426"},
                     "rows": rows, "calls": []})
                 relay = type("Relay", (), {"rows": []})()
                 from openkyrozen.tools.sandbox import SandboxedCommand
