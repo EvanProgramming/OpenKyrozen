@@ -289,6 +289,7 @@ class AgentRuntime:
         self._session_context = ContextVar("agent_session", default=None)
         self._surface_capability_override = ContextVar("agent_surface_capabilities", default=None)
         self._conversation_turn_id = ContextVar("conversation_turn_id", default=None)
+        self._conversation_append_lock = threading.Lock()
         self._last_model_response = ContextVar("last_model_response", default=None)
         self._record_foreground_model = ContextVar("record_foreground_model", default=False)
         self._turn_completion_status = ContextVar("turn_completion_status", default="completed")
@@ -483,16 +484,17 @@ class AgentRuntime:
     def _record_conversation_entry(self, kind, payload, *, call_id=None, task_id=None, request_id=None):
         history = self.conversation_history
         active_turn = self._conversation_turn_id.get()
-        parent = self._conversation_expected_head.get() if active_turn else history.head
-        entry = history.entry(
-            kind, payload, parent_id=parent, turn_id=self._conversation_turn_id.get(),
-            request_id=request_id or self._last_model_request_id.get(),
-            call_id=call_id, task_id=task_id,
-        )
-        history.append(entry, expected_head=parent)
-        if active_turn:
-            self._conversation_expected_head.set(entry.id)
-        return entry
+        with self._conversation_append_lock:
+            parent = history.head
+            entry = history.entry(
+                kind, payload, parent_id=parent, turn_id=self._conversation_turn_id.get(),
+                request_id=request_id or self._last_model_request_id.get(),
+                call_id=call_id, task_id=task_id,
+            )
+            history.append(entry, expected_head=parent)
+            if active_turn:
+                self._conversation_expected_head.set(entry.id)
+            return entry
 
     def reconcile_conversation_messages(self, messages):
         """Explicit adapter for callers that still supply a replacement message list."""
