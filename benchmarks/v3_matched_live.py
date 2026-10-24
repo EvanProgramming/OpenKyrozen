@@ -510,7 +510,8 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         if (prior.get("protocol") != "openkyrozen-v3-matched-live-v1"
                 or prior.get("candidate_sha") != candidate or prior.get("baseline_sha") != BASELINE
                 or prior.get("model") != MODEL or prior.get("repeats") != repeats
-                or prior.get("prior_campaign_hold_usd") != str(prior_hold)
+                or not isinstance(prior.get("budget"), dict)
+                or prior["budget"].get("prior_campaign_hold_usd") != str(prior_hold)
                 or not isinstance(prior.get("rows"), list) or not isinstance(prior.get("calls"), list)):
             raise ValueError("budget-ledger checkpoint does not match this candidate and cohort")
         rows = prior["rows"]
