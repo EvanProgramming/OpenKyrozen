@@ -38,6 +38,14 @@ class DistributionTests(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertEqual(classify_paths(paths), expected)
 
+    def test_release_evidence_matrix_is_selected_only_for_its_inputs_or_explicit_sha(self):
+        from scripts.ci_changes import requires_release_evidence
+
+        self.assertTrue(requires_release_evidence({".github/workflows/ci.yml"}))
+        self.assertTrue(requires_release_evidence(set(), "a" * 40))
+        self.assertFalse(requires_release_evidence({"docs/development.md"}))
+        self.assertFalse(requires_release_evidence(None))
+
     def test_ci_change_classifier_uses_complete_git_ranges_and_fails_open(self):
         from scripts.ci_changes import changed_paths
 
@@ -112,6 +120,10 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("name: CI result", workflow)
         self.assertIn("scripts/ci_changes.py", workflow)
+        self.assertIn("v3_release_candidate_sha", workflow)
+        self.assertIn("v3-platform-validation:", workflow)
+        self.assertIn("collect-r266:", workflow)
+        self.assertIn("PYTHONPATH=tests python -m unittest tests.test_durable_tasks_gateway", workflow)
         self.assertNotIn("matrix:\n      python-version: [\"3.12\", \"3.13\"]", workflow)
 
     def test_one_shot_release_workflow_is_retired_after_v2_release(self):

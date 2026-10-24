@@ -51,6 +51,11 @@ class MemoryBank:
         view.file_scope_id = self.file_scope_id if file_scope_id is None else file_scope_id
         return view
 
+    def close(self) -> None:
+        close = getattr(self._client, "close", None)
+        if close is not None:
+            close()
+
     @staticmethod
     def _kind_for_text(text: str) -> str:
         prefix = text.split(":", 1)[0].strip().upper()

@@ -7,6 +7,46 @@ import threading
 
 
 class ProcessLifecycleTests(unittest.TestCase):
+    def test_application_close_releases_its_memory_index(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        from openkyrozen.app.bootstrap import build_application
+        from openkyrozen.persistence.store import EventStore
+        from openkyrozen.memory.service import MemoryBank
+
+        class Index:
+            memories = object()
+            files = object()
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        with tempfile.TemporaryDirectory() as root, patch.dict('os.environ', {'KYROZEN_DISABLE_VECTOR_INDEX': '1'}):
+            path = Path(root) / 'state.sqlite3'
+            index = Index()
+            memory = MemoryBank(path, store=EventStore(path), index=index)
+            app = build_application(memory=memory)
+            app.close()
+            self.assertTrue(index.closed)
+
+    def test_unowned_chroma_index_releases_its_client(self):
+        import gc
+        from openkyrozen.memory.vector import ChromaIndex
+
+        class Client:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        index = ChromaIndex.__new__(ChromaIndex)
+        index.client = Client()
+        client = index.client
+        del index
+        gc.collect()
+        self.assertTrue(client.closed)
+
     def test_foreground_shell_cancellation_terminates_process_group(self):
         from openkyrozen.tools import ToolAdapters
         with tempfile.TemporaryDirectory() as root:
