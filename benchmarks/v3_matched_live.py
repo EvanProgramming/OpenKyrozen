@@ -410,6 +410,12 @@ def _row_can_resume_as_complete(row: dict) -> bool:
             and row.get("attempts", 0) > 0 and row.get("worker_exit_code") == 0)
 
 
+def _held_reservations(calls: list[dict]) -> list[dict]:
+    fields = ("attempt_id", "arm", "fixture_id", "repeat", "reserved_rmb", "status")
+    return [{key: call[key] for key in fields if key in call}
+            for call in calls if call.get("status") in {"reserved", "unknown"}]
+
+
 def _workflow_state_correct(fixture: dict, worker: dict) -> bool:
     tasks = worker.get("tasks")
     plan_required = bool(fixture.get("plan_tasks")) or fixture.get("plan_scenario") in {
@@ -438,13 +444,14 @@ def _initial_plan(fixture: dict) -> list[str] | dict:
 
 
 # Preserve prior settled, unknown, and in-flight exposure under the new cumulative cap.
-PRIOR_CAMPAIGN_HOLD_USD = Decimal("10.20")
+# Carry-forward at the last interrupted run; callers must provide the current total.
+PRIOR_CAMPAIGN_HOLD_USD = Decimal("10.22060426")
 PRIOR_CAMPAIGN_HOLD_RMB = str(PRIOR_CAMPAIGN_HOLD_USD * USD_CNY)
 
 
 def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         limit_usd: str = str(MAX_LIMIT_USD), repeats: int = REPEATS,
-        prior_hold_usd: str = str(PRIOR_CAMPAIGN_HOLD_USD),
+        prior_hold_usd: str,
         fixtures: tuple[dict, ...] = FIXTURES) -> dict:
     source, repo = source.resolve(), repo.resolve()
     candidate = _source_snapshot(source)
@@ -633,6 +640,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         if not result_file.exists() and not worker_error:
                             row["worker_error"] = "missing_result"
                         rows.append(row)
+                        held_reservations = _held_reservations(relay.rows)
                         document = {"protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
                                     "baseline_sha": BASELINE, "model": MODEL, "max_output_tokens": MAX_OUTPUT_TOKENS,
                                     "repeats": repeats, "pricing": PRICING,
@@ -668,6 +676,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         finally:
             relay.close()
     summary = summarize(rows)
+    held_reservations = _held_reservations(relay.rows)
     report = {"protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
               "baseline_sha": BASELINE, "model": MODEL, "pricing": PRICING, "repeats": repeats,
               "status": "blocked_provider_error" if relay.provider_error else
@@ -694,7 +703,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--budget-db", type=Path, required=True)
     parser.add_argument("--limit-usd", default=str(MAX_LIMIT_USD))
-    parser.add_argument("--prior-hold-usd", default=str(PRIOR_CAMPAIGN_HOLD_USD))
+    parser.add_argument("--prior-hold-usd", required=True)
     parser.add_argument("--repeats", type=int, default=REPEATS)
     args = parser.parse_args()
     if args.repeats != REPEATS:
