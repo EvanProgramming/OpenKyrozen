@@ -42,7 +42,7 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
     def test_missing_prior_campaign_ledger_reserves_all_accounted_prior_spend(self):
         from benchmarks.v3_matched_live import PRIOR_CAMPAIGN_HOLD_RMB
         from benchmarks.v3_matched import MAX_LIMIT_RMB, USD_CNY
-        prior_spend = Decimal("10.20")
+        prior_spend = Decimal("10.22060426")
         self.assertEqual(Decimal(PRIOR_CAMPAIGN_HOLD_RMB), prior_spend * USD_CNY)
         self.assertEqual(MAX_LIMIT_RMB - Decimal(PRIOR_CAMPAIGN_HOLD_RMB),
                          (Decimal("20") - prior_spend) * USD_CNY)

@@ -28,12 +28,13 @@ class V3MatchedLiveTests(unittest.TestCase):
             class Relay:
                 url = "http://127.0.0.1:1/v1"
                 client_key = "local"
-                rows = []
                 provider_error = None
                 budget_blocked = False
 
                 def __init__(self, **kwargs):
-                    pass
+                    self.rows = [{"attempt_id": "unknown-attempt", "arm": "v2",
+                                  "fixture_id": "investigation-1", "repeat": 0,
+                                  "reserved_rmb": "0.010", "status": "unknown"}]
 
                 def start(self):
                     pass
@@ -75,6 +76,10 @@ class V3MatchedLiveTests(unittest.TestCase):
             self.assertEqual(Decimal(hold), Decimal("10.25") * USD_CNY)
             self.assertEqual(json.loads((root / "report.json").read_text())[
                 "budget"]["prior_campaign_hold_usd"], "10.25")
+            self.assertEqual(json.loads((root / "report.json").read_text())[
+                "held_reservations"], [{"attempt_id": "unknown-attempt", "arm": "v2",
+                    "fixture_id": "investigation-1", "repeat": 0,
+                    "reserved_rmb": "0.010", "status": "unknown"}])
 
         candidate_worker = str(source.resolve() / "benchmarks" / "prompt_worker.py")
         self.assertEqual(len(commands), len(FIXTURES) * 3 * 2)
@@ -83,7 +88,19 @@ class V3MatchedLiveTests(unittest.TestCase):
     def test_prior_campaign_hold_reserves_all_accounted_prior_spend(self):
         from decimal import Decimal
         from benchmarks.v3_matched import USD_CNY
-        self.assertEqual(Decimal(PRIOR_CAMPAIGN_HOLD_RMB), Decimal("10.20") * USD_CNY)
+        self.assertEqual(Decimal(PRIOR_CAMPAIGN_HOLD_RMB), Decimal("10.22060426") * USD_CNY)
+
+    def test_held_reservations_report_in_flight_and_unknown_attempts(self):
+        from benchmarks.v3_matched_live import _held_reservations
+        calls = [{"attempt_id": "reserved", "arm": "v2", "fixture_id": "a", "repeat": 0,
+                  "reserved_rmb": "1", "status": "reserved"},
+                 {"attempt_id": "unknown", "arm": "v3", "fixture_id": "b", "repeat": 1,
+                  "reserved_rmb": "2", "status": "unknown"},
+                 {"attempt_id": "settled", "arm": "v2", "fixture_id": "c", "repeat": 2,
+                  "reserved_rmb": "3", "status": "settled"}]
+        self.assertEqual(_held_reservations(calls), [
+            {key: call[key] for key in ("attempt_id", "arm", "fixture_id", "repeat", "reserved_rmb", "status")}
+            for call in calls[:2]])
 
     def test_invalid_prior_campaign_hold_is_rejected_before_ledger_creation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -92,6 +109,15 @@ class V3MatchedLiveTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "valid USD amount"):
                     run(source=root / "src", repo=root, output=root / "report.json",
                         budget_path=root / "budget.sqlite3", prior_hold_usd="not-money")
+            self.assertFalse((root / "budget.sqlite3").exists())
+
+    def test_prior_campaign_hold_is_required_before_ledger_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("benchmarks.v3_matched_live._source_snapshot", return_value="candidate"):
+                with self.assertRaisesRegex(TypeError, "prior_hold_usd"):
+                    run(source=root / "src", repo=root, output=root / "report.json",
+                        budget_path=root / "budget.sqlite3")
             self.assertFalse((root / "budget.sqlite3").exists())
 
     def test_resume_retries_worker_failures_even_with_complete_usage(self):
@@ -176,7 +202,7 @@ class V3MatchedLiveTests(unittest.TestCase):
                     patch("benchmarks.v3_matched_live._credential", side_effect=AssertionError("credential read")) as credential:
                 with self.assertRaisesRegex(ValueError, "requires an available"):
                     run(source=root / "src", repo=root, output=root / "report.json",
-                        budget_path=root / "budget.sqlite3")
+                        budget_path=root / "budget.sqlite3", prior_hold_usd="10.22060426")
             credential.assert_not_called()
             probe.close.assert_called_once()
 
@@ -353,7 +379,8 @@ class V3MatchedLiveTests(unittest.TestCase):
             with patch("benchmarks.v3_matched_live._source_snapshot", return_value="candidate"):
                 with self.assertRaisesRegex(ValueError, "exact frozen fixture"):
                     run(source=root / "src", repo=root, output=root / "report.json",
-                        budget_path=root / "budget.sqlite3", fixtures=(fixture,) + FIXTURES[1:])
+                        budget_path=root / "budget.sqlite3", prior_hold_usd="10.20",
+                        fixtures=(fixture,) + FIXTURES[1:])
             self.assertFalse((root / "budget.sqlite3").exists())
 
     def test_live_runner_rejects_report_without_its_original_budget_ledger(self):
@@ -363,7 +390,8 @@ class V3MatchedLiveTests(unittest.TestCase):
             report.write_text('{"summary":{"comparison_thresholds_met":true}}', encoding="utf-8")
             with patch("benchmarks.v3_matched_live._source_snapshot", return_value="candidate"):
                 with self.assertRaisesRegex(ValueError, "not pinned"):
-                    run(source=root / "src", repo=root, output=report, budget_path=root / "budget.sqlite3")
+                    run(source=root / "src", repo=root, output=report, budget_path=root / "budget.sqlite3",
+                        prior_hold_usd="10.20")
 
     def test_budget_checkpoint_restores_a_tampered_or_interrupted_report_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -404,7 +432,7 @@ class V3MatchedLiveTests(unittest.TestCase):
                         "cache_read_tokens": 0, "usage_complete": True, "worker_result_complete": True})
                 _write_checkpoint(report, ledger_path, {"protocol": "openkyrozen-v3-matched-live-v1",
                     "candidate_sha": "candidate", "baseline_sha": BASELINE, "model": MODEL,
-                    "repeats": 3, "prior_campaign_hold_usd": "10.20",
+                    "repeats": 3, "prior_campaign_hold_usd": "10.22060426",
                     "rows": rows, "calls": []})
                 relay = type("Relay", (), {"rows": []})()
                 from openkyrozen.tools.sandbox import SandboxedCommand
@@ -415,7 +443,8 @@ class V3MatchedLiveTests(unittest.TestCase):
                         patch("benchmarks.v3_matched_live.ResponsesRelay", return_value=relay), \
                         patch("benchmarks.v3_matched_live._extract_baseline", side_effect=RuntimeError("stop")):
                     with self.assertRaisesRegex(RuntimeError, "stop"):
-                        run(source=root / "src", repo=root, output=report, budget_path=ledger_path)
+                        run(source=root / "src", repo=root, output=report, budget_path=ledger_path,
+                            prior_hold_usd="10.22060426")
                 self.assertEqual({call["attempt_id"] for call in relay.rows},
                                  {f"call-{index}" for index in range(len(keys))})
 
