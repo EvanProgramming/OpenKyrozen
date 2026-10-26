@@ -19,6 +19,34 @@ REQUIRED_PLATFORMS = (
 SIGNER_FINGERPRINT = "D3897E8FF704149D609ACF878C118C04263D2A4C"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+LIMITED_RELEASE_SCOPE = "openkyrozen-v3-preview-linux-macos-sandbox-required-v1"
+WAIVABLE_INCONCLUSIVE_GATES = {"R259", "R262", "R263", "R264"}
+WAIVABLE_FAILURE_CLASSES = {"provider_upstream_error"}
+SAFETY_UNIT_LOGS = tuple(
+    f"platforms/{platform}/unit.log"
+    for platform in ("linux-py312", "linux-py313", "macos-py312", "macos-py313")
+)
+SAFETY_TESTS = {
+    "R259": (
+        "test_apply_patch_is_atomic_stale_safe_and_rejects_ambiguous_hunks",
+        "test_edit_file_requires_matching_hash_and_unique_old_text",
+    ),
+    "R262": (
+        "test_required_unavailable_sandbox_blocks_command_before_execution",
+        "test_installed_but_unusable_backend_blocks_when_sandbox_is_required",
+        "test_linux_sandbox_allows_workspace_writes_and_denies_sibling_writes",
+        "test_macos_sandbox_allows_workspace_writes_and_denies_sibling_writes",
+    ),
+    "R263": (
+        "test_define_tool_text_is_rejected_without_registration",
+        "test_full_capability_profile_does_not_grant_dynamic_registration",
+    ),
+    "R264": (
+        "test_approval_decisions_are_scoped_versioned_history_not_authority",
+        "test_failed_migration_rolls_back_schema_and_version",
+        "test_incompatible_existing_table_rolls_back_migration",
+    ),
+}
 
 
 def _sha256(path: Path) -> str:
@@ -71,8 +99,9 @@ def _check_record(record: object, gate_id: str, candidate_sha: str, evidence_dir
     if result != "passed":
         if not isinstance(record.get("failure_class"), str) or not record["failure_class"].strip():
             raise ValueError(f"{gate_id}: nonpassing evidence requires a failure class")
-        raise ValueError(f"{gate_id}: gate did not pass ({record['failure_class']})")
-    if record.get("failure_class") is not None:
+        if result == "failed":
+            raise ValueError(f"{gate_id}: failed evidence cannot be waived ({record['failure_class']})")
+    elif record.get("failure_class") is not None:
         raise ValueError(f"{gate_id}: passing evidence cannot have a failure class")
     refs = record.get("evidence")
     if not isinstance(refs, list) or not refs:
@@ -123,12 +152,111 @@ def _check_record(record: object, gate_id: str, candidate_sha: str, evidence_dir
     return artifacts
 
 
-def validate_evidence_bundle(evidence_dir: Path, candidate_sha: str, *, verify_signature) -> dict:
-    """Validate every signed gate record and return a manifest bound to candidate_sha."""
+def _verify_safety_logs(gate_id: str, evidence_dir: Path) -> None:
+    for relative in SAFETY_UNIT_LOGS:
+        log = _contained_file(evidence_dir, relative).read_text(encoding="utf-8", errors="replace")
+        if not re.search(r"(?m)^Ran \d+ tests? in [^\n]+$", log) or not re.search(r"(?m)^OK(?: \(skipped=\d+\))?$", log):
+            raise ValueError(f"{gate_id}: safety test evidence is missing or did not pass for {relative}")
+        methods = SAFETY_TESTS[gate_id]
+        if relative.startswith("platforms/linux-"):
+            methods = tuple(method for method in methods if not method.startswith("test_macos_sandbox"))
+        else:
+            methods = tuple(method for method in methods if not method.startswith("test_linux_sandbox"))
+        for method in methods:
+            if not any(line.startswith(method + " (") and line.endswith(" ... ok") for line in log.splitlines()):
+                raise ValueError(f"{gate_id}: safety test evidence is missing or did not pass: {method}")
+
+
+def _check_waiver(gate_id: str, record_path: Path, candidate_sha: str, release_scope: str,
+                  evidence_dir: Path, records: dict, *, verify_signature) -> dict:
+    if gate_id not in WAIVABLE_INCONCLUSIVE_GATES:
+        raise ValueError(f"{gate_id}: inconclusive gate is not waivable")
+    record = records[gate_id]["record"]
+    if record.get("failure_class") not in WAIVABLE_FAILURE_CLASSES:
+        raise ValueError(f"{gate_id}: failure class is non-waivable")
+    waiver_path = _contained_file(evidence_dir, f"waivers/{gate_id}.json")
+    signature_path = _contained_file(evidence_dir, f"waivers/{gate_id}.json.asc")
+    if not verify_signature(waiver_path, signature_path):
+        raise ValueError(f"{gate_id}: waiver signature verification failed")
+    try:
+        waiver = json.loads(waiver_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{gate_id}: invalid waiver JSON: {exc}") from None
+    if not isinstance(waiver, dict) or waiver.get("schema_version") != 1:
+        raise ValueError(f"{gate_id}: unsupported waiver schema")
+    if waiver.get("gate_id") != gate_id:
+        raise ValueError(f"{gate_id}: waiver gate ID does not match its filename")
+    if waiver.get("candidate_sha") != candidate_sha:
+        raise ValueError(f"{gate_id}: waiver candidate SHA does not match the current candidate")
+    if waiver.get("release_scope") != release_scope:
+        raise ValueError(f"{gate_id}: waiver release scope does not match the manifest scope")
+    if waiver.get("approver_identity") != SIGNER_FINGERPRINT:
+        raise ValueError(f"{gate_id}: waiver approver does not match the pinned release owner")
+    if not isinstance(waiver.get("rationale"), str) or not waiver["rationale"].strip():
+        raise ValueError(f"{gate_id}: waiver rationale is required")
+    limitations = waiver.get("limitations")
+    if not isinstance(limitations, list) or not limitations or any(
+            not isinstance(item, str) or not item.strip() for item in limitations):
+        raise ValueError(f"{gate_id}: waiver limitations are required")
+    has_expiry = isinstance(waiver.get("expires_at"), str) and bool(waiver["expires_at"].strip())
+    has_review = isinstance(waiver.get("review_condition"), str) and bool(waiver["review_condition"].strip())
+    if has_expiry == has_review:
+        raise ValueError(f"{gate_id}: specify exactly one waiver expiry or review condition")
+    if has_expiry:
+        try:
+            expiry = datetime.fromisoformat(waiver["expires_at"].replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError(f"{gate_id}: waiver expiry must be an ISO-8601 timestamp") from None
+        if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc):
+            raise ValueError(f"{gate_id}: waiver expiry must be a future timezone-aware timestamp")
+    refs = waiver.get("evidence")
+    if not isinstance(refs, list) or not refs:
+        raise ValueError(f"{gate_id}: waiver evidence references are required")
+    artifacts = []
+    for ref in refs:
+        if not isinstance(ref, dict) or not isinstance(ref.get("sha256"), str) or not _SHA256.fullmatch(ref["sha256"]):
+            raise ValueError(f"{gate_id}: invalid waiver evidence reference")
+        path = _contained_file(evidence_dir, ref.get("path"))
+        actual = _sha256(path)
+        if actual != ref["sha256"]:
+            raise ValueError(f"{gate_id}: waiver evidence hash mismatch for {ref['path']}")
+        artifacts.append({"path": path.relative_to(evidence_dir).as_posix(), "sha256": actual})
+    by_path = {ref["path"]: ref["sha256"] for ref in artifacts}
+    required = {f"{gate_id}.json": _sha256(record_path), "R266.json": records["R266"]["record_sha256"]}
+    required.update({path: _sha256(_contained_file(evidence_dir, path)) for path in SAFETY_UNIT_LOGS})
+    if any(by_path.get(path) != digest for path, digest in required.items()):
+        raise ValueError(f"{gate_id}: missing safety test evidence or evidence for the inconclusive record")
+    r266_refs = {ref["path"]: ref["sha256"] for ref in records["R266"]["artifacts"]}
+    if any(r266_refs.get(path) != digest for path, digest in required.items() if path in SAFETY_UNIT_LOGS):
+        raise ValueError(f"{gate_id}: safety test evidence is not bound by the signed R266 platform record")
+    _verify_safety_logs(gate_id, evidence_dir)
+    return {
+        "record_path": waiver_path.relative_to(evidence_dir).as_posix(),
+        "record_sha256": _sha256(waiver_path),
+        "signature_path": signature_path.relative_to(evidence_dir).as_posix(),
+        "signature_sha256": _sha256(signature_path),
+        "approver_identity": waiver["approver_identity"],
+        "release_scope": waiver["release_scope"],
+        "rationale": waiver["rationale"],
+        "limitations": limitations,
+        **({"expires_at": waiver["expires_at"]} if has_expiry else {"review_condition": waiver["review_condition"]}),
+        "evidence": artifacts,
+    }
+
+
+def validate_evidence_bundle(evidence_dir: Path, candidate_sha: str, *, verify_signature,
+                             limited_evidence: bool = False, release_scope: str | None = None) -> dict:
+    """Validate full evidence, or a signed, exact-candidate limited-evidence preview."""
     evidence_dir = Path(evidence_dir).resolve(strict=True)
     if not _GIT_SHA.fullmatch(candidate_sha):
         raise ValueError("candidate SHA must be a full Git object ID")
-    gates = {}
+    if limited_evidence:
+        if release_scope != LIMITED_RELEASE_SCOPE:
+            raise ValueError(f"limited-evidence preview scope must be {LIMITED_RELEASE_SCOPE}")
+        waivers_dir = (evidence_dir / "waivers").resolve(strict=True)
+    elif release_scope is not None:
+        raise ValueError("release scope is only valid for limited-evidence preview")
+    records = {}
     for gate_id in GATE_IDS:
         try:
             record_path = _contained_file(evidence_dir, f"{gate_id}.json")
@@ -142,7 +270,9 @@ def validate_evidence_bundle(evidence_dir: Path, candidate_sha: str, *, verify_s
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"{gate_id}: invalid JSON record: {exc}") from None
         artifacts = _check_record(record, gate_id, candidate_sha, evidence_dir)
-        gates[gate_id] = {
+        records[gate_id] = {
+            "record": record,
+            "artifacts": artifacts,
             "record_path": record_path.name,
             "record_sha256": _sha256(record_path),
             "signature_path": signature_path.name,
@@ -154,14 +284,46 @@ def validate_evidence_bundle(evidence_dir: Path, candidate_sha: str, *, verify_s
             "environment": record["environment"],
             "dependencies": record["dependencies"],
             "evidence": artifacts,
-            **({"platform_results": record["platform_results"]} if gate_id == "R266" else {}),
         }
+    inconclusive = [gate_id for gate_id in GATE_IDS if records[gate_id]["record"]["result"] == "inconclusive"]
+    if not limited_evidence and inconclusive:
+        gate_id = inconclusive[0]
+        raise ValueError(f"{gate_id}: gate did not pass ({records[gate_id]['record']['failure_class']})")
+    if limited_evidence and not inconclusive:
+        raise ValueError("limited-evidence preview requires at least one inconclusive gate waiver")
+    gates = {}
+    for gate_id in GATE_IDS:
+        item = records[gate_id]
+        record = item["record"]
+        result = record["result"]
+        entry = {key: value for key, value in item.items() if key not in {"record", "artifacts"}}
+        entry["evidence_result"] = result
+        entry["status"] = "passed" if result == "passed" else "inconclusive"
+        if result == "inconclusive":
+            entry["waiver"] = _check_waiver(
+                gate_id, evidence_dir / f"{gate_id}.json", candidate_sha, release_scope,
+                evidence_dir, records, verify_signature=verify_signature,
+            )
+            entry["status"] = "waived"
+        if gate_id == "R266":
+            entry["platform_results"] = record["platform_results"]
+        gates[gate_id] = entry
+    waiver_files = {path.name for path in waivers_dir.glob("R*.json")} if limited_evidence else set()
+    expected_files = {f"{gate_id}.json" for gate_id in inconclusive} if limited_evidence else set()
+    if waiver_files != expected_files:
+        raise ValueError("waiver files must match exactly the inconclusive gates")
+    waived_gates = [gate_id for gate_id in GATE_IDS if gates[gate_id]["status"] == "waived"]
+    limitations = sorted({limit for gate_id in waived_gates for limit in gates[gate_id]["waiver"]["limitations"]})
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "candidate_sha": candidate_sha,
         "signer_fingerprint": SIGNER_FINGERPRINT,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "result": "passed",
+        "result": "limited-evidence" if limited_evidence else "passed",
+        "release_classification": "limited-evidence-preview" if limited_evidence else "full",
+        "release_scope": release_scope,
+        "release_limitations": limitations,
+        "waived_gates": waived_gates,
         "gates": gates,
     }
 
@@ -169,7 +331,8 @@ def validate_evidence_bundle(evidence_dir: Path, candidate_sha: str, *, verify_s
 def _gpg_verify(record_path: Path, signature_path: Path) -> bool:
     try:
         result = subprocess.run(
-            ["gpg", "--batch", "--status-fd", "1", "--verify", str(signature_path), str(record_path)],
+            ["gpg", "--batch", "--no-auto-check-trustdb", "--trust-model", "always",
+             "--status-fd", "1", "--verify", str(signature_path), str(record_path)],
             check=False, capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -241,6 +404,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--limited-evidence-preview", action="store_true",
+                        help="prepare a clearly labeled preview with signed waivers for eligible inconclusive gates")
+    parser.add_argument("--release-scope", help="scope ID bound by every signed preview waiver")
     args = parser.parse_args(argv)
     try:
         repo = args.repo.resolve(strict=True)
@@ -249,12 +415,16 @@ def main(argv: list[str] | None = None) -> int:
         _require_outside_checkout(evidence_dir, repo, "evidence directory")
         _require_outside_checkout(manifest_path, repo, "manifest")
         candidate = _current_candidate(repo)
-        manifest = validate_evidence_bundle(evidence_dir, candidate, verify_signature=_gpg_verify)
+        manifest = validate_evidence_bundle(
+            evidence_dir, candidate, verify_signature=_gpg_verify,
+            limited_evidence=args.limited_evidence_preview, release_scope=args.release_scope,
+        )
         _write_signed_manifest(manifest, manifest_path)
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         print(f"release blocked: {exc}", file=sys.stderr)
         return 1
-    print(f"release evidence passed for {candidate}; signed manifest: {args.manifest}")
+    status = "limited-evidence preview prepared" if args.limited_evidence_preview else "release evidence passed"
+    print(f"{status} for {candidate}; signed manifest: {args.manifest}")
     return 0
 
 
