@@ -76,8 +76,18 @@ class V3ReleaseGateTests(unittest.TestCase):
                             passing_tests.append("test_linux_sandbox_allows_workspace_writes_and_denies_sibling_writes")
                         else:
                             passing_tests.append("test_macos_sandbox_allows_workspace_writes_and_denies_sibling_writes")
-                        unit_log.write_text("".join(f"{name} (test_fixture.SafetyTests) ... ok\n" for name in passing_tests)
-                                            + "Ran 10 tests in 1.0s\n\nOK\n", encoding="utf-8")
+                        lines = []
+                        for name in passing_tests:
+                            lines.append(f"{name} (test_fixture.SafetyTests) ...")
+                            if name.startswith(("test_failed_migration_", "test_incompatible_existing_table_")):
+                                lines.extend((
+                                    "  RuntimeWarning: SQLite migration did not complete; original state is unchanged.",
+                                    "  self._initialise_once()",
+                                    "ok",
+                                ))
+                            else:
+                                lines[-1] += " ok"
+                        unit_log.write_text("\n".join(lines) + "\nRan 10 tests in 1.0s\n\nOK\n", encoding="utf-8")
                         unit_ref = unit_log.relative_to(records).as_posix()
                         record["evidence"].append({
                             "path": unit_ref,

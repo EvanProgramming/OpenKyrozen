@@ -62,6 +62,21 @@ def _contained_file(root: Path, relative: str) -> Path:
     return path
 
 
+def _unit_test_passed(lines: list[str], method: str) -> bool:
+    for index, line in enumerate(lines):
+        if not line.startswith(method + " ("):
+            continue
+        if line.endswith(" ... ok"):
+            return True
+        for following in lines[index + 1:]:
+            if following.startswith("test_") and " (" in following:
+                break
+            if following == "ok":
+                return True
+        return False
+    return False
+
+
 def _check_record(record: object, gate_id: str, candidate_sha: str, evidence_dir: Path) -> list[dict]:
     if not isinstance(record, dict) or record.get("schema_version") != 1:
         raise ValueError(f"{gate_id}: unsupported evidence record schema")
@@ -149,13 +164,14 @@ def _verify_safety_logs(gate_id: str, evidence_dir: Path) -> None:
         log = _contained_file(evidence_dir, relative).read_text(encoding="utf-8", errors="replace")
         if not re.search(r"(?m)^Ran \d+ tests? in [^\n]+$", log) or not re.search(r"(?m)^OK(?: \(skipped=\d+\))?$", log):
             raise ValueError(f"{gate_id}: safety test evidence is missing or did not pass for {relative}")
+        lines = log.splitlines()
         methods = SAFETY_TESTS
         if relative.startswith("platforms/linux-"):
             methods = tuple(method for method in methods if not method.startswith("test_macos_sandbox"))
         else:
             methods = tuple(method for method in methods if not method.startswith("test_linux_sandbox"))
         for method in methods:
-            if not any(line.startswith(method + " (") and line.endswith(" ... ok") for line in log.splitlines()):
+            if not _unit_test_passed(lines, method):
                 raise ValueError(f"{gate_id}: safety test evidence is missing or did not pass: {method}")
 
 
