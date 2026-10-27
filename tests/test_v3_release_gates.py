@@ -405,6 +405,46 @@ class V3ReleaseGateTests(unittest.TestCase):
                     records, candidate, verify_signature=self.verify_test_signatures,
                     limited_evidence=True, release_scope=LIMITED_SCOPE,
                 )
+
+    def test_any_preview_waiver_requires_the_complete_safety_suite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            records, candidate, waivers = self.create_inconclusive_bundle(Path(directory))
+            for gate_id in WAIVABLE_GATES[1:]:
+                (waivers / f"{gate_id}.json").unlink()
+                (waivers / f"{gate_id}.json.asc").unlink()
+                record_path = records / f"{gate_id}.json"
+                record = json.loads(record_path.read_text(encoding="utf-8"))
+                record.update(result="passed", failure_class=None)
+                record_path.write_text(json.dumps(record), encoding="utf-8")
+
+            unit_log = records / "platforms/linux-py312/unit.log"
+            passing_tests = [name for name in SAFETY_TESTS
+                             if name != "test_linux_sandbox_allows_workspace_writes_and_denies_sibling_writes"]
+            unit_log.write_text("".join(f"{name} (test_fixture.SafetyTests) ... ok\n"
+                                         for name in passing_tests)
+                               + "Ran 10 tests in 1.0s\n\nOK\n", encoding="utf-8")
+            r266_path = records / "R266.json"
+            r266 = json.loads(r266_path.read_text(encoding="utf-8"))
+            unit_ref = unit_log.relative_to(records).as_posix()
+            for ref in r266["evidence"]:
+                if ref["path"] == unit_ref:
+                    ref["sha256"] = hashlib.sha256(unit_log.read_bytes()).hexdigest()
+            r266_path.write_text(json.dumps(r266), encoding="utf-8")
+
+            waiver_path = waivers / "R259.json"
+            waiver = json.loads(waiver_path.read_text(encoding="utf-8"))
+            for ref in waiver["evidence"]:
+                if ref["path"] == unit_ref:
+                    ref["sha256"] = hashlib.sha256(unit_log.read_bytes()).hexdigest()
+                elif ref["path"] == "R266.json":
+                    ref["sha256"] = hashlib.sha256(r266_path.read_bytes()).hexdigest()
+            self._rewrite_waiver(waiver_path, **waiver)
+
+            with self.assertRaisesRegex(ValueError, "safety test evidence is missing or did not pass"):
+                validate_evidence_bundle(
+                    records, candidate, verify_signature=self.verify_test_signatures,
+                    limited_evidence=True, release_scope=LIMITED_SCOPE,
+                )
         with tempfile.TemporaryDirectory() as directory:
             records, candidate, waivers = self.create_inconclusive_bundle(Path(directory))
             unit_log = records / "platforms/linux-py312/unit.log"

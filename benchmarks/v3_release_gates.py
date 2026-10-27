@@ -26,27 +26,19 @@ SAFETY_UNIT_LOGS = tuple(
     f"platforms/{platform}/unit.log"
     for platform in ("linux-py312", "linux-py313", "macos-py312", "macos-py313")
 )
-SAFETY_TESTS = {
-    "R259": (
-        "test_apply_patch_is_atomic_stale_safe_and_rejects_ambiguous_hunks",
-        "test_edit_file_requires_matching_hash_and_unique_old_text",
-    ),
-    "R262": (
-        "test_required_unavailable_sandbox_blocks_command_before_execution",
-        "test_installed_but_unusable_backend_blocks_when_sandbox_is_required",
-        "test_linux_sandbox_allows_workspace_writes_and_denies_sibling_writes",
-        "test_macos_sandbox_allows_workspace_writes_and_denies_sibling_writes",
-    ),
-    "R263": (
-        "test_define_tool_text_is_rejected_without_registration",
-        "test_full_capability_profile_does_not_grant_dynamic_registration",
-    ),
-    "R264": (
-        "test_approval_decisions_are_scoped_versioned_history_not_authority",
-        "test_failed_migration_rolls_back_schema_and_version",
-        "test_incompatible_existing_table_rolls_back_migration",
-    ),
-}
+SAFETY_TESTS = (
+    "test_apply_patch_is_atomic_stale_safe_and_rejects_ambiguous_hunks",
+    "test_edit_file_requires_matching_hash_and_unique_old_text",
+    "test_required_unavailable_sandbox_blocks_command_before_execution",
+    "test_installed_but_unusable_backend_blocks_when_sandbox_is_required",
+    "test_linux_sandbox_allows_workspace_writes_and_denies_sibling_writes",
+    "test_macos_sandbox_allows_workspace_writes_and_denies_sibling_writes",
+    "test_define_tool_text_is_rejected_without_registration",
+    "test_full_capability_profile_does_not_grant_dynamic_registration",
+    "test_approval_decisions_are_scoped_versioned_history_not_authority",
+    "test_failed_migration_rolls_back_schema_and_version",
+    "test_incompatible_existing_table_rolls_back_migration",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -157,7 +149,7 @@ def _verify_safety_logs(gate_id: str, evidence_dir: Path) -> None:
         log = _contained_file(evidence_dir, relative).read_text(encoding="utf-8", errors="replace")
         if not re.search(r"(?m)^Ran \d+ tests? in [^\n]+$", log) or not re.search(r"(?m)^OK(?: \(skipped=\d+\))?$", log):
             raise ValueError(f"{gate_id}: safety test evidence is missing or did not pass for {relative}")
-        methods = SAFETY_TESTS[gate_id]
+        methods = SAFETY_TESTS
         if relative.startswith("platforms/linux-"):
             methods = tuple(method for method in methods if not method.startswith("test_macos_sandbox"))
         else:
