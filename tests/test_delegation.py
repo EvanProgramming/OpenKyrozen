@@ -813,7 +813,14 @@ class DelegationTests(unittest.TestCase):
         self.runtime.get_provider = lambda _: SlowProvider()
         coordinator = self.runtime.delegation()
         run = coordinator.spawn([brief(profile="coder")])[0]
-        self.assertTrue(entered.wait(10))
+        if not entered.wait(10):
+            with coordinator.lock:
+                future = coordinator.futures[run["run_id"]]
+                state = coordinator.summary(coordinator.runs[run["run_id"]])
+                future_done = future.done()
+                future_error = repr(future.exception()) if future_done else None
+            self.fail(f"Provider call did not start within 10 seconds: state={state}, "
+                      f"future_done={future_done}, future_error={future_error}")
         coordinator.cancel(run["run_id"])
         release.set()
         coordinator.futures[run["run_id"]].result(timeout=5)
