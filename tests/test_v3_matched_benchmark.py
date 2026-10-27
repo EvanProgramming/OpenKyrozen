@@ -6,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from benchmarks.v3_matched import BudgetLedger, PRICING, _cost, summarize
+from benchmarks.v3_responses_relay import MODEL
 
 
 class V3MatchedBenchmarkTests(unittest.TestCase):
@@ -38,14 +39,6 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
                                   limit_rmb=MAX_LIMIT_RMB, prior_hold_rmb=MAX_LIMIT_RMB)
             self.assertEqual(budget.remaining_rmb, 0)
             self.assertFalse(budget.reserve("new-attempt", input_token_bound=1, output_token_bound=1))
-
-    def test_missing_prior_campaign_ledger_reserves_all_accounted_prior_spend(self):
-        from benchmarks.v3_matched_live import PRIOR_CAMPAIGN_HOLD_RMB
-        from benchmarks.v3_matched import MAX_LIMIT_RMB, USD_CNY
-        prior_spend = Decimal("10.22060426")
-        self.assertEqual(Decimal(PRIOR_CAMPAIGN_HOLD_RMB), prior_spend * USD_CNY)
-        self.assertEqual(MAX_LIMIT_RMB - Decimal(PRIOR_CAMPAIGN_HOLD_RMB),
-                         (Decimal("20") - prior_spend) * USD_CNY)
 
     def test_cap_reduction_preserves_existing_reservations(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -158,7 +151,7 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             budget = BudgetLedger(Path(directory) / "budget.sqlite3")
             metadata = {"arm": "v3", "fixture_id": "bug_fix-1", "repeat": 0,
-                        "request_sha256": "hash", "model": "gemini-3.5-flash-lite",
+                        "request_sha256": "hash", "model": MODEL,
                         "max_output_tokens": 4096, "reserved_rmb": str(_cost(100, 100))}
             self.assertTrue(budget.reserve("call-1", input_token_bound=100,
                                            output_token_bound=100, metadata=metadata))

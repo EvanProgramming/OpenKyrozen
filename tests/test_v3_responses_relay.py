@@ -92,6 +92,7 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_reserves_before_forwarding_and_forces_matched_responses_settings(self):
+        self.assertEqual(MODEL, "gemini-3.1-flash-lite")
         response = requests.post(self.relay.url + "/responses", json={
             "model": "wrong-model", "input": [{"role": "user", "content": "fixture"}],
             "stream": True,
