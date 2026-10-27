@@ -439,8 +439,9 @@ def _initial_plan(fixture: dict) -> list[str] | dict:
         return [f"{title}: {description}" for title, description in fixture.get("plan_tasks", [])]
     return {"title": step["title"], "summary": step["description"], "assumptions": [],
             "steps": [step],
-            "bounds": {"workspace_paths": ["."], "capabilities": ["read", "write"],
-                       "effects": ["read_only", "filesystem", "internal"], "risk_ceiling": "normal"}}
+            "bounds": {"workspace_paths": ["."], "capabilities": ["read", "write", "shell"],
+                       "effects": ["read_only", "filesystem", "process", "internal"],
+                       "risk_ceiling": "normal"}}
 
 
 def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
