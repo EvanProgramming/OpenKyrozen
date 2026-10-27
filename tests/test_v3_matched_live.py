@@ -2,15 +2,19 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
 from benchmarks.v3_fixtures import FIXTURES
-from benchmarks.v3_matched_live import (BASELINE, MODEL, PRIOR_CAMPAIGN_HOLD_RMB, _load_checkpoint, _row_can_resume_as_complete, _run_fixture_tests, _worker_env,
+from benchmarks.v3_matched_live import (BASELINE, MODEL, _load_checkpoint, _row_can_resume_as_complete, _run_fixture_tests, _worker_env,
                                          _extract_baseline, _initial_plan, _run_worker, _workflow_state_correct,
                                          _write_checkpoint, prepare_fixture, run, snapshot_workspace,
                                          verify_fixture)
-from benchmarks.v3_matched import BudgetLedger, _cost
+from benchmarks.v3_matched import BudgetLedger, USD_CNY, _cost
+
+TEST_PRIOR_HOLD_USD = "1.25"
+TEST_PRIOR_HOLD_RMB = str(Decimal(TEST_PRIOR_HOLD_USD) * USD_CNY)
 
 
 class V3MatchedLiveTests(unittest.TestCase):
@@ -84,11 +88,6 @@ class V3MatchedLiveTests(unittest.TestCase):
         candidate_worker = str(source.resolve() / "benchmarks" / "prompt_worker.py")
         self.assertEqual(len(commands), len(FIXTURES) * 3 * 2)
         self.assertTrue(all(command[1] == candidate_worker for command in commands), repr(commands[:2]))
-
-    def test_prior_campaign_hold_reserves_all_accounted_prior_spend(self):
-        from decimal import Decimal
-        from benchmarks.v3_matched import USD_CNY
-        self.assertEqual(Decimal(PRIOR_CAMPAIGN_HOLD_RMB), Decimal("10.22060426") * USD_CNY)
 
     def test_held_reservations_report_in_flight_and_unknown_attempts(self):
         from benchmarks.v3_matched_live import _held_reservations
@@ -202,7 +201,7 @@ class V3MatchedLiveTests(unittest.TestCase):
                     patch("benchmarks.v3_matched_live._credential", side_effect=AssertionError("credential read")) as credential:
                 with self.assertRaisesRegex(ValueError, "requires an available"):
                     run(source=root / "src", repo=root, output=root / "report.json",
-                        budget_path=root / "budget.sqlite3", prior_hold_usd="10.22060426")
+                        budget_path=root / "budget.sqlite3", prior_hold_usd=TEST_PRIOR_HOLD_USD)
             credential.assert_not_called()
             probe.close.assert_called_once()
 
@@ -412,7 +411,7 @@ class V3MatchedLiveTests(unittest.TestCase):
             with self.subTest(include_completed_row=include_completed_row), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 report, ledger_path = root / "report.json", root / "budget.sqlite3"
-                budget = BudgetLedger(ledger_path, prior_hold_rmb=PRIOR_CAMPAIGN_HOLD_RMB)
+                budget = BudgetLedger(ledger_path, prior_hold_rmb=TEST_PRIOR_HOLD_RMB)
                 first_key = (fixtures[0]["fixture_id"], 0, "v2")
                 orphan_key = (fixtures[1]["fixture_id"], 0, "v3")
                 keys = [first_key, orphan_key] if include_completed_row else [orphan_key]
@@ -432,7 +431,7 @@ class V3MatchedLiveTests(unittest.TestCase):
                         "cache_read_tokens": 0, "usage_complete": True, "worker_result_complete": True})
                 _write_checkpoint(report, ledger_path, {"protocol": "openkyrozen-v3-matched-live-v1",
                     "candidate_sha": "candidate", "baseline_sha": BASELINE, "model": MODEL,
-                    "repeats": 3, "budget": {"prior_campaign_hold_usd": "10.22060426"},
+                    "repeats": 3, "budget": {"prior_campaign_hold_usd": TEST_PRIOR_HOLD_USD},
                     "rows": rows, "calls": []})
                 relay = type("Relay", (), {"rows": []})()
                 from openkyrozen.tools.sandbox import SandboxedCommand
@@ -444,7 +443,7 @@ class V3MatchedLiveTests(unittest.TestCase):
                         patch("benchmarks.v3_matched_live._extract_baseline", side_effect=RuntimeError("stop")):
                     with self.assertRaisesRegex(RuntimeError, "stop"):
                         run(source=root / "src", repo=root, output=report, budget_path=ledger_path,
-                            prior_hold_usd="10.22060426")
+                            prior_hold_usd=TEST_PRIOR_HOLD_USD)
                 self.assertEqual({call["attempt_id"] for call in relay.rows},
                                  {f"call-{index}" for index in range(len(keys))})
 

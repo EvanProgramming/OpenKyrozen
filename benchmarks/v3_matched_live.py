@@ -443,12 +443,6 @@ def _initial_plan(fixture: dict) -> list[str] | dict:
                        "effects": ["read_only", "filesystem", "internal"], "risk_ceiling": "normal"}}
 
 
-# Preserve prior settled, unknown, and in-flight exposure under the new cumulative cap.
-# Carry-forward at the last interrupted run; callers must provide the current total.
-PRIOR_CAMPAIGN_HOLD_USD = Decimal("10.22060426")
-PRIOR_CAMPAIGN_HOLD_RMB = str(PRIOR_CAMPAIGN_HOLD_USD * USD_CNY)
-
-
 def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         limit_usd: str = str(MAX_LIMIT_USD), repeats: int = REPEATS,
         prior_hold_usd: str,

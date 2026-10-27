@@ -14,7 +14,7 @@ import requests
 
 from benchmarks.v3_matched import BudgetLedger, _cost
 
-MODEL = "gemini-3.5-flash-lite"
+MODEL = "gemini-3.1-flash-lite"
 MAX_OUTPUT_TOKENS = 4096
 MAX_REQUEST_BYTES = 20_000_000
 MAX_ERROR_BODY_BYTES = 65_536
