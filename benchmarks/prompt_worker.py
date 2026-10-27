@@ -11,6 +11,25 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
+def _accepted_scope_preserved(history, accepted_fingerprints, accepted_plan, task_records):
+    if (not isinstance(accepted_plan, dict)
+            or accepted_plan.get("fingerprint") not in accepted_fingerprints):
+        return False
+    identity = ("plan_id", "version", "fingerprint")
+    completed = any(
+        isinstance(event, dict) and event.get("event_type") == "interaction.plan_completed"
+        and isinstance(event.get("payload"), dict)
+        and event["payload"].get("status") == "completed"
+        and all(event["payload"].get(key) == accepted_plan.get(key) for key in identity)
+        for event in history
+    )
+    return completed or any(
+        task.get("status") != "cancelled"
+        and (task.get("strategic_binding") or {}).get("fingerprint") == accepted_plan.get("fingerprint")
+        for task in task_records if isinstance(task, dict)
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True)
@@ -98,12 +117,14 @@ def main():
         initial_plan = json.loads(Path(args.plan_file).read_text()) if args.plan_file else []
         initial_tasks = []
         accepted_fingerprint = None
+        accepted_plan_identity = None
         if isinstance(initial_plan, dict):
             proposal = runtime._interaction_controller.propose_plan(initial_plan, original_input=prompt)
             accepted, _ = runtime._interaction_controller.accept_plan(
                 runtime.tasks, plan_id=proposal["plan_id"], version=proposal["version"],
             )
             accepted_fingerprint = accepted.get("fingerprint")
+            accepted_plan_identity = {key: accepted.get(key) for key in ("plan_id", "version", "fingerprint")}
             initial_tasks = [f"{step['title']}: {step['description']}" for step in accepted["steps"]]
         elif isinstance(initial_plan, list) and all(isinstance(item, str) for item in initial_plan):
             initial_tasks = initial_plan
@@ -211,14 +232,8 @@ def main():
                                               for handle in handles),
                   "first_delta_latency_ms": first_delta_ms,
                   "provider_error": "[LLM Error]" in answer}
-        bound_scope_active = bool(accepted_fingerprint and any(
-            task["status"] != "cancelled"
-            and (task.get("strategic_binding") or {}).get("fingerprint") == accepted_fingerprint
-            for task in result["task_records"]
-        ))
-        result["accepted_scope_preserved"] = bool(
-            accepted_fingerprint and accepted_fingerprint in accepted_fingerprints
-            and bound_scope_active
+        result["accepted_scope_preserved"] = _accepted_scope_preserved(
+            history, accepted_fingerprints, accepted_plan_identity, result["task_records"],
         )
         result["scope_preserved"] = bool(result["accepted_scope_preserved"] and not pending_material)
         Path(args.result).write_text(json.dumps(result))

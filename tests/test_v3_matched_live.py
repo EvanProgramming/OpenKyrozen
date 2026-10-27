@@ -236,9 +236,18 @@ class V3MatchedLiveTests(unittest.TestCase):
             worker = {"provider_error": False, "processes_alive": 0,
                       "pending_material_revision": True, "accepted_scope_preserved": True,
                       "material_plan_proposals": 1}
-            result = verify_fixture(fixture, root, "please approve the public API change", worker, prepared)
+            with patch("benchmarks.v3_matched_live._run_fixture_tests", return_value=True):
+                result = verify_fixture(fixture, root, "please approve the public API change", worker, prepared)
         self.assertTrue(result["plan_scenario_passed"])
         self.assertTrue(result["verified_success"])
+
+    def test_strategic_plan_fixtures_authorize_their_test_process(self):
+        for scenario in ("scope_preserving", "material_revision"):
+            with self.subTest(scenario=scenario):
+                plan = _initial_plan(next(item for item in FIXTURES
+                                          if item["plan_scenario"] == scenario))
+                self.assertIn("shell", plan["bounds"]["capabilities"])
+                self.assertIn("process", plan["bounds"]["effects"])
 
     def test_scope_scenario_rejects_missing_active_strategic_binding(self):
         fixture = next(item for item in FIXTURES if item["plan_scenario"] == "scope_preserving")
@@ -295,6 +304,14 @@ class V3MatchedLiveTests(unittest.TestCase):
         import sys
         import time
         from benchmarks.v3_matched_live import _kill_process_tree
+
+        try:
+            process_listing = subprocess.run(["ps", "-axo", "pid=,ppid="],
+                                             capture_output=True, timeout=5, check=False)
+        except OSError as exc:
+            self.skipTest(f"process tree inspection unavailable: {exc}")
+        if process_listing.returncode:
+            self.skipTest("process tree inspection unavailable")
 
         with tempfile.TemporaryDirectory() as directory:
             pid_file = Path(directory) / "pid"
