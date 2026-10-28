@@ -336,6 +336,54 @@ class ServerBoundaryTests(unittest.TestCase):
             finally:
                 server._sessions = original_sessions
 
+    def test_textual_plan_acceptance_keeps_identity_across_awaited_controls(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            "KYROZEN_DB_PATH": str(Path(directory) / "bootstrap.sqlite3"),
+            "KYROZEN_DISABLE_VECTOR_INDEX": "1",
+        }):
+            service = WebService(None)
+            client = TestClient(service.app)
+            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="interaction-await")
+            original_sessions = service._sessions
+            service._sessions = {}
+            try:
+                with patch.object(service._agent.current_session, "memory", memory), \
+                        patch.object(service, "_emit_chat_completed"):
+                    session = service._get_or_create_session("awaited-acceptance-session")
+                    controller = service._interaction_for_session(session)
+                    reviewed = controller.propose_plan({
+                        "title": "Reviewed plan", "summary": "Keep this identity across the await.",
+                        "assumptions": [], "steps": [{
+                            "id": "reviewed-step", "title": "Verify", "description": "Preserve this proposal.",
+                            "acceptance": ["The reviewed identity is passed through"],
+                        }],
+                    })
+
+                    def replace_proposal(_session, _body, message):
+                        controller.propose_plan({
+                            "title": "Newer plan", "summary": "This arrives while controls yield.",
+                            "assumptions": [], "steps": [{
+                                "id": "newer-step", "title": "Verify", "description": "Do not accept implicitly.",
+                                "acceptance": ["The newer proposal remains pending"],
+                            }],
+                        })
+                        return message, None
+
+                    with patch.object(service, "_apply_chat_controls", side_effect=replace_proposal), \
+                            patch.object(service, "_run_session_chat", return_value="executed") as run:
+                        response = client.post("/api/chat", json={
+                            "session_id": "awaited-acceptance-session", "message": "accept plan",
+                            "decision_assist_backend": "off",
+                        })
+
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(run.call_args.kwargs["plan_acceptance"], {
+                        "plan_id": reviewed["plan_id"], "version": reviewed["version"],
+                    })
+                    self.assertEqual(controller.state()["pending_plan"]["title"], "Newer plan")
+            finally:
+                service._sessions = original_sessions
+
     def test_json_post_boundaries_reject_non_objects_and_malformed_payloads(self):
         client = TestClient(server.app)
         endpoints = (
