@@ -84,6 +84,39 @@ class TUIProtocolTests(unittest.TestCase):
 
         submit.assert_called_once_with("accept plan", "accept-1", plan_acceptance=plan)
 
+    def test_typed_plan_acceptance_snapshots_identity_before_worker_queue(self):
+        plan = {"plan_id": "plan-queued", "version": 7}
+        with patch.object(self.backend.agent, "is_plan_acceptance", return_value=True), \
+                patch.object(self.backend.agent._interaction_controller, "state", return_value={
+                    "pending_plan": plan,
+                }), patch("openkyrozen.interfaces.tui.turns.threading.Thread") as thread:
+            self.backend.submit("accept plan", "accept-queued")
+
+        self.assertEqual(thread.call_args.kwargs["args"], ("accept plan", "accept-queued", plan))
+
+    def test_typed_acceptance_without_a_plan_cannot_accept_a_later_proposal(self):
+        with patch.object(self.backend.agent, "is_plan_acceptance", return_value=True), \
+                patch.object(self.backend.agent._interaction_controller, "state", return_value={
+                    "pending_plan": None, "executing_plan": None,
+                }), patch("openkyrozen.interfaces.tui.turns.threading.Thread") as thread:
+            self.backend.submit("accept plan", "accept-empty")
+
+        self.assertEqual(thread.call_args.kwargs["args"], (
+            "accept plan", "accept-empty", {"plan_id": "", "version": 0},
+        ))
+
+    def test_plan_command_snapshots_once_before_a_later_proposal_can_appear(self):
+        plan = {"plan_id": "later-plan", "version": 2}
+        with patch.object(self.backend.agent._interaction_controller, "state", side_effect=[
+            {"pending_plan": None, "executing_plan": None}, {"pending_plan": plan},
+        ]) as state, patch("openkyrozen.interfaces.tui.turns.threading.Thread") as thread:
+            self.backend._command("plan", "accept", "accept-empty")
+
+        state.assert_called_once()
+        self.assertEqual(thread.call_args.kwargs["args"], (
+            "accept plan", "accept-empty", {"plan_id": "", "version": 0},
+        ))
+
     def test_permissions_jev_alias_is_normalized_before_persistence(self):
         with patch.object(self.backend.agent.fast_mode, "jev_key", return_value="configured"), \
                 patch.object(self.backend.agent, "set_permission_mode", return_value={

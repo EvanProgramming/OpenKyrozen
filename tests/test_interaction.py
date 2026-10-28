@@ -1391,6 +1391,20 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(session.interaction.state()["pending_plan"]["version"], newer["version"])
         self.assertEqual(session.interaction.state()["executing_plan"]["version"], first["version"])
 
+    def test_queued_acceptance_without_a_snapshot_cannot_take_a_later_plan(self):
+        session = self.agent.open_session("queued-empty-acceptance")
+        proposal = session.interaction.propose_plan({
+            "title": "Later proposal", "summary": "Remain pending until reviewed.",
+            "steps": [{"id": "step", "title": "Verify", "description": "Wait for explicit review.",
+                       "acceptance": ["The plan remains pending"]}],
+        })
+
+        reply = self.agent.chat(session, "accept plan", plan_acceptance={"plan_id": "", "version": 0})
+
+        self.assertIn("changed before acceptance", reply)
+        self.assertEqual(session.interaction.state()["pending_plan"]["plan_id"], proposal["plan_id"])
+        self.assertIsNone(session.interaction.state()["executing_plan"])
+
     def test_restore_history_refreshes_active_session_transcript(self):
         from openkyrozen.agent.conversation import ConversationHistory
         from types import SimpleNamespace

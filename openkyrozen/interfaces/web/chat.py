@@ -287,6 +287,19 @@ def _apply_chat_controls(self, session: dict[str, Any], body: dict[str, Any], me
     return message, None
 
 
+def _capture_plan_acceptance(self, session: dict[str, Any], body: dict[str, Any],
+                             message: str) -> dict[str, Any] | None:
+    plan_action = body.get("plan_action")
+    if isinstance(plan_action, dict) and str(plan_action.get("action") or "").lower() == "accept":
+        return {"plan_id": plan_action.get("plan_id"), "version": plan_action.get("version")}
+    if self._agent.is_plan_acceptance(message):
+        state = self._interaction_for_session(session).state()
+        plan = state.get("pending_plan") or state.get("executing_plan")
+        return ({"plan_id": plan["plan_id"], "version": plan["version"]}
+                if plan else {"plan_id": "", "version": 0})
+    return None
+
+
 def _run_session_chat(self, session: dict[str, Any], message: str, *, on_runtime_event=None,
                       plan_acceptance: dict[str, Any] | None = None) -> str:
     """Run a session without swapping process-global agent state."""
@@ -400,13 +413,10 @@ async def api_chat(self, request: Request):
     session["profile"] = service._normalise_profile(body.get("profile", session.get("profile", "auto")))
     service._set_memory_context(session, body)
     msg = service._validate_message(service._sanitize_api_message(str(body.get("message", "")).strip()))
+    plan_acceptance = service._capture_plan_acceptance(session, body, msg)
     msg, immediate_reply = (await asyncio.to_thread(service._apply_chat_controls, session, body, msg)
                             if "fast_backend" in body or "system_one_backend" in body or "decision_assist_backend" in body
                             else service._apply_chat_controls(session, body, msg))
-    plan_action = body.get("plan_action")
-    plan_acceptance = ({"plan_id": plan_action["plan_id"], "version": plan_action["version"]}
-                       if isinstance(plan_action, dict)
-                       and str(plan_action.get("action") or "").lower() == "accept" else None)
     if not msg and immediate_reply is None:
         raise HTTPException(400, "Empty message")
     service._audit("CHAT", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
@@ -451,13 +461,10 @@ async def api_chat_stream(self, request: Request):
     session["profile"] = service._normalise_profile(body.get("profile", session.get("profile", "auto")))
     service._set_memory_context(session, body)
     msg = service._validate_message(service._sanitize_api_message(str(body.get("message", "")).strip()))
+    plan_acceptance = service._capture_plan_acceptance(session, body, msg)
     msg, immediate_reply = (await asyncio.to_thread(service._apply_chat_controls, session, body, msg)
                             if "fast_backend" in body or "system_one_backend" in body or "decision_assist_backend" in body
                             else service._apply_chat_controls(session, body, msg))
-    plan_action = body.get("plan_action")
-    plan_acceptance = ({"plan_id": plan_action["plan_id"], "version": plan_action["version"]}
-                       if isinstance(plan_action, dict)
-                       and str(plan_action.get("action") or "").lower() == "accept" else None)
     if not msg and immediate_reply is None:
         raise HTTPException(400, "Empty message")
     service._audit("CHAT_STREAM", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
