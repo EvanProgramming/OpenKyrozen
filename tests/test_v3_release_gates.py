@@ -425,9 +425,9 @@ class V3ReleaseGateTests(unittest.TestCase):
     def test_safety_gate_failure_and_missing_safety_tests_cannot_be_waived(self):
         with tempfile.TemporaryDirectory() as directory:
             records, candidate, _ = self.create_inconclusive_bundle(Path(directory))
-            record = json.loads((records / "R262.json").read_text(encoding="utf-8"))
+            record = json.loads((records / "R261.json").read_text(encoding="utf-8"))
             record.update(result="failed", failure_class="safety_control_failure")
-            (records / "R262.json").write_text(json.dumps(record), encoding="utf-8")
+            (records / "R261.json").write_text(json.dumps(record), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "failed evidence cannot be waived"):
                 validate_evidence_bundle(
                     records, candidate, verify_signature=self.verify_test_signatures,
