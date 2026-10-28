@@ -49,6 +49,20 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _read_signed_pair(record_path: Path, signature_path: Path, verify_signature) -> tuple[bytes, bytes, bool]:
+    record_bytes = record_path.read_bytes()
+    signature_bytes = signature_path.read_bytes()
+    with tempfile.TemporaryDirectory(prefix="v3-evidence-verify-") as temporary:
+        staged = Path(temporary) / record_path.parent.name
+        staged.mkdir()
+        staged_record = staged / record_path.name
+        staged_signature = staged / signature_path.name
+        staged_record.write_bytes(record_bytes)
+        staged_signature.write_bytes(signature_bytes)
+        verified = verify_signature(staged_record, staged_signature)
+    return record_bytes, signature_bytes, verified
+
+
 def _contained_file(root: Path, relative: str) -> Path:
     if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
         raise ValueError("evidence artifact path must be a nonempty relative path")
@@ -175,7 +189,7 @@ def _verify_safety_logs(gate_id: str, evidence_dir: Path) -> None:
                 raise ValueError(f"{gate_id}: safety test evidence is missing or did not pass: {method}")
 
 
-def _check_waiver(gate_id: str, record_path: Path, candidate_sha: str, release_scope: str,
+def _check_waiver(gate_id: str, candidate_sha: str, release_scope: str,
                   evidence_dir: Path, records: dict, *, verify_signature) -> dict:
     if gate_id not in WAIVABLE_INCONCLUSIVE_GATES:
         raise ValueError(f"{gate_id}: inconclusive gate is not waivable")
@@ -184,10 +198,13 @@ def _check_waiver(gate_id: str, record_path: Path, candidate_sha: str, release_s
         raise ValueError(f"{gate_id}: failure class is non-waivable")
     waiver_path = _contained_file(evidence_dir, f"waivers/{gate_id}.json")
     signature_path = _contained_file(evidence_dir, f"waivers/{gate_id}.json.asc")
-    if not verify_signature(waiver_path, signature_path):
+    waiver_bytes, waiver_signature_bytes, verified = _read_signed_pair(
+        waiver_path, signature_path, verify_signature,
+    )
+    if not verified:
         raise ValueError(f"{gate_id}: waiver signature verification failed")
     try:
-        waiver = json.loads(waiver_path.read_text(encoding="utf-8"))
+        waiver = json.loads(waiver_bytes)
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"{gate_id}: invalid waiver JSON: {exc}") from None
     if not isinstance(waiver, dict) or waiver.get("schema_version") != 1:
@@ -230,7 +247,8 @@ def _check_waiver(gate_id: str, record_path: Path, candidate_sha: str, release_s
             raise ValueError(f"{gate_id}: waiver evidence hash mismatch for {ref['path']}")
         artifacts.append({"path": path.relative_to(evidence_dir).as_posix(), "sha256": actual})
     by_path = {ref["path"]: ref["sha256"] for ref in artifacts}
-    required = {f"{gate_id}.json": _sha256(record_path), "R266.json": records["R266"]["record_sha256"]}
+    required = {f"{gate_id}.json": records[gate_id]["record_sha256"],
+                "R266.json": records["R266"]["record_sha256"]}
     required.update({path: _sha256(_contained_file(evidence_dir, path)) for path in SAFETY_UNIT_LOGS})
     if any(by_path.get(path) != digest for path, digest in required.items()):
         raise ValueError(f"{gate_id}: missing safety test evidence or evidence for the inconclusive record")
@@ -240,9 +258,9 @@ def _check_waiver(gate_id: str, record_path: Path, candidate_sha: str, release_s
     _verify_safety_logs(gate_id, evidence_dir)
     return {
         "record_path": waiver_path.relative_to(evidence_dir).as_posix(),
-        "record_sha256": _sha256(waiver_path),
+        "record_sha256": hashlib.sha256(waiver_bytes).hexdigest(),
         "signature_path": signature_path.relative_to(evidence_dir).as_posix(),
-        "signature_sha256": _sha256(signature_path),
+        "signature_sha256": hashlib.sha256(waiver_signature_bytes).hexdigest(),
         "approver_identity": waiver["approver_identity"],
         "release_scope": waiver["release_scope"],
         "rationale": waiver["rationale"],
@@ -271,10 +289,13 @@ def validate_evidence_bundle(evidence_dir: Path, candidate_sha: str, *, verify_s
             signature_path = _contained_file(evidence_dir, f"{gate_id}.json.asc")
         except ValueError:
             raise ValueError(f"missing gate record or signature for {gate_id}")
-        if not verify_signature(record_path, signature_path):
+        record_bytes, signature_bytes, verified = _read_signed_pair(
+            record_path, signature_path, verify_signature,
+        )
+        if not verified:
             raise ValueError(f"{gate_id}: signature verification failed")
         try:
-            record = json.loads(record_path.read_text(encoding="utf-8"))
+            record = json.loads(record_bytes)
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"{gate_id}: invalid JSON record: {exc}") from None
         artifacts = _check_record(record, gate_id, candidate_sha, evidence_dir)
@@ -282,9 +303,9 @@ def validate_evidence_bundle(evidence_dir: Path, candidate_sha: str, *, verify_s
             "record": record,
             "artifacts": artifacts,
             "record_path": record_path.name,
-            "record_sha256": _sha256(record_path),
+            "record_sha256": hashlib.sha256(record_bytes).hexdigest(),
             "signature_path": signature_path.name,
-            "signature_sha256": _sha256(signature_path),
+            "signature_sha256": hashlib.sha256(signature_bytes).hexdigest(),
             "command_set_sha256": record["command_set_sha256"],
             "fixture_set_sha256": record["fixture_set_sha256"],
             "command_set_path": record["command_set_path"],
@@ -309,7 +330,7 @@ def validate_evidence_bundle(evidence_dir: Path, candidate_sha: str, *, verify_s
         entry["status"] = "passed" if result == "passed" else "inconclusive"
         if result == "inconclusive":
             entry["waiver"] = _check_waiver(
-                gate_id, evidence_dir / f"{gate_id}.json", candidate_sha, release_scope,
+                gate_id, candidate_sha, release_scope,
                 evidence_dir, records, verify_signature=verify_signature,
             )
             entry["status"] = "waived"

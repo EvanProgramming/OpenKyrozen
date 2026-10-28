@@ -258,6 +258,24 @@ class V3ReleaseGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, expected):
                     validate_evidence_bundle(records, candidate, verify_signature=verifier)
 
+    def test_record_changed_after_signature_check_cannot_change_validated_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            records, candidate = self.create_bundle(Path(directory))
+            record_path = records / "R250.json"
+            passed_record = json.loads(record_path.read_text(encoding="utf-8"))
+            failed_record = dict(passed_record, result="failed", failure_class="test_failure")
+            record_path.write_text(json.dumps(failed_record), encoding="utf-8")
+
+            def replace_after_verification(record, _signature):
+                signed_record = json.loads(record.read_text(encoding="utf-8"))
+                if signed_record["gate_id"] == "R250":
+                    self.assertEqual(signed_record["result"], "failed")
+                    record_path.write_text(json.dumps(passed_record), encoding="utf-8")
+                return True
+
+            with self.assertRaisesRegex(ValueError, "failed evidence cannot be waived"):
+                validate_evidence_bundle(records, candidate, verify_signature=replace_after_verification)
+
     def test_rejects_changed_or_escaping_evidence_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
