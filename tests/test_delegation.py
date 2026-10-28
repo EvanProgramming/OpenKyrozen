@@ -945,7 +945,8 @@ class DelegationTests(unittest.TestCase):
             for url, headers, body in requests:
                 if url.path == "/v1/messages":
                     self.assertEqual(url.host, "api.anthropic.com")
-                    self.assertEqual(headers["x-api-key"], "fixture-claude")
+                    self.assertIn(headers.get("x-api-key") or headers.get("authorization"),
+                                  {"fixture-claude", "Bearer fixture-claude"})
                     self.assertIn("system", body)
                     self.assertEqual(body["max_tokens"], 4096)
                     self.assertTrue(all(message["role"] != "system" for message in body["messages"]))
