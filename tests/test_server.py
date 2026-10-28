@@ -262,16 +262,43 @@ class ServerBoundaryTests(unittest.TestCase):
                                    "description": "Make the scoped change.",
                                    "acceptance": ["Tests pass"]}],
                     })
+                    stale = client.post("/api/chat", json={
+                        "session_id": "interaction-session",
+                        "plan_action": {"plan_id": plan["plan_id"], "version": plan["version"],
+                                        "fingerprint": "stale-fingerprint", "action": "accept"},
+                    })
+                    self.assertEqual(stale.status_code, 409, stale.text)
                     with patch.object(server, "_run_session_chat", return_value="executed") as run:
                         accepted = client.post("/api/chat", json={
                             "session_id": "interaction-session",
                             "plan_action": {"plan_id": plan["plan_id"], "version": plan["version"],
-                                            "action": "accept"},
+                                            "fingerprint": plan["fingerprint"], "action": "accept"},
                         })
                     self.assertEqual(accepted.status_code, 200, accepted.text)
                     self.assertEqual(run.call_args.args[1], "accept plan")
                     self.assertEqual(run.call_args.kwargs["plan_acceptance"], {
                         "plan_id": plan["plan_id"], "version": plan["version"],
+                        "fingerprint": plan["fingerprint"],
+                    })
+                    with patch.object(server, "_run_session_chat", return_value="streamed") as run:
+                        streamed = client.post("/api/chat/stream", json={
+                            "session_id": "interaction-session",
+                            "plan_action": {"plan_id": plan["plan_id"], "version": plan["version"],
+                                            "fingerprint": plan["fingerprint"], "action": "accept"},
+                        })
+                    self.assertEqual(streamed.status_code, 200, streamed.text)
+                    self.assertEqual(run.call_args.kwargs["plan_acceptance"], {
+                        "plan_id": plan["plan_id"], "version": plan["version"],
+                        "fingerprint": plan["fingerprint"],
+                    })
+                    with patch.object(server, "_run_session_chat", return_value="executed") as run:
+                        accepted_text = client.post("/api/chat", json={
+                            "session_id": "interaction-session", "message": "accept plan",
+                        })
+                    self.assertEqual(accepted_text.status_code, 200, accepted_text.text)
+                    self.assertEqual(run.call_args.kwargs["plan_acceptance"], {
+                        "plan_id": plan["plan_id"], "version": plan["version"],
+                        "fingerprint": plan["fingerprint"],
                     })
                     restored = client.get("/api/v2/sessions/interaction-session")
                     self.assertEqual(restored.status_code, 200, restored.text)

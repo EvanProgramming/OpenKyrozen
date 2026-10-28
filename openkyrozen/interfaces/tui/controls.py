@@ -60,8 +60,12 @@ def _plan_action(self, payload: dict[str, Any], request_id: str) -> None:
         self.emit("error", request_id, code="plan_not_pending", error="plan is not pending at the requested version")
         return
     if action == "accept":
+        fingerprint = payload.get("fingerprint")
+        if not isinstance(fingerprint, str) or fingerprint != plan.get("fingerprint"):
+            self.emit("error", request_id, code="plan_not_pending", error="plan fingerprint is stale")
+            return
         self.submit("accept plan", request_id, plan_acceptance={
-            "plan_id": plan["plan_id"], "version": plan["version"],
+            "plan_id": plan["plan_id"], "version": plan["version"], "fingerprint": fingerprint,
         })
     elif action == "cancel":
         runtime.cancel_interaction_plan(plan_id, version)

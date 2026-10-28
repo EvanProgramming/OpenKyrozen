@@ -259,6 +259,7 @@ def _apply_chat_controls(self, session: dict[str, Any], body: dict[str, Any], me
         plan_id = str(plan_action.get("plan_id") or "") or None
         version_raw = plan_action.get("version")
         version = version_raw if isinstance(version_raw, int) and not isinstance(version_raw, bool) else None
+        fingerprint = plan_action.get("fingerprint")
         if not plan_id or version is None or version < 1:
             raise HTTPException(400, "plan_action.plan_id and positive integer version are required")
         plan = controller.state().get("pending_plan")
@@ -267,6 +268,8 @@ def _apply_chat_controls(self, session: dict[str, Any], body: dict[str, Any], me
         if not plan or (plan_id and plan_id != plan.get("plan_id")) or (version is not None and version != plan.get("version")):
             raise HTTPException(409, "plan is not pending at the requested version")
         if action == "accept":
+            if not isinstance(fingerprint, str) or fingerprint != plan.get("fingerprint"):
+                raise HTTPException(409, "plan fingerprint is stale; review the current proposal")
             message = "accept plan"
         elif action == "cancel":
             controller.cancel_plan(plan_id, version)
@@ -404,9 +407,14 @@ async def api_chat(self, request: Request):
                             if "fast_backend" in body or "system_one_backend" in body or "decision_assist_backend" in body
                             else service._apply_chat_controls(session, body, msg))
     plan_action = body.get("plan_action")
-    plan_acceptance = ({"plan_id": plan_action["plan_id"], "version": plan_action["version"]}
+    plan_acceptance = ({"plan_id": plan_action["plan_id"], "version": plan_action["version"],
+                        "fingerprint": plan_action["fingerprint"]}
                        if isinstance(plan_action, dict)
                        and str(plan_action.get("action") or "").lower() == "accept" else None)
+    if plan_acceptance is None and service._agent.is_plan_acceptance(msg):
+        pending = service._interaction_for_session(session).state().get("pending_plan")
+        if pending:
+            plan_acceptance = {key: pending[key] for key in ("plan_id", "version", "fingerprint")}
     if not msg and immediate_reply is None:
         raise HTTPException(400, "Empty message")
     service._audit("CHAT", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
@@ -455,9 +463,14 @@ async def api_chat_stream(self, request: Request):
                             if "fast_backend" in body or "system_one_backend" in body or "decision_assist_backend" in body
                             else service._apply_chat_controls(session, body, msg))
     plan_action = body.get("plan_action")
-    plan_acceptance = ({"plan_id": plan_action["plan_id"], "version": plan_action["version"]}
+    plan_acceptance = ({"plan_id": plan_action["plan_id"], "version": plan_action["version"],
+                        "fingerprint": plan_action["fingerprint"]}
                        if isinstance(plan_action, dict)
                        and str(plan_action.get("action") or "").lower() == "accept" else None)
+    if plan_acceptance is None and service._agent.is_plan_acceptance(msg):
+        pending = service._interaction_for_session(session).state().get("pending_plan")
+        if pending:
+            plan_acceptance = {key: pending[key] for key in ("plan_id", "version", "fingerprint")}
     if not msg and immediate_reply is None:
         raise HTTPException(400, "Empty message")
     service._audit("CHAT_STREAM", f"user={session['user_id']} msg={msg[:80]}", session["user_id"])
