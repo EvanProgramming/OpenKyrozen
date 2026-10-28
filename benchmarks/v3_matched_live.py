@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -264,7 +265,7 @@ def _source_snapshot(source: Path) -> str:
 def _write_checkpoint(output: Path, budget_path: Path, document: dict) -> None:
     output, budget_path = output.resolve(), budget_path.resolve()
     content = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
-    with sqlite3.connect(budget_path) as db:
+    with closing(sqlite3.connect(budget_path)) as db:
         db.execute("CREATE TABLE IF NOT EXISTS benchmark_checkpoint "
                    "(id INTEGER PRIMARY KEY CHECK(id=1), output_path TEXT NOT NULL, "
                    "report_sha256 TEXT NOT NULL, report_json TEXT NOT NULL)")
@@ -274,6 +275,7 @@ def _write_checkpoint(output: Path, budget_path: Path, document: dict) -> None:
         db.execute("INSERT OR REPLACE INTO benchmark_checkpoint "
                    "(id,output_path,report_sha256,report_json) VALUES(1,?,?,?)",
                    (str(output), hashlib.sha256(content).hexdigest(), content.decode()))
+        db.commit()
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(output.name + ".tmp")
     temporary.write_bytes(content)
@@ -282,13 +284,14 @@ def _write_checkpoint(output: Path, budget_path: Path, document: dict) -> None:
 
 def _load_checkpoint(output: Path, budget_path: Path) -> dict | None:
     output, budget_path = output.resolve(), budget_path.resolve()
-    with sqlite3.connect(budget_path) as db:
+    with closing(sqlite3.connect(budget_path)) as db:
         db.execute("CREATE TABLE IF NOT EXISTS benchmark_checkpoint "
                    "(id INTEGER PRIMARY KEY CHECK(id=1), output_path TEXT NOT NULL, "
                    "report_sha256 TEXT NOT NULL, report_json TEXT)")
         columns = {row[1] for row in db.execute("PRAGMA table_info(benchmark_checkpoint)")}
         if "report_json" not in columns:
             db.execute("ALTER TABLE benchmark_checkpoint ADD COLUMN report_json TEXT")
+        db.commit()
         checkpoint = db.execute(
             "SELECT output_path, report_sha256, report_json FROM benchmark_checkpoint WHERE id=1"
         ).fetchone()
@@ -474,7 +477,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         if output.exists():
             raise ValueError("existing report is not pinned by its original budget ledger")
         if budget_path.exists():
-            with sqlite3.connect(budget_path) as db:
+            with closing(sqlite3.connect(budget_path)) as db:
                 has_attempts = db.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='attempts'"
                 ).fetchone()
@@ -544,7 +547,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                            worker_result_complete=False,
                            worker_error="interrupted before fixture result was checkpointed")
     else:
-        with sqlite3.connect(budget_path) as db:
+        with closing(sqlite3.connect(budget_path)) as db:
             if db.execute("SELECT 1 FROM attempts WHERE id!='prior-campaign-reservations' LIMIT 1").fetchone():
                 raise ValueError("cannot start a new report with a nonempty budget ledger")
         if output.exists():

@@ -1,6 +1,7 @@
 """Budgeted analysis primitives for the matched OpenKyrozen V2/V3 evaluation."""
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 import random
@@ -57,7 +58,7 @@ class BudgetLedger:
             raise ValueError("the cumulative benchmark cap must be at most USD 20 at the recorded exchange rate")
         self.limit_picormb = _picormb(limit)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db:
             db.execute("PRAGMA journal_mode=WAL")
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "budget_config" in tables:
@@ -105,9 +106,10 @@ class BudgetLedger:
                     "SELECT reserved_picormb FROM attempts WHERE id='prior-campaign-reservations'"
             ).fetchone() != (_picormb(prior_hold),):
                 raise ValueError("the persisted ledger is missing the prior campaign reservation")
+            db.commit()
 
     def _totals(self) -> tuple[int, int, bool]:
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db:
             spent, held, overruns = db.execute(
                 "SELECT COALESCE(SUM(actual_picormb), 0), "
                 "COALESCE(SUM(CASE WHEN status IN ('reserved','unknown') "
@@ -136,7 +138,7 @@ class BudgetLedger:
         if not attempt_id or min(input_token_bound, output_token_bound) < 0:
             raise ValueError("attempt ID and nonnegative token bounds are required")
         reserve = _picormb(_cost(input_token_bound, output_token_bound))
-        with sqlite3.connect(self.path, timeout=30, isolation_level=None) as db:
+        with closing(sqlite3.connect(self.path, timeout=30, isolation_level=None)) as db:
             db.execute("BEGIN IMMEDIATE")
             spent, held, overruns = db.execute(
                 "SELECT COALESCE(SUM(actual_picormb), 0), "
@@ -158,7 +160,7 @@ class BudgetLedger:
         return True
 
     def campaign_calls(self) -> list[dict]:
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db:
             attempts = db.execute(
                 "SELECT id,reserved_picormb,actual_picormb,status,usage_json,metadata_json "
                 "FROM attempts ORDER BY created_at,id"
@@ -184,7 +186,7 @@ class BudgetLedger:
         return calls
 
     def settle(self, attempt_id: str, usage: dict | None) -> None:
-        with sqlite3.connect(self.path, timeout=30, isolation_level=None) as db:
+        with closing(sqlite3.connect(self.path, timeout=30, isolation_level=None)) as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT reserved_picormb,status FROM attempts WHERE id=?",
                              (attempt_id,)).fetchone()
