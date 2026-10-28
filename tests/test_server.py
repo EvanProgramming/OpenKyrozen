@@ -273,6 +273,22 @@ class ServerBoundaryTests(unittest.TestCase):
                     self.assertEqual(run.call_args.kwargs["plan_acceptance"], {
                         "plan_id": plan["plan_id"], "version": plan["version"],
                     })
+
+                    typed_plan = controller.propose_plan({
+                        "title": "Typed acceptance", "summary": "Keep the reviewed identity.",
+                        "assumptions": [], "steps": [{
+                            "id": "typed-step", "title": "Verify", "description": "Verify the queue boundary.",
+                            "acceptance": ["The queued identity is preserved"],
+                        }],
+                    })
+                    with patch.object(server, "_run_session_chat", return_value="executed") as run:
+                        accepted = client.post("/api/chat", json={
+                            "session_id": "interaction-session", "message": "accept plan",
+                        })
+                    self.assertEqual(accepted.status_code, 200, accepted.text)
+                    self.assertEqual(run.call_args.kwargs["plan_acceptance"], {
+                        "plan_id": typed_plan["plan_id"], "version": typed_plan["version"],
+                    })
                     restored = client.get("/api/v2/sessions/interaction-session")
                     self.assertEqual(restored.status_code, 200, restored.text)
                     self.assertIn("interaction", restored.json())
@@ -289,6 +305,84 @@ class ServerBoundaryTests(unittest.TestCase):
                                      "Inspect restored plan")
             finally:
                 server._sessions = original_sessions
+
+    def test_streamed_typed_plan_acceptance_preserves_reviewed_identity(self):
+        client = TestClient(server.app)
+        with tempfile.TemporaryDirectory() as directory:
+            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="interaction-stream")
+            original_sessions = server._sessions
+            server._sessions = {}
+            try:
+                with patch.object(server._agent.current_session, "memory", memory), \
+                        patch.object(server, "_emit_chat_completed"):
+                    session = server._get_or_create_session("streamed-acceptance-session")
+                    controller = server._interaction_for_session(session)
+                    plan = controller.propose_plan({
+                        "title": "Streamed acceptance", "summary": "Keep the request identity.",
+                        "assumptions": [], "steps": [{
+                            "id": "streamed-step", "title": "Verify", "description": "Preserve this review.",
+                            "acceptance": ["The reviewed plan reaches execution"],
+                        }],
+                    })
+                    with patch.object(server, "_run_session_chat", return_value="executed") as run:
+                        response = client.post("/api/chat/stream", json={
+                            "session_id": "streamed-acceptance-session", "message": "accept plan",
+                        })
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertIn('"status": "completed"', response.text)
+                    self.assertEqual(run.call_args.kwargs["plan_acceptance"], {
+                        "plan_id": plan["plan_id"], "version": plan["version"],
+                    })
+            finally:
+                server._sessions = original_sessions
+
+    def test_textual_plan_acceptance_keeps_identity_across_awaited_controls(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            "KYROZEN_DB_PATH": str(Path(directory) / "bootstrap.sqlite3"),
+            "KYROZEN_DISABLE_VECTOR_INDEX": "1",
+        }):
+            service = WebService(None)
+            client = TestClient(service.app)
+            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="interaction-await")
+            original_sessions = service._sessions
+            service._sessions = {}
+            try:
+                with patch.object(service._agent.current_session, "memory", memory), \
+                        patch.object(service, "_emit_chat_completed"):
+                    session = service._get_or_create_session("awaited-acceptance-session")
+                    controller = service._interaction_for_session(session)
+                    reviewed = controller.propose_plan({
+                        "title": "Reviewed plan", "summary": "Keep this identity across the await.",
+                        "assumptions": [], "steps": [{
+                            "id": "reviewed-step", "title": "Verify", "description": "Preserve this proposal.",
+                            "acceptance": ["The reviewed identity is passed through"],
+                        }],
+                    })
+
+                    def replace_proposal(_session, _body, message):
+                        controller.propose_plan({
+                            "title": "Newer plan", "summary": "This arrives while controls yield.",
+                            "assumptions": [], "steps": [{
+                                "id": "newer-step", "title": "Verify", "description": "Do not accept implicitly.",
+                                "acceptance": ["The newer proposal remains pending"],
+                            }],
+                        })
+                        return message, None
+
+                    with patch.object(service, "_apply_chat_controls", side_effect=replace_proposal), \
+                            patch.object(service, "_run_session_chat", return_value="executed") as run:
+                        response = client.post("/api/chat", json={
+                            "session_id": "awaited-acceptance-session", "message": "accept plan",
+                            "decision_assist_backend": "off",
+                        })
+
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(run.call_args.kwargs["plan_acceptance"], {
+                        "plan_id": reviewed["plan_id"], "version": reviewed["version"],
+                    })
+                    self.assertEqual(controller.state()["pending_plan"]["title"], "Newer plan")
+            finally:
+                service._sessions = original_sessions
 
     def test_json_post_boundaries_reject_non_objects_and_malformed_payloads(self):
         client = TestClient(server.app)

@@ -166,6 +166,11 @@ def _stream_projection(self, request_id: str):
 
 
 def submit(self, text: str, request_id: str, *, plan_acceptance: dict[str, Any] | None = None) -> None:
+    if plan_acceptance is None and self.agent.is_plan_acceptance(text):
+        state = self.agent._interaction_controller.state()
+        plan = state.get("pending_plan") or state.get("executing_plan")
+        plan_acceptance = ({"plan_id": plan["plan_id"], "version": plan["version"]}
+                           if plan else {"plan_id": "", "version": 0})
     with self._state_lock:
         if self._busy:
             self.emit("error", request_id, code="busy", error="A turn is already running.")

@@ -148,7 +148,7 @@ class WebService:
 
     from openkyrozen.interfaces.web.tasks import (_execute_durable_task, _task_manager, _task_worker, _task_scopes, _recover_task_scopes, _run_task_worker_cycle, _run_scheduled_job, api_v2_tasks, api_v2_create_task, api_v2_resume_task, api_v2_schedules, api_v2_create_schedule, api_v2_disable_schedule)
 
-    from openkyrozen.interfaces.web.chat import (_normalise_session_id, _normalise_profile, _normalise_memory_actor, _normalise_memory_context, _initialise_session_defaults, _set_memory_context, _actor_for_request, _get_or_create_session, _interaction_for_session, _history_for_session, _ensure_history_baseline, _public_history_node, _apply_chat_controls, _run_session_chat, _validate_message, _server_capabilities, _allowed_server_tools, _cost_summary, _cost_report, _json_object, api_chat, api_chat_stream, api_cancel_chat)
+    from openkyrozen.interfaces.web.chat import (_normalise_session_id, _normalise_profile, _normalise_memory_actor, _normalise_memory_context, _initialise_session_defaults, _set_memory_context, _actor_for_request, _get_or_create_session, _interaction_for_session, _history_for_session, _ensure_history_baseline, _public_history_node, _apply_chat_controls, _capture_plan_acceptance, _run_session_chat, _validate_message, _server_capabilities, _allowed_server_tools, _cost_summary, _cost_report, _json_object, api_chat, api_chat_stream, api_cancel_chat)
 
     from openkyrozen.interfaces.web.pages import (chat_page, fast_diagnostics, decision_assist_status, pwa_manifest)
 
