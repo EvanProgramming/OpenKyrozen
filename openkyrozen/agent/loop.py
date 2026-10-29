@@ -67,18 +67,22 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
             if plan_acceptance is not None:
                 plan_id = plan_acceptance.get("plan_id")
                 version = plan_acceptance.get("version")
+                fingerprint = plan_acceptance.get("fingerprint")
                 if (not isinstance(plan_id, str) or not plan_id.strip()
-                        or not isinstance(version, int) or isinstance(version, bool) or version < 1):
+                        or not isinstance(version, int) or isinstance(version, bool) or version < 1
+                        or not isinstance(fingerprint, str) or not fingerprint):
                     raise InteractionError("plan acceptance identity is invalid")
                 current_state = self._interaction_controller.state()
                 current_plan = current_state.get("pending_plan") or current_state.get("executing_plan")
                 if (not current_plan or current_plan.get("plan_id") != plan_id
-                        or current_plan.get("version") != version):
+                        or current_plan.get("version") != version
+                        or current_plan.get("fingerprint") != fingerprint):
                     raise InteractionError("plan acceptance identity is stale")
             accepted_plan, created = self._interaction_controller.accept_plan(
                 self.tasks,
                 plan_id=plan_id if plan_acceptance is not None else None,
                 version=version if plan_acceptance is not None else None,
+                fingerprint=fingerprint if plan_acceptance is not None else None,
             )
         except InteractionError:
             early_reply = (

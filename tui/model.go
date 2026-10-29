@@ -105,7 +105,7 @@ type planStep struct {
 }
 
 type planProposal struct {
-	planID, title, summary string
+	planID, fingerprint, title, summary string
 	version                int
 	steps                  []planStep
 }
