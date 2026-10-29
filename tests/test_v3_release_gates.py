@@ -52,6 +52,8 @@ class V3ReleaseGateTests(unittest.TestCase):
                 "failure_class": None,
                 "evidence": [{"path": artifact.name, "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest()}],
             }
+            if gate_id == "R259":
+                record["protocol_recovery_count"] = 0
             if gate_id == "R266":
                 record["platform_results"] = []
                 for platform in REQUIRED_PLATFORMS:
@@ -107,10 +109,13 @@ class V3ReleaseGateTests(unittest.TestCase):
         return records, candidate
 
     def create_inconclusive_bundle(self, root):
-        records, candidate = self.create_bundle(root, mutate=lambda gate, record, _: (
-            record.update(result="inconclusive", failure_class="provider_upstream_error")
-            if gate in WAIVABLE_GATES else None
-        ))
+        def make_inconclusive(gate, record, _):
+            if gate in WAIVABLE_GATES:
+                record.update(result="inconclusive", failure_class="provider_upstream_error")
+                if gate == "R259":
+                    record["protocol_recovery_count"] = None
+
+        records, candidate = self.create_bundle(root, mutate=make_inconclusive)
         waivers = records / "waivers"
         waivers.mkdir()
         for gate_id in WAIVABLE_GATES:
@@ -429,6 +434,53 @@ class V3ReleaseGateTests(unittest.TestCase):
             record.update(result="failed", failure_class="safety_control_failure")
             (records / "R261.json").write_text(json.dumps(record), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "failed evidence cannot be waived"):
+                validate_evidence_bundle(
+                    records, candidate, verify_signature=self.verify_test_signatures,
+                    limited_evidence=True, release_scope=LIMITED_SCOPE,
+                )
+
+    def test_nonzero_protocol_recovery_count_cannot_be_waived_as_inconclusive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            records, candidate, waivers = self.create_inconclusive_bundle(Path(directory))
+            record_path = records / "R259.json"
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            record["protocol_recovery_count"] = 1
+            record_path.write_text(json.dumps(record), encoding="utf-8")
+            waiver_path = waivers / "R259.json"
+            waiver = json.loads(waiver_path.read_text(encoding="utf-8"))
+            for ref in waiver["evidence"]:
+                if ref["path"] == "R259.json":
+                    ref["sha256"] = hashlib.sha256(record_path.read_bytes()).hexdigest()
+            self._rewrite_waiver(waiver_path, **waiver)
+            with self.assertRaisesRegex(ValueError, "nonzero protocol recovery count"):
+                validate_evidence_bundle(
+                    records, candidate, verify_signature=self.verify_test_signatures,
+                    limited_evidence=True, release_scope=LIMITED_SCOPE,
+                )
+
+    def test_passing_protocol_recovery_gate_requires_explicit_zero_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            records, candidate = self.create_bundle(
+                Path(directory), mutate=lambda gate, record, _: record.update(protocol_recovery_count=None)
+                if gate == "R259" else None,
+            )
+            with self.assertRaisesRegex(ValueError, "passed evidence requires protocol_recovery_count == 0"):
+                validate_evidence_bundle(records, candidate, verify_signature=lambda *_: True)
+
+    def test_inconclusive_protocol_recovery_record_must_mark_count_unavailable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            records, candidate, waivers = self.create_inconclusive_bundle(Path(directory))
+            record_path = records / "R259.json"
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            record.pop("protocol_recovery_count")
+            record_path.write_text(json.dumps(record), encoding="utf-8")
+            waiver_path = waivers / "R259.json"
+            waiver = json.loads(waiver_path.read_text(encoding="utf-8"))
+            for ref in waiver["evidence"]:
+                if ref["path"] == "R259.json":
+                    ref["sha256"] = hashlib.sha256(record_path.read_bytes()).hexdigest()
+            self._rewrite_waiver(waiver_path, **waiver)
+            with self.assertRaisesRegex(ValueError, "protocol_recovery_count is required"):
                 validate_evidence_bundle(
                     records, candidate, verify_signature=self.verify_test_signatures,
                     limited_evidence=True, release_scope=LIMITED_SCOPE,

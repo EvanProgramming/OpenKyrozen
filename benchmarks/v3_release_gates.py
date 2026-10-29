@@ -117,6 +117,16 @@ def _check_record(record: object, gate_id: str, candidate_sha: str, evidence_dir
     result = record.get("result")
     if not isinstance(result, str) or result not in {"passed", "failed", "inconclusive"}:
         raise ValueError(f"{gate_id}: invalid result")
+    if gate_id == "R259":
+        if "protocol_recovery_count" not in record:
+            raise ValueError("R259: protocol_recovery_count is required (use null when unavailable)")
+        recovery_count = record.get("protocol_recovery_count")
+        if recovery_count is not None and (type(recovery_count) is not int or recovery_count < 0):
+            raise ValueError("R259: protocol_recovery_count must be a nonnegative integer or null")
+        if recovery_count and result != "failed":
+            raise ValueError("R259: nonzero protocol recovery count is a non-waivable failed result")
+        if result == "passed" and recovery_count != 0:
+            raise ValueError("R259: passed evidence requires protocol_recovery_count == 0")
     if result != "passed":
         if not isinstance(record.get("failure_class"), str) or not record["failure_class"].strip():
             raise ValueError(f"{gate_id}: nonpassing evidence requires a failure class")
