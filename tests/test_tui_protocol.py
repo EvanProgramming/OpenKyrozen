@@ -95,7 +95,7 @@ class TUIProtocolTests(unittest.TestCase):
             }, "accept-stale")
 
         event = json.loads(self.output.getvalue().splitlines()[-1])
-        self.assertEqual(event["kind"], "error")
+        self.assertEqual(event["event"], "error")
         self.assertEqual(event["code"], "plan_not_pending")
 
     def test_text_acceptance_snapshots_identity_before_worker_queueing(self):
