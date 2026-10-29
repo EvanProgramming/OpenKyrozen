@@ -1,4 +1,5 @@
 import json
+import hashlib
 import tempfile
 import unittest
 from openkyrozen.tools.models import ToolResult
@@ -1407,6 +1408,32 @@ class InteractionTests(unittest.TestCase):
             self.agent.chat(session, "Continue the accepted work", clear_tasks=True)
         self.assertEqual([task["id"] for task in session.tasks.tasks], before)
         self.assertFalse(observed[0].clear_tasks)
+
+    def test_queued_plan_acceptance_rejects_same_version_proposal_with_new_fingerprint(self):
+        session = self.agent.open_session("queued-plan-fingerprint")
+        first = session.interaction.propose_plan({
+            "title": "First proposal", "summary": "Create one file.",
+            "steps": [{"id": "file", "title": "Create file", "description": "Write it.",
+                       "acceptance": ["File exists"]}],
+        })
+        replacement = {**first, "title": "Concurrent proposal", "summary": "Create a different file."}
+        fields = {key: replacement[key] for key in (
+            "plan_id", "version", "title", "summary", "assumptions", "steps", "bounds",
+        )}
+        replacement["fingerprint"] = hashlib.sha256(json.dumps(
+            fields, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        session.interaction._append("interaction.plan_proposed", replacement)
+
+        with patch.object(self.agent._agent_engine, "run", return_value="accepted"):
+            reply = self.agent.chat(session, "accept plan", plan_acceptance={
+                "plan_id": first["plan_id"], "version": first["version"],
+                "fingerprint": first["fingerprint"],
+            })
+
+        self.assertIn("changed", reply.lower())
+        self.assertIsNone(session.interaction.state()["executing_plan"])
+        self.assertEqual(session.interaction.state()["pending_plan"]["fingerprint"], replacement["fingerprint"])
 
     def test_restore_history_refreshes_active_session_transcript(self):
         from openkyrozen.agent.conversation import ConversationHistory

@@ -167,7 +167,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 			m.planScroll = m.planMaxScroll()
 		case "a", "A", "enter":
 			if m.pendingPlan != nil {
-				m.send("plan_action", map[string]any{"action": "accept", "plan_id": m.pendingPlan.planID, "version": m.pendingPlan.version})
+				m.send("plan_action", map[string]any{"action": "accept", "plan_id": m.pendingPlan.planID,
+					"version": m.pendingPlan.version, "fingerprint": m.pendingPlan.fingerprint})
 			}
 			m.screen = screenChat
 		case "c", "C", "esc":

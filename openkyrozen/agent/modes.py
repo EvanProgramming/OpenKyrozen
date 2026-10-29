@@ -738,23 +738,28 @@ class InteractionController:
         ) if field in accepted[key]}}
 
     def accept_plan(self, task_manager: Any, *, plan_id: str | None = None,
-                    version: int | None = None) -> tuple[dict[str, Any], bool]:
+                    version: int | None = None, fingerprint: str | None = None) -> tuple[dict[str, Any], bool]:
         state = self.state()
         plan = state.get("pending_plan")
         executing = state.get("executing_plan")
         if executing and not plan and (not plan_id or plan_id == executing.get("plan_id")):
             if version is not None and version != executing.get("version"):
                 raise InteractionError("accepted plan version is stale")
+            if fingerprint is not None and fingerprint != executing.get("fingerprint"):
+                raise InteractionError("accepted plan fingerprint is stale")
             return executing, False
         if not plan:
             if executing and plan_id and plan_id != executing.get("plan_id"):
                 raise InteractionError("accepted plan identity is stale")
             accepted = self.accepted_plan(plan_id, version)
-            if accepted:
+            if accepted and (fingerprint is None or accepted.get("fingerprint") == fingerprint):
                 return accepted, False
+            if accepted:
+                raise InteractionError("accepted plan fingerprint is stale")
             raise InteractionError("plan is not pending")
         if ((plan_id and plan_id != plan.get("plan_id"))
-                or (version is not None and version != plan.get("version"))):
+                or (version is not None and version != plan.get("version"))
+                or (fingerprint is not None and fingerprint != plan.get("fingerprint"))):
             raise InteractionError("plan is not pending at the requested version")
         if executing and task_manager.working_plan is None:
             task_manager.recover()

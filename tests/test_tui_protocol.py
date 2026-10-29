@@ -74,15 +74,43 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertIn("too long", error)
 
     def test_plan_action_carries_the_reviewed_identity_into_the_worker(self):
-        plan = {"plan_id": "plan-123", "version": 4}
+        plan = {"plan_id": "plan-123", "version": 4, "fingerprint": "a" * 64}
         with patch.object(self.backend.agent._interaction_controller, "state", return_value={
             "pending_plan": plan,
         }), patch.object(self.backend, "submit") as submit:
             self.backend._plan_action({
                 "action": "accept", "plan_id": plan["plan_id"], "version": plan["version"],
+                "fingerprint": plan["fingerprint"],
             }, "accept-1")
 
         submit.assert_called_once_with("accept plan", "accept-1", plan_acceptance=plan)
+
+    def test_duplicate_plan_acceptance_rejects_a_stale_fingerprint(self):
+        accepted = {"plan_id": "plan-123", "version": 4, "fingerprint": "current-fingerprint"}
+        with patch.object(self.backend.agent._interaction_controller, "state", return_value={}), \
+                patch.object(self.backend.agent._interaction_controller, "accepted_plan", return_value=accepted):
+            self.backend._plan_action({
+                "action": "accept", "plan_id": accepted["plan_id"], "version": accepted["version"],
+                "fingerprint": "stale-fingerprint",
+            }, "accept-stale")
+
+        event = json.loads(self.output.getvalue().splitlines()[-1])
+        self.assertEqual(event["event"], "error")
+        self.assertEqual(event["code"], "plan_not_pending")
+
+    def test_text_acceptance_snapshots_identity_before_worker_queueing(self):
+        plan = self.backend.agent._interaction_controller.propose_plan({
+            "title": "Feature", "summary": "Implement safely.",
+            "steps": [{"id": "step", "title": "Implement", "description": "Make the change.",
+                       "acceptance": ["Tests pass"]}],
+        })
+        with patch("openkyrozen.interfaces.tui.turns.threading.Thread") as thread:
+            self.backend.submit("accept plan", "accept-text")
+
+        self.assertEqual(thread.call_args.kwargs["args"][2], {
+            "plan_id": plan["plan_id"], "version": plan["version"],
+            "fingerprint": plan["fingerprint"],
+        })
 
     def test_permissions_jev_alias_is_normalized_before_persistence(self):
         with patch.object(self.backend.agent.fast_mode, "jev_key", return_value="configured"), \

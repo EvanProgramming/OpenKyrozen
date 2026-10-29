@@ -951,7 +951,7 @@ class DelegationTests(unittest.TestCase):
         fail = threading.Event()
         def handle(request):
             body = json.loads(request.content)
-            requests.append((request.url, dict(request.headers), body))
+            requests.append((request.url, httpx.Headers(request.headers), body))
             is_claude = request.url.path == "/v1/messages"
             if fail.is_set():
                 response = claude_http.Response if is_claude else httpx.Response

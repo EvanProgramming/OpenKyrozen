@@ -18,7 +18,8 @@ def _run_cli_chat(self, user_input, interaction_before):
             interaction_before["pending_question"] or interaction_before["pending_plan"]
             or is_plan_acceptance(sanitized)
         ), **({"plan_acceptance": {"plan_id": pending_plan["plan_id"],
-                                    "version": pending_plan["version"]}}
+                                    "version": pending_plan["version"],
+                                    "fingerprint": pending_plan["fingerprint"]}}
               if pending_plan and is_plan_acceptance(sanitized) else {}))
     except Exception as e:
         import traceback as _tb

@@ -52,16 +52,25 @@ def _plan_action(self, payload: dict[str, Any], request_id: str) -> None:
         self.emit("error", request_id, code="invalid_plan_action", error="plan version must be a positive integer")
         return
     plan = runtime._interaction_controller.state().get("pending_plan")
-    if action == "accept" and not plan and runtime._interaction_controller.accepted_plan(plan_id, version):
-        self.emit("response", request_id, text="Plan was already accepted.")
-        self.interaction(request_id)
-        return
+    if action == "accept" and not plan:
+        accepted = runtime._interaction_controller.accepted_plan(plan_id, version)
+        if accepted and payload.get("fingerprint") == accepted.get("fingerprint"):
+            self.emit("response", request_id, text="Plan was already accepted.")
+            self.interaction(request_id)
+            return
+        if accepted:
+            self.emit("error", request_id, code="plan_not_pending", error="accepted plan fingerprint is stale")
+            return
     if not plan or (plan_id and plan_id != plan.get("plan_id")) or (version is not None and version != plan.get("version")):
         self.emit("error", request_id, code="plan_not_pending", error="plan is not pending at the requested version")
         return
     if action == "accept":
+        fingerprint = payload.get("fingerprint")
+        if not isinstance(fingerprint, str) or fingerprint != plan.get("fingerprint"):
+            self.emit("error", request_id, code="plan_not_pending", error="plan fingerprint is stale")
+            return
         self.submit("accept plan", request_id, plan_acceptance={
-            "plan_id": plan["plan_id"], "version": plan["version"],
+            "plan_id": plan["plan_id"], "version": plan["version"], "fingerprint": fingerprint,
         })
     elif action == "cancel":
         runtime.cancel_interaction_plan(plan_id, version)

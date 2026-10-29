@@ -277,7 +277,8 @@ def _command(self, name: str, args: Any, request_id: str) -> None:
             self.interaction(request_id)
         elif action == "accept":
             plan = runtime._interaction_controller.state().get("pending_plan")
-            acceptance = ({"plan_id": plan["plan_id"], "version": plan["version"]}
+            acceptance = ({"plan_id": plan["plan_id"], "version": plan["version"],
+                           "fingerprint": plan["fingerprint"]}
                           if plan else None)
             self.submit("accept plan", request_id, plan_acceptance=acceptance)
         elif action == "cancel":
