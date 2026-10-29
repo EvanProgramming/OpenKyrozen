@@ -300,6 +300,23 @@ class ServerBoundaryTests(unittest.TestCase):
                         "plan_id": plan["plan_id"], "version": plan["version"],
                         "fingerprint": plan["fingerprint"],
                     })
+                    controller._append("interaction.plan_accepted", {
+                        "plan_id": plan["plan_id"], "version": plan["version"],
+                        "fingerprint": plan["fingerprint"],
+                    })
+                    stale_duplicate = client.post("/api/chat", json={
+                        "session_id": "interaction-session",
+                        "plan_action": {"plan_id": plan["plan_id"], "version": plan["version"],
+                                        "fingerprint": "stale-fingerprint", "action": "accept"},
+                    })
+                    self.assertEqual(stale_duplicate.status_code, 409, stale_duplicate.text)
+                    accepted_duplicate = client.post("/api/chat", json={
+                        "session_id": "interaction-session",
+                        "plan_action": {"plan_id": plan["plan_id"], "version": plan["version"],
+                                        "fingerprint": plan["fingerprint"], "action": "accept"},
+                    })
+                    self.assertEqual(accepted_duplicate.status_code, 200, accepted_duplicate.text)
+                    self.assertEqual(accepted_duplicate.json()["reply"], "Plan was already accepted.")
                     restored = client.get("/api/v2/sessions/interaction-session")
                     self.assertEqual(restored.status_code, 200, restored.text)
                     self.assertIn("interaction", restored.json())

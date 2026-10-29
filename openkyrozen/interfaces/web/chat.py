@@ -263,8 +263,12 @@ def _apply_chat_controls(self, session: dict[str, Any], body: dict[str, Any], me
         if not plan_id or version is None or version < 1:
             raise HTTPException(400, "plan_action.plan_id and positive integer version are required")
         plan = controller.state().get("pending_plan")
-        if action == "accept" and not plan and controller.accepted_plan(plan_id, version):
-            return "", "Plan was already accepted."
+        if action == "accept" and not plan:
+            accepted = controller.accepted_plan(plan_id, version)
+            if accepted and isinstance(fingerprint, str) and accepted.get("fingerprint") == fingerprint:
+                return "", "Plan was already accepted."
+            if accepted:
+                raise HTTPException(409, "accepted plan fingerprint is stale")
         if not plan or (plan_id and plan_id != plan.get("plan_id")) or (version is not None and version != plan.get("version")):
             raise HTTPException(409, "plan is not pending at the requested version")
         if action == "accept":
