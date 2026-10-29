@@ -283,10 +283,6 @@ def initialise(self):
 
     self._technology_lock = threading.Lock()
 
-    self._SPINNER_STOP = threading.Event()
-
-    self._SPINNER_THREAD: threading.Thread | None = None
-
     self._active_context_state: ContextVar[ContextState | None] = ContextVar("active_context_state", default=None)
 
     self._in_context_compaction: ContextVar[bool] = ContextVar("in_context_compaction", default=False)

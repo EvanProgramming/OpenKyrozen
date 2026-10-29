@@ -1392,6 +1392,23 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(session.interaction.state()["pending_plan"]["version"], newer["version"])
         self.assertEqual(session.interaction.state()["executing_plan"]["version"], first["version"])
 
+    def test_resuming_an_executing_plan_never_clears_its_tasks(self):
+        session = self.agent.open_session("resume-executing-plan")
+        proposal = session.interaction.propose_plan({
+            "title": "Retain task state", "summary": "Finish the accepted task.",
+            "steps": [{"id": "retain", "title": "Retain", "description": "Keep the task available.",
+                       "acceptance": ["Task remains available"]}],
+        })
+        session.interaction.accept_plan(session.tasks, plan_id=proposal["plan_id"],
+                                        version=proposal["version"])
+        before = [task["id"] for task in session.tasks.tasks]
+        observed = []
+        with patch.object(self.agent._agent_engine, "run",
+                          side_effect=lambda turn: observed.append(turn) or "continued"):
+            self.agent.chat(session, "Continue the accepted work", clear_tasks=True)
+        self.assertEqual([task["id"] for task in session.tasks.tasks], before)
+        self.assertFalse(observed[0].clear_tasks)
+
     def test_queued_plan_acceptance_rejects_same_version_proposal_with_new_fingerprint(self):
         session = self.agent.open_session("queued-plan-fingerprint")
         first = session.interaction.propose_plan({

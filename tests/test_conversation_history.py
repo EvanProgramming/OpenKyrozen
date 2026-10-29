@@ -519,6 +519,44 @@ class ConversationRuntimeTests(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_parallel_tool_results_serialize_conversation_head_updates(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from contextvars import copy_context
+        from threading import Barrier
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.tools import ToolAdapters
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
+            "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
+        }):
+            root = Path(temp)
+            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+                                    tools=ToolAdapters(root), user_id="alice")
+            try:
+                runtime = app.runtime
+                turn = runtime._conversation_turn_id.set("turn-parallel")
+                head = runtime._conversation_expected_head.set(None)
+                barrier = Barrier(2)
+
+                def append(call_id):
+                    barrier.wait()
+                    return runtime._record_conversation_entry("tool.result", {"call_id": call_id})
+
+                try:
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        futures = [executor.submit(copy_context().run, append, call_id)
+                                   for call_id in ("call-a", "call-b")]
+                        entries = [future.result() for future in futures]
+                finally:
+                    runtime._conversation_expected_head.reset(head)
+                    runtime._conversation_turn_id.reset(turn)
+                history = runtime.conversation_history.entries()
+                self.assertEqual({entry.payload["call_id"] for entry in entries}, {"call-a", "call-b"})
+                self.assertEqual({entry.id for entry in history}, {entry.id for entry in entries})
+                self.assertEqual(history[1].parent_id, history[0].id)
+            finally:
+                app.close()
+
     def test_repeated_equal_inputs_are_distinct_runtime_turns_and_interfaces_do_not_duplicate(self):
         from openkyrozen.app.bootstrap import build_application, build_memory
         from openkyrozen.tools import ToolAdapters
