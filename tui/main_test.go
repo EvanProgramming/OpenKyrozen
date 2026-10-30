@@ -16,9 +16,15 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-func TestOnboardingDistinguishesNewAndUpdatedInstall(t *testing.T) {
+func setTestHome(t *testing.T) {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
+func TestOnboardingDistinguishesNewAndUpdatedInstall(t *testing.T) {
+	setTestHome(t)
 	fresh := initialModel("", true)
 	if fresh.onboardingKind != "new" {
 		t.Fatalf("fresh install was classified as %q", fresh.onboardingKind)
@@ -46,7 +52,7 @@ func TestOnboardingDistinguishesNewAndUpdatedInstall(t *testing.T) {
 }
 
 func TestOnboardingCompletionPersistsVersionAndReturnsToChat(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	m := initialModel("", true)
 	m.screen, m.onboardingKind = screenOnboarding, "new"
 	m.handleBackendEvent(backendEvent{"event": "onboarding_complete", "kind": "new"})
@@ -276,7 +282,7 @@ func TestUpdatingLocksInputButKeepsEmergencyQuit(t *testing.T) {
 }
 
 func TestToolDetailsAreHiddenByDefaultAndPersistWhenEnabled(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	m := initialModel("", true)
 	m.handleBackendEvent(backendEvent{"event": "tool_receipt", "receipt": map[string]any{
 		"action": "read_file", "result": "secret file contents", "success": true,
@@ -316,7 +322,7 @@ func TestSettingsSlashCommandOpensLocalScreen(t *testing.T) {
 }
 
 func TestSettingsExposeInteractionControlsAndKeepCommandDispatch(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	m := initialModel("", true)
 	m.width, m.height, m.screen = 100, 30, screenSettings
 	m.applyInteraction(map[string]any{

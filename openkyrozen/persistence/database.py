@@ -215,6 +215,8 @@ class SQLiteDatabase:
         try:
             connection.execute(f"PRAGMA busy_timeout={busy_timeout_ms if busy_timeout_ms is not None else 30000}")
             connection.execute("PRAGMA foreign_keys=ON")
+            # WAL mode persists, but synchronous is connection-local.
+            connection.execute("PRAGMA synchronous=NORMAL")
             yield connection
         finally:
             connection.close()

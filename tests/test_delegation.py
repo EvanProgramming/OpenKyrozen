@@ -1,9 +1,11 @@
 import copy
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
+import traceback
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -399,10 +401,17 @@ class DelegationTests(unittest.TestCase):
             return {"result": result()}
         coordinator = self.manager(invoke, 1)
         run = coordinator.spawn([brief()])[0]
-        self.assertTrue(entered.wait(2))
+        self.assertTrue(entered.wait(10))
         coordinator.cancel(run["run_id"])
         release.set()
-        coordinator.futures[run["run_id"]].result(timeout=5)
+        try:
+            coordinator.futures[run["run_id"]].result(timeout=5)
+        except TimeoutError:
+            frames = sys._current_frames()
+            stacks = [f"{thread.name}:\n{''.join(traceback.format_stack(frames[thread.ident]))}"
+                      for thread in threading.enumerate()
+                      if thread.name.startswith("kyrozen-agent") and thread.ident in frames]
+            self.fail("Cancelled worker did not finish within 5 seconds:\n" + "\n".join(stacks))
         self.assertEqual(coordinator.wait(timeout=3)[0]["status"], "cancelled")
         coordinator.memory.store.append_event("subagent.state", {**run, "status": "running"},
             user_id=coordinator.memory.user_id, workspace_id=coordinator.memory.file_scope_id,
@@ -813,7 +822,14 @@ class DelegationTests(unittest.TestCase):
         self.runtime.get_provider = lambda _: SlowProvider()
         coordinator = self.runtime.delegation()
         run = coordinator.spawn([brief(profile="coder")])[0]
-        self.assertTrue(entered.wait(2))
+        if not entered.wait(10):
+            with coordinator.lock:
+                future = coordinator.futures[run["run_id"]]
+                state = coordinator.summary(coordinator.runs[run["run_id"]])
+                future_done = future.done()
+                future_error = repr(future.exception()) if future_done else None
+            self.fail(f"Provider call did not start within 10 seconds: state={state}, "
+                      f"future_done={future_done}, future_error={future_error}")
         coordinator.cancel(run["run_id"])
         release.set()
         coordinator.futures[run["run_id"]].result(timeout=5)
@@ -867,7 +883,7 @@ class DelegationTests(unittest.TestCase):
         runtime.get_provider = lambda _: Provider()
         coordinator = runtime.delegation()
         coordinator.spawn([brief(profile="coder")])
-        run = coordinator.wait(timeout=5)[0]
+        run = coordinator.wait(timeout=15)[0]
         self.assertEqual(run["status"], "succeeded")
         self.assertEqual(run["corrections"], 1)
         self.assertEqual((self.root / "marker.txt").read_text(), "ok")

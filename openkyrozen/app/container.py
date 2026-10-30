@@ -22,3 +22,4 @@ class Application:
         self.runtime._technology_executor.shutdown(wait=False, cancel_futures=True)
         for workspace in self.runtime._workspaces.values():
             workspace.adapters._BROWSER.close_all()
+        self.runtime.memory_bank.close()

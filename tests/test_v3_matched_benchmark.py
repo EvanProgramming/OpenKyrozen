@@ -1,7 +1,9 @@
+import gc
 import json
 import sqlite3
 import tempfile
 import unittest
+import warnings
 from decimal import Decimal
 from pathlib import Path
 
@@ -10,6 +12,21 @@ from benchmarks.v3_responses_relay import MODEL
 
 
 class V3MatchedBenchmarkTests(unittest.TestCase):
+    def test_ledger_closes_sqlite_connections_after_each_operation(self):
+        gc.collect()
+        with tempfile.TemporaryDirectory() as directory, warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ResourceWarning)
+            budget = BudgetLedger(Path(directory) / "budget.sqlite3")
+            _ = budget.remaining_rmb
+            budget.reserve("closed-connection", input_token_bound=1, output_token_bound=1,
+                           metadata={"reserved_rmb": str(_cost(1, 1))})
+            budget.settle("closed-connection", None)
+            budget.campaign_calls()
+            del budget
+            gc.collect()
+
+            self.assertEqual([], [item for item in caught if issubclass(item.category, ResourceWarning)])
+
     def test_pricing_matches_the_approved_panstar_rates_at_recorded_fx(self):
         self.assertEqual(PRICING["source_currency"], "USD")
         self.assertEqual(PRICING["input_usd_per_million"], "0.033")

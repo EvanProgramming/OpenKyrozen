@@ -17,6 +17,26 @@ ROOT = Path(__file__).parents[1].resolve()
 
 
 class DistributionTests(unittest.TestCase):
+    def test_v3_tag_cannot_trigger_the_ungated_stable_release_workflow(self):
+        import fnmatch
+        import yaml
+
+        workflow = yaml.load((ROOT / ".github/workflows/release.yml").read_text(), Loader=yaml.BaseLoader)
+        patterns = workflow["on"]["push"]["tags"]
+
+        def selected(tag):
+            result = False
+            for pattern in patterns:
+                negative = pattern.startswith("!")
+                if fnmatch.fnmatchcase(tag, pattern[1:] if negative else pattern):
+                    result = not negative
+            return result
+
+        self.assertTrue(selected("v2.0.8"))
+        self.assertFalse(selected("v3.0.0.dev1"))
+        self.assertIn("!startsWith(inputs.release_tag || github.ref_name, 'v3.')",
+                      workflow["jobs"]["build-release"]["if"])
+
     def test_ci_change_routing_covers_known_inputs_and_fails_open(self):
         from scripts.ci_changes import classify_paths
 
@@ -37,6 +57,14 @@ class DistributionTests(unittest.TestCase):
         for label, (paths, expected) in cases.items():
             with self.subTest(label=label):
                 self.assertEqual(classify_paths(paths), expected)
+
+    def test_release_evidence_matrix_is_selected_only_for_its_inputs_or_explicit_sha(self):
+        from scripts.ci_changes import requires_release_evidence
+
+        self.assertTrue(requires_release_evidence({".github/workflows/ci.yml"}))
+        self.assertTrue(requires_release_evidence(set(), "a" * 40))
+        self.assertFalse(requires_release_evidence({"docs/development.md"}))
+        self.assertFalse(requires_release_evidence(None))
 
     def test_ci_change_classifier_uses_complete_git_ranges_and_fails_open(self):
         from scripts.ci_changes import changed_paths
@@ -70,7 +98,9 @@ class DistributionTests(unittest.TestCase):
         with (ROOT / "pyproject.toml").open("rb") as handle:
             document = tomllib.load(handle)
         project = document["project"]
-        self.assertEqual(project["version"], "2.0.8")
+        self.assertEqual(project["version"], "3.0.0.dev1")
+        self.assertIn("Development Status :: 3 - Alpha", project["classifiers"])
+        self.assertNotIn("Development Status :: 5 - Production/Stable", project["classifiers"])
         self.assertEqual(project["requires-python"], ">=3.12,<3.14")
         self.assertEqual(project["scripts"]["kyrozen"], "openkyrozen.interfaces.cli.launcher:main")
         self.assertEqual(project["scripts"]["kyrozen-backend"], "openkyrozen.interfaces.tui.backend:main")
@@ -112,6 +142,10 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("name: CI result", workflow)
         self.assertIn("scripts/ci_changes.py", workflow)
+        self.assertIn("v3_release_candidate_sha", workflow)
+        self.assertIn("v3-platform-validation:", workflow)
+        self.assertIn("collect-r266:", workflow)
+        self.assertIn("PYTHONPATH=tests python -m unittest tests.test_durable_tasks_gateway", workflow)
         self.assertNotIn("matrix:\n      python-version: [\"3.12\", \"3.13\"]", workflow)
 
     def test_one_shot_release_workflow_is_retired_after_v2_release(self):
@@ -168,7 +202,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn('PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"', text)
         self.assertIn("grep -Fq '$HOME/.local/bin'", text)
         self.assertIn('tool install --python', text)
-        self.assertIn("release_version='2.0.8'", text)
+        self.assertIn("release_version='3.0.0.dev1'", text)
         self.assertIn("-X main.revision=$release_tag", text)
         self.assertIn("releases/download", text)
         self.assertIn("--with fastapi --with uvicorn", text)
@@ -248,7 +282,7 @@ if [ "$1" = "tool" ] && [ "$2" = "install" ]; then
 fi
 if [ "$1" = "--no-cache" ] && [ "$2" = "tool" ] && [ "$3" = "install" ]; then
     mkdir -p "$HOME/.local/bin"
-    printf '%s\n' '#!/bin/sh' 'if [ "$1" = "--version" ]; then printf "%s\n" "OpenKyrozen 2.0.8"; fi' > "$HOME/.local/bin/kyrozen"
+    printf '%s\n' '#!/bin/sh' 'if [ "$1" = "--version" ]; then printf "%s\n" "OpenKyrozen 3.0.0.dev1"; fi' > "$HOME/.local/bin/kyrozen"
     chmod +x "$HOME/.local/bin/kyrozen"
     exit 0
 fi
@@ -290,7 +324,7 @@ exit 0
             })
             commands = [
                 ([sys.executable, str(ROOT / "main.py"), "--help"], "--project"),
-                ([sys.executable, str(ROOT / "main.py"), "--version"], "OpenKyrozen"),
+                ([sys.executable, str(ROOT / "main.py"), "--version"], "OpenKyrozen 3.0.0.dev1"),
                 ([sys.executable, str(ROOT / "server.py"), "--help"], "--reload"),
             ]
             for command, marker in commands:
@@ -304,7 +338,7 @@ exit 0
         from openkyrozen.interfaces.web.service import WebService
 
         server = WebService(None)
-        self.assertEqual(server.app.version, "2.0.8")
+        self.assertEqual(server.app.version, "3.0.0.dev1")
 
     def test_web_parser_accepts_project_and_server_flags(self):
         from openkyrozen.interfaces.web.service import WebService
@@ -337,7 +371,8 @@ exit 0
         )
         with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(main, "_release_tui_asset_available", return_value=True), \
-             patch.object(main, "_resolve_update_revision", return_value=None), \
+             patch.object(main, "_resolve_update_revision", return_value="a" * 40), \
+             patch("openkyrozen.updates.service._read_update_version", return_value="3.0.0"), \
              patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
              patch.object(main, "_prepare_update_browser", return_value=None), \
              patch.object(main, "_verify_update_package", return_value=True), \
@@ -356,7 +391,7 @@ exit 0
         self.assertIn("--with", command)
         self.assertIn("fastapi", command)
         self.assertIn("uvicorn", command)
-        self.assertTrue(command[-1].endswith("/v2.0.8/openkyrozen-2.0.8-py3-none-any.whl"))
+        self.assertTrue(command[-1].endswith("@" + "a" * 40))
 
     def test_update_retries_without_uv_cache_after_install_failure(self):
         from openkyrozen.app.bootstrap import build_application
@@ -370,7 +405,8 @@ exit 0
         )
         with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(main, "_release_tui_asset_available", return_value=True), \
-             patch.object(main, "_resolve_update_revision", return_value=None), \
+             patch.object(main, "_resolve_update_revision", return_value="a" * 40), \
+             patch("openkyrozen.updates.service._read_update_version", return_value="3.0.0"), \
              patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
              patch.object(main, "_prepare_update_browser", return_value=None), \
              patch.object(main, "_verify_update_package", return_value=True), \
@@ -400,7 +436,8 @@ exit 0
         )
         with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(main, "_release_tui_asset_available", return_value=True), \
-             patch.object(main, "_resolve_update_revision", return_value=None), \
+             patch.object(main, "_resolve_update_revision", return_value="a" * 40), \
+             patch("openkyrozen.updates.service._read_update_version", return_value="3.0.0"), \
              patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
              patch.object(main, "_prepare_update_browser", return_value=None), \
              patch.object(main, "_verify_update_package", return_value=True), \
@@ -421,6 +458,7 @@ exit 0
         with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(main, "_release_tui_asset_available", return_value=True), \
              patch.object(main, "_resolve_update_revision", return_value=revision), \
+             patch("openkyrozen.updates.service._read_update_version", return_value="3.0.0"), \
              patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
              patch.object(main, "_prepare_update_browser", return_value=None), \
              patch.object(main, "_verify_update_package", return_value=True), \
@@ -444,6 +482,7 @@ exit 0
         with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(main, "_release_tui_asset_available", return_value=False), \
              patch.object(main, "_resolve_update_revision", return_value=revision), \
+             patch("openkyrozen.updates.service._read_update_version", return_value="3.0.0"), \
              patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
              patch.object(main, "_prepare_update_browser", return_value=None), \
              patch.object(main, "_verify_update_package", return_value=True), \

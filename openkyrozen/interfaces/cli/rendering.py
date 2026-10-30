@@ -20,6 +20,12 @@ def _terminal_supports_unicode(self) -> bool:
     """Return True if the terminal can render Unicode box-drawing and special chars."""
     if not self._IS_WINDOWS:
         return True
+    encoding = getattr(sys.stdout, "encoding", None)
+    if encoding:
+        try:
+            "✓".encode(encoding)
+        except (LookupError, UnicodeEncodeError):
+            return False
     # Windows Terminal, VS Code terminal, and ConEmu all set WT_SESSION
     if _os.environ.get("WT_SESSION") or _os.environ.get("TERM_PROGRAM") == "vscode":
         return True

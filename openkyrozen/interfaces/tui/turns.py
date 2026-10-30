@@ -264,6 +264,7 @@ def _attachment_prompt(self, text: str) -> str:
 def _run_submit(self, text: str, request_id: str, plan_acceptance: dict[str, Any] | None = None) -> None:
     runtime = self.agent
     approval_token = runtime._approval_callback.set(self._approval)
+    final_state, final_message = "ready", "Ready"
     try:
         inline = runtime.split_inline_command(text)
         if inline:
@@ -277,10 +278,10 @@ def _run_submit(self, text: str, request_id: str, plan_acceptance: dict[str, Any
             else:
                 self.prompt_api_key(request_id=request_id)
             self.status("waiting", "Provider setup required.", request_id)
+            final_state, final_message = "waiting", "Provider setup required."
             return
         sanitized, flagged = self._quiet_call(runtime._sanitize_input, text)
         if not sanitized.strip() and not self._staged_attachments:
-            self.status("ready", "Type a message before sending.", request_id)
             return
         metadata = runtime.memory_bank.store.list_events(
             "tui.chat_metadata", limit=1, workspace_id=runtime.interaction_workspace_id(),
@@ -325,7 +326,6 @@ def _run_submit(self, text: str, request_id: str, plan_acceptance: dict[str, Any
         ], working_plan=runtime.tasks.working_plan_snapshot())
         self.interaction(request_id)
         self.usage(request_id)
-        self.status("ready", "Ready", request_id)
         self.navigation(request_id)
     except runtime.ProviderUnavailableError as exc:
         self.emit("error", request_id, code=runtime.PROVIDER_UNAVAILABLE_CODE,
@@ -338,6 +338,7 @@ def _run_submit(self, text: str, request_id: str, plan_acceptance: dict[str, Any
         with self._state_lock:
             self._busy = False
             self._workers.discard(threading.current_thread())
+            self.status(final_state, final_message, request_id)
 
 
 def _features(self) -> list[dict[str, Any]]:

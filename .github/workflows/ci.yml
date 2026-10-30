@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      v3_release_candidate_sha:
+        description: Full candidate SHA for the six-platform V3 release gate
+        required: false
+        type: string
   schedule:
     # Monday 04:17 Asia/Shanghai.
     - cron: "17 20 * * 0"
@@ -30,6 +35,7 @@ jobs:
       all: ${{ steps.classify.outputs.all }}
       core: ${{ steps.classify.outputs.core }}
       full: ${{ steps.classify.outputs.full }}
+      release: ${{ steps.classify.outputs.release }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,9 +47,11 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.sha }}
           FULL_RUN: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+          RELEASE_CANDIDATE_SHA: ${{ inputs.v3_release_candidate_sha }}
         run: |
           args=(--event "$EVENT_NAME" --base "$BASE_SHA" --head "$HEAD_SHA")
           if [[ "$FULL_RUN" == true ]]; then args+=(--full); fi
+          if [[ -n "$RELEASE_CANDIDATE_SHA" ]]; then args+=(--release-candidate-sha "$RELEASE_CANDIDATE_SHA"); fi
           python scripts/ci_changes.py "${args[@]}"
 
   core-test:
@@ -54,6 +62,10 @@ jobs:
       KYROZEN_SANDBOX_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify pinned V2 benchmark baseline
+        run: git cat-file -e 1bfc82c793df49e76097061ec5adfef0e4e2e883^{commit}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -86,6 +98,10 @@ jobs:
       KYROZEN_SANDBOX_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify pinned V2 benchmark baseline
+        run: git cat-file -e 1bfc82c793df49e76097061ec5adfef0e4e2e883^{commit}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -126,6 +142,10 @@ jobs:
       KYROZEN_SANDBOX_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify pinned V2 benchmark baseline
+        run: git cat-file -e 1bfc82c793df49e76097061ec5adfef0e4e2e883^{commit}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -257,6 +277,199 @@ jobs:
           name: update-acceptance-${{ matrix.os }}
           path: update-acceptance.json
 
+  v3-platform-validation:
+    needs: changes
+    if: needs.changes.outputs.release == 'true'
+    name: V3 production matrix (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-py312, os: ubuntu-latest, python: '3.12' }
+          - { platform: linux-py313, os: ubuntu-latest, python: '3.13' }
+          - { platform: macos-py312, os: macos-latest, python: '3.12' }
+          - { platform: macos-py313, os: macos-latest, python: '3.13' }
+          - { platform: windows-py312, os: windows-latest, python: '3.12' }
+          - { platform: windows-py313, os: windows-latest, python: '3.13' }
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || inputs.v3_release_candidate_sha || github.sha }}
+      PLATFORM_ID: ${{ matrix.platform }}
+      KYROZEN_BROWSER_TESTS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || inputs.v3_release_candidate_sha || github.sha }}
+      - name: Verify pinned V2 benchmark baseline
+        if: runner.os != 'Windows'
+        shell: bash
+        run: git cat-file -e 1bfc82c793df49e76097061ec5adfef0e4e2e883^{commit}
+      - name: Verify exact candidate
+        shell: bash
+        run: |
+          [[ "$CANDIDATE_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: tui/go.sum
+      - name: Install Linux sandbox and browser system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          python -m pip install playwright
+          python -m playwright install-deps chromium
+      - name: Install project and browser dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[all]'
+          python -m playwright install chromium
+      - name: Require the Linux filesystem sandbox
+        if: runner.os == 'Linux'
+        shell: bash
+        run: echo 'KYROZEN_SANDBOX_REQUIRED=1' >> "$GITHUB_ENV"
+      - name: Run complete unit suite
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee unit.log
+      - name: Run integration suite
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=tests python -m unittest tests.test_durable_tasks_gateway tests.test_gateway_startup_logging -v 2>&1 | tee integration.log
+      - name: Run supported-feature workflow and TUI acceptance
+        env:
+          PYTHONIOENCODING: utf-8
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/agent_workflow_acceptance.py 2>&1 | tee agent-acceptance.log
+          python scripts/subagent_workflow_acceptance.py 2>&1 | tee subagent-acceptance.log
+          binary="../kyrozen-tui"
+          if [[ "$RUNNER_OS" == Windows ]]; then binary="../kyrozen-tui.exe"; fi
+          (cd tui && go test ./... && go build -o "$binary" .) 2>&1 | tee tui-tests.log
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            echo 'not_run: interactive PTY acceptance requires POSIX fcntl/pty; Windows Go TUI tests/build and agent workflow acceptance are required.' | tee tui-acceptance.log
+          else
+            python scripts/tui_workflow_acceptance.py "${binary#../}" 2>&1 | tee tui-acceptance.log
+          fi
+      - name: Run 30-minute production soak
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/production_soak.py --seconds 1800 \
+            --output soak.json --log-dir soak-logs 2>&1 | tee soak.log
+      - name: Record platform result
+        if: success()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib.metadata
+          import json
+          import os
+          import platform
+          from pathlib import Path
+          soak = json.loads(Path("soak.json").read_text(encoding="utf-8"))
+          dependencies = {
+              distribution.metadata["Name"]: distribution.version
+              for distribution in importlib.metadata.distributions()
+              if distribution.metadata.get("Name")
+          }
+          result = {
+              "schema_version": 1,
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "platform": os.environ["PLATFORM_ID"],
+              "unit": "not_run" if os.environ["RUNNER_OS"] == "Windows" else "passed",
+              "integration": "not_run" if os.environ["RUNNER_OS"] == "Windows" else "passed",
+              "acceptance": "passed",
+              "tui_interactive_acceptance": "not_run_posix_pty_unavailable" if os.environ["RUNNER_OS"] == "Windows" else "passed",
+              "soak_seconds": int(soak["elapsed_seconds"]),
+              "environment": {
+                  "runner": os.environ["ImageOS"] if "ImageOS" in os.environ else os.environ["RUNNER_OS"],
+                  "os": platform.platform(),
+                  "python": platform.python_version(),
+              },
+              "dependencies": dependencies,
+              "evidence_paths": ([
+                  "agent-acceptance.log", "subagent-acceptance.log", "tui-tests.log",
+                  "tui-acceptance.log", "soak.log", "soak.json",
+              ] if os.environ["RUNNER_OS"] == "Windows" else [
+                  "unit.log", "integration.log", "agent-acceptance.log",
+                  "subagent-acceptance.log", "tui-tests.log", "tui-acceptance.log",
+                  "soak.log", "soak.json",
+              ]),
+          }
+          if os.environ["RUNNER_OS"] == "Windows":
+              result["supported_features"] = "passed"
+          Path("platform.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+          PY
+      - name: Upload platform logs and result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-platform-${{ matrix.platform }}
+          path: |
+            platform.json
+            unit.log
+            integration.log
+            agent-acceptance.log
+            subagent-acceptance.log
+            tui-acceptance.log
+            tui-tests.log
+            soak.log
+            soak.json
+            soak-logs/
+          if-no-files-found: warn
+          retention-days: 30
+
+  collect-r266:
+    needs: [changes, v3-platform-validation]
+    if: needs.changes.outputs.release == 'true' && needs.v3-platform-validation.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || inputs.v3_release_candidate_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || inputs.v3_release_candidate_sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v3-platform-*
+          path: platform-results
+          merge-multiple: false
+      - name: Collect unsigned exact-candidate R266 record
+        run: >-
+          python -m benchmarks.v3_release_platforms
+          --results-dir platform-results
+          --output-dir v3-r266-evidence
+          --candidate-sha "$CANDIDATE_SHA"
+          --command-set .github/workflows/ci.yml
+      - name: Upload unsigned R266 evidence bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-r266-${{ github.event.pull_request.head.sha || inputs.v3_release_candidate_sha || github.sha }}
+          path: v3-r266-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
   ci-result:
     name: CI result
     if: always()
@@ -270,6 +483,8 @@ jobs:
       - installer-syntax
       - docker-persistence
       - update-install
+      - v3-platform-validation
+      - collect-r266
     runs-on: ubuntu-latest
     steps:
       - name: Require every selected check to pass
@@ -290,6 +505,9 @@ jobs:
           UPDATE_RESULT: ${{ needs.update-install.result }}
           DOCKER_EXPECTED: ${{ needs.changes.outputs.docker }}
           DOCKER_RESULT: ${{ needs.docker-persistence.result }}
+          RELEASE_EXPECTED: ${{ needs.changes.outputs.release }}
+          RELEASE_MATRIX_RESULT: ${{ needs.v3-platform-validation.result }}
+          RELEASE_COLLECT_RESULT: ${{ needs.collect-r266.result }}
         run: |
           set -euo pipefail
           test "$CHANGES_RESULT" = success
@@ -315,6 +533,8 @@ jobs:
           require_selected "Installer syntax" "$UPDATE_EXPECTED" "$INSTALLER_RESULT"
           require_selected "Installed update" "$UPDATE_EXPECTED" "$UPDATE_RESULT"
           require_selected "Docker persistence" "$DOCKER_EXPECTED" "$DOCKER_RESULT"
+          require_selected "V3 release matrix" "$RELEASE_EXPECTED" "$RELEASE_MATRIX_RESULT"
+          require_selected "V3 R266 evidence collection" "$RELEASE_EXPECTED" "$RELEASE_COLLECT_RESULT"
           if [ "$CORE_EXPECTED" != true ]; then require_unselected "Unselected core job" "$CORE_RESULT"; fi
           if [ "$PYTHON_EXPECTED" != true ]; then require_unselected "Unselected Python tests" "$PYTHON_RESULT"; fi
           if [ "$ALL_EXPECTED" != true ]; then require_unselected "Unselected full Python 3.12 tests" "$PYTHON_312_RESULT"; fi
@@ -323,3 +543,5 @@ jobs:
           require_unselected "Unselected installer syntax" "$INSTALLER_RESULT"
           require_unselected "Unselected installed update" "$UPDATE_RESULT"
           require_unselected "Unselected Docker persistence" "$DOCKER_RESULT"
+          if [ "$RELEASE_EXPECTED" != true ]; then require_unselected "Unselected V3 release matrix" "$RELEASE_MATRIX_RESULT"; fi
+          if [ "$RELEASE_EXPECTED" != true ]; then require_unselected "Unselected V3 R266 collection" "$RELEASE_COLLECT_RESULT"; fi
