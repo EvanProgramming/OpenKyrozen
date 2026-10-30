@@ -216,7 +216,7 @@ function renderInteraction(value) {
     for (const step of plan.steps || []) { const item = document.createElement('li'); item.textContent = `${step.title} — ${step.description} (Acceptance: ${(step.acceptance || []).join('; ')})`; list.appendChild(item); }
     card.appendChild(list);
     const actions = document.createElement('div'); actions.id = 'interaction-actions';
-    const accept = document.createElement('button'); accept.textContent = 'Accept'; accept.onclick = () => submitControl({plan_action: {plan_id: plan.plan_id, version: plan.version, action: 'accept'}}, 'Accepted plan');
+  const accept = document.createElement('button'); accept.textContent = 'Accept'; accept.onclick = () => submitControl({plan_action: {plan_id: plan.plan_id, version: plan.version, fingerprint: plan.fingerprint, action: 'accept'}}, 'Accepted plan');
     const revise = document.createElement('button'); revise.textContent = 'Revise'; revise.onclick = () => { const input = document.getElementById('user-input'); input.placeholder = 'Describe the plan revision…'; input.focus(); };
     const cancel = document.createElement('button'); cancel.textContent = 'Cancel'; cancel.onclick = () => submitControl({plan_action: {plan_id: plan.plan_id, version: plan.version, action: 'cancel'}}, 'Cancelled plan');
     actions.append(accept, revise, cancel); card.appendChild(actions);

@@ -640,6 +640,22 @@ func TestInteractionCardsRestoreModeQuestionAndPlan(t *testing.T) {
 	}
 }
 
+func TestPlanAcceptActionCarriesReviewedFingerprint(t *testing.T) {
+	m := initialModel(".", false)
+	m.width, m.height, m.screen = 100, 30, screenPlan
+	m.pendingPlan = &planProposal{planID: "plan-1", fingerprint: "reviewed-fingerprint", version: 2}
+	var sent bytes.Buffer
+	m.bridge = &bridge{stdin: bufio.NewWriter(&sent)}
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	var payload map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(sent.Bytes()), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["fingerprint"] != "reviewed-fingerprint" {
+		t.Fatalf("plan accept omitted reviewed fingerprint: %#v", payload)
+	}
+}
+
 func TestReducedMotionSkipsSplashAndBackgroundFillsWindow(t *testing.T) {
 	m := initialModel("", true)
 	m.reducedMotion = true

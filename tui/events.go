@@ -341,7 +341,8 @@ func (m *model) applyInteraction(value map[string]any) {
 		}
 	}
 	if raw, ok := value["pending_plan"].(map[string]any); ok {
-		plan := &planProposal{planID: stringValue(raw, "plan_id"), title: stringValue(raw, "title"), summary: stringValue(raw, "summary")}
+		plan := &planProposal{planID: stringValue(raw, "plan_id"), fingerprint: stringValue(raw, "fingerprint"),
+			title: stringValue(raw, "title"), summary: stringValue(raw, "summary")}
 		if version, ok := raw["version"].(float64); ok {
 			plan.version = int(version)
 		}

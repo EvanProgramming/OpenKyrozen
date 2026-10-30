@@ -241,13 +241,13 @@ class V3MatchedLiveTests(unittest.TestCase):
         self.assertTrue(result["plan_scenario_passed"])
         self.assertTrue(result["verified_success"])
 
-    def test_strategic_plan_fixtures_authorize_their_test_process(self):
+    def test_strategic_plan_fixtures_do_not_claim_unavailable_process_authority(self):
         for scenario in ("scope_preserving", "material_revision"):
             with self.subTest(scenario=scenario):
-                plan = _initial_plan(next(item for item in FIXTURES
-                                          if item["plan_scenario"] == scenario))
-                self.assertIn("shell", plan["bounds"]["capabilities"])
-                self.assertIn("process", plan["bounds"]["effects"])
+                fixture = next(item for item in FIXTURES if item["plan_scenario"] == scenario)
+                plan = _initial_plan(fixture)
+                self.assertNotIn("shell", plan["bounds"]["capabilities"])
+                self.assertNotIn("process", plan["bounds"]["effects"])
 
     def test_scope_scenario_rejects_missing_active_strategic_binding(self):
         fixture = next(item for item in FIXTURES if item["plan_scenario"] == "scope_preserving")
