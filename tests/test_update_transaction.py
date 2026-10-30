@@ -48,6 +48,7 @@ class UpdateTransactionTests(unittest.TestCase):
         with patch('openkyrozen.updates.service.Path.home', return_value=self.home), \
              patch('openkyrozen.updates.service.shutil.which', return_value='/bin/uv'), \
              patch.object(self.runtime, '_resolve_update_revision', return_value=self.revision), \
+             patch('openkyrozen.updates.service._read_update_version', return_value='3.0.0'), \
              patch.object(self.runtime, '_update_tui_binary', return_value=(True, 'fixture TUI')), \
              patch.object(self.runtime, '_stage_update_tui', stage, create=True), \
              patch.object(self.runtime, '_verify_update_package', verify, create=True), \
@@ -127,6 +128,17 @@ class UpdateTransactionTests(unittest.TestCase):
             result = self.runtime._self_update()
         self.assertEqual(result.status, 'failed')
         self.assertEqual(result.components['python'], 'unchanged')
+
+    def test_preview_does_not_fall_back_to_unverified_release_version(self):
+        with patch('openkyrozen.updates.service.Path.home', return_value=self.home), \
+             patch('openkyrozen.updates.service.shutil.which', return_value='/bin/uv'), \
+             patch.object(self.runtime, '_resolve_update_revision', return_value=None), \
+             patch.object(self.runtime, '_release_tui_asset_available', return_value=True), \
+             patch.object(self.runtime, '_stage_update_tui', side_effect=RuntimeError('unexpected staging')) as stage:
+            result = self.runtime._self_update()
+        self.assertEqual(result.status, 'failed')
+        self.assertEqual(result.components['python'], 'unchanged')
+        stage.assert_not_called()
 
     def test_concurrent_update_is_rejected_before_installation(self):
         with patch('openkyrozen.updates.service.Path.home', return_value=self.home):

@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 import io
 import json
 import tempfile
@@ -390,6 +391,37 @@ class V3ReleaseGateTests(unittest.TestCase):
             self.assertEqual(manifest["gates"][gate_id]["status"], "waived")
         self.assertEqual(manifest["gates"]["R250"]["status"], "passed")
 
+    def test_signed_preview_manifest_must_match_current_validated_evidence(self):
+        from benchmarks import v3_release_gates
+        verify = getattr(v3_release_gates, "verify_signed_preview_manifest", None)
+        self.assertTrue(callable(verify), "preview publisher must revalidate its signed manifest")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            records, candidate, _ = self.create_inconclusive_bundle(root)
+            manifest = validate_evidence_bundle(records, candidate, verify_signature=self.verify_test_signatures,
+                                                limited_evidence=True, release_scope=LIMITED_SCOPE)
+            path = root / "preview.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            signature = path.with_suffix(".json.asc")
+            signature.write_text(hashlib.sha256(path.read_bytes()).hexdigest(), encoding="utf-8")
+
+            def verify_signature(record, sig):
+                if record.name == "preview.json":
+                    return sig.read_text() == hashlib.sha256(record.read_bytes()).hexdigest()
+                return self.verify_test_signatures(record, sig)
+
+            verified = verify(records, candidate, path, verify_signature=verify_signature)
+            self.assertEqual(verified["waived_gates"], list(WAIVABLE_GATES))
+            path.write_text(path.read_text() + " ", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "manifest signature"):
+                verify(records, candidate, path, verify_signature=verify_signature)
+            signature.write_text(hashlib.sha256(path.read_bytes()).hexdigest(), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "candidate SHA"):
+                verify(records, "b" * 40, path, verify_signature=verify_signature)
+            (records / "R250.log").write_text("tampered evidence", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "evidence hash mismatch"):
+                verify(records, candidate, path, verify_signature=verify_signature)
+
     def test_full_release_stays_blocked_even_with_valid_waivers(self):
         with tempfile.TemporaryDirectory() as directory:
             records, candidate, _ = self.create_inconclusive_bundle(Path(directory))
@@ -525,6 +557,29 @@ class V3ReleaseGateTests(unittest.TestCase):
                     records, candidate, verify_signature=self.verify_test_signatures,
                     limited_evidence=True, release_scope=LIMITED_SCOPE,
                 )
+
+    def test_safety_log_replacement_after_hash_check_is_rejected(self):
+        from benchmarks.v3_release_gates import _contained_file
+
+        with tempfile.TemporaryDirectory() as directory:
+            records, candidate, _ = self.create_inconclusive_bundle(Path(directory))
+            relative = "platforms/linux-py312/unit.log"
+            unit_log = records / relative
+
+            def replace_before_read(root, path):
+                result = _contained_file(root, path)
+                if path == relative and inspect.currentframe().f_back.f_code.co_name == "_verify_safety_logs":
+                    unit_log.write_text(unit_log.read_text(encoding="utf-8") + "tampered\n", encoding="utf-8")
+                return result
+
+            with patch("benchmarks.v3_release_gates._contained_file", new=replace_before_read):
+                with self.assertRaisesRegex(ValueError, "safety.*hash mismatch"):
+                    validate_evidence_bundle(
+                        records, candidate, verify_signature=self.verify_test_signatures,
+                        limited_evidence=True, release_scope=LIMITED_SCOPE,
+                    )
+
+    def test_incomplete_safety_log_cannot_be_waived(self):
         with tempfile.TemporaryDirectory() as directory:
             records, candidate, waivers = self.create_inconclusive_bundle(Path(directory))
             unit_log = records / "platforms/linux-py312/unit.log"

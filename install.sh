@@ -2,7 +2,7 @@
 
 set -eu
 
-release_version='2.0.8'
+release_version='3.0.0.dev1'
 release_tag="v$release_version"
 go_version='1.27.1'
 release_base_url="https://github.com/EvanProgramming/OpenKyrozen/releases/download/$release_tag"

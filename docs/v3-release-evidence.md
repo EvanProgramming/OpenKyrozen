@@ -57,3 +57,21 @@ python -m benchmarks.v3_release_gates \
 ```
 
 The command verifies every record and waiver signature against the pinned GPG fingerprint, checks the exact clean checkout SHA, validates all artifact hashes and platform gates, then emits a signed manifest and detached signature. It verifies, parses, and hashes each signed record from one private snapshot so a file replacement during validation cannot change the bytes being accepted. Any missing, stale, malformed, failed, unsigned, or unsupported inconclusive evidence returns failure and emits no manifest. Preview manifests use `result: limited-evidence`, `release_classification: limited-evidence-preview`, and explicitly list `waived_gates`; full manifests continue to use `result: passed` only when every gate passes. Both manifest forms preserve per-gate `evidence_result`. The command publishes the signature first and the manifest last, and refuses to overwrite either existing output; use a new manifest path for each attempt. The signed manifest records every gate record hash, command-set hash, fixture-set hash, environment, dependency inventory, artifact hash, and waiver/signature hash for audit.
+
+## Publishing the preview
+
+The planned preview uses package version `3.0.0.dev1` and tag `v3.0.0.dev1`. Review and sign the final commit before collecting its evidence: changing the commit invalidates earlier records. The ordinary tag workflow excludes V3 tags and rejects manual V3 release requests, so it cannot create a full release for the preview tag.
+
+After the exact candidate, signed gate records, scoped waivers, and signed manifest have all been reviewed, use the local publisher with an authenticated GitHub CLI and the release-owner signing key. Its output directory must be a new directory outside the checkout:
+
+```sh
+python -m scripts.publish_v3_preview \
+  --repo . \
+  --evidence-dir /outside/checkout/v3-evidence \
+  --manifest /outside/checkout/v3-preview-manifest.json \
+  --output-dir /outside/checkout/v3-preview-assets
+```
+
+The publisher verifies the commit signature, the signed manifest, every gate and waiver again, and the release workflow's V3 guard. It builds from the committed Git tree, signs an artifact hash record, and creates a signed tag bound to that commit. It creates a **draft prerelease**, downloads and hashes its assets, revalidates the evidence, and only then publishes it as a prerelease. Release notes identify every waived gate and its limitations. If a tag already exists, its signature and remote identity must match before retrying. If publication or its final verification is interrupted, inspect the GitHub release and tag before retrying; the publisher never overwrites an existing release.
+
+Preview usage is limited to Linux and macOS with the filesystem sandbox required. Set `KYROZEN_SANDBOX_REQUIRED=1` when running `kyrozen` or `kyrozen-web`; unavailable required protection blocks execution. Preview `/update` verifies the version at the selected main-branch revision and refuses to stage an older or unverifiable version. It supports numeric release, `a`, `b`, `rc`, and `.dev` versions; an unsupported version format is rejected until the user installs an appropriate release explicitly. Windows remains in the acceptance matrix, but is outside preview distribution scope.

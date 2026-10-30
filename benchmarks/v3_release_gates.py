@@ -183,9 +183,12 @@ def _check_record(record: object, gate_id: str, candidate_sha: str, evidence_dir
     return artifacts
 
 
-def _verify_safety_logs(gate_id: str, evidence_dir: Path) -> None:
+def _verify_safety_logs(gate_id: str, evidence_dir: Path, expected_hashes: dict) -> None:
     for relative in SAFETY_UNIT_LOGS:
-        log = _contained_file(evidence_dir, relative).read_text(encoding="utf-8", errors="replace")
+        data = _contained_file(evidence_dir, relative).read_bytes()
+        if hashlib.sha256(data).hexdigest() != expected_hashes.get(relative):
+            raise ValueError(f"{gate_id}: safety evidence hash mismatch for {relative}")
+        log = data.decode("utf-8", errors="replace")
         if not re.search(r"(?m)^Ran \d+ tests? in [^\n]+$", log) or not re.search(r"(?m)^OK(?: \(skipped=\d+\))?$", log):
             raise ValueError(f"{gate_id}: safety test evidence is missing or did not pass for {relative}")
         lines = log.splitlines()
@@ -265,7 +268,7 @@ def _check_waiver(gate_id: str, candidate_sha: str, release_scope: str,
     r266_refs = {ref["path"]: ref["sha256"] for ref in records["R266"]["artifacts"]}
     if any(r266_refs.get(path) != digest for path, digest in required.items() if path in SAFETY_UNIT_LOGS):
         raise ValueError(f"{gate_id}: safety test evidence is not bound by the signed R266 platform record")
-    _verify_safety_logs(gate_id, evidence_dir)
+    _verify_safety_logs(gate_id, evidence_dir, r266_refs)
     return {
         "record_path": waiver_path.relative_to(evidence_dir).as_posix(),
         "record_sha256": hashlib.sha256(waiver_bytes).hexdigest(),
@@ -365,6 +368,35 @@ def validate_evidence_bundle(evidence_dir: Path, candidate_sha: str, *, verify_s
         "waived_gates": waived_gates,
         "gates": gates,
     }
+
+
+def verify_signed_preview_manifest(evidence_dir: Path, candidate_sha: str, manifest_path: Path, *, verify_signature) -> dict:
+    """Verify the signed preview and revalidate the evidence it names before publication."""
+    manifest_path = Path(manifest_path).resolve(strict=True)
+    signature_path = manifest_path.with_name(manifest_path.name + ".asc")
+    manifest_bytes, _, verified = _read_signed_pair(manifest_path, signature_path, verify_signature)
+    if not verified:
+        raise ValueError("preview manifest signature verification failed")
+    try:
+        manifest = json.loads(manifest_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid preview manifest: {exc}") from None
+    if not isinstance(manifest, dict) or manifest.get("candidate_sha") != candidate_sha:
+        raise ValueError("preview manifest candidate SHA does not match the candidate")
+    try:
+        created = datetime.fromisoformat(manifest["created_at"].replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            raise ValueError("timestamp has no timezone")
+    except (KeyError, AttributeError, TypeError, ValueError):
+        raise ValueError("preview manifest has an invalid creation timestamp") from None
+    expected = validate_evidence_bundle(
+        evidence_dir, candidate_sha, verify_signature=verify_signature,
+        limited_evidence=True, release_scope=LIMITED_RELEASE_SCOPE,
+    )
+    if {key: value for key, value in manifest.items() if key != "created_at"} != {
+            key: value for key, value in expected.items() if key != "created_at"}:
+        raise ValueError("preview manifest does not match the current validated evidence")
+    return manifest
 
 
 def _gpg_verify(record_path: Path, signature_path: Path) -> bool:
