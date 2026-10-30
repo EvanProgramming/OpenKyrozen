@@ -1,9 +1,11 @@
 import copy
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
+import traceback
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -402,7 +404,14 @@ class DelegationTests(unittest.TestCase):
         self.assertTrue(entered.wait(10))
         coordinator.cancel(run["run_id"])
         release.set()
-        coordinator.futures[run["run_id"]].result(timeout=5)
+        try:
+            coordinator.futures[run["run_id"]].result(timeout=5)
+        except TimeoutError:
+            frames = sys._current_frames()
+            stacks = [f"{thread.name}:\n{''.join(traceback.format_stack(frames[thread.ident]))}"
+                      for thread in threading.enumerate()
+                      if thread.name.startswith("kyrozen-agent") and thread.ident in frames]
+            self.fail("Cancelled worker did not finish within 5 seconds:\n" + "\n".join(stacks))
         self.assertEqual(coordinator.wait(timeout=3)[0]["status"], "cancelled")
         coordinator.memory.store.append_event("subagent.state", {**run, "status": "running"},
             user_id=coordinator.memory.user_id, workspace_id=coordinator.memory.file_scope_id,

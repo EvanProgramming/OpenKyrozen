@@ -371,7 +371,8 @@ exit 0
         )
         with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(main, "_release_tui_asset_available", return_value=True), \
-             patch.object(main, "_resolve_update_revision", return_value=None), \
+             patch.object(main, "_resolve_update_revision", return_value="a" * 40), \
+             patch("openkyrozen.updates.service._read_update_version", return_value="3.0.0"), \
              patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
              patch.object(main, "_prepare_update_browser", return_value=None), \
              patch.object(main, "_verify_update_package", return_value=True), \
@@ -390,7 +391,7 @@ exit 0
         self.assertIn("--with", command)
         self.assertIn("fastapi", command)
         self.assertIn("uvicorn", command)
-        self.assertTrue(command[-1].endswith("/v3.0.0.dev1/openkyrozen-3.0.0.dev1-py3-none-any.whl"))
+        self.assertTrue(command[-1].endswith("@" + "a" * 40))
 
     def test_update_retries_without_uv_cache_after_install_failure(self):
         from openkyrozen.app.bootstrap import build_application
@@ -404,7 +405,8 @@ exit 0
         )
         with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(main, "_release_tui_asset_available", return_value=True), \
-             patch.object(main, "_resolve_update_revision", return_value=None), \
+             patch.object(main, "_resolve_update_revision", return_value="a" * 40), \
+             patch("openkyrozen.updates.service._read_update_version", return_value="3.0.0"), \
              patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
              patch.object(main, "_prepare_update_browser", return_value=None), \
              patch.object(main, "_verify_update_package", return_value=True), \
@@ -434,7 +436,8 @@ exit 0
         )
         with patch("openkyrozen.updates.service.shutil.which", return_value="/usr/local/bin/uv"), \
              patch.object(main, "_release_tui_asset_available", return_value=True), \
-             patch.object(main, "_resolve_update_revision", return_value=None), \
+             patch.object(main, "_resolve_update_revision", return_value="a" * 40), \
+             patch("openkyrozen.updates.service._read_update_version", return_value="3.0.0"), \
              patch.object(main, "_stage_update_tui", return_value=Path("/fixture-tui")), \
              patch.object(main, "_prepare_update_browser", return_value=None), \
              patch.object(main, "_verify_update_package", return_value=True), \
