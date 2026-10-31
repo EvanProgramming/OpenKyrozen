@@ -2,6 +2,7 @@ import hashlib
 import json
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from openkyrozen.tools.models import ToolResult
@@ -995,38 +996,52 @@ class TaskConsistencyTests(unittest.TestCase):
         self.assertEqual(failed.failure, "command_failed")
         self.assertTrue(retried.success)
 
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
         class SlowProvider:
             def chat(self, _messages, _model):
-                time.sleep(0.2)
+                entered.set()
+                release.wait(5)
+                finished.set()
                 return "late", None
 
         original_provider = main.llm_provider
         main.llm_provider = SlowProvider()
         try:
-            with patch.object(main, "_provider_timeout_seconds", return_value=0.01):
-                started = time.monotonic()
+            with patch.object(main, "_provider_timeout_seconds", return_value=0.1):
                 response = main._get_llm_response([])
+                self.assertTrue(entered.wait(2), "provider worker did not start")
+                self.assertFalse(finished.is_set(), "provider returned before timeout completed")
         finally:
+            release.set()
+            finished.wait(2)
             main.llm_provider = original_provider
-        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertTrue(finished.is_set(), "provider worker did not finish after release")
         self.assertIn("Provider timed out", response)
 
     def test_streaming_provider_obeys_deadline_and_discards_late_chunks(self):
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
         class SlowStreamingProvider:
             def chat_stream(self, _messages, _model):
-                time.sleep(0.2)
-                yield "late"
+                entered.set()
+                release.wait(5)
+                try:
+                    yield "late"
+                finally:
+                    finished.set()
 
         original_provider = main.llm_provider
         main.llm_provider = SlowStreamingProvider()
         chunks = []
         try:
-            with patch.object(main, "_provider_timeout_seconds", return_value=0.01):
-                started = time.monotonic()
+            with patch.object(main, "_provider_timeout_seconds", return_value=0.1):
                 response = main._get_llm_response([], stream=True, on_chunk=chunks.append)
+                self.assertTrue(entered.wait(2), "provider worker did not start")
+                self.assertFalse(finished.is_set(), "provider returned before timeout completed")
         finally:
+            release.set()
+            finished.wait(2)
             main.llm_provider = original_provider
-        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertTrue(finished.is_set(), "provider worker did not finish after release")
         self.assertIn("Provider timed out", response)
         self.assertEqual(chunks, [])
 
