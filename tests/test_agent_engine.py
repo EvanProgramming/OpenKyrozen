@@ -74,6 +74,112 @@ class AgentEngineTests(unittest.TestCase):
         runtime._operation_action = lambda name: name
         runtime._execute_tool_batch = lambda calls, **kwargs: _execute_tool_batch(runtime, calls, **kwargs)
 
+    def complex_native_runtime(self):
+        provider = SimpleNamespace(get_capabilities=lambda _model: ProviderCapabilities(native_tools=True))
+        runtime = SimpleNamespace(
+            execution_context=SimpleNamespace(provider=provider, discovered_tools=frozenset()),
+            llm_provider=None, DEEPSEEK_MODEL="model", MAX_STEPS_PER_TURN=2,
+            _record_foreground_model=contextvars.ContextVar("record", default=False),
+            _conversation_turn_id=contextvars.ContextVar("turn", default=None),
+            _last_response_is_native=contextvars.ContextVar("native", default=False),
+            _last_prompt_tokens=0, _last_completion_tokens=0,
+            tasks=SimpleNamespace(working_plan=None),
+        )
+        runtime._prepare_turn = lambda turn: (
+            setattr(turn, "interaction_mode", "agent"), setattr(turn, "complexity", "complex"),
+            setattr(turn, "learning_run", {"run_id": "run"}), setattr(turn, "learned_context", ""),
+        )
+        runtime._build_messages = lambda *args, **kwargs: []
+        runtime._permitted_tool_names = lambda: {"read_file", "update_plan"}
+        runtime._prompt_profile = lambda: "compact"
+        runtime._get_model_response = Mock(return_value=ModelResponse(
+            tool_calls=(ToolCall("read-1", "read_file", {"path": "note.txt"}),),
+            finish_reason=FinishReason.TOOL_REQUEST,
+        ))
+        runtime._execute_tool_batch = Mock()
+        runtime._deterministic_tool_summary = lambda records: "no tools"
+        runtime._complete_turn = lambda turn: turn.protocol_error_message or turn.final_answer
+        return runtime
+
+    def test_complex_native_turn_cannot_run_tools_before_a_working_plan(self):
+        runtime = self.complex_native_runtime()
+
+        result = AgentEngine(runtime).run(TurnContext("Complex task"))
+
+        runtime._execute_tool_batch.assert_not_called()
+        self.assertIn("plan", result.lower())
+        self.assertEqual(runtime._get_model_response.call_args.kwargs["tool_names"], {"update_plan"})
+
+    def test_complex_native_turn_blocks_when_planning_is_not_permitted(self):
+        runtime = self.complex_native_runtime()
+        runtime._permitted_tool_names = lambda: {"read_file"}
+        result = AgentEngine(runtime).run(TurnContext("Complex task"))
+        self.assertIn("planning is not permitted", result)
+        runtime._get_model_response.assert_not_called()
+        runtime._execute_tool_batch.assert_not_called()
+
+    def test_complex_native_turn_rejects_plan_and_other_tool_in_same_batch(self):
+        runtime = self.complex_native_runtime()
+        runtime._get_model_response.return_value = ModelResponse(tool_calls=(
+            ToolCall("plan-1", "update_plan", {"complexity": "complex", "tasks": []}),
+            ToolCall("read-1", "read_file", {"path": "note.txt"}),
+        ), finish_reason=FinishReason.TOOL_REQUEST)
+        result = AgentEngine(runtime).run(TurnContext("Complex task"))
+        self.assertIn("plan", result.lower())
+        runtime._execute_tool_batch.assert_not_called()
+
+    def test_complex_native_turn_cannot_continue_after_failed_plan_update(self):
+        runtime = self.complex_native_runtime()
+        runtime._get_model_response.side_effect = [
+            ModelResponse(tool_calls=(ToolCall("plan-1", "update_plan", {}),),
+                          finish_reason=FinishReason.TOOL_REQUEST),
+            ModelResponse(tool_calls=(ToolCall("read-1", "read_file", {"path": "note.txt"}),),
+                          finish_reason=FinishReason.TOOL_REQUEST),
+        ]
+        result = AgentEngine(runtime).run(TurnContext("Complex task"))
+        self.assertIn("plan", result.lower())
+        self.assertEqual(runtime._execute_tool_batch.call_count, 1)
+        self.assertEqual(runtime._execute_tool_batch.call_args.args[0][0]["action"], "update_plan")
+
+    def test_complex_native_turn_retries_final_answer_without_plan_then_stops(self):
+        runtime = self.complex_native_runtime()
+        runtime._get_model_response.return_value = ModelResponse(text="Done", finish_reason=FinishReason.FINAL)
+        result = AgentEngine(runtime).run(TurnContext("Complex task"))
+        self.assertIn("not established", result)
+        self.assertEqual(runtime._get_model_response.call_count, 3)
+        runtime._execute_tool_batch.assert_not_called()
+
+    def test_complex_native_turn_runs_other_tools_after_plan_succeeds(self):
+        runtime = self.complex_native_runtime()
+        runtime._get_model_response.side_effect = [
+            ModelResponse(tool_calls=(ToolCall("plan-1", "update_plan", {"complexity": "complex", "tasks": []}),),
+                          finish_reason=FinishReason.TOOL_REQUEST),
+            ModelResponse(tool_calls=(ToolCall("read-1", "read_file", {"path": "note.txt"}),),
+                          finish_reason=FinishReason.TOOL_REQUEST),
+            ModelResponse(text="Done", finish_reason=FinishReason.FINAL),
+        ]
+        def execute(calls, **kwargs):
+            if calls[0]["action"] == "update_plan":
+                runtime.tasks.working_plan = SimpleNamespace(id="plan-1", status="active")
+        runtime._execute_tool_batch.side_effect = execute
+        self.assertEqual(AgentEngine(runtime).run(TurnContext("Complex task")), "Done")
+        self.assertEqual([call.args[0][0]["action"] for call in runtime._execute_tool_batch.call_args_list],
+                         ["update_plan", "read_file"])
+        self.assertEqual(runtime._get_model_response.call_args_list[0].kwargs["tool_names"], {"update_plan"})
+        self.assertIn("read_file", runtime._get_model_response.call_args_list[1].kwargs["tool_names"])
+
+    def test_complex_native_turn_can_finish_after_its_plan_completes(self):
+        runtime = self.complex_native_runtime()
+        runtime.tasks.working_plan = SimpleNamespace(id="plan-1", status="active")
+        runtime._get_model_response.side_effect = [
+            ModelResponse(tool_calls=(ToolCall("read-1", "read_file", {"path": "note.txt"}),),
+                          finish_reason=FinishReason.TOOL_REQUEST),
+            ModelResponse(text="Done", finish_reason=FinishReason.FINAL),
+        ]
+        runtime._execute_tool_batch.side_effect = lambda *args, **kwargs: setattr(
+            runtime.tasks.working_plan, "status", "completed")
+        self.assertEqual(AgentEngine(runtime).run(TurnContext("Complex task")), "Done")
+
     def test_compact_native_falls_back_to_permitted_inventory_without_discovery_access(self):
         runtime = SimpleNamespace(
             execution_context=SimpleNamespace(discovered_tools=frozenset()),
@@ -107,7 +213,8 @@ class AgentEngineTests(unittest.TestCase):
             _last_prompt_tokens=0, _last_completion_tokens=0,
         )
         runtime._prepare_turn = lambda turn: (
-            setattr(turn, "interaction_mode", "agent"), setattr(turn, "learning_run", {"run_id": "run-1"}),
+            setattr(turn, "interaction_mode", "agent"), setattr(turn, "complexity", "simple"),
+            setattr(turn, "learning_run", {"run_id": "run-1"}),
             setattr(turn, "learned_context", ""),
         )
         runtime._build_messages = lambda *args, **kwargs: [{"role": "user", "content": "Save this note"}]
@@ -166,7 +273,8 @@ class AgentEngineTests(unittest.TestCase):
             _last_prompt_tokens=0, _last_completion_tokens=0,
         )
         runtime._prepare_turn = lambda turn: (
-            setattr(turn, "interaction_mode", "agent"), setattr(turn, "learning_run", {"run_id": "run-1"}),
+            setattr(turn, "interaction_mode", "agent"), setattr(turn, "complexity", "simple"),
+            setattr(turn, "learning_run", {"run_id": "run-1"}),
             setattr(turn, "learned_context", ""),
         )
         runtime._build_messages = lambda *args, **kwargs: [{"role": "user", "content": "Review Git history"}]
@@ -219,7 +327,8 @@ class AgentEngineTests(unittest.TestCase):
             _last_prompt_tokens=0, _last_completion_tokens=0,
         )
         runtime._prepare_turn = lambda turn: (
-            setattr(turn, "interaction_mode", "agent"), setattr(turn, "learning_run", {"run_id": "run-1"}),
+            setattr(turn, "interaction_mode", "agent"), setattr(turn, "complexity", "simple"),
+            setattr(turn, "learning_run", {"run_id": "run-1"}),
             setattr(turn, "learned_context", ""),
         )
         runtime._build_messages = lambda *args, **kwargs: [{"role": "user", "content": "Read README"}]
@@ -251,7 +360,8 @@ class AgentEngineTests(unittest.TestCase):
             _last_prompt_tokens=0, _last_completion_tokens=0,
         )
         runtime._prepare_turn = lambda turn: (
-            setattr(turn, "interaction_mode", "agent"), setattr(turn, "learning_run", {"run_id": "run-1"}),
+            setattr(turn, "interaction_mode", "agent"), setattr(turn, "complexity", "simple"),
+            setattr(turn, "learning_run", {"run_id": "run-1"}),
             setattr(turn, "learned_context", ""),
         )
         runtime._build_messages = lambda *args, **kwargs: [{"role": "user", "content": "Use missing tool"}]
@@ -287,7 +397,8 @@ class AgentEngineTests(unittest.TestCase):
             _last_prompt_tokens=2, _last_completion_tokens=1,
         )
         runtime._prepare_turn = lambda turn: (
-            setattr(turn, "interaction_mode", "agent"), setattr(turn, "learning_run", {"run_id": "run-1"}),
+            setattr(turn, "interaction_mode", "agent"), setattr(turn, "complexity", "simple"),
+            setattr(turn, "learning_run", {"run_id": "run-1"}),
             setattr(turn, "learned_context", ""),
         )
         runtime._build_messages = lambda *args, **kwargs: [{"role": "user", "content": "Read README"}]
@@ -360,6 +471,8 @@ class AgentEngineTests(unittest.TestCase):
                     raise AssertionError("native prompt includes legacy control syntax")
                 if len(self.requests) == 1:
                     self.assert_tool_schema(tools, "update_plan")
+                    if {item["name"] for item in tools} != {"update_plan"}:
+                        raise AssertionError("complex direct turn offered other tools before planning")
                     return ModelResponse(
                         tool_calls=(ToolCall("plan-1", "update_plan", {
                             "complexity": "complex",
@@ -408,7 +521,13 @@ class AgentEngineTests(unittest.TestCase):
             runtime._default_turn.provider = provider
             runtime.set_interaction_mode("agent")
             packet = "<memory_context>frozen packet</memory_context>"
+            prepare_turn = runtime._prepare_turn
+            def prepare_complex(turn):
+                prepare_turn(turn)
+                turn.routing_decision = None
+                turn.complexity = "complex"
             with patch.object(runtime, "_schedule_post_turn_learning"), \
+                    patch.object(runtime, "_prepare_turn", side_effect=prepare_complex), \
                     patch.object(runtime, "_build_memory_context", return_value=packet) as retrieve_memory, \
                     patch.object(runtime, "_collect_tool_calls", side_effect=AssertionError("legacy parser used")), \
                     patch.object(runtime, "_collect_unwrapped_tool_calls", side_effect=AssertionError("legacy parser used")):
