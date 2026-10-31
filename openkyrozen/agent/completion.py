@@ -122,7 +122,7 @@ def _complete_turn(self, turn):
                 status_line += f"\n- {task['status']}: {task['description']}"
         turn.final_answer = f"{turn.final_answer.rstrip()}\n\n{status_line}"
 
-    if failed_tools or turn.protocol_error_message:
+    if turn.protocol_error_message and turn.runtime_status == "completed":
         turn.runtime_status = "incomplete"
 
     completion_status = getattr(self, "_turn_completion_status", None)

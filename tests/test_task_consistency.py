@@ -1126,6 +1126,29 @@ class TaskConsistencyTests(unittest.TestCase):
             main.subagent_manager, main.tasks = original_manager, original_tasks
         self.assertEqual(turn.runtime_status, "incomplete")
 
+    def test_protocol_error_preserves_blocked_plan_status(self):
+        from types import SimpleNamespace
+        original_manager, original_tasks = main.subagent_manager, main.tasks
+        main.subagent_manager = SimpleNamespace(coordinator=None)
+        main.tasks = SimpleNamespace(
+            tasks=[{"id": "task-1", "status": "blocked", "description": "Wait for access"}],
+            working_plan=SimpleNamespace(status="active", task_ids=["task-1"]),
+        )
+        turn = SimpleNamespace(
+            final_answer="Work blocked.", protocol_error_message="A Working Plan is required.",
+            tool_records=[], turn_prompt_total=0, turn_completion_total=0, turn_start=time.time(),
+            tool_calls=[], pending_interaction_reply=None, interaction_mode="agent", fix_workflow=None,
+            user_input="complex task", response_text="", learning_run=None, learning_receipts=[],
+            complexity="complex", runtime_status="completed",
+        )
+        try:
+            with patch.object(main, "_advance_fix_workflow", side_effect=lambda state, _request, answer, *_args: (state, answer)), \
+                    patch.object(main, "_finish_learning_run", side_effect=lambda _run, _receipts, _task, result, *_args: result):
+                main._complete_turn(turn)
+        finally:
+            main.subagent_manager, main.tasks = original_manager, original_tasks
+        self.assertEqual(turn.runtime_status, "blocked")
+
     def test_simple_turn_completion_ignores_an_unrelated_pending_task_ledger(self):
         from types import SimpleNamespace
         original_manager, original_tasks = main.subagent_manager, main.tasks
