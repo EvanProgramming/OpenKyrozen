@@ -97,6 +97,8 @@ class AgentEngine:
                     break
                 else:
                     tool_names = {"update_plan"}
+            elif turn.planning_required and not getattr(runtime.execution_context, "child_run_id", None):
+                tool_names |= runtime._permitted_tool_names() & {"update_plan"}
             token = runtime._record_foreground_model.set(False)
             try:
                 try:

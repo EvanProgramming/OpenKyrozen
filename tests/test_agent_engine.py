@@ -168,6 +168,38 @@ class AgentEngineTests(unittest.TestCase):
         self.assertEqual(runtime._get_model_response.call_args_list[0].kwargs["tool_names"], {"update_plan"})
         self.assertIn("read_file", runtime._get_model_response.call_args_list[1].kwargs["tool_names"])
 
+    def test_complex_native_turn_can_revise_plan_in_compact_mode(self):
+        runtime = self.complex_native_runtime()
+        runtime._permitted_tool_names = lambda: {"read_file", "discover_tools", "update_plan"}
+        runtime._get_model_response.side_effect = [
+            ModelResponse(tool_calls=(ToolCall("plan-1", "update_plan", {"complexity": "complex", "tasks": []}),),
+                          finish_reason=FinishReason.TOOL_REQUEST),
+            ModelResponse(tool_calls=(ToolCall("plan-2", "update_plan", {"expected_revision": 1, "operations": []}),),
+                          finish_reason=FinishReason.TOOL_REQUEST),
+            ModelResponse(text="Done", finish_reason=FinishReason.FINAL),
+        ]
+        def execute(calls, **kwargs):
+            runtime.tasks.working_plan = SimpleNamespace(id="plan-1", status="active")
+        runtime._execute_tool_batch.side_effect = execute
+        self.assertEqual(AgentEngine(runtime).run(TurnContext("Complex task")), "Done")
+        self.assertIn("update_plan", runtime._get_model_response.call_args_list[1].kwargs["tool_names"])
+
+    def test_complex_native_turn_does_not_retain_revoked_plan_permission(self):
+        runtime = self.complex_native_runtime()
+        allowed = {"read_file", "discover_tools", "update_plan"}
+        runtime._permitted_tool_names = lambda: allowed.copy()
+        runtime._get_model_response.side_effect = [
+            ModelResponse(tool_calls=(ToolCall("plan-1", "update_plan", {}),), finish_reason=FinishReason.TOOL_REQUEST),
+            ModelResponse(tool_calls=(ToolCall("plan-2", "update_plan", {}),), finish_reason=FinishReason.TOOL_REQUEST),
+        ]
+        def execute(calls, **kwargs):
+            runtime.tasks.working_plan = SimpleNamespace(id="plan-1", status="active")
+            allowed.remove("update_plan")
+        runtime._execute_tool_batch.side_effect = execute
+        result = AgentEngine(runtime).run(TurnContext("Complex task"))
+        self.assertIn("unknown tool", result)
+        self.assertEqual(runtime._execute_tool_batch.call_count, 1)
+
     def test_complex_native_turn_can_finish_after_its_plan_completes(self):
         runtime = self.complex_native_runtime()
         runtime.tasks.working_plan = SimpleNamespace(id="plan-1", status="active")
