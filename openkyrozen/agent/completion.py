@@ -80,7 +80,7 @@ def _complete_turn(self, turn):
 
     verified_fix = turn.fix_workflow and turn.fix_workflow.get("stage") in {"verified", "explained"}
     failed_tools = [] if verified_fix else [record for record in turn.tool_records if not record.get("success")]
-    turn.runtime_status = "incomplete" if failed_tools else "completed"
+    turn.runtime_status = "incomplete" if failed_tools or turn.protocol_error_message else "completed"
     if failed_tools:
         failures = "\n".join(
             f"- {record.get('action', 'Tool')}: operation failed; its result was not verified."
@@ -121,6 +121,9 @@ def _complete_turn(self, turn):
             for task in outstanding:
                 status_line += f"\n- {task['status']}: {task['description']}"
         turn.final_answer = f"{turn.final_answer.rstrip()}\n\n{status_line}"
+
+    if turn.protocol_error_message and turn.runtime_status == "completed":
+        turn.runtime_status = "incomplete"
 
     completion_status = getattr(self, "_turn_completion_status", None)
     if callable(getattr(completion_status, "set", None)):

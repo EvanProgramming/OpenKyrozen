@@ -161,6 +161,13 @@ call identity and fragment length but redact argument text because observers
 include remote UI surfaces; those deltas are progress metadata, not replayable
 invocation input.
 
+For a complex direct native turn, the engine offers only the permitted typed
+`update_plan` tool until an active Working Plan exists. It rejects a batch that
+also requests other tools, retries a planless final response within the turn's
+step limit, and reports an incomplete turn if planning is unavailable or fails.
+Existing Strategic Plan and tool permission checks still apply. Once a plan
+completes, the model may finish or establish a new plan before further tools.
+
 Permitted feature dependencies follow the responsibilities above: `agent` coordinates
 `tasks`, `tools` catalog/model contracts, `security`, provider contracts, `routing`,
 `memory` and `learning`; `tasks` owns its models/storage ports; `memory` owns memory

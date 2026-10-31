@@ -75,12 +75,30 @@ class AgentEngine:
         final_text = ""
         response = None
         history_tool_names: set[str] = set()
+        observed_plan_id = None
 
         max_steps = getattr(runtime.execution_context, "max_steps", None)
         if max_steps is None:
             max_steps = runtime.MAX_STEPS_PER_TURN
         for step in range(max_steps + 1):
             tool_names = self._native_tool_names()
+            plan = getattr(runtime.tasks, "working_plan", None) if turn.planning_required else None
+            if plan is not None and plan.status == "active":
+                observed_plan_id = plan.id
+            completed_plan = (observed_plan_id is not None and plan is not None
+                              and plan.id == observed_plan_id and plan.status == "completed")
+            needs_plan = (turn.planning_required and not getattr(runtime.execution_context, "child_run_id", None)
+                          and (plan is None or plan.status != "active"))
+            if needs_plan:
+                if completed_plan:
+                    tool_names = runtime._permitted_tool_names() & {"update_plan"}
+                elif "update_plan" not in runtime._permitted_tool_names():
+                    turn.protocol_error_message = "A Working Plan is required, but planning is not permitted."
+                    break
+                else:
+                    tool_names = {"update_plan"}
+            elif turn.planning_required and not getattr(runtime.execution_context, "child_run_id", None):
+                tool_names |= runtime._permitted_tool_names() & {"update_plan"}
             token = runtime._record_foreground_model.set(False)
             try:
                 try:
@@ -106,7 +124,9 @@ class AgentEngine:
 
             unknown_tools = [call.name for call in response.tool_calls if call.name not in tool_names]
             if unknown_tools:
-                turn.protocol_error_message = "The provider returned an unknown tool call; no tool was run."
+                turn.protocol_error_message = ("A Working Plan is required before other tools can run."
+                                               if needs_plan else
+                                               "The provider returned an unknown tool call; no tool was run.")
                 if runtime._conversation_turn_id.get() is not None:
                     runtime._record_conversation_entry("model.failure", {
                         "error_type": "invalid_native_tool_call",
@@ -126,6 +146,16 @@ class AgentEngine:
 
             if not response.tool_calls:
                 final_text = response.text.strip()
+                if needs_plan and not completed_plan:
+                    final_text = ""
+                    if step < max_steps:
+                        messages.extend((response if response.continuation else {
+                            "role": "assistant", "content": response.text,
+                        }, {"role": "user", "content":
+                            "Create a Working Plan with the update_plan tool before continuing."}))
+                        continue
+                    turn.protocol_error_message = "A Working Plan was not established; no further tools were run."
+                    break
                 if (not final_text or response.finish_reason == FinishReason.LENGTH) and step < 2:
                     messages.extend((response if response.continuation else {
                         "role": "assistant", "content": response.text,
