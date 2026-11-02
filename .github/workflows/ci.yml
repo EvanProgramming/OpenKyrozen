@@ -33,7 +33,7 @@ jobs:
                   key = id(arg[1])
                   if key not in seen:
                       seen.add(key)
-                      print("TRACE_SQLITE_ERROR", repr(arg[1]), file=sys.stderr, flush=True)
+                      print("TRACE_SQLITE_ERROR", repr(arg[1]), "code", getattr(arg[1], "sqlite_errorcode", None), "name", getattr(arg[1], "sqlite_errorname", None), file=sys.stderr, flush=True)
                       traceback.print_stack(frame, limit=30, file=sys.stderr)
               return trace
           sys.settrace(trace)
