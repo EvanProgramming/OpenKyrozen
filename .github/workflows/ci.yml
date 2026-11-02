@@ -26,7 +26,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force diagnostics | Out-Null
           @'
-          import runpy, sqlite3, sys, threading, traceback
+          import os, runpy, sqlite3, sys, threading, traceback
           seen = set()
           def trace(frame, event, arg):
               if event == "exception" and isinstance(arg[1], sqlite3.OperationalError):
@@ -34,6 +34,20 @@ jobs:
                   if key not in seen:
                       seen.add(key)
                       print("TRACE_SQLITE_ERROR", repr(arg[1]), "code", getattr(arg[1], "sqlite_errorcode", None), "name", getattr(arg[1], "sqlite_errorname", None), file=sys.stderr, flush=True)
+                      db = frame.f_locals.get("db")
+                      if isinstance(db, sqlite3.Connection):
+                          try:
+                              path = db.execute("PRAGMA database_list").fetchone()[2]
+                              print("TRACE_DB_PATH", path, file=sys.stderr, flush=True)
+                              for suffix in ("", "-wal", "-shm"):
+                                  name = path + suffix
+                                  try:
+                                      stat = os.stat(name)
+                                      print("TRACE_DB_FILE", suffix, "exists", True, "mode", oct(stat.st_mode), "size", stat.st_size, "writable", os.access(name, os.W_OK), file=sys.stderr, flush=True)
+                                  except OSError as exc:
+                                      print("TRACE_DB_FILE", suffix, "error", repr(exc), file=sys.stderr, flush=True)
+                          except Exception as exc:
+                              print("TRACE_DB_INSPECT_ERROR", repr(exc), file=sys.stderr, flush=True)
                       traceback.print_stack(frame, limit=30, file=sys.stderr)
               return trace
           sys.settrace(trace)
