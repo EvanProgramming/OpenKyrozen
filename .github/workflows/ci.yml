@@ -8,8 +8,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.13']
-        revision: ['c98800198a92944b3166a1e43cceef7bf55a4d95']
+        python: ['3.12']
+        revision: ['caa7f444c5d5be43bb53f40625879c3fe19bf167']
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
