@@ -610,6 +610,11 @@ class AgentRuntime:
     def _read_tool_artifact(self, args):
         """Read a session-owned tool artifact in pages up to 1,000 characters."""
         from openkyrozen.tools.models import ToolResult, tool_failure
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (TypeError, ValueError):
+                args = None
         artifact_id = args.get("artifact_id") if isinstance(args, dict) else None
         offset = args.get("offset", 0) if isinstance(args, dict) else 0
         limit = args.get("limit", 1000) if isinstance(args, dict) else 1000

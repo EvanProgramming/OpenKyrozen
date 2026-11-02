@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 from openkyrozen.tasks.engine import canonical_status, is_complete, is_terminal
@@ -8,14 +9,23 @@ from openkyrozen.app.config import load_agent_config
 def _execute_action_rounds(self, turn):
     from openkyrozen.agent.delegation import GUIDANCE
     results: list[str] = []
+    full_results: list[dict[str, Any]] = []
     turn.tool_records: list[dict[str, Any]] = []
     successful_operations: set[str] = set()
     operation_scope = str(turn.learning_run.get("run_id") or uuid.uuid4().hex)
+
+    def full_result(receipt, prompt_result):
+        from openkyrozen.agent.conversation import tool_result_to_dict
+        result = getattr(receipt, "tool_result", None)
+        return {"action": receipt.action, "arguments": receipt.args,
+                "output": tool_result_to_dict(result) if result is not None else {"text": prompt_result}}
+
     def record_initial_call(tc, receipt):
         turn.tool_records.append(self._record_turn_receipt(receipt, allow_legacy_task_matching=True))
         prompt_result = self._tool_result_for_prompt(receipt)
         self._render_tool_result(receipt.action, prompt_result)
         results.append(f"- `{receipt.action}({receipt.args!r})` returned:\n{self._safe_fstring(prompt_result)}")
+        full_results.append(full_result(receipt, prompt_result))
         if self.tasks.tasks:
             self._update_tasks_panel()
     self._execute_tool_batch(
@@ -41,6 +51,20 @@ def _execute_action_rounds(self, turn):
     evolving_messages = None
     previous_model_reply = None
     previous_tool_results: list[str] = []
+    previous_full_results: list[dict[str, Any]] = []
+    previous_result_slot = None
+
+    def archive_result(slot):
+        if slot is None:
+            return
+        message, start, output, complete = slot
+        content = json.dumps({"results": complete}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        artifact_id = self._agent_engine._store_tool_output(content)
+        arguments = json.dumps({"artifact_id": artifact_id, "offset": 0, "limit": 1000})
+        action = json.dumps({"action": "read_tool_artifact", "args": arguments})
+        reference = f"Earlier tool results archived. Retrieve a page with Action: {action}"
+        message["content"] = message["content"][:start] + reference + message["content"][start + len(output):]
+
     distribution_reply = None
     coordinator = self.subagent_manager.coordinator
     delegated_this_turn = coordinator and any(run["version"] != turn.agent_versions.get(run["run_id"])
@@ -205,12 +229,33 @@ def _execute_action_rounds(self, turn):
                 summary_messages.insert(2, {"role": "system", "content": memory})
         if evolving_messages is not None:
             summary_messages = evolving_messages
+            try:
+                archive_result(previous_result_slot)
+            except Exception:
+                turn.protocol_error_message = "Could not retain earlier tool results; no further tools were run."
+                break
             summary_messages.append({"role": "assistant", "content": previous_model_reply or ""})
+            previous_result_slot = None
             if previous_tool_results:
-                summary_messages.append({"role": "user", "content": "Tool results:\n" + "\n".join(previous_tool_results)})
+                output = "\n".join(previous_tool_results)
+                message = {"role": "user", "content": "Tool results:\n" + output}
+                summary_messages.append(message)
+                previous_result_slot = (message, len("Tool results:\n"), output, previous_full_results)
             if error_hint or search_throttle:
                 summary_messages.append({"role": "user", "content": error_hint + search_throttle
                                          + self._build_task_progress_hint()})
+        elif turn.tool_results_text:
+            message = summary_messages[-1]
+            start = -1
+            for label in ("The tools returned:\n", "Read-only inspection results:\n", "Tool results:\n"):
+                position = message["content"].rfind(label + turn.tool_results_text)
+                if position >= 0:
+                    start = position + len(label)
+                    break
+            if start < 0:
+                turn.protocol_error_message = "Could not retain earlier tool results; no further tools were run."
+                break
+            previous_result_slot = (message, start, turn.tool_results_text, full_results)
         if distribution_reply is not None:
             step_reply, distribution_reply = distribution_reply, None
         else:
@@ -375,6 +420,7 @@ def _execute_action_rounds(self, turn):
         # execute all new tool calls
         round_count += 1
         next_results: list[str] = []
+        next_full_results: list[dict[str, Any]] = []
         has_errors = False
         def record_followup_call(tc2, receipt):
             nonlocal has_errors, consecutive_search_failures, total_search_calls
@@ -382,6 +428,7 @@ def _execute_action_rounds(self, turn):
             prompt_result = self._tool_result_for_prompt(receipt)
             self._render_tool_result(receipt.action, prompt_result)
             next_results.append(f"- `{receipt.action}({receipt.args!r})` returned:\n{self._safe_fstring(prompt_result)}")
+            next_full_results.append(full_result(receipt, prompt_result))
             if self.tasks.tasks:
                 self._update_tasks_panel()
             if not receipt.success:
@@ -408,8 +455,14 @@ def _execute_action_rounds(self, turn):
         evolving_messages = summary_messages
         previous_model_reply = step_reply
         previous_tool_results = list(next_results)
+        previous_full_results = list(next_full_results)
         # Hard limit: too many search_web calls → one last chance to complete
         if total_search_calls >= 7 and consecutive_search_failures >= 3:
+            try:
+                archive_result(previous_result_slot)
+            except Exception:
+                turn.protocol_error_message = "Could not retain earlier tool results; no further tools were run."
+                break
             final_msg = (
                 "System: Search is unavailable (7+ calls, {0} consecutive failures). "
                 "Stop searching now. Give your **best final answer** using whatever "
@@ -419,6 +472,7 @@ def _execute_action_rounds(self, turn):
             ).format(consecutive_search_failures)
             step_reply = self._call_llm_with_spinner(
                 summary_messages + [{"role": "assistant", "content": step_reply},
+                                    {"role": "user", "content": "Tool results:\n" + "\n".join(next_results)},
                                     {"role": "user", "content": final_msg}]
             ).strip()
             step_reply, search_meta = self._observe_turn_response(turn, step_reply, summary_messages)

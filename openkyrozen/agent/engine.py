@@ -60,22 +60,23 @@ class AgentEngine:
         discovered = getattr(runtime.execution_context, "discovered_tools", frozenset())
         return permitted & (_COMPACT_CORE_TOOLS | set(discovered))
 
-    def _archive_replies(self, messages, indexes):
-        if not indexes:
-            return
-        import json
+    def _store_tool_output(self, content):
         runtime = self.runtime
         memory = runtime.memory_bank
         task_owner = getattr(runtime.current_session, "_delegation_parent", None) or runtime
         tasks = getattr(task_owner, "tasks", None)
+        return memory.store.artifacts.get_or_create(
+            content, user_id=getattr(tasks, "user_id", None) or memory.user_id,
+            workspace_id=getattr(tasks, "workspace_id", None) or memory.workspace_id,
+            session_id=getattr(tasks, "session_id", None) or memory.session_id,
+        )
+
+    def _archive_replies(self, messages, indexes):
+        import json
         for index in indexes:
             reply = messages[index]
             content = json.dumps(reply.output, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            artifact_id = memory.store.artifacts.get_or_create(
-                content, user_id=getattr(tasks, "user_id", None) or memory.user_id,
-                workspace_id=getattr(tasks, "workspace_id", None) or memory.workspace_id,
-                session_id=getattr(tasks, "session_id", None) or memory.session_id,
-            )
+            artifact_id = self._store_tool_output(content)
             summary = {"artifact_id": artifact_id, "total_chars": len(content)}
             messages[index] = ToolReply(reply.call_id, reply.name, {
                 "data": summary, "text": "Earlier tool result archived; use read_tool_artifact to retrieve it.",
