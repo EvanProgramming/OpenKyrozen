@@ -14,3 +14,9 @@ later tool round is sent to the provider, older native replies become artifact r
 while their call/reply identities remain intact. The tool inventory lists the
 retrieval schema and bounds. Access still requires permission to use
 `read_tool_artifact`.
+
+Legacy text-protocol turns also replace earlier rounds with scoped artifact
+references. Their reference includes an `Action` example whose `args` is a JSON
+string containing `artifact_id`, `offset`, and `limit`. Archived rounds contain
+structured results, including content beyond the legacy display limit. The newest
+round stays inline, and a storage failure stops the turn before another model request.
