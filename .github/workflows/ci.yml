@@ -8,8 +8,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.12', '3.13']
-        revision: ['0f172f9fe692ff8fafcc0a15a72fe51eaf67e977', 'c98800198a92944b3166a1e43cceef7bf55a4d95']
+        python: ['3.13']
+        revision: ['c98800198a92944b3166a1e43cceef7bf55a4d95']
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -25,12 +25,27 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force diagnostics | Out-Null
+          @'
+          import runpy, sqlite3, sys, threading, traceback
+          seen = set()
+          def trace(frame, event, arg):
+              if event == "exception" and isinstance(arg[1], sqlite3.OperationalError):
+                  key = id(arg[1])
+                  if key not in seen:
+                      seen.add(key)
+                      print("TRACE_SQLITE_ERROR", repr(arg[1]), file=sys.stderr, flush=True)
+                      traceback.print_stack(frame, limit=30, file=sys.stderr)
+              return trace
+          sys.settrace(trace)
+          threading.settrace(trace)
+          runpy.run_path("scripts/subagent_workflow_acceptance.py", run_name="__main__")
+          '@ | Set-Content -Encoding utf8 diagnostics/trace_acceptance.py
           $failed = 0
           1..20 | ForEach-Object {
             $iteration = $_
             python -m unittest -v tests.test_delegation.DelegationTests.test_cancel_during_provider_call_prevents_late_write *> "diagnostics/cancel-$iteration.log"
             if ($LASTEXITCODE -ne 0) { $failed++ ; Write-Host "Cancellation iteration $iteration failed" }
-            python scripts/subagent_workflow_acceptance.py *> "diagnostics/reviewer-$iteration.log"
+            python diagnostics/trace_acceptance.py *> "diagnostics/reviewer-$iteration.log"
             if ($LASTEXITCODE -ne 0) { $failed++ ; Write-Host "Reviewer iteration $iteration failed" }
           }
           Write-Host "Diagnostic failures: $failed"
