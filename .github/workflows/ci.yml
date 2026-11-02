@@ -43,7 +43,7 @@ jobs:
           $failed = 0
           1..20 | ForEach-Object {
             $iteration = $_
-            python -m unittest -v tests.test_delegation.DelegationTests.test_cancel_during_provider_call_prevents_late_write *> "diagnostics/cancel-$iteration.log"
+            python -c "import faulthandler,unittest; faulthandler.dump_traceback_later(8); unittest.main(module=None)" -v tests.test_delegation.DelegationTests.test_cancel_during_provider_call_prevents_late_write *> "diagnostics/cancel-$iteration.log"
             if ($LASTEXITCODE -ne 0) { $failed++ ; Write-Host "Cancellation iteration $iteration failed" }
             python diagnostics/trace_acceptance.py *> "diagnostics/reviewer-$iteration.log"
             if ($LASTEXITCODE -ne 0) { $failed++ ; Write-Host "Reviewer iteration $iteration failed" }
