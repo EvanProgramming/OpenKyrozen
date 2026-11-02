@@ -99,6 +99,13 @@ def _record_context_history_metrics(self, messages: list[dict[str, Any]]) -> Non
     retransmitted_ids = unique_history_ids & seen
     entry_tokens = {entry.id: max(1, (len(json.dumps(entry.payload, ensure_ascii=False)) + 3) // 4)
                     for entry in entries if entry.id in history_ids}
+    if projection is not None and projection[0] == id(messages):
+        for index, entry_id in projection[1].items():
+            if index < len(messages) and isinstance(messages[index], ToolReply):
+                reply = messages[index]
+                sent = {"call_id": reply.call_id, "name": reply.name,
+                        "output": reply.output, "is_error": reply.is_error}
+                entry_tokens[entry_id] = max(1, (len(json.dumps(sent, ensure_ascii=False)) + 3) // 4)
     self._context_history_metrics.set({
         "new_entry_count": len(new_ids),
         "retransmitted_entry_count": len(retransmitted_ids),

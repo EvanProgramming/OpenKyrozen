@@ -21,6 +21,23 @@ class ToolArtifactsRepository:
             )
         return artifact_id
 
+    def get_or_create(self, content: str, *, user_id: str, workspace_id: str, session_id: str) -> str:
+        if not all(isinstance(value, str) and value for value in (user_id, workspace_id, session_id)):
+            raise ValueError("Tool artifacts require a complete session scope")
+        with self.database._lock, self.database.connection() as db:
+            row = db.execute(
+                "SELECT id FROM tool_artifacts WHERE user_id=? AND workspace_id=? AND session_id=? AND content=? LIMIT 1",
+                (user_id, workspace_id, session_id, content),
+            ).fetchone()
+            if row is not None:
+                return row["id"]
+            artifact_id = f"artifact_{uuid.uuid4().hex}"
+            db.execute(
+                "INSERT INTO tool_artifacts(id,user_id,workspace_id,session_id,content,created_at) VALUES(?,?,?,?,?,?)",
+                (artifact_id, user_id, workspace_id, session_id, content, utc_now()),
+            )
+            return artifact_id
+
     def read_page(self, artifact_id: str, offset: int, limit: int, *,
                   user_id: str, workspace_id: str, session_id: str) -> dict | None:
         with self.database.connection() as db:
