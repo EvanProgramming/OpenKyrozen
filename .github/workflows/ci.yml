@@ -1,73 +1,59 @@
-name: V3 Windows reliability diagnostics
+name: V3 SQLite Windows reduction
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  diagnostics:
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ['3.12']
-        revision: ['caa7f444c5d5be43bb53f40625879c3fe19bf167']
+  reduce:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: '${{ matrix.revision }}'
       - uses: actions/setup-python@v5
         with:
-          python-version: '${{ matrix.python }}'
-      - name: Install project dependencies
-        run: python -m pip install -e '.[all]'
-      - name: Repeat cancellation and reviewer acceptance
+          python-version: '3.12'
+      - name: Exercise concurrent SQLite WAL connections
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force diagnostics | Out-Null
           @'
-          import os, runpy, sqlite3, sys, threading, traceback
-          seen = set()
-          def trace(frame, event, arg):
-              if event == "exception" and isinstance(arg[1], sqlite3.OperationalError):
-                  key = id(arg[1])
-                  if key not in seen:
-                      seen.add(key)
-                      print("TRACE_SQLITE_ERROR", repr(arg[1]), "code", getattr(arg[1], "sqlite_errorcode", None), "name", getattr(arg[1], "sqlite_errorname", None), file=sys.stderr, flush=True)
-                      db = frame.f_locals.get("db")
-                      if isinstance(db, sqlite3.Connection):
-                          try:
-                              path = db.execute("PRAGMA database_list").fetchone()[2]
-                              print("TRACE_DB_PATH", path, file=sys.stderr, flush=True)
-                              for suffix in ("", "-wal", "-shm"):
-                                  name = path + suffix
-                                  try:
-                                      stat = os.stat(name)
-                                      print("TRACE_DB_FILE", suffix, "exists", True, "mode", oct(stat.st_mode), "size", stat.st_size, "writable", os.access(name, os.W_OK), file=sys.stderr, flush=True)
-                                  except OSError as exc:
-                                      print("TRACE_DB_FILE", suffix, "error", repr(exc), file=sys.stderr, flush=True)
-                          except Exception as exc:
-                              print("TRACE_DB_INSPECT_ERROR", repr(exc), file=sys.stderr, flush=True)
-                      traceback.print_stack(frame, limit=30, file=sys.stderr)
-              return trace
-          sys.settrace(trace)
-          threading.settrace(trace)
-          runpy.run_path("scripts/subagent_workflow_acceptance.py", run_name="__main__")
-          '@ | Set-Content -Encoding utf8 diagnostics/trace_acceptance.py
-          $failed = 0
-          1..20 | ForEach-Object {
-            $iteration = $_
-            python -c "import faulthandler,unittest; faulthandler.dump_traceback_later(8); unittest.main(module=None)" -v tests.test_delegation.DelegationTests.test_cancel_during_provider_call_prevents_late_write *> "diagnostics/cancel-$iteration.log"
-            if ($LASTEXITCODE -ne 0) { $failed++ ; Write-Host "Cancellation iteration $iteration failed" }
-            python diagnostics/trace_acceptance.py *> "diagnostics/reviewer-$iteration.log"
-            if ($LASTEXITCODE -ne 0) { $failed++ ; Write-Host "Reviewer iteration $iteration failed" }
-          }
-          Write-Host "Diagnostic failures: $failed"
-          if ($failed -gt 0) { exit 1 }
-      - name: Upload diagnostics
+          import concurrent.futures, json, os, sqlite3, tempfile, threading
+          from pathlib import Path
+          print('SQLite version:', sqlite3.sqlite_version, flush=True)
+          all_results = {}
+          for keep_open in (False, True):
+              failures = []
+              for repetition in range(10):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = str(Path(directory) / 'state.sqlite3')
+                      initial = sqlite3.connect(path, isolation_level=None, timeout=30)
+                      initial.execute('PRAGMA journal_mode=WAL')
+                      initial.execute('CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)')
+                      keeper = initial if keep_open else None
+                      if not keep_open: initial.close()
+                      barrier = threading.Barrier(8)
+                      def worker(number):
+                          barrier.wait()
+                          for i in range(150):
+                              db = sqlite3.connect(path, isolation_level=None, timeout=30)
+                              try:
+                                  db.execute('PRAGMA busy_timeout=30000')
+                                  db.execute('PRAGMA synchronous=NORMAL')
+                                  db.execute('INSERT INTO records(value) VALUES(?)', (str(number),))
+                              except sqlite3.Error as exc:
+                                  failures.append({'iteration': repetition, 'worker': number, 'step': i,
+                                      'error': str(exc), 'code': getattr(exc,'sqlite_errorcode',None),
+                                      'name': getattr(exc,'sqlite_errorname',None)})
+                              finally: db.close()
+                      with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                          list(pool.map(worker, range(8)))
+                      if keeper: keeper.close()
+              all_results[str(keep_open)] = failures
+              print('keeper', keep_open, 'failures', len(failures), flush=True)
+          Path('sqlite-reduction.json').write_text(json.dumps({'sqlite_version':sqlite3.sqlite_version,'failures':all_results}, indent=2))
+          '@ | Set-Content -Encoding utf8 reduce.py
+          python reduce.py
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: windows-reliability-py${{ matrix.python }}-${{ matrix.revision }}
-          path: diagnostics/
+          name: windows-sqlite-reduction
+          path: sqlite-reduction.json
           if-no-files-found: warn
