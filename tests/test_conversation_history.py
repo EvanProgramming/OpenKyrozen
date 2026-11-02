@@ -112,6 +112,31 @@ class ConversationHistoryTests(unittest.TestCase):
         self.assertEqual(self.history.head, original_head)
         self.assertEqual(self.history.display_messages(), [{"role": "user", "content": "old"}])
 
+    def test_context_metrics_count_archived_reply_sent_to_provider(self):
+        from contextvars import ContextVar
+        from types import SimpleNamespace
+        from openkyrozen.agent.context import _record_context_history_metrics
+        from openkyrozen.providers.models import ToolReply
+
+        entry = self.history.entry("tool.result", {
+            "call_id": "call-1", "name": "read_file", "output": {"text": "x" * 6000}, "is_error": False,
+        })
+        self.history.append(entry)
+        messages = [ToolReply("call-1", "read_file", {"data": {"artifact_id": "artifact-1"},
+                                                        "text": "archived"})]
+        runtime = SimpleNamespace(
+            conversation_history=self.history, _conversation_turn_id=ContextVar("turn", default=None),
+            _context_history_projection_ids=ContextVar("projection", default=None),
+            _context_history_seen=ContextVar("seen", default=set()),
+            _context_history_metrics=ContextVar("metrics", default={}),
+        )
+        runtime._context_history_projection_ids.set((id(messages), {0: entry.id}, (0, 1)))
+        _record_context_history_metrics(runtime, messages)
+        self.assertEqual(runtime._context_history_metrics.get()["new_entry_count"], 1)
+        self.assertLess(runtime._context_history_metrics.get()["new_context_tokens"], 500)
+        _record_context_history_metrics(runtime, messages)
+        self.assertLess(runtime._context_history_metrics.get()["retransmitted_history_tokens"], 500)
+
     def test_context_metrics_drop_compacted_native_history_entries(self):
         from types import SimpleNamespace
         from openkyrozen.agent.compaction import ContextState

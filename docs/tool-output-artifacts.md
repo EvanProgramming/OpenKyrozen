@@ -9,5 +9,8 @@ characters in the serialized JSON result, so pages can be concatenated exactly.
 Artifacts are private to their user, workspace, and session. Knowing an ID does
 not grant access from another scope. They remain available until that session or
 workspace is deleted, at which point the artifact rows are deleted with the
-other scoped state. Small results remain inline. The tool inventory lists the
-retrieval schema and bounds.
+other scoped state. The most recent native tool round remains inline. Before a
+later tool round is sent to the provider, older native replies become artifact references
+while their call/reply identities remain intact. The tool inventory lists the
+retrieval schema and bounds. Access still requires permission to use
+`read_tool_artifact`.

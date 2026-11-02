@@ -6,7 +6,7 @@ from openkyrozen.providers.models import FinishReason, ToolReply
 
 _COMPACT_CORE_TOOLS = frozenset({
     "list_dir", "find_files", "search_files", "read_file", "write_file", "edit_file", "apply_patch",
-    "run_cmd", "discover_tools",
+    "run_cmd", "discover_tools", "read_tool_artifact",
 })
 
 
@@ -60,6 +60,31 @@ class AgentEngine:
         discovered = getattr(runtime.execution_context, "discovered_tools", frozenset())
         return permitted & (_COMPACT_CORE_TOOLS | set(discovered))
 
+    def _archive_replies(self, messages, indexes):
+        if not indexes:
+            return
+        import json
+        runtime = self.runtime
+        memory = runtime.memory_bank
+        task_owner = getattr(runtime.current_session, "_delegation_parent", None) or runtime
+        tasks = getattr(task_owner, "tasks", None)
+        for index in indexes:
+            reply = messages[index]
+            content = json.dumps(reply.output, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            artifact_id = memory.store.artifacts.get_or_create(
+                content, user_id=getattr(tasks, "user_id", None) or memory.user_id,
+                workspace_id=getattr(tasks, "workspace_id", None) or memory.workspace_id,
+                session_id=getattr(tasks, "session_id", None) or memory.session_id,
+            )
+            summary = {"artifact_id": artifact_id, "total_chars": len(content)}
+            messages[index] = ToolReply(reply.call_id, reply.name, {
+                "data": summary, "text": "Earlier tool result archived; use read_tool_artifact to retrieve it.",
+                "error": ({"code": "archived_result", "message": "Tool call failed; see artifact.",
+                           "retriable": False, "metadata": {"artifact_id": artifact_id}}
+                          if reply.is_error else None),
+                "metadata": {"artifact_id": artifact_id},
+            }, reply.is_error)
+
     def _run_native(self, turn: TurnContext) -> None:
         runtime = self.runtime
         from openkyrozen.agent.conversation import model_response_to_dict
@@ -70,12 +95,18 @@ class AgentEngine:
         turn.tool_calls = []
         turn.tool_records = []
         turn.tool_results_text = ""
+        try:
+            self._archive_replies(messages, [index for index, item in enumerate(messages) if isinstance(item, ToolReply)])
+        except Exception:
+            turn.protocol_error_message = "Could not retain earlier tool results; no further tools were run."
+            return
         successful_operations: set[str] = set()
         operation_scope = str(turn.learning_run.get("run_id"))
         final_text = ""
         response = None
         history_tool_names: set[str] = set()
         observed_plan_id = None
+        previous_reply_indexes: list[int] = []
 
         max_steps = getattr(runtime.execution_context, "max_steps", None)
         if max_steps is None:
@@ -169,6 +200,7 @@ class AgentEngine:
                 turn.protocol_error_message = final_text
                 break
             messages.append(response)
+            current_reply_indexes: list[int] = []
             history_tool_names.update(call.name for call in response.tool_calls)
             calls = [{"action": call.name, "args": call.arguments, "call_id": call.id,
                       "call_id_source": "native",
@@ -186,6 +218,7 @@ class AgentEngine:
                 outcome = receipt.tool_result or ToolResult(data=receipt.result_data, text=receipt.result)
                 reply_data = tool_result_to_dict(outcome)
                 messages.append(ToolReply(call["call_id"], call["action"], reply_data, not outcome.success))
+                current_reply_indexes.append(len(messages) - 1)
                 turn.tool_results_text += f"- `{call['action']}` returned:\n{runtime._safe_fstring(prompt_result)}\n"
                 runtime._update_tasks_panel()
 
@@ -193,5 +226,11 @@ class AgentEngine:
                 calls, operation_scope=operation_scope, successful_operations=successful_operations,
                 call_id_source="native", on_receipt=record_native_call,
             )
+            try:
+                self._archive_replies(messages, previous_reply_indexes)
+            except Exception:
+                turn.protocol_error_message = "Could not retain earlier tool results; no further tools were run."
+                break
+            previous_reply_indexes = current_reply_indexes
 
         turn.final_answer = final_text or runtime._deterministic_tool_summary(turn.tool_records)

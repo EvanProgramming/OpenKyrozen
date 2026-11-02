@@ -212,6 +212,17 @@ class AgentEngineTests(unittest.TestCase):
             runtime.tasks.working_plan, "status", "completed")
         self.assertEqual(AgentEngine(runtime).run(TurnContext("Complex task")), "Done")
 
+    def test_compact_native_artifact_reader_respects_permission(self):
+        permitted = {"discover_tools", "read_tool_artifact"}
+        runtime = SimpleNamespace(
+            execution_context=SimpleNamespace(discovered_tools=frozenset()),
+            _prompt_profile=lambda: "compact", _permitted_tool_names=lambda: permitted,
+        )
+        engine = AgentEngine(runtime)
+        self.assertIn("read_tool_artifact", engine._native_tool_names())
+        permitted.remove("read_tool_artifact")
+        self.assertNotIn("read_tool_artifact", engine._native_tool_names())
+
     def test_compact_native_falls_back_to_permitted_inventory_without_discovery_access(self):
         runtime = SimpleNamespace(
             execution_context=SimpleNamespace(discovered_tools=frozenset()),
@@ -331,6 +342,11 @@ class AgentEngineTests(unittest.TestCase):
         runtime._safe_fstring = str
         runtime._deterministic_tool_summary = lambda records: "tool summary"
         runtime.tasks = SimpleNamespace(tasks=[])
+        runtime.current_session = SimpleNamespace()
+        runtime.memory_bank = SimpleNamespace(
+            user_id="user", workspace_id="workspace", session_id="session",
+            store=SimpleNamespace(artifacts=SimpleNamespace(get_or_create=lambda *args, **kwargs: "artifact-test")),
+        )
         runtime._complete_turn = Mock(side_effect=lambda turn: turn.final_answer)
 
         result = AgentEngine(runtime).run(TurnContext("Review Git history"))
@@ -473,6 +489,32 @@ class AgentEngineTests(unittest.TestCase):
         runtime._initial_turn_response.assert_not_called()
         runtime._execute_action_rounds.assert_not_called()
 
+    def test_archived_failed_result_keeps_error_identity_and_scoped_full_output(self):
+        import json
+        from openkyrozen.persistence.store import EventStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            memory = SimpleNamespace(store=store, user_id="alice", workspace_id="project", session_id="session")
+            runtime = SimpleNamespace(memory_bank=memory, current_session=SimpleNamespace(), tasks=None)
+            original = {"data": None, "text": "failed detail", "error": {"code": "denied"}, "metadata": {}}
+            messages = [ToolReply("call-1", "read_file", original, True)]
+            AgentEngine(runtime)._archive_replies(messages, [0])
+            reply = messages[0]
+            self.assertTrue(reply.is_error)
+            self.assertEqual((reply.call_id, reply.name), ("call-1", "read_file"))
+            artifact_id = reply.output["data"]["artifact_id"]
+            page = store.artifacts.read_page(artifact_id, 0, 1000, user_id="alice",
+                                             workspace_id="project", session_id="session")
+            self.assertEqual(json.loads(page["content"]), original)
+            self.assertIsNone(store.artifacts.read_page(artifact_id, 0, 1000, user_id="alice",
+                                                       workspace_id="other", session_id="session"))
+            reopened = EventStore(Path(directory) / "state.sqlite3")
+            second = [ToolReply("call-1", "read_file", original, True)]
+            runtime.memory_bank.store = reopened
+            AgentEngine(runtime)._archive_replies(second, [0])
+            self.assertEqual(second[0].output["data"]["artifact_id"], artifact_id)
+
     def test_runtime_native_provider_executes_and_continues_without_text_parsing(self):
         from openkyrozen.app.bootstrap import build_application, build_memory
         from openkyrozen.tools import ToolAdapters
@@ -524,7 +566,7 @@ class AgentEngineTests(unittest.TestCase):
                         continuation=provider_continuation(self, model, "fixture", {"id": "response-2"}),
                         metadata={"provider": self.name, "model": model},
                     )
-                if not isinstance(messages[-1], ToolReply) or messages[-1].call_id != "read-1":
+                if len(self.requests) == 3 and (not isinstance(messages[-1], ToolReply) or messages[-1].call_id != "read-1"):
                     raise AssertionError("native read result was not correlated to its call")
                 return ModelResponse(
                     text="The file contains verified text.", finish_reason=FinishReason.FINAL,
@@ -565,10 +607,36 @@ class AgentEngineTests(unittest.TestCase):
                     patch.object(runtime, "_collect_unwrapped_tool_calls", side_effect=AssertionError("legacy parser used")):
                 answer = runtime.chat(runtime.current_session, "Read note.txt")
 
+            older = next(item for item in provider.requests[2][0]
+                         if isinstance(item, ToolReply) and item.call_id == "plan-1")
+            original = provider.requests[1][0][-1].output
+            self.assertNotEqual(older.output, original)
+            artifact_id = older.output["data"]["artifact_id"]
+            page = runtime.tool_registry.get_spec("read_tool_artifact").executor({"artifact_id": artifact_id})
+            import json
+            self.assertEqual(json.loads(page.data["content"]), original)
+            self.assertIsNone(runtime.memory_bank.store.artifacts.read_page(
+                artifact_id, 0, 1000, user_id="another-user", workspace_id=runtime.tasks.workspace_id,
+                session_id=runtime.tasks.session_id))
+            with patch.object(runtime, "_schedule_post_turn_learning"), \
+                    patch.object(runtime, "_prepare_turn", side_effect=prepare_complex), \
+                    patch.object(runtime, "_build_memory_context", return_value=packet):
+                next_answer = runtime.chat(runtime.current_session, "Continue")
+            self.assertIn("verified text", next_answer)
+            historical = [item for item in provider.requests[3][0] if isinstance(item, ToolReply)]
+            self.assertTrue(historical)
+            self.assertTrue(all("artifact_id" in item.output["data"] for item in historical))
+            self.assertEqual(historical[0].output["data"]["artifact_id"], artifact_id)
+            with patch.object(runtime.memory_bank.store.artifacts, "get_or_create", side_effect=OSError("offline")), \
+                    patch.object(runtime, "_schedule_post_turn_learning"):
+                failure = runtime.chat(runtime.current_session, "Continue again")
+            self.assertIn("Could not retain earlier tool results", failure)
+            self.assertEqual(provider.calls_attempted, 4)
+
         self.assertIn("verified text", answer)
         retrieve_memory.assert_called_once()
-        self.assertEqual(provider.calls_attempted, 3)
-        self.assertEqual(len(provider.requests), 3)
+        self.assertEqual(provider.calls_attempted, 4)
+        self.assertEqual(len(provider.requests), 4)
         self.assertTrue(all(any(packet in item.get("content", "") for item in request[0]
                                 if isinstance(item, dict)) for request in provider.requests))
         self.assertEqual(provider.requests[1][0][-1].call_id, "plan-1")
