@@ -9,10 +9,13 @@ jobs:
       fail-fast: false
       matrix:
         python: ['3.12', '3.13']
+        revision: ['0f172f9fe692ff8fafcc0a15a72fe51eaf67e977', 'c98800198a92944b3166a1e43cceef7bf55a4d95']
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: '${{ matrix.revision }}'
       - uses: actions/setup-python@v5
         with:
           python-version: '${{ matrix.python }}'
@@ -36,6 +39,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-reliability-py${{ matrix.python }}
+          name: windows-reliability-py${{ matrix.python }}-${{ matrix.revision }}
           path: diagnostics/
           if-no-files-found: warn
