@@ -1,59 +1,54 @@
-name: V3 SQLite Windows reduction
+name: V3 Windows snapshot diagnostic
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  reduce:
+  compare:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: caa7f444c5d5be43bb53f40625879c3fe19bf167
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Exercise concurrent SQLite WAL connections
+      - run: python -m pip install -e '.[all]'
+      - name: Compare unmodified fixture with database excluded from history
         shell: pwsh
         run: |
           @'
-          import concurrent.futures, json, os, sqlite3, tempfile, threading
+          import os, runpy, shutil, sys
           from pathlib import Path
-          print('SQLite version:', sqlite3.sqlite_version, flush=True)
-          all_results = {}
-          for keep_open in (False, True):
-              failures = []
-              for repetition in range(10):
-                  with tempfile.TemporaryDirectory() as directory:
-                      path = str(Path(directory) / 'state.sqlite3')
-                      initial = sqlite3.connect(path, isolation_level=None, timeout=30)
-                      initial.execute('PRAGMA journal_mode=WAL')
-                      initial.execute('CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)')
-                      keeper = initial if keep_open else None
-                      if not keep_open: initial.close()
-                      barrier = threading.Barrier(8)
-                      def worker(number):
-                          barrier.wait()
-                          for i in range(150):
-                              db = sqlite3.connect(path, isolation_level=None, timeout=30)
-                              try:
-                                  db.execute('PRAGMA busy_timeout=30000')
-                                  db.execute('PRAGMA synchronous=NORMAL')
-                                  db.execute('INSERT INTO records(value) VALUES(?)', (str(number),))
-                              except sqlite3.Error as exc:
-                                  failures.append({'iteration': repetition, 'worker': number, 'step': i,
-                                      'error': str(exc), 'code': getattr(exc,'sqlite_errorcode',None),
-                                      'name': getattr(exc,'sqlite_errorname',None)})
-                              finally: db.close()
-                      with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-                          list(pool.map(worker, range(8)))
-                      if keeper: keeper.close()
-              all_results[str(keep_open)] = failures
-              print('keeper', keep_open, 'failures', len(failures), flush=True)
-          Path('sqlite-reduction.json').write_text(json.dumps({'sqlite_version':sqlite3.sqlite_version,'failures':all_results}, indent=2))
-          '@ | Set-Content -Encoding utf8 reduce.py
-          python reduce.py
+          from openkyrozen.workspace.history import HistoryManager
+          original_excluded = HistoryManager._excluded
+          original_copy = shutil.copy2
+          def tracked_copy(source, destination, *args, **kwargs):
+              if Path(source).name in {'state.sqlite3', 'state.sqlite3-wal', 'state.sqlite3-shm'}:
+                  print('SNAPSHOT_DATABASE_FILE:', Path(source).name, flush=True)
+              return original_copy(source, destination, *args, **kwargs)
+          shutil.copy2 = tracked_copy
+          if os.environ.get('EXCLUDE_DB') == '1':
+              def excluded(self, path):
+                  db = Path(self.store.path).expanduser().resolve()
+                  return path in {db, Path(str(db)+'-wal'), Path(str(db)+'-shm'), Path(str(db)+'-journal')} or original_excluded(self, path)
+              HistoryManager._excluded = excluded
+          sys.argv = ['scripts/subagent_workflow_acceptance.py']
+          runpy.run_path(sys.argv[0], run_name='__main__')
+          '@ | Set-Content -Encoding utf8 snapshot_compare.py
+          New-Item -ItemType Directory -Force comparison | Out-Null
+          foreach ($mode in @('baseline','excluded')) {
+            $env:EXCLUDE_DB = if ($mode -eq 'excluded') {'1'} else {'0'}
+            for ($i=1; $i -le 25; $i++) {
+              $log = "comparison/$mode-$i.log"
+              python snapshot_compare.py *> $log
+              Write-Host "$mode iteration $i exit=$LASTEXITCODE"
+            }
+          }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: windows-sqlite-reduction
-          path: sqlite-reduction.json
+          name: windows-snapshot-comparison
+          path: comparison/
           if-no-files-found: warn
