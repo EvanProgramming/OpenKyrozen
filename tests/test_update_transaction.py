@@ -130,7 +130,8 @@ class UpdateTransactionTests(unittest.TestCase):
         self.assertEqual(result.components['python'], 'unchanged')
 
     def test_preview_does_not_fall_back_to_unverified_release_version(self):
-        with patch('openkyrozen.updates.service.Path.home', return_value=self.home), \
+        with patch.object(self.runtime, 'RELEASE_VERSION', '3.0.0.dev1'), \
+             patch('openkyrozen.updates.service.Path.home', return_value=self.home), \
              patch('openkyrozen.updates.service.shutil.which', return_value='/bin/uv'), \
              patch.object(self.runtime, '_resolve_update_revision', return_value=None), \
              patch.object(self.runtime, '_release_tui_asset_available', return_value=True), \
