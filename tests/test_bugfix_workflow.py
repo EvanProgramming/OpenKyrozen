@@ -85,10 +85,16 @@ class BugFixWorkflowTests(unittest.TestCase):
              patch.object(main, "_build_memory_context", return_value=""), \
              patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
              patch.object(main, "_get_llm_response", return_value=""), \
+             patch.object(main, "_schedule_post_turn_learning"), \
              patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
                           result, records, tokens, started: result):
             reply = main._chat_turn("bug: the command fails", clear_tasks=True)
         return root, reply, main.memory_bank.store
+
+    def test_bugfix_fixture_does_not_schedule_unrelated_background_learning(self):
+        with patch.object(main, "_schedule_post_turn_learning") as schedule:
+            self._run_fake_bug_turn(["The bug is fixed now."] * 4)
+        schedule.assert_not_called()
 
     def test_fake_provider_requires_real_reproduce_fix_and_verify_evidence(self):
         responses = [
