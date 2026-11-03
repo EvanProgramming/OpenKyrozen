@@ -1,49 +1,59 @@
-name: V3 Windows extended reliability
+name: V3 Windows original snapshot tracing
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  repeat:
+  trace:
     runs-on: windows-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ['3.12', '3.13']
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 24005ebf33a78d6bd23381dca0d0d2c25a598e91
+          ref: caa7f444c5d5be43bb53f40625879c3fe19bf167
       - uses: actions/setup-python@v5
         with:
-          python-version: '${{ matrix.python }}'
+          python-version: '3.12'
       - run: python -m pip install -e '.[all]'
-      - name: Test database protection
-        run: python -m unittest tests.test_history -v
-      - name: Repeat cancellation and reviewer acceptance
+      - name: Trace original database snapshot copies and SQLite errors
         shell: pwsh
         run: |
           @'
-          import faulthandler, runpy, sys
-          faulthandler.dump_traceback_later(8, repeat=False)
-          if sys.argv[1] == 'cancel':
-              sys.argv = ['unittest', 'tests.test_delegation.DelegationTests.test_cancel_during_provider_call_prevents_late_write', '-v']
-              runpy.run_module('unittest', run_name='__main__')
-          else:
-              sys.argv = ['scripts/subagent_workflow_acceptance.py']
-              runpy.run_path(sys.argv[0], run_name='__main__')
-          '@ | Set-Content -Encoding utf8 reliability.py
+          import json, os, runpy, shutil, sqlite3, sys, threading, time
+          from pathlib import Path
+          events = []
+          copy = shutil.copy2
+          def traced_copy(source, destination, *args, **kwargs):
+              relevant = Path(source).name in {'state.sqlite3', 'state.sqlite3-wal', 'state.sqlite3-shm'}
+              if relevant: events.append({'type':'copy_start','file':Path(source).name,'time':time.monotonic(),'thread':threading.current_thread().name})
+              try: return copy(source, destination, *args, **kwargs)
+              finally:
+                  if relevant: events.append({'type':'copy_end','file':Path(source).name,'time':time.monotonic(),'thread':threading.current_thread().name})
+          def trace(frame, event, arg):
+              if event == 'exception' and isinstance(arg[1], sqlite3.OperationalError) and 'readonly' in str(arg[1]).lower():
+                  if frame.f_code.co_filename.endswith(('usage.py','events.py','history.py','database.py')):
+                      events.append({'type':'sqlite_readonly','time':time.monotonic(),'thread':threading.current_thread().name,'file':Path(frame.f_code.co_filename).name,'line':frame.f_lineno})
+              return trace
+          shutil.copy2 = traced_copy
+          threading.settrace(trace)
+          sys.settrace(trace)
+          try:
+              sys.argv=['scripts/subagent_workflow_acceptance.py']
+              runpy.run_path(sys.argv[0],run_name='__main__')
+          finally:
+              sys.settrace(None)
+              threading.settrace(None)
+              Path(os.environ['TRACE_OUTPUT']).write_text(json.dumps(events,indent=2))
+          '@ | Set-Content -Encoding utf8 trace_snapshot.py
           New-Item -ItemType Directory -Force logs | Out-Null
-          foreach ($mode in @('cancel','reviewer')) {
-            for ($i=1; $i -le $(if ($mode -eq 'cancel') {50} else {30}); $i++) {
-              python reliability.py $mode *> "logs/$mode-$i.log"
-              Write-Host "$mode iteration $i exit=$LASTEXITCODE"
-            }
+          for ($i=1; $i -le 20; $i++) {
+            $env:TRACE_OUTPUT = "logs/events-$i.json"
+            python trace_snapshot.py *> "logs/run-$i.log"
+            Write-Host "iteration $i exit=$LASTEXITCODE"
           }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: extended-candidate-reliability-${{ matrix.python }}
+          name: original-snapshot-traces
           path: logs/
           if-no-files-found: warn
