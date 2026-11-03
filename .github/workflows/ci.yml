@@ -1,4 +1,4 @@
-name: V3 Windows original snapshot tracing
+name: V3 historical cancellation tracing
 on:
   workflow_dispatch:
 permissions:
@@ -6,54 +6,32 @@ permissions:
 jobs:
   trace:
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: caa7f444c5d5be43bb53f40625879c3fe19bf167
+          ref: 0f172f9fe692ff8fafcc0a15a72fe51eaf67e977
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: python -m pip install -e '.[all]'
-      - name: Trace original database snapshot copies and SQLite errors
+      - name: Repeat historical cancellation with thread dumps
         shell: pwsh
         run: |
           @'
-          import json, os, runpy, shutil, sqlite3, sys, threading, time
-          from pathlib import Path
-          events = []
-          copy = shutil.copy2
-          def traced_copy(source, destination, *args, **kwargs):
-              relevant = Path(source).name in {'state.sqlite3', 'state.sqlite3-wal', 'state.sqlite3-shm'}
-              if relevant: events.append({'type':'copy_start','file':Path(source).name,'time':time.monotonic(),'thread':threading.current_thread().name})
-              try: return copy(source, destination, *args, **kwargs)
-              finally:
-                  if relevant: events.append({'type':'copy_end','file':Path(source).name,'time':time.monotonic(),'thread':threading.current_thread().name})
-          def trace(frame, event, arg):
-              if event == 'exception' and isinstance(arg[1], sqlite3.OperationalError) and 'readonly' in str(arg[1]).lower():
-                  if frame.f_code.co_filename.endswith(('usage.py','events.py','history.py','database.py')):
-                      events.append({'type':'sqlite_readonly','time':time.monotonic(),'thread':threading.current_thread().name,'file':Path(frame.f_code.co_filename).name,'line':frame.f_lineno})
-              return trace
-          shutil.copy2 = traced_copy
-          threading.settrace(trace)
-          sys.settrace(trace)
-          try:
-              sys.argv=['scripts/subagent_workflow_acceptance.py']
-              runpy.run_path(sys.argv[0],run_name='__main__')
-          finally:
-              sys.settrace(None)
-              threading.settrace(None)
-              Path(os.environ['TRACE_OUTPUT']).write_text(json.dumps(events,indent=2))
-          '@ | Set-Content -Encoding utf8 trace_snapshot.py
+          import faulthandler, runpy, sys
+          faulthandler.dump_traceback_later(4, repeat=True)
+          sys.argv = ['unittest', 'tests.test_delegation.DelegationTests.test_cancel_during_provider_call_prevents_late_write', '-v']
+          runpy.run_module('unittest', run_name='__main__')
+          '@ | Set-Content -Encoding utf8 trace_cancel.py
           New-Item -ItemType Directory -Force logs | Out-Null
-          for ($i=1; $i -le 20; $i++) {
-            $env:TRACE_OUTPUT = "logs/events-$i.json"
-            python trace_snapshot.py *> "logs/run-$i.log"
+          for ($i=1; $i -le 100; $i++) {
+            python trace_cancel.py *> "logs/cancel-$i.log"
             Write-Host "iteration $i exit=$LASTEXITCODE"
           }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: original-snapshot-traces
+          name: historical-cancellation-traces
           path: logs/
           if-no-files-found: warn
