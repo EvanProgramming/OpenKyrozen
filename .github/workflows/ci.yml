@@ -1,69 +1,49 @@
-name: V3 SQLite Windows copy diagnostic
+name: V3 Windows fixed-candidate reliability
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  compare:
+  repeat:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.13']
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 24617f1fe164c979359f6d6d13b233108742390c
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - name: Compare concurrent SQLite writes with and without snapshot copies
+          python-version: '${{ matrix.python }}'
+      - run: python -m pip install -e '.[all]'
+      - name: Test database protection
+        run: python -m unittest tests.test_history -v
+      - name: Repeat cancellation and reviewer acceptance
         shell: pwsh
         run: |
           @'
-          import concurrent.futures, json, shutil, sqlite3, tempfile, threading
-          from pathlib import Path
-          result = {}
-          for copy_files in (False, True):
-              failures, copies = [], [0]
-              for repetition in range(10):
-                  with tempfile.TemporaryDirectory() as directory:
-                      root = Path(directory); dbpath = root/'state.sqlite3'
-                      keeper = sqlite3.connect(dbpath, isolation_level=None, timeout=30)
-                      keeper.execute('PRAGMA journal_mode=WAL')
-                      keeper.execute('CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)')
-                      stop = threading.Event()
-                      def snapshotter():
-                          while not stop.is_set():
-                              for suffix in ('', '-wal', '-shm'):
-                                  source = Path(str(dbpath)+suffix)
-                                  try:
-                                      shutil.copy2(source, root/('copy'+suffix))
-                                      copies[0] += 1
-                                  except FileNotFoundError:
-                                      pass
-                                  except OSError as exc:
-                                      failures.append({'type':'copy', 'error':repr(exc)})
-                      thread = threading.Thread(target=snapshotter) if copy_files else None
-                      if thread: thread.start()
-                      def writer(number):
-                          for i in range(100):
-                              try:
-                                  connection = sqlite3.connect(dbpath, isolation_level=None, timeout=30)
-                                  try:
-                                      connection.execute('PRAGMA synchronous=NORMAL')
-                                      connection.execute('INSERT INTO records(value) VALUES(?)',(str(number),))
-                                  finally: connection.close()
-                              except sqlite3.Error as exc:
-                                  failures.append({'type':'sqlite','iteration':repetition,'error':str(exc),
-                                      'code':getattr(exc,'sqlite_errorcode',None), 'name':getattr(exc,'sqlite_errorname',None)})
-                      with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-                          list(pool.map(writer, range(4)))
-                      stop.set()
-                      if thread: thread.join()
-                      keeper.close()
-              result[str(copy_files)] = {'copies':copies[0], 'failures':failures}
-              print('copy=',copy_files,'copies=',copies[0],'failures=',len(failures),flush=True)
-          Path('sqlite-copy-diagnostic.json').write_text(json.dumps(result,indent=2))
-          '@ | Set-Content -Encoding utf8 diagnostic.py
-          python diagnostic.py
+          import faulthandler, runpy, sys
+          faulthandler.dump_traceback_later(8, repeat=False)
+          if sys.argv[1] == 'cancel':
+              sys.argv = ['unittest', 'tests.test_delegation.DelegationTests.test_cancel_during_provider_call_prevents_late_write', '-v']
+              runpy.run_module('unittest', run_name='__main__')
+          else:
+              sys.argv = ['scripts/subagent_workflow_acceptance.py']
+              runpy.run_path(sys.argv[0], run_name='__main__')
+          '@ | Set-Content -Encoding utf8 reliability.py
+          New-Item -ItemType Directory -Force logs | Out-Null
+          foreach ($mode in @('cancel','reviewer')) {
+            for ($i=1; $i -le 20; $i++) {
+              python reliability.py $mode *> "logs/$mode-$i.log"
+              Write-Host "$mode iteration $i exit=$LASTEXITCODE"
+            }
+          }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: windows-sqlite-copy-diagnostic
-          path: sqlite-copy-diagnostic.json
+          name: fixed-candidate-reliability-${{ matrix.python }}
+          path: logs/
           if-no-files-found: warn
