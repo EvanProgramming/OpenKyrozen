@@ -1,4 +1,4 @@
-name: V3 historical cancellation tracing
+name: V3 historical cancellation load diagnostic
 on:
   workflow_dispatch:
 permissions:
@@ -6,7 +6,7 @@ permissions:
 jobs:
   trace:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
         with:
@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -e '.[all]'
-      - name: Repeat historical cancellation with thread dumps
+      - name: Trace historical cancellation under CPU contention
         shell: pwsh
         run: |
           @'
@@ -24,14 +24,22 @@ jobs:
           sys.argv = ['unittest', 'tests.test_delegation.DelegationTests.test_cancel_during_provider_call_prevents_late_write', '-v']
           runpy.run_module('unittest', run_name='__main__')
           '@ | Set-Content -Encoding utf8 trace_cancel.py
+          'while True: pass' | Set-Content -Encoding utf8 hog.py
           New-Item -ItemType Directory -Force logs | Out-Null
-          for ($i=1; $i -le 100; $i++) {
-            python trace_cancel.py *> "logs/cancel-$i.log"
-            Write-Host "iteration $i exit=$LASTEXITCODE"
+          $hogs = @()
+          try {
+            $hogs += Start-Process python -ArgumentList 'hog.py' -PassThru -NoNewWindow
+            $hogs += Start-Process python -ArgumentList 'hog.py' -PassThru -NoNewWindow
+            for ($i=1; $i -le 50; $i++) {
+              python trace_cancel.py *> "logs/cancel-$i.log"
+              Write-Host "iteration $i exit=$LASTEXITCODE"
+            }
+          } finally {
+            foreach ($hog in $hogs) { Stop-Process -Id $hog.Id -Force -ErrorAction SilentlyContinue }
           }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: historical-cancellation-traces
+          name: historical-cancellation-cpu-load
           path: logs/
           if-no-files-found: warn
