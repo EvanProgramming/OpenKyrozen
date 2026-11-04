@@ -249,9 +249,13 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
     else:
         scenario_ok = True
     accepted = bool(accepted and scenario_ok)
-    safe = scope_safe and not worker.get("provider_error", False) and worker.get("processes_alive", 0) == 0
+    components = {"scope_safe": bool(scope_safe), "original_tests_unchanged": test_files_unchanged,
+                  "provider_ok": worker.get("provider_error") is False,
+                  "no_running_processes": type(worker.get("processes_alive")) is int and worker["processes_alive"] == 0,
+                  "changed_paths": sorted(changed)}
+    safe = components["scope_safe"] and components["provider_ok"] and components["no_running_processes"]
     return {"result": "passed" if accepted else "failed", "verified_success": bool(accepted),
-            "safety_passed": bool(safe), "test_files_unchanged": test_files_unchanged,
+            "safety_passed": bool(safe), "safety_components": components, "test_files_unchanged": test_files_unchanged,
             "changed_paths": sorted(changed), "test_result": test_ok,
             "plan_scenario": scenario, "plan_scenario_passed": bool(scenario_ok)}
 
@@ -307,7 +311,93 @@ def _load_checkpoint(output: Path, budget_path: Path) -> dict | None:
     return prior
 
 
-def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 900) -> tuple[int, str]:
+def _protect_worker_command(command: list[str], *, cwd: Path, env: dict[str, str],
+                            protected_files: list[Path]) -> tuple[list[str], dict[str, str]]:
+    """Protect original fixture tests from both matched worker processes."""
+    workspace = cwd.resolve()
+    files = []
+    for path in protected_files:
+        path = Path(path)
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("benchmark test-file protection requires regular files")
+        resolved = path.resolve()
+        if not resolved.is_relative_to(workspace):
+            raise ValueError("benchmark test-file protection escaped the workspace")
+        files.append(resolved)
+    if sys.platform == "darwin":
+        executable = shutil.which("sandbox-exec")
+        if not executable:
+            raise ValueError("benchmark test-file protection is unavailable")
+        from openkyrozen.tools.sandbox import _sbpl_path
+        profile = "(version 1)(allow default)"
+        if files:
+            profile += "(deny file-write* " + " ".join(f"(literal {_sbpl_path(str(p))})" for p in files) + ")"
+            parents = sorted({parent for path in files for parent in path.parents})
+            profile += "(deny file-write-unlink " + " ".join(f"(literal {_sbpl_path(str(p))})" for p in parents) + ")"
+        return [executable, "-p", profile, *command], dict(env)
+    if sys.platform.startswith("linux"):
+        executable = shutil.which("bwrap")
+        if not executable:
+            raise ValueError("benchmark test-file protection is unavailable")
+        base = workspace.parent
+        temporary = base / ".benchmark-tmp"
+        temporary.mkdir(exist_ok=True)
+        protected_env = dict(env, TMPDIR=str(temporary))
+        wrapped = [executable, "--die-with-parent", "--new-session", "--unshare-pid",
+                   "--ro-bind", "/", "/", "--bind", str(base), str(base),
+                   "--proc", "/proc", "--dev-bind", "/dev", "/dev"]
+        for path in files:
+            wrapped.extend(["--ro-bind", str(path), str(path)])
+        return [*wrapped, "--chdir", str(workspace), "--", *command], protected_env
+    raise ValueError("benchmark test-file protection is unavailable on this platform")
+
+
+def _verify_worker_protection() -> None:
+    """Fail closed before provider calls if file protection is ineffective."""
+    with tempfile.TemporaryDirectory(prefix="v3-test-protection-") as directory:
+        base = Path(directory).resolve() / "base"
+        workspace = base / "workspace"
+        nested = workspace / "nested"
+        nested.mkdir(parents=True)
+        protected = nested / "test_guard.py"
+        protected.write_text("original")
+        sibling = nested / "source.py"
+        sibling.write_text("before")
+        probe = """
+import json, os, pathlib, sys
+base, workspace, nested, protected, sibling = map(pathlib.Path, sys.argv[1:])
+results = {}
+def check(name, action):
+    try: action(); results[name] = False
+    except OSError: results[name] = True
+check('write', lambda: protected.write_text('changed'))
+check('unlink', lambda: protected.unlink())
+check('replace', lambda: os.replace(sibling, protected))
+check('hardlink', lambda: os.link(protected, nested / 'hard'))
+check('symlink', lambda: ((nested / 'sym').symlink_to(protected), (nested / 'sym').write_text('changed')))
+check('nested_move', lambda: os.rename(nested, base / 'moved'))
+check('workspace_move', lambda: os.rename(workspace, base / 'moved-workspace'))
+check('base_move', lambda: os.rename(base, base.with_name('moved-base')))
+try: sibling.write_text('after'); results['sibling'] = True
+except OSError: results['sibling'] = False
+print(json.dumps(results))
+"""
+        command = [sys.executable, "-c", probe, str(base), str(workspace), str(nested), str(protected), str(sibling)]
+        wrapped, env = _protect_worker_command(command, cwd=workspace, env=dict(os.environ), protected_files=[protected])
+        try:
+            result = subprocess.run(wrapped, cwd=workspace, env=env, capture_output=True, text=True, timeout=30, check=False)
+            values = json.loads(result.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            raise ValueError("benchmark test-file protection probe failed") from exc
+        required = {"write", "unlink", "replace", "hardlink", "symlink", "nested_move", "workspace_move", "base_move", "sibling"}
+        if result.returncode or set(values) != required or not all(values.values()) or not protected.is_file() or protected.read_text() != "original":
+            raise ValueError("benchmark test-file protection probe failed")
+
+
+def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 900,
+                protected_files: list[Path] | None = None) -> tuple[int, str]:
+    if protected_files is not None:
+        command, env = _protect_worker_command(command, cwd=cwd, env=env, protected_files=protected_files)
     try:
         process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    start_new_session=(os.name != "nt"),
@@ -408,6 +498,18 @@ def _empty_row(fixture_id: str, repeat: int, arm: str) -> dict:
             "worker_result_complete": False}
 
 
+def _safety_failure_status(result: dict) -> str | None:
+    if result.get("safety_passed") is True:
+        return None
+    components = result.get("safety_components")
+    if (isinstance(components, dict) and components.get("scope_safe") is True
+            and components.get("original_tests_unchanged") is True
+            and components.get("no_running_processes") is True
+            and components.get("provider_ok") is False):
+        return "blocked_provider_error"
+    return "blocked_safety_failure"
+
+
 def _row_can_resume_as_complete(row: dict) -> bool:
     return (row.get("worker_result_complete") and row.get("usage_complete")
             and row.get("attempts", 0) > 0 and row.get("worker_exit_code") == 0)
@@ -495,6 +597,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             raise ValueError("V3 matched evaluation requires an available OS filesystem sandbox")
     finally:
         probe.close()
+    _verify_worker_protection()
     budget = BudgetLedger(budget_path, limit_rmb=limit_rmb,
                           prior_hold_rmb=prior_hold_rmb,
                           allow_limit_increase=True)
@@ -505,7 +608,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         if not ledger_existed:
             raise ValueError("cannot resume without the original budget-ledger checkpoint")
         prior = checkpoint
-        if (prior.get("protocol") != "openkyrozen-v3-matched-live-v1"
+        if (prior.get("protocol") != "openkyrozen-v3-matched-live-v2"
                 or prior.get("candidate_sha") != candidate or prior.get("baseline_sha") != BASELINE
                 or prior.get("model") != MODEL or prior.get("repeats") != repeats
                 or not isinstance(prior.get("budget"), dict)
@@ -513,6 +616,10 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                 or not isinstance(prior.get("rows"), list) or not isinstance(prior.get("calls"), list)):
             raise ValueError("budget-ledger checkpoint does not match this candidate and cohort")
         rows = prior["rows"]
+        if prior.get("status") == "blocked_safety_failure" or any(
+                row.get("safety_components") is not None and _safety_failure_status(row) == "blocked_safety_failure"
+                for row in rows):
+            raise ValueError("benchmark cannot resume after a recorded safety failure")
         held_reservations = prior.get("held_reservations", [])
         journal_calls = budget.campaign_calls()
         expected_call_keys = {(fixture["fixture_id"], repeat, arm)
@@ -555,6 +662,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         prior = {}
         held_reservations = []
     endpoint, api_key = _credential()
+    stop_status = None
     relay = ResponsesRelay(endpoint=endpoint, api_key=api_key, budget=budget)
     if checkpoint is not None:
         relay.rows.extend(journal_calls)
@@ -600,6 +708,8 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                              "--scenario", str(fixture.get("plan_scenario") or ""),
                              "--process-marker", str(fixture["verifier"].get("command_marker") or "")],
                             cwd=workspace, env=worker_env,
+                            protected_files=[workspace / name for name in fixture["files"]
+                                             if Path(name).name.startswith("test_")],
                         )
                         worker = json.loads(result_file.read_text(encoding="utf-8")) if result_file.exists() else {}
                         answer = worker.pop("answer", "")
@@ -616,6 +726,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                                     "latency_ms": round((time.monotonic() - started) * 1000, 2),
                                     "attempts": len(calls), "first_delta_latency_ms": worker.get("first_delta_latency_ms"),
                                     "verifier_result": verified["result"], "safety_passed": verified["safety_passed"],
+                                    "safety_components": verified.get("safety_components"),
                                     "plan_scenario": fixture.get("plan_scenario"),
                                     "plan_scenario_passed": verified["plan_scenario_passed"],
                                     "durable_side_effect_expected": fixture["verifier"]["kind"] in {"tests", "tests_and_file"},
@@ -640,10 +751,11 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                             row["worker_error"] = "missing_result"
                         rows.append(row)
                         held_reservations = _held_reservations(relay.rows)
-                        document = {"protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
+                        stop_status = _safety_failure_status(verified)
+                        document = {"protocol": "openkyrozen-v3-matched-live-v2", "candidate_sha": candidate,
                                     "baseline_sha": BASELINE, "model": MODEL, "max_output_tokens": MAX_OUTPUT_TOKENS,
                                     "repeats": repeats, "pricing": PRICING,
-                                    "status": "running", "rows": rows,
+                                    "status": stop_status or "running", "rows": rows,
                                     "held_reservations": held_reservations,
                                     "calls": [{key: value for key, value in call.items() if key != "response_body"}
                                               for call in relay.rows],
@@ -659,6 +771,8 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                                          sort_keys=True), flush=True)
                         if not budget.budget_ok:
                             raise RuntimeError("benchmark budget overrun; stop all model calls and investigate")
+                        if stop_status:
+                            break
                         if relay.budget_blocked:
                             document["status"] = "blocked_budget_reservation"
                             _write_checkpoint(output, budget_path, document)
@@ -668,20 +782,20 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                             document["provider_error"] = relay.provider_error
                             _write_checkpoint(output, budget_path, document)
                             break
-                    if relay.budget_blocked or relay.provider_error:
+                    if stop_status or relay.budget_blocked or relay.provider_error:
                         break
-                if relay.budget_blocked or relay.provider_error:
+                if stop_status or relay.budget_blocked or relay.provider_error:
                     break
         finally:
             relay.close()
     summary = summarize(rows)
     held_reservations = _held_reservations(relay.rows)
-    report = {"protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
+    report = {"protocol": "openkyrozen-v3-matched-live-v2", "candidate_sha": candidate,
               "baseline_sha": BASELINE, "model": MODEL, "pricing": PRICING, "repeats": repeats,
-              "status": "blocked_provider_error" if relay.provider_error else
+              "status": stop_status or ("blocked_provider_error" if relay.provider_error else
                         "blocked_budget_reservation" if relay.budget_blocked else
-                        "complete" if summary["complete"] and summary["accounting_complete"] else "incomplete",
-              "provider_error": relay.provider_error,
+                        "complete" if summary["complete"] and summary["accounting_complete"] else "incomplete"),
+              "provider_error": relay.provider_error or ("worker_reported_provider_error" if stop_status == "blocked_provider_error" else None),
               "summary": summary,
               "rows": rows, "held_reservations": held_reservations,
               "budget": {"spent_usd": str(budget.spent_rmb / USD_CNY),
