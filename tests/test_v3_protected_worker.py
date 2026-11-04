@@ -64,6 +64,35 @@ print(json.dumps(out))
             self.assertNotEqual(code, 0)
             self.assertEqual(protected.read_text(), 'original')
 
+    @unittest.skipUnless(sys.platform == 'darwin' or sys.platform.startswith('linux'), 'Unix sandbox required')
+    def test_nested_managed_shell_cannot_widen_test_file_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            root = base / 'workspace'
+            home = base / 'home'
+            root.mkdir(); home.mkdir()
+            protected = root / 'test_guard.py'
+            protected.write_text('original')
+            sibling = root / 'source.py'
+            sibling.write_text('before')
+            script = """
+import os, subprocess, sys
+from openkyrozen.tools.sandbox import sandbox_command
+root = sys.argv[1]
+invocation = sandbox_command('printf changed > test_guard.py; printf after > source.py', workspace=root, cwd=root, env=dict(os.environ))
+try:
+    result = subprocess.run(invocation.command, cwd=root, env=invocation.env, shell=invocation.shell, capture_output=True)
+    raise SystemExit(result.returncode)
+finally:
+    invocation.close()
+"""
+            env = dict(os.environ, HOME=str(home), KYROZEN_SANDBOX_REQUIRED='1', PYTHONPATH=str(Path(live.__file__).resolve().parents[1]))
+            code, error = live._run_worker([sys.executable, '-c', script, str(root)], cwd=root, env=env,
+                                           protected_files=[protected])
+            self.assertEqual(code, 0, error)
+            self.assertEqual(protected.read_text(), 'original')
+            self.assertEqual(sibling.read_text(), 'after')
+
     def test_symlink_and_outside_test_paths_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory).resolve()

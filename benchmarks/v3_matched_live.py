@@ -346,6 +346,10 @@ def _protect_worker_command(command: list[str], *, cwd: Path, env: dict[str, str
         wrapped = [executable, "--die-with-parent", "--new-session", "--unshare-pid",
                    "--ro-bind", "/", "/", "--bind", str(base), str(base),
                    "--proc", "/proc", "--dev-bind", "/dev", "/dev"]
+        directories = {parent for path in files for parent in path.parents
+                       if parent == workspace or parent.is_relative_to(workspace)}
+        for directory in sorted(directories, key=lambda path: len(path.parts)):
+            wrapped.extend(["--bind", str(directory), str(directory)])
         for path in files:
             wrapped.extend(["--ro-bind", str(path), str(path)])
         return [*wrapped, "--chdir", str(workspace), "--", *command], protected_env
