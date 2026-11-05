@@ -346,7 +346,7 @@ def _protect_worker_command(command: list[str], *, cwd: Path, env: dict[str, str
         binaries.mkdir(exist_ok=True)
         real_bwrap = Path(executable).resolve()
         shim = binaries / "bwrap"
-        shim.write_text(f'#!/bin/sh\nexec {shlex.quote(str(real_bwrap))} --disable-userns "$@"\n')
+        shim.write_text(f'#!/bin/sh\nexec {shlex.quote(str(real_bwrap))} --unshare-user --disable-userns "$@"\n')
         shim.chmod(0o755)
         protected_env = dict(env, TMPDIR=str(temporary),
                              PATH=str(binaries) + os.pathsep + env.get("PATH", ""))
