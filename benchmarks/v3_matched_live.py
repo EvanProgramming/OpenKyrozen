@@ -342,7 +342,14 @@ def _protect_worker_command(command: list[str], *, cwd: Path, env: dict[str, str
         base = workspace.parent
         temporary = base / ".benchmark-tmp"
         temporary.mkdir(exist_ok=True)
-        protected_env = dict(env, TMPDIR=str(temporary))
+        binaries = base / ".benchmark-bin"
+        binaries.mkdir(exist_ok=True)
+        real_bwrap = Path(executable).resolve()
+        shim = binaries / "bwrap"
+        shim.write_text(f'#!/bin/sh\nexec {shlex.quote(str(real_bwrap))} --disable-userns "$@"\n')
+        shim.chmod(0o755)
+        protected_env = dict(env, TMPDIR=str(temporary),
+                             PATH=str(binaries) + os.pathsep + env.get("PATH", ""))
         wrapped = [executable, "--die-with-parent", "--new-session", "--unshare-pid",
                    "--ro-bind", "/", "/", "--bind", str(base), str(base),
                    "--proc", "/proc", "--dev-bind", "/dev", "/dev"]
@@ -396,6 +403,29 @@ print(json.dumps(results))
         required = {"write", "unlink", "replace", "hardlink", "symlink", "nested_move", "workspace_move", "base_move", "sibling"}
         if result.returncode or set(values) != required or not all(values.values()) or not protected.is_file() or protected.read_text() != "original":
             raise ValueError("benchmark test-file protection probe failed")
+        sibling.write_text("before")
+        shell_probe = """
+import os, subprocess, sys
+from openkyrozen.tools.sandbox import sandbox_command
+root = sys.argv[1]
+invocation = sandbox_command('printf changed > nested/test_guard.py; printf after > nested/source.py',
+                             workspace=root, cwd=root, env=dict(os.environ))
+try:
+    result = subprocess.run(invocation.command, cwd=root, env=invocation.env,
+                            shell=invocation.shell, capture_output=True)
+    raise SystemExit(result.returncode)
+finally:
+    invocation.close()
+"""
+        env = dict(os.environ, KYROZEN_SANDBOX_REQUIRED="1")
+        wrapped, env = _protect_worker_command([sys.executable, "-c", shell_probe, str(workspace)],
+                                               cwd=workspace, env=env, protected_files=[protected])
+        try:
+            result = subprocess.run(wrapped, cwd=workspace, env=env, capture_output=True, timeout=30, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError("benchmark managed shell protection probe failed") from exc
+        if result.returncode or protected.read_text() != "original" or sibling.read_text() != "after":
+            raise ValueError("benchmark managed shell protection probe failed")
 
 
 def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 900,
