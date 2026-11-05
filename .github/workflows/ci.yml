@@ -22,6 +22,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Check nested Linux sandbox support
+        if: runner.os == 'Linux'
+        run: bwrap --version && bwrap --die-with-parent --new-session --unshare-pid --ro-bind / / --proc /proc --dev-bind /dev /dev -- /usr/bin/bwrap --disable-userns --die-with-parent --new-session --unshare-pid --ro-bind / / --proc /proc --dev-bind /dev /dev -- /usr/bin/true
       - run: python -m pip install -e '.[all]'
       - name: Test attack resistance and production preflight
         run: |
