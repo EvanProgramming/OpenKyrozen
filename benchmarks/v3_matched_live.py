@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+from dataclasses import asdict
 import hashlib
 import json
 import os
@@ -17,8 +18,9 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from benchmarks.v3_fixtures import FIXTURES
-from benchmarks.v3_matched import BudgetLedger, MAX_LIMIT_USD, PRICING, USD_CNY, _cost, summarize
-from benchmarks.v3_responses_relay import MODEL, MAX_OUTPUT_TOKENS, ResponsesRelay
+from benchmarks.v3_matched import BudgetLedger, MAX_LIMIT_USD, PANSTAR_PRICING, Pricing, PRICING, USD_CNY, _cost, summarize
+from benchmarks.v3_responses_relay import (MODEL, MAX_OUTPUT_TOKENS, DEFAULT_RELAY_CONFIG,
+                                            RelayConfig, ResponsesRelay)
 
 BASELINE = "1bfc82c793df49e76097061ec5adfef0e4e2e883"
 REPEATS = 3
@@ -249,9 +251,15 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
     else:
         scenario_ok = True
     accepted = bool(accepted and scenario_ok)
-    safe = scope_safe and not worker.get("provider_error", False) and worker.get("processes_alive", 0) == 0
+    components = {"scope_safe": bool(scope_safe), "original_tests_unchanged": test_files_unchanged,
+                  "provider_ok": worker.get("provider_error") is False,
+                  "no_running_processes": type(worker.get("processes_alive")) is int
+                  and worker["processes_alive"] == 0, "changed_paths": sorted(changed)}
+    safe = all(components[name] for name in (
+        "scope_safe", "original_tests_unchanged", "provider_ok", "no_running_processes"))
     return {"result": "passed" if accepted else "failed", "verified_success": bool(accepted),
-            "safety_passed": bool(safe), "test_files_unchanged": test_files_unchanged,
+            "safety_passed": bool(safe), "safety_components": components,
+            "test_files_unchanged": test_files_unchanged,
             "changed_paths": sorted(changed), "test_result": test_ok,
             "plan_scenario": scenario, "plan_scenario_passed": bool(scenario_ok)}
 
@@ -307,31 +315,39 @@ def _load_checkpoint(output: Path, budget_path: Path) -> dict | None:
     return prior
 
 
-def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 900) -> tuple[int, str]:
-    try:
-        process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   start_new_session=(os.name != "nt"),
-                                   creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0))
-    except OSError as exc:
-        return -1, type(exc).__name__
-    try:
-        _, stderr = process.communicate(timeout=timeout)
-        if process.returncode == 0:
-            return 0, ""
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode(errors="replace")
-        error_type = next((line.split(":", 1)[0] for line in reversed(stderr.splitlines())
-                           if ":" in line and line.split(":", 1)[0].endswith(("Error", "Exception"))), None)
-        suffix = f":{error_type}" if error_type else ""
-        return process.returncode, f"worker_exit_{process.returncode}{suffix}"
-    except subprocess.TimeoutExpired:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                           capture_output=True, timeout=5, check=False)
-        else:
+def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 900,
+                protected_files: list[Path] | None = None, policy=None) -> tuple[int, str]:
+    from benchmarks.v3_protected_worker import ProtectedWorker
+    from benchmarks.v3_shell_launcher import ShellPolicy
+    # Standalone callers have no shell authority; fixture callers supply the
+    # immutable parent policy and the complete original-test manifest.
+    policy = policy or ShellPolicy(cwd, frozenset())
+    with ProtectedWorker(command, cwd=cwd, env=env, protected_files=protected_files or [],
+                         policy=policy) as launch:
+        try:
+            process = subprocess.Popen(launch.command, cwd=cwd, env=launch.env,
+                                       pass_fds=launch.pass_fds,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       start_new_session=(os.name != "nt"),
+                                       creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0))
+        except OSError as exc:
+            return -1, type(exc).__name__
+        launch.attach(process)
+        try:
+            _, stderr = process.communicate(timeout=timeout)
+            if process.returncode == 0:
+                return 0, ""
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode(errors="replace")
+            error_type = next((line.split(":", 1)[0] for line in reversed(stderr.splitlines())
+                               if ":" in line and line.split(":", 1)[0].endswith(("Error", "Exception"))), None)
+            suffix = f":{error_type}" if error_type else ""
+            return process.returncode, f"worker_exit_{process.returncode}{suffix}"
+        except subprocess.TimeoutExpired:
             _kill_process_tree(process.pid)
-        process.communicate()
-        return -1, "timeout"
+            launch.broker.close()
+            process.communicate()
+            return -1, "timeout"
 
 
 def _kill_process_tree(pid: int) -> None:
@@ -410,7 +426,20 @@ def _empty_row(fixture_id: str, repeat: int, arm: str) -> dict:
 
 def _row_can_resume_as_complete(row: dict) -> bool:
     return (row.get("worker_result_complete") and row.get("usage_complete")
-            and row.get("attempts", 0) > 0 and row.get("worker_exit_code") == 0)
+            and row.get("attempts", 0) > 0 and row.get("worker_exit_code") == 0
+            and _safety_failure_status(row) is None)
+
+
+def _safety_failure_status(row: dict) -> str | None:
+    components = row.get("safety_components") or {}
+    checks = ("scope_safe", "original_tests_unchanged", "no_running_processes", "worker_complete")
+    if not all(components.get(name) is True for name in checks):
+        return "blocked_safety_failure"
+    if components.get("provider_ok") is False:
+        return "blocked_provider_error"
+    if components.get("provider_ok") is not True or row.get("safety_passed") is not True:
+        return "blocked_safety_failure"
+    return None
 
 
 def _held_reservations(calls: list[dict]) -> list[dict]:
@@ -449,8 +478,12 @@ def _initial_plan(fixture: dict) -> list[str] | dict:
 
 def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         limit_usd: str = str(MAX_LIMIT_USD), repeats: int = REPEATS,
-        prior_hold_usd: str,
-        fixtures: tuple[dict, ...] = FIXTURES) -> dict:
+        prior_hold_usd: str | None = None,
+        fixtures: tuple[dict, ...] = FIXTURES,
+        limit_cny: str | None = None, prior_hold_cny: str | None = None,
+        prior_hold_records: tuple[str, ...] | None = None,
+        pricing: Pricing = PANSTAR_PRICING, relay_config: RelayConfig = DEFAULT_RELAY_CONFIG,
+        endpoint: str | None = None) -> dict:
     source, repo = source.resolve(), repo.resolve()
     candidate = _source_snapshot(source)
     output, budget_path = output.resolve(), budget_path.resolve()
@@ -461,29 +494,72 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
     if fixtures != FIXTURES:
         raise ValueError("release evaluation requires the exact frozen fixture content")
     ledger_existed = budget_path.exists()
-    limit = Decimal(limit_usd)
-    if not Decimal(0) < limit <= MAX_LIMIT_USD:
-        raise ValueError("the cumulative benchmark cap cannot exceed USD 20")
+    cny_accounting = limit_cny is not None
+    if not cny_accounting and prior_hold_usd is None:
+        raise TypeError("prior_hold_usd is required for the default USD campaign")
     try:
-        prior_hold = Decimal(prior_hold_usd)
-    except (InvalidOperation, TypeError, ValueError):
-        raise ValueError("the prior campaign reservation must be a valid USD amount") from None
-    if not prior_hold.is_finite() or not Decimal(0) < prior_hold <= limit:
-        raise ValueError("the prior campaign reservation must be positive and within the cumulative cap")
-    limit_rmb = str(limit * USD_CNY)
-    prior_hold_rmb = str(prior_hold * USD_CNY)
+        if cny_accounting:
+            if prior_hold_usd is not None or prior_hold_cny is None:
+                raise ValueError("CNY campaigns require a CNY prior hold without a USD workaround")
+            limit = Decimal(limit_cny)
+            prior_hold = Decimal(prior_hold_cny)
+            if (not limit.is_finite() or not prior_hold.is_finite()
+                    or not 0 < limit <= pricing.max_limit_cny or not 0 <= prior_hold <= limit):
+                raise ValueError("the cumulative CNY cap and prior exposure must fit the pricing configuration")
+            limit_rmb, prior_hold_rmb = str(limit), str(prior_hold)
+            prior_hold_key = "prior_campaign_hold_cny"
+        else:
+            if pricing != PANSTAR_PRICING or prior_hold_cny is not None:
+                raise ValueError("custom CNY pricing requires a genuine CNY cap")
+            limit = Decimal(limit_usd)
+            if not limit.is_finite() or not Decimal(0) < limit <= MAX_LIMIT_USD:
+                raise ValueError("the cumulative benchmark cap cannot exceed USD 20")
+            prior_hold = Decimal(prior_hold_usd)
+            if not prior_hold.is_finite() or not Decimal(0) < prior_hold <= limit:
+                raise ValueError("the prior campaign reservation must be positive and within the cumulative cap")
+            limit_rmb, prior_hold_rmb = str(limit * USD_CNY), str(prior_hold * USD_CNY)
+            prior_hold_key = "prior_campaign_hold_usd"
+    except (InvalidOperation, TypeError):
+        currency = "CNY" if cny_accounting else "USD"
+        raise ValueError(f"the prior campaign reservation must be a valid {currency} amount") from None
+    model, max_output_tokens = relay_config.model, relay_config.max_output_tokens
+    pricing_info = pricing.as_dict()
+
+    def budget_metadata() -> dict:
+        if cny_accounting:
+            return {"currency": "CNY", "spent_cny": str(budget.spent_rmb),
+                    "remaining_cny": str(budget.remaining_rmb), "limit_cny": str(limit),
+                    "prior_campaign_hold_cny": str(prior_hold)}
+        return {"spent_usd": str(budget.spent_rmb / USD_CNY),
+                "remaining_usd": str(budget.remaining_rmb / USD_CNY), "limit_usd": str(limit),
+                "prior_campaign_hold_usd": str(prior_hold), "usd_cny": str(USD_CNY)}
+
+    def is_smoke_call(call: dict) -> bool:
+        return (cny_accounting and call.get("arm") == "smoke"
+                and call.get("fixture_id") == candidate and call.get("repeat") == -1
+                and call.get("model") == model and call.get("max_output_tokens") == max_output_tokens)
+
+    def require_smoke_only_ledger() -> None:
+        with closing(sqlite3.connect(budget_path)) as db:
+            has_attempts = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='attempts'"
+            ).fetchone()
+            records = db.execute("SELECT metadata_json FROM attempts "
+                                 "WHERE id!='prior-campaign-reservations'").fetchall() if has_attempts else []
+        for (metadata,) in records:
+            try:
+                valid = metadata and is_smoke_call(json.loads(metadata))
+            except (ValueError, TypeError, AttributeError):
+                valid = False
+            if not valid:
+                raise ValueError("cannot start a new report with a nonempty budget ledger")
+
     checkpoint = _load_checkpoint(output, budget_path)
     if checkpoint is None:
         if output.exists():
             raise ValueError("existing report is not pinned by its original budget ledger")
         if budget_path.exists():
-            with closing(sqlite3.connect(budget_path)) as db:
-                has_attempts = db.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='attempts'"
-                ).fetchone()
-                if has_attempts and db.execute(
-                        "SELECT 1 FROM attempts WHERE id!='prior-campaign-reservations' LIMIT 1").fetchone():
-                    raise ValueError("cannot start a new report with a nonempty budget ledger")
+            require_smoke_only_ledger()
     from openkyrozen.tools.sandbox import SandboxUnavailableError, sandbox_command
     probe_env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR") if key in os.environ}
     try:
@@ -495,36 +571,49 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             raise ValueError("V3 matched evaluation requires an available OS filesystem sandbox")
     finally:
         probe.close()
+    from benchmarks.v3_protected_worker import verify_worker_protection
+    verify_worker_protection()
     budget = BudgetLedger(budget_path, limit_rmb=limit_rmb,
                           prior_hold_rmb=prior_hold_rmb,
-                          allow_limit_increase=True)
+                          allow_limit_increase=not cny_accounting, pricing=pricing,
+                          prior_hold_records=prior_hold_records)
     if not budget.budget_ok:
         raise ValueError("the persisted budget ledger contains an overrun")
     rows: list[dict] = []
+    safety_stop = None
+    journal_calls = budget.campaign_calls()
     if checkpoint is not None:
         if not ledger_existed:
             raise ValueError("cannot resume without the original budget-ledger checkpoint")
         prior = checkpoint
         if (prior.get("protocol") != "openkyrozen-v3-matched-live-v1"
                 or prior.get("candidate_sha") != candidate or prior.get("baseline_sha") != BASELINE
-                or prior.get("model") != MODEL or prior.get("repeats") != repeats
+                or prior.get("model") != model or prior.get("repeats") != repeats
                 or not isinstance(prior.get("budget"), dict)
-                or prior["budget"].get("prior_campaign_hold_usd") != str(prior_hold)
+                or prior["budget"].get(prior_hold_key) != str(prior_hold)
+                or (cny_accounting and (prior.get("pricing") != pricing_info
+                    or prior.get("relay_config") != asdict(relay_config)))
                 or not isinstance(prior.get("rows"), list) or not isinstance(prior.get("calls"), list)):
             raise ValueError("budget-ledger checkpoint does not match this candidate and cohort")
         rows = prior["rows"]
+        if prior.get("status") == "blocked_safety_failure" or any(
+                row.get("worker_result_complete") is True
+                and _safety_failure_status(row) == "blocked_safety_failure" for row in rows):
+            raise ValueError("recorded safety failure requires investigation and a fresh campaign")
         held_reservations = prior.get("held_reservations", [])
-        journal_calls = budget.campaign_calls()
         expected_call_keys = {(fixture["fixture_id"], repeat, arm)
                               for fixture in fixtures for repeat in range(repeats) for arm in ("v2", "v3")}
-        if any((call.get("fixture_id"), call.get("repeat"), call.get("arm")) not in expected_call_keys
-               or call.get("model") != MODEL for call in journal_calls):
+        if any(not is_smoke_call(call) and (
+                (call.get("fixture_id"), call.get("repeat"), call.get("arm")) not in expected_call_keys
+                or call.get("model") != model) for call in journal_calls):
             raise ValueError("budget-ledger journal contains a call outside the frozen cohort")
         keys = [(row.get("fixture_id"), row.get("repeat"), row.get("arm")) for row in rows]
         if len(keys) != len(set(keys)):
             raise ValueError("existing benchmark report contains duplicate attempts")
         calls_by_key: dict[tuple, list[dict]] = {}
         for call in journal_calls:
+            if is_smoke_call(call):
+                continue
             calls_by_key.setdefault((call.get("fixture_id"), call.get("repeat"), call.get("arm")), []).append(call)
         rows_by_key = dict(zip(keys, rows))
         for key, calls_for_key in calls_by_key.items():
@@ -547,17 +636,23 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                            worker_result_complete=False,
                            worker_error="interrupted before fixture result was checkpointed")
     else:
-        with closing(sqlite3.connect(budget_path)) as db:
-            if db.execute("SELECT 1 FROM attempts WHERE id!='prior-campaign-reservations' LIMIT 1").fetchone():
-                raise ValueError("cannot start a new report with a nonempty budget ledger")
+        require_smoke_only_ledger()
         if output.exists():
             raise ValueError("existing report is not pinned by its original budget ledger")
         prior = {}
         held_reservations = []
-    endpoint, api_key = _credential()
-    relay = ResponsesRelay(endpoint=endpoint, api_key=api_key, budget=budget)
-    if checkpoint is not None:
-        relay.rows.extend(journal_calls)
+    credential_endpoint, api_key = _credential()
+    relay = ResponsesRelay(endpoint=endpoint or credential_endpoint, api_key=api_key,
+                           budget=budget, config=relay_config)
+    relay.rows.extend(journal_calls)
+    smoke_calls = {call["attempt_id"]: call for call in journal_calls if is_smoke_call(call)}
+    smoke_attempt_ids = prior.get("smoke_attempt_ids")
+    if (cny_accounting and prior.get("smoke_passed") is True
+            and isinstance(smoke_attempt_ids, list) and len(set(smoke_attempt_ids)) == len(smoke_attempt_ids) == 2
+            and all(attempt in smoke_calls and smoke_calls[attempt].get("status") == "settled"
+                    and isinstance(smoke_calls[attempt].get("usage"), dict) for attempt in smoke_attempt_ids)):
+        relay.smoke_verified_candidate = candidate
+        relay.smoke_verified_attempt_ids = tuple(smoke_attempt_ids)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="openkyrozen-v3-matched-") as temporary:
         temporary_root = Path(temporary)
@@ -565,7 +660,21 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         _extract_baseline(baseline_source, repo, BASELINE)
         relay.start()
         try:
-            for repeat in range(repeats):
+            smoke_ok = True
+            if cny_accounting:
+                from benchmarks.v3_deepseek import run_smoke
+                smoke_ok = run_smoke(relay, candidate)
+                _write_checkpoint(output, budget_path, {
+                    "protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
+                    "baseline_sha": BASELINE, "model": model, "max_output_tokens": max_output_tokens,
+                    "pricing": pricing_info, "relay_config": asdict(relay_config), "repeats": repeats,
+                    "status": ("running" if smoke_ok else "blocked_budget_reservation"
+                               if relay.budget_blocked else "blocked_provider_error"),
+                    "provider_error": relay.provider_error, "smoke_passed": smoke_ok,
+                    "smoke_attempt_ids": list(getattr(relay, "smoke_verified_attempt_ids", ())),
+                    "rows": rows, "calls": relay.rows, "budget": budget_metadata(),
+                    "held_reservations": _held_reservations(relay.rows)})
+            for repeat in range(repeats if smoke_ok else 0):
                 for fixture_index, fixture in enumerate(fixtures):
                     ordered_arms = (("v2", baseline_source), ("v3", source))
                     if (repeat + fixture_index) % 2:
@@ -586,22 +695,39 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         prepared = prepare_fixture(workspace, fixture)
                         prompt_file, plan_file, result_file = base / "prompt.txt", base / "plan.json", base / "result.json"
                         prompt_file.write_text(fixture["prompt"], encoding="utf-8")
-                        plan_file.write_text(json.dumps(_initial_plan(fixture)),
-                                              encoding="utf-8")
+                        initial_plan = _initial_plan(fixture)
+                        plan_file.write_text(json.dumps(initial_plan), encoding="utf-8")
+                        from benchmarks.v3_shell_launcher import ShellPolicy
+                        shell_policy = ShellPolicy(
+                            workspace, frozenset(fixture["capabilities"]),
+                            accepted_bounds=initial_plan.get("bounds") if isinstance(initial_plan, dict) else None,
+                            run_id=f"{candidate}:{repeat}:{fixture_id}:{arm}",
+                        )
                         relay.label = (arm, fixture_id, repeat)
                         started = time.monotonic()
                         worker_env = _worker_env(base, fixture, relay)
                         code, worker_error = _run_worker(
                             [sys.executable, str(source / "benchmarks" / "prompt_worker.py"),
                              "--source", str(arm_source), "--workspace", str(workspace),
-                             "--url", relay.url, "--model", MODEL, "--protocol", "responses",
+                             "--url", relay.url, "--model", model, "--protocol", "responses",
                              "--prompt-file", str(prompt_file), "--plan-file", str(plan_file),
                              "--result", str(result_file),
                              "--scenario", str(fixture.get("plan_scenario") or ""),
                              "--process-marker", str(fixture["verifier"].get("command_marker") or "")],
                             cwd=workspace, env=worker_env,
+                            protected_files=[workspace / name for name in fixture["files"]
+                                             if Path(name).name.startswith("test_")],
+                            policy=shell_policy,
                         )
-                        worker = json.loads(result_file.read_text(encoding="utf-8")) if result_file.exists() else {}
+                        worker_complete = False
+                        try:
+                            worker = json.loads(result_file.read_text(encoding="utf-8"))
+                            if not isinstance(worker, dict):
+                                raise ValueError("invalid worker result")
+                            worker_complete = True
+                        except (OSError, ValueError):
+                            worker = {}
+                            worker_error = worker_error or "missing_or_invalid_result"
                         answer = worker.pop("answer", "")
                         verified = verify_fixture(fixture, workspace, answer, worker, prepared)
                         calls = [row for row in relay.rows if (row["arm"], row["fixture_id"], row["repeat"]) == (arm, fixture_id, repeat)]
@@ -635,30 +761,37 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                                     "budget_ok": budget.budget_ok,
                                     "worker_error": worker_error,
                                     "worker_exit_code": code,
-                                    "worker_result_complete": result_file.exists()})
+                                    "worker_result_complete": worker_complete})
+                        components = dict(verified.get("safety_components") or {})
+                        components["worker_complete"] = code == 0 and worker_complete
+                        row["safety_components"] = components
+                        safety_stop = _safety_failure_status(row)
+                        row["safety_passed"] = safety_stop is None
                         if not result_file.exists() and not worker_error:
                             row["worker_error"] = "missing_result"
                         rows.append(row)
                         held_reservations = _held_reservations(relay.rows)
                         document = {"protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
-                                    "baseline_sha": BASELINE, "model": MODEL, "max_output_tokens": MAX_OUTPUT_TOKENS,
-                                    "repeats": repeats, "pricing": PRICING,
-                                    "status": "running", "rows": rows,
+                                    "baseline_sha": BASELINE, "model": model, "max_output_tokens": max_output_tokens,
+                                    "repeats": repeats, "pricing": pricing_info, "relay_config": asdict(relay_config),
+                                    "smoke_passed": smoke_ok if cny_accounting else None,
+                                    "smoke_attempt_ids": list(getattr(relay, "smoke_verified_attempt_ids", ())),
+                                    "status": safety_stop or "running", "rows": rows,
                                     "held_reservations": held_reservations,
                                     "calls": [{key: value for key, value in call.items() if key != "response_body"}
                                               for call in relay.rows],
-                                    "budget": {"spent_usd": str(budget.spent_rmb / USD_CNY),
-                                               "remaining_usd": str(budget.remaining_rmb / USD_CNY),
-                                               "limit_usd": str(limit),
-                                               "prior_campaign_hold_usd": str(prior_hold),
-                                               "usd_cny": str(USD_CNY)}}
+                                    "budget": budget_metadata()}
                         _write_checkpoint(output, budget_path, document)
                         print(json.dumps({"fixture_id": fixture_id, "repeat": repeat, "arm": arm,
                                           "verified_success": row["verified_success"],
-                                          "requests": row["requests"], "remaining_usd": str(budget.remaining_rmb / USD_CNY)},
+                                          "requests": row["requests"],
+                                          **({"remaining_cny": str(budget.remaining_rmb)} if cny_accounting else
+                                             {"remaining_usd": str(budget.remaining_rmb / USD_CNY)})},
                                          sort_keys=True), flush=True)
                         if not budget.budget_ok:
                             raise RuntimeError("benchmark budget overrun; stop all model calls and investigate")
+                        if safety_stop:
+                            break
                         if relay.budget_blocked:
                             document["status"] = "blocked_budget_reservation"
                             _write_checkpoint(output, budget_path, document)
@@ -668,27 +801,25 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                             document["provider_error"] = relay.provider_error
                             _write_checkpoint(output, budget_path, document)
                             break
-                    if relay.budget_blocked or relay.provider_error:
+                    if safety_stop or relay.budget_blocked or relay.provider_error:
                         break
-                if relay.budget_blocked or relay.provider_error:
+                if safety_stop or relay.budget_blocked or relay.provider_error:
                     break
         finally:
             relay.close()
-    summary = summarize(rows)
+    summary = summarize(rows, pricing=pricing)
     held_reservations = _held_reservations(relay.rows)
     report = {"protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
-              "baseline_sha": BASELINE, "model": MODEL, "pricing": PRICING, "repeats": repeats,
-              "status": "blocked_provider_error" if relay.provider_error else
+              "baseline_sha": BASELINE, "model": model, "pricing": pricing_info, "relay_config": asdict(relay_config), "repeats": repeats,
+              "status": safety_stop or ("blocked_provider_error" if relay.provider_error else
                         "blocked_budget_reservation" if relay.budget_blocked else
-                        "complete" if summary["complete"] and summary["accounting_complete"] else "incomplete",
+                        "complete" if summary["complete"] and summary["accounting_complete"] else "incomplete"),
               "provider_error": relay.provider_error,
+              "smoke_passed": smoke_ok if cny_accounting else None,
+              "smoke_attempt_ids": list(getattr(relay, "smoke_verified_attempt_ids", ())),
               "summary": summary,
               "rows": rows, "held_reservations": held_reservations,
-              "budget": {"spent_usd": str(budget.spent_rmb / USD_CNY),
-                         "remaining_usd": str(budget.remaining_rmb / USD_CNY),
-                         "limit_usd": str(limit),
-                         "prior_campaign_hold_usd": str(prior_hold),
-                         "usd_cny": str(USD_CNY)},
+              "budget": budget_metadata(),
               "calls": [{key: value for key, value in call.items() if key != "response_body"}
                         for call in relay.rows]}
     _write_checkpoint(output, budget_path, report)

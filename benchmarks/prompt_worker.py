@@ -45,6 +45,11 @@ def main():
     args = parser.parse_args()
     workspace_root = Path(args.workspace).resolve()
     sys.path.insert(0, args.source)
+    if os.environ.get("KYROZEN_BENCHMARK_BROKER_FD") is not None:
+        # V2 also has a benchmarks package; load this adapter by its owning file
+        # without allowing the current source tree to shadow the frozen snapshot.
+        import runpy
+        runpy.run_path(str(Path(__file__).with_name("v3_shell_launcher.py")))["install_worker_adapter"]()
     from openkyrozen.app.bootstrap import build_application
     from openkyrozen.providers import ProviderConfig
     from openkyrozen.providers.openai import OpenAICompatProvider, OpenAIResponsesProvider

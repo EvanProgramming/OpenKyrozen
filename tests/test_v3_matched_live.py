@@ -62,9 +62,12 @@ class V3MatchedLiveTests(unittest.TestCase):
                     patch.object(live, "ResponsesRelay", Relay), \
                     patch.object(live, "_extract_baseline", side_effect=extract_baseline), \
                     patch.object(live, "_run_worker", side_effect=run_worker), \
+                    patch("benchmarks.v3_protected_worker.verify_worker_protection", return_value={}), \
                     patch("builtins.print"), \
                     patch.object(live, "verify_fixture", return_value={
                         "result": "failed", "safety_passed": True,
+                        "safety_components": {"scope_safe": True, "original_tests_unchanged": True,
+                                              "provider_ok": True, "no_running_processes": True},
                         "plan_scenario_passed": True, "verified_success": False,
                         "changed_paths": [],
                     }):
@@ -122,7 +125,10 @@ class V3MatchedLiveTests(unittest.TestCase):
     def test_resume_retries_worker_failures_even_with_complete_usage(self):
         failed = {"worker_result_complete": True, "usage_complete": True,
                   "attempts": 3, "worker_exit_code": 1}
-        succeeded = {**failed, "worker_exit_code": 0}
+        succeeded = {**failed, "worker_exit_code": 0, "safety_passed": True,
+                     "safety_components": {name: True for name in (
+                         "scope_safe", "original_tests_unchanged", "provider_ok",
+                         "no_running_processes", "worker_complete")}}
 
         self.assertFalse(_row_can_resume_as_complete(failed))
         self.assertTrue(_row_can_resume_as_complete(succeeded))
@@ -445,7 +451,10 @@ class V3MatchedLiveTests(unittest.TestCase):
                 if include_completed_row:
                     rows.append({"fixture_id": first_key[0], "repeat": first_key[1], "arm": first_key[2],
                         "attempts": 1, "requests": 1, "input_tokens": 100, "output_tokens": 10,
-                        "cache_read_tokens": 0, "usage_complete": True, "worker_result_complete": True})
+                        "cache_read_tokens": 0, "usage_complete": True, "worker_result_complete": True,
+                        "safety_passed": True, "safety_components": {name: True for name in (
+                            "scope_safe", "original_tests_unchanged", "provider_ok",
+                            "no_running_processes", "worker_complete")}})
                 _write_checkpoint(report, ledger_path, {"protocol": "openkyrozen-v3-matched-live-v1",
                     "candidate_sha": "candidate", "baseline_sha": BASELINE, "model": MODEL,
                     "repeats": 3, "budget": {"prior_campaign_hold_usd": TEST_PRIOR_HOLD_USD},
@@ -457,6 +466,7 @@ class V3MatchedLiveTests(unittest.TestCase):
                         patch("benchmarks.v3_matched_live._credential", return_value=("https://example.invalid", "key")), \
                         patch("openkyrozen.tools.sandbox.sandbox_command", return_value=probe), \
                         patch("benchmarks.v3_matched_live.ResponsesRelay", return_value=relay), \
+                        patch("benchmarks.v3_protected_worker.verify_worker_protection", return_value={}), \
                         patch("benchmarks.v3_matched_live._extract_baseline", side_effect=RuntimeError("stop")):
                     with self.assertRaisesRegex(RuntimeError, "stop"):
                         run(source=root / "src", repo=root, output=report, budget_path=ledger_path,
