@@ -746,6 +746,223 @@ class NativeLifecycleRegressionTests(unittest.TestCase):
         answer = runtime._complete_turn(turn)
         self.assertEqual(turn.runtime_status, "incomplete")
         self.assertIn("not verified", answer)
+        self.assertNotIn("file was written successfully", answer.lower())
+
+    def test_failed_write_without_effect_verification_cannot_keep_success_claim(self):
+        for stage in (None, "verified"):
+            for retried in (False, True):
+                with self.subTest(stage=stage, retried=retried):
+                    runtime = self.runtime()
+                    turn = TurnContext("Write a note")
+                    runtime._prepare_turn(turn)
+                    turn.fix_workflow = {"stage": stage} if stage else None
+                    turn.final_answer, turn.response_text = "The file was written successfully.", ""
+                    turn.tool_calls = []
+                    first = {"action": "write_file", "success": False, "operation_id": "same-write",
+                        "args": "note.txt|requested", "task_id": "task", "plan_id": "plan",
+                        "verification": {"status": "not_applicable"}}
+                    turn.tool_records = [first]
+                    if retried:
+                        turn.tool_records.append({**first, "success": True,
+                            "verification": {"status": "verified", "method": "file_content_match"}})
+                    answer = runtime._complete_turn(turn)
+                    self.assertEqual(turn.runtime_status, "completed" if retried else "incomplete")
+                    if retried:
+                        self.assertIn("file was written successfully", answer)
+                    else:
+                        self.assertNotIn("file was written successfully", answer)
+                        self.assertIn("write_file", answer)
+
+    def test_typed_remote_effect_failure_cannot_keep_success_claim(self):
+        runtime = self.runtime()
+        turn = TurnContext("Publish the change")
+        runtime._prepare_turn(turn)
+        turn.fix_workflow = {"stage": "verified"}
+        turn.final_answer, turn.response_text = "The remote change was published successfully.", ""
+        turn.tool_calls = []
+        turn.tool_records = [{"action": "git_push", "side_effects": "remote", "success": False,
+            "verification": {"status": "not_applicable"}}]
+        answer = runtime._complete_turn(turn)
+        self.assertEqual(turn.runtime_status, "incomplete")
+        self.assertNotIn("published successfully", answer)
+        self.assertIn("git_push", answer)
+        self.assertIn("not verified", answer)
+
+    def test_only_trusted_duplicate_refusal_can_preserve_prior_verified_claim(self):
+        for kind in ("duplicate", "conflict", "permission_denied", "failed_verification", "different_task"):
+            with self.subTest(kind=kind):
+                runtime = self.runtime()
+                turn = TurnContext("Write a note")
+                runtime._prepare_turn(turn)
+                turn.fix_workflow = {"stage": "verified"}
+                turn.final_answer, turn.response_text = "The file was written successfully.", ""
+                turn.tool_calls = []
+                first = {"action": "write_file", "success": True, "operation_id": "write", "args": "note.txt|requested",
+                    "task_id": "task", "plan_id": "plan", "verification": {"status": "verified", "method": "file_content_match"}}
+                later = {**first, "success": False, "failure": "conflict",
+                    "verification": {"status": "not_applicable", "method": "duplicate_success_refusal"}}
+                if kind == "conflict": later["verification"] = {"status": "unavailable", "method": "none"}
+                elif kind == "permission_denied": later.update(failure="permission_denied", verification={"status": "unavailable"})
+                elif kind == "failed_verification": later["verification"] = {"status": "failed", "method": "file_content_match"}
+                elif kind == "different_task": later["task_id"] = "other-task"
+                turn.tool_records = [first, later]
+                answer = runtime._complete_turn(turn)
+                if kind == "duplicate":
+                    self.assertIn("file was written successfully", answer)
+                else:
+                    self.assertNotIn("file was written successfully", answer)
+                    self.assertEqual(turn.runtime_status, "blocked" if kind == "permission_denied" else "incomplete")
+
+    def test_trusted_duplicate_refusal_completes_without_a_fix_workflow(self):
+        runtime = self.runtime()
+        turn = TurnContext("Write a note")
+        runtime._prepare_turn(turn)
+        turn.final_answer, turn.response_text = "The file was written successfully.", ""
+        turn.tool_calls = []
+        first = {"action": "write_file", "success": True, "operation_id": "write", "args": "note.txt|requested",
+            "task_id": "task", "plan_id": "plan", "verification": {"status": "verified", "method": "file_content_match"}}
+        turn.tool_records = [first, {**first, "success": False, "failure": "conflict",
+            "verification": {"status": "not_applicable", "method": "duplicate_success_refusal"}}]
+        answer = runtime._complete_turn(turn)
+        self.assertEqual(turn.runtime_status, "completed")
+        self.assertEqual(answer, "The file was written successfully.")
+
+    def test_delegated_failure_reply_remains_valid_worker_or_review_json(self):
+        import json
+        from openkyrozen.agent.delegation import REPORT_LISTS, report
+        for review in (False, True):
+            with self.subTest(review=review):
+                runtime = self.runtime(complexity="complex", child=True)
+                runtime.execution_context.coordinator = object()
+                runtime.tasks.working_plan = SimpleNamespace(id="child-plan", status="active", task_ids=["child-task"])
+                runtime.tasks.tasks = [{"id": "child-task", "status": "pending", "description": "Verify the change"}]
+                turn = TurnContext("Write a note")
+                runtime._prepare_turn(turn)
+                payload = ({"verdict": "verified", "findings": [], "evidence": []} if review else
+                           {**{key: [] for key in REPORT_LISTS}, "status": "completed"})
+                payload["summary"] = "The file was written successfully."
+                raw = json.dumps(payload)
+                turn.final_answer = "```json\n" + raw + "\n```" if review else raw
+                turn.response_text, turn.tool_calls = "", []
+                turn.tool_records = [{"action": "write_file", "success": False, "failure": "permission_denied",
+                    "verification": {"status": "unavailable"}, "tool_error": {"code": "permission_denied"}}]
+                answer = runtime._complete_turn(turn)
+                parsed = report(answer, review=review)
+                self.assertEqual(json.loads(answer), parsed)
+                self.assertEqual(parsed["verdict"] if review else parsed["status"], "unverifiable" if review else "blocked")
+                self.assertTrue(any("write_file" in finding for finding in parsed["findings"]))
+                self.assertNotIn("written successfully", answer)
+                self.assertEqual(turn.runtime_status, "blocked")
+
+    def test_complex_child_plan_status_keeps_valid_worker_json_and_cannot_complete_active_plan(self):
+        import json
+        from openkyrozen.agent.delegation import REPORT_LISTS, report
+        for plan_status, task_status, expected_runtime, expected_report in (
+                ("completed", "succeeded", "completed", "completed"),
+                ("active", "pending", "incomplete", "partial"),
+                ("active", "blocked", "blocked", "blocked")):
+            with self.subTest(plan_status=plan_status, task_status=task_status):
+                runtime = self.runtime(complexity="complex", child=True)
+                runtime.execution_context.coordinator = object()
+                runtime.tasks.working_plan = SimpleNamespace(id="child-plan", status=plan_status, task_ids=["child-task"])
+                runtime.tasks.tasks = [{"id": "child-task", "status": task_status, "description": "Verify the change"}]
+                turn = TurnContext("Investigate the result")
+                runtime._prepare_turn(turn)
+                payload = {**{key: [] for key in REPORT_LISTS}, "status": "completed", "summary": "The requested result."}
+                turn.final_answer = json.dumps(payload)
+                turn.response_text, turn.tool_calls, turn.tool_records = "", [], []
+                answer = runtime._complete_turn(turn)
+                parsed = report(answer)
+                self.assertEqual(json.loads(answer), parsed)
+                self.assertEqual(turn.runtime_status, expected_runtime)
+                self.assertEqual(parsed["status"], expected_report)
+                if expected_report == "completed":
+                    self.assertEqual(parsed, payload)
+                else:
+                    self.assertTrue(any("Plan status:" in item for item in parsed["uncertainties"]))
+
+    def test_native_final_claim_is_replaced_after_actual_failed_write_verification(self):
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.tools import ToolAdapters
+        from openkyrozen.tools.manifest import ToolSpec
+        class Provider(LLMProvider):
+            calls = 0
+            def get_capabilities(self, model=None): return ProviderCapabilities(native_tools=True)
+            def chat(self, messages, model=None): raise AssertionError("legacy provider boundary used")
+            def chat_response(self, messages, model=None, *, tools=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return ModelResponse(tool_calls=(ToolCall("failed-write", "write_file", {
+                        "path": "note.txt", "content": "requested content"}),), finish_reason=FinishReason.TOOL_REQUEST,
+                        continuation=provider_continuation(self, model, "fixture", {"call": "failed-write"}))
+                return ModelResponse(text="The file was written successfully.", finish_reason=FinishReason.FINAL)
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_APPROVAL_MODE": "never",
+        }):
+            root = Path(directory)
+            (root / "note.txt").write_text("unchanged old content")
+            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", index=None), tools=ToolAdapters(root))
+            self.addCleanup(app.close)
+            runtime = app.runtime
+            runtime._set_workspace_root(root)
+            runtime.set_interaction_mode("agent")
+            config = ProviderConfig(provider="custom", model_simple="fixture", model_complex="fixture")
+            runtime._provider_config = config
+            provider = Provider(config)
+            runtime.llm_provider = runtime._default_turn.provider = provider
+            spec = runtime.tool_registry.get_spec("write_file")
+            runtime.tool_registry.register_spec(ToolSpec("write_file", lambda _arguments: ToolResult(text="Tool reported success"),
+                description=spec.description, input_schema=spec.input_schema, capability=spec.capability,
+                side_effects=spec.side_effects), replace=True)
+            events = []
+            with patch.object(runtime, "_schedule_post_turn_learning"), patch.object(runtime, "_finish_learning_run",
+                    side_effect=lambda _run, _receipts, _task, answer, *_args: answer):
+                answer = runtime.chat(runtime.current_session, "Write note.txt", on_runtime_event=events.append)
+            receipts = runtime.memory_bank.store.list_events("execution.receipt", user_id=runtime.tasks.user_id,
+                workspace_id=runtime.tasks.workspace_id, session_id=runtime.tasks.session_id)
+            receipt = next(event["payload"] for event in receipts if event["payload"].get("call_id") == "failed-write")
+            self.assertTrue(receipt["success"])
+            self.assertEqual(receipt["verification"]["status"], "failed")
+            self.assertEqual((root / "note.txt").read_text(), "unchanged old content")
+            self.assertEqual(provider.calls, 2)
+            self.assertNotIn("file was written successfully", answer.lower())
+            self.assertIn("write_file", answer)
+            self.assertIn("not verified", answer)
+            terminal = next(event for event in events if event.kind == "turn.completed")
+            self.assertEqual(terminal.payload["status"], "incomplete")
+            # CLI/TUI/Web consume the returned native reply through these literal projections.
+            self.assertEqual(runtime._clean_final_response(answer), answer)
+            self.assertEqual(runtime._split_reply(answer)[1], answer)
+
+    def test_failed_effect_summary_preserves_provider_block_reason(self):
+        runtime = self.runtime()
+        turn = TurnContext("Write a note")
+        runtime._prepare_turn(turn)
+        turn.runtime_status = "blocked"
+        turn.protocol_error_message = "The provider blocked this response; no further tools were run."
+        turn.final_answer, turn.response_text = "The file was written successfully.", ""
+        turn.tool_calls = []
+        turn.tool_records = [{"action": "write_file", "success": True,
+            "verification": {"status": "failed", "method": "file_content_match"}}]
+        answer = runtime._complete_turn(turn)
+        self.assertEqual(turn.runtime_status, "blocked")
+        self.assertIn("provider blocked", answer)
+        self.assertIn("not verified", answer)
+        self.assertNotIn("written successfully", answer)
+
+    def test_verified_reproduction_failure_preserves_literal_final_reply(self):
+        runtime = self.runtime()
+        turn = TurnContext("Fix the page")
+        runtime._prepare_turn(turn)
+        turn.fix_workflow = {"stage": "verified"}
+        turn.final_answer = "The verified repair passed. Action: read_file is a literal example."
+        turn.response_text, turn.tool_calls = "", []
+        turn.tool_records = [{"action": "run_cmd", "success": False,
+            "verification": {"status": "failed", "method": "command_exit_status"}}]
+        answer = runtime._complete_turn(turn)
+        self.assertEqual(turn.runtime_status, "completed")
+        self.assertEqual(answer, turn.final_answer)
+        self.assertIn("Action: read_file is a literal example.", answer)
 
     def test_verified_fix_cannot_hide_latest_failed_file_verification(self):
         for stage in ("verified", "explained"):
@@ -776,8 +993,12 @@ class NativeLifecycleRegressionTests(unittest.TestCase):
                 turn.final_answer, turn.response_text = "The repair was independently verified.", ""
                 turn.tool_calls = []
                 turn.tool_records = [first, {**first, **changes, "verification": {"status": "verified", "method": "file_content_match"}}]
-                runtime._complete_turn(turn)
+                answer = runtime._complete_turn(turn)
                 self.assertEqual(turn.runtime_status, expected)
+                if expected == "completed":
+                    self.assertIn("independently verified", answer)
+                else:
+                    self.assertNotIn("independently verified", answer)
 
     def test_learning_bookkeeping_failure_preserves_the_completed_answer(self):
         runtime = self.runtime()

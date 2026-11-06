@@ -224,6 +224,7 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                             call_id_source: str = "legacy", task_id: str | None = None,
                             task_plan_id: str | None = None,
                             receipt_arguments: dict[str, Any] | None = None,
+                            _duplicate_successful_operation: bool = False,
                             expected_spec=None) -> ExecutionReceipt:
     canonical = self._operation_action(action)
     from openkyrozen.agent.delegation import TOOLS
@@ -300,6 +301,8 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         }
     elif getattr(expected_spec, "side_effects", None) == "read_only":
         verification = {"status": "not_applicable", "method": "read_only_tool", "observed": None}
+    if _duplicate_successful_operation:
+        verification = {"status": "not_applicable", "method": "duplicate_success_refusal", "observed": None}
 
     def safe_metadata(value, budget=4000):
         def clean(item, remaining, depth=0):
@@ -780,6 +783,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             result=result, operation_scope=operation_scope, failure=outcome.error.code, tool_error=outcome.error,
             tool_result=outcome, call_id=call_id, call_id_source=call_id_source,
             task_id=task_id, task_plan_id=task_plan_id, expected_spec=expected_spec,
+            _duplicate_successful_operation=True,
         )
     receipt = self._run_tool(canonical, args, return_receipt=True, operation_scope=operation_scope,
                              _typed_arguments=typed_arguments,
@@ -930,6 +934,7 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
         "acceptance": effective_acceptance, "failure": receipt_projection["failure"],
         "tool_error": receipt_projection["tool_error"],
         "task_id": task_id, "requested_task_id": receipt.task_id,
+        "plan_id": receipt.plan_id, "side_effects": receipt.side_effects,
         "result_data": receipt_projection["result_data"], "verification": receipt_projection["verification"],
     }
     if evidence.get("unmatched_reason"):
