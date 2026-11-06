@@ -326,6 +326,7 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000,
               "accounting_complete": accounting_complete, "fixtures": len(fixture_ids), "repeats": 3,
               "paired_success_ci95": None, "summary": {}, "comparisons": {},
               "comparison_thresholds_met": False, "release_comparison_passed": False,
+              "independent_v3_context_passed": False,
               "release_evidence_status": "blocked: live fixture runner evidence is not attached"}
     if not complete or not accounting_complete:
         return result
@@ -386,6 +387,15 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000,
         and (not row.get("recovery_required") or row.get("recovery_verified") is True)
         for row in keyed.values() if row.get("arm") == "v3"
     )
+    long_context_ids = {fixture["fixture_id"] for fixture in FIXTURES
+                        if fixture["category"] == "long_context"}
+    # Paired task success has the same physical oracle for both arms. V3's
+    # compaction feature is separate evidence and cannot inflate that interval.
+    result["independent_v3_context_passed"] = all(
+        row.get("context_compaction_observed") is True
+        for row in keyed.values()
+        if row.get("arm") == "v3" and row.get("fixture_id") in long_context_ids
+    )
     result["comparisons"] = {"token_savings_fraction": float(token_savings) if token_savings is not None else None,
                               "request_savings_fraction": float(request_savings) if request_savings is not None else None,
                               "success_improved": success_improved}
@@ -393,6 +403,7 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000,
         accounting_complete and success_improved and token_savings is not None and token_savings >= Decimal("0.10")
         and request_savings is not None and request_savings >= Decimal("0.10")
         and newer["protocol_recovery"] == 0 and verification_complete
+        and result["independent_v3_context_passed"]
         and newer["plan_scenarios_passed"] == newer["plan_scenarios"]
         and all(row["budget_ok"] is True for row in keyed.values())
     )

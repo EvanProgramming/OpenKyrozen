@@ -64,6 +64,10 @@ class CampaignSafetyStopTests(unittest.TestCase):
             root = Path(directory)
             source = root / 'source'
             source.mkdir()
+            import shutil
+            (source / 'benchmarks').mkdir()
+            for name in live.apparatus_identity()['apparatus_files']:
+                shutil.copy2(Path(live.__file__).parent / name, source / 'benchmarks' / name)
             with patch.object(live, '_source_snapshot', return_value='candidate'), \
                  patch('openkyrozen.tools.sandbox.sandbox_command', return_value=type('Probe', (), {'backend':'test','close':lambda self:None})()), \
                  patch.object(live, '_credential', return_value=('http://example.invalid', 'local')), \

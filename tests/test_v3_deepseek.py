@@ -314,6 +314,8 @@ class DeepSeekRunnerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            from tests.test_v3_matched_live import prepare_candidate_apparatus
+            prepare_candidate_apparatus(root / 'src')
             with patch.object(live, '_source_snapshot', return_value='candidate'), \
                     patch('benchmarks.v3_protected_worker.verify_worker_protection', return_value={}), \
                     patch('benchmarks.v3_deepseek.run_smoke', return_value=True), \
@@ -387,6 +389,8 @@ class DeepSeekRunnerTests(unittest.TestCase):
             with self.subTest(candidate=candidate, model=model, carryover=carryover), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 budget_path = root / 'budget.db'
+                from tests.test_v3_matched_live import prepare_candidate_apparatus
+                prepare_candidate_apparatus(root / 'src')
                 ledger = v3_matched.BudgetLedger(budget_path, limit_rmb='15', pricing=DEEPSEEK_PRICING,
                                                 prior_hold_rmb='0.582914960007')
                 ledger.reserve('smoke', input_token_bound=1_000_000, output_token_bound=4096,
@@ -422,7 +426,7 @@ class DeepSeekRunnerTests(unittest.TestCase):
                 root = Path(directory)
                 ledger_path = root / 'budget.db'
                 v3_matched.BudgetLedger(ledger_path, limit_rmb='15', prior_hold_rmb='0.5', pricing=DEEPSEEK_PRICING)
-                checkpoint = {'protocol': 'openkyrozen-v3-matched-live-v1', 'candidate_sha': 'candidate',
+                checkpoint = {**live.apparatus_identity(), 'protocol': 'openkyrozen-v3-matched-live-v1', 'candidate_sha': 'candidate',
                               'baseline_sha': live.BASELINE, 'model': 'deepseek-flash', 'repeats': 3,
                               'pricing': DEEPSEEK_PRICING.as_dict(),
                               'relay_config': dataclasses.asdict(DEEPSEEK_RELAY_CONFIG),
