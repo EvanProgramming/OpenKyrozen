@@ -214,6 +214,47 @@ class ProcessLifecycleTests(unittest.TestCase):
         self.assertIsNone(handle.finished_at)
         sandbox.cleanup.assert_not_called()
 
+    def test_cancellation_publication_can_follow_observed_os_exit(self):
+        from unittest.mock import patch
+        from openkyrozen.tools.processes import SessionProcessManager
+
+        with tempfile.TemporaryDirectory() as root:
+            manager = SessionProcessManager('user', root, 'session')
+            cancelled, stopped, release = threading.Event(), threading.Event(), threading.Event()
+            original_stop = manager.stop
+
+            def delayed_stop(process_id):
+                result = original_stop(process_id)
+                stopped.set()
+                if not release.wait(2):
+                    raise AssertionError('test did not release process stop')
+                return result
+
+            try:
+                with patch.object(manager, 'stop', side_effect=delayed_stop):
+                    handle = manager.start(shlex.join([sys.executable, '-c', 'import time; time.sleep(30)']),
+                        cwd=root, env=None, timeout_seconds=30, cancelled=cancelled)
+                    cancelled.set()
+                    try:
+                        self.assertTrue(stopped.wait(2))
+                        self.assertIsNotNone(handle.process.poll())
+                        # Observing OS exit is not a cancellation-publication
+                        # barrier while the stopping thread has not returned.
+                        self.assertFalse(manager.read(handle.process_id)['cancelled'])
+                    finally:
+                        release.set()
+                    deadline = time.monotonic() + 2
+                    page = manager.read(handle.process_id)
+                    while not page['cancelled'] and time.monotonic() < deadline:
+                        time.sleep(.01)
+                        page = manager.read(handle.process_id)
+                    self.assertTrue(page['cancelled'])
+                    self.assertFalse(page['running'])
+                    self.assertFalse(page['timed_out'])
+            finally:
+                release.set()
+                manager.close()
+
     def test_process_output_cap_is_reported_and_can_be_paged(self):
         from unittest.mock import patch
         from openkyrozen.tools.processes import SessionProcessManager

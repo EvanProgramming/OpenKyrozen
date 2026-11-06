@@ -47,11 +47,15 @@ class RuntimeReliabilityTests(unittest.TestCase):
                     self.assertTrue(ready.wait(5))
                     self.assertTrue(runtime.cancel_turn(session.session_id, user_id=session.memory.user_id))
                     deadline = time.monotonic() + 3
-                    while handles[0].process.poll() is None and time.monotonic() < deadline:
-                        time.sleep(.02)
-                    self.assertIsNotNone(handles[0].process.poll())
                     page = session.process_manager.read(handles[0].process_id)
+                    # OS exit can precede stop() returning and the expiry
+                    # thread publishing its cancellation result.
+                    while not page['cancelled'] and time.monotonic() < deadline:
+                        time.sleep(.02)
+                        page = session.process_manager.read(handles[0].process_id)
+                    self.assertIsNotNone(handles[0].process.poll())
                     self.assertTrue(page['cancelled'])
+                    self.assertFalse(page['running'])
                     self.assertFalse(page['timed_out'])
                 finally:
                     release.set()
