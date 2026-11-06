@@ -145,7 +145,27 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
                              exc, (KeyboardInterrupt, asyncio.CancelledError)
                          ) or (isinstance(exc, ProviderError) and exc.kind == ProviderErrorKind.CANCELLED)
             if cancelled and active_plan:
-                for task_id in active_plan.get("working_task_ids", []):
+                # Safe narrowing advances the Strategic Plan version while
+                # acceptance anchors and their children retain their original
+                # immutable binding. Follow those current anchors, not the
+                # latest proposal fingerprint, when cancelling their work.
+                anchor_ids = set(active_plan.get("working_task_ids", []))
+                anchors = {task["id"]: (task.get("checkpoint") or {}).get("strategic_plan") or {}
+                           for task in self.tasks.tasks
+                           if task["id"] in anchor_ids
+                           and task.get("plan_id") == active_plan.get("working_plan_id")
+                           and ((task.get("checkpoint") or {}).get("strategic_plan") or {}).get("plan_id")
+                           == active_plan.get("plan_id")}
+                cancelled_ids = set(anchors)
+                for task in self.tasks.tasks:
+                    checkpoint = task.get("checkpoint") or {}
+                    binding = checkpoint.get("strategic_plan") or {}
+                    anchor_binding = anchors.get(checkpoint.get("strategy_anchor"))
+                    if (task.get("plan_id") == active_plan.get("working_plan_id")
+                            and anchor_binding is not None
+                            and binding == anchor_binding):
+                        cancelled_ids.add(task["id"])
+                for task_id in cancelled_ids:
                     index = next((i for i, task in enumerate(self.tasks.tasks)
                                   if task.get("id") == task_id), None)
                     if index is not None and self.tasks.tasks[index].get("status") not in {"succeeded", "cancelled"}:

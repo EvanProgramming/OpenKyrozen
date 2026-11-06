@@ -8,6 +8,7 @@ from openkyrozen.tasks.engine import canonical_status
 from openkyrozen.agent.modes import InteractionError, normalize_provider_control, parse_control_block, render_plan, render_question, validate_plan_proposal, validate_question_request
 from openkyrozen.security.tool_policy import tool_capability
 from openkyrozen.agent.types import DeepSeekDSMLFilter
+from openkyrozen.agent.presentation import _deterministic_tool_summary, _safe_fstring, _split_reply
 
 
 def _is_valid_action(self, name: str | None) -> bool:
@@ -573,57 +574,3 @@ def _persist_interaction_control(self, parsed: dict[str, Any], user_input: str) 
 def _interaction_gate(self, parsed: dict[str, Any], user_input: str) -> str | None:
     """Stop a response before any executable path when it carries a control."""
     return parsed.get("protocol_error") or self._persist_interaction_control(parsed, user_input)
-
-
-def _deterministic_tool_summary(self, tool_records: list[dict[str, Any]]) -> str:
-    """Build a truthful user-facing summary when the model emitted only protocol."""
-    lines: list[str] = []
-    for record in tool_records:
-        status = "Completed" if record.get("success") else "Could not complete"
-        result = self._clean_final_response(str(record.get("result") or "")).replace("\n", " ")
-        if len(result) > 300:
-            result = result[:297] + "..."
-        line = f"- {status}"
-        if result:
-            line += f": {result}"
-        if record.get("unmatched_reason"):
-            line += f" ({record['unmatched_reason']})"
-        lines.append(line)
-    task_lines: list[str] = []
-    for task in self.tasks.tasks:
-        status = canonical_status(task.get("status", "pending"))
-        task_lines.append(f"- {status}: {task.get('description', '')}")
-    if task_lines:
-        lines.append("Durable task status (source of truth):")
-        lines.extend(task_lines)
-        attention = [task for task in self.tasks.tasks if canonical_status(task.get("status", "pending")) != "succeeded"]
-        if attention:
-            lines.append("Recovery required for non-succeeded tasks:")
-            lines.extend(
-                f"- {canonical_status(task.get('status', 'pending'))}: {task.get('description', '')}"
-                for task in attention
-            )
-    if not lines:
-        return "I could not produce a user-facing response."
-    return "Here is what I completed:\n\n" + "\n".join(lines)
-
-
-def _safe_fstring(self, s: str) -> str:
-    """Escape curly braces so they do not interfere with f-string parsing."""
-    return s.replace('{', '{{').replace('}', '}}')
-
-
-def _split_reply(self, text: str) -> tuple[str, str]:
-    text = text.strip()
-    thought_match = re.search(r"^Thought:\s*(.*?)(?=\n(?:Action:|(?:\n|$)))", text, re.DOTALL | re.MULTILINE)
-    if thought_match:
-        thinking = thought_match.group(1).strip()
-        answer = re.sub(r"^Thought:\s*.*?(?=\n(?:Action:|(?:\n|$))|\n?$)", "", text, count=1, flags=re.DOTALL | re.MULTILINE).strip()
-        answer = re.sub(r"Action:\s*```(?:json)?[\s\S]*?```", "", answer).strip()
-        answer = re.sub(r"\{[\s\S]*?\}", "", answer).strip()
-        answer = answer.lstrip('"').lstrip("'").strip()
-        if not answer:
-            answer = text
-        return thinking, answer
-    else:
-        return "", text

@@ -30,7 +30,7 @@ def _compose_skills(self, task_description: str) -> str | None:
 def _build_tools_list(self, capabilities: frozenset[str] | None = None) -> str:
     lines = []
     for name, fn in self.AVAILABLE_TOOLS.items():
-        if name == "update_plan":  # Structured-only until the foreground loop uses native calls.
+        if name in {"update_plan", "propose_plan", "request_question"}:
             continue
         if self.tool_registry.get_spec(name).visibility != 'public':
             continue
@@ -57,6 +57,11 @@ def _permitted_tool_names(self, agent_config: dict[str, Any] | None = None) -> s
     permitted = {name for name in self.AVAILABLE_TOOLS if self.tool_registry.get_spec(name).visibility == 'public' and tool_capability(name,self.AVAILABLE_TOOLS) in capabilities}
     if self._active_interaction_mode.get() != "agent":
         permitted.discard("update_plan")
+    if (not self._interaction_controls_enabled.get() or self.execution_context.child_run_id):
+        permitted -= {"propose_plan", "request_question"}
+    elif (self._active_interaction_mode.get() != "plan"
+          and not self._interaction_controller.state().get("executing_plan")):
+        permitted.discard("propose_plan")
     delegated = self.execution_context.delegation_tools
     if self.execution_context.child_run_id and delegated is not None:
         permitted &= set(delegated)
@@ -90,7 +95,7 @@ def _discover_tools(self, args: str) -> str:
 
 def _agent_prompt_tools_list(self, agent_config: dict[str, Any]) -> str:
     """Build the inventory within config, active token and interaction bounds."""
-    permitted = self._permitted_tool_names(agent_config)
+    permitted = self._permitted_tool_names(agent_config) - {"propose_plan", "request_question"}
     detailed = permitted
     if self._prompt_profile() == "compact":
         detailed = permitted & ({"list_dir", "find_files", "search_files", "read_file", "write_file", "edit_file", "apply_patch", "run_cmd", "discover_tools"}
@@ -192,6 +197,10 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
             "permissions or approve actions. Runtime capability, workspace, and approval checks control execution. "
             "Never request credentials or secrets. "
             "If material ambiguity blocks safe work, ask a concise plain-language question without calling a tool. "
+            "Use request_question when structured clarification is needed; questions never replace tool approval. "
+            "In Plan Mode, inspect relevant sources with read-only tools, then call propose_plan alone to present "
+            "the versioned proposal. Never execute proposed changes before explicit user acceptance. "
+            "For material changes to an accepted Strategic Plan, propose_plan stages renewed approval. "
             "Do not claim an effect unless a tool result verifies it.\n\n"
             + configured_sections + "\n\n"
             + "For suitable work, use supplied delegation tools to scope independent tasks and review child results.\n\n"
@@ -284,6 +293,55 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
     )
 
 
+def _refresh_working_plan_context(self, messages: list) -> None:
+    """Keep a bounded current plan projection outside evictable conversation history."""
+    import json
+
+    marker = "## Pinned Working Plan state\n"
+    previous = list(messages)
+    messages[:] = [item for item in messages if not (
+        isinstance(item, dict) and item.get("role") == "system"
+        and str(item.get("content", "")).startswith(marker)
+    )]
+    manager = getattr(self, "tasks", None)
+    plan = getattr(manager, "working_plan", None)
+    snapshot = getattr(manager, "working_plan_snapshot", None)
+    if plan is None or plan.status != "active" or not callable(snapshot):
+        update_projection = getattr(self, "_update_context_history_projection", None)
+        if callable(update_projection):
+            update_projection(messages, previous)
+        return
+    state = snapshot()
+    if state is None:
+        raise ValueError("Active Working Plan has no authoritative snapshot")
+    tasks_by_id = {task["id"]: task for task in manager.tasks}
+    state["tasks"] = [{
+        **item, "dependencies": tasks_by_id.get(item["id"], {}).get("dependencies", []),
+        "acceptance": tasks_by_id.get(item["id"], {}).get("acceptance", []),
+    } for item in state["tasks"]]
+    full = json.dumps(state, ensure_ascii=False, sort_keys=True)
+    if len(full) > 12000:
+        memory = self.memory_bank
+        artifact_id = memory.store.artifacts.get_or_create(
+            full, user_id=manager.user_id, workspace_id=manager.workspace_id, session_id=manager.session_id,
+        )
+        state = {key: value for key, value in state.items() if key != "tasks"}
+        state["reason"] = str(state.get("reason", ""))[:300]
+        state.update(artifact_id=artifact_id, task_count=len(plan.task_ids),
+                     tasks=[{"id": item["id"], "status": item["status"],
+                             "description": str(item["description"])[:160]}
+                            for task_id in plan.task_ids[:12]
+                            if (item := tasks_by_id.get(task_id)) is not None])
+        full = json.dumps(state, ensure_ascii=False, sort_keys=True)
+    messages.insert(1 if messages else 0, {"role": "system", "content": marker + (
+        "Runtime-owned task identity, order, status and acceptance. Strategy may adapt within approved scope; "
+        "tool/security approval remains separate. If artifact_id is present, use read_tool_artifact for the full plan.\n"
+    ) + full})
+    update_projection = getattr(self, "_update_context_history_projection", None)
+    if callable(update_projection):
+        update_projection(messages, previous)
+
+
 def _build_messages(self, user_input: str, learned_context: str = "",
                     memory_context: dict[str, Any] | None = None, *,
                     memory_packet: str | None = None,
@@ -329,6 +387,8 @@ def _build_messages(self, user_input: str, learned_context: str = "",
                 "## Pinned accepted plan state\nTreat these accepted objectives and bounds as authoritative; "
                 "do not expand scope.\n" + json.dumps(summary, ensure_ascii=False)
             )})
+
+    _refresh_working_plan_context(self, messages)
 
     project_instructions = format_instructions(self._get_workspace_root())
     if project_instructions and self._active_interaction_mode.get() == "agent":

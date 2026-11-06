@@ -938,6 +938,68 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         self.assertIsNone(receipt.verified_effect)
         self.assertIsNone(receipt.acceptance)
 
+    def test_exact_operation_acceptance_does_not_cover_extra_criteria_or_changed_arguments(self):
+        runtime = self.app.runtime
+        cases = [
+            ("unrelated-criterion", ["All unit tests pass"], "requested", "requested"),
+            ("extra-criteria", ["Requested contents exist", "Independent second condition"], "requested", "requested"),
+            ("changed-arguments", ["Requested contents exist"], "requested", "different"),
+        ]
+        for name, criteria, declared, actual in cases:
+            with self.subTest(name=name):
+                session = runtime.open_session(name)
+                with runtime.use_session(session):
+                    plan = runtime.tasks.edit_plan(complexity="complex", expected_revision=0, operations=[
+                        {"op": "add", "ref": "write", "task": {"description": "Write exact contents", "acceptance": criteria,
+                         "execution": {"action": "write_file", "arguments": {"path": name + ".txt", "content": declared}}}},
+                        {"op": "start", "task": "write"}, {"op": "suggest_complete", "task": "write"},
+                    ])
+                    receipt = runtime._execute_turn_action("write_file", {"path": name + ".txt", "content": actual},
+                        operation_scope=name, successful_operations=set(), call_id=name, call_id_source="native",
+                        task_id=plan["task_ids"][0], task_plan_id=plan["plan_id"])
+                    self.assertEqual(receipt.verification["status"], "verified")
+                    record = runtime._record_turn_receipt(receipt)
+                    self.assertIsNone(record["acceptance"])
+                    self.assertEqual(runtime.tasks.tasks[0]["status"], "running")
+
+    def test_child_local_receipt_cannot_fall_back_to_a_parent_task_id(self):
+        runtime = self.app.runtime
+        self.plan()
+        parent = runtime.current_session
+        parent_task_id = parent.tasks.tasks[0]["id"]
+        child = runtime.open_session("isolated-child")
+        child._delegation_parent, child._delegation_task_id = parent, parent_task_id
+        with runtime.use_session(child):
+            plan = runtime.tasks.edit_plan(complexity="complex", expected_revision=0, operations=[
+                {"op": "add", "ref": "local", "task": {"description": "Check a value", "acceptance": ["Value checked"],
+                 "execution": {"action": "calculate", "arguments": {"expression": "2+2"}}}},
+                {"op": "start", "task": "local"},
+            ])
+            receipt = runtime._execute_turn_action("calculate", {"expression": "2+2"},
+                operation_scope="isolated-child", successful_operations=set(), call_id="local-call", call_id_source="native",
+                task_id=plan["task_ids"][0], task_plan_id=plan["plan_id"])
+            self.assertEqual(receipt.plan_id, plan["plan_id"])
+            forged_binding = ExecutionReceipt.from_dict({**receipt.as_dict(), "task_id": parent_task_id})
+            record = runtime._record_turn_receipt(forged_binding)
+            self.assertIsNone(record["task_id"])
+            self.assertEqual(child.tasks.tasks[0]["evidence"], [])
+        runtime._record_turn_receipt(forged_binding)
+        self.assertEqual(parent.tasks.tasks[0]["evidence"], [])
+        self.assertEqual(parent.tasks.tasks[0]["status"], "pending")
+
+    def test_native_selected_task_identity_survives_argument_rejection(self):
+        runtime = self.app.runtime
+        plan = self.plan("write_file", {"path": "invalid.txt", "content": "requested"})
+        task_id = runtime.tasks.tasks[0]["id"]
+        runtime.tasks.edit_plan(plan_id=plan.id, expected_revision=1, operations=[{"op": "start", "task": task_id}])
+        receipt = runtime._execute_turn_action("write_file", {"path": "invalid.txt"},
+            operation_scope="invalid-selected", successful_operations=set(), call_id="invalid-selected", call_id_source="native",
+            task_id=task_id, task_plan_id=plan.id)
+        self.assertFalse(receipt.success)
+        self.assertEqual(receipt.task_id, task_id)
+        self.assertEqual(receipt.plan_id, plan.id)
+        self.assertFalse((self.root / "invalid.txt").exists())
+
     def test_command_verification_uses_exit_status_not_output_words(self):
         from openkyrozen.providers.models import ToolCall
 

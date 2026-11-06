@@ -257,7 +257,22 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator, report_repair
     if review or self._active_interaction_mode.get() in {"ask", "plan"}:
         capabilities &= resolve_capabilities("readonly")
     tools = (allowed_tool_names(adapters.AVAILABLE_TOOLS, ",".join(capabilities)) - set(TOOLS)) if not report_repair else set()
+    if not report_repair and "read" in capabilities:
+        with self.use_session(child):
+            artifact_spec = self.tool_registry.get_spec("read_tool_artifact")
+            if artifact_spec.source == "builtin" and artifact_spec.capability == "read":
+                tools.add("read_tool_artifact")
+    if not review and not report_repair and capabilities & {"read", "write"}:
+        with self.use_session(child):
+            plan_spec = self.tool_registry.get_spec("update_plan")
+            if plan_spec.source == "builtin" and plan_spec.capability == "write":
+                if "write" not in capabilities:
+                    # This registry belongs only to the child session. Local planning
+                    # does not grant filesystem writes or change the parent catalog.
+                    self.tool_registry.register_spec(plan_spec.replace(capability="read"), replace=True)
+                tools.add("update_plan")
     child._delegation_parent = parent
+    child._delegation_classifier_input = "\n".join((brief["objective"], brief["context"]))
     child._delegation_task_id = brief.get("task_id") if not review else None
     profile = replace(profile, metadata={**profile.metadata, "structured": True, "review": review,
         "display_name": run["reviewer"] if review else run["name"], "assignment": brief,
@@ -435,11 +450,55 @@ def _delegation_tool_access(self, action, args):
         read_only_network = capability == "network" and action in {
             "search_web", "read_webpage", "analyze_remote_repo", "github_status", "github_read",
         }
-        if action not in {"write_file", "edit_file", "apply_patch"} and not read_only_network and (
+        parent = getattr(self.current_session, "_delegation_parent", None)
+        from openkyrozen.tools.manifest import typed_executor
+        if action == "read_tool_artifact" and (spec is None or spec.source != "builtin"
+                or capability != "read" or effects not in {"read", "read_only"}
+                or spec.executor != typed_executor(self._read_tool_artifact)):
+            raise PermissionError("Child artifact reads require the scoped builtin reader")
+        local_plan_update = (action == "update_plan" and spec is not None
+                             and spec.source == "builtin" and capability in {"read", "write"}
+                             and effects in {"internal", "internal_write"}
+                             and spec.executor == typed_executor(self._update_plan)
+                             and parent is not None and self.current_session.tasks is not parent.tasks)
+        if action not in {"write_file", "edit_file", "apply_patch"} and not read_only_network and not local_plan_update and (
             capability in {"write", "shell", "git", "browser", "destructive"}
             or effects not in {"none", "read", "read_only"}
         ):
             raise PermissionError(f"Sub-agent capability '{capability}' is not confined to assigned files")
+        if local_plan_update:
+            plan_arguments = args
+            if isinstance(plan_arguments, str):
+                try:
+                    plan_arguments = json.loads(plan_arguments)
+                except (TypeError, ValueError) as exc:
+                    raise PermissionError("Child plan arguments must be a structured object") from exc
+            if not isinstance(plan_arguments, dict):
+                raise PermissionError("Child plan arguments must be a structured object")
+            def executions(value):
+                if isinstance(value, dict):
+                    for key, item in value.items():
+                        if key == "execution" and isinstance(item, dict):
+                            yield item
+                        else:
+                            yield from executions(item)
+                elif isinstance(value, list):
+                    for item in value:
+                        yield from executions(item)
+
+            for execution in executions(plan_arguments):
+                name = self._operation_action(execution.get("action", ""))
+                arguments = execution.get("arguments")
+                target = self.tool_registry.specs.get(name)
+                if (name == "update_plan" or name in TOOLS or target is None
+                        or name not in (context.delegation_tools or ())
+                        or not context.capability_token.allows(target.capability)
+                        or self.tool_registry._argument_error(target.input_schema, arguments)):
+                    raise PermissionError("Child plan execution exceeds its delegated tool authority")
+                # Stored execution checkpoints may later reach a durable worker;
+                # validate their scope now, while the child boundary is present.
+                with self._delegation_tool_access(name, arguments):
+                    pass
         run = coordinator.runs[context.child_run_id]
         brief = run["assignment"]
         writing = action in {"write_file", "edit_file", "apply_patch"}
@@ -482,7 +541,7 @@ def _delegation_tool_access(self, action, args):
             )
             if denial:
                 raise PermissionError(f"Sub-agent operation exceeds the accepted Strategic Plan: {denial}")
-            if self._is_state_changing_action(action, args):
+            if not local_plan_update and self._is_state_changing_action(action, args):
                 allowed, reason = parent.tasks.mutation_matches_current_task(action, match_args)
                 if not allowed:
                     raise ValueError("Sub-agent action does not match accepted plan: " + reason)

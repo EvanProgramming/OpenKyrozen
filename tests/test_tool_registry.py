@@ -159,7 +159,7 @@ class RuntimeCatalogTests(unittest.TestCase):
             finally:
                 app.close()
 
-    def test_all53_bound_tools_and_workspace_isolation(self):
+    def test_all55_bound_tools_and_workspace_isolation(self):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
@@ -168,7 +168,7 @@ class RuntimeCatalogTests(unittest.TestCase):
             app=build_application(memory=build_memory(Path(home)/'state.sqlite3'))
             try:
                 runtime=app.runtime
-                self.assertEqual(len(runtime.AVAILABLE_TOOLS),53)
+                self.assertEqual(len(runtime.AVAILABLE_TOOLS),55)
                 self.assertEqual(set(runtime.AVAILABLE_TOOLS),set(runtime.tool_registry.specs))
                 self.assertTrue(all(getattr(spec.executor, "__tool_result_executor__", None)
                                     for spec in runtime.tool_registry.specs.values()))

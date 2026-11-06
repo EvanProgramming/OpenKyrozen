@@ -265,6 +265,55 @@ class EvolutionTests(unittest.TestCase):
         self.assertEqual(self.memory.store.list_events(
             "learning.regression_case_created", workspace_id="project"), [])
 
+    def test_direct_activation_cannot_bypass_live_evidence_or_shadow_replay(self):
+        candidate = self._candidate()
+        self.assertFalse(self.engine.validate_and_activate(candidate["proposal_id"], validation={"success": True}))
+        self.assertEqual(self.registry.list()[0]["status"], "canary")
+        for _ in range(2):
+            run = self.engine.begin_run("coder", "run pytest tests")
+            _, receipts = self.engine.artifact_context(run)
+            self.engine.record_outcome(run, receipts, verified=True, success=True)
+        self.assertFalse(self.engine.validate_and_activate(candidate["proposal_id"], validation={"success": True}))
+        self._pass_replay(candidate)
+        self.assertTrue(self.engine.validate_and_activate(candidate["proposal_id"], validation={"success": True}))
+        self.assertEqual(self.registry.list()[0]["status"], "active")
+
+    def test_shadow_replay_rejects_individual_regression_hidden_by_aggregate_success(self):
+        candidate = self._candidate()
+        replay = self.engine.record_shadow_replay(candidate["proposal_id"], [
+            {"case_id": "old", "verified_success": False},
+            {"case_id": "new", "verified_success": True},
+        ], [
+            {"case_id": "old", "verified_success": True},
+            {"case_id": "new", "verified_success": False},
+        ])
+        self.assertFalse(replay["non_regressing"])
+
+    def test_shadow_replay_blocks_measured_cost_latency_and_error_regressions(self):
+        candidate = self._candidate()
+        baseline = {"case_id": "case", "verified_success": True, "tokens": 100,
+                    "latency": 1.0, "corrections": 0, "repeated_errors": 0}
+        for field, value in (("tokens", 101), ("latency", 1.1), ("corrections", 1), ("repeated_errors", 1)):
+            with self.subTest(field=field):
+                changed = {**baseline, field: value}
+                result = self.engine.record_shadow_replay(candidate["proposal_id"], [changed], [baseline])
+                self.assertFalse(result["non_regressing"])
+        result = self.engine.record_shadow_replay(candidate["proposal_id"], [baseline], [baseline])
+        self.assertTrue(result["non_regressing"])
+        self.assertEqual(result["metric_comparisons"]["tokens"], {"candidate": 100, "predecessor": 100, "non_regressing": True})
+
+    def test_shadow_replay_cannot_drop_baseline_measurement_or_use_truthy_success(self):
+        candidate = self._candidate()
+        for current, previous in ((
+            {"case_id": "case", "verified_success": True},
+            {"case_id": "case", "verified_success": True, "latency": 1.0},
+        ), (
+            {"case_id": "case", "verified_success": "false"},
+            {"case_id": "case", "verified_success": True},
+        )):
+            with self.subTest(current=current), self.assertRaises(ValueError):
+                self.engine.record_shadow_replay(candidate["proposal_id"], [current], [previous])
+
 
 if __name__ == "__main__":
     unittest.main()

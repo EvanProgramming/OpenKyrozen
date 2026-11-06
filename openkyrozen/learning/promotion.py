@@ -110,11 +110,13 @@ def validate_and_activate(self, proposal_id: str, *, validation: dict[str, Any])
     if not proposal:
         return False
     skill_id = proposal.get("validation", {}).get("skill_id")
-    if skill_id:
-        return bool(self.registry and self.registry.activate_learned(skill_id))
-    self.store.update_proposal(proposal_id, status="active", confidence=max(0.8, proposal["confidence"]),
-                               validation=validation)
-    self.memory.add_log(proposal["content"], kind=proposal["kind"], status="active",
-                        confidence=max(0.8, proposal["confidence"]),
-                        metadata={"proposal_id": proposal_id, "validation": validation})
-    return True
+    if not skill_id or self.registry is None:
+        return False
+    # Caller-supplied success is a claim, never a substitute for persisted promotion evidence.
+    self._reconcile_artifact(skill_id)
+    current = self._proposal_for_skill(skill_id) or {}
+    evidence = current.get("validation", {})
+    return (current.get("status") == "active" and evidence.get("stage") == "active"
+            and evidence.get("verified_successes", 0) >= 2
+            and (evidence.get("shadow_replay") or {}).get("non_regressing") is True
+            and any(item["id"] == skill_id and item["status"] == "active" for item in self.registry.list()))

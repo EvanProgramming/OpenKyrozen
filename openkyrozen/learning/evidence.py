@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 from typing import Any
 from openkyrozen.persistence.models import stable_hash
 
@@ -18,13 +19,34 @@ def record_shadow_replay(self, proposal_id: str, candidate: list[dict[str, Any]]
     predecessor_ids = [str(item.get("case_id", "")) for item in predecessor]
     if not all(candidate_ids) or candidate_ids != predecessor_ids or len(set(candidate_ids)) != len(candidate_ids):
         raise ValueError("paired replay case ids must be unique and identical")
-    candidate_successes = sum(bool(item.get("verified_success")) for item in candidate)
-    predecessor_successes = sum(bool(item.get("verified_success")) for item in predecessor)
+    if any(type(item.get("verified_success")) is not bool for item in candidate + predecessor):
+        raise ValueError("replay success must be a verified boolean")
+    candidate_successes = sum(item["verified_success"] for item in candidate)
+    predecessor_successes = sum(item["verified_success"] for item in predecessor)
+    outcome_safe = all(not previous["verified_success"] or current["verified_success"]
+                       for current, previous in zip(candidate, predecessor))
+    comparisons = {}
+    for field in ("tokens", "latency", "corrections", "repeated_errors", "tool_calls",
+                  "cost", "cost_picos", "cost_rmb"):
+        pairs = [(current.get(field), previous[field]) for current, previous in zip(candidate, predecessor)
+                 if field in previous]
+        if not pairs:
+            continue
+        if any(type(value) not in {int, float} or (type(value) is float and not math.isfinite(value)) or value < 0
+               for pair in pairs for value in pair):
+            raise ValueError(f"paired {field} measurements must be finite nonnegative numbers")
+        current_total, previous_total = (sum(pair[index] for pair in pairs) for index in (0, 1))
+        non_regressing = current_total <= previous_total
+        if field in {"corrections", "repeated_errors"}:
+            non_regressing = all(current <= previous for current, previous in pairs)
+        comparisons[field] = {"candidate": current_total, "predecessor": previous_total,
+                              "non_regressing": non_regressing}
     models = sorted({str(item.get("provider_model")) for item in candidate if item.get("provider_model")})
     result = {
         "case_ids": candidate_ids, "candidate_successes": candidate_successes,
         "predecessor_successes": predecessor_successes,
-        "non_regressing": candidate_successes >= predecessor_successes,
+        "non_regressing": outcome_safe and all(item["non_regressing"] for item in comparisons.values()),
+        "metric_comparisons": comparisons,
         "environment": self.environment_fingerprint(),
         "model_scope": models, "cross_model_validated": len(models) >= 2,
     }

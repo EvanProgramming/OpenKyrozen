@@ -36,6 +36,7 @@ class ProcessHandle:
     stderr_truncated: bool = False
     timed_out: bool = False
     finished_at: float | None = None
+    cancelled: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -50,11 +51,14 @@ class SessionProcessManager:
         self._lock = threading.Lock()
         self._closed = False
 
-    def start(self, command: str, *, cwd: str, env: dict[str, str], timeout_seconds: float) -> ProcessHandle:
+    def start(self, command: str, *, cwd: str, env: dict[str, str], timeout_seconds: float,
+              cancelled=None) -> ProcessHandle:
         with self._lock:
             if self._closed:
                 raise RuntimeError("session process manager is closed")
-            if len(self._handles) >= 32:
+            if cancelled is not None and cancelled.is_set():
+                raise RuntimeError("turn was cancelled before process start")
+            if sum(handle.process.poll() is None for handle in self._handles.values()) >= 32:
                 raise RuntimeError("session process handle limit reached")
             invocation = sandbox_command(
                 command, workspace=self.workspace_id, cwd=cwd,
@@ -78,21 +82,34 @@ class SessionProcessManager:
             self._handles[handle.process_id] = handle
         for name in ("stdout", "stderr"):
             threading.Thread(target=self._collect, args=(handle, name), daemon=True).start()
-        threading.Thread(target=self._expire, args=(handle,), daemon=True).start()
+        threading.Thread(target=self._expire, args=(handle, cancelled), daemon=True).start()
         return handle
 
-    def _expire(self, handle: ProcessHandle) -> None:
+    def _expire(self, handle: ProcessHandle, cancelled=None) -> None:
         try:
-            handle.process.wait(timeout=min(handle.timeout_seconds, _MAX_PROCESS_SECONDS))
-        except subprocess.TimeoutExpired:
-            if handle.process.poll() is None:
-                self.stop(handle.process_id)
-                handle.timed_out = True
+            deadline = handle.started_at + min(handle.timeout_seconds, _MAX_PROCESS_SECONDS)
+            while handle.process.poll() is None:
+                if cancelled is not None and cancelled.is_set():
+                    self.stop(handle.process_id)
+                    handle.cancelled = True
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.stop(handle.process_id)
+                    handle.timed_out = True
+                    break
+                try:
+                    handle.process.wait(timeout=min(.1, remaining))
+                except subprocess.TimeoutExpired:
+                    pass
         finally:
-            handle.finished_at = time.monotonic()
-            if handle.temporary_directory is not None:
-                handle.temporary_directory.cleanup()
-                handle.temporary_directory = None
+            # A failed termination must remain visibly running, with its
+            # sandbox retained while the process may still be using it.
+            if handle.process.poll() is not None:
+                handle.finished_at = time.monotonic()
+                if handle.temporary_directory is not None:
+                    handle.temporary_directory.cleanup()
+                    handle.temporary_directory = None
 
     @staticmethod
     def _collect(handle: ProcessHandle, name: str) -> None:
@@ -128,7 +145,7 @@ class SessionProcessManager:
         return {
             "process_id": process_id, "stream": stream, "offset": offset,
             "output": page, "next_offset": offset + len(page),
-            "output_truncated": truncated, "timed_out": timed_out,
+            "output_truncated": truncated, "timed_out": timed_out, "cancelled": handle.cancelled,
             "sandbox_backend": handle.sandbox_backend,
             "sandbox_reason": handle.sandbox_reason,
             "duration_seconds": duration,
