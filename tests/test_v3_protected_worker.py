@@ -439,6 +439,8 @@ from benchmarks.v3_shell_launcher import install_worker_adapter
 install_worker_adapter()
 from openkyrozen.tools.processes import SessionProcessManager
 manager = SessionProcessManager('owner', sys.argv[1], 'session')
+from openkyrozen.persistence.store import EventStore
+manager._bind_audit(EventStore(os.path.join(sys.argv[1], 'audit.sqlite3')), 'audit-workspace')
 cancelled = threading.Event()
 handle = manager.start('sleep 100', cwd=sys.argv[1], env=dict(os.environ), timeout_seconds=10, cancelled=cancelled)
 stopping, release = threading.Event(), threading.Event()
@@ -456,6 +458,14 @@ finally:
     release.set()
 handle.process.wait(5)
 time.sleep(.1)
+deadline = time.monotonic() + 3
+records = manager._audit_records()
+while (not records or records[0]['status'] != 'cancelled') and time.monotonic() < deadline:
+    time.sleep(.01)
+    records = manager._audit_records()
+assert records[0]['status'] == 'cancelled', records
+assert records[0]['owned_process_state'] == 'exited', records
+assert records[0]['descendant_state'] == 'unknown', records
 print(json.dumps(manager.read(handle.process_id)['cancelled']), flush=True)
 manager.close()
 '''

@@ -9,6 +9,83 @@ from openkyrozen.workspace.history_port import TurnToken
 
 from .turn import TurnContext, scoped_turn
 
+def _cancelled_turn_cleanup(self, active_plan, exc, conversation, plugin_runtime, context):
+    """Attempt existing cancellation/CAS writes within one bounded DB budget."""
+    incomplete = False
+    uncertainty = {
+        "reason": "cancelled_during_execution", "turn_id": self._conversation_turn_id.get(),
+        "message": "Remote or already-dispatched side effects may still complete.", "durable": True,
+    }
+    with self.memory_bank.store._cancellation_deadline():
+        if active_plan:
+            # Safe narrowing advances the Strategic Plan version while
+            # acceptance anchors and their children retain their original
+            # immutable binding. Follow those current anchors, not the
+            # latest proposal fingerprint, when cancelling their work.
+            anchor_ids = set(active_plan.get("working_task_ids", []))
+            anchors = {task["id"]: (task.get("checkpoint") or {}).get("strategic_plan") or {}
+                       for task in self.tasks.tasks
+                       if task["id"] in anchor_ids
+                       and task.get("plan_id") == active_plan.get("working_plan_id")
+                       and ((task.get("checkpoint") or {}).get("strategic_plan") or {}).get("plan_id")
+                       == active_plan.get("plan_id")}
+            cancelled_ids = set(anchors)
+            for task in self.tasks.tasks:
+                checkpoint = task.get("checkpoint") or {}
+                binding = checkpoint.get("strategic_plan") or {}
+                anchor_binding = anchors.get(checkpoint.get("strategy_anchor"))
+                if (task.get("plan_id") == active_plan.get("working_plan_id")
+                        and anchor_binding is not None
+                        and binding == anchor_binding):
+                    cancelled_ids.add(task["id"])
+            for task_id in cancelled_ids:
+                index = next((i for i, task in enumerate(self.tasks.tasks)
+                              if task.get("id") == task_id), None)
+                if index is not None and self.tasks.tasks[index].get("status") not in {"succeeded", "cancelled"}:
+                    try:
+                        if not self.tasks.set_status(index, "cancelled"):
+                            incomplete = True
+                    except Exception:
+                        incomplete = True
+            if not incomplete:
+                try:
+                    self._interaction_controller.complete_plan(
+                        active_plan, status="cancelled", task_manager=self.tasks,
+                    )
+                except Exception:
+                    incomplete = True
+        try:
+            self.memory_bank.store._append_control_audit("turn.effect_uncertain", uncertainty,
+                user_id=self.memory_bank.user_id, workspace_id=self.tasks.workspace_id,
+                session_id=self.current_session.session_id)
+        except Exception:
+            incomplete = True
+            uncertainty["durable"] = False
+        try:
+            self._record_conversation_entry("turn.outcome", {
+                "status": "cancelled", "error_type": type(exc).__name__,
+            })
+        except Exception:
+            incomplete = True
+        try:
+            from openkyrozen.agent.compaction import is_context_digest, retain_context_digests
+            display = conversation.display_messages()
+            limit = self.SHORT_TERM_CAP * 2
+            digest = next((item for item in reversed(self.short_term_memory) if is_context_digest(item)), None)
+            projected = ([digest] if digest else []) + display
+            self.short_term_memory = retain_context_digests(projected, limit)
+            self.current_session.messages_compacted = bool(digest) or len(projected) > limit
+        except Exception:
+            incomplete = True
+        try:
+            plugin_runtime.turn_end(reply="", success=False, error=type(exc).__name__, **context)
+        except Exception:
+            incomplete = True
+    if incomplete:
+        self._publish_runtime_event("turn.audit_failed", {"reason": "cancellation_cleanup_incomplete"})
+    self._publish_runtime_event("turn.effect_uncertain", uncertainty)
+
+
 def _chat_turn_impl(self, user_input: str, clear_tasks: bool = False, profile: str | None = None,
                     memory_context: dict[str, Any] | None = None,
                     inspection_complete: bool = False,
@@ -144,43 +221,16 @@ def _chat_turn(self, user_input: str, clear_tasks: bool = False, profile: str | 
                          and self.execution_context.cancelled.is_set()) or isinstance(
                              exc, (KeyboardInterrupt, asyncio.CancelledError)
                          ) or (isinstance(exc, ProviderError) and exc.kind == ProviderErrorKind.CANCELLED)
-            if cancelled and active_plan:
-                # Safe narrowing advances the Strategic Plan version while
-                # acceptance anchors and their children retain their original
-                # immutable binding. Follow those current anchors, not the
-                # latest proposal fingerprint, when cancelling their work.
-                anchor_ids = set(active_plan.get("working_task_ids", []))
-                anchors = {task["id"]: (task.get("checkpoint") or {}).get("strategic_plan") or {}
-                           for task in self.tasks.tasks
-                           if task["id"] in anchor_ids
-                           and task.get("plan_id") == active_plan.get("working_plan_id")
-                           and ((task.get("checkpoint") or {}).get("strategic_plan") or {}).get("plan_id")
-                           == active_plan.get("plan_id")}
-                cancelled_ids = set(anchors)
-                for task in self.tasks.tasks:
-                    checkpoint = task.get("checkpoint") or {}
-                    binding = checkpoint.get("strategic_plan") or {}
-                    anchor_binding = anchors.get(checkpoint.get("strategy_anchor"))
-                    if (task.get("plan_id") == active_plan.get("working_plan_id")
-                            and anchor_binding is not None
-                            and binding == anchor_binding):
-                        cancelled_ids.add(task["id"])
-                for task_id in cancelled_ids:
-                    index = next((i for i, task in enumerate(self.tasks.tasks)
-                                  if task.get("id") == task_id), None)
-                    if index is not None and self.tasks.tasks[index].get("status") not in {"succeeded", "cancelled"}:
-                        self.tasks.set_status(index, "cancelled")
-                try:
-                    self._interaction_controller.complete_plan(
-                        active_plan, status="cancelled", task_manager=self.tasks,
-                    )
-                except Exception:
-                    pass
             if cancelled:
-                self._publish_runtime_event("turn.effect_uncertain", {
-                    "reason": "cancelled_during_execution",
-                    "message": "Remote or already-dispatched side effects may still complete.",
-                })
+                try:
+                    _cancelled_turn_cleanup(self, active_plan, exc, conversation, runtime, context)
+                except Exception:
+                    # A secondary bookkeeping error cannot replace cancellation.
+                    self._publish_runtime_event("turn.audit_failed", {"reason": "cancellation_cleanup_failed"})
+                    self._publish_runtime_event("turn.effect_uncertain", {
+                        "reason": "cancelled_during_execution", "durable": False,
+                    })
+                raise
             self._record_conversation_entry("turn.outcome", {
                 "status": "cancelled" if cancelled else "failed", "error_type": type(exc).__name__,
             })

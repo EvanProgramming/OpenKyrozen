@@ -1451,8 +1451,7 @@ class InteractionTests(unittest.TestCase):
         self.addCleanup(restore)
         self.agent.short_term_memory = [{"role": "user", "content": "previous project"}]
         empty_history = type("History", (), {"current": lambda self: None})()
-        with patch.object(self.agent, "TaskManager", return_value=object()), \
-                patch.object(self.agent, "InteractionController", return_value=object()), \
+        with patch.object(self.agent, "InteractionController", return_value=object()), \
                 patch.object(self.agent, "history_manager", return_value=empty_history), \
                 patch.object(self.agent, "_restore_ponytail_level"):
             self.agent.bind_interaction_scope("chat-empty")

@@ -115,3 +115,6 @@ def _prepare_turn(self, turn):
         turn.memory_packet = self._build_memory_context(
             turn.user_input, context=turn.memory_context, profile=resolved_profile,
         )
+    process_context = self.current_session.process_manager._recovery_context()
+    if process_context:
+        turn.memory_packet = (turn.memory_packet + "\n" + process_context).strip()

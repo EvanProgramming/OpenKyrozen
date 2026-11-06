@@ -455,20 +455,41 @@ def install_worker_adapter():
 
     class BrokerProcessManager(base_manager):
         def start(self, command, *, cwd, env, timeout_seconds, cancelled=None):
-            with self._lock:
-                live = sum(handle.process.poll() is None for handle in self._handles.values())
-                if self._closed or live >= 32:
-                    raise RuntimeError('session process manager is closed or full')
-                process = client.start(command, cwd, env, timeout_seconds,
-                                       background=not getattr(self, '_foreground', False))
-                handle = processes.ProcessHandle(uuid.uuid4().hex, process, self.owner_id,
-                                                  self.workspace_id, self.session_id, timeout_seconds,
-                                                  process.backend)
-                self._handles[handle.process_id] = handle
+            process_id = uuid.uuid4().hex
+            audit = getattr(self, '_audit_event', None)
+            if audit:
+                audit('launch_intent', process_id, timeout_seconds=timeout_seconds)
+            try:
+                with self._lock:
+                    live = sum(handle.process.poll() is None for handle in self._handles.values())
+                    if self._closed or live >= 32:
+                        raise RuntimeError('session process manager is closed or full')
+                    if cancelled is not None and cancelled.is_set():
+                        raise RuntimeError('turn was cancelled before process start')
+                    process = client.start(command, cwd, env, timeout_seconds,
+                                           background=not getattr(self, '_foreground', False))
+                    handle = processes.ProcessHandle(process_id, process, self.owner_id,
+                                                      self.workspace_id, self.session_id, timeout_seconds,
+                                                      process.backend)
+                    self._handles[handle.process_id] = handle
+            except BaseException:
+                if audit:
+                    try:
+                        # A failed RPC can leave remote dispatch uncertain.
+                        audit('launch_failed', process_id, reason='launch_not_confirmed')
+                    except RuntimeError:
+                        pass
+                raise
+            started = getattr(self, '_audit_started', None)
+            if started:
+                started(handle)
             for name in ('stdout', 'stderr'):
                 threading.Thread(target=self._collect, args=(handle, name), daemon=True).start()
             expiry_options = {'cancelled': cancelled} if cancelled is not None else {}
-            threading.Thread(target=self._expire, args=(handle,), kwargs=expiry_options, daemon=True).start()
+            expiry = threading.Thread(target=self._expire, args=(handle,), kwargs=expiry_options, daemon=True)
+            if hasattr(handle, 'expiry_thread'):
+                handle.expiry_thread = expiry
+            expiry.start()
             return handle
 
         def _collect(self, handle, name):
@@ -486,11 +507,14 @@ def install_worker_adapter():
                 stream.close()
 
         def _expire(self, handle, cancelled=None):
+            outcome = getattr(self, '_audit_outcome', None)
             try:
                 deadline = time.monotonic() + min(handle.timeout_seconds, 1800) + 5
                 while handle.process.poll() is None:
                     if cancelled is not None and cancelled.is_set():
-                        handle.process.stop()
+                        if outcome:
+                            handle.stop_reason = 'cancelled'
+                        self.stop(handle.process_id)
                         handle.cancelled = True
                         break
                     remaining = deadline - time.monotonic()
@@ -501,10 +525,16 @@ def install_worker_adapter():
                     except subprocess.TimeoutExpired:
                         continue
             except subprocess.TimeoutExpired:
-                handle.process.stop()
+                if outcome:
+                    handle.stop_reason = 'timed_out'
+                self.stop(handle.process_id)
                 handle.timed_out = True
             finally:
                 handle.timed_out = handle.timed_out or handle.process.timed_out
+                if outcome:
+                    if handle.timed_out and not handle.stop_reason:
+                        handle.stop_reason = 'timed_out'
+                    outcome(handle)
                 if handle.process.poll() is not None:
                     handle.finished_at = time.monotonic()
 
@@ -512,10 +542,20 @@ def install_worker_adapter():
             handle = self._handles.get(process_id)
             if handle is None:
                 return None
+            audit = getattr(self, '_audit_event', None)
+            if audit and handle.process.poll() is None:
+                handle.stop_reason = handle.stop_reason or 'stopped'
+                try:
+                    audit('stop_requested', process_id, handle=handle, reason=handle.stop_reason)
+                except RuntimeError:
+                    handle.audit_error = True
             handle.process.stop()
             stopped = handle.process.poll() is not None
             if stopped:
                 handle.finished_at = time.monotonic()
+            outcome = getattr(self, '_audit_outcome', None)
+            if outcome:
+                outcome(handle)
             return stopped
 
     def run_command(adapter, args, *, cancelled=None):
