@@ -454,9 +454,10 @@ def install_worker_adapter():
     base_manager = processes.SessionProcessManager
 
     class BrokerProcessManager(base_manager):
-        def start(self, command, *, cwd, env, timeout_seconds):
+        def start(self, command, *, cwd, env, timeout_seconds, cancelled=None):
             with self._lock:
-                if self._closed or len(self._handles) >= 32:
+                live = sum(handle.process.poll() is None for handle in self._handles.values())
+                if self._closed or live >= 32:
                     raise RuntimeError('session process manager is closed or full')
                 process = client.start(command, cwd, env, timeout_seconds,
                                        background=not getattr(self, '_foreground', False))
@@ -466,7 +467,8 @@ def install_worker_adapter():
                 self._handles[handle.process_id] = handle
             for name in ('stdout', 'stderr'):
                 threading.Thread(target=self._collect, args=(handle, name), daemon=True).start()
-            threading.Thread(target=self._expire, args=(handle,), daemon=True).start()
+            expiry_options = {'cancelled': cancelled} if cancelled is not None else {}
+            threading.Thread(target=self._expire, args=(handle,), kwargs=expiry_options, daemon=True).start()
             return handle
 
         def _collect(self, handle, name):
@@ -483,9 +485,21 @@ def install_worker_adapter():
             finally:
                 stream.close()
 
-        def _expire(self, handle):
+        def _expire(self, handle, cancelled=None):
             try:
-                handle.process.wait(timeout=min(handle.timeout_seconds, 1800) + 5)
+                deadline = time.monotonic() + min(handle.timeout_seconds, 1800) + 5
+                while handle.process.poll() is None:
+                    if cancelled is not None and cancelled.is_set():
+                        handle.cancelled = True
+                        handle.process.stop()
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(handle.process.identifier, handle.timeout_seconds)
+                    try:
+                        handle.process.wait(timeout=min(.1, remaining))
+                    except subprocess.TimeoutExpired:
+                        continue
             except subprocess.TimeoutExpired:
                 handle.process.stop()
                 handle.timed_out = True

@@ -338,13 +338,16 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000,
         output_tokens = sum(int(row.get("output_tokens", 0)) for row in arm_rows)
         cache_read_tokens = sum(int(row.get("cache_read_tokens", 0)) for row in arm_rows)
         cache_write_tokens = sum(int(row.get("cache_write_tokens", 0)) for row in arm_rows)
+        successful_tasks = sum(bool(row.get("verified_success")) for row in arm_rows)
         cost = sum((pricing.cost(int(row["input_tokens"]), int(row["output_tokens"]),
                            int(row["cache_read_tokens"]), int(row["cache_write_tokens"]))
                     for row in arm_rows), Decimal(0))
         result["summary"][arm] = {
-            "verified_success": sum(bool(row.get("verified_success")) for row in arm_rows),
+            "verified_success": successful_tasks,
             "workflow_state_correct": sum(bool(row.get("workflow_state_correct")) for row in arm_rows),
-            "requests": request_count, "input_tokens": input_tokens,
+            "requests": request_count,
+            "requests_per_successful_task": request_count / successful_tasks if successful_tasks else None,
+            "input_tokens": input_tokens,
             "output_tokens": output_tokens, "cache_read_tokens": cache_read_tokens,
             "cache_write_tokens": cache_write_tokens,
             "tokens": input_tokens + output_tokens, "cost_rmb": float(cost),

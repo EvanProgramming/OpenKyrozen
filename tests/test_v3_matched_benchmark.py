@@ -237,6 +237,8 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         json.dumps(result)
         self.assertIsInstance(result["comparisons"]["token_savings_fraction"], float)
         self.assertEqual(result["summary"]["v3"]["workflow_state_correct"], 90)
+        self.assertEqual(result["summary"]["v3"]["requests_per_successful_task"], 2)
+        self.assertIsNone(result["summary"]["v2"]["requests_per_successful_task"])
         self.assertEqual(result["summary"]["v3"]["attempts"], 180)
         self.assertAlmostEqual(result["summary"]["v3"]["cost_rmb"], float(90 * _cost(90, 45)))
         self.assertTrue(result["summary"]["v3"]["all_safety_passed"])
