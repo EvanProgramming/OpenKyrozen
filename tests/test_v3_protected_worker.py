@@ -396,3 +396,64 @@ class FullCampaignGateTests(unittest.TestCase):
                     run(source=repository, repo=repository, output=base / 'report.json',
                         budget_path=base / 'budget.sqlite3', prior_hold_usd='1')
             credential.assert_not_called()
+
+@unittest.skipUnless(sys.platform == 'darwin' or sys.platform.startswith('linux'), 'Unix sandbox required')
+class BrokerCancellationCompatibilityTests(unittest.TestCase):
+    def test_completed_remote_handles_do_not_exhaust_the_live_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            script = '''
+import os, sys
+from benchmarks.v3_shell_launcher import install_worker_adapter
+install_worker_adapter()
+from openkyrozen.tools.processes import SessionProcessManager
+manager = SessionProcessManager('owner', sys.argv[1], 'session')
+try:
+    first = None
+    for index in range(33):
+        handle = manager.start('exit 0', cwd=sys.argv[1], env=dict(os.environ), timeout_seconds=5)
+        first = first or handle.process_id
+        assert handle.process.wait(5) == 0
+    assert manager.read(first)['exit_code'] == 0
+    print('completed handles retained', flush=True)
+finally:
+    manager.close()
+'''
+            policy = ShellPolicy(root, frozenset({'read', 'write', 'shell'}))
+            env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]))
+            with protected.ProtectedWorker([sys.executable, '-c', script, str(root)], cwd=root,
+                                           env=env, protected_files=[], policy=policy) as launch:
+                process = subprocess.Popen(launch.command, cwd=root, env=launch.env,
+                                           pass_fds=launch.pass_fds, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                launch.attach(process)
+                stdout, stderr = process.communicate(timeout=30)
+                self.assertEqual(process.returncode, 0, stderr.decode())
+                self.assertIn(b'completed handles retained', stdout)
+
+    def test_turn_cancellation_reaches_remote_background_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            script = '''
+import json, os, sys, threading, time
+from benchmarks.v3_shell_launcher import install_worker_adapter
+install_worker_adapter()
+from openkyrozen.tools.processes import SessionProcessManager
+manager = SessionProcessManager('owner', sys.argv[1], 'session')
+cancelled = threading.Event()
+handle = manager.start('sleep 100', cwd=sys.argv[1], env=dict(os.environ), timeout_seconds=10, cancelled=cancelled)
+cancelled.set()
+handle.process.wait(5)
+time.sleep(.1)
+print(json.dumps(manager.read(handle.process_id)['cancelled']), flush=True)
+manager.close()
+'''
+            policy = ShellPolicy(root, frozenset({'read', 'write', 'shell'}))
+            env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]))
+            with protected.ProtectedWorker([sys.executable, '-c', script, str(root)], cwd=root,
+                                           env=env, protected_files=[], policy=policy) as launch:
+                process = subprocess.Popen(launch.command, cwd=root, env=launch.env,
+                                           pass_fds=launch.pass_fds, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                launch.attach(process)
+                stdout, stderr = process.communicate(timeout=20)
+                self.assertEqual(process.returncode, 0, stderr.decode())
+                self.assertTrue(json.loads(stdout))
