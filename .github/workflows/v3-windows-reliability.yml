@@ -1,0 +1,68 @@
+name: V3 Windows cancellation investigation
+on:
+  push:
+    branches: ['Evan/v3-windows-cancellation-investigation-20261107']
+    paths: ['.github/workflows/v3-windows-reliability.yml', 'scripts/v3_windows_reliability.py', 'tests/test_v3_windows_reliability.py']
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact 40-character product commit to test (diagnostic code remains separate)
+        type: string
+        required: true
+        default: '7905fb634fe447243668c2d01179ce5cb2cdb275'
+env:
+  PRODUCT_SHA: ${{ inputs.candidate_sha || '7905fb634fe447243668c2d01179ce5cb2cdb275' }}
+permissions:
+  contents: read
+jobs:
+  cancellation:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.13']
+    steps:
+      - name: Validate exact candidate identity
+        shell: pwsh
+        run: |
+          if ($env:PRODUCT_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'candidate_sha must be a full lowercase commit SHA' }
+      - name: Checkout diagnostic harness
+        uses: actions/checkout@v4
+        with:
+          path: diagnostic-source
+          fetch-depth: 0
+      - name: Checkout exact product
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          path: product
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Verify checked-out product
+        shell: pwsh
+        working-directory: product
+        run: |
+          if ((git rev-parse HEAD) -cne $env:PRODUCT_SHA) { throw 'Checked-out candidate differs from requested commit' }
+          if (git status --porcelain --untracked-files=no) { throw 'Product checkout has tracked edits' }
+      - name: Install exact product dependencies
+        working-directory: product
+        run: python -m pip install -e '.[all]'
+      - name: Record dependency versions
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force windows-evidence | Out-Null
+          python -m pip freeze | Set-Content -Encoding utf8 windows-evidence/dependencies.txt
+          $env:GITHUB_SHA | Set-Content -Encoding utf8 windows-evidence/diagnostic-commit.txt
+      - name: Trace unchanged cancellation test 50 times
+        shell: pwsh
+        run: python diagnostic-source/scripts/v3_windows_reliability.py --repository product --output windows-evidence --iterations 50
+      - name: Upload investigation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cancellation-${{ matrix.python }}-${{ env.PRODUCT_SHA }}
+          path: windows-evidence/
+          if-no-files-found: error
