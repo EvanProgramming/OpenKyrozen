@@ -389,6 +389,9 @@ class ServerBoundaryTests(unittest.TestCase):
             original_root = runtime._get_workspace_root()
             runtime._set_workspace_root(root)
             class FixtureProvider:
+                name = "server-native-fixture"
+                _continuation_id = "server-delegation-fixture"
+
                 def get_capabilities(self, model):
                     from openkyrozen.providers.models import ProviderCapabilities
                     return ProviderCapabilities(native_tools=True)
@@ -396,16 +399,30 @@ class ServerBoundaryTests(unittest.TestCase):
             from openkyrozen.providers.models import FinishReason, ModelResponse, ToolCall
             responses = iter([
                 ModelResponse(tool_calls=(ToolCall("write", "write_file", {"path": "allowed.txt", "content": "created"}),), finish_reason=FinishReason.TOOL_REQUEST),
-                ModelResponse(text=json.dumps(result("Created allowed.txt"))),
+                ModelResponse(text=json.dumps(result("Created allowed.txt")), finish_reason=FinishReason.FINAL),
                 ModelResponse(tool_calls=(ToolCall("review-read", "read_file", {"path": "allowed.txt"}),), finish_reason=FinishReason.TOOL_REQUEST),
-                ModelResponse(text=json.dumps(reviewed())),
+                ModelResponse(text=json.dumps(reviewed()), finish_reason=FinishReason.FINAL),
                 ModelResponse(tool_calls=(ToolCall("deny-write", "write_file", {"path": "denied.txt", "content": "must not write"}),), finish_reason=FinishReason.TOOL_REQUEST),
-                ModelResponse(text=json.dumps(result("Write denied", status="blocked"))),
+                ModelResponse(text=json.dumps(result("Write denied", status="blocked")), finish_reason=FinishReason.FINAL),
             ])
             provider = FixtureProvider()
+
+            def native_response(messages, model=None, **kwargs):
+                from dataclasses import replace
+                from openkyrozen.providers.models import provider_continuation
+
+                response = next(responses)
+                request_model = model or runtime.DEEPSEEK_MODEL
+                return replace(response, continuation=provider_continuation(
+                    provider, request_model, "fixture", {
+                        "role": "assistant", "content": response.text,
+                        "tool_calls": [{"id": call.id, "name": call.name, "arguments": call.arguments}
+                                       for call in response.tool_calls],
+                    }), metadata={"provider": provider.name, "model": request_model})
+
             try:
                 with (patch.object(runtime, "get_provider", return_value=provider),
-                      patch.object(runtime, "_get_model_response", side_effect=lambda *args, **kwargs: next(responses)),
+                      patch.object(runtime, "_get_model_response", side_effect=native_response),
                       patch.object(runtime, "_provider_config", ProviderConfig(provider="deepseek", api_key="fixture-key"))):
                     allowed = client.post("/api/v2/agents/run", json={
                         "profile": "coder", "task": "Create allowed.txt", "session_id": "delegation-api-test",

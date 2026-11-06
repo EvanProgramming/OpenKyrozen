@@ -194,8 +194,9 @@ def _authorize_tool_action(self, action: str, args: object, *, approve=None) -> 
         return True
     if mode == "full_jev" and not risk:
         return True
-    if mode == "full_jev" and risk and self._jev_permission_check(action, risk):
-        return True
+    if mode == "full_jev" and risk:
+        # Model advice cannot grant authority for a high-impact operation.
+        self._jev_permission_check(action, risk)
     if mode == "ask" and not requires_ask_approval(action, args, self.AVAILABLE_TOOLS):
         return True
     fallback_approval = approve is None and not callable(self._approval_callback.get())

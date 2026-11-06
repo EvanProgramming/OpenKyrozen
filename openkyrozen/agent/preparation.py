@@ -64,8 +64,10 @@ def _prepare_turn(self, turn):
         self.execution_context.delegation_budget = DelegationBudget()
     provider_config = self.execution_context.provider_config or self._provider_config
     select_model = (lambda _text: self.execution_context.model) if self.execution_context.child_run_id else self._select_model
+    classification_input = (getattr(self.current_session, "_delegation_classifier_input", turn.user_input)
+                            if self.execution_context.child_run_id else turn.user_input)
     decision, turn.complexity = decide_request(
-        provider_config, fast_route, turn.user_input, select_model,
+        provider_config, fast_route, classification_input, select_model,
         self._classify_complexity, automatic_profile,
         turn.profile or self._agent_profile_mode, turn.interaction_mode,
     )
