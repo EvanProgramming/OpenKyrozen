@@ -441,7 +441,19 @@ from openkyrozen.tools.processes import SessionProcessManager
 manager = SessionProcessManager('owner', sys.argv[1], 'session')
 cancelled = threading.Event()
 handle = manager.start('sleep 100', cwd=sys.argv[1], env=dict(os.environ), timeout_seconds=10, cancelled=cancelled)
+stopping, release = threading.Event(), threading.Event()
+original_stop = handle.process.stop
+def delayed_stop():
+    stopping.set()
+    assert release.wait(5)
+    return original_stop()
+handle.process.stop = delayed_stop
 cancelled.set()
+assert stopping.wait(5)
+try:
+    assert manager.read(handle.process_id)['cancelled'] is False
+finally:
+    release.set()
 handle.process.wait(5)
 time.sleep(.1)
 print(json.dumps(manager.read(handle.process_id)['cancelled']), flush=True)

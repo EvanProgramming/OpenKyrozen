@@ -490,8 +490,8 @@ def install_worker_adapter():
                 deadline = time.monotonic() + min(handle.timeout_seconds, 1800) + 5
                 while handle.process.poll() is None:
                     if cancelled is not None and cancelled.is_set():
-                        handle.cancelled = True
                         handle.process.stop()
+                        handle.cancelled = True
                         break
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -505,15 +505,18 @@ def install_worker_adapter():
                 handle.timed_out = True
             finally:
                 handle.timed_out = handle.timed_out or handle.process.timed_out
-                handle.finished_at = time.monotonic()
+                if handle.process.poll() is not None:
+                    handle.finished_at = time.monotonic()
 
         def stop(self, process_id):
             handle = self._handles.get(process_id)
             if handle is None:
                 return None
             handle.process.stop()
-            handle.finished_at = time.monotonic()
-            return handle.process.poll() is not None
+            stopped = handle.process.poll() is not None
+            if stopped:
+                handle.finished_at = time.monotonic()
+            return stopped
 
     def run_command(adapter, args, *, cancelled=None):
         validated = adapter._validated_shell_options(args)

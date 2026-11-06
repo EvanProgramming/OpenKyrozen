@@ -5,10 +5,215 @@ import argparse
 import json
 import hashlib
 import os
+import shlex
 import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from contextvars import ContextVar
+from functools import wraps
+
+
+def _normalize_tool_receipt(receipt, workspace_root):
+    arguments = receipt.get("arguments")
+    if not isinstance(arguments, dict):
+        arguments = receipt.get("args")
+        if isinstance(arguments, str) and len(arguments) <= 65536 and arguments.lstrip().startswith("{"):
+            try:
+                parsed = json.loads(arguments)
+                if isinstance(parsed, dict):
+                    arguments = parsed
+            except (TypeError, ValueError):
+                pass
+    canonical = json.dumps(arguments, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    path = (arguments.get("path") or arguments.get("file_path")) if isinstance(arguments, dict) else None
+    if isinstance(arguments, str) and len(arguments) <= 65536:
+        # Frozen V2 filesystem tools take a bare path, or path|content for writes.
+        if receipt.get("action") == "read_file":
+            path = arguments.strip()
+        elif receipt.get("action") == "write_file" and "|" in arguments:
+            path = arguments.split("|", 1)[0].strip()
+    try:
+        target = Path(path)
+        target = target if target.is_absolute() else Path(workspace_root) / target
+        target_path = target.resolve().relative_to(Path(workspace_root).resolve()).as_posix()
+    except (OSError, ValueError, TypeError):
+        target_path = None
+    reference = None
+    if receipt.get("action") == "git_show":
+        if isinstance(arguments, dict):
+            reference = arguments.get("reference")
+        elif isinstance(arguments, str) and len(arguments) <= 65536:
+            try:
+                reference = next((part for part in shlex.split(arguments) if not part.startswith("-")), None)
+            except ValueError:
+                pass
+    return {"action": receipt.get("action"), "call_id": receipt.get("call_id"),
+            "args_hash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            "target_path": target_path, "git_reference": reference,
+            "background": arguments.get("background") is True if isinstance(arguments, dict) else None,
+            "success": receipt.get("success") is True, "authorized": receipt.get("authorized") is True,
+            "error_code": (receipt.get("tool_error") or {}).get("code")}
+
+
+def _context_observation(runtime):
+    port = getattr(runtime, "context_usage", None)
+    try:
+        status = port() if callable(port) else None
+    except Exception:
+        status = None
+    if not isinstance(status, dict):
+        return None
+    keys = ("model", "window_tokens", "window_source", "input_tokens", "input_source", "reserve_tokens",
+            "breakdown", "breakdown_source", "native_input_overhead_tokens", "native_overhead_method",
+            "stable_prefix_tokens", "stable_prefix_fingerprint", "compaction",
+            "new_context_tokens", "retransmitted_history_tokens", "new_entry_count",
+            "retransmitted_entry_count", "duplicate_entry_count")
+    result = {key: status.get(key) for key in keys}
+    new, retransmitted = result["new_context_tokens"], result["retransmitted_history_tokens"]
+    result["retained_history_tokens"] = new + retransmitted if type(new) is int and type(retransmitted) is int else None
+    result["component_attribution_source"] = status.get("component_attribution_source")
+    return json.loads(json.dumps(result))
+
+
+class _ProviderObservations:
+    """Observe each provider-port invocation after production preflight.
+
+    Components are source-runtime estimates, never provider attribution. Internal
+    transport retries may reuse one invocation payload; the relay owns attempts.
+    """
+    def __init__(self, runtime, provider):
+        self.runtime, self.provider = runtime, provider
+        self.records, self.turn, self.prompt_sha256 = [], None, None
+        self.depth = ContextVar("benchmark_provider_observation_depth", default=0)
+        for name in ("chat", "chat_stream", "chat_response", "chat_response_stream"):
+            method = getattr(provider, name, None)
+            if callable(method):
+                setattr(provider, name, self._wrap(method, name.endswith("stream")))
+
+    def _begin(self, messages, model, tools):
+        from openkyrozen.agent.compaction import estimate_messages, _text_tokens, DEFAULT_OUTPUT_RESERVE_TOKENS
+        runtime = self.runtime
+        compacting = getattr(runtime, "_in_context_compaction", None)
+        summary = bool(compacting.get()) if compacting is not None else False
+        state_var = getattr(runtime, "_active_context_state", None)
+        state = state_var.get() if state_var is not None else None
+        schema_json = json.dumps(tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        overhead = _text_tokens(schema_json) + 32 * len(tools or ()) + 64 if tools is not None else 0
+        estimated, components = estimate_messages(messages)
+        components = dict(components)
+        components["fixed_instructions"] += overhead
+        status = _context_observation(runtime) if not summary else None
+        metrics_var = getattr(runtime, "_context_history_metrics", None)
+        metrics = metrics_var.get() if not summary and metrics_var is not None else None
+        metrics = metrics if isinstance(metrics, dict) else {}
+        new_history, repeated_history = metrics.get("new_context_tokens"), metrics.get("retransmitted_history_tokens")
+        record = {"turn": self.turn, "prompt_sha256": self.prompt_sha256,
+                  "kind": "summary" if summary else "generation", "model": model,
+                  "observation_boundary": "provider_port_after_production_preflight",
+                  "estimate_method": "source_runtime_stdlib_messages_plus_json_schema_framing",
+                  "window_tokens": getattr(self.provider.config, "context_window_tokens", None),
+                  "reserve_tokens": getattr(state, "reserve_tokens", DEFAULT_OUTPUT_RESERVE_TOKENS),
+                  "estimated_input_tokens": estimated + overhead,
+                  "component_estimates": components, "component_attribution_source": "estimated",
+                  "native_input_overhead_tokens": overhead,
+                  "schema_sha256": hashlib.sha256(schema_json.encode()).hexdigest() if tools is not None else None,
+                  "message_count": len(messages),
+                  "message_projection_sha256": None,
+                  "retained_history_tokens": new_history + repeated_history if type(new_history) is int and type(repeated_history) is int else None,
+                  "new_context_tokens": new_history,
+                  "retransmitted_history_tokens": repeated_history,
+                  "history_attribution_source": "production_history_projection_estimate" if metrics else None,
+                  "compaction": status.get("compaction") if status else None,
+                  "provider_input_tokens": None, "provider_output_tokens": None,
+                  "provider_usage_source": None, "outcome": "pending"}
+        # Fingerprint the same source-owned estimate projection without retaining content.
+        from openkyrozen.agent.compaction import message_fingerprint
+        record["message_projection_sha256"] = message_fingerprint(messages)
+        self.records.append(record)
+        return record
+
+    @staticmethod
+    def _usage(record, usage):
+        if not isinstance(usage, dict) or usage.get("_estimated"):
+            return
+        for target, keys in (("provider_input_tokens", ("prompt_tokens", "input_tokens")),
+                             ("provider_output_tokens", ("completion_tokens", "output_tokens"))):
+            value = next((usage[key] for key in keys if type(usage.get(key)) is int and usage[key] >= 0), None)
+            record[target] = value
+        if record["provider_input_tokens"] is not None:
+            record["provider_usage_source"] = "provider_reported_total"
+
+    def _wrap(self, original, streaming):
+        def begin(args, kwargs):
+            messages = args[0] if args else kwargs["messages"]
+            model = args[1] if len(args) > 1 else kwargs.get("model")
+            return self._begin(messages, model, kwargs.get("tools"))
+        if streaming:
+            @wraps(original)
+            def stream(*args, **kwargs):
+                if self.depth.get():
+                    yield from original(*args, **kwargs)
+                    return
+                record = begin(args, kwargs)
+                token = self.depth.set(self.depth.get() + 1)
+                iterator = None
+                try:
+                    iterator = original(*args, **kwargs)
+                    for event in iterator:
+                        usage = getattr(event, "usage", None)
+                        response = getattr(event, "response", None)
+                        self._usage(record, getattr(response, "usage", None) or usage)
+                        if type(event).__name__ == "ResponseError":
+                            record["outcome"] = "failed"
+                        elif type(event).__name__ == "ResponseComplete":
+                            record["outcome"] = "returned"
+                        yield event
+                    if record["outcome"] == "pending":
+                        record["outcome"] = "returned"
+                except BaseException:
+                    if record["outcome"] == "pending":
+                        record["outcome"] = "failed"
+                    raise
+                finally:
+                    try:
+                        if callable(getattr(iterator, "close", None)):
+                            iterator.close()
+                    finally:
+                        self.depth.reset(token)
+            return stream
+        @wraps(original)
+        def call(*args, **kwargs):
+            if self.depth.get():
+                return original(*args, **kwargs)
+            record = begin(args, kwargs)
+            token = self.depth.set(self.depth.get() + 1)
+            try:
+                response = original(*args, **kwargs)
+                usage = response[1] if isinstance(response, tuple) and len(response) == 2 else getattr(response, "usage", None)
+                self._usage(record, usage)
+                record["outcome"] = "returned"
+                return response
+            except BaseException:
+                record["outcome"] = "failed"
+                raise
+            finally:
+                self.depth.reset(token)
+        return call
+
+
+def _run_conversation(runtime, session, turns, observations=None):
+    records = []
+    answer = ""
+    for index, prompt in enumerate(turns):
+        if observations is not None:
+            observations.turn = index
+            observations.prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        answer = runtime.chat(session, prompt, clear_tasks=False, profile="auto")
+        records.append({"turn": index, "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                        "completed": True, "context": _context_observation(runtime),
+                        "messages_compacted": getattr(session, "messages_compacted", None)})
+    return answer, records
 
 
 def _accepted_scope_preserved(history, accepted_fingerprints, accepted_plan, task_records):
@@ -41,8 +246,20 @@ def main():
     parser.add_argument("--process-marker", default="")
     parser.add_argument("--prompt-file", required=True)
     parser.add_argument("--plan-file")
+    parser.add_argument("--conversation-file")
     parser.add_argument("--result", required=True)
     args = parser.parse_args()
+    conversation = json.loads(Path(args.conversation_file).read_text()) if args.conversation_file else {}
+    followups = conversation.get("followups", [])
+    if (not isinstance(followups, list) or any(not isinstance(turn, str) or not turn for turn in followups)
+            or len(followups) > 20):
+        raise ValueError("benchmark followups must be a bounded array of nonempty strings")
+    window = conversation.get("context_window_tokens")
+    if window is not None and (type(window) is not int or not 1 <= window <= 10000000):
+        raise ValueError("benchmark context window must be a positive declared integer")
+    from_output_reserve = conversation.get("output_reserve_tokens", 4096)
+    if from_output_reserve != 4096:
+        raise ValueError("both benchmark arms require the frozen 4096-token output reserve")
     workspace_root = Path(args.workspace).resolve()
     sys.path.insert(0, args.source)
     if os.environ.get("KYROZEN_BENCHMARK_BROKER_FD") is not None:
@@ -53,19 +270,23 @@ def main():
     from openkyrozen.app.bootstrap import build_application
     from openkyrozen.providers import ProviderConfig
     from openkyrozen.providers.openai import OpenAICompatProvider, OpenAIResponsesProvider
+    from openkyrozen.agent.compaction import DEFAULT_OUTPUT_RESERVE_TOKENS
+    if DEFAULT_OUTPUT_RESERVE_TOKENS != from_output_reserve:
+        raise ValueError("source runtime output reserve differs from the frozen cohort")
     application = build_application(surface="cli")
     runtime = application.runtime
     try:
         runtime._set_workspace_root(args.workspace)
-        runtime.set_interaction_mode("agent")
+        runtime.set_interaction_mode("ask" if followups else "agent")
         provider_name = "openai" if args.protocol == "responses" else "deepseek"
         config = ProviderConfig(provider=provider_name,
                                 api_key=os.environ.get("KYROZEN_BENCHMARK_API_KEY", "benchmark-local"),
                                 base_url=args.url, model_simple=args.model,
-                                model_complex=args.model)
+                                model_complex=args.model, context_window_tokens=window)
         runtime._provider_config = config
         provider_type = OpenAIResponsesProvider if args.protocol == "responses" else OpenAICompatProvider
         runtime.llm_provider = provider_type(config)
+        observations = _ProviderObservations(runtime, runtime.llm_provider)
         runtime._default_turn.provider = runtime.llm_provider
         runtime.DEEPSEEK_MODEL_SIMPLE = runtime.DEEPSEEK_MODEL_COMPLEX = args.model
         # Keep production planning, tools, recovery, receipts and completion active.
@@ -91,19 +312,7 @@ def main():
                 first_delta_ms = round((time.monotonic() - started) * 1000, 2)
             if event.get("event") == "tool_receipt":
                 receipt = event.get("tool_receipt", {})
-                args = receipt.get("args") or {}
-                args_hash = hashlib.sha256(json.dumps(args, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-                path = args.get("path") or args.get("file_path") if isinstance(args, dict) else None
-                try:
-                    target_path = Path(str(path)).resolve().relative_to(workspace_root).as_posix()
-                except (OSError, ValueError):
-                    target_path = None
-                receipts.append({"action": receipt.get("action"), "args_hash": args_hash,
-                                 "target_path": target_path,
-                                 "background": isinstance(args, dict) and args.get("background") is True,
-                                 "success": receipt.get("success") is True,
-                                 "authorized": receipt.get("authorized") is True,
-                                 "error_code": (receipt.get("tool_error") or {}).get("code")})
+                receipts.append(_normalize_tool_receipt(receipt, workspace_root))
                 events.append({"event": "tool_receipt", "action": receipt.get("action"),
                                "success": receipt.get("success") is True})
             elif event.get("event") in {"tasks", "task_update", "working_plan", "subagent"}:
@@ -159,7 +368,7 @@ def main():
         if accepted_fingerprint:
             prompt = ("A Strategic Plan has already been accepted. Preserve its approved scope; use the working plan "
                       "for implementation changes, and request renewed approval for material scope changes.\n\n" + prompt)
-        answer = runtime.chat(runtime.current_session, prompt, clear_tasks=False, profile="auto")
+        answer, conversation_records = _run_conversation(runtime, runtime.current_session, [prompt, *followups], observations)
         manager = getattr(runtime.current_session, "process_manager", None)
         handles = tuple(getattr(manager, "_handles", {}).values())
         cancellations = sum(item["action"] == "stop_process" and item["success"] for item in receipts)
@@ -209,6 +418,8 @@ def main():
         result = {"answer": answer, "tool_calls": sum(e.get("event") == "tool_receipt" for e in events),
                   "tool_actions": [e.get("action") for e in events if e.get("event") == "tool_receipt"],
                   "tool_receipts": receipts, "events": events,
+                  "conversation_records": conversation_records,
+                  "request_context_records": observations.records,
                   "tool_successes": sum(e.get("event") == "tool_receipt" and e.get("success") is True for e in events),
                   "tasks": [t["status"] for t in runtime.tasks.tasks],
                   "task_records": [{"id": t["id"], "description": t["description"],
@@ -228,7 +439,7 @@ def main():
                   "duplicate_calls": len(receipts) - len(unique_calls),
                   "protocol_recovery": sum(event["event"] in {"protocol_recovery", "protocol.recovery"}
                                             for event in events),
-                  "processes_started": sum(item["action"] == "run_cmd" and item["background"] and item["success"]
+                  "processes_started": sum(item["action"] == "run_cmd" and item["background"] is True and item["success"]
                                            for item in receipts),
                   "processes_cancelled": cancellations,
                   "processes_alive": sum(handle.process.poll() is None for handle in handles),
@@ -236,7 +447,7 @@ def main():
                   "process_marker_seen": any(args.process_marker and args.process_marker in handle.stdout
                                               for handle in handles),
                   "first_delta_latency_ms": first_delta_ms,
-                  "provider_error": "[LLM Error]" in answer}
+                  "provider_error": "[LLM Error]" in answer or any(item["outcome"] == "failed" for item in observations.records)}
         result["accepted_scope_preserved"] = _accepted_scope_preserved(
             history, accepted_fingerprints, accepted_plan_identity, result["task_records"],
         )

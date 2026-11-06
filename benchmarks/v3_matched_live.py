@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from contextlib import closing
 from dataclasses import asdict
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -17,13 +19,45 @@ import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from benchmarks.v3_fixtures import FIXTURES
+from benchmarks.v3_fixtures import FIXTURES, cohort_digest
 from benchmarks.v3_matched import BudgetLedger, MAX_LIMIT_USD, PANSTAR_PRICING, Pricing, PRICING, USD_CNY, _cost, summarize
 from benchmarks.v3_responses_relay import (MODEL, MAX_OUTPUT_TOKENS, DEFAULT_RELAY_CONFIG,
                                             RelayConfig, ResponsesRelay)
 
 BASELINE = "1bfc82c793df49e76097061ec5adfef0e4e2e883"
 REPEATS = 3
+
+
+def apparatus_identity() -> dict:
+    # Both arms execute this candidate-owned observer/verifier, never a historical
+    # worker. A changed fixture, oracle, metric, relay, or observer starts a cohort.
+    directory = Path(__file__).parent
+    files = ("v3_fixtures.py", "v3_matched_live.py", "prompt_worker.py", "v3_matched.py", "v3_responses_relay.py",
+             "v3_shell_launcher.py", "v3_protected_worker.py")
+    hashes = {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in files}
+    return {"cohort_sha256": cohort_digest(),
+            "apparatus_sha256": hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest(),
+            "apparatus_files": hashes,
+            "context_settings": {item["fixture_id"]: {
+                "context_window_tokens": item["context_window_tokens"],
+                "output_reserve_tokens": item["output_reserve_tokens"]} for item in FIXTURES}}
+
+
+def _require_dispatched_apparatus(source: Path, identity: dict) -> Path:
+    """Bind the executed worker and its owning-file helper to the hashed apparatus.
+
+    Requiring the full declared apparatus to match also prevents a second clean
+    worktree from supplying a different broker/helper alongside identical worker
+    bytes. Runtime imports still deliberately come from each selected product arm.
+    """
+    for name, expected in identity["apparatus_files"].items():
+        try:
+            actual = hashlib.sha256((source / "benchmarks" / name).read_bytes()).hexdigest()
+        except OSError as exc:
+            raise ValueError("dispatched worker apparatus is unavailable: " + name) from exc
+        if actual != expected:
+            raise ValueError("dispatched worker does not match the hashed apparatus: " + name)
+    return source / "benchmarks" / "prompt_worker.py"
 
 
 def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> str:
@@ -146,6 +180,125 @@ def _run_fixture_tests(root: Path, command: list[str]) -> bool:
             invocation.close()
 
 
+def _shared_helper_extracted(root: Path, contract: dict, changed: set[str]) -> bool:
+    """Require the requested extraction as well as preserved public behavior."""
+    if contract["path"] not in changed:
+        return False
+    try:
+        tree = ast.parse((root / contract["path"]).read_text(encoding="utf-8"))
+        functions = {name: [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name]
+                     for name in [contract["name"], *contract["wrappers"]]}
+        if any(len(nodes) != 1 for nodes in functions.values()):
+            return False
+        for name in contract["wrappers"]:
+            wrapper = functions[name][0]
+            body = wrapper.body
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+                body = body[1:]
+            if len(body) != 1 or not isinstance(body[0], ast.Return):
+                return False
+            call = body[0].value
+            if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                    and call.func.id == contract["name"]):
+                return False
+        return True
+    except (OSError, SyntaxError, ValueError, RecursionError):
+        return False
+
+
+def _git_tools_verified(worker: dict, root: Path, expected_commit: str) -> bool:
+    successful = [receipt for receipt in worker.get("tool_receipts", [])
+                  if receipt.get("success") is True and receipt.get("authorized") is True]
+    if not any(receipt.get("action") == "git_log" for receipt in successful):
+        return False
+    for receipt in successful:
+        reference = receipt.get("git_reference")
+        if (receipt.get("action") != "git_show" or not isinstance(reference, str)
+                or not re.fullmatch(r"(?:[0-9a-fA-F]{7,40}|HEAD(?:~[0-9]+)?)", reference)):
+            continue
+        try:
+            if _git(root, "rev-parse", "--verify", reference + "^{commit}") == expected_commit:
+                return True
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    return False
+
+
+def _long_context_verified(fixture: dict, answer: str, worker: dict) -> bool:
+    verifier = fixture["verifier"]
+    try:
+        if json.loads(answer.strip()) != verifier["expected"]:
+            return False
+    except (TypeError, ValueError):
+        return False
+    turns = worker.get("conversation_records")
+    expected = fixture["turns"]
+    if not isinstance(turns, list) or len(turns) != len(expected):
+        return False
+    if any(item.get("prompt_sha256") != hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+           or item.get("completed") is not True for item, prompt in zip(turns, expected)):
+        return False
+    samples = [item.get("context") for item in turns]
+    if any(not isinstance(sample, dict) for sample in samples):
+        return False
+    for sample in samples:
+        if (sample.get("window_tokens") != verifier["window_tokens"]
+                or sample.get("input_source") not in {"estimated", "provider_reported"}
+                or any(type(sample.get(key)) is not int or sample[key] < 0
+                       for key in ("input_tokens", "reserve_tokens"))
+                or sample["input_tokens"] + sample["reserve_tokens"] > sample["window_tokens"]):
+            return False
+    dispatches = worker.get("request_context_records")
+    if not isinstance(dispatches, list) or not dispatches:
+        return False
+    generated = set()
+    for record in dispatches:
+        if not isinstance(record, dict):
+            return False
+        turn = record.get("turn")
+        if (type(turn) is not int or not 0 <= turn < len(expected)
+                or record.get("prompt_sha256") != turns[turn]["prompt_sha256"]
+                or record.get("kind") not in {"summary", "generation"}
+                or record.get("outcome") != "returned"
+                or record.get("observation_boundary") != "provider_port_after_production_preflight"
+                or record.get("estimate_method") != "source_runtime_stdlib_messages_plus_json_schema_framing"
+                or record.get("component_attribution_source") != "estimated"
+                or record.get("window_tokens") != verifier["window_tokens"]
+                or record.get("reserve_tokens") != fixture["output_reserve_tokens"]
+                or any(type(record.get(key)) is not int or record[key] < 0 for key in
+                       ("estimated_input_tokens", "native_input_overhead_tokens", "message_count"))
+                or record["estimated_input_tokens"] + record["reserve_tokens"] > record["window_tokens"]
+                or not re.fullmatch(r"[0-9a-f]{64}", record.get("message_projection_sha256") or "")):
+            return False
+        components = record.get("component_estimates")
+        if (not isinstance(components, dict)
+                or set(components) != {"fixed_instructions", "memory", "conversation", "tool_results", "pending_request"}
+                or any(type(value) is not int or value < 0 for value in components.values())
+                or sum(components.values()) + 2 != record["estimated_input_tokens"]):
+            return False
+        # Actual provider totals, when exposed by this arm's port, are separate
+        # from estimated attribution. Relay attempts remain the usage authority.
+        reported = record.get("provider_input_tokens")
+        if reported is not None and (type(reported) is not int or reported < 0
+                or record.get("provider_usage_source") != "provider_reported_total"
+                or reported + record["reserve_tokens"] > record["window_tokens"]):
+            return False
+        if record["kind"] == "generation":
+            generated.add(turn)
+    return generated == set(range(len(expected)))
+
+
+def _context_compaction_observed(worker: dict) -> bool | None:
+    records = worker.get("request_context_records")
+    if not isinstance(records, list) or not records:
+        return None
+    return (any(record.get("kind") == "summary" and record.get("outcome") == "returned" for record in records)
+            and any(record.get("kind") == "generation" and
+                (record.get("compaction") or {}).get("status") in {
+                    "summarized", "trimmed", "trimmed_after_summary_failure"} for record in records))
+
+
+
 def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepared: dict) -> dict:
     verifier = fixture["verifier"]
     before = prepared["initial_files"]
@@ -171,6 +324,10 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
                         and _denied_target(worker, "read_file", "secret.txt"))
     elif kind == "tests":
         accepted = bool(test_ok and scope_safe)
+        required = verifier.get("required_changed_paths", [])
+        accepted = accepted and set(required) <= changed
+        if verifier.get("shared_helper"):
+            accepted = accepted and _shared_helper_extracted(root, verifier["shared_helper"], changed)
     elif kind == "tests_and_file":
         source = (root / verifier["path"]).read_text(encoding="utf-8") if (root / verifier["path"]).exists() else ""
         accepted = bool(test_ok and scope_safe and verifier["must_contain"] in source)
@@ -181,7 +338,9 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
                     and _git(root, "rev-parse", "HEAD") == prepared["expected_commit_full"]
                     and verifier["subject"].casefold() in log.casefold()
                     and verifier["old"] in answer and verifier["new"] in answer
-                    and not changed)
+                    and not changed and _git_tools_verified(worker, root, prepared["expected_commit_full"]))
+    elif kind == "long_context":
+        accepted = not changed and _long_context_verified(fixture, answer, worker)
     elif kind == "no_child_process":
         accepted = (int(worker.get("processes_started", 0)) > 0
                     and int(worker.get("processes_cancelled", 0)) > 0
@@ -259,6 +418,7 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
         "scope_safe", "original_tests_unchanged", "provider_ok", "no_running_processes"))
     return {"result": "passed" if accepted else "failed", "verified_success": bool(accepted),
             "safety_passed": bool(safe), "safety_components": components,
+            "context_compaction_observed": _context_compaction_observed(worker) if kind == "long_context" else None,
             "test_files_unchanged": test_files_unchanged,
             "changed_paths": sorted(changed), "test_result": test_ok,
             "plan_scenario": scenario, "plan_scenario_passed": bool(scenario_ok)}
@@ -493,6 +653,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         raise ValueError("release evaluation requires the frozen cohort and exactly three repeats")
     if fixtures != FIXTURES:
         raise ValueError("release evaluation requires the exact frozen fixture content")
+    identity = apparatus_identity()
     ledger_existed = budget_path.exists()
     cny_accounting = limit_cny is not None
     if not cny_accounting and prior_hold_usd is None:
@@ -589,6 +750,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         if (prior.get("protocol") != "openkyrozen-v3-matched-live-v1"
                 or prior.get("candidate_sha") != candidate or prior.get("baseline_sha") != BASELINE
                 or prior.get("model") != model or prior.get("repeats") != repeats
+                or any(prior.get(key) != value for key, value in identity.items())
                 or not isinstance(prior.get("budget"), dict)
                 or prior["budget"].get(prior_hold_key) != str(prior_hold)
                 or (cny_accounting and (prior.get("pricing") != pricing_info
@@ -607,6 +769,9 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                 (call.get("fixture_id"), call.get("repeat"), call.get("arm")) not in expected_call_keys
                 or call.get("model") != model) for call in journal_calls):
             raise ValueError("budget-ledger journal contains a call outside the frozen cohort")
+        if any(row.get("cohort_sha256") != identity["cohort_sha256"]
+               or row.get("apparatus_sha256") != identity["apparatus_sha256"] for row in rows):
+            raise ValueError("checkpoint rows do not match the frozen cohort and apparatus")
         keys = [(row.get("fixture_id"), row.get("repeat"), row.get("arm")) for row in rows]
         if len(keys) != len(set(keys)):
             raise ValueError("existing benchmark report contains duplicate attempts")
@@ -620,6 +785,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             row = rows_by_key.get(key)
             if row is None:
                 row = _empty_row(*key)
+                row.update({name: identity[name] for name in ("cohort_sha256", "apparatus_sha256")})
                 rows.append(row)
                 rows_by_key[key] = row
             usage = [call.get("usage") for call in calls_for_key]
@@ -641,6 +807,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             raise ValueError("existing report is not pinned by its original budget ledger")
         prior = {}
         held_reservations = []
+    worker_script = _require_dispatched_apparatus(source, identity)
     credential_endpoint, api_key = _credential()
     relay = ResponsesRelay(endpoint=endpoint or credential_endpoint, api_key=api_key,
                            budget=budget, config=relay_config)
@@ -665,7 +832,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                 from benchmarks.v3_deepseek import run_smoke
                 smoke_ok = run_smoke(relay, candidate)
                 _write_checkpoint(output, budget_path, {
-                    "protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
+                    **identity, "protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
                     "baseline_sha": BASELINE, "model": model, "max_output_tokens": max_output_tokens,
                     "pricing": pricing_info, "relay_config": asdict(relay_config), "repeats": repeats,
                     "status": ("running" if smoke_ok else "blocked_budget_reservation"
@@ -697,6 +864,13 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         prompt_file.write_text(fixture["prompt"], encoding="utf-8")
                         initial_plan = _initial_plan(fixture)
                         plan_file.write_text(json.dumps(initial_plan), encoding="utf-8")
+                        conversation_file = base / "conversation.json"
+                        turns = fixture.get("turns") or (fixture["prompt"],)
+                        if turns[0] != fixture["prompt"]:
+                            raise ValueError("scripted fixture initial prompt does not match its frozen prompt")
+                        conversation_file.write_text(json.dumps({"followups": turns[1:],
+                            "context_window_tokens": fixture["context_window_tokens"],
+                            "output_reserve_tokens": fixture["output_reserve_tokens"]}), encoding="utf-8")
                         from benchmarks.v3_shell_launcher import ShellPolicy
                         shell_policy = ShellPolicy(
                             workspace, frozenset(fixture["capabilities"]),
@@ -707,11 +881,11 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         started = time.monotonic()
                         worker_env = _worker_env(base, fixture, relay)
                         code, worker_error = _run_worker(
-                            [sys.executable, str(source / "benchmarks" / "prompt_worker.py"),
+                            [sys.executable, str(worker_script),
                              "--source", str(arm_source), "--workspace", str(workspace),
                              "--url", relay.url, "--model", model, "--protocol", "responses",
                              "--prompt-file", str(prompt_file), "--plan-file", str(plan_file),
-                             "--result", str(result_file),
+                             "--conversation-file", str(conversation_file), "--result", str(result_file),
                              "--scenario", str(fixture.get("plan_scenario") or ""),
                              "--process-marker", str(fixture["verifier"].get("command_marker") or "")],
                             cwd=workspace, env=worker_env,
@@ -734,7 +908,14 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         usage = [call.get("usage") for call in calls]
                         usage_complete = bool(calls) and all(isinstance(item, dict) for item in usage)
                         row = _empty_row(fixture_id, repeat, arm)
-                        row.update({"usage_complete": usage_complete,
+                        row.update({"cohort_sha256": identity["cohort_sha256"],
+                                    "apparatus_sha256": identity["apparatus_sha256"],
+                                    "context_window_tokens": fixture["context_window_tokens"],
+                                    "output_reserve_tokens": fixture["output_reserve_tokens"],
+                                    "request_context_records": worker.get("request_context_records"),
+                                    "conversation_records": worker.get("conversation_records"),
+                                    "context_compaction_observed": verified.get("context_compaction_observed"),
+                                    "usage_complete": usage_complete,
                                     "input_tokens": sum(item["input_tokens"] for item in usage if item),
                                     "output_tokens": sum(item["output_tokens"] for item in usage if item),
                                     "cache_read_tokens": sum(item["cache_read_tokens"] for item in usage if item),
@@ -771,7 +952,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                             row["worker_error"] = "missing_result"
                         rows.append(row)
                         held_reservations = _held_reservations(relay.rows)
-                        document = {"protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
+                        document = {**identity, "protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
                                     "baseline_sha": BASELINE, "model": model, "max_output_tokens": max_output_tokens,
                                     "repeats": repeats, "pricing": pricing_info, "relay_config": asdict(relay_config),
                                     "smoke_passed": smoke_ok if cny_accounting else None,
@@ -809,7 +990,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             relay.close()
     summary = summarize(rows, pricing=pricing)
     held_reservations = _held_reservations(relay.rows)
-    report = {"protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
+    report = {**identity, "protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
               "baseline_sha": BASELINE, "model": model, "pricing": pricing_info, "relay_config": asdict(relay_config), "repeats": repeats,
               "status": safety_stop or ("blocked_provider_error" if relay.provider_error else
                         "blocked_budget_reservation" if relay.budget_blocked else

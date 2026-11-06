@@ -13,6 +13,14 @@ from benchmarks.v3_matched_live import (BASELINE, MODEL, _load_checkpoint, _row_
                                          verify_fixture)
 from benchmarks.v3_matched import BudgetLedger, USD_CNY, _cost
 
+def prepare_candidate_apparatus(source):
+    from benchmarks import v3_matched_live as live
+    target = source / "benchmarks"
+    target.mkdir(parents=True, exist_ok=True)
+    for name in live.apparatus_identity()["apparatus_files"]:
+        (target / name).write_bytes((Path(live.__file__).parent / name).read_bytes())
+
+
 TEST_PRIOR_HOLD_USD = "1.25"
 TEST_PRIOR_HOLD_RMB = str(Decimal(TEST_PRIOR_HOLD_USD) * USD_CNY)
 
@@ -27,6 +35,7 @@ class V3MatchedLiveTests(unittest.TestCase):
             source, repo = root / "candidate", root / "repository"
             source.mkdir()
             repo.mkdir()
+            prepare_candidate_apparatus(source)
             commands = []
 
             class Relay:
@@ -152,7 +161,10 @@ class V3MatchedLiveTests(unittest.TestCase):
             root = Path(directory)
             prepared = prepare_fixture(root, fixture)
             answer = f"increase retry count {prepared['expected_commit']} changed RETRIES = 1 to RETRIES = 3"
-            result = verify_fixture(fixture, root, answer, {}, prepared)
+            worker = {"tool_receipts": [{"action": "git_log", "success": True, "authorized": True},
+                {"action": "git_show", "success": True, "authorized": True,
+                 "git_reference": prepared["expected_commit_full"]}]}
+            result = verify_fixture(fixture, root, answer, worker, prepared)
         self.assertEqual(result["result"], "passed")
         self.assertTrue(result["verified_success"])
 
@@ -455,10 +467,15 @@ class V3MatchedLiveTests(unittest.TestCase):
                         "safety_passed": True, "safety_components": {name: True for name in (
                             "scope_safe", "original_tests_unchanged", "provider_ok",
                             "no_running_processes", "worker_complete")}})
-                _write_checkpoint(report, ledger_path, {"protocol": "openkyrozen-v3-matched-live-v1",
+                from benchmarks.v3_matched_live import apparatus_identity
+                identity = apparatus_identity()
+                for row in rows:
+                    row.update({key: identity[key] for key in ("cohort_sha256", "apparatus_sha256")})
+                _write_checkpoint(report, ledger_path, {**identity, "protocol": "openkyrozen-v3-matched-live-v1",
                     "candidate_sha": "candidate", "baseline_sha": BASELINE, "model": MODEL,
                     "repeats": 3, "budget": {"prior_campaign_hold_usd": TEST_PRIOR_HOLD_USD},
                     "rows": rows, "calls": []})
+                prepare_candidate_apparatus(root / "src")
                 relay = type("Relay", (), {"rows": []})()
                 from openkyrozen.tools.sandbox import SandboxedCommand
                 probe = SandboxedCommand("true", False, {}, "test")
@@ -473,6 +490,81 @@ class V3MatchedLiveTests(unittest.TestCase):
                             prior_hold_usd=TEST_PRIOR_HOLD_USD)
                 self.assertEqual({call["attempt_id"] for call in relay.rows},
                                  {f"call-{index}" for index in range(len(keys))})
+
+    def test_reconciled_unknown_orphan_row_survives_checkpoint_interruption_and_next_resume(self):
+        from benchmarks import v3_matched_live as live
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "candidate"
+            prepare_candidate_apparatus(source)
+            report, ledger_path = root / "report.json", root / "budget.sqlite3"
+            budget = BudgetLedger(ledger_path, prior_hold_rmb=TEST_PRIOR_HOLD_RMB)
+            identity = live.apparatus_identity()
+            orphan_key = ("permissions-3", 2, "v3")
+            metadata = {"attempt_id": "held-orphan", "fixture_id": orphan_key[0], "repeat": orphan_key[1],
+                        "arm": orphan_key[2], "request_sha256": "held-request", "model": MODEL,
+                        "max_output_tokens": 4096, "reserved_rmb": str(_cost(100, 100))}
+            self.assertTrue(budget.reserve("held-orphan", input_token_bound=100, output_token_bound=100, metadata=metadata))
+            budget.settle("held-orphan", None)
+            remaining = budget.remaining_rmb
+            def ledger_state():
+                with sqlite3.connect(ledger_path) as db:
+                    return db.execute("SELECT id,reserved_picormb,actual_picormb,status,usage_json FROM attempts ORDER BY id").fetchall()
+            held_state = ledger_state()
+            live._write_checkpoint(report, ledger_path, {**identity, "protocol": "openkyrozen-v3-matched-live-v1",
+                "candidate_sha": "candidate", "baseline_sha": BASELINE, "model": MODEL, "repeats": 3,
+                "budget": {"prior_campaign_hold_usd": TEST_PRIOR_HOLD_USD}, "rows": [], "calls": []})
+            class Relay:
+                url, client_key = "http://127.0.0.1:1/v1", "offline"
+                provider_error, budget_blocked = None, False
+                def __init__(self, **kwargs): self.rows = []
+                def start(self): pass
+                def close(self): pass
+            def extract(destination, *_args): destination.mkdir(parents=True)
+            def worker(command, **kwargs):
+                Path(command[command.index("--result") + 1]).write_text("{}")
+                return 0, ""
+            def checkpoint_then_interrupt(*args):
+                live._write_checkpoint_original(*args)
+                raise RuntimeError("interrupted after unrelated cell checkpoint")
+            common = [patch.object(live, "_source_snapshot", return_value="candidate"),
+                patch("openkyrozen.tools.sandbox.sandbox_command", return_value=type("Probe", (), {"backend": "test", "close": lambda self: None})()),
+                patch("benchmarks.v3_protected_worker.verify_worker_protection", return_value={}),
+                patch.object(live, "_credential", return_value=("https://invalid.example", "offline")),
+                patch.object(live, "ResponsesRelay", Relay)]
+            from contextlib import ExitStack
+            with ExitStack() as stack:
+                for context in common: stack.enter_context(context)
+                stack.enter_context(patch.object(live, "_extract_baseline", side_effect=extract))
+                stack.enter_context(patch.object(live, "_run_worker", side_effect=worker))
+                stack.enter_context(patch.object(live, "verify_fixture", return_value={"result": "passed", "verified_success": True, "safety_passed": True,
+                    "plan_scenario_passed": True, "changed_paths": [], "safety_components": {
+                    "scope_safe": True, "original_tests_unchanged": True, "provider_ok": True, "no_running_processes": True}}))
+                stack.enter_context(patch.object(live, "_write_checkpoint_original", live._write_checkpoint, create=True))
+                stack.enter_context(patch.object(live, "_write_checkpoint", side_effect=checkpoint_then_interrupt))
+                with self.assertRaisesRegex(RuntimeError, "interrupted after unrelated"):
+                    live.run(source=source, repo=root, output=report, budget_path=ledger_path, prior_hold_usd=TEST_PRIOR_HOLD_USD)
+            restored = live._load_checkpoint(report, ledger_path)
+            orphan = next(row for row in restored["rows"] if (row["fixture_id"], row["repeat"], row["arm"]) == orphan_key)
+            self.assertEqual(orphan.get("cohort_sha256"), identity["cohort_sha256"])
+            self.assertEqual(orphan.get("apparatus_sha256"), identity["apparatus_sha256"])
+            self.assertFalse(orphan["worker_result_complete"])
+            self.assertFalse(orphan["usage_complete"])
+            self.assertFalse(orphan["verified_success"])
+            self.assertEqual((orphan["attempts"], orphan["requests"], orphan["input_tokens"], orphan["output_tokens"]), (1, 1, 0, 0))
+            with ExitStack() as stack:
+                for context in [patch.object(live, "_source_snapshot", return_value="candidate"),
+                    patch("openkyrozen.tools.sandbox.sandbox_command", return_value=type("Probe", (), {"backend": "test", "close": lambda self: None})()),
+                    patch("benchmarks.v3_protected_worker.verify_worker_protection", return_value={}),
+                    patch.object(live, "_credential", return_value=("https://invalid.example", "offline")),
+                    patch.object(live, "ResponsesRelay", Relay),
+                    patch.object(live, "_extract_baseline", side_effect=RuntimeError("second resume accepted"))]:
+                    stack.enter_context(context)
+                with self.assertRaisesRegex(RuntimeError, "second resume accepted"):
+                    live.run(source=source, repo=root, output=report, budget_path=ledger_path, prior_hold_usd=TEST_PRIOR_HOLD_USD)
+            self.assertEqual(ledger_state(), held_state)
+            self.assertEqual(budget.remaining_rmb, remaining)
+            self.assertEqual(budget.spent_rmb, 0)
 
     def test_cancellation_verifier_requires_a_started_and_stopped_process(self):
         fixture = next(item for item in FIXTURES if item["fixture_id"] == "cancellation-1")

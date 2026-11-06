@@ -225,6 +225,7 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
                         "plan_revisions": 0, "cancelled_tasks": 0,
                         "material_revisions": 0, "unnecessary_churn": 0,
                         "worker_result_complete": True, "worker_exit_code": 0,
+                        "context_compaction_observed": arm == "v3" if fixture["category"] == "long_context" else None,
                         "plan_scenario": fixture.get("plan_scenario"), "plan_scenario_passed": True,
                     })
 
@@ -233,6 +234,7 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         self.assertTrue(result["complete"])
         self.assertGreater(result["paired_success_ci95"][0], 0)
         self.assertTrue(result["comparison_thresholds_met"])
+        self.assertTrue(result["independent_v3_context_passed"])
         self.assertFalse(result["release_comparison_passed"])
         json.dumps(result)
         self.assertIsInstance(result["comparisons"]["token_savings_fraction"], float)
@@ -245,6 +247,15 @@ class V3MatchedBenchmarkTests(unittest.TestCase):
         self.assertEqual(result["summary"]["v3"]["verifier_passed"], 90)
         self.assertEqual(result["summary"]["v3"]["durable_side_effects_expected"], 90)
         self.assertEqual(result["summary"]["v3"]["recoveries_required"], 90)
+        original_interval = result["paired_success_ci95"]
+        for observation in (False, None, 1):
+            unproved_context = [dict(row) for row in rows]
+            next(row for row in unproved_context if row["arm"] == "v3"
+                 and row["fixture_id"] == "long_context-1")["context_compaction_observed"] = observation
+            rejected = summarize(unproved_context, bootstrap_samples=500)
+            self.assertFalse(rejected["independent_v3_context_passed"])
+            self.assertFalse(rejected["comparison_thresholds_met"])
+            self.assertEqual(rejected["paired_success_ci95"], original_interval)
         baseline_gap = [dict(row) for row in rows]
         baseline_gap[0].update(verifier_result="failed", durable_side_effect_verified=False,
                                recovery_verified=False)
