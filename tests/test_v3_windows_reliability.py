@@ -1,8 +1,10 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -11,6 +13,75 @@ SCRIPT = ROOT / 'scripts' / 'v3_windows_reliability.py'
 
 
 class WindowsReliabilityDiagnosticTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'posix', 'real owned process-group cleanup requires POSIX')
+    def test_diagnostic_timeout_cleanup_stops_owned_descendant(self):
+        from scripts.v3_windows_reliability import stop_diagnostic_tree
+        code = '''
+import subprocess, sys, time
+from pathlib import Path
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+Path(sys.argv[1]).write_text(str(child.pid))
+time.sleep(30)
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'child-pid'
+            process = subprocess.Popen([sys.executable, '-c', code, str(marker)],
+                                       start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 3
+                while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(marker.exists())
+                child_pid = int(marker.read_text())
+                cleanup = stop_diagnostic_tree(process)
+                process.communicate(timeout=3)
+                state = subprocess.run(['ps', '-p', str(child_pid), '-o', 'stat='],
+                                       capture_output=True, text=True, timeout=3).stdout.strip()
+                self.assertTrue(not state or state.startswith('Z'), state)
+                self.assertFalse(cleanup['descendant_cleanup_certified'])
+                self.assertIsNotNone(process.returncode)
+            finally:
+                stop_diagnostic_tree(process)
+                process.communicate(timeout=3)
+
+    def test_cpu_control_exits_at_its_own_deadline_without_parent_stop(self):
+        from scripts.v3_windows_reliability import _CPU_LOAD
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = subprocess.run([sys.executable, '-c', _CPU_LOAD,
+                str(root / 'ready'), str(root / 'never-stopped'), str(root / 'result.json'), '.15'],
+                capture_output=True, text=True, timeout=3)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            metrics = json.loads((root / 'result.json').read_text())
+            self.assertEqual(metrics['stopped_by'], 'deadline')
+            self.assertLess(metrics['wall_seconds'], 2)
+
+    def test_explicit_load_control_records_real_contention_and_owned_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            process = subprocess.run([sys.executable, str(SCRIPT), '--output', directory,
+                '--iterations', '1', '--repository', str(ROOT), '--control', 'combined',
+                '--cpu-workers', '1'], cwd=ROOT, capture_output=True, text=True, timeout=40)
+            self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+            report = json.loads((Path(directory) / 'report.json').read_text())
+            self.assertEqual(report['control'], 'combined')
+            self.assertFalse(report['historical_cause_established'])
+            result = json.loads((Path(directory) / '1' / 'load-control.json').read_text())
+            self.assertEqual(result['control'], 'combined')
+            self.assertGreaterEqual(result['sqlite']['acquired_transactions'], 1)
+            self.assertTrue(result['sqlite']['thread_stopped'])
+            self.assertEqual(len(result['cpu']), 1)
+            self.assertEqual(result['cpu'][0]['returncode'], 0)
+            self.assertGreater(result['cpu'][0]['cpu_seconds'], 0)
+            self.assertGreater(result['cpu'][0]['wall_seconds'], 0)
+            events = [json.loads(line)['event'] for line in
+                      (Path(directory) / '1' / 'events.jsonl').read_text().splitlines()]
+            self.assertIn('sqlite.lock_acquired', events)
+            self.assertIn('sqlite.lock_released', events)
+            self.assertIn('load.started', events)
+            self.assertIn('load.stopped', events)
+            state = json.loads((Path(directory) / '1' / 'state-before-cleanup.json').read_text())
+            self.assertEqual(state['marker'], 'ok')
+
     def test_actual_cancellation_fixture_emits_boundary_and_persisted_evidence(self):
         self.assertTrue(SCRIPT.is_file(), 'Windows diagnostic harness is missing')
         with tempfile.TemporaryDirectory() as directory:

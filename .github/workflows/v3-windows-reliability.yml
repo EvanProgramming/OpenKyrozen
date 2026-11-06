@@ -10,8 +10,18 @@ on:
         type: string
         required: true
         default: '7905fb634fe447243668c2d01179ce5cb2cdb275'
+      control:
+        description: Diagnostic load control (passing repetitions never establish historical cause)
+        type: choice
+        options: [baseline, cpu, sqlite, combined, all]
+        default: baseline
+      iterations:
+        description: Samples per control and Python version (1–50)
+        type: number
+        default: 50
 env:
   PRODUCT_SHA: ${{ inputs.candidate_sha || '7905fb634fe447243668c2d01179ce5cb2cdb275' }}
+  ITERATIONS: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.iterations) || '50' }}
 permissions:
   contents: read
 jobs:
@@ -22,11 +32,13 @@ jobs:
       fail-fast: false
       matrix:
         python: ['3.12', '3.13']
+        control: ${{ fromJSON(inputs.control == 'all' && '["baseline","cpu","sqlite","combined"]' || format('["{0}"]', inputs.control || 'baseline')) }}
     steps:
       - name: Validate exact candidate identity
         shell: pwsh
         run: |
           if ($env:PRODUCT_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'candidate_sha must be a full lowercase commit SHA' }
+          if ($env:ITERATIONS -cnotmatch '^[0-9]+$' -or [int]$env:ITERATIONS -lt 1 -or [int]$env:ITERATIONS -gt 50) { throw 'iterations must be 1–50' }
       - name: Checkout diagnostic harness
         uses: actions/checkout@v4
         with:
@@ -56,13 +68,15 @@ jobs:
           New-Item -ItemType Directory -Force windows-evidence | Out-Null
           python -m pip freeze | Set-Content -Encoding utf8 windows-evidence/dependencies.txt
           $env:GITHUB_SHA | Set-Content -Encoding utf8 windows-evidence/diagnostic-commit.txt
-      - name: Trace unchanged cancellation test 50 times
+      - name: Trace unchanged cancellation test under recorded load control
         shell: pwsh
-        run: python diagnostic-source/scripts/v3_windows_reliability.py --repository product --output windows-evidence --iterations 50
+        env:
+          LOAD_CONTROL: ${{ matrix.control }}
+        run: python diagnostic-source/scripts/v3_windows_reliability.py --repository product --output windows-evidence --iterations $env:ITERATIONS --control $env:LOAD_CONTROL --cpu-workers 2
       - name: Upload investigation evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-cancellation-${{ matrix.python }}-${{ env.PRODUCT_SHA }}
+          name: windows-cancellation-${{ matrix.python }}-${{ env.PRODUCT_SHA }}-${{ matrix.control }}
           path: windows-evidence/
           if-no-files-found: error
