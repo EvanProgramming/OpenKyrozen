@@ -14,19 +14,21 @@
 
 ## 설치
 
+V3는 아직 출시되지 않았습니다. 아래 명령은 공개된 안정 버전 **v2.0.8**을 설치합니다.
+
 OpenKyrozen은 Python **3.12와 3.13**을 지원합니다. Python 3.14는 지원 대상이 아닙니다.
 
 ### macOS 또는 Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v3.0.0/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.8/install.sh | sh
 kyrozen
 ```
 
 ### Windows PowerShell
 
 ```powershell
-irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v3.0.0/install.ps1 | iex
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.8/install.ps1 | iex
 kyrozen
 ```
 
@@ -53,7 +55,7 @@ make run
 ### 검증된 release wheel 직접 설치
 
 ```bash
-uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v3.0.0/openkyrozen-3.0.0-py3-none-any.whl
+uv tool install --python 3.12 --force --with fastapi --with uvicorn https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.8/openkyrozen-2.0.8-py3-none-any.whl
 ```
 
 ## 빠른 시작
