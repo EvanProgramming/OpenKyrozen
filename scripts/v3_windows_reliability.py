@@ -124,11 +124,16 @@ def run_child(output):
             count += 1
             trace.record('watchdog', interval_seconds=4)
             trace.snapshot(f'state-watchdog-{count}.json')
+            if stopped.is_set():
+                return
+            stacks.write('Timeout (0:00:04)!\n')
+            stacks.flush()
+            # The C watchdog can spin walking profiled live frames on CPython 3.12.
+            faulthandler.dump_traceback(file=stacks, all_threads=True)
 
     previous = sys.getprofile()
     previous_thread = threading.getprofile()
     with (output / 'threads.log').open('w', encoding='utf-8') as stacks:
-        faulthandler.dump_traceback_later(4, repeat=True, file=stacks)
         watcher = threading.Thread(target=watch, name='diagnostic-state-watchdog', daemon=True)
         watcher.start()
         sys.setprofile(trace.profile)
@@ -142,7 +147,6 @@ def run_child(output):
             threading.setprofile(previous_thread)
             stopped.set()
             watcher.join(timeout=1)
-            faulthandler.cancel_dump_traceback_later()
             with trace.lock:
                 trace.active = False
                 trace.stream.close()

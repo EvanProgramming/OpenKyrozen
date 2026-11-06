@@ -39,25 +39,39 @@ class WindowsReliabilityDiagnosticTests(unittest.TestCase):
             self.assertEqual(report['test_timeouts_seconds'], {'provider_wait': 3, 'entry_wait': 10, 'future_wait': 5})
 
     def test_slow_worker_completion_keeps_original_timeout_and_captures_pending_worker(self):
-        import time
-        from unittest.mock import patch
-        from scripts.v3_windows_reliability import Trace, run_child
+        code = """
+from pathlib import Path
+import faulthandler
+import sys
+import time
+from unittest.mock import patch
+from scripts.v3_windows_reliability import Trace, run_child
 
-        original = Trace.record
+original = Trace.record
 
-        def delay_worker_completion(trace, event, **fields):
-            original(trace, event, **fields)
-            if event == 'worker.return':
-                time.sleep(5.3)
+def delay_worker_completion(trace, event, **fields):
+    original(trace, event, **fields)
+    if event == 'worker.return':
+        time.sleep(5.3)
 
+with patch.object(Trace, 'record', delay_worker_completion), \
+     patch.object(faulthandler, 'dump_traceback_later', side_effect=AssertionError('native watchdog forbidden')), \
+     patch.object(faulthandler, 'cancel_dump_traceback_later', side_effect=AssertionError('native watchdog forbidden')):
+    result = run_child(Path(sys.argv[1]))
+print('native watchdog unused', flush=True)
+raise SystemExit(result)
+"""
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory)
-            with patch.object(Trace, 'record', delay_worker_completion):
-                self.assertEqual(run_child(path), 1)
-            self.assertIn('TimeoutError', (path / 'unittest.log').read_text())
-            self.assertIn('Timeout (0:00:04)', (path / 'threads.log').read_text())
-            self.assertTrue((path / 'state-watchdog-1.json').exists())
-            state = json.loads((path / 'state-before-cleanup.json').read_text())
-            self.assertEqual(state['marker'], 'ok')
-            self.assertTrue(any(not run['future_done'] for run in state['runs']))
-            self.assertEqual(state['persisted_states'][-1]['status'], 'cancelled')
+            for iteration in range(3):
+                path = Path(directory) / str(iteration)
+                process = subprocess.run([sys.executable, '-c', code, str(path)], cwd=ROOT,
+                                         capture_output=True, text=True, timeout=20)
+                self.assertIn('native watchdog unused', process.stdout, process.stderr)
+                self.assertEqual(process.returncode, 1, process.stdout + process.stderr)
+                self.assertIn('TimeoutError', (path / 'unittest.log').read_text())
+                self.assertIn('Timeout (0:00:04)', (path / 'threads.log').read_text())
+                self.assertTrue((path / 'state-watchdog-1.json').exists())
+                state = json.loads((path / 'state-before-cleanup.json').read_text())
+                self.assertEqual(state['marker'], 'ok')
+                self.assertTrue(any(not run['future_done'] for run in state['runs']))
+                self.assertEqual(state['persisted_states'][-1]['status'], 'cancelled')
