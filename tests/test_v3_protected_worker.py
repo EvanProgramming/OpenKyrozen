@@ -76,6 +76,53 @@ class ProtectedWorkerTests(unittest.TestCase):
         self.assertTrue(evidence['managed_shell_attacks_denied'])
         self.assertTrue(evidence['source_write_allowed'])
 
+    def test_real_preflight_probes_receive_no_parent_provider_credentials(self):
+        from unittest.mock import patch
+        from benchmarks import v3_matched_live
+        allowed = {'PATH', 'SYSTEMROOT', 'WINDIR', 'TMPDIR', 'TMP', 'TEMP'}
+        secrets = {'DEEPSEEK_API_KEY': 'fake-deepseek-secret', 'OPENAI_API_KEY': 'fake-openai-secret',
+                   'ANTHROPIC_API_KEY': 'fake-anthropic-secret', 'AWS_SECRET_ACCESS_KEY': 'fake-aws-secret',
+                   'KYROZEN_BENCHMARK_API_KEY': 'fake-benchmark-secret', 'GITHUB_TOKEN': 'fake-github-secret'}
+        incoming, managed, launched, probe_homes = [], [], [], []
+        original_protect, original_worker = protected.protect_worker_command, protected.ProtectedWorker
+        def protect(command, **kwargs):
+            incoming.append(dict(kwargs['env']))
+            probe_homes.append(str(Path(kwargs['cwd']).resolve().parent))
+            return original_protect(command, **kwargs)
+        def worker(command, **kwargs):
+            managed.append(dict(kwargs['env']))
+            launch = original_worker(command, **kwargs)
+            launched.append(dict(launch.env))
+            return launch
+        with tempfile.TemporaryDirectory() as home:
+            environment = {key: value for key, value in os.environ.items() if key in allowed}
+            environment.update(secrets, HOME=home, USERPROFILE=home, PYTHONNOUSERSITE='0',
+                               UNRELATED_PARENT_STATE='must-not-forward')
+            with patch.dict(os.environ, environment, clear=True), patch.object(
+                    protected, 'protect_worker_command', side_effect=protect), patch.object(
+                    protected, 'ProtectedWorker', side_effect=worker), patch.object(
+                    v3_matched_live, '_credential', side_effect=AssertionError('credential lookup before protection')):
+                evidence = protected.verify_worker_protection(require_authenticated_children=False)
+        self.assertTrue(evidence['direct_attacks_denied'])
+        self.assertTrue(evidence['managed_shell_attacks_denied'])
+        self.assertTrue(evidence['source_write_allowed'])
+        self.assertEqual(len(incoming), 2)
+        self.assertEqual(len(managed), 1)
+        explicit = {'HOME', 'USERPROFILE', 'PYTHONNOUSERSITE'}
+        self.assertLessEqual(set(incoming[0]), allowed | explicit)
+        self.assertLessEqual(set(managed[0]), allowed | explicit | {'PYTHONPATH', 'KYROZEN_SANDBOX_REQUIRED'})
+        self.assertEqual(managed[0]['KYROZEN_SANDBOX_REQUIRED'], '1')
+        self.assertEqual(managed[0]['PYTHONPATH'], str(Path(protected.__file__).resolve().parents[1]))
+        for environment in incoming + managed + launched:
+            self.assertTrue(set(secrets).isdisjoint(environment))
+            self.assertNotIn('UNRELATED_PARENT_STATE', environment)
+            self.assertEqual(environment['HOME'], probe_homes[0])
+            self.assertEqual(environment['USERPROFILE'], probe_homes[0])
+            self.assertEqual(environment['PYTHONNOUSERSITE'], '1')
+            self.assertNotEqual(environment['HOME'], home)
+            for value in secrets.values():
+                self.assertNotIn(value, json.dumps(environment))
+
     def test_external_launcher_preserves_background_timeout_and_disconnect_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

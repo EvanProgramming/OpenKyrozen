@@ -189,6 +189,13 @@ print(json.dumps(out))
 '''
 
 
+def _probe_environment(home):
+    """Static probes get platform paths and their own home, never parent secrets."""
+    environment = {key: os.environ[key] for key in ('PATH', 'SYSTEMROOT', 'WINDIR', 'TMPDIR', 'TMP', 'TEMP')
+                   if key in os.environ}
+    return dict(environment, HOME=str(home), USERPROFILE=str(home), PYTHONNOUSERSITE='1')
+
+
 def verify_worker_protection(*, require_authenticated_children=True):
     """Run real attacks before key lookup; the full campaign remains blocked.
 
@@ -205,7 +212,7 @@ def verify_worker_protection(*, require_authenticated_children=True):
         source.write_text('before')
         paths = list(map(str, (base, workspace, nested, guard, source)))
         command = [sys.executable, '-c', _ATTACK_SCRIPT, *paths]
-        wrapped, env = protect_worker_command(command, cwd=workspace, env=dict(os.environ), protected_files=[guard])
+        wrapped, env = protect_worker_command(command, cwd=workspace, env=_probe_environment(base), protected_files=[guard])
         result = subprocess.run(wrapped, cwd=workspace, env=env, capture_output=True, text=True, timeout=30)
         try:
             values = json.loads(result.stdout)
@@ -233,7 +240,7 @@ while not (h.process.stdout.closed and h.process.stderr.closed) and time.monoton
 print(json.dumps({'exit': h.process.returncode, 'out': h.stdout, 'err': h.stderr}))
 m.close()
 '''
-        env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]),
+        env = dict(_probe_environment(base), PYTHONPATH=str(Path(__file__).resolve().parents[1]),
                    KYROZEN_SANDBOX_REQUIRED='1')
         policy = ShellPolicy(workspace, {'read', 'write', 'shell'})
         with ProtectedWorker([sys.executable, '-c', script, str(workspace), shell_command],
