@@ -1,5 +1,7 @@
 # Install, update, and recover
 
+V3 is not yet released. The public installation commands below use the published stable v2.0.8 release.
+
 ## Requirements
 
 The v3.0.0 release supports Python 3.12 and 3.13. Python 3.14 is excluded by the package metadata. The official installers provision Python through `uv`; a source checkout needs Git and a supported Python. The optional Bubble Tea terminal UI is a Go binary distributed with the release. Docker uses Python 3.12. See the live [release page](https://github.com/EvanProgramming/OpenKyrozen/releases/latest) before copying a pinned command: installer examples below identify the v3.0.0 release.
@@ -9,14 +11,14 @@ The v3.0.0 release supports Python 3.12 and 3.13. Python 3.14 is excluded by the
 On macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v3.0.0/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.8/install.sh | sh
 kyrozen --version
 ```
 
 On Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v3.0.0/install.ps1 | iex
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.8/install.ps1 | iex
 kyrozen --version
 ```
 
@@ -26,7 +28,7 @@ For a direct Python install, add the optional web server dependencies explicitly
 
 ```sh
 uv tool install --python 3.12 --force --with fastapi --with uvicorn \
-  https://github.com/EvanProgramming/OpenKyrozen/releases/download/v3.0.0/openkyrozen-3.0.0-py3-none-any.whl
+  https://github.com/EvanProgramming/OpenKyrozen/releases/download/v2.0.8/openkyrozen-2.0.8-py3-none-any.whl
 kyrozen --version
 ```
 
