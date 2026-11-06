@@ -1,5 +1,8 @@
 name: V3 Windows cancellation investigation
 on:
+  push:
+    branches: ['Evan/v3-windows-cancellation-investigation-20261107']
+    paths: ['.github/workflows/v3-windows-reliability.yml', 'scripts/v3_windows_reliability.py', 'tests/test_v3_windows_reliability.py']
   workflow_dispatch:
     inputs:
       candidate_sha:
@@ -7,6 +10,8 @@ on:
         type: string
         required: true
         default: '7905fb634fe447243668c2d01179ce5cb2cdb275'
+env:
+  PRODUCT_SHA: ${{ inputs.candidate_sha || '7905fb634fe447243668c2d01179ce5cb2cdb275' }}
 permissions:
   contents: read
 jobs:
@@ -20,8 +25,6 @@ jobs:
     steps:
       - name: Validate exact candidate identity
         shell: pwsh
-        env:
-          PRODUCT_SHA: ${{ inputs.candidate_sha }}
         run: |
           if ($env:PRODUCT_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'candidate_sha must be a full lowercase commit SHA' }
       - name: Checkout diagnostic harness
@@ -32,7 +35,7 @@ jobs:
       - name: Checkout exact product
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.candidate_sha }}
+          ref: ${{ env.PRODUCT_SHA }}
           path: product
           fetch-depth: 0
       - uses: actions/setup-python@v5
@@ -41,8 +44,6 @@ jobs:
       - name: Verify checked-out product
         shell: pwsh
         working-directory: product
-        env:
-          PRODUCT_SHA: ${{ inputs.candidate_sha }}
         run: |
           if ((git rev-parse HEAD) -cne $env:PRODUCT_SHA) { throw 'Checked-out candidate differs from requested commit' }
           if (git status --porcelain --untracked-files=no) { throw 'Product checkout has tracked edits' }
@@ -62,6 +63,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-cancellation-${{ matrix.python }}-${{ inputs.candidate_sha }}
+          name: windows-cancellation-${{ matrix.python }}-${{ env.PRODUCT_SHA }}
           path: windows-evidence/
           if-no-files-found: error
