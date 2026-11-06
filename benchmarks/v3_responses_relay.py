@@ -8,16 +8,34 @@ import secrets
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
 
-from benchmarks.v3_matched import BudgetLedger, _cost
+from benchmarks.v3_matched import BudgetLedger
 
 MODEL = "gemini-3.1-flash-lite"
 MAX_OUTPUT_TOKENS = 4096
 MAX_REQUEST_BYTES = 20_000_000
 MAX_ERROR_BODY_BYTES = 65_536
+
+
+@dataclass(frozen=True)
+class RelayConfig:
+    model: str = MODEL
+    max_output_tokens: int = MAX_OUTPUT_TOKENS
+    fixed_input_token_bound: int | None = None
+    serial_requests: bool = False
+
+    def __post_init__(self) -> None:
+        if (not self.model or type(self.max_output_tokens) is not int or self.max_output_tokens <= 0
+                or (self.fixed_input_token_bound is not None and
+                    (type(self.fixed_input_token_bound) is not int or self.fixed_input_token_bound <= 0))):
+            raise ValueError("relay model and token bounds must be valid")
+
+
+DEFAULT_RELAY_CONFIG = RelayConfig()
 
 
 def _safe_error_code(error: object) -> str | None:
@@ -28,7 +46,13 @@ def _safe_error_code(error: object) -> str | None:
 
 
 class ResponsesRelay:
-    def __init__(self, *, endpoint: str, api_key: str, budget: BudgetLedger):
+    def __init__(self, *, endpoint: str, api_key: str, budget: BudgetLedger,
+                 config: RelayConfig = DEFAULT_RELAY_CONFIG):
+        if config.model == "deepseek-flash" or budget.pricing.as_dict().get("provider") == "DeepSeek official":
+            from benchmarks.v3_deepseek import DEEPSEEK_PRICING, DEEPSEEK_RELAY_CONFIG
+            if budget.pricing != DEEPSEEK_PRICING or config != DEEPSEEK_RELAY_CONFIG:
+                raise ValueError("DeepSeek relay requires its pinned CNY prices, model, and fixed reservation")
+        self.config = config
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
         self.client_key = secrets.token_urlsafe(24)
@@ -37,6 +61,7 @@ class ResponsesRelay:
         self.rows: list[dict] = []
         self.budget_blocked = False
         self.provider_error: str | None = None
+        self._request_lock = threading.Lock()
         self._lock = threading.Lock()
         self._upstream_lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
@@ -66,7 +91,7 @@ class ResponsesRelay:
         cache_write = (usage.get("cache_write_tokens", usage.get("cache_creation_input_tokens", 0)))
         if isinstance(details, dict):
             cache_write = details.get("cache_write_tokens", details.get("cache_creation_tokens", cache_write))
-        if not all(isinstance(value, int) and value >= 0
+        if not all(type(value) is int and value >= 0
                    for value in (input_tokens, output_tokens, cached, cache_write)):
             return None
         if cached + cache_write > input_tokens:
@@ -90,7 +115,11 @@ class ResponsesRelay:
                 self.wfile.write(payload)
 
             def do_POST(self):
-                self._forward_post()
+                if relay.config.serial_requests:
+                    with relay._request_lock:
+                        self._forward_post()
+                else:
+                    self._forward_post()
 
             def _forward_post(self):
                 if self.path.split("?", 1)[0] not in {"/v1/responses", "/responses"}:
@@ -131,31 +160,33 @@ class ResponsesRelay:
                             ([instructions] if instructions else []) + system_messages)
                         body["input"] = forwarded_items or "Continue."
 
-                body["model"] = MODEL
-                body["max_output_tokens"] = MAX_OUTPUT_TOKENS
+                body["model"] = relay.config.model
+                body["max_output_tokens"] = relay.config.max_output_tokens
                 wants_stream = body.get("stream") is True
                 body["stream"] = wants_stream
                 encoded = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
                 attempt_id = uuid.uuid4().hex
-                input_bound = len(encoded) + 512
+                input_bound = relay.config.fixed_input_token_bound or len(encoded) + 512
                 arm, fixture_id, repeat = relay.label
                 row = {"attempt_id": attempt_id, "arm": arm, "fixture_id": fixture_id,
                        "repeat": repeat, "request_sha256": hashlib.sha256(encoded).hexdigest(),
-                       "model": MODEL, "max_output_tokens": MAX_OUTPUT_TOKENS,
-                       "reserved_rmb": str(_cost(input_bound, MAX_OUTPUT_TOKENS)),
+                       "model": relay.config.model, "max_output_tokens": relay.config.max_output_tokens,
+                       "reserved_rmb": str(relay.budget.cost(input_bound, relay.config.max_output_tokens)),
                        "status": "unknown", "usage": None}
                 started = time.monotonic()
                 stream_started = False
+                reserved = False
                 try:
                     with relay._upstream_lock:
                         if relay.provider_error:
                             self._json(503, {"error": {"message": "benchmark provider is disabled after an upstream error"}})
                             return
                         if not relay.budget.reserve(attempt_id, input_token_bound=input_bound,
-                                                    output_token_bound=MAX_OUTPUT_TOKENS, metadata=row):
+                                                    output_token_bound=relay.config.max_output_tokens, metadata=row):
                             relay.budget_blocked = True
                             self._json(402, {"error": {"message": "benchmark spend cap reached"}})
                             return
+                        reserved = True
                         with relay._lock:
                             relay.rows.append(row)
                         try:
@@ -213,7 +244,7 @@ class ResponsesRelay:
                         relay.budget.settle(attempt_id, usage)
                         row["usage"] = usage
                         row["status"] = "settled" if usage is not None else "unknown"
-                        row["actual_rmb"] = (str(_cost(usage["input_tokens"], usage["output_tokens"],
+                        row["actual_rmb"] = (str(relay.budget.cost(usage["input_tokens"], usage["output_tokens"],
                                                          usage["cache_read_tokens"], usage["cache_write_tokens"]))
                                               if usage is not None else None)
                         self._json(200, response_body)
@@ -257,7 +288,7 @@ class ResponsesRelay:
                                     relay.budget.settle(attempt_id, usage)
                                     row["usage"] = usage
                                     row["status"] = "settled" if usage is not None else "unknown"
-                                    row["actual_rmb"] = (str(_cost(usage["input_tokens"], usage["output_tokens"],
+                                    row["actual_rmb"] = (str(relay.budget.cost(usage["input_tokens"], usage["output_tokens"],
                                                                      usage["cache_read_tokens"], usage["cache_write_tokens"]))
                                                           if usage is not None else None)
                                     upstream.close()
@@ -278,6 +309,10 @@ class ResponsesRelay:
                         except (OSError, BrokenPipeError):
                             pass
                 finally:
+                    if reserved and row["status"] == "unknown":
+                        relay.budget.settle(attempt_id, None)
+                    if "upstream" in locals():
+                        upstream.close()
                     row["latency_ms"] = round((time.monotonic() - started) * 1000, 2)
 
         return Handler

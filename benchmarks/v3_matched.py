@@ -7,6 +7,7 @@ import json
 import random
 import sqlite3
 from collections import defaultdict
+from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING
 from pathlib import Path
 from statistics import mean, median
@@ -31,15 +32,54 @@ PRICING = {"currency": "CNY", "source_currency": "USD", "usd_cny": str(USD_CNY),
 PRICING_SHA256 = hashlib.sha256(json.dumps(PRICING, sort_keys=True).encode()).hexdigest()
 
 
+@dataclass(frozen=True)
+class Pricing:
+    """Immutable CNY prices and cap, pinned in every persisted ledger."""
+
+    input_rate: Decimal
+    output_rate: Decimal
+    cache_read_rate: Decimal
+    cache_write_rate: Decimal
+    max_limit_cny: Decimal
+    metadata_json: str
+
+    def __post_init__(self) -> None:
+        rates = (self.input_rate, self.output_rate, self.cache_read_rate, self.cache_write_rate)
+        if (any(not rate.is_finite() or rate < 0 for rate in rates)
+                or not self.max_limit_cny.is_finite() or self.max_limit_cny <= 0):
+            raise ValueError("pricing rates and cumulative CNY cap must be finite and nonnegative")
+        metadata = self.as_dict()
+        if (metadata.get("currency") != "CNY" or any(
+                Decimal(metadata.get(name, "NaN")) != rate for name, rate in zip(
+                    ("input_per_million", "output_per_million", "cache_read_per_million", "cache_write_per_million"), rates))):
+            raise ValueError("pricing metadata must match the CNY rates")
+
+    def as_dict(self) -> dict:
+        return json.loads(self.metadata_json)
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(json.dumps(self.as_dict(), sort_keys=True).encode()).hexdigest()
+
+    def cost(self, input_tokens: int, output_tokens: int, cache_read_tokens: int = 0,
+             cache_write_tokens: int = 0) -> Decimal:
+        counts = (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+        if (any(type(value) is not int or value < 0 for value in counts)
+                or cache_read_tokens + cache_write_tokens > input_tokens):
+            raise ValueError("usage token counts are invalid")
+        return ((input_tokens - cache_read_tokens - cache_write_tokens) * self.input_rate
+                + cache_write_tokens * self.cache_write_rate
+                + cache_read_tokens * self.cache_read_rate
+                + output_tokens * self.output_rate) / _MILLION
+
+
+PANSTAR_PRICING = Pricing(INPUT_RATE, OUTPUT_RATE, CACHE_READ_RATE, CACHE_WRITE_RATE,
+                          MAX_LIMIT_RMB, json.dumps(PRICING, sort_keys=True))
+
+
 def _cost(input_tokens: int, output_tokens: int, cache_read_tokens: int = 0,
           cache_write_tokens: int = 0) -> Decimal:
-    if (min(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens) < 0
-            or cache_read_tokens + cache_write_tokens > input_tokens):
-        raise ValueError("usage token counts are invalid")
-    return ((input_tokens - cache_read_tokens - cache_write_tokens) * INPUT_RATE
-            + cache_write_tokens * CACHE_WRITE_RATE
-            + cache_read_tokens * CACHE_READ_RATE
-            + output_tokens * OUTPUT_RATE) / _MILLION
+    return PANSTAR_PRICING.cost(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
 
 
 def _picormb(amount: Decimal) -> int:
@@ -50,12 +90,16 @@ class BudgetLedger:
     """Atomically reserve worst-case API spend and retain unknown attempts."""
 
     def __init__(self, path: Path, *, limit_rmb: str | Decimal = MAX_LIMIT_RMB,
-                 prior_hold_rmb: str | Decimal = "0", allow_limit_increase: bool = False):
+                 prior_hold_rmb: str | Decimal = "0", allow_limit_increase: bool = False,
+                 pricing: Pricing = PANSTAR_PRICING,
+                 prior_hold_records: tuple[str, ...] | None = None):
         self.path = Path(path)
+        self.pricing = pricing
         limit = Decimal(limit_rmb)
         prior_hold = Decimal(prior_hold_rmb)
-        if not Decimal(0) < limit <= MAX_LIMIT_RMB or not Decimal(0) <= prior_hold <= limit:
-            raise ValueError("the cumulative benchmark cap must be at most USD 20 at the recorded exchange rate")
+        if (not limit.is_finite() or not prior_hold.is_finite()
+                or not Decimal(0) < limit <= pricing.max_limit_cny or not Decimal(0) <= prior_hold <= limit):
+            raise ValueError("the cumulative benchmark cap exceeds the immutable pricing configuration")
         self.limit_picormb = _picormb(limit)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.path)) as db:
@@ -80,13 +124,18 @@ class BudgetLedger:
                 db.execute("ALTER TABLE attempts ADD COLUMN metadata_json TEXT")
             current = db.execute("SELECT currency_code,limit_picormb,pricing_sha256 FROM budget_config WHERE id=1").fetchone()
             if current is None:
-                db.execute("INSERT INTO budget_config VALUES(1,'CNY',?,?)", (self.limit_picormb, PRICING_SHA256))
+                db.execute("INSERT INTO budget_config VALUES(1,'CNY',?,?)", (self.limit_picormb, self.pricing.sha256))
                 if prior_hold:
+                    prior_metadata = {"archived_reservation": True,
+                                      "prior_cny_reservations": str(prior_hold)}
+                    if prior_hold_records is not None:
+                        prior_metadata["prior_attempts"] = list(prior_hold_records)
+                        prior_metadata["prior_attempts_sha256"] = hashlib.sha256(
+                            json.dumps(list(prior_hold_records), sort_keys=True).encode()).hexdigest()
                     db.execute("INSERT INTO attempts(id,reserved_picormb,status,metadata_json) VALUES(?,?,'unknown',?)",
                                ("prior-campaign-reservations", _picormb(prior_hold),
-                                json.dumps({"archived_reservation": True,
-                                            "prior_cny_reservations": str(prior_hold)}, sort_keys=True)))
-            elif current[0] != "CNY" or current[2] != PRICING_SHA256:
+                                json.dumps(prior_metadata, sort_keys=True)))
+            elif current[0] != "CNY" or current[2] != self.pricing.sha256:
                 raise ValueError("the persisted RMB benchmark cap and pricing cannot be changed")
             elif int(current[1]) != self.limit_picormb:
                 if int(current[1]) < self.limit_picormb:
@@ -106,7 +155,17 @@ class BudgetLedger:
                     "SELECT reserved_picormb FROM attempts WHERE id='prior-campaign-reservations'"
             ).fetchone() != (_picormb(prior_hold),):
                 raise ValueError("the persisted ledger is missing the prior campaign reservation")
+            if prior_hold_records is not None:
+                record = db.execute("SELECT metadata_json FROM attempts WHERE id='prior-campaign-reservations'").fetchone()
+                metadata = json.loads(record[0]) if record else {}
+                if ((not prior_hold and (record is not None or prior_hold_records))
+                        or (prior_hold and metadata.get("prior_attempts") != list(prior_hold_records))):
+                    raise ValueError("the persisted ledger prior campaign provenance does not match")
             db.commit()
+
+    def cost(self, input_tokens: int, output_tokens: int, cache_read_tokens: int = 0,
+             cache_write_tokens: int = 0) -> Decimal:
+        return self.pricing.cost(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
 
     def _totals(self) -> tuple[int, int, bool]:
         with closing(sqlite3.connect(self.path)) as db:
@@ -137,7 +196,7 @@ class BudgetLedger:
                 metadata: dict | None = None) -> bool:
         if not attempt_id or min(input_token_bound, output_token_bound) < 0:
             raise ValueError("attempt ID and nonnegative token bounds are required")
-        reserve = _picormb(_cost(input_token_bound, output_token_bound))
+        reserve = _picormb(self.cost(input_token_bound, output_token_bound))
         with closing(sqlite3.connect(self.path, timeout=30, isolation_level=None)) as db:
             db.execute("BEGIN IMMEDIATE")
             spent, held, overruns = db.execute(
@@ -202,11 +261,11 @@ class BudgetLedger:
             if usage is None:
                 db.execute("UPDATE attempts SET status='unknown' WHERE id=?", (attempt_id,))
             else:
-                input_tokens = int(usage.get("input_tokens", 0))
-                output_tokens = int(usage.get("output_tokens", 0))
-                cached = int(usage.get("cache_read_tokens", 0))
-                cache_write = int(usage.get("cache_write_tokens", 0))
-                actual = _picormb(_cost(input_tokens, output_tokens, cached, cache_write))
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+                cached = usage.get("cache_read_tokens", 0)
+                cache_write = usage.get("cache_write_tokens", 0)
+                actual = _picormb(self.cost(input_tokens, output_tokens, cached, cache_write))
                 status = "settled" if actual <= row[0] else "overrun"
                 db.execute("UPDATE attempts SET status=?,actual_picormb=?,usage_json=? WHERE id=?",
                            (status, actual, json.dumps(usage, sort_keys=True), attempt_id))
@@ -231,7 +290,8 @@ def _paired_success_interval(groups: dict[str, dict[int, dict[str, dict]]],
     return [round(_percentile(samples, .025), 6), round(_percentile(samples, .975), 6)]
 
 
-def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000) -> dict:
+def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000,
+              pricing: Pricing = PANSTAR_PRICING) -> dict:
     """Summarize complete paired runs; do not turn missing evidence into success."""
     if bootstrap_samples < 1:
         raise ValueError("bootstrap_samples must be positive")
@@ -278,7 +338,7 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000) -> dict:
         output_tokens = sum(int(row.get("output_tokens", 0)) for row in arm_rows)
         cache_read_tokens = sum(int(row.get("cache_read_tokens", 0)) for row in arm_rows)
         cache_write_tokens = sum(int(row.get("cache_write_tokens", 0)) for row in arm_rows)
-        cost = sum((_cost(int(row["input_tokens"]), int(row["output_tokens"]),
+        cost = sum((pricing.cost(int(row["input_tokens"]), int(row["output_tokens"]),
                            int(row["cache_read_tokens"]), int(row["cache_write_tokens"]))
                     for row in arm_rows), Decimal(0))
         result["summary"][arm] = {

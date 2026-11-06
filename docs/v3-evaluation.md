@@ -20,3 +20,23 @@ python -m benchmarks.v3_matched_live \
 ```
 
 The report is descriptive evaluation data, not release authorization. A result is conclusive only when all 180 matched rows have complete provider usage, all independent verifiers pass, the full paired success interval improves, token and request reductions meet their thresholds, and no safety or protocol-recovery control fails. Missing or unknown usage, failed checks, budget exhaustion, or an incomplete run remains inconclusive. Any code change creates a different candidate SHA and requires a new matched run.
+
+## DeepSeek CNY campaign
+
+The in-tree `benchmarks.v3_deepseek` CLI uses the same frozen 180-row cohort and unchanged comparison thresholds, with immutable DeepSeek configuration. It pins the official `https://api.deepseek.com` Responses endpoint and `deepseek-flash` alias (served model `DeepSeek-V4.1-Flash-1017`). Peak prices are CNY 2/M input, 8/M output, 0.04/M cache reads, and conservatively 2/M cache writes, from the [official pricing table](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/). Every request reserves exactly CNY 2.032768 for 1,000,000 input and 4,096 output tokens. Requests are serial through stream completion. Unknown usage keeps its entire reservation; retries and the required metered smoke share the cohort ledger. Smoke calls remain in its journal and do not count toward the 180 matched rows.
+
+The cumulative cap is **CNY 15 including previous campaigns**. Supply original prior ledgers; the reader opens them in SQLite read-only mode, independently reconstructs settled charges from usage, retains reserved/unknown amounts, and deduplicates identical attempt IDs across copies. New aggregate carryovers include the underlying attempt records and a SHA256 manifest so later campaigns can be reconciled with their original ledgers without double counting or releasing unknown exposure. Missing sources, conflicting records, invalid provenance, unknown pricing, and overruns fail closed. Original campaign `run1/budget.sqlite3` and its `evidence/budget.sqlite3` copy represent one campaign, not two. The code has no fixed candidate SHA or machine-local path.
+
+After the offline protection gates pass, use a clean, signed frozen candidate and output paths outside it. The CLI verifies the configured candidate and release-owner signature; the runner probes the OS sandbox and protected worker/managed shell before reading `KYROZEN_BENCHMARK_API_KEY` from the environment. It then performs and checkpoints a two-request native-tool smoke through the same relay before starting cohort workers: a typed `echo_probe` call must carry an unpredictable value, its `function_call_output` must use the returned call ID, and the final assistant answer must include that value. Both requests require complete usage; the probe has no external side effects. The checkpoint pins the two verified attempt IDs. A previously settled smoke for the same candidate can be reused; failed or unknown smoke attempts remain charged or held when retrying.
+
+```sh
+python -m benchmarks.v3_deepseek \
+  --source "$FROZEN_SOURCE" --candidate-sha "$FROZEN_CANDIDATE_SHA" \
+  --repo "$REPOSITORY_WITH_V2_HISTORY" \
+  --output "$CAMPAIGN_OUTPUT/report.json" \
+  --budget-db "$CAMPAIGN_OUTPUT/budget.sqlite3" \
+  --prior-ledger "$ORIGINAL_PRIOR_LEDGER" \
+  --limit-cny 15
+```
+
+CNY checkpoints report their actual CNY cap, prior exposure and remaining balance without an exchange-rate workaround. A new request cannot be reserved once cumulative settled spend plus outstanding holds exceeds CNY 12.967232. A completed smoke is provider compatibility/accounting evidence only; it does not satisfy the cohort or authorize release.
