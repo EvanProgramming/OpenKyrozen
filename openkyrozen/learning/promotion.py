@@ -5,6 +5,7 @@ from typing import Any
 
 from .models import CAPSULE_PROTOCOL, DEFAULT_CONSTITUTION, EVOLUTION_PROFILES, NEGATIVE_FEEDBACK, POSITIVE_FEEDBACK
 from openkyrozen.memory.models import _SECRET_RE
+from .evidence import MEASURED_REPLAY_POLICY, _promotion_replay_ready
 
 def record_outcome(self, run: dict[str, str], receipts: list[dict[str, Any]], *, verified: bool,
                    success: bool, correction: bool = False, source: str = "runtime") -> list[str]:
@@ -81,6 +82,13 @@ def _reconcile_artifact(self, skill_id: str) -> str | None:
             return f"Rolled back learned {skill['name']} after verified regression."
     successful_runs = {item["run_id"] for item in verified if item.get("success")}
     replay = (proposal or {}).get("validation", {}).get("shadow_replay") or {}
+    if replay and (replay.get("measurement_policy") != MEASURED_REPLAY_POLICY
+                   or replay.get("measurements_complete") is not True):
+        replay = {**replay, "non_regressing": False,
+                  "blocked_reason": "Replay evidence incomplete: measured paired cost, latency and regression evidence must be revalidated."}
+        self.store.update_proposal(proposal["id"], status=proposal["status"], validation={
+            **proposal["validation"], "shadow_replay": replay, "revalidation_status": "incomplete",
+        })
     verifier_ids = {item.get("source") for item in verified if item.get("success") and item.get("source")}
     verifiers_reliable = all(
         self.verifier_reliability(verifier)["reliability"] in {None, 1.0}
@@ -88,7 +96,7 @@ def _reconcile_artifact(self, skill_id: str) -> str | None:
         for verifier in verifier_ids
     )
     if (skill["status"] == "canary" and len(successful_runs) >= 2 and not any_failure and not corrected
-            and replay.get("non_regressing") is True and verifiers_reliable):
+            and _promotion_replay_ready(replay) and verifiers_reliable):
         if self.registry.activate_learned(skill_id):
             if proposal:
                 self.store.update_proposal(proposal["id"], status="active", confidence=0.9,
@@ -118,5 +126,5 @@ def validate_and_activate(self, proposal_id: str, *, validation: dict[str, Any])
     evidence = current.get("validation", {})
     return (current.get("status") == "active" and evidence.get("stage") == "active"
             and evidence.get("verified_successes", 0) >= 2
-            and (evidence.get("shadow_replay") or {}).get("non_regressing") is True
+            and _promotion_replay_ready(evidence.get("shadow_replay") or {})
             and any(item["id"] == skill_id and item["status"] == "active" for item in self.registry.list()))

@@ -47,9 +47,11 @@ class EvolutionRobustnessTests(unittest.TestCase):
         other = self.engine.begin_run("coder", "pytest", provider_model="provider:model-b")
         self.assertEqual(self.engine.artifact_context(other), ("", []))
         self.registry.set_learned_status(candidate["skill_id"], "active")
+        measurements = {"verified_success": True, "latency": 0.5, "cost_rmb": 0.002,
+                        "corrections": 0, "repeated_errors": 0}
         paired = [
-            {"case_id": "a", "verified_success": True, "provider_model": "provider:model-a"},
-            {"case_id": "b", "verified_success": True, "provider_model": "provider:model-b"},
+            {**measurements, "case_id": "a", "provider_model": "provider:model-a"},
+            {**measurements, "case_id": "b", "provider_model": "provider:model-b"},
         ]
         self.engine.record_shadow_replay(candidate["proposal_id"], paired, paired)
         context, receipts = self.engine.artifact_context(other)
