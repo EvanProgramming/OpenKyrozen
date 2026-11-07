@@ -5,7 +5,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +15,107 @@ SCRIPT = ROOT / 'scripts' / 'v3_windows_reliability.py'
 
 
 class WindowsReliabilityDiagnosticTests(unittest.TestCase):
+    def test_detailed_profiler_starts_after_fixture_setup(self):
+        import sqlite3
+        from scripts.v3_windows_reliability import run_child
+
+        class Fixture(unittest.TestCase):
+            def setUp(self):
+                self.root = root
+                connection = sqlite3.connect(':memory:')
+                connection.close()
+
+            def test_cancel_during_provider_call_prevents_late_write(self):
+                connection = sqlite3.connect(':memory:')
+                connection.close()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = types.SimpleNamespace(DelegationTests=Fixture)
+            with patch.dict(sys.modules, {'test_delegation': fixture}):
+                self.assertEqual(run_child(root), 0)
+            names = [json.loads(line)['event'] for line in (root / 'events.jsonl').read_text().splitlines()]
+            start = names.index('setup.return')
+            self.assertFalse(any(name.startswith('sqlite.') for name in names[:start]))
+            self.assertIn('sqlite.connect.c_call', names[start:names.index('cleanup.call')])
+
+    def test_historical_pin_export_includes_preinstalled_dependencies_and_excludes_product(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'requirements.txt'
+            process = subprocess.run([sys.executable, str(SCRIPT), '--write-historical-requirements', str(path)],
+                                     capture_output=True, text=True, timeout=5)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            requirements = path.read_text().splitlines()
+            for requirement in ('openai==3.42.1', 'anthropic==2.3.0', 'packaging==26.3',
+                                'colorama==0.4.6', 'click==8.5.0', 'filelock==4.2.4'):
+                self.assertIn(requirement, requirements)
+            self.assertFalse(any(item.startswith('openkyrozen==') for item in requirements))
+
+    def test_historical_environment_mismatch_stops_before_running_any_fixture(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(sys, 'argv', [str(SCRIPT), '--output', directory,
+                    '--iterations', '1', '--historical-environment']), \
+                 patch.object(diagnostic.platform, 'python_version', return_value='3.12.99'):
+                self.assertEqual(diagnostic.main(), 2)
+            root = Path(directory)
+            environment = json.loads((root / 'historical-environment.json').read_text())
+            self.assertEqual(environment['status'], 'INFRASTRUCTURE_FAILURE')
+            self.assertFalse((root / '1').exists())
+
+    def test_child_environment_uses_private_windows_home_and_scrubs_credentials(self):
+        from scripts.v3_windows_reliability import isolated_environment
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                'USERPROFILE': '/original-user', 'HOME': '/original-home',
+                'DEEPSEEK_API_KEY': 'must-not-inherit', 'GH_TOKEN': 'must-not-inherit',
+                'KYROZEN_DB_PATH': '/original.sqlite3'}):
+            env = isolated_environment(Path(directory))
+            self.assertEqual(env['HOME'], directory)
+            self.assertEqual(env['USERPROFILE'], directory)
+            self.assertEqual(env['KYROZEN_DB_PATH'], str(Path(directory) / 'runtime.sqlite3'))
+            self.assertTrue(Path(env['KYROZEN_WORKSPACE_ROOT']).is_dir())
+            self.assertNotIn('DEEPSEEK_API_KEY', env)
+            self.assertNotIn('GH_TOKEN', env)
+
+    def test_historical_environment_rejects_runtime_and_dependency_substitutions(self):
+        from scripts.v3_windows_reliability import historical_environment
+        with patch('scripts.v3_windows_reliability.platform.python_version', return_value='3.12.10'), \
+             patch('scripts.v3_windows_reliability.platform.system', return_value='Windows'), \
+             patch('scripts.v3_windows_reliability.metadata.version', return_value='wrong-version'):
+            report = historical_environment()
+        self.assertEqual(report['status'], 'INFRASTRUCTURE_FAILURE')
+        self.assertIn('openai', report['dependency_mismatches'])
+        self.assertEqual(report['dependency_mismatches']['openai']['expected'], '3.42.1')
+        self.assertEqual(report['dependency_mismatches']['anthropic']['expected'], '2.3.0')
+        with patch('scripts.v3_windows_reliability.platform.python_version', return_value='3.12.13'):
+            report = historical_environment()
+        self.assertEqual(report['status'], 'INFRASTRUCTURE_FAILURE')
+        self.assertEqual(report['python'], '3.12.13')
+
+    def test_interleaved_run_keeps_original_order_and_traces_post_cancel_phases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            process = subprocess.run([sys.executable, str(SCRIPT), '--output', directory,
+                '--iterations', '2', '--repository', str(ROOT), '--interleave-reviewer'],
+                cwd=ROOT, capture_output=True, text=True, timeout=45)
+            self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+            root = Path(directory)
+            report = json.loads((root / 'report.json').read_text())
+            self.assertFalse(report['historical_cause_established'])
+            self.assertEqual(report['execution_order'], [
+                'cancellation-1', 'reviewer-1', 'cancellation-2', 'reviewer-2'])
+            for index in (1, 2):
+                result = report['iterations'][index - 1]
+                self.assertEqual(result['reviewer']['returncode'], 0)
+                self.assertIn('Sub-agent workflow acceptance passed.',
+                              (root / str(index) / 'reviewer.log').read_text())
+                events = [json.loads(line) for line in
+                          (root / str(index) / 'events.jsonl').read_text().splitlines()]
+                names = [item['event'] for item in events]
+                for name in ('provider_wait.call', 'provider_check.call', 'usage_persist.call', 'usage_summary.call',
+                             'sqlite.execute.c_call', 'sqlite.close.c_return'):
+                    self.assertIn(name, names)
+                self.assertTrue(all('thread_cpu_ns' in item for item in events))
+
     @unittest.skipUnless(os.name == 'posix', 'real owned process-group cleanup requires POSIX')
     def test_diagnostic_timeout_cleanup_stops_owned_descendant(self):
         from scripts.v3_windows_reliability import stop_diagnostic_tree
