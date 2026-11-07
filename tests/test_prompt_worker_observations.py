@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import hashlib
 import json
 import os
@@ -19,11 +20,11 @@ class PromptWorkerObservationTests(unittest.TestCase):
         from benchmarks.v3_matched_live import prepare_fixture
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_APPROVAL_MODE": "never",
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(directory)
             case = next(item for item in FIXTURES if item["fixture_id"] == "git_history-1")
             prepared = prepare_fixture(root, case)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", index=None), tools=ToolAdapters(root))
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", index=None))), tools=ToolAdapters(root))
             self.addCleanup(app.close)
             runtime = app.runtime
             runtime._set_workspace_root(root)
@@ -63,10 +64,10 @@ class PromptWorkerObservationTests(unittest.TestCase):
                     text = "Preserved facts: owner team-cedar; rollback release-17; latest approved region ap-southeast-1."
                 return ModelResponse(text=text, finish_reason=FinishReason.FINAL,
                     continuation=provider_continuation(self, model, "fixture", {"assistant": {"role": "assistant", "content": text}}))
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}), ExitStack() as sqlite_owners:
             root = Path(directory) / "workspace"
             prepared = prepare_fixture(root, case)
-            app = build_application(surface="cli", memory=build_memory(Path(directory) / "state.sqlite3", index=None), tools=ToolAdapters(root))
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3", index=None))), tools=ToolAdapters(root))
             self.addCleanup(app.close)
             runtime = app.runtime
             runtime._set_workspace_root(root)

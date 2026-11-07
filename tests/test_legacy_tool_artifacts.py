@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import copy
 import json
 import os
@@ -17,12 +18,12 @@ class LegacyToolArtifactsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_APPROVAL_MODE": "never",
             "KYROZEN_WORKSPACE_ROOT": directory,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(directory)
             for index in range(250):
                 (root / f"file_{index:04d}_long_name.txt").touch()
             (root / "note.txt").write_text("note", encoding="utf-8")
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             self.addCleanup(app.close)
             runtime = app.runtime
@@ -56,9 +57,9 @@ class LegacyToolArtifactsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_APPROVAL_MODE": "never",
             "KYROZEN_WORKSPACE_ROOT": directory,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(directory)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             self.addCleanup(app.close)
             runtime = app.runtime
@@ -91,11 +92,11 @@ class LegacyToolArtifactsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_APPROVAL_MODE": "never",
             "KYROZEN_WORKSPACE_ROOT": directory,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(directory)
             (root / "first.txt").write_text("first", encoding="utf-8")
             (root / "second.txt").write_text("second", encoding="utf-8")
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             self.addCleanup(app.close)
             runtime = app.runtime
@@ -117,9 +118,9 @@ class LegacyToolArtifactsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_APPROVAL_MODE": "never",
             "KYROZEN_WORKSPACE_ROOT": directory,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(directory)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             self.addCleanup(app.close)
             runtime = app.runtime
@@ -144,12 +145,12 @@ class LegacyToolArtifactsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_APPROVAL_MODE": "never",
             "KYROZEN_WORKSPACE_ROOT": directory,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(directory)
             (root / "first.txt").write_text("FIRST_UNIQUE_CONTENT", encoding="utf-8")
             (root / "second.txt").write_text("SECOND_UNIQUE_CONTENT", encoding="utf-8")
             (root / "third.txt").write_text("THIRD_UNIQUE_CONTENT", encoding="utf-8")
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             self.addCleanup(app.close)
             runtime = app.runtime
@@ -197,7 +198,7 @@ class LegacyToolArtifactsTests(unittest.TestCase):
                                         return_receipt=True)
             self.assertTrue(receipt.success)
             self.assertIn("FIRST_UNIQUE_CONTENT", receipt.result)
-            reopened = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            reopened = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                          tools=ToolAdapters(root), user_id="alice")
             self.addCleanup(reopened.close)
             reopened.runtime.bind_interaction_scope(runtime.tasks.session_id, user_id="alice")

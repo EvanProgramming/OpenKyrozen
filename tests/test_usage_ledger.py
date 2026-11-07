@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import json
 import os
 import subprocess
@@ -31,12 +32,12 @@ class UsageLedgerTests(unittest.TestCase):
             "import json; from fastapi.testclient import TestClient; from openkyrozen.interfaces.web.service import WebService; server = WebService(); "
             "print(json.dumps(TestClient(server.app).get('/api/cost').json()))"
         )
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-usage-restart-") as directory:
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-usage-restart-") as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             home = root / "home"
             home.mkdir()
             database = root / "state.sqlite3"
-            self._record(EventStore(database), workspace="default")
+            self._record(sqlite_owners.enter_context(closing(EventStore(database))), workspace="default")
             environment = os.environ.copy()
             environment.update({
                 "HOME": str(home), "KYROZEN_DB_PATH": str(database),
@@ -57,8 +58,8 @@ class UsageLedgerTests(unittest.TestCase):
             self.assertEqual(reports[1]["totals"]["workspace"]["completion_tokens"], 50)
 
     def test_concurrent_attempts_keep_unique_ids_and_pricing_snapshots(self):
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-usage-concurrent-") as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-usage-concurrent-") as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
 
             def record(index: int) -> None:
                 with usage_scope(store=store, workspace_id="project", session_id=f"session-{index % 2}",
@@ -98,8 +99,8 @@ class UsageLedgerTests(unittest.TestCase):
             self.assertTrue(all(item["completion_state"] == "completed" for item in attempts))
 
     def test_reset_requires_explicit_confirmation_and_preserves_installation_ledger(self):
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-usage-reset-") as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-usage-reset-") as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")))
             self._record(memory.store)
             original_memory = server._agent.memory_bank
             server._agent.memory_bank = memory
@@ -119,8 +120,8 @@ class UsageLedgerTests(unittest.TestCase):
                 server._agent.memory_bank = original_memory
 
     def test_short_and_mixed_calls_aggregate_before_display_rounding(self):
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-usage-precision-") as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-usage-precision-") as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             peak_time = datetime(2026, 9, 7, 2, tzinfo=timezone.utc)
             with usage_scope(store=store, workspace_id="project", session_id="short"):
                 for _ in range(1000):
@@ -161,8 +162,8 @@ class UsageLedgerTests(unittest.TestCase):
             "prompt_cache_miss_tokens": 750_000,
             "completion_tokens": 1_000_000,
         }
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-deepseek-pricing-") as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-deepseek-pricing-") as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             with usage_scope(store=store, workspace_id="project", session_id="peak"):
                 _track_cost("deepseek", usage, model="deepseek-v4-flash",
                             occurred_at=datetime(2026, 9, 7, 2, tzinfo=timezone.utc))
@@ -194,8 +195,8 @@ class UsageLedgerTests(unittest.TestCase):
         provider._client = SimpleNamespace(chat=SimpleNamespace(
             completions=SimpleNamespace(create=lambda **_kwargs: response),
         ))
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-deepseek-usage-") as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-deepseek-usage-") as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             with usage_scope(store=store, workspace_id="project"):
                 text, usage = provider.chat([], "deepseek-v4-flash")
             attempt = store.list_usage_attempts(workspace_id="project", user_id="local")[0]
@@ -266,8 +267,8 @@ class UsageLedgerTests(unittest.TestCase):
         provider._client = SimpleNamespace(chat=SimpleNamespace(
             completions=SimpleNamespace(create=lambda **kwargs: calls.append(kwargs) or iter(chunks)),
         ))
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-stream-usage-") as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-stream-usage-") as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             with usage_scope(store=store, workspace_id="project"):
                 self.assertEqual(list(provider.chat_stream([], "deepseek-v4-flash")), ["STREAM", "_OK"])
             attempts = store.list_usage_attempts(workspace_id="project", user_id="local")

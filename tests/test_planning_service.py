@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import os
 import subprocess
 import sys
@@ -65,9 +66,9 @@ class PlanningServiceOwnershipTests(unittest.TestCase):
         self.assertIs(modes.InteractionError, InteractionError)
         self.assertIs(modes.validate_plan_proposal, validate_plan_proposal)
         self.assertTrue(issubclass(modes.InteractionController, PlanningService))
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             from openkyrozen.persistence.store import EventStore
-            controller = modes.InteractionController(EventStore(Path(directory) / 'state.sqlite3'), session_id='ui')
+            controller = modes.InteractionController(sqlite_owners.enter_context(closing(EventStore(Path(directory) / 'state.sqlite3'))), session_id='ui')
             controller.set_mode('ask')
             proposal = controller.propose_plan({'title': 'Inspect', 'summary': 'Inspect source',
                 'steps': [{'id': 'inspect', 'title': 'Inspect', 'description': 'Read source',

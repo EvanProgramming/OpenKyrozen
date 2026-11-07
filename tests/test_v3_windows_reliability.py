@@ -1,4 +1,6 @@
 import json
+import hashlib
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -7,6 +9,7 @@ import tempfile
 import time
 import types
 import unittest
+import zipfile
 from unittest.mock import patch
 
 
@@ -97,7 +100,14 @@ class WindowsReliabilityDiagnosticTests(unittest.TestCase):
 from pathlib import Path
 import sqlite3, sys, threading, time
 from unittest.mock import patch
+import scripts.v3_windows_reliability as harness
+repository = Path(sys.argv[3]).resolve()
+harness.ROOT = repository
+sys.path[:0] = [str(repository), str(repository / 'tests')]
 from scripts.v3_windows_reliability import Trace, run_child
+import openkyrozen
+assert Path(openkyrozen.__file__).resolve().is_relative_to(repository)
+print('Fixture product source:', openkyrozen.__file__, flush=True)
 
 active, injected = threading.Event(), threading.Event()
 state = {}
@@ -134,16 +144,30 @@ with patch.object(Trace, 'record', record), patch.object(sqlite3, 'connect', con
     raise SystemExit(run_child(Path(sys.argv[1]), readonly_anchor=sys.argv[2] == 'anchor'))
 """
         with tempfile.TemporaryDirectory() as directory:
+            revision = '0f172f9fe692ff8fafcc0a15a72fe51eaf67e977'
+            legacy = Path(directory) / 'historical-product'
+            archive = subprocess.run(['git', 'archive', '--format=zip', revision], cwd=ROOT,
+                                     capture_output=True, check=True, timeout=10).stdout
+            with zipfile.ZipFile(io.BytesIO(archive)) as source:
+                self.assertTrue(all(not Path(name).is_absolute() and '..' not in Path(name).parts
+                                    for name in source.namelist()))
+                source.extractall(legacy)
+            self.assertEqual(hashlib.sha256((legacy / 'tests/test_delegation.py').read_bytes()).hexdigest(),
+                             '7484131880e91a328961ec0b8b99fe2bcaad8ded19b2ebe8efd944028f2aa3a7')
             evidence = Path(os.environ.get('KYROZEN_DIAGNOSTIC_TEST_OUTPUT', directory))
             evidence = evidence / f'checkpoint-close-{time.time_ns()}'
             env = isolated_environment(Path(directory) / 'home')
-            for variant, expected in (('baseline', 1), ('anchor', 0)):
+            for variant, expected in (('baseline', 1), ('anchor', 0), ('current', 0)):
+                repository = ROOT if variant == 'current' else legacy
                 output = evidence / variant
                 output.mkdir(parents=True)
-                process = run_process([sys.executable, '-c', code, str(output), variant],
+                process = run_process([sys.executable, '-c', code, str(output), variant, str(repository)],
                                       output / 'process.log', env)
                 (output / 'child-process-result.json').write_text(json.dumps(
-                    {**process, 'expected_returncode': expected, 'readonly_anchor': variant == 'anchor'}, indent=2))
+                    {**process, 'expected_returncode': expected, 'readonly_anchor': variant == 'anchor',
+                     'product_revision': 'current-checkout' if variant == 'current' else revision,
+                     'fixture_sha256': hashlib.sha256((repository / 'tests/test_delegation.py').read_bytes()).hexdigest(),
+                     'database_source_sha256': hashlib.sha256((repository / 'openkyrozen/persistence/database.py').read_bytes()).hexdigest()}, indent=2))
                 self.assertEqual(process['returncode'], expected, (output / 'process.log').read_text())
                 log = (output / 'unittest.log').read_text()
                 events = [json.loads(line)['event'] for line in (output / 'events.jsonl').read_text().splitlines()]
@@ -154,10 +178,15 @@ with patch.object(Trace, 'record', record), patch.object(sqlite3, 'connect', con
                     self.assertIn('TimeoutError', log)
                     self.assertIn('injected_checkpoint_close.call', events)
                     self.assertLess(events.index('injected_checkpoint_close.call'), events.index('future_wait.return'))
-                else:
+                elif variant == 'anchor':
                     self.assertNotIn('TimeoutError', log)
                     self.assertNotIn('injected_checkpoint_close.call', events)
                     self.assertLess(events.index('future_wait.return'), events.index('anchor.close.call'))
+                else:
+                    self.assertNotIn('TimeoutError', log)
+                    for index, event in enumerate(events):
+                        if event == 'injected_checkpoint_close.call':
+                            self.assertLess(events.index('future_wait.return'), index)
 
     def test_detailed_profiler_starts_after_fixture_setup(self):
         import sqlite3

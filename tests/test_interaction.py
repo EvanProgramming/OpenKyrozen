@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import json
 import hashlib
 import tempfile
@@ -92,7 +93,7 @@ class StrategicPlanExecutionBoundsTests(unittest.TestCase):
 
     def test_legacy_mutation_arguments_are_normalized_for_scope_checks(self):
         from pathlib import Path
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             plan = {"bounds": {"workspace_paths": ["site"], "capabilities": ["write"],
                                "effects": ["filesystem"], "risk_ceiling": "normal"}}
             spec = SimpleNamespace(capability="write", side_effects="filesystem", risk="normal",
@@ -102,7 +103,7 @@ class StrategicPlanExecutionBoundsTests(unittest.TestCase):
                              {"path": "site/index.html", "content": "ok"})
             normalized = json.dumps(_legacy_object_arguments("site/index.html|ok", spec),
                                     ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            manager = TaskManager(EventStore(Path(directory) / "match.sqlite3"), workspace_id="w", session_id="s")
+            manager = TaskManager(sqlite_owners.enter_context(closing(EventStore(Path(directory) / "match.sqlite3"))), workspace_id="w", session_id="s")
             self.assertGreater(manager._receipt_match_score({"acceptance": [{
                 "action": "write_file", "args": normalized,
             }]}, "write_file", normalized), 0)
@@ -299,7 +300,9 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.store = EventStore(Path(self.directory.name) / "state.sqlite3")
+        self._sqlite_owners = ExitStack()
+        self.addCleanup(self._sqlite_owners.close)
+        self.store = self._sqlite_owners.enter_context(closing(EventStore(Path(self.directory.name) / "state.sqlite3")))
         self.controller = InteractionController(
             self.store, workspace_id="project", session_id="strategic-session",
         )
@@ -1822,9 +1825,9 @@ class InteractionTests(unittest.TestCase):
             self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
             self.agent._get_workspace_root(), self.agent._execution_capability_token,
         )
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             self.agent.tasks = TaskManager(store, workspace_id="repair", session_id="repair")
             self.agent._interaction_controller = InteractionController(
                 store, workspace_id="repair", session_id="repair",
@@ -2056,9 +2059,9 @@ class InteractionTests(unittest.TestCase):
 
         original = (self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
                     self.agent._get_workspace_root(), self.agent._execution_capability_token)
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             self.agent.tasks = TaskManager(store, workspace_id="prose", session_id="prose")
             self.agent._interaction_controller = InteractionController(
                 store, workspace_id="prose", session_id="prose",
@@ -2124,9 +2127,9 @@ class InteractionTests(unittest.TestCase):
 
         original = (self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
                     self.agent._get_workspace_root(), self.agent._execution_capability_token)
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             self.agent.tasks = TaskManager(store, workspace_id="exhaust", session_id="exhaust")
             self.agent._interaction_controller = InteractionController(store, workspace_id="exhaust", session_id="exhaust")
             self.agent._interaction_controller.set_mode("plan")
@@ -2171,10 +2174,10 @@ class InteractionTests(unittest.TestCase):
 
         original = (self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
                     self.agent._get_workspace_root(), self.agent._execution_capability_token)
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             (root / "note.txt").write_text("evidence", encoding="utf-8")
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             self.agent.tasks = TaskManager(store, workspace_id="inspect", session_id="inspect")
             self.agent._interaction_controller = InteractionController(store, workspace_id="inspect", session_id="inspect")
             self.agent._interaction_controller.set_mode("plan")
@@ -2274,9 +2277,9 @@ class InteractionTests(unittest.TestCase):
             self.agent.tasks, self.agent._interaction_controller, self.agent._execution_capability_token,
             self.agent._get_workspace_root(),
         )
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="bound", session_id="surface:tui")
             controller = InteractionController(
                 store, workspace_id="bound", session_id="surface:tui",
@@ -2329,9 +2332,9 @@ class InteractionTests(unittest.TestCase):
             self.agent.tasks, self.agent._interaction_controller, self.agent._execution_capability_token,
             self.agent._get_workspace_root(),
         )
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="bounded", session_id="surface:tui")
             controller = InteractionController(store, workspace_id="bounded", session_id="surface:tui")
             proposal = controller.propose_plan({
@@ -2369,9 +2372,9 @@ class InteractionTests(unittest.TestCase):
     def test_duplicate_legacy_write_uses_canonical_typed_operation_identity(self):
         previous = (self.agent.tasks, self.agent._interaction_controller,
                     self.agent._execution_capability_token, self.agent._get_workspace_root())
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="duplicate", session_id="surface:tui")
             controller = InteractionController(store, workspace_id="duplicate", session_id="surface:tui")
             proposal = controller.propose_plan({
@@ -2406,9 +2409,9 @@ class InteractionTests(unittest.TestCase):
             self.agent.tasks, self.agent._interaction_controller, self.agent._execution_capability_token,
             self.agent._get_workspace_root(),
         )
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="bound", session_id="surface:tui")
             controller = InteractionController(store, workspace_id="bound", session_id="surface:tui")
             proposal = controller.propose_plan({
@@ -2494,9 +2497,9 @@ class InteractionTests(unittest.TestCase):
             self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
             self.agent._get_workspace_root(), self.agent._execution_capability_token,
         )
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             self.agent.tasks = TaskManager(store, workspace_id="flow", session_id="flow")
             self.agent._interaction_controller = InteractionController(
                 store, workspace_id="flow", session_id="flow",

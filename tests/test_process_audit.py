@@ -56,7 +56,9 @@ class ProcessAuditTests(unittest.TestCase):
         scope = {**self.scope, **changes}
         manager = SessionProcessManager(scope['user_id'], str(self.root), scope['session_id'])
         from openkyrozen.persistence.store import EventStore
-        manager._bind_audit(EventStore(self.store.path), scope['workspace_id'])
+        store = EventStore(self.store.path)
+        self.addCleanup(store.close)
+        manager._bind_audit(store, scope['workspace_id'])
         return manager
 
     def test_real_session_launch_cancellation_and_restart_preserve_scoped_uncertainty(self):
@@ -472,6 +474,7 @@ class ProcessAuditTests(unittest.TestCase):
     def test_cancellation_deadline_leaves_normal_other_thread_and_other_database_waits_unchanged(self):
         from openkyrozen.persistence.store import EventStore
         other = EventStore(self.root / 'other.sqlite3')
+        self.addCleanup(other.close)
         observed = []
         def observe_other_thread():
             with self.store.database.connection() as db:

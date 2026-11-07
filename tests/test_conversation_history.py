@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,12 +16,15 @@ from openkyrozen.tools.models import ToolError, ToolResult
 class ConversationHistoryTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
-        self.store = EventStore(Path(self.directory.name) / "events.sqlite3")
+        self._sqlite_owners = ExitStack()
+        self.addCleanup(self._sqlite_owners.close)
+        self.store = self._sqlite_owners.enter_context(closing(EventStore(Path(self.directory.name) / "events.sqlite3")))
         self.history = ConversationHistory(
             self.store, user_id="alice", workspace_id="project", session_id="session-a",
         )
 
     def tearDown(self):
+        self._sqlite_owners.close()
         self.directory.cleanup()
 
     def test_append_is_idempotent_and_private_from_generic_event_api(self):
@@ -326,9 +330,9 @@ class ConversationRuntimeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(temp)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             try:
                 runtime = app.runtime
@@ -368,9 +372,9 @@ class ConversationRuntimeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(temp)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             try:
                 runtime = app.runtime
@@ -411,9 +415,9 @@ class ConversationRuntimeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(temp)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             try:
                 runtime = app.runtime
@@ -436,9 +440,9 @@ class ConversationRuntimeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(temp)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             try:
                 runtime = app.runtime
@@ -460,9 +464,9 @@ class ConversationRuntimeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(temp)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             try:
                 runtime = app.runtime
@@ -484,10 +488,10 @@ class ConversationRuntimeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(temp)
             database = root / "state.sqlite3"
-            first = build_application(surface="cli", memory=build_memory(database, user_id="alice", index=None),
+            first = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(database, user_id="alice", index=None))),
                                       tools=ToolAdapters(root), user_id="alice")
             try:
                 runtime = first.runtime
@@ -501,7 +505,7 @@ class ConversationRuntimeTests(unittest.TestCase):
             finally:
                 first.close()
 
-            second = build_application(surface="cli", memory=build_memory(database, user_id="alice", index=None),
+            second = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(database, user_id="alice", index=None))),
                                        tools=ToolAdapters(root), user_id="alice")
             try:
                 restored = second.runtime.open_session("surface:cli")
@@ -521,9 +525,9 @@ class ConversationRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
             "KYROZEN_CLI_CAPABILITIES": "full", "KYROZEN_APPROVAL_MODE": "never",
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(temp)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             try:
                 runtime = app.runtime
@@ -553,9 +557,9 @@ class ConversationRuntimeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(temp)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             try:
                 runtime = app.runtime
@@ -587,9 +591,9 @@ class ConversationRuntimeTests(unittest.TestCase):
         from openkyrozen.tools import ToolAdapters
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(temp)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             try:
                 runtime = app.runtime
@@ -618,9 +622,9 @@ class ConversationRuntimeTests(unittest.TestCase):
         from openkyrozen.tools import ToolAdapters
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(temp)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             try:
                 runtime = app.runtime
@@ -656,9 +660,9 @@ class ConversationRuntimeTests(unittest.TestCase):
         from openkyrozen.tools import ToolAdapters
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(temp)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             try:
                 runtime = app.runtime
@@ -700,9 +704,9 @@ class ConversationRuntimeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": temp,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(temp)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                                     tools=ToolAdapters(root), user_id="alice")
             try:
                 runtime = app.runtime

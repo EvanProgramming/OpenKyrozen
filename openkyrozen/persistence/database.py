@@ -237,8 +237,35 @@ class SQLiteDatabase:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._control_deadline = ContextVar("sqlite_control_deadline", default=None)
         self._lock = _DeadlineRLock(self._remaining_control_seconds)
+        self._lifecycle_lock = threading.Lock()
+        self._active_connections = 0
+        self._closing = False
+        self._anchor = None
         self.last_backup_path: Path | None = None
         self._initialise()
+        anchor = sqlite3.connect(str(self.path), timeout=30, isolation_level=None, check_same_thread=False)
+        try:
+            anchor.execute("PRAGMA synchronous=NORMAL")
+            # Keep an idle WAL client so ordinary lease closes do not checkpoint the database.
+            anchor.execute("SELECT name FROM sqlite_schema LIMIT 1").fetchall()
+        except BaseException:
+            anchor.close()
+            raise
+        self._anchor = anchor
+
+    def close(self):
+        with self._lifecycle_lock:
+            self._closing = True
+            anchor = self._anchor if self._active_connections == 0 else None
+            if anchor is not None:
+                self._anchor = None
+        if anchor is not None:
+            try:
+                anchor.close()
+            except BaseException:
+                with self._lifecycle_lock:
+                    self._anchor = anchor
+                raise
 
 
     def _remaining_control_seconds(self):
@@ -259,23 +286,36 @@ class SQLiteDatabase:
 
     @contextmanager
     def connection(self, *, timeout: float = 30, busy_timeout_ms: int | None = None) -> Iterator[sqlite3.Connection]:
-        remaining = self._remaining_control_seconds()
-        if remaining is not None:
-            if remaining <= 0:
-                raise sqlite3.OperationalError("cancellation persistence deadline exceeded")
-            timeout = min(timeout, remaining)
-            busy_timeout_ms = min(30000 if busy_timeout_ms is None else busy_timeout_ms,
-                                  int(remaining * 1000))
-        connection = sqlite3.connect(str(self.path), timeout=timeout, isolation_level=None)
-        connection.row_factory = sqlite3.Row
+        with self._lifecycle_lock:
+            if self._closing:
+                raise RuntimeError("SQLite database is closed")
+            self._active_connections += 1
+        connection = None
         try:
+            remaining = self._remaining_control_seconds()
+            if remaining is not None:
+                if remaining <= 0:
+                    raise sqlite3.OperationalError("cancellation persistence deadline exceeded")
+                timeout = min(timeout, remaining)
+                busy_timeout_ms = min(30000 if busy_timeout_ms is None else busy_timeout_ms,
+                                      int(remaining * 1000))
+            connection = sqlite3.connect(str(self.path), timeout=timeout, isolation_level=None)
+            connection.row_factory = sqlite3.Row
             connection.execute(f"PRAGMA busy_timeout={busy_timeout_ms if busy_timeout_ms is not None else 30000}")
             connection.execute("PRAGMA foreign_keys=ON")
             # WAL mode persists, but synchronous is connection-local.
             connection.execute("PRAGMA synchronous=NORMAL")
             yield connection
         finally:
-            connection.close()
+            try:
+                if connection is not None:
+                    connection.close()
+            finally:
+                with self._lifecycle_lock:
+                    self._active_connections -= 1
+                    finish_close = self._closing and self._active_connections == 0
+                if finish_close:
+                    self.close()
 
 
     def _initialise(self) -> None:

@@ -1,4 +1,5 @@
 import json
+from contextlib import ExitStack, closing
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,6 +53,8 @@ class BugFixWorkflowTests(unittest.TestCase):
         self.original_root = main._get_workspace_root()
         self.original_fix_outcomes = list(main._fix_outcomes)
         self.tempdirs = []
+        self._sqlite_owners = ExitStack()
+        self.addCleanup(self._sqlite_owners.close)
 
     def tearDown(self):
         if main.memory_bank is not self.original_memory:
@@ -62,6 +65,7 @@ class BugFixWorkflowTests(unittest.TestCase):
         main._interaction_controller = self.original_interaction
         main._fix_outcomes[:] = self.original_fix_outcomes
         main._set_workspace_root(self.original_root)
+        self._sqlite_owners.close()
         for directory in self.tempdirs:
             directory.cleanup()
 
@@ -70,7 +74,8 @@ class BugFixWorkflowTests(unittest.TestCase):
         self.tempdirs.append(directory)
         root = Path(directory.name)
         with patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
-            main.memory_bank = MemoryBank(root / "state.sqlite3", workspace_id="bugfix", session_id="turn")
+            main.memory_bank = self._sqlite_owners.enter_context(closing(
+                MemoryBank(root / "state.sqlite3", workspace_id="bugfix", session_id="turn")))
         main.tasks = TaskManager(main.memory_bank.store, workspace_id="bugfix", session_id="turn")
         main._interaction_controller = InteractionController(
             main.memory_bank.store, workspace_id="bugfix", session_id="turn",

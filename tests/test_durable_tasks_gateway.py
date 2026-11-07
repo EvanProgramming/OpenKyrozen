@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import json
 import os
 import socket
@@ -90,14 +91,14 @@ class DurableTaskGatewayTests(unittest.TestCase):
             process.stdout.close()
 
     def test_gateway_blocks_interrupted_mutations_and_executes_new_api_task(self):
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-task-gateway-") as directory:
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-task-gateway-") as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             workspace = root / "workspace"
             workspace.mkdir()
             (workspace / "home").mkdir()
             db_path = root / "state.sqlite3"
             skills_path = root / "skills"
-            store = EventStore(db_path)
+            store = sqlite_owners.enter_context(closing(EventStore(db_path)))
             workspace_id = source_scope_id(workspace)
             recovery_manager = TaskManager(
                 store, user_id="local", workspace_id=workspace_id, session_id="restart-session"

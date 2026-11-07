@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import sys
 import time
 import unittest
@@ -22,10 +23,10 @@ class ProcessLifecycleTests(unittest.TestCase):
             def close(self):
                 self.closed = True
 
-        with tempfile.TemporaryDirectory() as root, patch.dict('os.environ', {'KYROZEN_DISABLE_VECTOR_INDEX': '1'}):
+        with tempfile.TemporaryDirectory() as root, patch.dict('os.environ', {'KYROZEN_DISABLE_VECTOR_INDEX': '1'}), ExitStack() as sqlite_owners:
             path = Path(root) / 'state.sqlite3'
             index = Index()
-            memory = MemoryBank(path, store=EventStore(path), index=index)
+            memory = sqlite_owners.enter_context(closing(MemoryBank(path, store=sqlite_owners.enter_context(closing(EventStore(path))), index=index)))
             app = build_application(memory=memory)
             app.close()
             self.assertTrue(index.closed)
@@ -71,10 +72,10 @@ class ProcessLifecycleTests(unittest.TestCase):
         from openkyrozen.tools import ToolAdapters
         from openkyrozen.tools.models import CommandResult, invoke_tool_result
 
-        with tempfile.TemporaryDirectory() as root, patch.dict('os.environ', {'KYROZEN_DISABLE_VECTOR_INDEX': '1'}):
+        with tempfile.TemporaryDirectory() as root, patch.dict('os.environ', {'KYROZEN_DISABLE_VECTOR_INDEX': '1'}), ExitStack() as sqlite_owners:
             workspace = Path(root) / 'workspace'
             workspace.mkdir()
-            app = build_application(memory=build_memory(Path(root) / 'state.sqlite3'), tools=ToolAdapters(workspace))
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(root) / 'state.sqlite3'))), tools=ToolAdapters(workspace))
             try:
                 started = app.runtime.run_command({
                     'command': shlex.join([sys.executable, '-c', 'import time; print("ready",flush=True); time.sleep(30)']),

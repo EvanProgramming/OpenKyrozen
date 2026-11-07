@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import os
 import shlex
 import sys
@@ -19,9 +20,9 @@ class RuntimeReliabilityTests(unittest.TestCase):
     def test_turn_cancellation_stops_its_background_process_and_reports_cancelled(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             'KYROZEN_DISABLE_VECTOR_INDEX': '1',
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(directory)
-            app = build_application(memory=build_memory(root / 'state.sqlite3'), tools=ToolAdapters(root))
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(root / 'state.sqlite3'))), tools=ToolAdapters(root))
             self.addCleanup(app.close)
             runtime = app.runtime
             ready, release = threading.Event(), threading.Event()
@@ -64,9 +65,9 @@ class RuntimeReliabilityTests(unittest.TestCase):
             self.assertEqual(events[-1].kind, 'turn.cancelled')
 
     def test_turn_cancelled_signal_controls_terminal_event_when_tool_raises(self):
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'KYROZEN_DISABLE_VECTOR_INDEX': '1'}):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'KYROZEN_DISABLE_VECTOR_INDEX': '1'}), ExitStack() as sqlite_owners:
             root = Path(directory)
-            app = build_application(memory=build_memory(root / 'state.sqlite3'), tools=ToolAdapters(root))
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(root / 'state.sqlite3'))), tools=ToolAdapters(root))
             self.addCleanup(app.close)
             runtime, events = app.runtime, []
             session = runtime.current_session
@@ -94,9 +95,9 @@ class RuntimeReliabilityTests(unittest.TestCase):
             self.assertIsNone(other.process.poll())
 
     def test_recovery_blocks_unknown_mutation_without_dispatching_it(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / 'state.sqlite3')
+            store = sqlite_owners.enter_context(closing(EventStore(root / 'state.sqlite3')))
             manager = TaskManager(store, workspace_id='project', session_id='session')
             index = manager.add_task('append once', checkpoint={'action': 'run_cmd', 'args': 'echo duplicate >> marker'})
             manager.set_status(index, 'running')
@@ -115,9 +116,9 @@ class RuntimeReliabilityTests(unittest.TestCase):
 
     def test_common_resume_unblock_and_native_binding_cannot_replay_unknown_effect(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
-                'KYROZEN_DISABLE_VECTOR_INDEX': '1', 'KYROZEN_WORKSPACE_ROOT': directory}):
+                'KYROZEN_DISABLE_VECTOR_INDEX': '1', 'KYROZEN_WORKSPACE_ROOT': directory}), ExitStack() as sqlite_owners:
             root = Path(directory)
-            app = build_application(memory=build_memory(root / 'state.sqlite3'), tools=ToolAdapters(root))
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(root / 'state.sqlite3'))), tools=ToolAdapters(root))
             self.addCleanup(app.close)
             runtime, manager = app.runtime, app.runtime.tasks
             created = manager.edit_plan(expected_revision=0, operations=[
@@ -147,8 +148,8 @@ class RuntimeReliabilityTests(unittest.TestCase):
             self.assertFalse((root / 'marker.txt').exists())
 
     def test_unclassified_running_native_task_is_not_treated_as_read_only_after_restart(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / 'state.sqlite3')
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / 'state.sqlite3')))
             manager = TaskManager(store, workspace_id='project', session_id='native')
             manager.edit_plan(expected_revision=0, operations=[
                 {'op': 'add', 'ref': 'work', 'task': {'description': 'Unclassified work', 'acceptance': ['Verified']}},
@@ -188,9 +189,9 @@ class RuntimeReliabilityTests(unittest.TestCase):
         from openkyrozen.providers.models import ModelResponse, ProviderCapabilities, FinishReason
         from openkyrozen.providers.errors import ProviderError, ProviderErrorKind
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
-                'KYROZEN_DISABLE_VECTOR_INDEX': '1', 'KYROZEN_WORKSPACE_ROOT': directory}):
+                'KYROZEN_DISABLE_VECTOR_INDEX': '1', 'KYROZEN_WORKSPACE_ROOT': directory}), ExitStack() as sqlite_owners:
             root = Path(directory)
-            app = build_application(memory=build_memory(root / 'state.sqlite3'), tools=ToolAdapters(root))
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(root / 'state.sqlite3'))), tools=ToolAdapters(root))
             self.addCleanup(app.close)
             runtime, manager = app.runtime, app.runtime.tasks
             controller = runtime._interaction_controller
@@ -242,8 +243,8 @@ class RuntimeReliabilityTests(unittest.TestCase):
             self.assertTrue(all(task['status'] == 'cancelled' for task in recovered.tasks if task['id'] in expected))
 
     def test_recovery_resumes_only_declared_read_only_operation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / 'state.sqlite3')
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / 'state.sqlite3')))
             manager = TaskManager(store, workspace_id='project', session_id='session')
             index = manager.add_task('inspect', checkpoint={'action': 'read_file', 'args': 'note.txt'})
             manager.set_status(index, 'running')
@@ -254,9 +255,9 @@ class RuntimeReliabilityTests(unittest.TestCase):
             self.assertEqual(worker.run_once()['status'], 'succeeded')
 
     def test_jev_allow_remains_advisory_for_high_impact_operation(self):
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'KYROZEN_DISABLE_VECTOR_INDEX': '1'}):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'KYROZEN_DISABLE_VECTOR_INDEX': '1'}), ExitStack() as sqlite_owners:
             root = Path(directory)
-            app = build_application(memory=build_memory(root / 'state.sqlite3'), tools=ToolAdapters(root))
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(root / 'state.sqlite3'))), tools=ToolAdapters(root))
             self.addCleanup(app.close)
             runtime = app.runtime
             with patch.object(runtime, '_EXECUTION_SURFACE', 'tui'), \

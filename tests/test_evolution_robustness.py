@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import json
 import os
 import tempfile
@@ -27,11 +28,14 @@ class EvolutionRobustnessTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         root = Path(self.directory.name)
-        self.memory = MemoryBank(root / "state.sqlite3", workspace_id="project")
+        self._sqlite_owners = ExitStack()
+        self.addCleanup(self._sqlite_owners.close)
+        self.memory = self._sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3", workspace_id="project")))
         self.registry = SkillRegistry(self.memory.store, workspace_id="project", root=root / "skills")
         self.engine = LearningEngine(self.memory, registry=self.registry)
 
     def tearDown(self):
+        self._sqlite_owners.close()
         self.directory.cleanup()
 
     def _candidate(self, run_id="source"):

@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import os
 import stat
 import tempfile
@@ -18,13 +19,16 @@ class HistoryManagerTests(unittest.TestCase):
         self.state = Path(self.directory.name) / "state"
         self.root.mkdir()
         self.state.mkdir()
-        self.store = EventStore(self.state / "history.sqlite3")
+        self._sqlite_owners = ExitStack()
+        self.addCleanup(self._sqlite_owners.close)
+        self.store = self._sqlite_owners.enter_context(closing(EventStore(self.state / "history.sqlite3")))
         self.manager = HistoryManager(
             self.store, self.root, self.state, source_scope_id=source_scope_id(self.root),
             user_id="alice", workspace_id="project", session_id="conversation",
         )
 
     def tearDown(self):
+        self._sqlite_owners.close()
         self.directory.cleanup()
 
     def test_branching_restore_preserves_files_descendants_memory_tasks_and_git(self):
@@ -111,7 +115,7 @@ class HistoryManagerTests(unittest.TestCase):
         )
 
         reopened = HistoryManager(
-            EventStore(self.state / "history.sqlite3"), self.root, self.state,
+            self._sqlite_owners.enter_context(closing(EventStore(self.state / "history.sqlite3"))), self.root, self.state,
             source_scope_id=source_scope_id(self.root), user_id="alice", workspace_id="project",
             session_id="conversation",
         )
@@ -120,7 +124,7 @@ class HistoryManagerTests(unittest.TestCase):
     def test_snapshot_excludes_active_database_and_sidecars_inside_workspace(self):
         db_dir = self.root / "database"
         db_dir.mkdir()
-        store = EventStore(db_dir / "state.sqlite3")
+        store = self._sqlite_owners.enter_context(closing(EventStore(db_dir / "state.sqlite3")))
         manager = HistoryManager(store, self.root, self.state,
             source_scope_id=source_scope_id(self.root), session_id="inside")
         (db_dir / "state.sqlite3-unrelated").write_text("user file")
@@ -137,7 +141,7 @@ class HistoryManagerTests(unittest.TestCase):
         before_db = self.manager.ensure_root()
         db_dir = self.root / "database"
         db_dir.mkdir()
-        store = EventStore(db_dir / "state.sqlite3")
+        store = self._sqlite_owners.enter_context(closing(EventStore(db_dir / "state.sqlite3")))
         manager = HistoryManager(store, self.root, self.state,
             source_scope_id=source_scope_id(self.root), session_id="inside")
         # Construct a legacy snapshot that includes the live database.
@@ -156,7 +160,7 @@ class HistoryManagerTests(unittest.TestCase):
         actual.mkdir()
         link = self.root / "database-link"
         link.symlink_to(actual, target_is_directory=True)
-        store = EventStore(link / "state.sqlite3")
+        store = self._sqlite_owners.enter_context(closing(EventStore(link / "state.sqlite3")))
         manager = HistoryManager(store, self.root, self.state,
             source_scope_id=source_scope_id(self.root), session_id="inside")
         baseline = manager.ensure_root()
@@ -171,7 +175,7 @@ class HistoryManagerTests(unittest.TestCase):
         db_dir = self.root / "database"
         db_dir.mkdir(mode=0o700)
         baseline = self.manager.ensure_root()
-        store = EventStore(db_dir / "state.sqlite3")
+        store = self._sqlite_owners.enter_context(closing(EventStore(db_dir / "state.sqlite3")))
         os.chmod(db_dir, 0o750)
         manager = HistoryManager(store, self.root, self.state,
             source_scope_id=source_scope_id(self.root), session_id="inside")
@@ -183,7 +187,7 @@ class HistoryManagerTests(unittest.TestCase):
         baseline = self.manager.ensure_root()
         (self.root / "database").unlink()
         (self.root / "database").mkdir()
-        store = EventStore(self.root / "database" / "state.sqlite3")
+        store = self._sqlite_owners.enter_context(closing(EventStore(self.root / "database" / "state.sqlite3")))
         manager = HistoryManager(store, self.root, self.state,
             source_scope_id=source_scope_id(self.root), session_id="inside")
         (self.root / "later.txt").write_text("keep if preflight fails")

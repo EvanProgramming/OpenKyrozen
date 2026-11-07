@@ -1,4 +1,5 @@
 from __future__ import annotations
+from contextlib import ExitStack, closing
 
 import tempfile
 import unittest
@@ -17,8 +18,8 @@ from openkyrozen.tools.models import ToolResult
 
 class WorkingPlanModelTests(unittest.TestCase):
     def test_working_plan_snapshot_is_ordered_redacted_and_includes_revision_reason(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="plan-snapshot")
             plan = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "broad", "task": {"description": "Investigate all", "acceptance": ["result"]}},
@@ -53,8 +54,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(restored["tasks"], snapshot["tasks"])
 
     def test_plan_supersession_blocking_and_revision_history_survive_recovery(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="plan-revisions")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "broad", "task": {"description": "Investigate all", "acceptance": ["result"]}},
@@ -98,8 +99,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual({task["id"] for task in recovered.tasks}, {task["id"] for task in latest["tasks"]})
 
     def test_plan_merge_and_replace_preserve_supersession_links(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="merge-replace")
             plan = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "one", "task": {"description": "One", "acceptance": ["one"]}},
@@ -124,8 +125,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(tasks[corrected]["checkpoint"]["supersedes"], [combined])
 
     def test_invalid_split_rolls_back_all_supersession_changes(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="split-rollback")
             plan = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "broad", "task": {"description": "Broad", "acceptance": ["done"]}},
@@ -146,8 +147,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertNotIn("superseded_by", recovered.tasks[0]["checkpoint"])
 
     def test_ordered_plan_edits_create_and_revise_at_expected_revision(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="atomic-create")
 
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
@@ -181,8 +182,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             ])
 
     def test_stale_or_invalid_plan_edit_leaves_database_and_memory_unchanged(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="stale-edit")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {
@@ -212,8 +213,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             )), 1)
 
     def test_plan_edit_rejects_incomplete_reorder_and_dependency_cycles(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="invalid-edits")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "a", "task": {"description": "A", "acceptance": ["A"]}},
@@ -232,8 +233,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(manager.working_plan.revision, 1)
 
     def test_update_cancel_and_remove_dependency_operations_preserve_task_identity(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="mutations")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
@@ -253,8 +254,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(revised["tasks"][1]["status"], "cancelled")
 
     def test_plan_edits_preserve_evidence_and_require_new_task_for_changed_work(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="retain-evidence")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "Inspect", "acceptance": ["files listed"]}},
@@ -274,8 +275,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(revised["tasks"][0]["status"], "pending")
 
     def test_executed_task_dependencies_cannot_be_changed_in_place(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="executed-dependency")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
@@ -293,8 +294,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertTrue(manager.tasks[0]["evidence"])
 
     def test_duplicate_batch_references_are_rejected_before_plan_creation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="duplicate-refs")
             with self.assertRaisesRegex(ValueError, "unique"):
                 manager.edit_plan(complexity="complex", expected_revision=0, operations=[
@@ -306,8 +307,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             ))
 
     def test_batch_reference_cannot_shadow_existing_task_id(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="shadow-ref")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
@@ -321,8 +322,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(manager.tasks[0]["status"], "pending")
 
     def test_edit_preserves_legacy_checkpoint_and_acceptance_shapes(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="legacy-checkpoint")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
@@ -345,8 +346,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(changed_execution["tasks"][0]["checkpoint"]["args"], '{"command":"pytest -q"}')
 
     def test_legacy_done_status_does_not_block_plan_edit(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="legacy-status-edit")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
@@ -359,8 +360,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(revised["revision"], 2)
 
     def test_foreground_execution_obeys_dependencies_after_reorder(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="foreground-dependency")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "Inspect source", "acceptance": ["inspect"],
@@ -376,8 +377,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertFalse(allowed)
 
     def test_cancelled_replaced_step_does_not_prevent_plan_completion(self):
-        with tempfile.TemporaryDirectory() as directory:
-            manager = TaskManager(EventStore(Path(directory) / "state.sqlite3"),
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            manager = TaskManager(sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3"))),
                                   workspace_id="project", session_id="cancel-replacement")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "old", "task": {"description": "Old step", "acceptance": ["old"]}},
@@ -394,8 +395,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(manager.working_plan.status, "completed")
 
     def test_edit_cancelling_every_member_terminalizes_plan_atomically(self):
-        with tempfile.TemporaryDirectory() as directory:
-            manager = TaskManager(EventStore(Path(directory) / "state.sqlite3"),
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            manager = TaskManager(sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3"))),
                                   workspace_id="project", session_id="cancel-all-edit")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "one", "task": {"description": "One", "acceptance": ["one"]}},
@@ -411,8 +412,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             ))
 
     def test_stale_manager_cannot_terminalize_a_newer_plan_revision(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             stale = TaskManager(store, workspace_id="project", session_id="terminal-race")
             created = stale.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "one", "task": {"description": "One", "acceptance": ["one"]}},
@@ -431,8 +432,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual([task["status"] for task in members], ["succeeded", "pending"])
 
     def test_clear_does_not_cancel_a_task_claimed_by_another_manager(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             stale = TaskManager(store, workspace_id="project", session_id="clear-claim-race")
             stale.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "one", "task": {"description": "One", "acceptance": ["one"]}},
@@ -449,8 +450,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(saved_task["status"], "running")
 
     def test_mutation_match_does_not_fall_through_from_blocked_plan(self):
-        with tempfile.TemporaryDirectory() as directory:
-            manager = TaskManager(EventStore(Path(directory) / "state.sqlite3"),
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            manager = TaskManager(sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3"))),
                                   workspace_id="project", session_id="blocked-plan-scope")
             result = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
@@ -463,8 +464,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertFalse(allowed)
 
     def test_sessionless_working_plan_edit_keeps_event_session_null(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id=None)
             manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "one", "task": {"description": "One", "acceptance": ["one"]}},
@@ -474,8 +475,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertIsNone(session)
 
     def test_stale_worker_cannot_resurrect_cancelled_task(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             worker_manager = TaskManager(store, workspace_id="project", session_id="cancel-race")
             created = worker_manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
@@ -495,8 +496,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(saved["status"], "cancelled")
 
     def test_worker_finishing_after_concurrent_cancel_keeps_cancellation_terminal(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="worker-cancel")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
@@ -519,8 +520,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(saved["evidence"], [])
 
     def test_plan_claim_order_honors_reorder_and_unsatisfied_prerequisites(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="claim-order")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
@@ -536,8 +537,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             )[1]["status"], "pending")
 
     def test_reordered_ready_tasks_claim_in_explicit_plan_order(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="reorder-claim")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "a", "task": {"description": "A", "acceptance": ["A"]}},
@@ -547,8 +548,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(manager.claim_next()["id"], created["references"]["b"])
 
     def test_legacy_done_dependency_counts_as_satisfied(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="legacy-done")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
@@ -561,8 +562,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(manager.claim_next()["id"], second_id)
 
     def test_edit_rejects_progress_changed_after_candidate_was_read(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="claim-race")
             created = manager.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "First", "acceptance": ["first"]}},
@@ -583,8 +584,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             )), 1)
 
     def test_edit_storage_failure_rolls_back_plan_tasks_and_event(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="edit-failure")
             original_json = store.database._json
             def fail_plan_event(value):
@@ -610,8 +611,8 @@ class WorkingPlanModelTests(unittest.TestCase):
         self.assertTrue(requires_working_plan("complex"))
 
     def test_task_status_transitions_are_explicit_and_terminal_states_stay_terminal(self):
-        with tempfile.TemporaryDirectory() as directory:
-            manager = TaskManager(EventStore(Path(directory) / "state.sqlite3"),
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            manager = TaskManager(sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3"))),
                                   workspace_id="project", session_id="lifecycle")
             index = manager.add_task("inspect the repository")
 
@@ -626,8 +627,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(manager.tasks[index]["status"], "succeeded")
 
     def test_plan_completes_only_after_every_task_has_acceptance_evidence(self):
-        with tempfile.TemporaryDirectory() as directory:
-            manager = TaskManager(EventStore(Path(directory) / "state.sqlite3"),
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            manager = TaskManager(sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3"))),
                                   workspace_id="project", session_id="complete-plan")
             plan = manager.update_plan(complexity="complex", tasks=[
                 {"description": "First step", "acceptance": ["first result exists"]},
@@ -648,8 +649,8 @@ class WorkingPlanModelTests(unittest.TestCase):
                 ).fetchone()["status"], "completed")
 
     def test_recovery_reconciles_a_crash_after_last_task_completion(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="crash-window")
             manager.update_plan(complexity="complex", tasks=[
                 {"description": "Run acceptance checks", "acceptance": ["checks pass"]},
@@ -672,8 +673,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             ))
 
     def test_working_plan_update_uses_stable_runtime_ids_and_recovers_from_sqlite(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="plan")
 
             plan = manager.update_plan(complexity="complex", tasks=[
@@ -714,8 +715,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(recovered.tasks[0]["id"], first_task_id)
 
     def test_update_after_terminal_plan_creates_new_plan_instead_of_reopening_it(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="terminal-update")
             first = manager.update_plan(complexity="complex", tasks=[
                 {"description": "first", "acceptance": ["first done"]},
@@ -732,8 +733,8 @@ class WorkingPlanModelTests(unittest.TestCase):
                 self.assertEqual(db.execute("SELECT status FROM working_plans WHERE id=?", (first.id,)).fetchone()["status"], "completed")
 
     def test_clear_cancels_failed_and_blocked_tasks_in_the_plan(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="clear-terminal-tasks")
             manager.update_plan(complexity="complex", tasks=[
                 {"description": "failed", "acceptance": ["recover or cancel"]},
@@ -749,8 +750,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             )], ["cancelled", "cancelled"])
 
     def test_clear_does_not_complete_a_partially_succeeded_plan(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="clear-partial-plan")
             plan = manager.update_plan(complexity="complex", tasks=[
                 {"description": "first", "acceptance": ["first is verified"]},
@@ -769,8 +770,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(status, "cancelled")
 
     def test_legacy_done_without_acceptance_evidence_cannot_complete_mixed_plan(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="legacy-done-evidence")
             plan = manager.update_plan(complexity="complex", tasks=[
                 {"description": "first", "acceptance": ["first is verified"]},
@@ -785,8 +786,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(status, "cancelled")
 
     def test_legacy_update_accepts_unchanged_execution_after_receipt(self):
-        with tempfile.TemporaryDirectory() as directory:
-            manager = TaskManager(EventStore(Path(directory) / "state.sqlite3"),
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            manager = TaskManager(sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3"))),
                                   workspace_id="project", session_id="same-execution")
             task_data = {
                 "description": "Read the source file", "acceptance": ["source was read"],
@@ -809,8 +810,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(manager.tasks[0]["checkpoint"]["args_sha256"], "stable-fingerprint")
 
     def test_working_plan_isolated_by_user_workspace_and_session(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             owner = TaskManager(store, user_id="alice", workspace_id="project", session_id="one")
             other = TaskManager(store, user_id="alice", workspace_id="project", session_id="two")
             owner.update_plan(complexity="complex", tasks=[{"description": "owner task", "acceptance": []}])
@@ -821,8 +822,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(other.tasks, [])
 
     def test_clear_cancels_old_plan_before_recovering_a_new_complex_request(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="new-request")
             old_plan = manager.update_plan(complexity="complex", tasks=[
                 {"description": "Old request step", "acceptance": ["old result exists"]},
@@ -846,8 +847,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual([task["description"] for task in recovered.tasks], ["New request step"])
 
     def test_legacy_plan_adapter_preserves_existing_task_ids(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="project", session_id="legacy")
             manager.from_llm_block('TaskList:\n```json\n["Inspect the workspace"]\n```')
             task_id = manager.tasks[0]["id"]
@@ -860,8 +861,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(recovered.working_plan.id, plan.id)
 
     def test_migration_version_includes_working_plan_schema(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = SQLiteDatabase(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            database = sqlite_owners.enter_context(closing(SQLiteDatabase(Path(directory) / "state.sqlite3")))
             self.assertEqual(database.SCHEMA_VERSION, 6)
             with database.connection() as db:
                 self.assertIsNotNone(db.execute(
@@ -873,8 +874,8 @@ class WorkingPlanModelTests(unittest.TestCase):
                 self.assertIn("revision", {row["name"] for row in db.execute("PRAGMA table_info(working_plans)")})
 
     def test_native_task_selection_and_completion_suggestion_require_evidence(self):
-        with tempfile.TemporaryDirectory() as directory:
-            manager = TaskManager(EventStore(Path(directory) / "state.sqlite3"), session_id="native-selection")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            manager = TaskManager(sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3"))), session_id="native-selection")
             created = manager.edit_plan(expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "Inspect", "acceptance": ["Inspected"]}},
                 {"op": "add", "ref": "second", "task": {"description": "Verify", "acceptance": ["Verified"], "dependencies": ["first"]}},
@@ -901,8 +902,8 @@ class WorkingPlanModelTests(unittest.TestCase):
 
     def test_completion_suggestion_storage_failure_rolls_back_plan_revision(self):
         import sqlite3
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             manager = TaskManager(store, session_id="completion-atomicity")
             plan = manager.edit_plan(expected_revision=0, operations=[
                 {"op": "add", "ref": "inspect", "task": {"description": "Inspect", "acceptance": ["Inspected"]}},
@@ -924,9 +925,9 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(manager.tasks[0]["status"], "running")
 
     def test_schema_four_working_plan_is_upgraded_without_losing_tasks(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "state.sqlite3"
-            store = EventStore(path)
+            store = sqlite_owners.enter_context(closing(EventStore(path)))
             manager = TaskManager(store, workspace_id="project", session_id="schema-four")
             plan = manager.update_plan(complexity="complex", tasks=[
                 {"description": "Preserve me", "acceptance": ["still present"]},
@@ -934,8 +935,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             with store.database.connection() as db:
                 db.execute("ALTER TABLE working_plans DROP COLUMN revision")
                 db.execute("DELETE FROM schema_migrations WHERE version>=5")
-            migrated = SQLiteDatabase(path)
-            recovered = TaskManager(EventStore(path), workspace_id="project", session_id="schema-four")
+            migrated = sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
+            recovered = TaskManager(sqlite_owners.enter_context(closing(EventStore(path))), workspace_id="project", session_id="schema-four")
             recovered.recover()
             self.assertEqual(recovered.working_plan.id, plan.id)
             self.assertEqual(recovered.working_plan.revision, 0)
@@ -943,8 +944,8 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(migrated.SCHEMA_VERSION, 6)
 
     def test_strategy_execution_is_validated_against_approved_scope_at_tool_boundary(self):
-        with tempfile.TemporaryDirectory() as directory:
-            app = build_application(memory=build_memory(Path(directory) / "state.sqlite3", index=None),
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3", index=None))),
                                     tools=ToolAdapters(directory))
             self.addCleanup(app.close)
             runtime = app.runtime
@@ -973,9 +974,9 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(child["checkpoint"]["action"], "read_file")
 
     def test_update_plan_is_a_typed_registry_tool_with_object_arguments(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "state.sqlite3"
-            memory = build_memory(path, user_id="alice", index=None)
+            memory = sqlite_owners.enter_context(closing(build_memory(path, user_id="alice", index=None)))
             app = build_application(memory=memory, tools=ToolAdapters(directory), user_id="alice")
             runtime = app.runtime
             registry = runtime.tool_registry
@@ -1062,9 +1063,9 @@ class WorkingPlanModelTests(unittest.TestCase):
     def test_runtime_call_persists_a_typed_working_plan(self):
         from openkyrozen.providers.models import ToolCall
 
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "state.sqlite3"
-            memory = build_memory(path, user_id="alice", index=None)
+            memory = sqlite_owners.enter_context(closing(build_memory(path, user_id="alice", index=None)))
             app = build_application(surface="cli", memory=memory, tools=ToolAdapters(directory), user_id="alice")
             try:
                 receipt = app.runtime.execute_call(
@@ -1105,9 +1106,9 @@ class WorkingPlanModelTests(unittest.TestCase):
                 app.close()
 
     def test_structured_update_plan_is_agent_only_and_not_a_legacy_text_action(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "state.sqlite3"
-            memory = build_memory(path, user_id="alice", index=None)
+            memory = sqlite_owners.enter_context(closing(build_memory(path, user_id="alice", index=None)))
             app = build_application(memory=memory, tools=ToolAdapters(directory), user_id="alice")
             try:
                 app.runtime._active_interaction_mode.set("agent")

@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import asyncio
 import os
 import tempfile
@@ -118,8 +119,8 @@ class ContextCompactionTests(unittest.TestCase):
         from openkyrozen.persistence.store import EventStore
         from openkyrozen.tasks.engine import TaskManager
 
-        with tempfile.TemporaryDirectory() as directory:
-            manager = TaskManager(EventStore(Path(directory) / "state.sqlite3"), session_id="pinned")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            manager = TaskManager(sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3"))), session_id="pinned")
             created = manager.edit_plan(expected_revision=0, operations=[
                 {"op": "add", "ref": "inspect", "task": {
                     "description": "Inspect current source", "acceptance": ["Source compared"],
@@ -155,8 +156,8 @@ class ContextCompactionTests(unittest.TestCase):
         import json
         from openkyrozen.agent.prompts import _refresh_working_plan_context
 
-        with tempfile.TemporaryDirectory() as directory:
-            app = build_application(memory=MemoryBank(Path(directory) / "state.sqlite3", index=None))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            app = build_application(memory=sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", index=None))))
             self.addCleanup(app.close)
             runtime = app.runtime
             plan = runtime.tasks.edit_plan(expected_revision=0, reason="why" * 8000, operations=[
@@ -374,7 +375,9 @@ class ContextApiTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="openkyrozen-context-api-")
         self.addCleanup(self.directory.cleanup)
-        self.memory = MemoryBank(Path(self.directory.name) / "state.sqlite3", workspace_id="context-api")
+        self._sqlite_owners = ExitStack()
+        self.addCleanup(self._sqlite_owners.close)
+        self.memory = self._sqlite_owners.enter_context(closing(MemoryBank(Path(self.directory.name) / "state.sqlite3", workspace_id="context-api")))
         self.original_sessions = server._sessions
         server._sessions = {}
         self.addCleanup(lambda: setattr(server, "_sessions", self.original_sessions))

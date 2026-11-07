@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import contextvars
 import os
 import tempfile
@@ -499,8 +500,8 @@ class AgentEngineTests(unittest.TestCase):
         import json
         from openkyrozen.persistence.store import EventStore
 
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             memory = SimpleNamespace(store=store, user_id="alice", workspace_id="project", session_id="session")
             runtime = SimpleNamespace(memory_bank=memory, current_session=SimpleNamespace(), tasks=None)
             original = {"data": None, "text": "failed detail", "error": {"code": "denied"}, "metadata": {}}
@@ -515,7 +516,7 @@ class AgentEngineTests(unittest.TestCase):
             self.assertEqual(json.loads(page["content"]), original)
             self.assertIsNone(store.artifacts.read_page(artifact_id, 0, 1000, user_id="alice",
                                                        workspace_id="other", session_id="session"))
-            reopened = EventStore(Path(directory) / "state.sqlite3")
+            reopened = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             second = [ToolReply("call-1", "read_file", original, True)]
             runtime.memory_bank.store = reopened
             AgentEngine(runtime)._archive_replies(second, [0])
@@ -587,11 +588,11 @@ class AgentEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_APPROVAL_MODE": "never",
             "KYROZEN_WORKSPACE_ROOT": directory,
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(directory)
             (root / "note.txt").write_text("verified text", encoding="utf-8")
             app = build_application(
-                surface="cli", memory=build_memory(root / "state.sqlite3", user_id="alice", index=None),
+                surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", user_id="alice", index=None))),
                 tools=ToolAdapters(root), user_id="alice",
             )
             self.addCleanup(app.close)
@@ -898,10 +899,10 @@ class NativeLifecycleRegressionTests(unittest.TestCase):
                 return ModelResponse(text="The file was written successfully.", finish_reason=FinishReason.FINAL)
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_APPROVAL_MODE": "never",
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(directory)
             (root / "note.txt").write_text("unchanged old content")
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", index=None), tools=ToolAdapters(root))
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", index=None))), tools=ToolAdapters(root))
             self.addCleanup(app.close)
             runtime = app.runtime
             runtime._set_workspace_root(root)
@@ -1059,14 +1060,14 @@ class NativeLifecycleRegressionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_APPROVAL_MODE": "never",
             "PATH": str(Path(__import__("sys").executable).parent) + os.pathsep + os.environ["PATH"],
-        }):
+        }), ExitStack() as sqlite_owners:
             root = Path(directory)
             (root / "note.txt").write_text("verified content", encoding="utf-8")
             (root / "test_note.py").write_text(
                 "import unittest\nfrom pathlib import Path\nclass NoteTest(unittest.TestCase):\n"
                 "    def test_content(self):\n        self.assertEqual(Path('note.txt').read_text(), 'verified content')\n",
                 encoding="utf-8")
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", index=None), tools=ToolAdapters(root))
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", index=None))), tools=ToolAdapters(root))
             self.addCleanup(app.close)
             runtime = app.runtime
             provider = PlanningProvider(ProviderConfig(provider="custom", model_simple="fixture"))
@@ -1100,9 +1101,9 @@ class NativeLifecycleRegressionTests(unittest.TestCase):
         for delegated in (False, True):
             with self.subTest(delegated=delegated), tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
                 "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_APPROVAL_MODE": "never",
-            }):
+            }), ExitStack() as sqlite_owners:
                 root = Path(directory)
-                app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", index=None), tools=ToolAdapters(root))
+                app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", index=None))), tools=ToolAdapters(root))
                 self.addCleanup(app.close)
                 runtime = app.runtime
                 runtime._set_workspace_root(root)
@@ -1189,9 +1190,9 @@ class NativeLifecycleRegressionTests(unittest.TestCase):
                 if not delta_delivered.wait(timeout=1):
                     raise AssertionError("first text was withheld until completion")
                 yield ResponseComplete(ModelResponse(text="First useful text. Finished.", finish_reason=FinishReason.FINAL))
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}), ExitStack() as sqlite_owners:
             root = Path(directory)
-            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", index=None), tools=ToolAdapters(root))
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", index=None))), tools=ToolAdapters(root))
             self.addCleanup(app.close)
             runtime = app.runtime
             provider = StreamingProvider(ProviderConfig(provider="custom", model_simple="fixture"))

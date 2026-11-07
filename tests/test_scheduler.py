@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -9,8 +10,8 @@ from openkyrozen.tasks.scheduler import JobScheduler
 
 class SchedulerTests(unittest.TestCase):
     def test_due_one_shot_is_claimed_once_and_audited(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             scheduler = JobScheduler(store, workspace_id="project")
             seen = []
             scheduler.register_callback("test", lambda job: seen.append(job["id"]))

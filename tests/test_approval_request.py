@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import unittest
 
 from openkyrozen.security.approvals import ApprovalRequest
@@ -16,8 +17,8 @@ class ApprovalRequestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {
             "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_CLI_CAPABILITIES": "full",
             "KYROZEN_APPROVAL_MODE": "never",
-        }):
-            app = build_application(surface="cli", memory=build_memory(Path(directory) / "state.sqlite3"),
+        }), ExitStack() as sqlite_owners:
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))),
                                     tools=ToolAdapters(directory))
             calls = []
             spec = ToolSpec(
@@ -50,9 +51,9 @@ class ApprovalRequestTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             "os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_TUI_CAPABILITIES": "full"}
-        ):
+        ), ExitStack() as sqlite_owners:
             app = build_application(
-                surface="tui", memory=build_memory(Path(directory) / "state.sqlite3"),
+                surface="tui", memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))),
                 tools=ToolAdapters(directory),
             )
             try:
@@ -155,9 +156,9 @@ class ApprovalRequestTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             "os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WEB_CAPABILITIES": "workspace"}
-        ):
+        ), ExitStack() as sqlite_owners:
             adapters = ToolAdapters(directory)
-            app = build_application(surface="web", memory=build_memory(Path(directory) / "state.sqlite3"), tools=adapters)
+            app = build_application(surface="web", memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))), tools=adapters)
             calls = []
             try:
                 app.runtime.tool_registry.register_spec(ToolSpec(
@@ -184,9 +185,9 @@ class ApprovalRequestTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             "os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WEB_CAPABILITIES": "full"}
-        ):
+        ), ExitStack() as sqlite_owners:
             app = build_application(
-                surface="web", memory=build_memory(Path(directory) / "state.sqlite3"),
+                surface="web", memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))),
                 tools=ToolAdapters(directory),
             )
             calls = []
@@ -216,9 +217,9 @@ class ApprovalRequestTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             "os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WEB_CAPABILITIES": "workspace"}
-        ):
+        ), ExitStack() as sqlite_owners:
             app = build_application(
-                surface="web", memory=build_memory(Path(directory) / "state.sqlite3"),
+                surface="web", memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))),
                 tools=ToolAdapters(directory),
             )
             try:
@@ -271,8 +272,8 @@ class ApprovalRequestTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             "os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_CLI_CAPABILITIES": "full"}
-        ):
-            app = build_application(surface="cli", memory=build_memory(Path(directory) / "state.sqlite3"), tools=ToolAdapters(directory))
+        ), ExitStack() as sqlite_owners:
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))), tools=ToolAdapters(directory))
             calls = []
             spec = ToolSpec(
                 "approval_probe", lambda value: calls.append(value) or ToolResult(text="ran"),
@@ -332,8 +333,8 @@ class ApprovalRequestTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             "os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_CLI_CAPABILITIES": "full"}
-        ):
-            app = build_application(surface="cli", memory=build_memory(Path(directory) / "state.sqlite3"), tools=ToolAdapters(directory))
+        ), ExitStack() as sqlite_owners:
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))), tools=ToolAdapters(directory))
             calls = []
             spec = ToolSpec(
                 "approval_mutation_probe", lambda value: calls.append(value) or ToolResult(text="ran"),
@@ -365,10 +366,10 @@ class ApprovalRequestTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             "os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_CLI_CAPABILITIES": "full"}
-        ):
+        ), ExitStack() as sqlite_owners:
             root = Path(directory) / "workspace"
             root.mkdir()
-            app = build_application(surface="cli", memory=build_memory(Path(directory) / "state.sqlite3"), tools=ToolAdapters(root))
+            app = build_application(surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))), tools=ToolAdapters(root))
             try:
                 app.runtime._set_workspace_root(root)
                 receipt = app.runtime.execute_call(
@@ -391,9 +392,9 @@ class ApprovalRequestTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             "os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_CLI_CAPABILITIES": "full"}
-        ):
+        ), ExitStack() as sqlite_owners:
             app = build_application(
-                surface="cli", memory=build_memory(Path(directory) / "state.sqlite3"),
+                surface="cli", memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))),
                 tools=ToolAdapters(directory),
             )
             executed = []

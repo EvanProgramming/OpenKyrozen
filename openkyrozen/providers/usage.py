@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -146,7 +146,6 @@ def _track_cost(provider: str, usage: dict | None, *, model: str = "unknown",
                 latency_ms: int | None = None, completion_state: str = "completed",
                 occurred_at: datetime | None = None) -> str:
     """Write one immutable provider attempt; summaries always read this ledger."""
-    scope = _current_usage_scope()
     prompt_tokens = _usage_integer(usage, "prompt_tokens")
     completion_tokens = _usage_integer(usage, "completion_tokens")
     cache_hit_tokens = _usage_integer(usage, "cache_hit_tokens")
@@ -192,16 +191,22 @@ def _track_cost(provider: str, usage: dict | None, *, model: str = "unknown",
         else "estimated"
     )
     attempt_id = f"usage_{uuid.uuid4().hex}"
-    scope.store.record_usage_attempt(
-        attempt_id=attempt_id, provider=provider, model=model, surface=scope.surface,
-        user_id=scope.user_id, workspace_id=scope.workspace_id, session_id=scope.session_id,
-        run_id=scope.run_id, cache_status=cache_status, prompt_tokens=prompt_tokens,
-        cache_hit_tokens=cache_hit_tokens, cache_miss_tokens=cache_miss_tokens,
-        completion_tokens=completion_tokens, reasoning_tokens=reasoning_tokens,
-        latency_ms=latency_ms, completion_state=completion_state,
-        usage_status=usage_status,
-        cost_picos=cost_picos, pricing_snapshot=pricing_snapshot,
-    )
+    owns_store = _usage_scope.get() is None
+    scope = _current_usage_scope()
+    try:
+        scope.store.record_usage_attempt(
+            attempt_id=attempt_id, provider=provider, model=model, surface=scope.surface,
+            user_id=scope.user_id, workspace_id=scope.workspace_id, session_id=scope.session_id,
+            run_id=scope.run_id, cache_status=cache_status, prompt_tokens=prompt_tokens,
+            cache_hit_tokens=cache_hit_tokens, cache_miss_tokens=cache_miss_tokens,
+            completion_tokens=completion_tokens, reasoning_tokens=reasoning_tokens,
+            latency_ms=latency_ms, completion_state=completion_state,
+            usage_status=usage_status,
+            cost_picos=cost_picos, pricing_snapshot=pricing_snapshot,
+        )
+    finally:
+        if owns_store:
+            scope.store.close()
     if scope.delegation_budget is not None and scope.delegation_budget_run_id:
         scope.delegation_budget.record_cost(scope.delegation_budget_run_id, cost_picos)
     return attempt_id
@@ -250,7 +255,10 @@ def get_cost_report(*, store: EventStore | None = None, user_id: str = "local",
         raise ValueError("scope must be installation, workspace, or session")
     if scope == "session" and not session_id:
         raise ValueError("session scope requires a session_id")
-    store = store or EventStore()
+    if store is None:
+        with closing(EventStore()) as owned:
+            return get_cost_report(store=owned, user_id=user_id, workspace_id=workspace_id,
+                                   session_id=session_id, scope=scope)
     totals = {
         "installation": _scope_totals(store, scope="installation", user_id=user_id,
                                        workspace_id=workspace_id),
@@ -272,6 +280,10 @@ def reset_cost_tracker(*, store: EventStore | None = None, user_id: str = "local
                        workspace_id: str = "default", session_id: str | None = None,
                        scope: str = "workspace") -> dict[str, str]:
     """Create an audited reporting-window reset without deleting usage attempts."""
-    return (store or EventStore()).create_usage_reset(
+    if store is None:
+        with closing(EventStore()) as owned:
+            return reset_cost_tracker(store=owned, user_id=user_id, workspace_id=workspace_id,
+                                      session_id=session_id, scope=scope)
+    return store.create_usage_reset(
         scope=scope, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
     )

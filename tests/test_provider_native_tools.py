@@ -1,4 +1,5 @@
 """Offline tests for schema-backed native provider requests and replay history."""
+from contextlib import ExitStack, closing
 import unittest
 import json
 import sys
@@ -139,8 +140,8 @@ class NativeRequestTests(unittest.TestCase):
                 self.tools = tools
                 return ModelResponse(text="ready")
 
-        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
-            app = build_application(memory=build_memory(Path(directory) / "state.sqlite3"))
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}), ExitStack() as sqlite_owners:
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))))
             try:
                 provider = CaptureProvider(ProviderConfig(provider="custom", model_simple="model"))
                 app.runtime.llm_provider = provider
@@ -222,11 +223,11 @@ class NativeRequestTests(unittest.TestCase):
         from openkyrozen.tools import ToolAdapters
         from openkyrozen.providers.openai import OpenAICompatProvider
 
-        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}), ExitStack() as sqlite_owners:
             workspace = Path(directory)
             (workspace / "note.txt").write_text("native result | 雪", encoding="utf-8")
             adapters = ToolAdapters(str(workspace))
-            app = build_application(memory=build_memory(workspace / "state.sqlite3"), tools=adapters)
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(workspace / "state.sqlite3"))), tools=adapters)
             runtime = app.runtime
             from openkyrozen.agent.compaction import ContextState
             runtime._active_context_state.set(ContextState("gemini-3-flash"))

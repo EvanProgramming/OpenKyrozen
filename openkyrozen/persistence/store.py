@@ -35,6 +35,9 @@ class EventStore:
     _json = staticmethod(SQLiteDatabase._json)
     _loads = staticmethod(SQLiteDatabase._loads)
 
+    def close(self):
+        self.database.close()
+
     def append_event(self, event_type: str, payload: Any, *, user_id: str='local', workspace_id: str='default', session_id: str | None=None, task_id: str | None=None):
         return self.events.append_event(event_type, payload, user_id=user_id, workspace_id=workspace_id, session_id=session_id, task_id=task_id)
 
