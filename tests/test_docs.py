@@ -60,7 +60,7 @@ class DocumentationLinkTests(unittest.TestCase):
         errors = _check_provider_defaults(
             Path("configuration.md"),
             "export KYROZEN_MODEL_SIMPLE=deepseek-flash\n"
-            "export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro\n",
+            "export KYROZEN_MODEL_COMPLEX=deepseek-flash\n",
             PROVIDER_DEFAULT_MODELS,
         )
         self.assertEqual(errors, [])
