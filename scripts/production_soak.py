@@ -57,19 +57,37 @@ def _process_output(command: list[str]) -> tuple[str, int]:
     return stdout, process.pid
 
 
-def _process_table() -> dict[int, int]:
+class _WindowsProcessTable(dict):
+    def __init__(self, rows, probe_pid):
+        self.probe_pid = probe_pid
+        self.probe = rows.pop(probe_pid, None)
+        super().__init__(rows)
+
+
+def _process_table() -> dict:
     if platform.system() == 'Windows':
         shell = shutil.which('powershell') or shutil.which('pwsh')
         if not shell:
             raise RuntimeError('PowerShell is required for Windows process evidence')
         output, probe_pid = _process_output([shell, '-NoProfile', '-NonInteractive', '-Command',
             "Get-CimInstance Win32_Process | Select-Object "
-            "@{Name='pid';Expression={$_.ProcessId}},@{Name='ppid';Expression={$_.ParentProcessId}} "
+            "@{Name='pid';Expression={$_.ProcessId}},@{Name='ppid';Expression={$_.ParentProcessId}},"
+            "@{Name='CreationDate';Expression={if ($null -ne $_.CreationDate) {"
+            "$_.CreationDate.ToUniversalTime().ToString('o',[Globalization.CultureInfo]::InvariantCulture)}}},Name "
             "| ConvertTo-Json -Compress"])
         rows = json.loads(output) if output.strip() else []
         if isinstance(rows, dict):
             rows = [rows]
-        parents = {int(row['pid']): int(row['ppid']) for row in rows}
+        parents = {}
+        for row in rows:
+            pid = int(row['pid'])
+            if pid in parents:
+                raise AssertionError(f'ambiguous Windows process identity for PID {pid}')
+            stamp = row.get('CreationDate')
+            parents[pid] = {'pid': pid, 'ppid': int(row['ppid']),
+                           'CreationDate': stamp[:64] if isinstance(stamp, str) else None,
+                           'Name': str(row.get('Name') or '')[:256]}
+        return _WindowsProcessTable(parents, probe_pid)
     else:
         output, probe_pid = _process_output(['ps', '-axo', 'pid=,ppid='])
         parents = _parse_process_table(output)
@@ -77,18 +95,122 @@ def _process_table() -> dict[int, int]:
     return parents
 
 
-def _descendants(pid: int, parents: dict[int, int] | None = None) -> set[int]:
+def _process_identity(parents, pid):
+    row = parents[pid]
+    if not isinstance(row, dict):
+        return pid, None
+    import datetime
+    import re
+    stamp = row.get('CreationDate')
+    try:
+        if not isinstance(stamp, str) or not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{7}Z', stamp):
+            raise ValueError('missing or malformed timestamp')
+        datetime.datetime.fromisoformat(stamp)
+    except ValueError as exc:
+        raise AssertionError(f'missing or invalid Windows creation identity for PID {pid}') from exc
+    # Preserve all seven fractional digits; parsing above validates the calendar only.
+    return pid, stamp
+
+
+def _descendants(pid: int, parents: dict | None = None) -> set[int]:
     parents = _process_table() if parents is None else parents
+    if isinstance(parents, _WindowsProcessTable):
+        if pid not in parents:
+            raise AssertionError(f'missing Windows creation identity for root PID {pid}')
+        _process_identity(parents, pid)
     children = {}
     for child, parent in parents.items():
+        parent = parent['ppid'] if isinstance(parent, dict) else parent
         children.setdefault(parent, []).append(child)
-    found, pending = set(), list(children.get(pid, ()))
+    found, pending = set(), [(pid, child) for child in children.get(pid, ())]
     while pending:
-        child = pending.pop()
+        parent, child = pending.pop()
         if child not in found:
+            if isinstance(parents.get(parent), dict):
+                # Win32 ParentProcessId can name a newer, unrelated reused PID.
+                if _process_identity(parents, child)[1] < _process_identity(parents, parent)[1]:
+                    continue
             found.add(child)
-            pending.extend(children.get(child, ()))
+            pending.extend((child, descendant) for descendant in children.get(child, ()))
     return found
+
+
+def _process_checkpoint(path, parents, relevant, **fields):
+    relevant = sorted(relevant)
+    rows = [parents[pid] if isinstance(parents.get(pid), dict)
+            else {'pid': pid, 'ppid': parents.get(pid), 'CreationDate': None}
+            for pid in relevant[:512]]
+    path.write_text(json.dumps({'schema_version': 1, 'rows': rows, 'row_count': len(relevant),
+        'rows_truncated': len(relevant) > 512,
+        'identity_scheme': 'windows_pid_creation_date' if isinstance(parents, _WindowsProcessTable) else 'posix_pid',
+        'excluded_probe_pid': getattr(parents, 'probe_pid', None),
+        'excluded_probe': getattr(parents, 'probe', None), **fields}, indent=2) + '\n')
+
+
+def _read_process_table(checkpoint):
+    try:
+        return _process_table()
+    except Exception as exc:
+        _process_checkpoint(checkpoint, {}, set(), status='capture_failed',
+                            identity_scheme='unavailable', error=f'{type(exc).__name__}: {str(exc)[:300]}')
+        raise
+
+
+def _capture_process_tree(pid, checkpoint):
+    parents = _read_process_table(checkpoint)
+    raw = {key: row['ppid'] if isinstance(row, dict) else row for key, row in parents.items()}
+    candidates = _descendants(pid, raw)
+    fields = {'root_pid': pid, 'status': 'captured'}
+    try:
+        tracked = _descendants(pid, parents)
+        identities = {child: _process_identity(parents, child) for child in tracked}
+    except AssertionError as exc:
+        _process_checkpoint(checkpoint, parents, candidates | {pid}, root_pid=pid,
+                            status='identity_unavailable', error=str(exc))
+        raise
+    _process_checkpoint(checkpoint, parents, candidates | {pid}, **fields,
+        tracked_pids=sorted(tracked)[:512], tracked_count=len(tracked),
+        excluded_stale_parent_pids=sorted(candidates - tracked)[:512],
+        excluded_stale_parent_count=len(candidates - tracked))
+    return {'parents': parents, 'tracked': tracked, 'identities': identities}
+
+
+def _assert_processes_stopped(before, checkpoint):
+    after = _read_process_table(checkpoint)
+    present = before['tracked'] & set(after)
+    offending, reused = [], []
+    try:
+        for pid in sorted(present):
+            if _process_identity(after, pid) == before['identities'][pid]:
+                offending.append(after[pid] if isinstance(after[pid], dict)
+                                 else {'pid': pid, 'ppid': after[pid], 'CreationDate': None})
+            else:
+                reused.append(pid)
+    except AssertionError as exc:
+        _process_checkpoint(checkpoint, after, before['tracked'], status='identity_unavailable',
+                            error=str(exc), offending=offending[:512], reused_pids=reused[:512])
+        raise
+    _process_checkpoint(checkpoint, after, before['tracked'],
+                        status='orphan' if offending else 'stopped',
+                        offending=offending[:512], offending_count=len(offending),
+                        reused_pids=reused[:512], reused_pid_count=len(reused))
+    assert not offending, 'orphan gateway child'
+
+
+def _assert_no_new_audit_children(pid, baseline, checkpoint):
+    current = _capture_process_tree(pid, checkpoint)
+    baseline_keys = set(baseline['identities'].values())
+    extra = {child for child, identity in current['identities'].items() if identity not in baseline_keys}
+    if extra:
+        offending_pids = sorted(extra)[:512]
+        offending = [current['parents'][child] if isinstance(current['parents'][child], dict)
+                     else {'pid': child, 'ppid': current['parents'][child], 'CreationDate': None}
+                     for child in offending_pids]
+        report = json.loads(checkpoint.read_text())
+        report.update(status='orphan', offending_pids=offending_pids,
+                      offending=offending, offending_count=len(extra))
+        checkpoint.write_text(json.dumps(report, indent=2) + '\n')
+    assert not extra, 'orphan audit child'
 
 
 def _process_snapshot(pid: int) -> dict[str, int]:
@@ -169,7 +291,7 @@ def run(seconds: float, log_dir: Path) -> dict:
         db = root / 'state.sqlite3'
         os.environ['KYROZEN_DB_PATH'] = str(root / 'test-driver.sqlite3')
         os.environ['KYROZEN_BROWSER_PROFILES'] = str(root / 'browser-profiles')
-        baseline_children = _descendants(os.getpid())
+        baseline_children = _capture_process_tree(os.getpid(), log_dir / 'process-audit-baseline.json')
         try:
             process, url = start_gateway(workspace, db, root / 'skills',
                                                  log_path=log_dir / f'gateway-{restarts:03d}.log')
@@ -212,9 +334,9 @@ def run(seconds: float, log_dir: Path) -> dict:
                     result = unittest.TextTestRunner(stream=io.StringIO()).run(suite)
                     assert result.wasSuccessful(), (result.errors, result.failures)
                 if cycles % 12 == 0:
-                    tracked = _descendants(process.pid)
+                    tracked = _capture_process_tree(process.pid, log_dir / f'process-{restarts:03d}-before.json')
                     gateway._stop_server(process)
-                    assert not tracked & set(_process_table()), 'orphan gateway child'
+                    _assert_processes_stopped(tracked, log_dir / f'process-{restarts:03d}-after.json')
                     process, url = start_gateway(workspace, db, root / 'skills',
                                                          log_path=log_dir / f'gateway-{restarts + 1:03d}.log')
                     initial = _process_snapshot(process.pid)
@@ -227,11 +349,11 @@ def run(seconds: float, log_dir: Path) -> dict:
                 print(json.dumps({'cycles': cycles, 'restarts': restarts, 'elapsed_seconds': round(time.monotonic()-started),
                                   'rss_bytes': rss}), flush=True)
                 time.sleep(min(5, max(0, seconds - (time.monotonic() - started))))
-            tracked = _descendants(process.pid)
+            tracked = _capture_process_tree(process.pid, log_dir / 'process-final-before.json')
             gateway._stop_server(process)
             process = None
-            assert not tracked & set(_process_table()), 'orphan gateway child'
-            assert not (_descendants(os.getpid()) - baseline_children), 'orphan audit child'
+            _assert_processes_stopped(tracked, log_dir / 'process-final-after.json')
+            _assert_no_new_audit_children(os.getpid(), baseline_children, log_dir / 'process-audit-final.json')
         except Exception as exc:
             # Retain disposable state and progress so a timeout is diagnosable.
             evidence = log_dir / 'failed-state'
