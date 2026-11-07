@@ -17,6 +17,208 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts' / 'v3_windows_reliability.py'
 
 
+class OfflineNativeDecodeTests(unittest.TestCase):
+    def archive(self, root, *, member='traces/native-capture.etl', payload=b'opaque ETL fixture', kind=0):
+        from scripts import v3_windows_reliability as diagnostic
+        source=dict(diagnostic.OFFLINE_ETL_SOURCE)
+        archive=root/'source.zip'
+        with zipfile.ZipFile(archive,'w') as stream:
+            item=zipfile.ZipInfo(member);item.external_attr=kind << 16
+            stream.writestr(item,payload)
+            stream.writestr('../must-not-extract.txt',b'unrelated archive member')
+        source.update(zip_bytes=archive.stat().st_size,
+            zip_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
+            etl_bytes=len(payload),etl_sha256=hashlib.sha256(payload).hexdigest())
+        metadata={'repository':source['repository'],'run_id':source['run_id'],
+            'head_sha':source['diagnostic_sha'],'run_status':'completed','artifact':{
+                'id':source['artifact_id'],'name':source['artifact_name'],
+                'size_in_bytes':source['zip_bytes'],'digest':'sha256:'+source['zip_sha256'],
+                'expired':False,'workflow_run':{'id':source['run_id'],'head_sha':source['diagnostic_sha']}}}
+        path=root/'source-metadata.json';path.write_text(json.dumps(metadata))
+        return archive,path,source
+
+    def test_extracts_only_the_exact_verified_regular_etl_without_following_other_members(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);archive,metadata,source=self.archive(root)
+            output=root/'output';output.mkdir()
+            with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source):
+                etl=diagnostic._extract_offline_etl(archive,json.loads(metadata.read_text()),output)
+            self.assertEqual(etl.read_bytes(),b'opaque ETL fixture')
+            self.assertEqual([p.name for p in output.iterdir()],['native-capture.etl'])
+            self.assertFalse((root/'must-not-extract.txt').exists())
+
+    def test_wrong_source_or_archive_or_etl_hash_blocks_before_any_decoder_execution(self):
+        from scripts import v3_windows_reliability as diagnostic
+        for changed in ('run','artifact','sha','zip-size','zip','etl'):
+            with self.subTest(changed=changed),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);archive,metadata,source=self.archive(root)
+                value=json.loads(metadata.read_text())
+                if changed=='run':value['run_id']+=1
+                elif changed=='artifact':value['artifact']['id']+=1
+                elif changed=='sha':value['head_sha']='0'*40
+                elif changed=='zip-size':archive.write_bytes(archive.read_bytes()+b'changed')
+                elif changed=='zip':
+                    damaged=bytearray(archive.read_bytes());damaged[-1]^=1;archive.write_bytes(damaged)
+                else:source['etl_sha256']='0'*64
+                metadata.write_text(json.dumps(value))
+                with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
+                     patch.object(diagnostic,'run_process',side_effect=AssertionError('decoder ran before validation')):
+                    self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),2)
+                receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
+                self.assertEqual(receipt['status'],'BLOCKED')
+                self.assertNotIn('decoder',receipt)
+                if changed=='zip':self.assertIn('ZIP SHA256',receipt['error'])
+
+    def test_alias_missing_or_nonregular_selected_member_is_never_extracted(self):
+        from scripts import v3_windows_reliability as diagnostic
+        for member,kind in (('../native-capture.etl',0),('traces/native-capture.etl',0o120777)):
+            with self.subTest(member=member,kind=kind),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);archive,metadata,source=self.archive(root,member=member,kind=kind)
+                output=root/'output';output.mkdir()
+                with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source),self.assertRaises(ValueError):
+                    diagnostic._extract_offline_etl(archive,json.loads(metadata.read_text()),output)
+                self.assertFalse(list(output.iterdir()))
+
+    def test_missing_archive_keeps_a_blocked_receipt_instead_of_losing_failure_evidence(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);archive,metadata,source=self.archive(root);archive.unlink()
+            with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source):
+                self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),2)
+            receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
+            self.assertEqual(receipt['status'],'BLOCKED')
+            self.assertIn('FileNotFoundError',receipt['error'])
+            self.assertNotIn('decoder',receipt)
+
+    @unittest.skipUnless(os.name=='posix','native metadata alias fixture')
+    def test_metadata_alias_is_rejected_before_reading_or_running_the_decoder(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);archive,metadata,source=self.archive(root)
+            alias=root/'alias.json';alias.symlink_to(metadata)
+            with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source):
+                self.assertEqual(diagnostic.run_offline_decode(archive,alias,root/'output'),2)
+            receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
+            self.assertIn('metadata size/type',receipt['error'])
+
+    def test_single_csv_schema_decode_has_30_second_bound_and_no_capture_or_field_claim(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);archive,metadata,source=self.archive(root);commands=[]
+            def run(command,log,env,**options):
+                commands.append((command,options))
+                Path(command[command.index('-o')+1]).write_bytes(b'opaque dump bytes\n')
+                Path(command[command.index('-export')+1]).write_bytes(b'opaque schema bytes\n')
+                return {'returncode':0,'timeout_seconds':options['timeout'],'timeout_cleanup':None}
+            with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
+                 patch.object(diagnostic.platform,'system',return_value='Windows'), \
+                 patch.object(diagnostic.shutil,'which',return_value='tracerpt.exe'), \
+                 patch.object(diagnostic,'run_process',side_effect=run), \
+                 patch.object(diagnostic,'NativeCapture',side_effect=AssertionError('recording started')):
+                self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),0)
+            self.assertEqual(len(commands),1)
+            command,options=commands[0]
+            self.assertEqual(command[command.index('-of')+1],'CSV')
+            self.assertEqual(options['timeout'],30)
+            self.assertNotIn('-rts',command)
+            receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
+            self.assertEqual(receipt['status'],'DECODE_COMPLETED_UNANALYZED')
+            self.assertFalse(receipt['historical_cause_established'])
+            self.assertFalse(receipt['native_fields_validated'])
+            self.assertEqual(receipt['actual_product_sha'],'0109494a87448ce345dc69751b314b0aeab88ef0')
+            self.assertEqual(receipt['source_capture_head'],'7b07bfa3dfab7c4633689878372929647b9a9f48')
+            self.assertEqual(receipt['storage_limit_bytes'],512*1024*1024)
+            self.assertEqual(receipt['outputs']['native-events.csv']['bytes'],18)
+            with self.assertRaises(FileExistsError):
+                diagnostic.run_offline_decode(archive,metadata,root/'output')
+
+    def test_relative_cli_paths_reach_the_decoder_from_its_existing_repository_working_directory(self):
+        from contextlib import chdir
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);archive,metadata,source=self.archive(root)
+            def run(command,*args,**options):
+                path=Path(command[1]);path=path if path.is_absolute() else diagnostic.ROOT/path
+                self.assertTrue(path.is_file(),'decoder cwd cannot reach the verified ETL')
+                for flag in ('-o','-export'):
+                    target=Path(command[command.index(flag)+1])
+                    target=target if target.is_absolute() else diagnostic.ROOT/target
+                    target.write_bytes(b'opaque output')
+                return {'returncode':0,'timeout_cleanup':None}
+            with chdir(root),patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
+                 patch.object(diagnostic.platform,'system',return_value='Windows'), \
+                 patch.object(diagnostic.shutil,'which',return_value='tracerpt.exe'), \
+                 patch.object(diagnostic,'run_process',side_effect=run):
+                self.assertEqual(diagnostic.run_offline_decode(Path('source.zip'),Path('source-metadata.json'),Path('output')),0)
+
+    def test_decode_timeout_retains_partial_output_and_actual_cleanup_uncertainty(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);archive,metadata,source=self.archive(root)
+            def timeout(command,*args,**options):
+                Path(command[command.index('-o')+1]).write_text('partial')
+                return {'returncode':124,'timeout_seconds':30,'abort_reason':None,
+                        'timeout_cleanup':{'descendant_cleanup_certified':False,'method':'taskkill_tree'}}
+            with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
+                 patch.object(diagnostic.platform,'system',return_value='Windows'), \
+                 patch.object(diagnostic.shutil,'which',return_value='tracerpt.exe'), \
+                 patch.object(diagnostic,'run_process',side_effect=timeout):
+                self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),2)
+            receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
+            self.assertEqual(receipt['status'],'BLOCKED')
+            self.assertTrue(receipt['cleanup_uncertified'])
+            self.assertEqual(receipt['decoder']['timeout_cleanup']['method'],'taskkill_tree')
+            self.assertEqual((root/'output'/'native-events.csv').read_text(),'partial')
+
+    def test_decoder_storage_growth_and_missing_schema_remain_blocked_with_outputs_retained(self):
+        from scripts import v3_windows_reliability as diagnostic
+        for mode in ('growth','missing-schema'):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);archive,metadata,source=self.archive(root)
+                limit=source['zip_bytes']+source['etl_bytes']+8 if mode=='growth' else 512*1024*1024
+                def run(command,*args,**options):
+                    Path(command[command.index('-o')+1]).write_bytes(b'x'*100)
+                    reason=options['abort']()
+                    self.assertEqual(reason,'decode_storage_limit' if mode=='growth' else None)
+                    return {'returncode':124 if reason else 0,'abort_reason':reason,'timeout_cleanup':None}
+                with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
+                     patch.object(diagnostic,'OFFLINE_STORAGE_LIMIT',limit), \
+                     patch.object(diagnostic.platform,'system',return_value='Windows'), \
+                     patch.object(diagnostic.shutil,'which',return_value='tracerpt.exe'), \
+                     patch.object(diagnostic,'run_process',side_effect=run):
+                    self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),2)
+                receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
+                self.assertEqual(receipt['status'],'BLOCKED')
+                self.assertEqual(receipt['outputs']['native-events.csv']['bytes'],100)
+
+    def test_duplicate_canonical_member_cannot_replace_the_single_frozen_etl(self):
+        import warnings
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);archive,metadata,source=self.archive(root)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore',UserWarning)
+                with zipfile.ZipFile(archive,'a') as stream:
+                    stream.writestr(source['etl_member'],b'opaque ETL fixture')
+            source.update(zip_bytes=archive.stat().st_size,zip_sha256=hashlib.sha256(archive.read_bytes()).hexdigest())
+            value=json.loads(metadata.read_text());value['artifact'].update(
+                size_in_bytes=source['zip_bytes'],digest='sha256:'+source['zip_sha256'])
+            output=root/'output';output.mkdir()
+            with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source),self.assertRaises(ValueError):
+                diagnostic._extract_offline_etl(archive,value,output)
+            self.assertFalse(list(output.iterdir()))
+
+    def test_cli_offline_branch_never_enters_product_or_capture_campaign(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with patch.object(sys,'argv',[str(SCRIPT),'--output','new-output',
+                '--offline-decode-archive','source.zip','--offline-source-metadata','source.json']), \
+             patch.object(diagnostic,'run_offline_decode',return_value=0), \
+             patch.object(diagnostic,'run_native_comparison',side_effect=AssertionError('product campaign ran')), \
+             patch.object(diagnostic,'historical_environment',side_effect=AssertionError('product dependencies read')):
+            self.assertEqual(diagnostic.main(),0)
+
+
 class WindowsReliabilityDiagnosticTests(unittest.TestCase):
     @staticmethod
     def _historical_archive(revision):
@@ -907,6 +1109,18 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
         trace = next(step['run'] for step in steps if step.get('name','').startswith('Trace unchanged'))
         self.assertIn('--cpu-workers 2', trace)
         self.assertIn("'--historical-repository', 'historical-product'", trace)
+        self.assertEqual(dispatch['decode_existing_etl']['type'],'boolean')
+        self.assertEqual(workflow['jobs']['cancellation']['if'],'${{ !inputs.decode_existing_etl }}')
+        offline=workflow['jobs']['offline-decode']
+        self.assertEqual(offline['permissions'],{'contents':'read','actions':'read'})
+        self.assertIn('inputs.decode_existing_etl',offline['if'])
+        checkouts=[step.get('with',{}).get('path') for step in offline['steps']
+                   if step.get('uses','').startswith('actions/checkout@')]
+        self.assertEqual(checkouts,['diagnostic-source'])
+        commands='\n'.join(step.get('run','') for step in offline['steps'])
+        self.assertIn('--offline-decode-archive',commands)
+        self.assertNotIn('--historical-repository',commands)
+        self.assertNotIn('pip install',commands)
 
     def test_native_capture_stops_only_its_owned_instance_even_when_start_is_uncertain(self):
         from scripts import v3_windows_reliability as diagnostic

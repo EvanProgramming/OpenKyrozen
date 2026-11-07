@@ -16,6 +16,7 @@ import re
 import signal
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -24,16 +25,137 @@ import time
 import traceback
 import unittest
 import uuid
+import zipfile
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST = 'test_cancel_during_provider_call_prevents_late_write'
 HISTORICAL_PRODUCT = '0f172f9fe692ff8fafcc0a15a72fe51eaf67e977'
+OFFLINE_ETL_SOURCE = {
+    'repository':'EvanProgramming/OpenKyrozen', 'run_id':42360763158,
+    'artifact_id':13570135982, 'diagnostic_sha':'7b07bfa3dfab7c4633689878372929647b9a9f48',
+    'product_sha':'0109494a87448ce345dc69751b314b0aeab88ef0',
+    'artifact_name':'windows-cancellation-3.12.10-0109494a87448ce345dc69751b314b0aeab88ef0-native-vfs',
+    'zip_bytes':46633722, 'zip_sha256':'7dfeda28bcb1dca78df5875747abac0aa1e4400852592dcfc44153e711111e0e',
+    'etl_member':'traces/native-capture.etl', 'etl_bytes':120979456,
+    'etl_sha256':'68daa8aba9d7f46ed296154c500be5bb4657db5955df3f13a4b2abeaf29e6b58',
+}
+OFFLINE_STORAGE_LIMIT = 512 * 1024 * 1024
 sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
 
 
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
+
+
+def _extract_offline_etl(archive, metadata, output):
+    """Authenticate the frozen archive, then stream only its one regular ETL."""
+    expected = OFFLINE_ETL_SOURCE
+    artifact = metadata.get('artifact') if isinstance(metadata, dict) else None
+    run = artifact.get('workflow_run') if isinstance(artifact, dict) else None
+    if (not isinstance(run, dict) or metadata.get('repository') != expected['repository']
+            or metadata.get('run_id') != expected['run_id'] or metadata.get('run_status') != 'completed'
+            or metadata.get('head_sha') != expected['diagnostic_sha']
+            or artifact.get('id') != expected['artifact_id'] or artifact.get('name') != expected['artifact_name']
+            or artifact.get('size_in_bytes') != expected['zip_bytes']
+            or artifact.get('digest') != 'sha256:' + expected['zip_sha256']
+            or artifact.get('expired') is not False or run.get('id') != expected['run_id']
+            or run.get('head_sha') != expected['diagnostic_sha']):
+        raise ValueError('Frozen artifact/run/SHA metadata differs')
+    details = archive.lstat()
+    if not stat.S_ISREG(details.st_mode) or details.st_size != expected['zip_bytes']:
+        raise ValueError('Frozen ZIP size/type differs')
+    with archive.open('rb') as stream:
+        if hashlib.file_digest(stream, 'sha256').hexdigest() != expected['zip_sha256']:
+            raise ValueError('Frozen ZIP SHA256 differs')
+    with zipfile.ZipFile(archive) as source:
+        matches = [item for item in source.infolist() if item.filename == expected['etl_member']]
+        if len(matches) != 1:
+            raise ValueError('Expected exactly one canonical ETL member')
+        item = matches[0]
+        if (item.is_dir() or stat.S_IFMT(item.external_attr >> 16) not in (0, stat.S_IFREG)
+                or item.flag_bits & 1 or item.file_size != expected['etl_bytes']
+                or item.file_size > OFFLINE_STORAGE_LIMIT):
+            raise ValueError('Selected ETL member size/type differs')
+        target = output / 'native-capture.etl'
+        digest, count = hashlib.sha256(), 0
+        with source.open(item) as incoming, target.open('xb') as outgoing:
+            while chunk := incoming.read(1024 * 1024):
+                count += len(chunk)
+                if count > expected['etl_bytes']:
+                    raise ValueError('Selected ETL exceeded its frozen size')
+                digest.update(chunk)
+                outgoing.write(chunk)
+        if count != expected['etl_bytes'] or digest.hexdigest() != expected['etl_sha256']:
+            raise ValueError('Frozen ETL SHA256/size differs')
+    return target
+
+
+def _offline_storage_bytes(output, archive):
+    return archive.stat().st_size + sum(path.lstat().st_size for path in output.rglob('*') if path.is_file())
+
+
+def run_offline_decode(archive, metadata_path, output):
+    """One existing-ETL decode; never imports a product or controls a recorder."""
+    archive, metadata_path, output = (path.absolute() for path in (archive, metadata_path, output))
+    output.mkdir(parents=True, exist_ok=False)
+    receipt = {'schema_version':1, 'status':'BLOCKED', 'source':dict(OFFLINE_ETL_SOURCE),
+        'actual_product_sha':OFFLINE_ETL_SOURCE['product_sha'],
+        'source_capture_head':OFFLINE_ETL_SOURCE['diagnostic_sha'],
+        'product_identity_source':'frozen original artifact; candidate_sha/PRODUCT_SHA is not used',
+        'historical_cause_established':False, 'native_fields_validated':False,
+        'decode_timeout_seconds':30, 'storage_limit_bytes':OFFLINE_STORAGE_LIMIT,
+        'storage_limit_is_sampled_abort_not_hard_quota':True, 'cleanup_uncertified':False,
+        'qualification':'Decoder completion is not native field/schema validation or R260 acceptance.'}
+    try:
+        details = metadata_path.lstat()
+        if not stat.S_ISREG(details.st_mode) or details.st_size > 1024 * 1024:
+            raise ValueError('Source metadata size/type differs')
+        metadata_input = json.loads(metadata_path.read_text(encoding='utf-8-sig'))
+        etl = _extract_offline_etl(archive, metadata_input, output)
+        receipt['input_verified'] = True
+        decoder = shutil.which('tracerpt.exe')
+        if platform.system() != 'Windows' or not decoder:
+            raise RuntimeError('Windows tracerpt unavailable; no decoder was executed')
+        command = [decoder, str(etl), '-o', str(output / 'native-events.csv'), '-of', 'CSV',
+                   '-export', str(output / 'native-schema.man'),
+                   '-summary', str(output / 'native-summary.txt'), '-y']
+        def abort():
+            return ('decode_storage_limit' if _offline_storage_bytes(output, archive) > OFFLINE_STORAGE_LIMIT
+                    else None)
+        with tempfile.TemporaryDirectory(prefix='kyrozen-offline-decode-') as home:
+            result = run_process(command, output / 'decoder.log', isolated_environment(Path(home)),
+                                 timeout=30, abort=abort)
+        receipt['decoder'] = result
+        cleanup = result.get('timeout_cleanup')
+        receipt['cleanup_uncertified'] = bool(cleanup and not cleanup.get('descendant_cleanup_certified'))
+        receipt['cleanup_observation'] = ('run_process timeout cleanup record' if cleanup else
+            'direct decoder process exit only; no descendant-sweep certification')
+        if result['returncode'] or result.get('abort_reason'):
+            raise RuntimeError('Decoder did not complete within its unchanged bounds')
+        if abort():
+            raise RuntimeError('Decoder output exceeded the sampled storage bound')
+        if any(not (output / name).is_file() or not (output / name).stat().st_size
+               for name in ('native-events.csv', 'native-schema.man')):
+            raise RuntimeError('Decoder did not create nonempty CSV and schema outputs')
+        receipt['status'] = 'DECODE_COMPLETED_UNANALYZED'
+    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile, subprocess.SubprocessError) as error:
+        receipt['error'] = f'{type(error).__name__}: {error}'
+    finally:
+        receipt['outputs'] = {}
+        for name in ('native-capture.etl', 'native-events.csv', 'native-schema.man', 'native-summary.txt', 'decoder.log'):
+            path = output / name
+            if path.is_file():
+                with path.open('rb') as stream:
+                    receipt['outputs'][name] = {'bytes':path.stat().st_size,
+                        'sha256':hashlib.file_digest(stream, 'sha256').hexdigest()}
+        try:
+            receipt['observed_storage_bytes'] = _offline_storage_bytes(output, archive)
+        except OSError as error:
+            receipt['storage_observation_error'] = type(error).__name__
+        write_json(output / 'decode-receipt.json', receipt)
+    print('Offline native decode: ' + receipt['status'], flush=True)
+    return 0 if receipt['status'] == 'DECODE_COMPLETED_UNANALYZED' else 2
 
 
 # Exact dependency versions from job 125106035551, including its four already-satisfied packages.
@@ -1126,6 +1248,9 @@ def main():
     global ROOT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--offline-decode-archive', type=Path,
+                        help='Decode only the frozen existing run42360763158 ZIP; never starts a product or WPR')
+    parser.add_argument('--offline-source-metadata', type=Path, help='GitHub source artifact/run metadata for offline decode')
     parser.add_argument('--repository', type=Path, default=ROOT, help='Exact product checkout to test; harness may live separately')
     parser.add_argument('--iterations', type=int, default=20)
     parser.add_argument('--control', choices=('baseline', 'cpu', 'sqlite', 'combined', 'paired-anchor', 'native-wait', 'native-vfs'), default='baseline')
@@ -1139,6 +1264,13 @@ def main():
     parser.add_argument('--readonly-anchor', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--vfs-target', choices=('wal','control-file'), help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.offline_decode_archive or args.offline_source_metadata:
+        if (not args.offline_decode_archive or not args.offline_source_metadata or not args.output
+                or args.child or args.native_trace or args.readonly_anchor or args.vfs_target
+                or args.historical_repository or args.historical_environment or args.interleave_reviewer
+                or args.write_historical_requirements or args.control != 'baseline'):
+            parser.error('offline decode requires archive, source metadata and a fresh output; no campaign options')
+        return run_offline_decode(args.offline_decode_archive, args.offline_source_metadata, args.output)
     if args.write_historical_requirements:
         args.write_historical_requirements.parent.mkdir(parents=True, exist_ok=True)
         args.write_historical_requirements.write_text('\n'.join(HISTORICAL_REQUIREMENTS.split()) + '\n', encoding='utf-8')

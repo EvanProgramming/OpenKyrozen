@@ -5,6 +5,10 @@ on:
     paths: ['.github/workflows/v3-windows-reliability.yml', 'scripts/v3_windows_reliability.py', 'tests/test_v3_windows_reliability.py']
   workflow_dispatch:
     inputs:
+      decode_existing_etl:
+        description: Decode only the frozen existing 42360763158 ETL; no product or WPR execution
+        type: boolean
+        default: false
       candidate_sha:
         description: Exact 40-character product commit to test (diagnostic code remains separate)
         type: string
@@ -32,6 +36,7 @@ permissions:
   contents: read
 jobs:
   cancellation:
+    if: ${{ !inputs.decode_existing_etl }}
     runs-on: windows-latest
     timeout-minutes: 60
     strategy:
@@ -149,4 +154,79 @@ jobs:
         with:
           name: windows-cancellation-${{ matrix.python }}-${{ env.PRODUCT_SHA }}-${{ matrix.control }}
           path: windows-evidence/
+          if-no-files-found: error
+
+  offline-decode:
+    if: github.event_name == 'workflow_dispatch' && inputs.decode_existing_etl
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout diagnostic harness only
+        uses: actions/checkout@v4
+        with:
+          path: diagnostic-source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.10'
+      - name: Download only the frozen original artifact ZIP
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            fs.mkdirSync('offline-input');
+            const request = {owner: context.repo.owner, repo: context.repo.repo};
+            const source = {repository: 'EvanProgramming/OpenKyrozen', run_id: 42360763158,
+              artifact_id: 13570135982, head_sha: '7b07bfa3dfab7c4633689878372929647b9a9f48'};
+            fs.writeFileSync('offline-input/download-receipt.json', JSON.stringify({status:'STARTED',source}));
+            try {
+              if (request.owner + '/' + request.repo !== source.repository) throw new Error('repository mismatch');
+              const {data: run} = await github.rest.actions.getWorkflowRun({...request, run_id:source.run_id});
+              const {data: artifact} = await github.rest.actions.getArtifact({...request, artifact_id:source.artifact_id});
+              const metadata = {repository:source.repository, run_id:run.id, head_sha:run.head_sha,
+                run_status:run.status, artifact:{id:artifact.id, name:artifact.name,
+                  size_in_bytes:artifact.size_in_bytes, digest:artifact.digest, expired:artifact.expired,
+                  workflow_run:artifact.workflow_run}};
+              fs.writeFileSync('offline-input/source-metadata.json', JSON.stringify(metadata,null,2));
+              if (run.id !== source.run_id || run.head_sha !== source.head_sha || run.status !== 'completed' ||
+                  artifact.id !== source.artifact_id || artifact.workflow_run?.id !== source.run_id ||
+                  artifact.workflow_run?.head_sha !== source.head_sha || artifact.expired ||
+                  artifact.size_in_bytes !== 46633722 ||
+                  artifact.digest !== 'sha256:7dfeda28bcb1dca78df5875747abac0aa1e4400852592dcfc44153e711111e0e') {
+                throw new Error('source metadata mismatch');
+              }
+              const download = await github.rest.actions.downloadArtifact({...request,
+                artifact_id:source.artifact_id, archive_format:'zip', request:{timeout:30000}});
+              const bytes = Buffer.from(download.data);
+              if (bytes.length !== 46633722) throw new Error('archive size mismatch');
+              fs.writeFileSync('offline-input/source.zip',bytes,{flag:'wx'});
+              fs.writeFileSync('offline-input/download-receipt.json',JSON.stringify({status:'DOWNLOADED',source,bytes:bytes.length}));
+            } catch (error) {
+              fs.writeFileSync('offline-input/download-receipt.json',JSON.stringify({status:'BLOCKED',source,
+                error_type:error.name,http_status:error.status || null}));
+              throw new Error('Frozen artifact download blocked; inspect retained receipt/metadata');
+            }
+      - name: Test only the offline decode boundaries
+        working-directory: diagnostic-source
+        shell: pwsh
+        run: |
+          python -c "import unittest; unittest.main(module='tests.test_v3_windows_reliability', defaultTest='OfflineNativeDecodeTests', verbosity=2)" *> ../offline-input/offline-tests.log
+          if ($LASTEXITCODE -ne 0) { throw 'Offline decoder boundary tests failed' }
+      - name: Decode existing ETL once without starting capture or product workloads
+        shell: pwsh
+        run: |
+          python diagnostic-source/scripts/v3_windows_reliability.py --offline-decode-archive offline-input/source.zip --offline-source-metadata offline-input/source-metadata.json --output offline-decode-evidence
+          if ($LASTEXITCODE -ne 0) { throw 'Offline decode BLOCKED; inspect retained output' }
+      - name: Preserve separate offline decode evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-offline-decode-${{ github.run_id }}-${{ github.sha }}
+          path: |
+            offline-decode-evidence/
+            offline-input/source-metadata.json
+            offline-input/download-receipt.json
+            offline-input/offline-tests.log
           if-no-files-found: error
