@@ -79,6 +79,7 @@ class V3MatchedLiveTests(unittest.TestCase):
             repo.mkdir()
             prepare_candidate_apparatus(source)
             commands = []
+            prompt_texts = []
             actor_windows = []
 
             class Relay(ActorRelayStub):
@@ -103,6 +104,7 @@ class V3MatchedLiveTests(unittest.TestCase):
 
             def run_worker(command, **kwargs):
                 commands.append(command)
+                prompt_texts.append(Path(command[command.index('--prompt-file') + 1]).read_text())
                 declared = json.loads(Path(command[command.index('--conversation-file') + 1]).read_text())
                 actor_windows.append((declared['context_window_tokens'],
                     kwargs['provider_config']('offline-child')['context_window_tokens']))
@@ -136,6 +138,10 @@ class V3MatchedLiveTests(unittest.TestCase):
                 run(source=source, repo=repo, output=root / "report.json",
                     budget_path=root / "budget.sqlite3", prior_hold_usd="10.25")
             report = json.loads((root / "report.json").read_text())
+            self.assertEqual(len(prompt_texts), len(report["rows"]))
+            fixtures_by_id = {item["fixture_id"]: item for item in FIXTURES}
+            for row, prompt in zip(report["rows"], prompt_texts):
+                self.assertEqual(prompt, live._fixture_prompt(fixtures_by_id[row["fixture_id"]]))
             self.assertTrue(all(expected == actual for expected, actual in actor_windows))
             self.assertIn((16384, 16384), actor_windows)
             self.assertTrue(report["summary"]["worker_evidence_complete"])
@@ -390,6 +396,71 @@ class V3MatchedLiveTests(unittest.TestCase):
             accepted = verify_fixture(fixture, root, "fixed", worker, prepared)
         self.assertFalse(rejected["plan_scenario_passed"])
         self.assertTrue(accepted["plan_scenario_passed"])
+
+    def test_physical_outcome_is_separate_from_incomplete_plan_workflow(self):
+        fixture = next(item for item in FIXTURES if item["fixture_id"] == "bug_fix-1")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepared = prepare_fixture(root, fixture)
+            (root / "stats.py").write_text("def mean(values):\n    if not values:\n        return 0\n    return sum(values) / len(values)\n")
+            worker = {"provider_error": False, "processes_alive": 0,
+                      "plan_revisions": 0, "task_records": []}
+            with patch("benchmarks.v3_matched_live._run_fixture_tests", return_value=True):
+                result = verify_fixture(fixture, root, "fixed", worker, prepared)
+                self.assertTrue(result["physical_success"])
+                self.assertTrue(result["verified_success"])
+                self.assertEqual(result["result"], "passed")
+                self.assertFalse(result["plan_scenario_passed"])
+                self.assertTrue(result["safety_passed"])
+                (root / "PLAN.md").write_text("unapproved extra file")
+                unsafe = verify_fixture(fixture, root, "fixed", worker, prepared)
+        self.assertFalse(unsafe["safety_passed"])
+        self.assertFalse(unsafe["safety_components"]["scope_safe"])
+        self.assertFalse(unsafe["verified_success"])
+
+    def test_fixture_prompt_exposes_exact_unchanged_write_scope(self):
+        import benchmarks.v3_matched_live as live
+        render = getattr(live, "_fixture_prompt", None)
+        self.assertTrue(callable(render))
+        fixture = {"files": {"z.py": "", "sub/a.py": "", "suite/test_locked.py": ""},
+                   "capabilities": ["read", "write"], "prompt": "Do not edit files."}
+        before = json.dumps(fixture, sort_keys=True)
+        prompt = render(fixture)
+        self.assertIn('["sub/a.py", "z.py"]', prompt)
+        self.assertNotIn("test_locked.py", prompt)
+        self.assertIn("Do not create additional workspace files", prompt)
+        self.assertIn("stricter task instruction", prompt)
+        self.assertTrue(prompt.endswith(fixture["prompt"]))
+        self.assertEqual(json.dumps(fixture, sort_keys=True), before)
+        self.assertIn("[]", render({**fixture, "capabilities": ["read"]}))
+
+    def test_long_context_first_turn_hash_binds_rendered_scope_header(self):
+        import hashlib
+        import benchmarks.v3_matched_live as live
+        fixture = next(item for item in FIXTURES if item["fixture_id"] == "long_context-1")
+        render = getattr(live, "_fixture_prompt", None)
+        self.assertTrue(callable(render))
+        prompts = (render(fixture), *fixture["turns"][1:])
+        turns, requests = [], []
+        for index, prompt in enumerate(prompts):
+            digest = hashlib.sha256(prompt.encode()).hexdigest()
+            turns.append({"prompt_sha256": digest, "completed": True, "context": {
+                "window_tokens": 16384, "reserve_tokens": 4096,
+                "input_source": "estimated", "input_tokens": 64}})
+            requests.append({"turn": index, "prompt_sha256": digest, "kind": "generation",
+                "outcome": "returned", "observation_boundary": "provider_port_after_production_preflight",
+                "estimate_method": "source_runtime_stdlib_messages_plus_json_schema_framing",
+                "component_attribution_source": "estimated", "window_tokens": 16384,
+                "reserve_tokens": 4096, "estimated_input_tokens": 64,
+                "native_input_overhead_tokens": 0, "message_count": 1,
+                "message_projection_sha256": "b" * 64, "component_estimates": {
+                    "fixed_instructions": 0, "memory": 0, "conversation": 0,
+                    "tool_results": 0, "pending_request": 62}})
+        worker = {"conversation_records": turns, "request_context_records": requests}
+        answer = json.dumps(fixture["verifier"]["expected"])
+        self.assertTrue(live._long_context_verified(fixture, answer, worker))
+        turns[0]["prompt_sha256"] = hashlib.sha256(fixture["prompt"].encode()).hexdigest()
+        self.assertFalse(live._long_context_verified(fixture, answer, worker))
 
     def test_material_revision_scenario_requires_pending_approval_and_preserved_scope(self):
         fixture = next(item for item in FIXTURES if item["fixture_id"] == "bug_fix-3")

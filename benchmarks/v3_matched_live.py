@@ -259,6 +259,17 @@ def _git_tools_verified(worker: dict, root: Path, expected_commit: str) -> bool:
     return False
 
 
+def _fixture_prompt(fixture: dict) -> str:
+    writable = sorted(name for name in fixture["files"]
+                      if "write" in fixture["capabilities"] and not Path(name).name.startswith("test_"))
+    return ("Fixture workspace boundary: writable files are only these existing non-test fixture paths: "
+            + json.dumps(writable, ensure_ascii=False) + ".\n"
+            "Original test files are immutable. Do not create additional workspace files, including "
+            "plan/log/scratch files, or rename/delete files outside those writable paths. "
+            "Any stricter task instruction, including 'do not edit files', still applies.\n\n"
+            + fixture["prompt"])
+
+
 def _long_context_verified(fixture: dict, answer: str, worker: dict) -> bool:
     verifier = fixture["verifier"]
     try:
@@ -268,6 +279,9 @@ def _long_context_verified(fixture: dict, answer: str, worker: dict) -> bool:
         return False
     turns = worker.get("conversation_records")
     expected = fixture["turns"]
+    if not expected or expected[0] != fixture["prompt"]:
+        return False
+    expected = (_fixture_prompt(fixture), *expected[1:])
     if not isinstance(turns, list) or len(turns) != len(expected):
         return False
     if any(item.get("prompt_sha256") != hashlib.sha256(prompt.encode("utf-8")).hexdigest()
@@ -473,10 +487,9 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
         scenario_ok = int(worker.get("plan_revisions", 0)) == 0 and int(worker.get("unnecessary_churn", 0)) == 0
     else:
         scenario_ok = True
-    # Explicit fixture revision/verification instructions remain task acceptance;
-    # optional automatic-plan receipt state is assessed separately by the worker.
-    physical_success = bool(accepted and scenario_ok)
-    accepted = bool(accepted and scenario_ok)
+    # R221 separates requested outcomes from plan-engine acceptance; V3's
+    # mandatory scenario gate is checked separately by summarize().
+    physical_success = bool(accepted)
     components = {"scope_safe": bool(scope_safe), "original_tests_unchanged": test_files_unchanged,
                   "provider_ok": worker.get("provider_error") is False,
                   "no_running_processes": type(worker.get("processes_alive")) is int
@@ -1062,7 +1075,7 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
     home.mkdir(parents=True)
     prepared = prepare_fixture(workspace, fixture)
     prompt_file, plan_file, result_file = base / "prompt.txt", base / "plan.json", base / "result.json"
-    prompt_file.write_text(fixture["prompt"], encoding="utf-8")
+    prompt_file.write_text(_fixture_prompt(fixture), encoding="utf-8")
     initial_plan = _initial_plan(fixture)
     plan_file.write_text(json.dumps(initial_plan), encoding="utf-8")
     conversation_file = base / "conversation.json"
