@@ -1,6 +1,7 @@
 import json
 import hashlib
 import io
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import subprocess
@@ -18,6 +19,16 @@ SCRIPT = ROOT / 'scripts' / 'v3_windows_reliability.py'
 
 
 class OfflineNativeDecodeTests(unittest.TestCase):
+    @contextmanager
+    def installed_tool(self, root):
+        from scripts import v3_windows_reliability as diagnostic
+        tool=root/'xperf.exe';tool.write_bytes(b'opaque test tool bytes')
+        version=json.dumps({'file_version':'test-file-version','product_version':'test-product-version'})
+        with patch.object(diagnostic.platform,'system',return_value='Windows'), \
+             patch.object(diagnostic.shutil,'which',return_value=str(tool)), \
+             patch.object(diagnostic.subprocess,'run',return_value=subprocess.CompletedProcess([],0,version,'')):
+            yield tool
+
     def archive(self, root, *, member='traces/native-capture.etl', payload=b'opaque ETL fixture', kind=0):
         from scripts import v3_windows_reliability as diagnostic
         source=dict(diagnostic.OFFLINE_ETL_SOURCE)
@@ -102,26 +113,28 @@ class OfflineNativeDecodeTests(unittest.TestCase):
             receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
             self.assertIn('metadata size/type',receipt['error'])
 
-    def test_single_csv_schema_decode_has_30_second_bound_and_no_capture_or_field_claim(self):
+    def test_single_xperf_fileio_dump_keeps_raw_header_30_seconds_and_no_native_claim(self):
         from scripts import v3_windows_reliability as diagnostic
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);archive,metadata,source=self.archive(root);commands=[]
             def run(command,log,env,**options):
                 commands.append((command,options))
+                self.assertEqual(command[1],'-i')
+                self.assertEqual(command[command.index('-a')+1],'dumper')
+                self.assertEqual(command[command.index('-provider')+1],'{90cbdc39-4a3e-11d1-84f4-0000f80464e3}')
+                self.assertIn('-add_rawdata',command)
                 Path(command[command.index('-o')+1]).write_bytes(b'opaque dump bytes\n')
-                Path(command[command.index('-export')+1]).write_bytes(b'opaque schema bytes\n')
                 return {'returncode':0,'timeout_seconds':options['timeout'],'timeout_cleanup':None}
             with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
-                 patch.object(diagnostic.platform,'system',return_value='Windows'), \
-                 patch.object(diagnostic.shutil,'which',return_value='tracerpt.exe'), \
+                 self.installed_tool(root), \
                  patch.object(diagnostic,'run_process',side_effect=run), \
                  patch.object(diagnostic,'NativeCapture',side_effect=AssertionError('recording started')):
                 self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),0)
             self.assertEqual(len(commands),1)
             command,options=commands[0]
-            self.assertEqual(command[command.index('-of')+1],'CSV')
             self.assertEqual(options['timeout'],30)
-            self.assertNotIn('-rts',command)
+            for unwanted in ('-range','-of','-export','-summary','-rts'):
+                self.assertNotIn(unwanted,command)
             receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
             self.assertEqual(receipt['status'],'DECODE_COMPLETED_UNANALYZED')
             self.assertFalse(receipt['historical_cause_established'])
@@ -130,6 +143,9 @@ class OfflineNativeDecodeTests(unittest.TestCase):
             self.assertEqual(receipt['source_capture_head'],'7b07bfa3dfab7c4633689878372929647b9a9f48')
             self.assertEqual(receipt['storage_limit_bytes'],512*1024*1024)
             self.assertEqual(receipt['outputs']['native-events.csv']['bytes'],18)
+            self.assertEqual(receipt['decoder_tool']['sha256'],hashlib.sha256(b'opaque test tool bytes').hexdigest())
+            self.assertEqual(receipt['decoder_tool']['file_version'],'test-file-version')
+            self.assertFalse((root/'output'/'native-schema.man').exists())
             with self.assertRaises(FileExistsError):
                 diagnostic.run_offline_decode(archive,metadata,root/'output')
 
@@ -139,16 +155,14 @@ class OfflineNativeDecodeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);archive,metadata,source=self.archive(root)
             def run(command,*args,**options):
-                path=Path(command[1]);path=path if path.is_absolute() else diagnostic.ROOT/path
+                path=Path(command[command.index('-i')+1]);path=path if path.is_absolute() else diagnostic.ROOT/path
                 self.assertTrue(path.is_file(),'decoder cwd cannot reach the verified ETL')
-                for flag in ('-o','-export'):
-                    target=Path(command[command.index(flag)+1])
-                    target=target if target.is_absolute() else diagnostic.ROOT/target
-                    target.write_bytes(b'opaque output')
+                target=Path(command[command.index('-o')+1])
+                target=target if target.is_absolute() else diagnostic.ROOT/target
+                target.write_bytes(b'opaque output')
                 return {'returncode':0,'timeout_cleanup':None}
             with chdir(root),patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
-                 patch.object(diagnostic.platform,'system',return_value='Windows'), \
-                 patch.object(diagnostic.shutil,'which',return_value='tracerpt.exe'), \
+                 self.installed_tool(root), \
                  patch.object(diagnostic,'run_process',side_effect=run):
                 self.assertEqual(diagnostic.run_offline_decode(Path('source.zip'),Path('source-metadata.json'),Path('output')),0)
 
@@ -161,8 +175,7 @@ class OfflineNativeDecodeTests(unittest.TestCase):
                 return {'returncode':124,'timeout_seconds':30,'abort_reason':None,
                         'timeout_cleanup':{'descendant_cleanup_certified':False,'method':'taskkill_tree'}}
             with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
-                 patch.object(diagnostic.platform,'system',return_value='Windows'), \
-                 patch.object(diagnostic.shutil,'which',return_value='tracerpt.exe'), \
+                 self.installed_tool(root), \
                  patch.object(diagnostic,'run_process',side_effect=timeout):
                 self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),2)
             receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
@@ -171,26 +184,25 @@ class OfflineNativeDecodeTests(unittest.TestCase):
             self.assertEqual(receipt['decoder']['timeout_cleanup']['method'],'taskkill_tree')
             self.assertEqual((root/'output'/'native-events.csv').read_text(),'partial')
 
-    def test_decoder_storage_growth_and_missing_schema_remain_blocked_with_outputs_retained(self):
+    def test_decoder_storage_growth_and_missing_csv_remain_blocked(self):
         from scripts import v3_windows_reliability as diagnostic
-        for mode in ('growth','missing-schema'):
+        for mode in ('growth','missing-csv'):
             with self.subTest(mode=mode),tempfile.TemporaryDirectory() as directory:
                 root=Path(directory);archive,metadata,source=self.archive(root)
                 limit=source['zip_bytes']+source['etl_bytes']+8 if mode=='growth' else 512*1024*1024
                 def run(command,*args,**options):
-                    Path(command[command.index('-o')+1]).write_bytes(b'x'*100)
+                    if mode=='growth':Path(command[command.index('-o')+1]).write_bytes(b'x'*100)
                     reason=options['abort']()
                     self.assertEqual(reason,'decode_storage_limit' if mode=='growth' else None)
                     return {'returncode':124 if reason else 0,'abort_reason':reason,'timeout_cleanup':None}
                 with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
                      patch.object(diagnostic,'OFFLINE_STORAGE_LIMIT',limit), \
-                     patch.object(diagnostic.platform,'system',return_value='Windows'), \
-                     patch.object(diagnostic.shutil,'which',return_value='tracerpt.exe'), \
+                     self.installed_tool(root), \
                      patch.object(diagnostic,'run_process',side_effect=run):
                     self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),2)
                 receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
                 self.assertEqual(receipt['status'],'BLOCKED')
-                self.assertEqual(receipt['outputs']['native-events.csv']['bytes'],100)
+                if mode=='growth':self.assertEqual(receipt['outputs']['native-events.csv']['bytes'],100)
 
     def test_duplicate_canonical_member_cannot_replace_the_single_frozen_etl(self):
         import warnings
@@ -217,6 +229,80 @@ class OfflineNativeDecodeTests(unittest.TestCase):
              patch.object(diagnostic,'run_native_comparison',side_effect=AssertionError('product campaign ran')), \
              patch.object(diagnostic,'historical_environment',side_effect=AssertionError('product dependencies read')):
             self.assertEqual(diagnostic.main(),0)
+
+    def test_missing_xperf_blocks_without_installing_or_executing_a_decoder(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);archive,metadata,source=self.archive(root)
+            with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
+                 patch.object(diagnostic.platform,'system',return_value='Windows'), \
+                 patch.dict(os.environ,{'ProgramFiles(x86)':str(root/'unavailable')}), \
+                 patch.object(diagnostic.shutil,'which',return_value=None), \
+                 patch.object(diagnostic,'run_process',side_effect=AssertionError('missing decoder executed')):
+                self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),2)
+            receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
+            self.assertIn('xperf',receipt['error'])
+            self.assertNotIn('decoder',receipt)
+
+    def test_tool_metadata_and_dump_share_the_same_30_second_active_deadline(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);archive,metadata,source=self.archive(root)
+            def run(command,*args,**options):
+                reason=options['abort']()
+                self.assertEqual(reason,'decode_time_limit')
+                return {'returncode':124,'abort_reason':reason,'timeout_cleanup':None}
+            with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source),self.installed_tool(root), \
+                 patch.object(diagnostic.time,'monotonic',side_effect=(10,41)), \
+                 patch.object(diagnostic,'run_process',side_effect=run):
+                self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),2)
+            receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
+            self.assertEqual(receipt['decoder']['abort_reason'],'decode_time_limit')
+            self.assertEqual(receipt['status'],'BLOCKED')
+
+    def test_metadata_timeout_retains_phase_and_uncertified_cleanup_without_starting_dump(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);archive,metadata,source=self.archive(root)
+            with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source),self.installed_tool(root), \
+                 patch.object(diagnostic.subprocess,'run',side_effect=subprocess.TimeoutExpired(['powershell.exe'],5)), \
+                 patch.object(diagnostic,'run_process',side_effect=AssertionError('dump started after metadata timeout')):
+                self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),2)
+            receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
+            self.assertEqual(receipt['status'],'BLOCKED')
+            self.assertTrue(receipt['cleanup_uncertified'])
+            self.assertEqual(receipt['error_phase'],'tool_metadata')
+            self.assertIn('metadata',receipt['cleanup_observation'])
+            self.assertIn('TimeoutExpired',receipt['error'])
+            self.assertNotIn('decoder',receipt)
+            info=json.loads((root/'output'/'xperf-tool.json').read_text())
+            self.assertEqual(info['version_status'],'TIMED_OUT')
+            self.assertEqual(info['metadata_timeout_seconds'],5)
+            self.assertTrue(info['metadata_cleanup_uncertified'])
+
+    def test_known_toolkit_path_is_fingerprinted_and_unknown_version_is_not_accepted(self):
+        from scripts import v3_windows_reliability as diagnostic
+        for version_ok in (True,False):
+            with self.subTest(version_ok=version_ok),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);archive,metadata,source=self.archive(root)
+                tool=root/'Windows Kits'/'10'/'Windows Performance Toolkit'/'xperf.exe'
+                tool.parent.mkdir(parents=True);tool.write_bytes(b'known path test tool')
+                version=json.dumps({'file_version':'test-file','product_version':'test-product'} if version_ok else {})
+                def run(command,*args,**options):
+                    self.assertEqual(command[0],str(tool.resolve()))
+                    Path(command[command.index('-o')+1]).write_bytes(b'opaque dump')
+                    return {'returncode':0,'timeout_cleanup':None}
+                with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
+                     patch.object(diagnostic.platform,'system',return_value='Windows'), \
+                     patch.dict(os.environ,{'ProgramFiles(x86)':str(root)}), \
+                     patch.object(diagnostic.shutil,'which',side_effect=lambda name:'powershell.exe' if name=='powershell.exe' else None), \
+                     patch.object(diagnostic.subprocess,'run',return_value=subprocess.CompletedProcess([],0,version,'')), \
+                     patch.object(diagnostic,'run_process',side_effect=run):
+                    self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),0 if version_ok else 2)
+                info=json.loads((root/'output'/'xperf-tool.json').read_text())
+                self.assertEqual(info['path'],str(tool.resolve()))
+                self.assertEqual(info['sha256'],hashlib.sha256(b'known path test tool').hexdigest())
+                self.assertEqual(info['version_status'],'READ' if version_ok else 'UNAVAILABLE')
 
 
 class WindowsReliabilityDiagnosticTests(unittest.TestCase):

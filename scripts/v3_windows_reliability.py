@@ -41,6 +41,7 @@ OFFLINE_ETL_SOURCE = {
     'etl_sha256':'68daa8aba9d7f46ed296154c500be5bb4657db5955df3f13a4b2abeaf29e6b58',
 }
 OFFLINE_STORAGE_LIMIT = 512 * 1024 * 1024
+OFFLINE_FILEIO_GUID = '{90cbdc39-4a3e-11d1-84f4-0000f80464e3}'
 sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
 
 
@@ -95,6 +96,40 @@ def _offline_storage_bytes(output, archive):
     return archive.stat().st_size + sum(path.lstat().st_size for path in output.rglob('*') if path.is_file())
 
 
+def _offline_xperf_tool(output, env):
+    known = (Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')) /
+             'Windows Kits' / '10' / 'Windows Performance Toolkit' / 'xperf.exe')
+    candidates = [value for value in (shutil.which('xperf.exe'), str(known)) if value]
+    path = next((Path(value).resolve() for value in candidates if Path(value).is_file()), None)
+    info = {'searched':candidates, 'path':str(path) if path else None, 'version_status':'UNAVAILABLE'}
+    try:
+        if path is None:
+            raise RuntimeError('Installed Windows xperf unavailable; no installation or decoder was executed')
+        with path.open('rb') as stream:
+            info.update(bytes=path.stat().st_size, sha256=hashlib.file_digest(stream,'sha256').hexdigest())
+        shell = shutil.which('powershell.exe') or shutil.which('pwsh.exe')
+        if not shell:
+            raise RuntimeError('xperf file-version metadata tool unavailable')
+        query = ("$v=(Get-Item -LiteralPath $env:KYROZEN_XPERF_FILE -ErrorAction Stop).VersionInfo; "
+                 "[pscustomobject]@{file_version=$v.FileVersion;product_version=$v.ProductVersion}|ConvertTo-Json -Compress")
+        try:
+            result = subprocess.run([shell,'-NoProfile','-NonInteractive','-Command',query],
+                env={**env,'KYROZEN_XPERF_FILE':str(path)}, capture_output=True,text=True,timeout=5,check=True)
+        except subprocess.TimeoutExpired as error:
+            info.update(version_status='TIMED_OUT', metadata_error=type(error).__name__,
+                        metadata_timeout_seconds=error.timeout, metadata_cleanup_uncertified=True)
+            raise
+        version = json.loads(result.stdout)
+        if (not isinstance(version,dict) or any(not isinstance(version.get(key),str) or not version[key].strip()
+                                               for key in ('file_version','product_version'))):
+            raise RuntimeError('xperf file-version metadata unavailable')
+        info.update({key:version[key] for key in ('file_version','product_version')})
+        info.update(version_status='READ',version_source='Windows FileVersionInfo via PowerShell')
+        return info
+    finally:
+        write_json(output / 'xperf-tool.json',info)
+
+
 def run_offline_decode(archive, metadata_path, output):
     """One existing-ETL decode; never imports a product or controls a recorder."""
     archive, metadata_path, output = (path.absolute() for path in (archive, metadata_path, output))
@@ -103,8 +138,11 @@ def run_offline_decode(archive, metadata_path, output):
         'actual_product_sha':OFFLINE_ETL_SOURCE['product_sha'],
         'source_capture_head':OFFLINE_ETL_SOURCE['diagnostic_sha'],
         'product_identity_source':'frozen original artifact; candidate_sha/PRODUCT_SHA is not used',
+        'provider_filter':OFFLINE_FILEIO_GUID, 'range_filter':None, 'raw_data_requested':True,
+        'output_contract':'Complete xperf FileIo dumper output with its own header and raw lines; no separate MAN required',
         'historical_cause_established':False, 'native_fields_validated':False,
         'decode_timeout_seconds':30, 'storage_limit_bytes':OFFLINE_STORAGE_LIMIT,
+        'tool_metadata_within_decode_deadline':True,
         'storage_limit_is_sampled_abort_not_hard_quota':True, 'cleanup_uncertified':False,
         'qualification':'Decoder completion is not native field/schema validation or R260 acceptance.'}
     try:
@@ -114,17 +152,25 @@ def run_offline_decode(archive, metadata_path, output):
         metadata_input = json.loads(metadata_path.read_text(encoding='utf-8-sig'))
         etl = _extract_offline_etl(archive, metadata_input, output)
         receipt['input_verified'] = True
-        decoder = shutil.which('tracerpt.exe')
-        if platform.system() != 'Windows' or not decoder:
-            raise RuntimeError('Windows tracerpt unavailable; no decoder was executed')
-        command = [decoder, str(etl), '-o', str(output / 'native-events.csv'), '-of', 'CSV',
-                   '-export', str(output / 'native-schema.man'),
-                   '-summary', str(output / 'native-summary.txt'), '-y']
+        if platform.system() != 'Windows':
+            raise RuntimeError('Windows xperf unavailable; no decoder was executed')
+        deadline = time.monotonic() + 30
         def abort():
+            if time.monotonic() >= deadline:
+                return 'decode_time_limit'
             return ('decode_storage_limit' if _offline_storage_bytes(output, archive) > OFFLINE_STORAGE_LIMIT
                     else None)
         with tempfile.TemporaryDirectory(prefix='kyrozen-offline-decode-') as home:
-            result = run_process(command, output / 'decoder.log', isolated_environment(Path(home)),
+            env = isolated_environment(Path(home))
+            try:
+                receipt['decoder_tool'] = _offline_xperf_tool(output,env)
+            except subprocess.TimeoutExpired:
+                receipt.update(cleanup_uncertified=True, error_phase='tool_metadata',
+                    cleanup_observation='xperf metadata process timed out; descendant cleanup is uncertified')
+                raise
+            command = [receipt['decoder_tool']['path'],'-i',str(etl),'-o',str(output / 'native-events.csv'),
+                       '-a','dumper','-provider',OFFLINE_FILEIO_GUID,'-add_rawdata']
+            result = run_process(command, output / 'decoder.log', env,
                                  timeout=30, abort=abort)
         receipt['decoder'] = result
         cleanup = result.get('timeout_cleanup')
@@ -135,15 +181,14 @@ def run_offline_decode(archive, metadata_path, output):
             raise RuntimeError('Decoder did not complete within its unchanged bounds')
         if abort():
             raise RuntimeError('Decoder output exceeded the sampled storage bound')
-        if any(not (output / name).is_file() or not (output / name).stat().st_size
-               for name in ('native-events.csv', 'native-schema.man')):
-            raise RuntimeError('Decoder did not create nonempty CSV and schema outputs')
+        if not (output / 'native-events.csv').is_file() or not (output / 'native-events.csv').stat().st_size:
+            raise RuntimeError('Decoder did not create a nonempty xperf dump')
         receipt['status'] = 'DECODE_COMPLETED_UNANALYZED'
     except (OSError, RuntimeError, ValueError, zipfile.BadZipFile, subprocess.SubprocessError) as error:
         receipt['error'] = f'{type(error).__name__}: {error}'
     finally:
         receipt['outputs'] = {}
-        for name in ('native-capture.etl', 'native-events.csv', 'native-schema.man', 'native-summary.txt', 'decoder.log'):
+        for name in ('native-capture.etl', 'native-events.csv', 'xperf-tool.json', 'decoder.log'):
             path = output / name
             if path.is_file():
                 with path.open('rb') as stream:
