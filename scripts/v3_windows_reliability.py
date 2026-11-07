@@ -11,7 +11,9 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import signal
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -20,9 +22,11 @@ import threading
 import time
 import unittest
 import uuid
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST = 'test_cancel_during_provider_call_prevents_late_write'
+HISTORICAL_PRODUCT = '0f172f9fe692ff8fafcc0a15a72fe51eaf67e977'
 sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
 
 
@@ -267,27 +271,50 @@ def stop_diagnostic_tree(process):
 
 
 class Trace:
-    def __init__(self, output):
+    def __init__(self, output, native=False):
         self.output = output
         self.stream = (output / 'events.jsonl').open('w', encoding='utf-8')
         self.lock = threading.Lock()
         self.case = None
         self.coordinator = None
         self.active = True
+        self.native = native
+        if native:
+            clock = {'performance_counter_ns': time.perf_counter_ns(), 'unix_time_ns': time.time_ns()}
+            if os.name == 'nt':
+                import ctypes
+                counter, frequency = ctypes.c_longlong(), ctypes.c_longlong()
+                kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+                if not kernel.QueryPerformanceCounter(ctypes.byref(counter)) or not kernel.QueryPerformanceFrequency(ctypes.byref(frequency)):
+                    raise OSError('Windows performance-counter mapping unavailable')
+                clock.update(qpc_counter=counter.value, qpc_frequency=frequency.value)
+            self.record('clock.mapping', **clock)
 
     def record(self, event, **fields):
         with self.lock:
             if not self.active:
                 return
             self.stream.write(json.dumps({'event': event, 'monotonic_ns': time.monotonic_ns(),
-                'thread_id': threading.get_ident(), 'thread_cpu_ns': time.thread_time_ns(), **fields}) + '\n')
+                'thread_id': threading.get_ident(), 'native_tid': threading.get_native_id(),
+                'pid': os.getpid(), 'thread_cpu_ns': time.thread_time_ns(), **fields}) + '\n')
             self.stream.flush()
+
+    def wal_metadata(self):
+        try:
+            path = self.case.root / 'state.sqlite3-wal'
+            return {'exists': True, 'bytes': path.stat().st_size}
+        except FileNotFoundError:
+            return {'exists': False, 'bytes': 0}
+        except (OSError, AttributeError) as error:
+            return {'error': type(error).__name__}
 
     def profile(self, frame, event, arg):
         if event in {'c_call', 'c_return', 'c_exception'}:
             if isinstance(getattr(arg, '__self__', None), sqlite3.Connection):
+                details = ({'connection_id': id(arg.__self__), 'wal': self.wal_metadata()}
+                           if self.native and arg.__name__ == 'close' else {})
                 self.record('sqlite.' + arg.__name__ + '.' + event,
-                            caller=frame.f_code.co_qualname)
+                            caller=frame.f_code.co_qualname, **details)
             elif arg is sqlite3.connect:
                 self.record('sqlite.connect.' + event, caller=frame.f_code.co_qualname)
             return
@@ -329,6 +356,8 @@ class Trace:
             label = 'runtime_event'
         if label:
             self.record(label + '.' + event, function=frame.f_code.co_qualname)
+            if self.native and label == 'application_close' and event == 'return':
+                self.snapshot('state-after-completion.json')
 
     def snapshot(self, filename):
         """Avoid application locks and raw copies of live SQLite/WAL files."""
@@ -346,23 +375,31 @@ class Trace:
                 database = case.root / 'state.sqlite3'
                 state['sqlite_files'] = {path.name: path.stat().st_size
                     for path in case.root.glob('state.sqlite3*') if path.is_file()}
-                with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=0)) as connection:
-                    rows = connection.execute("SELECT payload FROM events WHERE event_type='subagent.state' ORDER BY rowid").fetchall()
-                for row in rows:
-                    run = json.loads(row[0])
-                    state['persisted_states'].append({key: run.get(key) for key in
-                        ('run_id', 'status', 'version', 'error', 'progress')})
+                state['database_snapshot_deferred'] = bool(self.native and
+                    (not state['runs'] or not all(run['future_done'] for run in state['runs'])))
+                if not state['database_snapshot_deferred']:
+                    with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=0)) as connection:
+                        rows = connection.execute("SELECT payload FROM events WHERE event_type='subagent.state' ORDER BY rowid").fetchall()
+                    for row in rows:
+                        run = json.loads(row[0])
+                        state['persisted_states'].append({key: run.get(key) for key in
+                            ('run_id', 'status', 'version', 'error', 'progress')})
             except (OSError, sqlite3.Error) as exc:
                 state['snapshot_error'] = repr(exc)
         write_json(self.output / filename, state)
 
 
-def run_child(output, control='baseline', cpu_workers=2, readonly_anchor=False):
+def run_child(output, control='baseline', cpu_workers=2, readonly_anchor=False, native_trace=False):
     # Import the fixture before starting the four-second cancellation watchdog.
     from test_delegation import DelegationTests
 
     output.mkdir(parents=True, exist_ok=True)
-    trace = Trace(output)
+    trace = Trace(output, native=native_trace)
+    if native_trace:
+        import openkyrozen
+        if not Path(openkyrozen.__file__).resolve().is_relative_to(ROOT):
+            raise RuntimeError('Native comparison imported the wrong product source')
+        trace.record('product.source', path=str(Path(openkyrozen.__file__).resolve()))
 
     class DiagnosticCase(DelegationTests):
         def setUp(self):
@@ -423,15 +460,32 @@ def run_child(output, control='baseline', cpu_workers=2, readonly_anchor=False):
     return 0 if result.wasSuccessful() else 1
 
 
-def run_process(command, log_path, env, *, timeout=45):
+def run_process(command, log_path, env, *, timeout=45, abort=None):
     started = time.monotonic_ns()
     cleanup = None
+    abort_reason = None
+    if abort is not None and (abort_reason := abort()):
+        return {'returncode':124, 'elapsed_ns':time.monotonic_ns()-started, 'command':command,
+                'timeout_seconds':timeout, 'timeout_cleanup':None, 'abort_reason':abort_reason}
     with log_path.open('w', encoding='utf-8') as log:
         process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
             start_new_session=os.name != 'nt',
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0)
         try:
-            returncode = process.wait(timeout=timeout)
+            if abort is None:
+                returncode = process.wait(timeout=timeout)
+            else:
+                deadline = time.monotonic() + timeout
+                while True:
+                    abort_reason = abort()
+                    remaining = deadline - time.monotonic()
+                    if abort_reason or remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    try:
+                        returncode = process.wait(timeout=min(.1, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
         except subprocess.TimeoutExpired:
             try:
                 cleanup = stop_diagnostic_tree(process)
@@ -444,7 +498,266 @@ def run_process(command, log_path, env, *, timeout=45):
                     process.wait(timeout=3)
             returncode = 124
     return {'returncode': returncode, 'elapsed_ns': time.monotonic_ns() - started,
+            **({'abort_reason': abort_reason} if abort else {}),
             'command': command, 'timeout_seconds': timeout, 'timeout_cleanup': cleanup}
+
+
+def native_limit(directory, deadline):
+    if time.monotonic() >= deadline:
+        return 'active_time_limit'
+    size = 0
+    try:
+        for path in directory.rglob('*.etl'):
+            try:
+                size += path.stat().st_size
+            except FileNotFoundError:
+                continue  # WPR may merge/rename an owned temporary while it is inspected.
+    except OSError:
+        return 'trace_inventory_error'
+    if size > 512 * 1024 * 1024:
+        return 'trace_size_limit'
+    return None
+
+
+class NativeCapture:
+    """Only controls one uniquely named WPR instance; never cancels a global trace."""
+    def __init__(self, output, env):
+        self.output, self.env = output, env
+        self.wpr, self.decoder = shutil.which('wpr.exe'), shutil.which('tracerpt.exe')
+        self.instance = 'KyrozenR260-' + uuid.uuid4().hex
+        self.case = None
+        self.active = False
+        self.cleanup_uncertified = False
+
+    def _tool(self, command, label, timeout=10, check=True, allowed_returncodes=(0,)):
+        path = (self.case or self.output) / (label + '.json')
+        if path.exists():
+            path = path.with_stem(path.stem + '-' + uuid.uuid4().hex[:8])
+        try:
+            result = subprocess.run(command, env=self.env, capture_output=True, text=True, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            write_json(path, {'command': command, 'error': type(error).__name__})
+            raise
+        write_json(path, {'command': command, 'returncode': result.returncode,
+                         'stdout': result.stdout[:65536], 'stderr': result.stderr[:65536]})
+        if check and result.returncode not in allowed_returncodes:
+            raise RuntimeError(f'{label} failed with exit {result.returncode}')
+        return result.stdout + result.stderr
+
+    def preflight(self):
+        if platform.system() != 'Windows' or not self.wpr or not self.decoder:
+            raise RuntimeError('Windows WPR/tracerpt unavailable')
+        profiles = self._tool([self.wpr, '-profiles'], 'wpr-profiles')
+        advanced = self._tool([self.wpr, '-help', 'advanced'], 'wpr-help')
+        if not all(re.search(r'\b' + name + r'\b', profiles) for name in ('GeneralProfile', 'FileIO')):
+            raise RuntimeError('Required WPR GeneralProfile/FileIO profile unavailable')
+        if 'instancename' not in advanced.lower():
+            raise RuntimeError('Owned WPR instance support unavailable')
+        profile = self.output / 'selected-profile.wprp'
+        self._tool([self.wpr, '-exportprofile', 'GeneralProfile+FileIO', str(profile), '-filemode'], 'wpr-export')
+        try:
+            text = ET.tostring(ET.parse(profile).getroot(), encoding='unicode')
+        except ET.ParseError as error:
+            raise RuntimeError('Exported WPR profile is not valid XML') from error
+        if not all(keyword in text for keyword in ('CSwitch', 'ReadyThread', 'DiskIO', 'FileIO')):
+            raise RuntimeError('Exported WPR profile lacks native wait/I/O events')
+
+    def start(self, case):
+        self.case = case
+        temporary = self.output / 'traces' / 'temporary'
+        temporary.mkdir(parents=True, exist_ok=True)
+        # A timed-out start is uncertain; finally still attempts to save this unique instance.
+        self.active = True
+        self._tool([self.wpr, '-start', 'GeneralProfile', '-start', 'FileIO', '-filemode',
+                    '-recordtempto', str(temporary), '-instancename', self.instance], 'wpr-start')
+
+    def stop(self):
+        if not self.active:
+            return None
+        trace = self.output / 'traces' / (self.case.name + '.etl')
+        trace.parent.mkdir(parents=True, exist_ok=True)
+        if trace.exists():
+            trace = trace.with_stem(trace.stem + '-' + uuid.uuid4().hex[:8])
+        self.cleanup_uncertified = True
+        failure = None
+        try:
+            status = self._tool([self.wpr, '-status', 'collectors', '-details',
+                                 '-instancename', self.instance], 'wpr-status')
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            failure = error
+        try:
+            # Saving is attempted even if status inspection failed. A failed
+            # save must not leave the owned file-mode recorder unmonitored.
+            self._tool([self.wpr, '-stop', str(trace), '-skipPdbGen', '-instancename', self.instance],
+                       'wpr-stop', timeout=30)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            failure = failure or error
+            self._cancel_owned()
+        else:
+            try:
+                self._verify_inactive()
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                failure = failure or error
+                self._cancel_owned()
+            self.active = False
+            self.cleanup_uncertified = False
+        if failure is not None:
+            raise failure
+        if not trace.is_file() or not trace.stat().st_size:
+            raise RuntimeError('WPR did not save a nonempty ETL')
+        losses = [int(value) for value in re.findall(r'(?:Events Lost|Dropped event)\s*:\s*(\d+)', status, re.I)]
+        if not losses or sum(losses):
+            raise RuntimeError('WPR event-loss evidence missing or nonzero; saved ETL is incomplete evidence')
+        with trace.open('rb') as stream:
+            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        return {'status': 'CAPTURED', 'etl': str(trace), 'bytes': trace.stat().st_size,
+                'sha256': digest,
+                'event_loss': sum(losses) if losses else None}
+
+    def _verify_inactive(self):
+        absent = 0xc5583000
+        status = self._tool([self.wpr, '-status', '-instancename', self.instance], 'wpr-inactive',
+                            allowed_returncodes=(0, absent, absent - 2**32))
+        inactive = {'wpr is not recording.', 'wpr is not recording',
+                    'windows performance recorder is not recording.',
+                    'there are no trace profiles running.'}
+        lines = {line.strip().casefold() for line in status.splitlines()}
+        if (not lines.intersection(inactive) or 'recording is in progress' in status.casefold()
+                or 'actively recording collectors' in status.casefold()):
+            raise RuntimeError('owned WPR inactivity could not be verified')
+
+    def _cancel_owned(self):
+        errors = []
+        for operation in (lambda: self._tool([self.wpr, '-cancel', '-instancename', self.instance],
+                                             'wpr-cancel', timeout=10), self._verify_inactive):
+            try:
+                operation()
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                errors.append(error)
+        if errors:
+            raise RuntimeError('owned WPR cleanup_uncertified: cancel/inactive verification failed') from errors[0]
+        self.active = False
+        self.cleanup_uncertified = False
+
+    def decode(self, capture):
+        self._tool([self.decoder, capture['etl'], '-o', str(self.case / 'native-events.xml'),
+                    '-of', 'XML', '-summary', str(self.case / 'native-summary.txt'), '-y'],
+                   'tracerpt', timeout=30)
+
+
+def _product_identity(repository):
+    def git(*arguments):
+        return subprocess.run(['git', *arguments], cwd=repository, check=True, capture_output=True,
+                              timeout=10).stdout
+    revision = git('rev-parse', 'HEAD').decode().strip()
+    if git('diff', 'HEAD', '--'):
+        raise RuntimeError('Native experiment product has tracked edits')
+    return {'candidate_sha': revision, 'tracked_product_edits': False,
+            'fixture_sha256': hashlib.sha256((repository / 'tests/test_delegation.py').read_bytes()).hexdigest(),
+            'database_sha256': hashlib.sha256((repository / 'openkyrozen/persistence/database.py').read_bytes()).hexdigest()}
+
+
+def _native_timing(case):
+    events = [json.loads(line) for line in (case / 'events.jsonl').read_text(encoding='utf-8-sig').splitlines()]
+    cancel = next((row for row in events if row['event'] == 'cancel.return'), None)
+    start = next((row for row in events if row['event'] == 'future_wait.call' and
+                  cancel and row['thread_id'] == cancel['thread_id'] and
+                  row['monotonic_ns'] >= cancel['monotonic_ns']), None)
+    end = next((row for row in events if row['event'] == 'future_wait.return' and start and
+                row['thread_id'] == start['thread_id'] and row['monotonic_ns'] >= start['monotonic_ns']), None)
+    return (end['monotonic_ns'] - start['monotonic_ns']) / 1e9 if end else None
+
+
+def run_native_comparison(output, current, historical):
+    output.mkdir(parents=True, exist_ok=True)
+    report = {'schema_version': 3, 'status': 'BLOCKED', 'historical_cause_established': False,
+              'active_limit_seconds': 300, 'trace_limit_bytes': 512*1024*1024,
+              'test_timeouts_seconds': {'provider_wait':3, 'entry_wait':10, 'future_wait':5},
+              'child_limit_seconds':45, 'cpu_workers':2, 'iterations':[], 'execution_order':[],
+              'qualification': 'Native traces require wait/phase analysis; all-fast samples are inconclusive.'}
+    capture = None
+    try:
+        report['historical_environment'] = historical_environment()
+        if report['historical_environment']['status'] != 'MATCH':
+            raise RuntimeError('Exact historical Windows Python/packages unavailable')
+        report['products'] = {'historical':_product_identity(historical), 'current':_product_identity(current)}
+        if report['products']['historical']['candidate_sha'] != HISTORICAL_PRODUCT:
+            raise RuntimeError('Historical product must be the pinned original source')
+        report['diagnostic_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        write_json(output / 'report.json', report)
+        with tempfile.TemporaryDirectory(prefix='kyrozen-native-wait-') as home:
+            env = isolated_environment(Path(home))
+            capture = NativeCapture(output, env)
+            capture.preflight()
+            deadline = time.monotonic() + 300
+            abort = lambda: native_limit(output / 'traces', deadline)
+            orders = (('baseline','anchor','current'), ('current','anchor','baseline'),
+                      ('anchor','baseline','current'), ('current','baseline','anchor'))
+            slow = False
+            for index, order in enumerate(orders, 1):
+                for variant in order:
+                    if reason := abort():
+                        report['limit_reached'] = reason
+                        break
+                    if deadline - time.monotonic() <= 10:
+                        report['limit_reached'] = 'active_time_limit'
+                        break
+                    case = output / f'{index}-{variant}'
+                    case.mkdir()
+                    repository = current if variant == 'current' else historical
+                    row = {'triple':index, 'variant':variant, 'repository':str(repository)}
+                    report['iterations'].append(row)
+                    report['execution_order'].append('cancellation-' + case.name)
+                    write_json(output / 'report.json', report)
+                    try:
+                        capture.start(case)
+                        command = [sys.executable, str(Path(__file__).resolve()), '--child', '--output', str(case),
+                                   '--repository', str(repository), '--control', 'cpu', '--cpu-workers', '2', '--native-trace']
+                        if variant == 'anchor':
+                            command.append('--readonly-anchor')
+                        row.update(run_process(command, case / 'process.log', env, abort=abort))
+                    finally:
+                        row['capture'] = capture.stop()
+                        write_json(output / 'report.json', report)
+                    if row.get('abort_reason') or abort():
+                        report['limit_reached'] = row.get('abort_reason') or abort()
+                        break
+                    row['future_wait_seconds'] = _native_timing(case)
+                    slow |= row['returncode'] != 0 or (row['future_wait_seconds'] or 0) >= 1
+                    report['execution_order'].append('reviewer-' + case.name)
+                    row['reviewer'] = run_process([sys.executable, str(historical / 'scripts/subagent_workflow_acceptance.py')],
+                        case / 'reviewer.log', env, abort=abort)
+                    if row['reviewer'].get('abort_reason'):
+                        report['limit_reached'] = row['reviewer']['abort_reason']
+                        break
+                    if row['reviewer']['returncode']:
+                        raise RuntimeError('Pinned historical reviewer workload failed; inspect retained row')
+                    write_json(output / 'report.json', report)
+                if report.get('limit_reached') or slow:
+                    break
+            report['status'] = 'PENDING_NATIVE_ANALYSIS' if slow else 'INCONCLUSIVE'
+            # Decode one representative or slow/failing trace, outside the active experiment.
+            rows = [row for row in report['iterations'] if row.get('capture')]
+            if rows:
+                selected = max(rows, key=lambda row: (bool(row.get('returncode')), row.get('future_wait_seconds') or 0))
+                capture.case = output / f"{selected['triple']}-{selected['variant']}"
+                capture.decode(selected['capture'])
+    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as error:
+        report.update(status='BLOCKED', error=f'{type(error).__name__}: {error}')
+    finally:
+        if capture is not None and capture.active:
+            try:
+                capture.stop()
+            except Exception as error:
+                report.update(status='BLOCKED', cleanup_error=f'{type(error).__name__}: {error}')
+        if capture is not None:
+            report['cleanup_uncertified'] = capture.active or getattr(capture, 'cleanup_uncertified', False)
+        write_json(output / 'report.json', report)
+    print('Native wait experiment: ' + report['status'], flush=True)
+    if report['status'] == 'BLOCKED':
+        return 2
+    return int(any(row.get('returncode') or row.get('reviewer', {}).get('returncode')
+                   for row in report['iterations']))
 
 
 def main():
@@ -453,7 +766,9 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--repository', type=Path, default=ROOT, help='Exact product checkout to test; harness may live separately')
     parser.add_argument('--iterations', type=int, default=20)
-    parser.add_argument('--control', choices=('baseline', 'cpu', 'sqlite', 'combined', 'paired-anchor'), default='baseline')
+    parser.add_argument('--control', choices=('baseline', 'cpu', 'sqlite', 'combined', 'paired-anchor', 'native-wait'), default='baseline')
+    parser.add_argument('--historical-repository', type=Path, help='Pinned old checkout for native Windows comparison')
+    parser.add_argument('--native-trace', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--cpu-workers', type=int, default=2, help='Bounded owned CPU load processes (1–4)')
     parser.add_argument('--interleave-reviewer', action='store_true', help='Run fixture-only reviewer acceptance after each cancellation, matching the original order')
     parser.add_argument('--historical-environment', action='store_true', help='Require Windows Python 3.12.10 and every original package version; mismatch is infrastructure failure')
@@ -480,7 +795,11 @@ def main():
     sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
     output = args.output.resolve()
     if args.child:
-        return run_child(output, args.control, args.cpu_workers, args.readonly_anchor)
+        return run_child(output, args.control, args.cpu_workers, args.readonly_anchor, args.native_trace)
+    if args.control == 'native-wait':
+        if not args.historical_repository or not args.historical_environment or args.iterations != 4:
+            parser.error('native-wait requires historical environment, historical repository and exactly four triples')
+        return run_native_comparison(output, ROOT, args.historical_repository.resolve())
     output.mkdir(parents=True, exist_ok=True)
     if args.historical_environment:
         environment = historical_environment()

@@ -441,3 +441,320 @@ raise SystemExit(result)
                 self.assertEqual(state['marker'], 'ok')
                 self.assertTrue(any(not run['future_done'] for run in state['runs']))
                 self.assertEqual(state['persisted_states'][-1]['status'], 'cancelled')
+
+
+class NativeWaitDiagnosticTests(unittest.TestCase):
+    def test_native_snapshot_never_opens_a_database_until_owned_futures_are_done(self):
+        import sqlite3
+        from scripts.v3_windows_reliability import Trace
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with sqlite3.connect(root / 'state.sqlite3') as connection:
+                connection.execute('CREATE TABLE events(event_type TEXT, payload TEXT)')
+                connection.execute('INSERT INTO events VALUES(?,?)',
+                                   ('subagent.state', json.dumps({'run_id':'owned','status':'cancelled'})))
+            (root / 'marker.txt').write_text('ok')
+            trace = Trace(root, native=True)
+            done = False
+            trace.case = types.SimpleNamespace(root=root)
+            trace.coordinator = types.SimpleNamespace(runs={'owned': {'status':'cancelled'}},
+                futures={'owned':types.SimpleNamespace(done=lambda: done)},
+                cancelled={'owned':types.SimpleNamespace(is_set=lambda: True)})
+            try:
+                with patch('scripts.v3_windows_reliability.sqlite3.connect',
+                           side_effect=AssertionError('measurement opened an implicit WAL client')):
+                    trace.snapshot('pending.json')
+                pending = json.loads((root / 'pending.json').read_text())
+                self.assertTrue(pending['database_snapshot_deferred'])
+                self.assertEqual(pending['persisted_states'], [])
+                done = True
+                trace.snapshot('complete.json')
+                self.assertEqual(json.loads((root / 'complete.json').read_text())['persisted_states'][0]['status'],
+                                 'cancelled')
+            finally:
+                trace.stream.close()
+
+    def test_native_trace_records_joinable_identity_and_real_wal_close_metadata(self):
+        import sqlite3
+        from scripts.v3_windows_reliability import Trace
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            connection = sqlite3.connect(root / 'state.sqlite3')
+            connection.execute('PRAGMA journal_mode=WAL')
+            connection.execute('CREATE TABLE probe(value TEXT)')
+            connection.commit()
+            trace = Trace(root, native=True)
+            trace.case = types.SimpleNamespace(root=root)
+            frame = types.SimpleNamespace(f_code=types.SimpleNamespace(co_qualname='owned.close'))
+            try:
+                trace.profile(frame, 'c_call', connection.close)
+                connection.close()
+                trace.profile(frame, 'c_return', connection.close)
+            finally:
+                trace.stream.close()
+            events = [json.loads(line) for line in (root / 'events.jsonl').read_text().splitlines()]
+            before, after = [row for row in events if row['event'].startswith('sqlite.close.')]
+            self.assertTrue(before['wal']['exists'])
+            self.assertGreater(before['wal']['bytes'], 32)
+            self.assertFalse(after['wal']['exists'])
+            self.assertEqual(before['connection_id'], after['connection_id'])
+            self.assertEqual(before['pid'], os.getpid())
+            self.assertGreater(before['native_tid'], 0)
+            self.assertEqual(events[0]['event'], 'clock.mapping')
+            self.assertIn('performance_counter_ns', events[0])
+
+    def test_missing_native_tools_blocks_without_starting_or_cancelling_any_recording(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(diagnostic.platform, 'system', return_value='Windows'), \
+             patch.object(diagnostic.shutil, 'which', return_value=None), \
+             patch.object(diagnostic.subprocess, 'run') as run:
+            capture = diagnostic.NativeCapture(Path(directory), {})
+            with self.assertRaisesRegex(RuntimeError, 'unavailable'):
+                capture.preflight()
+            capture.stop()
+            run.assert_not_called()
+
+    def test_native_preflight_checks_exported_wait_and_io_profiles_with_windows_xml_encoding(self):
+        from scripts import v3_windows_reliability as diagnostic
+        commands = []
+        def run(command, **kwargs):
+            commands.append(command)
+            if '-exportprofile' in command:
+                Path(command[-2]).write_text('<Profile keywords="CSwitch ReadyThread DiskIO FileIO"/>', encoding='utf-16')
+            text = 'GeneralProfile FileIO' if '-profiles' in command else '-instancename'
+            return subprocess.CompletedProcess(command, 0, text, '')
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(diagnostic.platform, 'system', return_value='Windows'), \
+             patch.object(diagnostic.shutil, 'which', side_effect=lambda name:name), \
+             patch.object(diagnostic.subprocess, 'run', side_effect=run):
+            diagnostic.NativeCapture(Path(directory), {}).preflight()
+            self.assertEqual(len(commands), 3)
+            self.assertFalse(any('-start' in command or '-cancel' in command for command in commands))
+
+    def test_native_workflow_preserves_existing_controls_and_adds_a_pinned_separate_old_checkout(self):
+        import yaml
+        workflow = yaml.safe_load((ROOT/'.github/workflows/v3-windows-reliability.yml').read_text())
+        dispatch = workflow.get('on', workflow.get(True))['workflow_dispatch']['inputs']
+        self.assertEqual(dispatch['control']['options'],
+                         ['baseline','cpu','sqlite','combined','paired-anchor','native-wait','all'])
+        steps = workflow['jobs']['cancellation']['steps']
+        old = next(step for step in steps if step.get('with', {}).get('path')=='historical-product')
+        self.assertEqual(old['with']['ref'], '0f172f9fe692ff8fafcc0a15a72fe51eaf67e977')
+        trace = next(step['run'] for step in steps if step.get('name','').startswith('Trace unchanged'))
+        self.assertIn('--cpu-workers 2', trace)
+        self.assertIn("'--historical-repository', 'historical-product'", trace)
+
+    def test_native_capture_stops_only_its_owned_instance_even_when_start_is_uncertain(self):
+        from scripts import v3_windows_reliability as diagnostic
+        commands = []
+        def run(command, **kwargs):
+            commands.append(command)
+            if '-start' in command:
+                raise subprocess.TimeoutExpired(command, 10)
+            if '-status' in command and 'collectors' not in command:
+                return subprocess.CompletedProcess(command, 0xc5583000, 'There are no trace profiles running.', '')
+            return subprocess.CompletedProcess(command, 0, 'Events Lost : 0', '')
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(diagnostic.shutil, 'which', side_effect=lambda name:name), \
+             patch.object(diagnostic.subprocess, 'run', side_effect=run):
+            capture = diagnostic.NativeCapture(Path(directory), {})
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    capture.start(Path(directory))
+            finally:
+                with self.assertRaisesRegex(RuntimeError, 'ETL'):
+                    capture.stop()
+            self.assertTrue(any('-stop' in command for command in commands))
+            self.assertFalse(any('-cancel' in command for command in commands))
+            self.assertTrue(all(command[-2:] == ['-instancename',capture.instance] for command in commands))
+
+    def test_failed_save_cancels_only_owned_recording_and_verifies_inactive_without_hiding_failure(self):
+        from scripts import v3_windows_reliability as diagnostic
+        commands = []
+        def run(command, **kwargs):
+            commands.append((command, kwargs['timeout']))
+            if '-stop' in command:
+                Path(command[2]).write_bytes(b'partial native trace')
+                raise subprocess.TimeoutExpired(command, kwargs['timeout'])
+            if '-status' in command and 'collectors' not in command:
+                return subprocess.CompletedProcess(command, 0xc5583000, 'There are no trace profiles running.', '')
+            return subprocess.CompletedProcess(command, 0, 'Events Lost : 0', '')
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(diagnostic.shutil, 'which', side_effect=lambda name:name), \
+             patch.object(diagnostic.subprocess, 'run', side_effect=run):
+            capture = diagnostic.NativeCapture(Path(directory), {})
+            capture.case, capture.active = Path(directory), True
+            with self.assertRaises(subprocess.TimeoutExpired):
+                capture.stop()
+            self.assertFalse(capture.active)
+            self.assertFalse(capture.cleanup_uncertified)
+            self.assertTrue(any('-cancel' in command for command, _ in commands))
+            self.assertTrue(all(command[-2:]==['-instancename',capture.instance] for command, _ in commands))
+            self.assertTrue(all(timeout<=30 for _, timeout in commands))
+            self.assertTrue(any((Path(directory)/'traces').glob('*.etl')))
+            self.assertTrue((Path(directory)/'wpr-stop.json').exists())
+
+    def test_failed_cancel_or_unknown_inactive_response_remains_active_and_uncertified(self):
+        from scripts import v3_windows_reliability as diagnostic
+        for cancel_code, inactive_text in ((5,'WPR recording is in progress...'), (0,'unknown status format')):
+            with self.subTest(cancel_code=cancel_code), tempfile.TemporaryDirectory() as directory, \
+                 patch.object(diagnostic.shutil, 'which', side_effect=lambda name:name):
+                commands = []
+                def run(command, **kwargs):
+                    commands.append(command)
+                    if '-stop' in command:
+                        return subprocess.CompletedProcess(command, 5, '', 'save failed')
+                    if '-cancel' in command:
+                        return subprocess.CompletedProcess(command, cancel_code, '', 'cancel output')
+                    text = 'Events Lost : 0' if 'collectors' in command else inactive_text
+                    return subprocess.CompletedProcess(command, 0, text, '')
+                capture = diagnostic.NativeCapture(Path(directory), {})
+                capture.case, capture.active = Path(directory), True
+                with patch.object(diagnostic.subprocess, 'run', side_effect=run), \
+                     self.assertRaisesRegex(RuntimeError, 'cleanup_uncertified'):
+                    capture.stop()
+                self.assertTrue(capture.active)
+                self.assertTrue(capture.cleanup_uncertified)
+                self.assertTrue(any('-cancel' in command for command in commands))
+                self.assertTrue(all(command[-2:]==['-instancename',capture.instance] for command in commands))
+
+    def test_failed_status_with_partial_zero_loss_still_saves_but_never_qualifies_capture(self):
+        from scripts import v3_windows_reliability as diagnostic
+        def run(command, **kwargs):
+            if '-stop' in command:
+                Path(command[2]).write_bytes(b'unit-test trace stub')
+            if '-status' in command:
+                if 'collectors' in command:
+                    return subprocess.CompletedProcess(command, 5, 'Events Lost : 0', 'query failed')
+                return subprocess.CompletedProcess(command, 0, 'WPR is not recording.', '')
+            return subprocess.CompletedProcess(command, 0, '', '')
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(diagnostic.shutil, 'which', side_effect=lambda name:name), \
+             patch.object(diagnostic.subprocess, 'run', side_effect=run):
+            capture = diagnostic.NativeCapture(Path(directory), {})
+            capture.case, capture.active = Path(directory), True
+            with self.assertRaisesRegex(RuntimeError, 'wpr-status'):
+                capture.stop()
+            self.assertFalse(capture.active)
+            self.assertTrue(any((Path(directory)/'traces').glob('*.etl')))
+
+    def test_uncertified_retries_preserve_each_partial_trace_and_tool_attempt(self):
+        from scripts import v3_windows_reliability as diagnostic
+        attempts = 0
+        def run(command, **kwargs):
+            nonlocal attempts
+            if '-stop' in command:
+                attempts += 1
+                Path(command[2]).write_bytes(f'partial {attempts}'.encode())
+                return subprocess.CompletedProcess(command, 5, '', 'failed save')
+            code = 5 if '-cancel' in command else 0
+            return subprocess.CompletedProcess(command, code, 'Events Lost : 0', '')
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(diagnostic.shutil, 'which', side_effect=lambda name:name), \
+             patch.object(diagnostic.subprocess, 'run', side_effect=run):
+            root = Path(directory)
+            capture = diagnostic.NativeCapture(root, {})
+            capture.case, capture.active = root, True
+            for _ in range(2):
+                with self.assertRaisesRegex(RuntimeError, 'cleanup_uncertified'):
+                    capture.stop()
+            self.assertEqual(sorted(path.read_bytes() for path in (root/'traces').glob('*.etl')),
+                             [b'partial 1',b'partial 2'])
+            self.assertEqual(len(list(root.glob('wpr-stop*.json'))), 2)
+            self.assertTrue(capture.active and capture.cleanup_uncertified)
+
+    def comparison(self, failure=False):
+        from scripts import v3_windows_reliability as diagnostic
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        output = Path(temporary.name)
+        old, current = output / 'old', output / 'current'
+        commands = []
+        def run(command, log_path, env, **kwargs):
+            commands.append((command, kwargs))
+            if '--child' in command:
+                case = Path(command[command.index('--output')+1])
+                bad = failure and len(commands)==1
+                (case/'unittest.log').write_text('TimeoutError' if bad else 'OK')
+                (case/'events.jsonl').write_text('\n'.join(json.dumps(row) for row in [
+                    {'event':'cancel.return','monotonic_ns':1,'thread_id':1},
+                    {'event':'future_wait.call','monotonic_ns':1,'thread_id':1},
+                    {'event':'future_wait.return','monotonic_ns':5_000_000_001 if bad else 200_000_001,'thread_id':1}]))
+                return {'returncode': int(bad), 'timeout_seconds':45, 'timeout_cleanup':None}
+            return {'returncode':0, 'timeout_seconds':45, 'timeout_cleanup':None}
+        capture = types.SimpleNamespace(preflight=lambda: None, start=lambda case:None, active=False,
+                                       stop=lambda: {'status':'CAPTURED'}, decode=lambda capture:None)
+        with patch.object(diagnostic, 'NativeCapture', return_value=capture), \
+             patch.object(diagnostic, '_product_identity', side_effect=lambda path: {
+                 'candidate_sha':diagnostic.HISTORICAL_PRODUCT if path==old else 'c'*40}), \
+             patch.object(diagnostic, 'historical_environment', return_value={'status':'MATCH'}), \
+             patch.object(diagnostic, 'run_process', side_effect=run):
+            result = diagnostic.run_native_comparison(output, current, old)
+        return result, json.loads((output/'report.json').read_text()), commands, old, current
+
+    def test_native_comparison_keeps_identical_cpu_controls_and_pinned_reviewers_and_all_fast_is_inconclusive(self):
+        result, report, commands, old, current = self.comparison()
+        self.assertEqual(result, 0)
+        self.assertEqual(report['status'], 'INCONCLUSIVE')
+        self.assertFalse(report['historical_cause_established'])
+        self.assertEqual(report['active_limit_seconds'], 300)
+        self.assertEqual(report['trace_limit_bytes'], 512*1024*1024)
+        self.assertEqual([row['variant'] for row in report['iterations']],
+            ['baseline','anchor','current','current','anchor','baseline',
+             'anchor','baseline','current','current','baseline','anchor'])
+        self.assertEqual(len(commands), 24)
+        for command, kwargs in commands[::2]:
+            self.assertIn('--native-trace', command)
+            self.assertEqual(command[command.index('--control')+1], 'cpu')
+            self.assertEqual(command[command.index('--cpu-workers')+1], '2')
+            self.assertIn('abort', kwargs)
+        for command, _ in commands[1::2]:
+            self.assertEqual(command[1], str(old/'scripts/subagent_workflow_acceptance.py'))
+        cancellations = [command for command, _ in commands[::2]]
+        self.assertEqual(['--readonly-anchor' in command for command in cancellations],
+                         [row['variant']=='anchor' for row in report['iterations']])
+
+    def test_native_failure_keeps_the_whole_control_triple_and_never_claims_attribution(self):
+        result, report, commands, _, _ = self.comparison(failure=True)
+        self.assertEqual(result, 1)
+        self.assertEqual(len(commands), 6)
+        self.assertEqual(report['status'], 'PENDING_NATIVE_ANALYSIS')
+        self.assertFalse(report['historical_cause_established'])
+        self.assertEqual(report['iterations'][0]['future_wait_seconds'], 5)
+
+    def test_native_time_and_trace_size_limits_are_explicit_abort_reasons(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(diagnostic.native_limit(root, time.monotonic()-1), 'active_time_limit')
+            with (root/'owned.etl').open('wb') as stream:
+                stream.truncate(512*1024*1024+1)
+            self.assertEqual(diagnostic.native_limit(root, time.monotonic()+300), 'trace_size_limit')
+            with patch.object(Path, 'rglob', side_effect=PermissionError('unreadable trace inventory')):
+                self.assertEqual(diagnostic.native_limit(root, time.monotonic()+300), 'trace_inventory_error')
+
+    def test_native_child_runs_the_actual_fixture_without_a_watchdog_database_client(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run([sys.executable,str(SCRIPT),'--child','--output',directory,
+                '--repository',str(ROOT),'--native-trace'], cwd=ROOT, capture_output=True, text=True, timeout=35)
+            self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+            events = [json.loads(row) for row in (Path(directory)/'events.jsonl').read_text().splitlines()]
+            self.assertEqual(events[0]['event'], 'clock.mapping')
+            self.assertTrue(any(row['event']=='product.source' for row in events))
+            self.assertTrue(any(row['event']=='sqlite.close.c_call' and 'wal' in row for row in events))
+            state = json.loads((Path(directory)/'state-before-cleanup.json').read_text())
+            self.assertFalse(state['database_snapshot_deferred'])
+            self.assertEqual(state['persisted_states'][-1]['status'], 'cancelled')
+
+    @unittest.skipUnless(os.name == 'posix', 'real owned child abort fixture requires POSIX')
+    def test_campaign_abort_preserves_45_second_child_bound_and_cleans_the_owned_process(self):
+        from scripts.v3_windows_reliability import run_process
+        with tempfile.TemporaryDirectory() as directory:
+            attempts = iter((None, 'active_time_limit'))
+            result = run_process([sys.executable,'-c','import time; time.sleep(20)'],
+                Path(directory)/'child.log', dict(os.environ), abort=lambda:next(attempts))
+            self.assertEqual(result['timeout_seconds'], 45)
+            self.assertEqual(result['abort_reason'], 'active_time_limit')
+            self.assertEqual(result['returncode'], 124)
+            self.assertIsNotNone(result['timeout_cleanup']['parent_returncode'])

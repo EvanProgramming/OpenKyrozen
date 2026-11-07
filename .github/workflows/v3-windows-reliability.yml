@@ -13,7 +13,7 @@ on:
       control:
         description: Load control; paired-anchor compares equal CPU load with/without read-only anchor (1–10 pairs)
         type: choice
-        options: [baseline, cpu, sqlite, combined, paired-anchor, all]
+        options: [baseline, cpu, sqlite, combined, paired-anchor, native-wait, all]
         default: baseline
       iterations:
         description: Samples per control and Python version (1–50)
@@ -49,6 +49,7 @@ jobs:
           if ($env:ITERATIONS -cnotmatch '^[0-9]+$' -or [int]$env:ITERATIONS -lt 1 -or [int]$env:ITERATIONS -gt 50) { throw 'iterations must be 1–50' }
           if ($env:HISTORICAL_ENVIRONMENT -eq '1' -and [int]$env:ITERATIONS -gt 20) { throw 'historical campaign is bounded at 20 iterations' }
           if ($env:LOAD_CONTROL -eq 'paired-anchor' -and [int]$env:ITERATIONS -gt 10) { throw 'paired-anchor is bounded at 10 pairs' }
+          if ($env:LOAD_CONTROL -eq 'native-wait' -and ($env:HISTORICAL_ENVIRONMENT -ne '1' -or [int]$env:ITERATIONS -ne 4)) { throw 'native-wait requires historical environment and exactly four triples' }
       - name: Checkout diagnostic harness
         uses: actions/checkout@v4
         with:
@@ -59,6 +60,13 @@ jobs:
         with:
           ref: ${{ env.PRODUCT_SHA }}
           path: product
+          fetch-depth: 0
+      - name: Checkout original product for native wait comparison
+        if: matrix.control == 'native-wait'
+        uses: actions/checkout@v4
+        with:
+          ref: '0f172f9fe692ff8fafcc0a15a72fe51eaf67e977'
+          path: historical-product
           fetch-depth: 0
       - uses: actions/setup-python@v5
         id: python
@@ -103,7 +111,9 @@ jobs:
         run: |
           $historical = @()
           if ($env:HISTORICAL_ENVIRONMENT -eq '1') { $historical = @('--historical-environment', '--interleave-reviewer') }
-          python diagnostic-source/scripts/v3_windows_reliability.py --repository product --output windows-evidence --iterations $env:ITERATIONS --control $env:LOAD_CONTROL --cpu-workers 2 @historical
+          $native = @()
+          if ($env:LOAD_CONTROL -eq 'native-wait') { $native = @('--historical-repository', 'historical-product') }
+          python diagnostic-source/scripts/v3_windows_reliability.py --repository product --output windows-evidence --iterations $env:ITERATIONS --control $env:LOAD_CONTROL --cpu-workers 2 @historical @native
       - name: Verify diagnostic harness independently of historical product
         if: always() && steps.python.outcome == 'success'
         working-directory: diagnostic-source
