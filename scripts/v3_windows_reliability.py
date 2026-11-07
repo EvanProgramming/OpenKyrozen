@@ -6,6 +6,7 @@ import argparse
 import ast
 from contextlib import closing
 import faulthandler
+import gzip
 import hashlib
 from importlib import metadata
 import json
@@ -17,6 +18,7 @@ import signal
 import shutil
 import sqlite3
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -26,6 +28,7 @@ import traceback
 import unittest
 import uuid
 import zipfile
+import zlib
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,6 +133,77 @@ def _offline_xperf_tool(output, env):
         write_json(output / 'xperf-tool.json',info)
 
 
+def _gzip_footer_matches(path, count, crc):
+    if not path.is_file() or path.stat().st_size < 18:
+        return False
+    with path.open('rb') as stream:
+        stream.seek(-8,os.SEEK_END)
+        return struct.unpack('<II',stream.read(8)) == (crc & 0xffffffff,count & 0xffffffff)
+
+
+def run_offline_gzip_child(output):
+    """Internal pipe consumer; the outer run_process owns its entire tree."""
+    output=output.absolute();target=output/'native-events.csv.gz';record=output/'gzip-stream.json'
+    state={'finalized':False,'stdout_eof':False,'gzip_closed':False,'gzip_footer_valid':False,
+           'raw_hash_scope':'observed_prefix',
+           'xperf_returncode':None,'raw_bytes':0,'cleanup_uncertified':False,'error':None}
+    digest=hashlib.sha256();crc=0;process=compressor=None
+    try:
+        info=json.loads((output/'xperf-tool.json').read_text(encoding='utf-8'))
+        command=[info['path'],'-i',str(output/'native-capture.etl'),'-a','dumper',
+                 '-provider',OFFLINE_FILEIO_GUID,'-add_rawdata']
+        state['command']=command;write_json(record,state)
+        with (output/'xperf-stderr.log').open('xb') as errors:
+            # No nested session/group: outer timeout owns wrapper and xperf together.
+            process=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=errors)
+            state['xperf_pid']=process.pid;write_json(record,state)
+            with target.open('xb') as raw_file:
+                with gzip.GzipFile(filename='',mode='wb',fileobj=raw_file,compresslevel=1,mtime=0) as compressor:
+                    checkpoint=0
+                    while chunk := process.stdout.read(64*1024):
+                        digest.update(chunk);crc=zlib.crc32(chunk,crc);state['raw_bytes']+=len(chunk)
+                        compressor.write(chunk)
+                        if state['raw_bytes']-checkpoint >= 8*1024*1024:
+                            state['raw_sha256']=digest.hexdigest();write_json(record,state)
+                            checkpoint=state['raw_bytes']
+                    state['stdout_eof']=True
+                    state['raw_hash_scope']='complete_stdout'
+            state['xperf_returncode']=process.wait()
+            if state['xperf_returncode'] != 0:
+                raise RuntimeError('xperf exited nonzero')
+            if not state['raw_bytes']:
+                raise RuntimeError('xperf produced no stdout bytes')
+    except Exception as error:
+        state['error']=f'{type(error).__name__}: {error}'
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                state['cleanup_uncertified']=True
+                try:
+                    if os.name=='nt':
+                        state['child_cleanup']=stop_diagnostic_tree(process)
+                    else:
+                        process.kill();process.wait(timeout=3)
+                        state['child_cleanup']={'method':'exact_child_kill_wait','parent_returncode':process.returncode,
+                                               'descendant_cleanup_certified':False}
+                except Exception as error:
+                    state['child_cleanup_error']=f'{type(error).__name__}: {error}'
+                if process.poll() is None:
+                    # Preserve ancestry until the unchanged outer bound stops this tree.
+                    write_json(record,state)
+                    process.wait()
+            state['xperf_returncode']=process.poll()
+            process.stdout.close()
+        state.update(gzip_closed=bool(compressor and compressor.closed),raw_sha256=digest.hexdigest(),raw_crc32=crc)
+        state['gzip_footer_valid']=_gzip_footer_matches(target,state['raw_bytes'],crc)
+        if target.is_file():
+            with target.open('rb') as stream:
+                state.update(gzip_bytes=target.stat().st_size,gzip_sha256=hashlib.file_digest(stream,'sha256').hexdigest())
+        state['finalized']=True;write_json(record,state)
+    return 0 if (not state['error'] and not state['cleanup_uncertified'] and state['stdout_eof']
+                 and state['gzip_closed'] and state['gzip_footer_valid'] and state['xperf_returncode']==0) else 2
+
+
 def run_offline_decode(archive, metadata_path, output):
     """One existing-ETL decode; never imports a product or controls a recorder."""
     archive, metadata_path, output = (path.absolute() for path in (archive, metadata_path, output))
@@ -139,7 +213,7 @@ def run_offline_decode(archive, metadata_path, output):
         'source_capture_head':OFFLINE_ETL_SOURCE['diagnostic_sha'],
         'product_identity_source':'frozen original artifact; candidate_sha/PRODUCT_SHA is not used',
         'provider_filter':OFFLINE_FILEIO_GUID, 'range_filter':None, 'raw_data_requested':True,
-        'output_contract':'Complete xperf FileIo dumper output with its own header and raw lines; no separate MAN required',
+        'output_contract':'Lossless gzip of complete xperf stdout including header/raw lines; no separate MAN required',
         'historical_cause_established':False, 'native_fields_validated':False,
         'decode_timeout_seconds':30, 'storage_limit_bytes':OFFLINE_STORAGE_LIMIT,
         'tool_metadata_within_decode_deadline':True,
@@ -168,27 +242,44 @@ def run_offline_decode(archive, metadata_path, output):
                 receipt.update(cleanup_uncertified=True, error_phase='tool_metadata',
                     cleanup_observation='xperf metadata process timed out; descendant cleanup is uncertified')
                 raise
-            command = [receipt['decoder_tool']['path'],'-i',str(etl),'-o',str(output / 'native-events.csv'),
-                       '-a','dumper','-provider',OFFLINE_FILEIO_GUID,'-add_rawdata']
+            command = [sys.executable,'-I',str(Path(__file__).resolve()),'--offline-gzip-child',str(output)]
+            receipt['cleanup_uncertified']=True
             result = run_process(command, output / 'decoder.log', env,
                                  timeout=30, abort=abort)
         receipt['decoder'] = result
         cleanup = result.get('timeout_cleanup')
-        receipt['cleanup_uncertified'] = bool(cleanup and not cleanup.get('descendant_cleanup_certified'))
-        receipt['cleanup_observation'] = ('run_process timeout cleanup record' if cleanup else
-            'direct decoder process exit only; no descendant-sweep certification')
+        record=output/'gzip-stream.json'
+        if not record.is_file() or record.stat().st_size > 1024*1024:
+            raise RuntimeError('Missing or oversized gzip stream result; child cleanup is uncertified')
+        state=json.loads(record.read_text(encoding='utf-8'));receipt['stream']=state
+        if not isinstance(state,dict):
+            raise ValueError('gzip stream result is not an object')
+        receipt['cleanup_uncertified'] = bool(cleanup and not cleanup.get('descendant_cleanup_certified')) or state.get('cleanup_uncertified') is not False
+        receipt['cleanup_observation'] = 'outer wrapper result and inner xperf stream/cleanup record; no inferred descendant certification'
         if result['returncode'] or result.get('abort_reason'):
             raise RuntimeError('Decoder did not complete within its unchanged bounds')
         if abort():
             raise RuntimeError('Decoder output exceeded the sampled storage bound')
-        if not (output / 'native-events.csv').is_file() or not (output / 'native-events.csv').stat().st_size:
-            raise RuntimeError('Decoder did not create a nonempty xperf dump')
+        target=output/'native-events.csv.gz'
+        if (state.get('error') is not None or receipt['cleanup_uncertified']
+                or any(state.get(key) is not True for key in ('finalized','stdout_eof','gzip_closed','gzip_footer_valid'))
+                or state.get('raw_hash_scope')!='complete_stdout'
+                or type(state.get('xperf_returncode')) is not int or state['xperf_returncode']!=0
+                or type(state.get('raw_bytes')) is not int or state['raw_bytes']<=0
+                or type(state.get('raw_crc32')) is not int
+                or not isinstance(state.get('raw_sha256'),str) or not re.fullmatch('[0-9a-f]{64}',state['raw_sha256'])
+                or not _gzip_footer_matches(target,state['raw_bytes'],state['raw_crc32'])):
+            raise RuntimeError('xperf stream/exit/gzip completion is unproven')
+        with target.open('rb') as stream:
+            if (state.get('gzip_bytes')!=target.stat().st_size
+                    or state.get('gzip_sha256')!=hashlib.file_digest(stream,'sha256').hexdigest()):
+                raise RuntimeError('Compressed output differs from the finalized stream result')
         receipt['status'] = 'DECODE_COMPLETED_UNANALYZED'
     except (OSError, RuntimeError, ValueError, zipfile.BadZipFile, subprocess.SubprocessError) as error:
         receipt['error'] = f'{type(error).__name__}: {error}'
     finally:
         receipt['outputs'] = {}
-        for name in ('native-capture.etl', 'native-events.csv', 'xperf-tool.json', 'decoder.log'):
+        for name in ('native-capture.etl', 'native-events.csv.gz', 'gzip-stream.json', 'xperf-stderr.log','xperf-tool.json', 'decoder.log'):
             path = output / name
             if path.is_file():
                 with path.open('rb') as stream:
@@ -1296,6 +1387,7 @@ def main():
     parser.add_argument('--offline-decode-archive', type=Path,
                         help='Decode only the frozen existing run42360763158 ZIP; never starts a product or WPR')
     parser.add_argument('--offline-source-metadata', type=Path, help='GitHub source artifact/run metadata for offline decode')
+    parser.add_argument('--offline-gzip-child',type=Path,help=argparse.SUPPRESS)
     parser.add_argument('--repository', type=Path, default=ROOT, help='Exact product checkout to test; harness may live separately')
     parser.add_argument('--iterations', type=int, default=20)
     parser.add_argument('--control', choices=('baseline', 'cpu', 'sqlite', 'combined', 'paired-anchor', 'native-wait', 'native-vfs'), default='baseline')
@@ -1309,6 +1401,12 @@ def main():
     parser.add_argument('--readonly-anchor', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--vfs-target', choices=('wal','control-file'), help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.offline_gzip_child:
+        if (args.output or args.offline_decode_archive or args.offline_source_metadata or args.child
+                or args.native_trace or args.historical_environment or args.historical_repository
+                or args.write_historical_requirements or args.control!='baseline' or args.vfs_target):
+            parser.error('offline gzip child is an internal output-directory-only mode')
+        return run_offline_gzip_child(args.offline_gzip_child)
     if args.offline_decode_archive or args.offline_source_metadata:
         if (not args.offline_decode_archive or not args.offline_source_metadata or not args.output
                 or args.child or args.native_trace or args.readonly_anchor or args.vfs_target

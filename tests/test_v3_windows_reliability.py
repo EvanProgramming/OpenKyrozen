@@ -1,6 +1,8 @@
 import json
 import hashlib
 import io
+import gzip
+import zlib
 from contextlib import contextmanager
 import os
 from pathlib import Path
@@ -19,6 +21,150 @@ SCRIPT = ROOT / 'scripts' / 'v3_windows_reliability.py'
 
 
 class OfflineNativeDecodeTests(unittest.TestCase):
+    def stream_fixture(self, root):
+        tool=root/'xperf.exe';tool.write_bytes(b'opaque test tool bytes')
+        (root/'xperf-tool.json').write_text(json.dumps({'path':str(tool),'sha256':hashlib.sha256(tool.read_bytes()).hexdigest()}))
+        (root/'native-capture.etl').write_bytes(b'opaque ETL fixture')
+        return tool
+
+    def completed_stream(self, root, payload=b'opaque dump bytes\n'):
+        data=gzip.compress(payload,compresslevel=1,mtime=0)
+        (root/'native-events.csv.gz').write_bytes(data)
+        state={'stdout_eof':True,'gzip_closed':True,'gzip_footer_valid':True,'finalized':True,
+            'raw_hash_scope':'complete_stdout',
+            'xperf_returncode':0,'raw_bytes':len(payload),'raw_sha256':hashlib.sha256(payload).hexdigest(),
+            'raw_crc32':zlib.crc32(payload),'gzip_bytes':len(data),'gzip_sha256':hashlib.sha256(data).hexdigest(),
+            'cleanup_uncertified':False,'error':None}
+        (root/'gzip-stream.json').write_text(json.dumps(state))
+        return state
+
+    def test_gzip_stream_retains_every_binary_stdout_byte_hash_footer_and_real_exit(self):
+        from scripts import v3_windows_reliability as diagnostic
+        payload=bytes(range(256))*4097+b'\r\n\x00\xff'
+        code="import sys;sys.stdout.buffer.write(bytes(range(256))*4097+b'\\r\\n\\x00\\xff')"
+        original_popen=subprocess.Popen
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);tool=self.stream_fixture(root);commands=[]
+            def spawn(command,**options):
+                commands.append(command)
+                return original_popen([sys.executable,'-I','-c',code],**options)
+            with patch.object(diagnostic.subprocess,'Popen',side_effect=spawn):
+                self.assertEqual(diagnostic.run_offline_gzip_child(root),0)
+            self.assertEqual(len(commands),1)
+            self.assertEqual(commands[0],[str(tool),'-i',str(root/'native-capture.etl'),'-a','dumper',
+                '-provider','{90cbdc39-4a3e-11d1-84f4-0000f80464e3}','-add_rawdata'])
+            self.assertEqual(gzip.decompress((root/'native-events.csv.gz').read_bytes()),payload)
+            state=json.loads((root/'gzip-stream.json').read_text())
+            self.assertEqual(state['raw_sha256'],hashlib.sha256(payload).hexdigest())
+            self.assertEqual(state['raw_bytes'],len(payload))
+            self.assertEqual(state['raw_hash_scope'],'complete_stdout')
+            self.assertTrue(state['stdout_eof'] and state['gzip_closed'] and state['gzip_footer_valid'])
+            self.assertEqual(state['xperf_returncode'],0)
+            self.assertFalse((root/'native-events.csv').exists())
+
+    def test_nonzero_xperf_exit_keeps_lossless_output_but_does_not_complete(self):
+        from scripts import v3_windows_reliability as diagnostic
+        original_popen=subprocess.Popen
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);self.stream_fixture(root)
+            def spawn(command,**options):
+                return original_popen([sys.executable,'-I','-c',"import sys;sys.stdout.buffer.write(b'prefix');sys.exit(7)"],**options)
+            with patch.object(diagnostic.subprocess,'Popen',side_effect=spawn):
+                self.assertEqual(diagnostic.run_offline_gzip_child(root),2)
+            state=json.loads((root/'gzip-stream.json').read_text())
+            self.assertEqual(state['xperf_returncode'],7)
+            self.assertTrue(state['stdout_eof'] and state['gzip_closed'])
+            self.assertTrue(state['error'])
+            self.assertEqual(gzip.decompress((root/'native-events.csv.gz').read_bytes()),b'prefix')
+
+    def test_gzip_write_error_stops_the_actual_child_and_retains_uncertainty(self):
+        from scripts import v3_windows_reliability as diagnostic
+        original_popen=subprocess.Popen;owned=[]
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);tool=self.stream_fixture(root)
+            def spawn(command,**options):
+                if command[0]!=str(tool):return original_popen(command,**options)
+                child=original_popen([sys.executable,'-I','-c',
+                    'import sys,threading;sys.stdout.buffer.write(b"x"*65536);sys.stdout.buffer.flush();threading.Event().wait()'],**options)
+                owned.append(child);return child
+            try:
+                with patch.object(diagnostic.subprocess,'Popen',side_effect=spawn), \
+                     patch.object(diagnostic.gzip.GzipFile,'write',side_effect=OSError('controlled output failure')):
+                    self.assertEqual(diagnostic.run_offline_gzip_child(root),2)
+                self.assertIsNotNone(owned[0].poll())
+                state=json.loads((root/'gzip-stream.json').read_text())
+                self.assertFalse(state['stdout_eof'])
+                self.assertEqual(state['raw_hash_scope'],'observed_prefix')
+                self.assertTrue(state['cleanup_uncertified'])
+                self.assertIn('controlled output failure',state['error'])
+            finally:
+                for child in owned:
+                    if child.poll() is None:child.kill()
+                    child.wait(timeout=3)
+
+    def test_outer_bound_stops_wrapper_actual_child_and_grandchild_in_one_tree(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);tool=self.stream_fixture(root);marker=root/'ready.json'
+            producer='''
+import json,os,subprocess,sys,threading
+from pathlib import Path
+grandchild=subprocess.Popen([sys.executable,'-I','-c','import threading;threading.Event().wait()'],
+    stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+marker=Path(sys.argv[1]);temporary=marker.with_suffix('.tmp')
+temporary.write_text(json.dumps([os.getppid(),os.getpid(),grandchild.pid]));temporary.replace(marker)
+threading.Event().wait()
+'''
+            wrapper=('import sys\nfrom pathlib import Path\nsys.path.insert(0,'+repr(str(ROOT))+')\n'
+                'from scripts import v3_windows_reliability as d\noriginal=d.subprocess.Popen\n'
+                'def spawn(command,**options):\n'
+                ' if command[0]=='+repr(str(tool))+':\n'
+                '  return original([sys.executable,"-I","-c",'+repr(producer)+','+repr(str(marker))+'],**options)\n'
+                ' return original(command,**options)\n'
+                'd.subprocess.Popen=spawn\nraise SystemExit(d.run_offline_gzip_child(Path('+repr(str(root))+')))')
+            identities=[];handles=[];kernel=None
+            if os.name=='nt':
+                import ctypes
+                from ctypes import wintypes
+                kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+                kernel.OpenProcess.argtypes=(wintypes.DWORD,wintypes.BOOL,wintypes.DWORD)
+                kernel.OpenProcess.restype=wintypes.HANDLE
+                kernel.WaitForSingleObject.argtypes=(wintypes.HANDLE,wintypes.DWORD)
+                kernel.WaitForSingleObject.restype=wintypes.DWORD
+                kernel.TerminateProcess.argtypes=(wintypes.HANDLE,wintypes.UINT)
+                kernel.CloseHandle.argtypes=(wintypes.HANDLE,)
+            def abort():
+                if marker.exists():
+                    identities.extend(json.loads(marker.read_text()))
+                    if kernel:
+                        for pid in identities:
+                            handle=kernel.OpenProcess(0x00100001,False,pid)
+                            self.assertTrue(handle);handles.append(handle)
+                    return 'decode_time_limit'
+            try:
+                result=diagnostic.run_process([sys.executable,'-I','-c',wrapper],root/'outer.log',
+                    dict(os.environ),timeout=30,abort=abort)
+                self.assertEqual(result['returncode'],124)
+                self.assertEqual(result['timeout_seconds'],30)
+                self.assertEqual(len(set(identities)),3)
+                self.assertFalse(result['timeout_cleanup']['descendant_cleanup_certified'])
+                if kernel:
+                    for handle in handles:self.assertEqual(kernel.WaitForSingleObject(handle,3000),0)
+                else:
+                    for pid in identities:
+                        state=subprocess.run(['ps','-p',str(pid),'-o','stat='],capture_output=True,text=True,timeout=3).stdout.strip()
+                        self.assertTrue(not state or state.startswith('Z'),state)
+            finally:
+                if kernel:
+                    for handle in handles:
+                        if kernel.WaitForSingleObject(handle,0)!=0:
+                            kernel.TerminateProcess(handle,1);kernel.WaitForSingleObject(handle,3000)
+                        kernel.CloseHandle(handle)
+                else:
+                    for group in identities[:1]:
+                        try:os.killpg(group,__import__('signal').SIGKILL)
+                        except ProcessLookupError:pass
+
     @contextmanager
     def installed_tool(self, root):
         from scripts import v3_windows_reliability as diagnostic
@@ -119,11 +265,8 @@ class OfflineNativeDecodeTests(unittest.TestCase):
             root=Path(directory);archive,metadata,source=self.archive(root);commands=[]
             def run(command,log,env,**options):
                 commands.append((command,options))
-                self.assertEqual(command[1],'-i')
-                self.assertEqual(command[command.index('-a')+1],'dumper')
-                self.assertEqual(command[command.index('-provider')+1],'{90cbdc39-4a3e-11d1-84f4-0000f80464e3}')
-                self.assertIn('-add_rawdata',command)
-                Path(command[command.index('-o')+1]).write_bytes(b'opaque dump bytes\n')
+                self.assertEqual(command[:4],[sys.executable,'-I',str(SCRIPT),'--offline-gzip-child'])
+                self.completed_stream(Path(command[4]))
                 return {'returncode':0,'timeout_seconds':options['timeout'],'timeout_cleanup':None}
             with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
                  self.installed_tool(root), \
@@ -142,7 +285,9 @@ class OfflineNativeDecodeTests(unittest.TestCase):
             self.assertEqual(receipt['actual_product_sha'],'0109494a87448ce345dc69751b314b0aeab88ef0')
             self.assertEqual(receipt['source_capture_head'],'7b07bfa3dfab7c4633689878372929647b9a9f48')
             self.assertEqual(receipt['storage_limit_bytes'],512*1024*1024)
-            self.assertEqual(receipt['outputs']['native-events.csv']['bytes'],18)
+            self.assertEqual(receipt['stream']['raw_bytes'],18)
+            self.assertIn('native-events.csv.gz',receipt['outputs'])
+            self.assertFalse((root/'output'/'native-events.csv').exists())
             self.assertEqual(receipt['decoder_tool']['sha256'],hashlib.sha256(b'opaque test tool bytes').hexdigest())
             self.assertEqual(receipt['decoder_tool']['file_version'],'test-file-version')
             self.assertFalse((root/'output'/'native-schema.man').exists())
@@ -155,11 +300,9 @@ class OfflineNativeDecodeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);archive,metadata,source=self.archive(root)
             def run(command,*args,**options):
-                path=Path(command[command.index('-i')+1]);path=path if path.is_absolute() else diagnostic.ROOT/path
+                path=Path(command[4])/'native-capture.etl';path=path if path.is_absolute() else diagnostic.ROOT/path
                 self.assertTrue(path.is_file(),'decoder cwd cannot reach the verified ETL')
-                target=Path(command[command.index('-o')+1])
-                target=target if target.is_absolute() else diagnostic.ROOT/target
-                target.write_bytes(b'opaque output')
+                self.completed_stream(path.parent)
                 return {'returncode':0,'timeout_cleanup':None}
             with chdir(root),patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
                  self.installed_tool(root), \
@@ -171,7 +314,7 @@ class OfflineNativeDecodeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);archive,metadata,source=self.archive(root)
             def timeout(command,*args,**options):
-                Path(command[command.index('-o')+1]).write_text('partial')
+                Path(command[4],'native-events.csv.gz').write_bytes(b'partial')
                 return {'returncode':124,'timeout_seconds':30,'abort_reason':None,
                         'timeout_cleanup':{'descendant_cleanup_certified':False,'method':'taskkill_tree'}}
             with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
@@ -182,7 +325,7 @@ class OfflineNativeDecodeTests(unittest.TestCase):
             self.assertEqual(receipt['status'],'BLOCKED')
             self.assertTrue(receipt['cleanup_uncertified'])
             self.assertEqual(receipt['decoder']['timeout_cleanup']['method'],'taskkill_tree')
-            self.assertEqual((root/'output'/'native-events.csv').read_text(),'partial')
+            self.assertEqual((root/'output'/'native-events.csv.gz').read_bytes(),b'partial')
 
     def test_decoder_storage_growth_and_missing_csv_remain_blocked(self):
         from scripts import v3_windows_reliability as diagnostic
@@ -191,7 +334,7 @@ class OfflineNativeDecodeTests(unittest.TestCase):
                 root=Path(directory);archive,metadata,source=self.archive(root)
                 limit=source['zip_bytes']+source['etl_bytes']+8 if mode=='growth' else 512*1024*1024
                 def run(command,*args,**options):
-                    if mode=='growth':Path(command[command.index('-o')+1]).write_bytes(b'x'*100)
+                    if mode=='growth':Path(command[4],'native-events.csv.gz').write_bytes(b'x'*100)
                     reason=options['abort']()
                     self.assertEqual(reason,'decode_storage_limit' if mode=='growth' else None)
                     return {'returncode':124 if reason else 0,'abort_reason':reason,'timeout_cleanup':None}
@@ -202,7 +345,7 @@ class OfflineNativeDecodeTests(unittest.TestCase):
                     self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),2)
                 receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
                 self.assertEqual(receipt['status'],'BLOCKED')
-                if mode=='growth':self.assertEqual(receipt['outputs']['native-events.csv']['bytes'],100)
+                if mode=='growth':self.assertEqual(receipt['outputs']['native-events.csv.gz']['bytes'],100)
 
     def test_duplicate_canonical_member_cannot_replace_the_single_frozen_etl(self):
         import warnings
@@ -228,6 +371,14 @@ class OfflineNativeDecodeTests(unittest.TestCase):
              patch.object(diagnostic,'run_offline_decode',return_value=0), \
              patch.object(diagnostic,'run_native_comparison',side_effect=AssertionError('product campaign ran')), \
              patch.object(diagnostic,'historical_environment',side_effect=AssertionError('product dependencies read')):
+            self.assertEqual(diagnostic.main(),0)
+
+    def test_internal_gzip_cli_enters_only_the_stream_child(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with patch.object(sys,'argv',[str(SCRIPT),'--offline-gzip-child','stream-output']), \
+             patch.object(diagnostic,'run_offline_gzip_child',return_value=0), \
+             patch.object(diagnostic,'run_offline_decode',side_effect=AssertionError('parent source stage entered')), \
+             patch.object(diagnostic,'run_native_comparison',side_effect=AssertionError('product campaign entered')):
             self.assertEqual(diagnostic.main(),0)
 
     def test_missing_xperf_blocks_without_installing_or_executing_a_decoder(self):
@@ -289,8 +440,8 @@ class OfflineNativeDecodeTests(unittest.TestCase):
                 tool.parent.mkdir(parents=True);tool.write_bytes(b'known path test tool')
                 version=json.dumps({'file_version':'test-file','product_version':'test-product'} if version_ok else {})
                 def run(command,*args,**options):
-                    self.assertEqual(command[0],str(tool.resolve()))
-                    Path(command[command.index('-o')+1]).write_bytes(b'opaque dump')
+                    self.assertEqual(command[3],'--offline-gzip-child')
+                    self.completed_stream(Path(command[4]))
                     return {'returncode':0,'timeout_cleanup':None}
                 with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
                      patch.object(diagnostic.platform,'system',return_value='Windows'), \
@@ -303,6 +454,33 @@ class OfflineNativeDecodeTests(unittest.TestCase):
                 self.assertEqual(info['path'],str(tool.resolve()))
                 self.assertEqual(info['sha256'],hashlib.sha256(b'known path test tool').hexdigest())
                 self.assertEqual(info['version_status'],'READ' if version_ok else 'UNAVAILABLE')
+
+    def test_parent_never_accepts_missing_partial_error_or_nonzero_child_gzip_results(self):
+        from scripts import v3_windows_reliability as diagnostic
+        for mode in ('missing','partial','scope','error','nonzero','uncertified','uncertified-null','footer','raw-hash','not-object'):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);archive,metadata,source=self.archive(root)
+                def run(command,*args,**options):
+                    output=Path(command[4]);state=self.completed_stream(output)
+                    if mode=='missing':(output/'gzip-stream.json').unlink()
+                    else:
+                        if mode=='partial':state['stdout_eof']=False
+                        elif mode=='scope':state['raw_hash_scope']='observed_prefix'
+                        elif mode=='error':state['error']='stream error'
+                        elif mode=='nonzero':state['xperf_returncode']=7
+                        elif mode=='uncertified':state['cleanup_uncertified']=True
+                        elif mode=='uncertified-null':state['cleanup_uncertified']=None
+                        elif mode=='raw-hash':state.pop('raw_sha256')
+                        elif mode=='not-object':state=[]
+                        elif mode=='footer':
+                            path=output/'native-events.csv.gz';data=bytearray(path.read_bytes());data[-1]^=1;path.write_bytes(data)
+                            state.update(gzip_sha256=hashlib.sha256(data).hexdigest())
+                        (output/'gzip-stream.json').write_text(json.dumps(state))
+                    return {'returncode':0,'timeout_cleanup':None}
+                with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source),self.installed_tool(root), \
+                     patch.object(diagnostic,'run_process',side_effect=run):
+                    self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),2)
+                self.assertEqual(json.loads((root/'output'/'decode-receipt.json').read_text())['status'],'BLOCKED')
 
 
 class WindowsReliabilityDiagnosticTests(unittest.TestCase):
