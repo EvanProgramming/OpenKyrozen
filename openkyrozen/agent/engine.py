@@ -117,11 +117,15 @@ class AgentEngine:
         runtime.execution_context.native_control_input = turn.user_input
         runtime.execution_context.native_plan_inspected = False
         control_failures = 0
+        pending_plan_validation = None
 
         max_steps = getattr(runtime.execution_context, "max_steps", None)
         if max_steps is None:
             max_steps = runtime.MAX_STEPS_PER_TURN
         for step in range(max_steps + 1):
+            cancelled = getattr(runtime.execution_context, "cancelled", None)
+            if cancelled is not None and cancelled.is_set():
+                raise ProviderError(ProviderErrorKind.CANCELLED, terminal=True)
             tool_names = self._native_tool_names()
             if turn.interaction_mode == "plan":
                 tool_names = {name for name in tool_names
@@ -222,8 +226,9 @@ class AgentEngine:
                         "error_type": "invalid_native_tool_call",
                     }, request_id=runtime._last_model_request_id.get())
                 break
-            if (any(call.name == "update_plan" for call in response.tool_calls)
-                    and any(call.name != "update_plan" for call in response.tool_calls)):
+            mixed_plan_batch = (any(call.name == "update_plan" for call in response.tool_calls)
+                                and any(call.name != "update_plan" for call in response.tool_calls))
+            if mixed_plan_batch and any(call.name in _NATIVE_CONTROLS for call in response.tool_calls):
                 turn.protocol_error_message = "Run Working Plan edits in a separate response before using their task selection."
                 break
             if any(call.name in _NATIVE_CONTROLS for call in response.tool_calls) and len(response.tool_calls) != 1:
@@ -284,6 +289,28 @@ class AgentEngine:
             messages.append(response)
             current_reply_indexes: list[int] = []
             history_tool_names.update(call.name for call in response.tool_calls)
+            if mixed_plan_batch:
+                from openkyrozen.agent.conversation import tool_result_to_dict
+                from openkyrozen.tools.models import tool_failure
+                pending_plan_validation = "Run Working Plan edits in a separate response before using their task selection."
+                output = tool_result_to_dict(tool_failure("invalid_arguments", pending_plan_validation, retriable=True))
+                # Reject the whole batch before task selection or execution receipts can bind stale state.
+                for call in response.tool_calls:
+                    messages.append(ToolReply(call.id, call.name, output, True))
+                    current_reply_indexes.append(len(messages) - 1)
+                    if runtime._conversation_turn_id.get() is not None:
+                        runtime._record_conversation_entry("tool.result", {
+                            "call_id": call.id, "name": call.name, "arguments": call.arguments,
+                            "output": output, "is_error": True,
+                        }, call_id=call.id, request_id=runtime._last_model_request_id.get())
+                try:
+                    self._archive_replies(messages, previous_reply_indexes)
+                except Exception:
+                    turn.protocol_error_message = "Could not retain earlier tool results; no further tools were run."
+                    break
+                previous_reply_indexes = current_reply_indexes
+                continue
+            pending_plan_validation = None
             selected_task_id = getattr(runtime.tasks, "execution_task_id", None)
             calls = [{"action": call.name, "args": call.arguments, "call_id": call.id,
                       "call_id_source": "native",
@@ -339,5 +366,7 @@ class AgentEngine:
                 break
             previous_reply_indexes = current_reply_indexes
 
+        if pending_plan_validation and not turn.protocol_error_message:
+            turn.protocol_error_message = pending_plan_validation
         runtime._last_response_is_native.set(True)
         turn.final_answer = final_text or runtime._deterministic_tool_summary(turn.tool_records)

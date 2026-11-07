@@ -1025,13 +1025,218 @@ class NativeLifecycleRegressionTests(unittest.TestCase):
         runtime = self.runtime(complexity="complex")
         runtime.tasks.working_plan = SimpleNamespace(id="plan", status="active", task_ids=[])
         runtime._permitted_tool_names = lambda: {"read_file", "update_plan"}
-        runtime._get_model_response.return_value = ModelResponse(tool_calls=(
+        runtime._get_model_response.side_effect = [ModelResponse(tool_calls=(
             ToolCall("select", "update_plan", {"expected_revision": 1, "operations": [{"op": "start", "task": "new"}]}),
             ToolCall("read", "read_file", {"path": "note.txt"}),
-        ), finish_reason=FinishReason.TOOL_REQUEST)
-        answer = AgentEngine(runtime).run(TurnContext("Inspect the task"))
+        ), finish_reason=FinishReason.TOOL_REQUEST), ModelResponse(text="Done", finish_reason=FinishReason.FINAL)]
+        turn = TurnContext("Inspect the task")
+        answer = AgentEngine(runtime).run(turn)
         runtime._execute_tool_batch.assert_not_called()
         self.assertIn("separate", answer.lower())
+        self.assertEqual(turn.runtime_status, "incomplete")
+        self.assertEqual(runtime._get_model_response.call_count, 2)
+
+    def test_native_mixed_plan_validation_can_continue_to_explicit_verified_work(self):
+        self._mixed_plan_validation_workflow(deny_scope=False)
+
+    def test_native_mixed_plan_validation_keeps_subsequent_scope_denial_incomplete(self):
+        self._mixed_plan_validation_workflow(deny_scope=True)
+
+    def _mixed_plan_validation_workflow(self, *, deny_scope):
+        import sys
+        import time
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.providers.models import provider_identity
+        from openkyrozen.tools import ToolAdapters
+
+        case = self
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_APPROVAL_MODE": "never",
+            "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"],
+        }), ExitStack() as owners:
+            root = Path(directory) / "workspace"
+            root.mkdir()
+            note = root / "note.txt"
+            note.write_text("before", encoding="utf-8")
+            command = "python -m unittest test_note"
+            (root / "test_note.py").write_text(
+                "import unittest\nfrom pathlib import Path\nclass NoteTest(unittest.TestCase):\n"
+                "    def test_update(self):\n        p = Path('note.txt')\n        p.write_text('verified')\n"
+                "        self.assertEqual(p.read_text(), 'verified')\n", encoding="utf-8")
+            memory = owners.enter_context(closing(build_memory(root / "state.sqlite3", index=None)))
+            app = build_application(surface="cli", memory=memory, tools=ToolAdapters(root))
+            owners.callback(app.close)
+            runtime = app.runtime
+            runtime._set_workspace_root(root)
+            runtime.tasks.edit_plan(complexity="complex", expected_revision=0, operations=[{
+                "op": "add", "ref": "verify", "task": {
+                    "description": "Update and verify note.txt", "acceptance": [command],
+                    "execution": {"action": "run_cmd", "arguments": {"command": command}},
+                },
+            }], reason="Explicit test objective")
+            task = runtime.tasks.tasks[0]
+            selection = {"plan_id": runtime.tasks.working_plan.id, "expected_revision": 1, "operations": [
+                {"op": "start", "task": task["id"]}, {"op": "suggest_complete", "task": task["id"]},
+            ]}
+
+            class PlanningProvider(LLMProvider):
+                requests = 0
+
+                def get_capabilities(self, model=None):
+                    return ProviderCapabilities(native_tools=True)
+
+                def chat(self, messages, model=None):
+                    raise AssertionError("legacy provider boundary used")
+
+                def chat_response(self, messages, model=None, *, tools=None):
+                    self.requests += 1
+                    validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=True)
+                    validate_replied_tool_definitions(messages, tools)
+                    if self.requests == 1:
+                        calls = (ToolCall("rejected-plan", "update_plan", selection),
+                                 ToolCall("rejected-command", "run_cmd", {"command": command}))
+                    elif self.requests == 2:
+                        case.assertEqual(note.read_text(), "before")
+                        case.assertEqual(runtime.tasks.working_plan.revision, 1)
+                        case.assertEqual(task["status"], "pending")
+                        case.assertIsNone(runtime.tasks.execution_task_id)
+                        replies = messages[-2:]
+                        case.assertEqual([item.call_id for item in replies], ["rejected-plan", "rejected-command"])
+                        for item in replies:
+                            case.assertIsInstance(item, ToolReply)
+                            case.assertTrue(item.is_error)
+                            case.assertEqual(item.output["error"]["code"], "invalid_arguments")
+                            case.assertTrue(item.output["error"]["retriable"])
+                        calls = (ToolCall("select", "update_plan", selection),)
+                    elif self.requests == 3:
+                        case.assertEqual(note.read_text(), "before")
+                        case.assertEqual(runtime.tasks.working_plan.revision, 2)
+                        case.assertEqual(runtime.tasks.execution_task_id, task["id"])
+                        calls = ((ToolCall("denied", "write_file", {"path": "../outside.txt", "content": "forbidden"})
+                                  if deny_scope else ToolCall("verify", "run_cmd", {"command": command})),)
+                    else:
+                        case.assertEqual(self.requests, 4)
+                        case.assertEqual(note.read_text(), "before" if deny_scope else "verified")
+                        case.assertFalse((root.parent / "outside.txt").exists())
+                        return ModelResponse(text="The requested change was verified.", finish_reason=FinishReason.FINAL)
+                    return ModelResponse(tool_calls=calls, finish_reason=FinishReason.TOOL_REQUEST,
+                        continuation=provider_continuation(self, model, "fixture", {"step": self.requests}))
+
+            provider = PlanningProvider(ProviderConfig(provider="custom", model_simple="fixture"))
+            runtime.llm_provider = runtime._default_turn.provider = provider
+            runtime.set_interaction_mode("agent")
+            def prepare(turn):
+                turn.interaction_mode, turn.complexity = "agent", "complex"
+                turn.learning_run, turn.turn_start = {"run_id": "fixture"}, time.time()
+                turn.learned_context = ""
+            events, runtime_events = [], []
+            with patch.object(runtime, "_prepare_turn", side_effect=prepare), \
+                    patch.object(runtime, "_finish_learning_run", side_effect=lambda _run, _records, _task, answer, *_args: answer), \
+                    patch.object(runtime, "_schedule_post_turn_learning"), \
+                    patch.object(runtime, "_collect_tool_calls", side_effect=AssertionError("legacy parser used")), \
+                    patch.object(runtime, "_collect_unwrapped_tool_calls", side_effect=AssertionError("legacy parser used")):
+                answer = runtime.chat(runtime.current_session, "Update and verify note.txt",
+                                      on_event=events.append, on_runtime_event=runtime_events.append)
+            self.assertEqual(provider.requests, 4, answer)
+            completed = [event for event in runtime_events if event.kind == "turn.completed"]
+            self.assertEqual([event.payload["status"] for event in completed],
+                             ["incomplete" if deny_scope else "completed"], answer)
+            self.assertEqual(runtime.tasks.tasks[0]["status"], "running" if deny_scope else "succeeded")
+            self.assertEqual(runtime.tasks.working_plan.status, "active" if deny_scope else "completed")
+            receipts = memory.store.list_events("execution.receipt", user_id=runtime.tasks.user_id,
+                workspace_id=runtime.tasks.workspace_id, session_id=runtime.tasks.session_id)
+            self.assertEqual(len(receipts), 2)
+            by_call = {event["payload"]["call_id"]: event["payload"] for event in receipts}
+            self.assertEqual(set(by_call), {"select", "denied" if deny_scope else "verify"})
+            self.assertIsNone(by_call["select"]["task_id"])
+            outcome = by_call["denied" if deny_scope else "verify"]
+            if deny_scope:
+                self.assertIsNone(outcome["task_id"])
+                self.assertFalse(outcome["success"])
+                self.assertIn("outside the active workspace", outcome["result"])
+                self.assertFalse((root.parent / "outside.txt").exists())
+            else:
+                self.assertEqual(outcome["task_id"], task["id"])
+                self.assertEqual(outcome["verification"]["status"], "verified")
+            entries = runtime.conversation_history.entries()
+            rejected = [entry for entry in entries if entry.kind == "tool.result"
+                        and entry.call_id in {"rejected-plan", "rejected-command"}]
+            self.assertEqual(len(rejected), 2)
+            self.assertTrue(all(entry.task_id is None and entry.payload["is_error"] for entry in rejected))
+            history = runtime.conversation_history.provider_messages(
+                provider_id=provider_identity(provider), model=runtime.DEEPSEEK_MODEL, native=True)
+            validate_tool_history(history, provider_id=provider_identity(provider), model=runtime.DEEPSEEK_MODEL, native=True)
+            self.assertFalse(any(event.get("event") in {"protocol_recovery", "protocol.recovery"} for event in events))
+            self.assertFalse(any(event.kind in {"protocol_recovery", "protocol.recovery"} for event in runtime_events))
+
+    def test_repeated_mixed_plan_validation_consumes_the_existing_step_budget(self):
+        runtime = self.runtime(complexity="complex")
+        runtime.tasks.working_plan = SimpleNamespace(id="plan", status="active", task_ids=[], revision=1)
+        requests = []
+        def respond(messages, **_kwargs):
+            requests.append(list(messages))
+            index = len(requests)
+            return ModelResponse(tool_calls=(
+                ToolCall(f"plan-{index}", "update_plan", {"expected_revision": 1, "operations": []}),
+                ToolCall(f"read-{index}", "read_file", {"path": "note.txt"}),
+            ), finish_reason=FinishReason.TOOL_REQUEST)
+        runtime._get_model_response.side_effect = respond
+        turn = TurnContext("Inspect the task")
+        with patch.object(AgentEngine, "_archive_replies"):
+            answer = AgentEngine(runtime).run(turn)
+        self.assertEqual(len(requests), 3)
+        self.assertEqual([item.call_id for item in requests[1] if isinstance(item, ToolReply)], ["plan-1", "read-1"])
+        self.assertEqual([item.call_id for item in requests[2] if isinstance(item, ToolReply)],
+                         ["plan-1", "read-1", "plan-2", "read-2"])
+        self.assertIn("step limit", answer)
+        self.assertEqual(turn.runtime_status, "incomplete")
+        self.assertEqual(runtime.tasks.working_plan.revision, 1)
+        self.assertEqual(turn.tool_calls, [])
+        self.assertEqual(turn.tool_records, [])
+        runtime._execute_tool_batch.assert_not_called()
+
+    def test_cancellation_after_mixed_plan_feedback_prevents_the_next_request(self):
+        import threading
+        from openkyrozen.providers.errors import ProviderError, ProviderErrorKind
+        runtime = self.runtime(complexity="complex")
+        runtime.tasks.working_plan = SimpleNamespace(id="plan", status="active", task_ids=[])
+        runtime.execution_context.cancelled = threading.Event()
+        runtime._conversation_turn_id = contextvars.ContextVar("validation-turn", default="turn")
+        runtime._last_model_request_id = contextvars.ContextVar("validation-request", default="request")
+        journal = []
+        def record(kind, payload, **correlation):
+            journal.append((kind, payload, correlation))
+            if kind == "tool.result":
+                runtime.execution_context.cancelled.set()
+        runtime._record_conversation_entry = record
+        runtime._get_model_response.return_value = ModelResponse(tool_calls=(
+            ToolCall("plan", "update_plan", {"expected_revision": 1, "operations": []}),
+            ToolCall("read", "read_file", {"path": "note.txt"}),
+        ), finish_reason=FinishReason.TOOL_REQUEST)
+        with self.assertRaises(ProviderError) as caught:
+            AgentEngine(runtime).run(TurnContext("Inspect the task"))
+        self.assertEqual(caught.exception.kind, ProviderErrorKind.CANCELLED)
+        runtime._get_model_response.assert_called_once()
+        runtime._execute_tool_batch.assert_not_called()
+        self.assertEqual([payload["call_id"] for kind, payload, _ in journal if kind == "tool.result"], ["plan", "read"])
+
+    def test_mixed_plan_feedback_does_not_relax_unknown_tools_or_interactive_controls(self):
+        for name, permitted, expected in (
+            ("forbidden", {"update_plan", "read_file"}, "unknown tool"),
+            ("request_question", {"update_plan", "request_question"}, "separate"),
+        ):
+            with self.subTest(name=name):
+                runtime = self.runtime(complexity="complex")
+                runtime.tasks.working_plan = SimpleNamespace(id="plan", status="active", task_ids=[])
+                runtime._permitted_tool_names = lambda: permitted
+                runtime._get_model_response.return_value = ModelResponse(tool_calls=(
+                    ToolCall("plan", "update_plan", {"expected_revision": 1, "operations": []}),
+                    ToolCall("other", name, {}),
+                ), finish_reason=FinishReason.TOOL_REQUEST)
+                answer = AgentEngine(runtime).run(TurnContext("Inspect the task"))
+                self.assertIn(expected, answer)
+                runtime._get_model_response.assert_called_once()
+                runtime._execute_tool_batch.assert_not_called()
 
     def test_native_plan_start_and_completion_suggestion_bind_verified_receipts(self):
         import time
