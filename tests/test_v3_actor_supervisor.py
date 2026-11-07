@@ -856,6 +856,73 @@ class ActorOutputLifecycleTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'darwin' or sys.platform.startswith('linux'), 'Unix sandbox required')
 class ActorReadSandboxTests(unittest.TestCase):
+    def test_actor_runtime_starts_from_private_home_without_widening_workspace_reads(self):
+        from benchmarks.v3_actor_supervisor import ActorSupervisor
+        source = Path(__file__).resolve().parents[1]
+        for view in ('file', 'directory', 'no-read', 'workspace'):
+            with self.subTest(view=view), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory).resolve()
+                workspace, home = base / 'workspace', base / 'home'
+                allowed = workspace / 'allowed'
+                allowed.mkdir(parents=True)
+                home.mkdir()
+                (allowed / 'source.py').write_text('allowed')
+                (workspace / 'sibling.py').write_text('private')
+                supervisor = ActorSupervisor.__new__(ActorSupervisor)
+                supervisor.workspace, supervisor.protected_files = workspace, []
+                supervisor.policy = ShellPolicy(workspace, {'read'} if view != 'no-read' else set())
+                supervisor.execution_lock, supervisor.closed = threading.RLock(), threading.Event()
+                supervisor.failures, supervisor.actors = [], {}
+                supervisor.provider_factory, supervisor.provider_config, supervisor.revoke_actor = None, {}, None
+                supervisor.group = SimpleNamespace(uid=os.getgid())
+                owner = SimpleNamespace(uid=os.getuid(), process=None)
+                def popen(command, *, cwd, env, group, stdout, stderr):
+                    owner.process = subprocess.Popen(command, cwd=cwd, env=env, stdout=stdout, stderr=stderr)
+                    return owner.process
+                def close():
+                    if owner.process is not None:
+                        if owner.process.poll() is None:
+                            owner.process.kill()
+                        owner.process.wait(timeout=5)
+                owner.popen, owner.close = popen, close
+                supervisor._owner, supervisor._home = lambda: owner, lambda *args: home
+                supervisor._chown = lambda *args: None
+                supervisor._environment = lambda home: {
+                    'PATH': os.environ['PATH'], 'HOME': str(home), 'KYROZEN_DB_PATH': str(home / 'private.sqlite3'),
+                    'KYROZEN_SKILLS_DIR': str(home / 'skills'), 'KYROZEN_DISABLE_VECTOR_INDEX': '1'}
+                scopes = {'file': ((allowed / 'source.py', False),), 'directory': ((allowed, True),),
+                          'no-read': (), 'workspace': ((workspace, True),)}[view]
+                actor = {'root': False, 'policy': supervisor.policy,
+                         'assignment': SimpleNamespace(capabilities=supervisor.policy.capabilities, read_scopes=scopes)}
+                code = '''import json,os,pathlib,sys
+sys.path.insert(0,sys.argv[1])
+from openkyrozen.app.bootstrap import build_application
+app=build_application()
+try:
+    app.runtime._set_workspace_root(sys.argv[2])
+    def read(path):
+        try: return path.read_text()
+        except OSError: return None
+    workspace=pathlib.Path(sys.argv[2])
+    try: siblings='sibling.py' in [path.name for path in workspace.iterdir()]
+    except OSError: siblings=False
+    print(json.dumps([os.getcwd(),str(app.runtime._get_workspace_root()),
+                      read(workspace/'allowed/source.py'),read(workspace/'sibling.py'),siblings]))
+finally: app.close()
+'''
+                try:
+                    process = supervisor._spawn([sys.executable, '-I', '-c', code, str(source), str(workspace)],
+                        actor, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    output, error = process.communicate(timeout=30)
+                    self.assertEqual(process.returncode, 0, error.decode())
+                    self.assertEqual(json.loads(output), [str(home), str(workspace),
+                        None if view == 'no-read' else 'allowed', 'private' if view == 'workspace' else None,
+                        view == 'workspace'])
+                finally:
+                    close()
+                    if actor.get('invocation'):
+                        actor['invocation'].close()
+
     def test_root_read_view_defaults_to_parent_approved_directories(self):
         from benchmarks.v3_actor_supervisor import ActorSupervisor
         with tempfile.TemporaryDirectory() as directory:

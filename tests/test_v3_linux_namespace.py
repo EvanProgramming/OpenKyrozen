@@ -104,6 +104,28 @@ class KernelNamespaceTests(unittest.TestCase):
         self.owner.close()
         self.group.close()
 
+    def test_dropper_accepts_an_already_empty_bounding_set_without_privileged_caps(self):
+        module = namespace_module(self)
+        # Exercise the real pre-handshake drop stage after a launcher already
+        # removed every capability, including permission to drop them again.
+        dropper = module._BOOTSTRAP.split('resource.setrlimit', 1)[0]
+        code = dropper + '\nprint(Path("/proc/self/status").read_text())'
+        result = subprocess.run(['/usr/bin/setpriv', '--bounding-set=-all',
+            '--reuid', str(self.owner.uid), '--regid', str(self.group.uid), '--clear-groups',
+            '--no-new-privs', sys.executable, '-I', '-S', '-c', code],
+            cwd='/', env={'PATH': '/usr/bin:/bin'}, capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        status = dict(line.split(':', 1) for line in result.stdout.decode().splitlines() if ':' in line)
+        for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'):
+            self.assertEqual(int(status[name].strip(), 16), 0)
+        self.assertEqual(status['NoNewPrivs'].strip(), '1')
+        denied = subprocess.run(['/usr/bin/setpriv', '--bounding-set=-all,+setpcap',
+            '--reuid', str(self.owner.uid), '--regid', str(self.group.uid), '--clear-groups',
+            '--no-new-privs', sys.executable, '-I', '-S', '-c', code],
+            cwd='/', env={'PATH': '/usr/bin:/bin'}, capture_output=True, timeout=5)
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn(b'bounding capability drop failed: 8', denied.stderr)
+
     def test_actual_host_identity_caps_namespace_denial_and_original_file_protection(self):
         module = namespace_module(self)
         before = Path('/proc/sys/user/max_user_namespaces').read_text()

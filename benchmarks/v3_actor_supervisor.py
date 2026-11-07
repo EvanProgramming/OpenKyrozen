@@ -623,8 +623,9 @@ class ActorSupervisor:
             scopes = (tuple((path, True) for path in self.policy.scope_paths)
                       if 'read' in self.policy.capabilities else ())
         readonly = ShellPolicy(self.workspace, {'read'} if scopes else set(), run_id=self.policy.run_id)
+        # Startup libraries inspect cwd; fixture access keeps its explicit workspace paths.
         invocation = protected_shell_command(shlex.join(command), policy=readonly,
-            cwd=str(self.workspace), env=self._environment(home), protected_files=self.protected_files)
+            cwd=str(home), env=self._environment(home), protected_files=self.protected_files)
         try:
             if invocation.shell:
                 raise PermissionError('actor protection requires a supported OS backend')
@@ -685,7 +686,7 @@ class ActorSupervisor:
                     invocation.env['KYROZEN_BENCHMARK_API_KEY'] = key
                 actor['invocation'] = invocation
                 self.actors[owner.uid] = actor
-                process = owner.popen(invocation.command, cwd=self.workspace, env=invocation.env,
+                process = owner.popen(invocation.command, cwd=home, env=invocation.env,
                                       group=self.group.uid, stdout=stdout, stderr=stderr)
                 actor['process'] = process
                 return process

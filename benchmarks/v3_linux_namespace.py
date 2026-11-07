@@ -23,7 +23,10 @@ from pathlib import Path
 libc=ctypes.CDLL(None,use_errno=True)
 libc.prctl.argtypes=[ctypes.c_int]+[ctypes.c_ulong]*4
 for capability in range(int(Path('/proc/sys/kernel/cap_last_cap').read_text())+1):
- if libc.prctl(24,capability,0,0,0): raise OSError(ctypes.get_errno(),'bounding capability drop failed')
+ present=libc.prctl(23,capability,0,0,0)
+ if present<0: raise OSError(ctypes.get_errno(),'bounding capability inspection failed')
+ if present and libc.prctl(24,capability,0,0,0):
+  raise OSError(ctypes.get_errno(),'bounding capability drop failed: '+str(capability))
 if libc.prctl(47,4,0,0,0): raise OSError(ctypes.get_errno(),'ambient capability drop failed')
 class Header(ctypes.Structure): _fields_=[('version',ctypes.c_uint32),('pid',ctypes.c_int)]
 class Data(ctypes.Structure): _fields_=[('effective',ctypes.c_uint32),('permitted',ctypes.c_uint32),('inheritable',ctypes.c_uint32)]
