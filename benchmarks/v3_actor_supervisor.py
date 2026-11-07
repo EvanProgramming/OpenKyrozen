@@ -35,7 +35,14 @@ _CALLBACK_FIELDS = {
     'parent_mutation_matches_current_task': {'action', 'arguments'},
     'memory_recall_records': {'session_id', 'query', 'options'},
     'memory_recall': {'session_id', 'query', 'options'},
-    'memory_recent': {'session_id', 'query', 'options'}, 'usage_attempts': {'attempts'}}
+    'memory_recent': {'session_id', 'query', 'options'}, 'usage_attempts': {'attempts'},
+    'canonical_history': {'session_id', 'kind', 'offset', 'chunk', 'final'}}
+
+
+def _actor_socket_directory():
+    directory = Path(tempfile.mkdtemp(prefix='openkyrozen-actors-', dir='/var/tmp')).resolve()
+    directory.chmod(0o711)
+    return directory
 
 
 def _copy(value):
@@ -359,17 +366,22 @@ class _ActorBroker(ShellBroker):
                     invocation = protected_shell_command(original['command'], policy=self.policy,
                         cwd=original['cwd'], env=environment, protected_files=self.protected_files)
                     assignment = self.actor.get('assignment')
-                    if assignment:
-                        _restrict_reads(invocation, self.policy.workspace, assignment.read_scopes,
-                                        writable='write' in self.policy.capabilities,
-                                        protected_files=self.protected_files)
+                    scopes = (assignment.read_scopes if assignment else
+                              tuple((path, True) for path in self.policy.scope_paths))
+                    _restrict_reads(invocation, self.policy.workspace,
+                                    scopes if 'read' in self.policy.capabilities else (),
+                                    writable='write' in self.policy.capabilities,
+                                    protected_files=self.protected_files)
                     if invocation.shell:
                         raise PermissionError('managed actor shell requires an argument vector')
                     if invocation.temporary_directory:
                         self.supervisor._chown(Path(invocation.temporary_directory.name), owner.uid)
                     concrete = dict(original, env=invocation.env)
-                    ticket = self.authority.issue(concrete)
-                    self.pending[ticket] = (original, concrete, _OwnedInvocation(invocation, owner), time.monotonic() + 5)
+                    with self.close_lock:
+                        if self.closed.is_set():
+                            raise PermissionError('benchmark actor broker is closed')
+                        ticket = self.authority.issue(concrete)
+                        self.pending[ticket] = (original, concrete, _OwnedInvocation(invocation, owner), time.monotonic() + 5)
                     def expire():
                         time.sleep(5.01)
                         with self.supervisor.execution_lock:
@@ -384,7 +396,10 @@ class _ActorBroker(ShellBroker):
         if operation == 'start':
             with self.supervisor.execution_lock, self.supervisor._frozen():
                 self._reap_pending()
-                pending = self.pending.pop(request.get('ticket'), None)
+                with self.close_lock:
+                    if self.closed.is_set():
+                        raise PermissionError('benchmark actor broker is closed')
+                    pending = self.pending.get(request.get('ticket'))
                 if pending is None:
                     raise PermissionError('invalid or expired shell ticket')
                 original, concrete, owned, _ = pending
@@ -406,14 +421,20 @@ class _ActorBroker(ShellBroker):
                     process = owned.owner.popen(owned.invocation.command, cwd=concrete['cwd'],
                         env=concrete['env'], group=self.supervisor.group.uid,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    with self.close_lock:
+                        if self.closed.is_set():
+                            raise PermissionError('benchmark actor closed during command launch')
+                        identifier = uuid.uuid4().hex
+                        self.processes[identifier] = process
+                        self.records[identifier] = {'stdout': tempfile.TemporaryFile(), 'stderr': tempfile.TemporaryFile(),
+                            'background': concrete['background'], 'eof': set(), 'timed_out': False,
+                            'lock': threading.Lock(), 'invocation': owned}
+                        self.pending.pop(request['ticket'], None)
                 except BaseException:
                     owned.close()
+                    with self.close_lock:
+                        self.pending.pop(request['ticket'], None)
                     raise
-                identifier = uuid.uuid4().hex
-                self.processes[identifier] = process
-                self.records[identifier] = {'stdout': tempfile.TemporaryFile(), 'stderr': tempfile.TemporaryFile(),
-                    'background': concrete['background'], 'eof': set(), 'timed_out': False,
-                    'lock': threading.Lock(), 'invocation': owned}
                 for name in ('stdout', 'stderr'):
                     threading.Thread(target=self._collect, args=(identifier, name), daemon=True).start()
                 threading.Thread(target=self._expire, args=(identifier, concrete['timeout_seconds']), daemon=True).start()
@@ -531,8 +552,7 @@ class ActorSupervisor:
             self.group = self._owner()
             self.state = Path(tempfile.mkdtemp(prefix='openkyrozen-actors-', dir='/var/tmp')).resolve()
             self.state.chmod(0o711)
-            self.socket_directory = Path(tempfile.mkdtemp(prefix='openkyrozen-actors-', dir='/var/run')).resolve()
-            self.socket_directory.chmod(0o711)
+            self.socket_directory = _actor_socket_directory()
             for directory in (self.socket_directory, *self.socket_directory.parents):
                 metadata = directory.stat()
                 if (metadata.st_uid != 0 or metadata.st_mode & 0o022 and not metadata.st_mode & stat.S_ISVTX
@@ -600,7 +620,8 @@ class ActorSupervisor:
     def _protected_actor(self, command, home, outputs=(), scopes=None):
         # Workers receive no direct workspace writes, including the root worker.
         if scopes is None:
-            scopes = ((self.workspace, True),) if 'read' in self.policy.capabilities else ()
+            scopes = (tuple((path, True) for path in self.policy.scope_paths)
+                      if 'read' in self.policy.capabilities else ())
         readonly = ShellPolicy(self.workspace, {'read'} if scopes else set(), run_id=self.policy.run_id)
         invocation = protected_shell_command(shlex.join(command), policy=readonly,
             cwd=str(self.workspace), env=self._environment(home), protected_files=self.protected_files)
@@ -652,7 +673,7 @@ class ActorSupervisor:
                     path.chmod(0o600)
                 assignment = actor.get('assignment')
                 capabilities = assignment.capabilities if assignment else self.policy.capabilities
-                scopes = assignment.read_scopes if assignment else ((self.workspace, True),)
+                scopes = assignment.read_scopes if assignment else None
                 invocation = self._protected_actor(command, home, outputs,
                     scopes=scopes if 'read' in capabilities else ())
                 if invocation.temporary_directory:

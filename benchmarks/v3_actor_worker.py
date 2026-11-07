@@ -6,6 +6,7 @@ import json
 _MAX_PAYLOAD = 1_000_000
 _MUTATIONS = frozenset({'write_file', 'edit_file', 'apply_patch'})
 _READS = frozenset({'read_file', 'search_files', 'list_dir', 'list_tree', 'find_files'})
+_HISTORY_CHUNK = 65_536
 
 
 def _json_copy(value):
@@ -56,6 +57,194 @@ def install_read_adapter(client):
     _install_file_adapter(client, 'file_read', _READS)
 
 
+def _artifact_references(value):
+    """Read framework-owned output envelopes, never prose or provider state."""
+    if isinstance(value, list):
+        result = set()
+        for item in value:
+            result.update(_artifact_references(item))
+        return result
+    if not isinstance(value, dict):
+        return set()
+    if value.get('kind') == 'tool.result' and isinstance(value.get('payload'), dict):
+        payload = value['payload']
+        name, output, success = payload.get('name'), payload.get('output'), payload.get('is_error') is False
+    elif 'receipt_id' in value and isinstance(value.get('action'), str):
+        name, output, success = value['action'], value.get('tool_result'), value.get('success') is True
+        if not isinstance(output, dict):
+            error = value.get('tool_error')
+            output = {'data': value.get('result_data'), 'error': error,
+                      'metadata': error.get('metadata', {}) if isinstance(error, dict) else {}}
+    else:
+        return set()
+    if not isinstance(output, dict) or not isinstance(output.get('data'), dict):
+        return set()
+    data = output['data']
+    identifier = data.get('artifact_id')
+    if not isinstance(identifier, str) or not identifier:
+        return set()
+    metadata = output.get('metadata')
+    # Oversized and archived outputs have a matched machine summary and metadata.
+    if (set(data) in ({'artifact_id', 'total_chars'}, {'artifact_id', 'total_chars', 'preview'})
+            and type(data['total_chars']) is int and data['total_chars'] >= 0
+            and ('preview' not in data or isinstance(data['preview'], str))
+            and isinstance(metadata, dict) and metadata.get('artifact_id') == identifier):
+        return {identifier}
+    # The paging builtin returns its own scoped ID; file contents and tool args
+    # containing the same spelling have no artifact authority.
+    if (name == 'read_tool_artifact' and success and output.get('error') is None
+            and set(data) == {'artifact_id', 'offset', 'limit', 'total_chars', 'content', 'next_offset'}
+            and all(type(data[key]) is int for key in ('offset', 'limit', 'total_chars'))
+            and data['offset'] >= 0 and 1 <= data['limit'] <= 1000 and data['total_chars'] >= 0
+            and isinstance(data['content'], str)
+            and (data['next_offset'] is None or type(data['next_offset']) is int
+                 and 0 <= data['next_offset'] <= data['total_chars'])):
+        return {identifier}
+    return set()
+
+
+class _CanonicalHistoryImport:
+    """One invocation's scoped, ordered native journal and referenced artifacts."""
+    def __init__(self, store, *, user_id, workspace_id, artifact_workspace_id, budget_id, review, owned_session):
+        self.store, self.user_id, self.workspace_id = store, user_id, workspace_id
+        self.artifact_workspace_id = artifact_workspace_id
+        self.budget_id, self.review, self.owned_session = budget_id, review, owned_session
+        self.session_id = None
+        self.prefix = []
+        self.index, self.previous, self.head = 0, None, None
+        self.ids, self.references, self.artifacts = set(), set(), set()
+        self.receipt_references = {}
+        self.pending = None
+        self.finished = False
+
+    def note_receipt(self, session_id, receipt):
+        self.receipt_references.setdefault(session_id, set()).update(_artifact_references(receipt))
+
+    @property
+    def scope(self):
+        return dict(user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id)
+
+    @property
+    def artifact_scope(self):
+        return dict(self.scope, workspace_id=self.artifact_workspace_id)
+
+    def receive(self, *, session_id, kind, offset, chunk, final):
+        self.owned_session(session_id)
+        if (self.finished or kind not in {'entry', 'artifact', 'finish'} or type(offset) is not int
+                or offset < 0 or not isinstance(chunk, str) or len(chunk) > _HISTORY_CHUNK
+                or type(final) is not bool):
+            raise PermissionError('invalid canonical history chunk')
+        if self.session_id is None:
+            if (not session_id.startswith(self.budget_id + '_review_') if self.review
+                    else session_id != self.budget_id):
+                raise PermissionError('canonical history belongs to another invocation phase')
+            self.session_id = session_id
+            self.prefix = self.store.list_conversation_entries(**self.scope)
+            self.head = self.store.conversation_head(**self.scope)
+            if (self.review and self.prefix or self.head != (self.prefix[-1]['id'] if self.prefix else None)):
+                raise PermissionError('canonical history session is stale or reused')
+        if session_id != self.session_id:
+            raise PermissionError('canonical history changed its owning session')
+        if kind == 'finish':
+            self.references.update(self.receipt_references.get(session_id, ()))
+            if (self.pending is not None or offset or chunk or not final or self.index < len(self.prefix)
+                    or self.previous != self.head or self.store.conversation_head(**self.scope) != self.head
+                    or self.artifacts != self.references):
+                raise ValueError('canonical history export is incomplete or has dangling artifacts')
+            self.finished = True
+            return None
+        if self.pending is None:
+            if offset:
+                raise ValueError('canonical history record starts at a nonzero offset')
+            self.pending = (kind, [], 0)
+        current_kind, pieces, length = self.pending
+        if kind != current_kind or offset != length or not chunk:
+            raise ValueError('canonical history chunks overlap or are out of order')
+        pieces.append(chunk)
+        self.pending = (kind, pieces, length + len(chunk))
+        if not final:
+            return None
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError('duplicate canonical history object key')
+                value[key] = item
+            return value
+        value = json.loads(''.join(pieces), object_pairs_hook=unique)
+        self.pending = None
+        if kind == 'entry':
+            from openkyrozen.agent.conversation import ConversationEntry
+            if (not isinstance(value, dict) or ConversationEntry(**value).as_dict() != value
+                    or any(value.get(key) != item for key, item in self.scope.items())
+                    or any(value[key] is not None and (not isinstance(value[key], str) or not value[key])
+                           for key in ('parent_id', 'turn_id', 'request_id', 'call_id', 'task_id'))
+                    or value['parent_id'] != self.previous or value['id'] in self.ids
+                    or self.store.conversation_head(**self.scope) != self.head):
+                raise PermissionError('canonical entry has a conflicting identity, scope, or parent')
+            if self.index < len(self.prefix):
+                if value != self.prefix[self.index]:
+                    raise ValueError('canonical history conflicts with the existing prefix')
+            else:
+                self.store.append_conversation_entry(value, expected_head=self.head)
+                self.head = value['id']
+            self.ids.add(value['id'])
+            self.previous = value['id']
+            self.index += 1
+            self.references.update(_artifact_references(value))
+        else:
+            self.references.update(self.receipt_references.get(session_id, ()))
+            fields = {'id', 'user_id', 'workspace_id', 'session_id', 'content', 'created_at'}
+            if (not isinstance(value, dict) or set(value) != fields
+                    or any(not isinstance(value[key], str) or not value[key] for key in fields - {'content'})
+                    or not isinstance(value['content'], str)
+                    or any(value[key] != item for key, item in self.artifact_scope.items())
+                    or value['id'] not in self.references or value['id'] in self.artifacts):
+                raise PermissionError('artifact is not referenced by this scoped canonical history')
+            # The native repository has no import-with-ID API. Keep its exact
+            # private table identity; create/get_or_create would change references.
+            with self.store._lock, self.store.connection() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                existing = connection.execute('SELECT * FROM tool_artifacts WHERE id=?', (value['id'],)).fetchone()
+                if existing is not None and dict(existing) != value:
+                    raise ValueError('canonical artifact ID conflicts with an existing artifact')
+                if existing is None:
+                    columns = ('id', 'user_id', 'workspace_id', 'session_id', 'content', 'created_at')
+                    connection.execute('INSERT INTO tool_artifacts(id,user_id,workspace_id,session_id,content,created_at) '
+                                       'VALUES(?,?,?,?,?,?)', tuple(value[key] for key in columns))
+                connection.commit()
+            self.artifacts.add(value['id'])
+        return None
+
+
+def _export_canonical_history(store, coordinator, scopes):
+    # Frozen V2 has no canonical journal; keep its original message callbacks.
+    if not hasattr(store, 'list_conversation_entries'):
+        return
+    for scope, artifact_scope in scopes.values():
+        entries = store.list_conversation_entries(**scope)
+        references = set(coordinator.artifact_references.get(scope['session_id'], ()))
+        def send(kind, value):
+            encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
+            for offset in range(0, len(encoded), _HISTORY_CHUNK):
+                end = offset + _HISTORY_CHUNK
+                coordinator.call('canonical_history', session_id=scope['session_id'], kind=kind,
+                                 offset=offset, chunk=encoded[offset:end], final=end >= len(encoded))
+        for entry in entries:
+            references.update(_artifact_references(entry))
+            send('entry', entry)
+        for identifier in sorted(references):
+            with store.connection() as connection:
+                artifact = connection.execute('SELECT * FROM tool_artifacts WHERE id=? AND user_id=? '
+                    'AND workspace_id=? AND session_id=?', (identifier, artifact_scope['user_id'],
+                    artifact_scope['workspace_id'], artifact_scope['session_id'])).fetchone()
+            if artifact is None:
+                raise PermissionError('canonical history references an unowned or missing artifact')
+            send('artifact', dict(artifact))
+        coordinator.call('canonical_history', session_id=scope['session_id'], kind='finish',
+                         offset=0, chunk='', final=True)
+
+
 def install_delegated_adapter(runtime, client, *, source):
     """Replace transport before the real Delegation captures its invocation port."""
     import inspect
@@ -85,6 +274,9 @@ def install_delegated_adapter(runtime, client, *, source):
         if any(getattr(parent.workspace, name, None) is not None
                for name in ('launch_context', 'graph', 'github')):
             raise RuntimeError('benchmark actor cannot copy live graph or launch-context services')
+        if hasattr(parent.memory.store, 'list_conversation_entries'):
+            with coordinator.lock:
+                run['conversation_workspace_id'] = self.interaction_workspace_id()
         payload = _json_copy({
             'schema_version': 1, 'source': source, 'workspace': str(coordinator.root),
             'run': run, 'review': review, 'feedback': feedback, 'report_repair': report_repair,
@@ -121,6 +313,11 @@ def install_delegated_adapter(runtime, client, *, source):
         def scoped_memory(session_id):
             return parent.memory.scoped(session_id=owned_session(session_id))
 
+        canonical = (_CanonicalHistoryImport(parent.memory.store, user_id=parent.memory.user_id,
+            workspace_id=self.interaction_workspace_id(), artifact_workspace_id=parent.tasks.workspace_id,
+            budget_id=budget_id, review=review,
+            owned_session=owned_session) if hasattr(parent.memory.store, 'list_conversation_entries') else None)
+
         def serve(request, stack):
             values = request['values']
             operation = request['op']
@@ -141,7 +338,14 @@ def install_delegated_adapter(runtime, client, *, source):
                     coordinator._publish(run)
                 return None
             if operation == 'receipt':
-                return coordinator.record_receipt(run_id, owned_session(values['child_id']), values['receipt'])
+                session_id = owned_session(values['child_id'])
+                if canonical is not None:
+                    canonical.note_receipt(session_id, values['receipt'])
+                return coordinator.record_receipt(run_id, session_id, values['receipt'])
+            if operation == 'canonical_history':
+                if canonical is None:
+                    raise PermissionError('selected snapshot has no canonical conversation history')
+                return canonical.receive(**values)
             if operation == 'message':
                 return coordinator.add_message(owned_session(values['child_id']), values['message'])
             if operation == 'usage':
@@ -218,12 +422,17 @@ def install_delegated_adapter(runtime, client, *, source):
                             value = _json_copy(serve(request, stack))
                             replies.append({'id': request['id'], 'ok': True, 'value': value})
                         except Exception as exc:
+                            if request['op'] == 'canonical_history':
+                                raise RuntimeError('canonical history import failed') from exc
                             replies.append({'id': request['id'], 'ok': False,
                                             'error': f'{type(exc).__name__}: {str(exc)[:1000]}'})
                     if response['state'] == 'complete':
                         if replies:
                             raise RuntimeError('actor completed with unanswered coordinator operations')
                         result = _json_copy(response['result'])
+                        if (canonical is not None
+                                and (not canonical.finished or result.get('session_id') != canonical.session_id)):
+                            raise RuntimeError('actor completed without its canonical history')
                         records = result.pop('_benchmark_request_context_records', [])
                         if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
                             raise ValueError('invalid child context observations')
@@ -256,6 +465,7 @@ class _CoordinatorPort:
         self.cancelled = {self.run_id: _CancellationPort(self)}
         self.access = _AccessPort(self)
         self.budgets = {self.run_id: _BudgetPort(self)} if payload['parent']['has_budget'] else {}
+        self.artifact_references = {}
 
     def call(self, operation, **values):
         return self.client.rpc('delegated_call', operation=operation, values=_json_copy(values))
@@ -273,6 +483,7 @@ class _CoordinatorPort:
     def record_receipt(self, run_id, child_id, receipt):
         if run_id != self.run_id:
             raise PermissionError('receipt belongs to another actor')
+        self.artifact_references.setdefault(child_id, set()).update(_artifact_references(receipt))
         return self.call('receipt', child_id=child_id, receipt=receipt)
 
     def add_message(self, child_id, message):
@@ -394,6 +605,7 @@ def run_actor(payload, client, *, source, provider_config):
         from benchmarks.prompt_worker import _ProviderObservations
     original_provider = runtime.get_provider
     observations = []
+    history_scopes = {}
 
     def get_provider(config):
         provider = original_provider(config)
@@ -406,6 +618,12 @@ def run_actor(payload, client, *, source, provider_config):
     def create_session(*args, **kwargs):
         session = original_create_session(*args, **kwargs)
         session_id = session.memory.session_id
+        if hasattr(application.store, 'list_conversation_entries'):
+            with runtime.use_session(session):
+                history = runtime.conversation_history
+                history_scopes[session_id] = (
+                    dict(user_id=history.user_id, workspace_id=history.workspace_id, session_id=history.session_id),
+                    dict(user_id=session.tasks.user_id, workspace_id=session.tasks.workspace_id, session_id=session_id))
         def memory_call(operation, query=None, **options):
             if 'authorized_speakers' in options:
                 options['authorized_speakers'] = sorted(options['authorized_speakers'])
@@ -454,6 +672,7 @@ def run_actor(payload, client, *, source, provider_config):
                 return dict(result, _benchmark_request_context_records=records)
             finally:
                 runtime._active_interaction_mode.reset(mode_token)
+                _export_canonical_history(application.store, coordinator, history_scopes)
                 usage = coordinator.run.get('usage', {})
                 prefixes = (coordinator.budget_id + '_review_', coordinator.run_id + '_review_')
                 coordinator.call('usage', usage={key: value for key, value in usage.items()

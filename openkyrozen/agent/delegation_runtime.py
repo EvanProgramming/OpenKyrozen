@@ -238,6 +238,7 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator, report_repair
         raise ValueError("Sub-agent provider requires a model/deployment")
     config.model_simple = config.model_complex = model
     with coordinator.lock:
+        run["conversation_workspace_id"] = self.interaction_workspace_id()
         if review:
             run["review_agent"].update(status="reviewing", provider_model=f"{provider_name}:{model}")
         else:

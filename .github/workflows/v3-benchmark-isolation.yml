@@ -41,16 +41,24 @@ jobs:
         run: |
           set -euo pipefail
           interpreter="$(command -v python)"
-          private_home="$RUNNER_TEMP/openkyrozen-uid-owner-home"
+          umask 022
+          stage_root="$(mktemp -d /var/tmp/openkyrozen-isolation.XXXXXX)"
+          trap 'sudo -n rm -rf -- "$stage_root"' EXIT
+          chmod 755 "$stage_root"
+          git clone --no-checkout --no-hardlinks "$PWD" "$stage_root/source"
+          git -C "$stage_root/source" checkout --detach "$GITHUB_SHA"
+          test "$(git -C "$stage_root/source" rev-parse HEAD)" = "$GITHUB_SHA"
+          sudo -n chown -R 0:0 "$stage_root"
+          private_home="$stage_root/parent-home"
           sudo -n mkdir -p "$private_home"
           sudo -n chmod 700 "$private_home"
+          cd "$stage_root/source"
           sudo -n env -i PATH="$PATH" HOME="$private_home" TMPDIR=/var/tmp PYTHONPATH="$PWD" \
             PYTHONDONTWRITEBYTECODE=1 KYROZEN_DISABLE_VECTOR_INDEX=1 \
-            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$PWD" \
             "$interpreter" -m unittest tests.test_v3_process_owner tests.test_v3_linux_namespace \
             tests.test_v3_actor_supervisor tests.test_v3_actor_worker tests.test_v3_actor_dispatch \
             tests.test_v3_actor_native_acceptance \
-            tests.test_v3_shell_cleanup tests.test_v3_protected_worker -v 2>&1 | tee isolation-tests.log
+            tests.test_v3_shell_cleanup tests.test_v3_protected_worker -v 2>&1 | tee "$GITHUB_WORKSPACE/isolation-tests.log"
       - name: Verify host security policy was preserved
         if: always() && runner.os == 'Linux'
         shell: bash

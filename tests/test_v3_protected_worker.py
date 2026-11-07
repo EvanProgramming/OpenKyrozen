@@ -272,6 +272,42 @@ print(p.stdout.read1(4096).decode().strip())
                 protected.verify_worker_protection()
 
 class ForegroundAdapterTests(_BrokerCase):
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS permits retained pipes after leader exit')
+    def test_cancellation_still_stops_owned_children_after_the_shell_leader_exits(self):
+        output = self.run_worker('''
+import json,os,threading,time
+from benchmarks.v3_shell_launcher import install_worker_adapter
+install_worker_adapter()
+from openkyrozen.tools import ToolAdapters,processes
+cancelled=threading.Event()
+phase=threading.Event()
+when=[]
+original=processes.SessionProcessManager.start
+def start(manager,*args,**kwargs):
+    handle=original(manager,*args,**kwargs)
+    def cancel_after_exit():
+        deadline=time.monotonic()+5
+        while handle.process.poll() is None and time.monotonic()<deadline:
+            time.sleep(.001)
+        assert handle.process.poll()==0
+        assert not (handle.process.stdout.closed and handle.process.stderr.closed)
+        when.append(time.monotonic())
+        phase.set()
+        cancelled.set()
+    threading.Thread(target=cancel_after_exit,daemon=True).start()
+    return handle
+processes.SessionProcessManager.start=start
+adapter=ToolAdapters(os.getcwd())
+result=adapter.run_command({'command':'printf early; (sleep 6; printf late) & exit 0',
+                            'timeout_seconds':10},cancelled=cancelled)
+assert phase.is_set()
+print(json.dumps([result.failure,result.stdout,time.monotonic()-when[0]]))
+''')
+        failure, stdout, elapsed = json.loads(output)
+        self.assertEqual(failure, 'cancelled')
+        self.assertEqual(stdout, 'early')
+        self.assertLess(elapsed, 4, 'cancellation waited for retained pipe EOF')
+
     def test_foreground_adapter_uses_external_shell_and_preserves_exit_output_and_cancellation(self):
         output = self.run_worker('''
 import json, os, threading
@@ -470,6 +506,37 @@ class PrivilegedFullPreflightTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'darwin' or sys.platform.startswith('linux'), 'Unix sandbox required')
 class BrokerCancellationCompatibilityTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS permits retained pipes after leader exit')
+    def test_background_cancellation_remains_active_until_output_collection_finishes(self):
+        # The Linux PID namespace init can reap the child before this interval.
+        case = _BrokerCase()
+        output = case.run_worker('''
+import json,os,threading,time
+from benchmarks.v3_shell_launcher import install_worker_adapter
+install_worker_adapter()
+from openkyrozen.tools.processes import SessionProcessManager
+cancelled=threading.Event()
+manager=SessionProcessManager('owner',os.getcwd(),'session')
+try:
+    handle=manager.start('printf early; (sleep 6; printf late) & exit 0',
+        cwd=os.getcwd(),env=dict(os.environ),timeout_seconds=10,cancelled=cancelled)
+    deadline=time.monotonic()+5
+    while handle.process.poll() is None and time.monotonic()<deadline:
+        time.sleep(.001)
+    assert handle.process.poll()==0
+    assert not (handle.process.stdout.closed and handle.process.stderr.closed)
+    started=time.monotonic()
+    cancelled.set()
+    deadline=started+4
+    while not (handle.process.stdout.closed and handle.process.stderr.closed) and time.monotonic()<deadline:
+        time.sleep(.01)
+    handle.expiry_thread.join(timeout=.2)
+    print(json.dumps([handle.cancelled,handle.stdout,handle.expiry_thread.is_alive()]))
+finally:
+    manager.close()
+''')
+        self.assertEqual(json.loads(output), [True, 'early', False])
+
     def test_completed_remote_handles_do_not_exhaust_the_live_limit(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

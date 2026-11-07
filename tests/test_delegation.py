@@ -480,6 +480,101 @@ class DelegationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.runtime.delegation().detail(run["run_id"])
 
+    def test_original_native_detail_uses_the_journal_scope_for_author_and_reviewer(self):
+        from openkyrozen.agent.conversation import ConversationHistory
+        from openkyrozen.providers.base import LLMProvider
+        from openkyrozen.providers.models import FinishReason, ModelResponse, ProviderCapabilities, ToolCall, ToolReply
+
+        class Provider(LLMProvider):
+            def chat(self, messages, model=None):
+                raise AssertionError("native delegation must not use the legacy provider")
+
+            def get_capabilities(self, model=None):
+                return ProviderCapabilities(native_tools=True)
+
+            def chat_response(self, messages, model=None, *, tools=None):
+                if not any(isinstance(item, ToolReply) for item in messages):
+                    return ModelResponse(tool_calls=(ToolCall("native-read", "read_file", {"path": "marker.txt"}),),
+                                         finish_reason=FinishReason.TOOL_REQUEST)
+                review = any(isinstance(item, dict) and "Independently verify" in str(item.get("content", ""))
+                             for item in messages)
+                return ModelResponse(text=json.dumps(reviewed() if review else result()),
+                                     finish_reason=FinishReason.FINAL)
+
+        self.runtime.get_provider = Provider
+        for bound in (False, True):
+            with self.subTest(project_bound=bound):
+                if bound:
+                    self.runtime.configure_launch_context(project_path=self.root)
+                    self.runtime.bind_interaction_scope("project-parent")
+                # The task scope is independent of the source and conversation scopes.
+                self.runtime.tasks.workspace_id = "parent-tasks-only"
+                scope = self.runtime.interaction_workspace_id()
+                coordinator = self.runtime.delegation()
+                self.addCleanup(coordinator.close)
+                agent = coordinator.spawn([brief()])[0]
+                run = coordinator.wait([agent["run_id"]], timeout=10)[0]
+                self.assertEqual(run["status"], "succeeded", run.get("error"))
+                detail = coordinator.detail(agent["run_id"])
+                for child_id, displayed in ((agent["run_id"], detail["messages"]),
+                        (run["reviews"][0]["session_id"], detail["review_messages"][run["reviews"][0]["session_id"]])):
+                    history = ConversationHistory(self.app.store, user_id="local", workspace_id=scope,
+                                                  session_id=child_id)
+                    entries = history.entries()
+                    self.assertTrue(any(entry.kind == "tool.result" and entry.payload["call_id"] == "native-read"
+                                        for entry in entries))
+                    self.assertEqual([item["role"] for item in displayed], ["user", "assistant"])
+                    self.assertEqual(displayed, history.display_messages())
+                self.assertEqual(detail.get("conversation_workspace_id"), scope)
+
+    def test_detail_old_runs_fall_back_only_when_the_source_journal_is_absent(self):
+        from openkyrozen.agent.conversation import ConversationHistory
+
+        coordinator = self.manager(lambda *_args, **_kwargs: None)
+        coordinator.memory.file_scope_id = "source-current"
+        store = coordinator.memory.store
+        for index, source_message in enumerate((None, "source history", "")):
+            with self.subTest(source_message=source_message):
+                run_id, review_id = f"old-author-{index}", f"old-review-{index}"
+                coordinator.runs[run_id] = {"run_id": run_id, "status": "succeeded",
+                                            "reviews": [{"session_id": review_id}]}
+                for session_id in (run_id, review_id):
+                    global_history = ConversationHistory(store, user_id="local", workspace_id="default",
+                                                         session_id=session_id)
+                    global_history.import_legacy([{"role": "assistant", "content": "global history"}])
+                    if source_message is not None:
+                        history = ConversationHistory(store, user_id="local", workspace_id="source-current",
+                                                      session_id=session_id)
+                        history.append(history.entry("turn.outcome", {"text": source_message}))
+                detail = coordinator.detail(run_id)
+                expected = ([{"role": "assistant", "content": "global history"}] if source_message is None else
+                            [{"role": "assistant", "content": "source history"}] if source_message else [])
+                self.assertEqual(detail["messages"], expected)
+                self.assertEqual(detail["review_messages"][review_id], expected)
+                self.assertNotIn("conversation_workspace_id", coordinator.runs[run_id])
+
+    def test_detail_explicit_journal_scope_never_falls_back_to_other_scopes(self):
+        from openkyrozen.agent.conversation import ConversationHistory
+
+        coordinator = self.manager(lambda *_args, **_kwargs: None)
+        coordinator.memory.file_scope_id = "source-current"
+        coordinator.runs["owned-author"] = {"run_id": "owned-author", "status": "succeeded", "reviews": [],
+                                            "conversation_workspace_id": "project-current"}
+        for user, workspace, session in (("other-user", "project-current", "owned-author"),
+                ("local", "other-project", "owned-author"), ("local", "default", "owned-author"),
+                ("local", "source-current", "owned-author"), ("local", "project-current", "other-session")):
+            history = ConversationHistory(coordinator.memory.store, user_id=user, workspace_id=workspace,
+                                          session_id=session)
+            history.import_legacy([{"role": "assistant", "content": "private foreign history"}])
+        self.assertEqual(coordinator.detail("owned-author")["messages"], [])
+        coordinator.runs["old-owned-author"] = {"run_id": "old-owned-author", "status": "succeeded", "reviews": []}
+        for user, workspace, session in (("other-user", "default", "old-owned-author"),
+                ("local", "other-project", "old-owned-author"), ("local", "default", "old-other-session")):
+            history = ConversationHistory(coordinator.memory.store, user_id=user, workspace_id=workspace,
+                                          session_id=session)
+            history.import_legacy([{"role": "assistant", "content": "private foreign history"}])
+        self.assertEqual(coordinator.detail("old-owned-author")["messages"], [])
+
     def test_main_automatically_delegates_and_waits_before_claiming_success(self):
         runtime = self.runtime
         runtime.set_interaction_mode("agent")

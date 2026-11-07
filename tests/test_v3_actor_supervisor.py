@@ -1,6 +1,7 @@
 """Parent policy and authenticated actor boundary regressions, without providers."""
 import importlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -177,6 +178,7 @@ class ActorPolicyTests(unittest.TestCase):
                     target.mkdir()
                 broker = module._ActorBroker.__new__(module._ActorBroker)
                 broker.actor, broker.policy, broker.authority = {'assignment': assignment}, policy, authority
+                broker.closed, broker.close_lock = threading.Event(), threading.RLock()
                 broker.processes = {}
                 owner = SimpleNamespace(popen=lambda *args, **kwargs: self.fail('invalid scope reached process execution'))
                 owned = SimpleNamespace(owner=owner, close=lambda: None, invocation=SimpleNamespace(
@@ -241,6 +243,21 @@ class ActorPolicyTests(unittest.TestCase):
         self.assertEqual(environment['KYROZEN_SKILLS_DIR'], str(self.base / 'private-home' / 'skills'))
         self.assertNotIn('KYROZEN_SKILLS_PATH', environment)
 
+    @unittest.skipUnless(os.name == 'posix', 'Unix actor listener directory')
+    def test_socket_factory_uses_a_private_directory_under_root_owned_sticky_var_tmp(self):
+        module=self.module()
+        self.assertTrue(hasattr(module,'_actor_socket_directory'), 'portable actor socket factory is missing')
+        directory=module._actor_socket_directory()
+        try:
+            self.assertEqual(directory.parent,Path('/var/tmp').resolve())
+            self.assertEqual(directory.stat().st_mode & 0o777,0o711)
+            self.assertEqual(directory.stat().st_uid,os.geteuid())
+            self.assertEqual(directory.parent.stat().st_uid,0)
+            self.assertTrue(directory.parent.stat().st_mode & 0o1000)
+            self.assertFalse(directory.is_relative_to(self.base))
+        finally:
+            directory.rmdir()
+
     @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0, 'uses unprivileged directories to force rejection')
     def test_failed_constructor_releases_unexecuted_identity_and_private_directories(self):
         module = self.module()
@@ -262,6 +279,59 @@ class ActorPolicyTests(unittest.TestCase):
 @unittest.skipUnless(hasattr(os, 'geteuid') and os.geteuid() == 0,
                      'privileged disposable benchmark runner required')
 class PrivilegedActorSupervisorTests(unittest.TestCase):
+    def test_narrowed_root_policy_bounds_raw_and_managed_shell_reads(self):
+        from benchmarks.v3_actor_supervisor import ActorSupervisor
+        with tempfile.TemporaryDirectory(dir='/var/tmp') as directory:
+            base = Path(directory).resolve()
+            base.chmod(0o755)
+            workspace = base/'workspace'
+            allowed = workspace/'allowed'
+            allowed.mkdir(parents=True)
+            (allowed/'source.py').write_text('visible')
+            (workspace/'sibling.py').write_text('private')
+            source = Path(__file__).resolve().parents[1]
+            probe = '''import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])
+out=[(p/'allowed/source.py').read_text()]
+try:
+    (p/'sibling.py').read_text()
+    out.append(False)
+except OSError:
+    out.append(True)
+try:
+    names=[item.name for item in p.iterdir()]
+except OSError:
+    names=[]
+out.append('sibling.py' not in names)
+print(json.dumps(out))
+'''
+            code = '''import json,os,shlex,sys
+sys.path.insert(0,sys.argv[1])
+from benchmarks.v3_process_owner import connect_actor_client
+c=connect_actor_client()
+args=sys.argv
+sys.argv=['probe',args[2]]
+exec(compile(args[3],'<raw-root-probe>','exec'))
+sys.argv=args
+p=c.start(shlex.join([sys.executable,'-I','-c',sys.argv[3],sys.argv[2]]),
+          os.path.join(sys.argv[2],'allowed'),{'PATH':os.environ['PATH']},5)
+p.wait(10)
+out=bytearray()
+while chunk:=p.stdout.read1(4096): out.extend(chunk)
+while p.stderr.read1(4096): pass
+assert p.returncode==0
+print(out.decode().strip())
+'''
+            policy = ShellPolicy(workspace, {'read','write','shell'}, scope_paths=['allowed'])
+            with ActorSupervisor([sys.executable,'-I','-c',code,str(source),str(workspace),probe],
+                    cwd=workspace, env={'PATH':os.environ['PATH']}, protected_files=[],
+                    policy=policy, source=source) as supervisor:
+                process = supervisor.popen(stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                output,error=process.communicate(timeout=20)
+                self.assertEqual(process.returncode,0,error)
+                self.assertEqual([json.loads(line) for line in output.splitlines()],
+                                 [['visible',True,True],['visible',True,True]])
+
     def test_directory_child_shell_cannot_hide_protected_test_mounts(self):
         from benchmarks.v3_actor_supervisor import ActorAssignment, ActorSupervisor
         with tempfile.TemporaryDirectory(dir='/var/tmp') as directory:
@@ -637,6 +707,89 @@ class ActorBrokerCleanupTests(unittest.TestCase):
         self.assertEqual(drained, ['command'])
         self.assertTrue(actor['owner'].closed)
 
+    def test_actor_cancel_owns_a_command_during_popen_and_rejects_late_publication(self):
+        from contextlib import nullcontext
+        from benchmarks.v3_actor_supervisor import _OwnedInvocation
+        from benchmarks.v3_shell_launcher import TicketAuthority
+        entered, release, close_entered, finished = (threading.Event() for _ in range(4))
+        process = SimpleNamespace(pid=12345, returncode=None, stdout=io.BytesIO(), stderr=io.BytesIO())
+        process.poll = lambda: process.returncode
+        def wait(timeout):
+            if not finished.wait(timeout):
+                raise subprocess.TimeoutExpired('benign barrier', timeout)
+            return process.returncode
+        process.wait = wait
+        owner = SimpleNamespace(closed=False, lock=threading.RLock())
+        def popen(*args, **kwargs):
+            with owner.lock:
+                entered.set()
+                if not release.wait(5):
+                    raise RuntimeError('test did not release popen')
+                return process
+        def close():
+            close_entered.set()
+            with owner.lock:
+                process.returncode = -9
+                owner.closed = True
+                finished.set()
+        owner.popen, owner.close = popen, close
+        invocation = SimpleNamespace(command=['benign'], env={}, backend='test', close=lambda: None)
+        owned = _OwnedInvocation(invocation, owner)
+        broker, actor, supervisor = self.broker([])
+        with tempfile.TemporaryDirectory() as directory:
+            policy = ShellPolicy(directory, {'read','shell'})
+            broker.policy = actor['policy'] = policy
+            broker.protected_files = []
+            actor.update(root=False, condition=threading.Condition(), callbacks={}, disconnected=False)
+            supervisor.execution_lock, supervisor._frozen = threading.RLock(), nullcontext
+            supervisor.group = SimpleNamespace(uid=12345)
+            broker.authority = TicketAuthority(policy)
+            request = {key:getattr(policy,key) for key in ('run_id','actor_id','session_id','revision')}
+            request.update(call_id='barrier',command='printf benign',cwd=directory,env={},
+                           timeout_seconds=1800,background=False)
+            ticket = broker.authority.issue(request)
+            broker.pending[ticket] = (request,request,owned,time.monotonic()+5)
+            results, errors, cancel_errors = [], [], []
+            cancelled = threading.Event()
+            def start():
+                try:
+                    results.append(broker._dispatch({'op':'start','ticket':ticket,'request':request}))
+                except Exception as exc:
+                    errors.append(exc)
+            def cancel():
+                try:
+                    supervisor._stop_actor(actor)
+                except Exception as exc:
+                    cancel_errors.append(exc)
+                finally:
+                    cancelled.set()
+            starter = threading.Thread(target=start)
+            stopper = threading.Thread(target=cancel)
+            starter.start()
+            try:
+                self.assertTrue(entered.wait(3))
+                stopper.start()
+                deadline = time.monotonic()+3
+                while not (close_entered.is_set() or cancelled.is_set()) and time.monotonic()<deadline:
+                    time.sleep(.001)
+                release.set()
+                starter.join(timeout=3)
+                stopper.join(timeout=3)
+                self.assertFalse(starter.is_alive() or stopper.is_alive(), 'cancel and start deadlocked')
+                self.assertFalse(cancel_errors)
+                self.assertTrue(owner.closed, 'cancel missed the in-flight command UID')
+                self.assertEqual(broker.records, {})
+                self.assertEqual(results, [])
+                self.assertEqual(len(errors), 1)
+                self.assertIsInstance(errors[0], PermissionError)
+            finally:
+                release.set()
+                close()
+                starter.join(timeout=5)
+                if stopper.ident is not None:
+                    stopper.join(timeout=5)
+                broker.close()
+
     def test_failed_uid_cleanup_drains_other_handles_and_actor_then_remains_retryable(self):
         attempted = []
         state = {'fail': True}
@@ -703,6 +856,40 @@ class ActorOutputLifecycleTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'darwin' or sys.platform.startswith('linux'), 'Unix sandbox required')
 class ActorReadSandboxTests(unittest.TestCase):
+    def test_root_read_view_defaults_to_parent_approved_directories(self):
+        from benchmarks.v3_actor_supervisor import ActorSupervisor
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory).resolve()
+            workspace=base/'workspace'
+            (workspace/'allowed').mkdir(parents=True)
+            (workspace/'allowed/source.py').write_text('visible')
+            (workspace/'sibling.py').write_text('private')
+            home=base/'home'
+            home.mkdir()
+            supervisor=ActorSupervisor.__new__(ActorSupervisor)
+            supervisor.workspace=workspace
+            supervisor.policy=ShellPolicy(workspace,{'read'},scope_paths=['allowed'])
+            supervisor.protected_files=[]
+            supervisor._environment=lambda home:{'PATH':os.environ['PATH'],'HOME':str(home)}
+            code='''import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])
+out=[(p/'allowed/source.py').read_text()]
+try:
+    (p/'sibling.py').read_text()
+    out.append(False)
+except OSError:
+    out.append(True)
+print(json.dumps(out))
+'''
+            invocation=supervisor._protected_actor([sys.executable,'-I','-c',code,str(workspace)],home)
+            try:
+                result=subprocess.run(invocation.command,cwd=workspace,env=invocation.env,
+                                      capture_output=True,text=True,timeout=10)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual(json.loads(result.stdout),['visible',True])
+            finally:
+                invocation.close()
+
     def test_empty_read_scope_denies_file_data_and_directory_listing(self):
         from benchmarks import v3_actor_supervisor as module
         from benchmarks.v3_protected_worker import protected_shell_command

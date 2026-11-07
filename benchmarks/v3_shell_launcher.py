@@ -552,7 +552,8 @@ def install_worker_adapter(client=None):
             outcome = getattr(self, '_audit_outcome', None)
             try:
                 deadline = time.monotonic() + min(handle.timeout_seconds, 1800) + 5
-                while handle.process.poll() is None:
+                while (handle.process.poll() is None
+                       or not (handle.process.stdout.closed and handle.process.stderr.closed)):
                     if cancelled is not None and cancelled.is_set():
                         if outcome:
                             handle.stop_reason = 'cancelled'
@@ -563,7 +564,10 @@ def install_worker_adapter(client=None):
                     if remaining <= 0:
                         raise subprocess.TimeoutExpired(handle.process.identifier, handle.timeout_seconds)
                     try:
-                        handle.process.wait(timeout=min(.1, remaining))
+                        if handle.process.poll() is None:
+                            handle.process.wait(timeout=min(.1, remaining))
+                        else:
+                            time.sleep(min(.02, remaining))
                     except subprocess.TimeoutExpired:
                         continue
             except subprocess.TimeoutExpired:
@@ -626,6 +630,9 @@ def install_worker_adapter(client=None):
                 failure = 'timeout'
             # Collector completion is distinct from process exit and preserves final output.
             while not (handle.process.stdout.closed and handle.process.stderr.closed):
+                if cancelled is not None and cancelled.is_set() and failure is None:
+                    failure = 'cancelled'
+                    manager.stop(handle.process_id)
                 time.sleep(.01)
             handle.process.poll()
             handle.timed_out = handle.timed_out or handle.process.timed_out

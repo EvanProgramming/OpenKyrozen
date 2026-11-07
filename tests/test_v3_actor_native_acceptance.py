@@ -34,15 +34,24 @@ try:
  install_delegated_adapter(runtime,client,source=source)
  coordinator=runtime.delegation()
  run={'run_id':'author1','budget_id':'author1','profile':'researcher','name':'Author','reviewer':'Reviewer',
-      'review_agent':{},'status':'succeeded','usage':{},
+      'review_agent':{},'reviews':[],'status':'succeeded','usage':{},
       'assignment':{'objective':'Read source.py','context':'Inspect actual source evidence','scope':['source.py']}}
  coordinator.runs['author1']=run
  coordinator.cancelled['author1']=threading.Event()
  author=runtime._invoke_delegated(run,review=False,feedback=None,coordinator=coordinator)
  run['report']=json.loads(author['result']); run['result']=author
  reviewer=runtime._invoke_delegated(run,review=True,feedback=None,coordinator=coordinator)
+ run['reviews']=[{'session_id':reviewer['session_id']}]
+ detail=coordinator.detail('author1')
+ journals=None
+ if hasattr(app.store,'list_conversation_entries'):
+  scope=run.get('conversation_workspace_id',runtime.interaction_workspace_id())
+  journals={role:[entry['kind'] for entry in app.store.list_conversation_entries(
+      user_id=runtime.memory_bank.user_id,workspace_id=scope,session_id=value['session_id'])]
+      for role,value in [('author',author),('reviewer',reviewer)]}
  Path(result).write_text(json.dumps({'author':author,'reviewer':reviewer,
-     'records':runtime._benchmark_child_context_records,'usage':run['usage']}))
+     'records':runtime._benchmark_child_context_records,'usage':run['usage'],
+     'messages':detail['messages'],'review_messages':detail['review_messages'],'journals':journals}))
 finally: app.close()
 '''
 
@@ -166,6 +175,12 @@ class NativeActorAcceptanceTests(unittest.TestCase):
                         self.assertTrue(all(row['status'] == 'settled' and row['usage']['input_tokens'] == 100
                                             for row in relay.rows))
                         self.assertTrue(observed['usage'])
+                        self.assertTrue(observed['messages'])
+                        self.assertTrue(observed['review_messages'][observed['reviewer']['session_id']])
+                        if arm == 'v3':
+                            for kinds in observed['journals'].values():
+                                self.assertIn('model.response', kinds)
+                                self.assertIn('tool.result', kinds)
                         self.assertEqual(guard.read_text(), 'original')
                         self.assertEqual((workspace / 'source.py').read_text(), 'kernel actor evidence')
                     finally:
