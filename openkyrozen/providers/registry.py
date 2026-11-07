@@ -21,7 +21,7 @@ class ProviderSpec:
 
 PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
     # Defaults are taken from the providers' current official model catalogs.
-    "deepseek": ProviderSpec("deepseek", "DeepSeek", "openai_compat", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY", "deepseek-flash", "deepseek-v4-pro", 1_048_576, True, ("openai", "anthropic")),
+    "deepseek": ProviderSpec("deepseek", "DeepSeek", "openai_compat", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY", "deepseek-flash", "deepseek-flash", 1_048_576, True, ("openai", "anthropic")),
     "openai": ProviderSpec("openai", "OpenAI", "responses", "https://api.openai.com/v1", "OPENAI_API_KEY", "gpt-6-luna", "gpt-6-astra", 1_048_576, True, ("deepseek", "anthropic")),
     "anthropic": ProviderSpec("anthropic", "Anthropic", "messages", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "claude-haiku-4-5", "claude-fable-5-1", 1_000_000, True, ("openai", "deepseek")),
     "google": ProviderSpec("google", "Google Gemini", "google_genai", "", "GEMINI_API_KEY", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", 1_048_576, True, ("openai", "deepseek")),

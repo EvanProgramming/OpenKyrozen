@@ -63,6 +63,9 @@ class FallbackProvider(LLMProvider):
             primary_config.model_complex,
             PROVIDER_DEFAULT_MODELS.get(primary_config.provider, ("", ""))[1],
         }
+        if primary_config.provider == "deepseek" and provider is not self._primary:
+            # Preserve the previous complex default when mapping a fallback.
+            primary_complex.add("deepseek-v4-pro")
         if requested in primary_complex and requested not in primary_simple:
             return target_config.model_complex
         if requested in primary_simple:

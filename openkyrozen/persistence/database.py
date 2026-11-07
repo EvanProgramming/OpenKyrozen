@@ -8,6 +8,7 @@ import threading
 import time
 import warnings
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -197,27 +198,124 @@ _REQUIRED_COLUMNS = {
     "tool_artifacts": {"id", "user_id", "workspace_id", "session_id", "content", "created_at"},
 }
 
+class _DeadlineRLock:
+    """Preserve ordinary RLock behavior, with an opt-in cancellation deadline."""
+    def __init__(self, remaining):
+        self._lock = threading.RLock()
+        self._remaining = remaining
+
+    def acquire(self, blocking=True, timeout=-1):
+        remaining = self._remaining()
+        if remaining is None:
+            return self._lock.acquire(blocking, timeout)
+        if remaining <= 0:
+            return False
+        if not blocking:
+            return self._lock.acquire(False)
+        return self._lock.acquire(timeout=remaining if timeout < 0 else min(timeout, remaining))
+
+    def release(self):
+        return self._lock.release()
+
+    def __enter__(self):
+        if not self.acquire():
+            raise sqlite3.OperationalError("cancellation persistence deadline exceeded")
+        return self
+
+    def __exit__(self, *args):
+        self.release()
+
+    def __getattr__(self, name):
+        return getattr(self._lock, name)
+
+
 class SQLiteDatabase:
     SCHEMA_VERSION = _MIGRATIONS[-1][0]
     def __init__(self, path: str | os.PathLike[str] | None = None):
         configured = path or os.environ.get("KYROZEN_DB_PATH")
         self.path = Path(configured or Path.home() / ".kyrozen" / "v2" / "openkyrozen.sqlite3").expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.RLock()
+        self._control_deadline = ContextVar("sqlite_control_deadline", default=None)
+        self._lock = _DeadlineRLock(self._remaining_control_seconds)
+        self._lifecycle_lock = threading.Lock()
+        self._active_connections = 0
+        self._closing = False
+        self._anchor = None
         self.last_backup_path: Path | None = None
         self._initialise()
+        anchor = sqlite3.connect(str(self.path), timeout=30, isolation_level=None, check_same_thread=False)
+        try:
+            anchor.execute("PRAGMA synchronous=NORMAL")
+            # Keep an idle WAL client so ordinary lease closes do not checkpoint the database.
+            anchor.execute("SELECT name FROM sqlite_schema LIMIT 1").fetchall()
+        except BaseException:
+            anchor.close()
+            raise
+        self._anchor = anchor
 
+    def close(self):
+        with self._lifecycle_lock:
+            self._closing = True
+            anchor = self._anchor if self._active_connections == 0 else None
+            if anchor is not None:
+                self._anchor = None
+        if anchor is not None:
+            try:
+                anchor.close()
+            except BaseException:
+                with self._lifecycle_lock:
+                    self._anchor = anchor
+                raise
+
+
+    def _remaining_control_seconds(self):
+        control = self._control_deadline.get()
+        if control is None or control[1] != threading.get_ident():
+            return None
+        return max(0, control[0] - time.monotonic())
+
+    @contextmanager
+    def _cancellation_deadline(self):
+        remaining = self._remaining_control_seconds()
+        deadline = time.monotonic() + min(.3, remaining) if remaining is not None else time.monotonic() + .3
+        token = self._control_deadline.set((deadline, threading.get_ident()))
+        try:
+            yield
+        finally:
+            self._control_deadline.reset(token)
 
     @contextmanager
     def connection(self, *, timeout: float = 30, busy_timeout_ms: int | None = None) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(str(self.path), timeout=timeout, isolation_level=None)
-        connection.row_factory = sqlite3.Row
+        with self._lifecycle_lock:
+            if self._closing:
+                raise RuntimeError("SQLite database is closed")
+            self._active_connections += 1
+        connection = None
         try:
+            remaining = self._remaining_control_seconds()
+            if remaining is not None:
+                if remaining <= 0:
+                    raise sqlite3.OperationalError("cancellation persistence deadline exceeded")
+                timeout = min(timeout, remaining)
+                busy_timeout_ms = min(30000 if busy_timeout_ms is None else busy_timeout_ms,
+                                      int(remaining * 1000))
+            connection = sqlite3.connect(str(self.path), timeout=timeout, isolation_level=None)
+            connection.row_factory = sqlite3.Row
             connection.execute(f"PRAGMA busy_timeout={busy_timeout_ms if busy_timeout_ms is not None else 30000}")
             connection.execute("PRAGMA foreign_keys=ON")
+            # WAL mode persists, but synchronous is connection-local.
+            connection.execute("PRAGMA synchronous=NORMAL")
             yield connection
         finally:
-            connection.close()
+            try:
+                if connection is not None:
+                    connection.close()
+            finally:
+                with self._lifecycle_lock:
+                    self._active_connections -= 1
+                    finish_close = self._closing and self._active_connections == 0
+                if finish_close:
+                    self.close()
 
 
     def _initialise(self) -> None:

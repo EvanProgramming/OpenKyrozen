@@ -1,4 +1,5 @@
 """Offline regression checks for provider-independent response boundaries."""
+from contextlib import ExitStack, closing
 import unittest
 import copy
 from types import SimpleNamespace as NS
@@ -53,8 +54,8 @@ class ProviderResponseRegressionTests(unittest.TestCase):
         response = ModelResponse(tool_calls=(ToolCall("id", "read_file", {"path": "a"}),),
                                  usage={"prompt_tokens": 2, "completion_tokens": 3},
                                  finish_reason=FinishReason.TOOL_REQUEST)
-        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
-            application = build_application(memory=build_memory(Path(directory) / "state.sqlite3"))
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}), ExitStack() as sqlite_owners:
+            application = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))))
             runtime = application.runtime
             runtime.llm_provider = NS(chat_response=Mock(return_value=response))
             try:

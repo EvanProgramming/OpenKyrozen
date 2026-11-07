@@ -4,6 +4,8 @@ import os
 import math
 import sys
 import uuid
+import hashlib
+import json
 from typing import Any
 from openkyrozen.providers.usage import usage_scope
 from openkyrozen.providers.base import get_model_response, get_model_events
@@ -119,6 +121,21 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
     self._last_model_response.set(None)
     self._turn_failed.set(False)
     selected_model = model or self.DEEPSEEK_MODEL
+    state = self._active_context_state.get()
+    if state is not None and not self._in_context_compaction.get():
+        from openkyrozen.providers.models import provider_identity
+        state.request_provider_id = provider_identity(provider)
+        state.request_model = selected_model
+        if tool_names is None:
+            state.native_input_overhead_tokens = 0
+            state.native_schema_fingerprint = ""
+    if tool_names is not None and not self._in_context_compaction.get():
+        if state is not None:
+            from openkyrozen.agent.compaction import _text_tokens
+            schema_json = json.dumps(tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            state.native_input_overhead_tokens = _text_tokens(schema_json) + 32 * len(tools or ()) + 64
+            state.native_schema_fingerprint = hashlib.sha256(schema_json.encode("utf-8")).hexdigest()
+        self._prepare_context_for_call(messages, selected_model)
     if self._active_context_state.get() is not None and not self._in_context_compaction.get():
         self._record_context_history_metrics(messages)
     request_id = f"model_{uuid.uuid4().hex}"

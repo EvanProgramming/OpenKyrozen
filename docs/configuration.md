@@ -66,7 +66,7 @@ OpenKyrozen has separate defaults for simple and complex work:
 
 ```bash
 export KYROZEN_MODEL_SIMPLE=deepseek-flash
-export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
+export KYROZEN_MODEL_COMPLEX=deepseek-flash
 ```
 
 Set `KYROZEN_MODEL_MAIN` or use `/model <name>` to pin every main-agent request to one model. Use `/model auto` to return to the simple/complex choices. Sub-agent model assignments remain independent. Ollama requires an explicit installed model tag; `/model` shows discovered tags as suggestions and accepts a manually entered tag.

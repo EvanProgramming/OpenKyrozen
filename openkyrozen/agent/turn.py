@@ -38,6 +38,7 @@ class TurnContext:
     turn_start: Any = None
     runtime_status: str = "completed"
     memory_packet: str = ""
+    native_tools: bool = False
 
     @property
     def planning_required(self) -> bool:
@@ -62,6 +63,8 @@ class ExecutionContext:
     delegation_tools: frozenset[str] | None = None
     max_steps: int | None = None
     cancelled: Any = None
+    native_control_input: str = ""
+    native_plan_inspected: bool = False
 
 
 def scoped_turn(function):

@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import json
 import hashlib
 import tempfile
@@ -92,7 +93,7 @@ class StrategicPlanExecutionBoundsTests(unittest.TestCase):
 
     def test_legacy_mutation_arguments_are_normalized_for_scope_checks(self):
         from pathlib import Path
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             plan = {"bounds": {"workspace_paths": ["site"], "capabilities": ["write"],
                                "effects": ["filesystem"], "risk_ceiling": "normal"}}
             spec = SimpleNamespace(capability="write", side_effects="filesystem", risk="normal",
@@ -102,7 +103,7 @@ class StrategicPlanExecutionBoundsTests(unittest.TestCase):
                              {"path": "site/index.html", "content": "ok"})
             normalized = json.dumps(_legacy_object_arguments("site/index.html|ok", spec),
                                     ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            manager = TaskManager(EventStore(Path(directory) / "match.sqlite3"), workspace_id="w", session_id="s")
+            manager = TaskManager(sqlite_owners.enter_context(closing(EventStore(Path(directory) / "match.sqlite3"))), workspace_id="w", session_id="s")
             self.assertGreater(manager._receipt_match_score({"acceptance": [{
                 "action": "write_file", "args": normalized,
             }]}, "write_file", normalized), 0)
@@ -299,7 +300,9 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.store = EventStore(Path(self.directory.name) / "state.sqlite3")
+        self._sqlite_owners = ExitStack()
+        self.addCleanup(self._sqlite_owners.close)
+        self.store = self._sqlite_owners.enter_context(closing(EventStore(Path(self.directory.name) / "state.sqlite3")))
         self.controller = InteractionController(
             self.store, workspace_id="project", session_id="strategic-session",
         )
@@ -344,6 +347,110 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
         )
         binding = next(task for task in result["tasks"] if task["id"] == task_id)["checkpoint"]["strategic_plan"]
         self.assertEqual(binding["fingerprint"], accepted["fingerprint"])
+
+    def test_strategic_split_retains_approved_anchor_and_adds_bound_strategy(self):
+        from copy import deepcopy
+        plan = self._proposal()
+        accepted, _ = self.controller.accept_plan(self.manager, plan_id=plan["plan_id"], version=1)
+        anchor_id = accepted["working_task_ids"][0]
+        before = deepcopy(self.manager.tasks[0])
+        result = self.manager.edit_plan(
+            plan_id=self.manager.working_plan.id, expected_revision=1,
+            operations=[{"op": "split", "task": anchor_id, "children": [
+                {"ref": "inspect", "task": {"description": "Inspect page input", "acceptance": ["Input checked"]}},
+                {"ref": "verify", "task": {"description": "Verify page output", "acceptance": ["Output checked"]}},
+            ]}],
+        )
+        anchor = next(task for task in result["tasks"] if task["id"] == anchor_id)
+        self.assertEqual(anchor["status"], "pending")
+        self.assertEqual(anchor["acceptance"], before["acceptance"])
+        self.assertEqual(anchor["description"], before["description"])
+        children = [task for task in result["tasks"] if task["id"] != anchor_id]
+        self.assertEqual(anchor["dependencies"], [task["id"] for task in children])
+        for child in children:
+            self.assertEqual(child["checkpoint"]["strategy_anchor"], anchor_id)
+            self.assertEqual(child["checkpoint"]["strategic_plan"], before["checkpoint"]["strategic_plan"])
+        snapshot = self.manager.working_plan_snapshot()
+        self.assertEqual(snapshot["tasks"][0]["role"], "approved_objective")
+        self.assertEqual(snapshot["tasks"][1]["strategy_anchor"], anchor_id)
+        self.assertEqual(self.controller.state()["executing_plan"], accepted)
+        self.assertFalse(self.manager._has_evidence(0))
+        added = self.manager.edit_plan(
+            plan_id=self.manager.working_plan.id, expected_revision=2,
+            operations=[{"op": "add", "anchor": anchor_id, "ref": "extra", "task": {
+                "description": "Investigate page edge case", "acceptance": ["Edge case checked"],
+            }}],
+        )
+        self.assertIn(added["references"]["extra"], self.manager.tasks[0]["dependencies"])
+        self.assertFalse(self.manager._has_evidence(0))
+        self.assertFalse(self.manager.set_status(0, "succeeded", evidence={
+            "success": True, "acceptance": "Original objective verified",
+            "acceptance_ids": before["checkpoint"]["strategic_plan"]["acceptance_ids"],
+        }))
+
+    def test_strategy_children_can_merge_and_replace_without_replacing_objective(self):
+        proposal = self._proposal()
+        accepted, _ = self.controller.accept_plan(self.manager, plan_id=proposal["plan_id"], version=1)
+        anchor = accepted["working_task_ids"][0]
+        refined = self.manager.edit_plan(plan_id=self.manager.working_plan.id, expected_revision=1, operations=[
+            {"op": "split", "task": anchor, "children": [
+                {"ref": "a", "task": {"description": "Inspect input", "acceptance": ["Input checked"]}},
+                {"ref": "b", "task": {"description": "Inspect output", "acceptance": ["Output checked"]}},
+            ]},
+        ])
+        merged = self.manager.edit_plan(plan_id=self.manager.working_plan.id, expected_revision=2, operations=[
+            {"op": "merge", "tasks": [refined["references"]["a"], refined["references"]["b"]],
+             "replacement": {"ref": "both", "task": {"description": "Inspect both", "acceptance": ["Both checked"]}}},
+        ])
+        merged_id = merged["references"]["both"]
+        self.assertEqual(self.manager.tasks[0]["dependencies"], [merged_id])
+        revised = self.manager.edit_plan(plan_id=self.manager.working_plan.id, expected_revision=3, operations=[
+            {"op": "replace", "task": merged_id, "replacement": {
+                "ref": "new", "task": {"description": "Investigate root cause", "acceptance": ["Cause checked"]},
+            }},
+        ])
+        replacement = next(task for task in revised["tasks"] if task["id"] == revised["references"]["new"])
+        self.assertEqual(replacement["checkpoint"]["strategy_anchor"], anchor)
+        self.assertEqual(self.manager.tasks[0]["status"], "pending")
+        self.assertEqual(self.manager.tasks[0]["checkpoint"]["strategic_plan"]["acceptance_ids"],
+                         proposal["steps"][0]["acceptance_ids"])
+
+    def test_strategic_completion_rejects_unfinished_refinement_even_after_dependency_removal(self):
+        proposal = self._proposal()
+        accepted, _ = self.controller.accept_plan(self.manager, plan_id=proposal["plan_id"], version=1)
+        anchor_id = accepted["working_task_ids"][0]
+        refined = self.manager.edit_plan(plan_id=self.manager.working_plan.id, expected_revision=1, operations=[
+            {"op": "add", "anchor": anchor_id, "ref": "inspect", "task": {
+                "description": "Inspect page", "acceptance": ["Inspected"],
+            }},
+        ])
+        self.manager.edit_plan(plan_id=self.manager.working_plan.id, expected_revision=2, operations=[
+            {"op": "remove_dependency", "task": anchor_id, "depends_on": refined["references"]["inspect"]},
+        ])
+        self.assertTrue(self.manager.set_status(0, "succeeded", evidence={
+            "success": True, "acceptance": "Verified approved objective",
+            "acceptance_ids": self.manager.tasks[0]["checkpoint"]["strategic_plan"]["acceptance_ids"],
+        }))
+        with self.assertRaises(InteractionError):
+            self.controller.complete_plan(accepted, task_manager=self.manager)
+
+    def test_material_reapproval_cancels_previous_strategy_children(self):
+        first = self._proposal()
+        accepted, _ = self.controller.accept_plan(self.manager, plan_id=first["plan_id"], version=1)
+        anchor_id = accepted["working_task_ids"][0]
+        refined = self.manager.edit_plan(plan_id=self.manager.working_plan.id, expected_revision=1, operations=[
+            {"op": "add", "anchor": anchor_id, "ref": "inspect", "task": {
+                "description": "Inspect page", "acceptance": ["Inspected"],
+            }},
+        ])
+        revision = self.controller.propose_plan({
+            "title": "Revised page", "summary": "A revised outcome", "bounds": first["bounds"],
+            "steps": [{"id": "page", "title": "Create revised page", "description": "Write revised page.",
+                       "acceptance": ["Revised content correct"]}],
+        })
+        self.controller.accept_plan(self.manager, plan_id=revision["plan_id"], version=2)
+        child = next(task for task in self.manager.tasks if task["id"] == refined["references"]["inspect"])
+        self.assertEqual(child["status"], "cancelled")
 
     def test_accepting_material_revision_replaces_executing_plan_atomically(self):
         first = self._proposal()
@@ -1347,8 +1454,7 @@ class InteractionTests(unittest.TestCase):
         self.addCleanup(restore)
         self.agent.short_term_memory = [{"role": "user", "content": "previous project"}]
         empty_history = type("History", (), {"current": lambda self: None})()
-        with patch.object(self.agent, "TaskManager", return_value=object()), \
-                patch.object(self.agent, "InteractionController", return_value=object()), \
+        with patch.object(self.agent, "InteractionController", return_value=object()), \
                 patch.object(self.agent, "history_manager", return_value=empty_history), \
                 patch.object(self.agent, "_restore_ponytail_level"):
             self.agent.bind_interaction_scope("chat-empty")
@@ -1391,6 +1497,23 @@ class InteractionTests(unittest.TestCase):
         self.assertIn("changed", reply.lower())
         self.assertEqual(session.interaction.state()["pending_plan"]["version"], newer["version"])
         self.assertEqual(session.interaction.state()["executing_plan"]["version"], first["version"])
+
+    def test_resuming_an_executing_plan_never_clears_its_tasks(self):
+        session = self.agent.open_session("resume-executing-plan")
+        proposal = session.interaction.propose_plan({
+            "title": "Retain task state", "summary": "Finish the accepted task.",
+            "steps": [{"id": "retain", "title": "Retain", "description": "Keep the task available.",
+                       "acceptance": ["Task remains available"]}],
+        })
+        session.interaction.accept_plan(session.tasks, plan_id=proposal["plan_id"],
+                                        version=proposal["version"])
+        before = [task["id"] for task in session.tasks.tasks]
+        observed = []
+        with patch.object(self.agent._agent_engine, "run",
+                          side_effect=lambda turn: observed.append(turn) or "continued"):
+            self.agent.chat(session, "Continue the accepted work", clear_tasks=True)
+        self.assertEqual([task["id"] for task in session.tasks.tasks], before)
+        self.assertFalse(observed[0].clear_tasks)
 
     def test_queued_plan_acceptance_rejects_same_version_proposal_with_new_fingerprint(self):
         session = self.agent.open_session("queued-plan-fingerprint")
@@ -1702,9 +1825,9 @@ class InteractionTests(unittest.TestCase):
             self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
             self.agent._get_workspace_root(), self.agent._execution_capability_token,
         )
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             self.agent.tasks = TaskManager(store, workspace_id="repair", session_id="repair")
             self.agent._interaction_controller = InteractionController(
                 store, workspace_id="repair", session_id="repair",
@@ -1936,9 +2059,9 @@ class InteractionTests(unittest.TestCase):
 
         original = (self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
                     self.agent._get_workspace_root(), self.agent._execution_capability_token)
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             self.agent.tasks = TaskManager(store, workspace_id="prose", session_id="prose")
             self.agent._interaction_controller = InteractionController(
                 store, workspace_id="prose", session_id="prose",
@@ -2004,9 +2127,9 @@ class InteractionTests(unittest.TestCase):
 
         original = (self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
                     self.agent._get_workspace_root(), self.agent._execution_capability_token)
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             self.agent.tasks = TaskManager(store, workspace_id="exhaust", session_id="exhaust")
             self.agent._interaction_controller = InteractionController(store, workspace_id="exhaust", session_id="exhaust")
             self.agent._interaction_controller.set_mode("plan")
@@ -2051,10 +2174,10 @@ class InteractionTests(unittest.TestCase):
 
         original = (self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
                     self.agent._get_workspace_root(), self.agent._execution_capability_token)
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             (root / "note.txt").write_text("evidence", encoding="utf-8")
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             self.agent.tasks = TaskManager(store, workspace_id="inspect", session_id="inspect")
             self.agent._interaction_controller = InteractionController(store, workspace_id="inspect", session_id="inspect")
             self.agent._interaction_controller.set_mode("plan")
@@ -2154,9 +2277,9 @@ class InteractionTests(unittest.TestCase):
             self.agent.tasks, self.agent._interaction_controller, self.agent._execution_capability_token,
             self.agent._get_workspace_root(),
         )
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="bound", session_id="surface:tui")
             controller = InteractionController(
                 store, workspace_id="bound", session_id="surface:tui",
@@ -2209,9 +2332,9 @@ class InteractionTests(unittest.TestCase):
             self.agent.tasks, self.agent._interaction_controller, self.agent._execution_capability_token,
             self.agent._get_workspace_root(),
         )
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="bounded", session_id="surface:tui")
             controller = InteractionController(store, workspace_id="bounded", session_id="surface:tui")
             proposal = controller.propose_plan({
@@ -2249,9 +2372,9 @@ class InteractionTests(unittest.TestCase):
     def test_duplicate_legacy_write_uses_canonical_typed_operation_identity(self):
         previous = (self.agent.tasks, self.agent._interaction_controller,
                     self.agent._execution_capability_token, self.agent._get_workspace_root())
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="duplicate", session_id="surface:tui")
             controller = InteractionController(store, workspace_id="duplicate", session_id="surface:tui")
             proposal = controller.propose_plan({
@@ -2286,9 +2409,9 @@ class InteractionTests(unittest.TestCase):
             self.agent.tasks, self.agent._interaction_controller, self.agent._execution_capability_token,
             self.agent._get_workspace_root(),
         )
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             manager = TaskManager(store, workspace_id="bound", session_id="surface:tui")
             controller = InteractionController(store, workspace_id="bound", session_id="surface:tui")
             proposal = controller.propose_plan({
@@ -2374,9 +2497,9 @@ class InteractionTests(unittest.TestCase):
             self.agent.tasks, self.agent._interaction_controller, self.agent.learning_engine,
             self.agent._get_workspace_root(), self.agent._execution_capability_token,
         )
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             self.agent.tasks = TaskManager(store, workspace_id="flow", session_id="flow")
             self.agent._interaction_controller = InteractionController(
                 store, workspace_id="flow", session_id="flow",

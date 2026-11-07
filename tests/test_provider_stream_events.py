@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -187,8 +188,8 @@ class StreamEventContractTests(unittest.TestCase):
                 yield ResponseComplete(ModelResponse(text="live", finish_reason=FinishReason.FINAL,
                     usage={"prompt_tokens": 2, "completion_tokens": 1}))
 
-        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
-            app = build_application(memory=build_memory(Path(directory) / "state.sqlite3"))
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}), ExitStack() as sqlite_owners:
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))))
             try:
                 app.runtime.llm_provider = StreamingProvider(ProviderConfig(provider="custom", model_simple="m"))
                 observed = []
@@ -232,8 +233,8 @@ class StreamEventContractTests(unittest.TestCase):
             def chat_stream(self, messages, model=None):
                 yield "[Ollama Error] context length exceeded"
 
-        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
-            app = build_application(memory=build_memory(Path(directory) / "state.sqlite3"))
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}), ExitStack() as sqlite_owners:
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))))
             try:
                 app.runtime.llm_provider = LegacyStreamProvider()
                 context_token = app.runtime._active_context_state.set(object())

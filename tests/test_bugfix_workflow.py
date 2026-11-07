@@ -1,4 +1,5 @@
 import json
+from contextlib import ExitStack, closing
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,14 +53,19 @@ class BugFixWorkflowTests(unittest.TestCase):
         self.original_root = main._get_workspace_root()
         self.original_fix_outcomes = list(main._fix_outcomes)
         self.tempdirs = []
+        self._sqlite_owners = ExitStack()
+        self.addCleanup(self._sqlite_owners.close)
 
     def tearDown(self):
+        if main.memory_bank is not self.original_memory:
+            main.memory_bank.close()
         main.memory_bank = self.original_memory
         main.tasks = self.original_tasks
         main.learning_engine = self.original_learning
         main._interaction_controller = self.original_interaction
         main._fix_outcomes[:] = self.original_fix_outcomes
         main._set_workspace_root(self.original_root)
+        self._sqlite_owners.close()
         for directory in self.tempdirs:
             directory.cleanup()
 
@@ -67,7 +73,9 @@ class BugFixWorkflowTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.tempdirs.append(directory)
         root = Path(directory.name)
-        main.memory_bank = MemoryBank(root / "state.sqlite3", workspace_id="bugfix", session_id="turn")
+        with patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
+            main.memory_bank = self._sqlite_owners.enter_context(closing(
+                MemoryBank(root / "state.sqlite3", workspace_id="bugfix", session_id="turn")))
         main.tasks = TaskManager(main.memory_bank.store, workspace_id="bugfix", session_id="turn")
         main._interaction_controller = InteractionController(
             main.memory_bank.store, workspace_id="bugfix", session_id="turn",
@@ -82,10 +90,16 @@ class BugFixWorkflowTests(unittest.TestCase):
              patch.object(main, "_build_memory_context", return_value=""), \
              patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
              patch.object(main, "_get_llm_response", return_value=""), \
+             patch.object(main, "_schedule_post_turn_learning"), \
              patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
                           result, records, tokens, started: result):
             reply = main._chat_turn("bug: the command fails", clear_tasks=True)
         return root, reply, main.memory_bank.store
+
+    def test_bugfix_fixture_does_not_schedule_unrelated_background_learning(self):
+        with patch.object(main, "_schedule_post_turn_learning") as schedule:
+            self._run_fake_bug_turn(["The bug is fixed now."] * 4)
+        schedule.assert_not_called()
 
     def test_fake_provider_requires_real_reproduce_fix_and_verify_evidence(self):
         responses = [

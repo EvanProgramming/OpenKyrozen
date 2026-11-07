@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import dataclasses
 import json
 import unittest
@@ -98,11 +99,11 @@ class TypedRegistryIntegrationTests(unittest.TestCase):
         from openkyrozen.app.bootstrap import build_application, build_memory
         from openkyrozen.tools import ToolAdapters
 
-        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}), ExitStack() as sqlite_owners:
             root = Path(directory) / "workspace"
             root.mkdir()
             (root / "note.txt").write_text("Error: this is the file's content", encoding="utf-8")
-            app = build_application(memory=build_memory(Path(directory) / "state.sqlite3"), tools=ToolAdapters(root))
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))), tools=ToolAdapters(root))
             try:
                 app.runtime._set_workspace_root(root)
                 receipt = app.runtime.execute(app.runtime.current_session, "read_file", "note.txt", capabilities={"read"})
@@ -120,8 +121,8 @@ class TypedRegistryIntegrationTests(unittest.TestCase):
         from openkyrozen.tools import ToolAdapters
         from openkyrozen.tools.models import CommandResult
 
-        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
-            app = build_application(memory=build_memory(Path(directory) / "state.sqlite3"), tools=ToolAdapters(directory))
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}), ExitStack() as sqlite_owners:
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))), tools=ToolAdapters(directory))
             try:
                 with patch.object(app.runtime, "run_command", return_value=CommandResult("permission denied", False, 1)):
                     result, success = app.runtime._run_tool("run_cmd", "false", return_success=True)

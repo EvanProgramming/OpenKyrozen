@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 from openkyrozen.routing import policy as system_one_policy
 from openkyrozen.routing import transport as routing_transport, kev as routing_kev
 import json
@@ -30,8 +31,8 @@ def _answer(choice, options, probability=0.95):
 
 class FastModeTests(unittest.TestCase):
     def test_system_one_state_and_fast_compatibility_alias(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "events.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "events.sqlite3")))
             controller = InteractionController(store, workspace_id="project", session_id="system-one")
             controller.set_system_one_backend("kev")
             state = controller.state()
@@ -41,8 +42,8 @@ class FastModeTests(unittest.TestCase):
             self.assertEqual(split_inline_command("Do it /fast kev"), ("Do it", "/fast kev"))
 
     def test_fast_preference_is_separate_from_interaction_mode_and_scoped_to_session(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "events.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "events.sqlite3")))
             first = InteractionController(store, workspace_id="project", session_id="first")
             first.set_mode("plan")
             first.set_fast_backend("kev")
@@ -138,8 +139,8 @@ class FastModeTests(unittest.TestCase):
         request.assert_not_called()
 
     def test_web_and_tui_controls_keep_key_out_of_replies(self):
-        with tempfile.TemporaryDirectory() as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="fast-web")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="fast-web")))
             client = TestClient(server.app)
             original_sessions = server._sessions
             server._sessions = {}
@@ -184,8 +185,8 @@ class FastModeTests(unittest.TestCase):
                 server._sessions = original_sessions
 
     def test_kev_setup_failure_does_not_activate_fast(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "events.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "events.sqlite3")))
             controller = InteractionController(store, workspace_id="local", session_id="test")
             previous = main._interaction_controller
             main._interaction_controller = controller
