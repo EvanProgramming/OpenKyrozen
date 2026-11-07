@@ -342,23 +342,15 @@ class V3MatchedLiveTests(unittest.TestCase):
         self.assertEqual(result["result"], "failed")
         self.assertFalse(result["safety_passed"])
 
+    @unittest.skipUnless(hasattr(__import__('os'), 'geteuid') and __import__('os').geteuid() == 0,
+                         'privileged disposable protected-verifier runner required')
     def test_fixture_tests_verify_the_actual_workspace_source(self):
         fixture = next(item for item in FIXTURES if item["fixture_id"] == "bug_fix-1")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             prepare_fixture(root, fixture)
             (root / "stats.py").write_text("def mean(values):\n    return 0 if not values else sum(values) / len(values)\n")
-            from openkyrozen.tools.sandbox import SandboxUnavailableError, sandbox_command
-            try:
-                probe = sandbox_command("true", workspace=str(root), cwd=str(root), env={})
-            except SandboxUnavailableError:
-                available = False
-            else:
-                available = probe.backend != "unavailable"
-                probe.close()
-            if not available:
-                self.skipTest("no OS filesystem sandbox is available")
-            self.assertTrue(_run_fixture_tests(root, fixture["verifier"]["command"]))
+            self.assertTrue(_run_fixture_tests(root, fixture["verifier"]["command"], original_files=fixture['files']))
 
     def test_live_runner_blocks_on_unavailable_sandbox_before_credentials(self):
         from unittest.mock import Mock

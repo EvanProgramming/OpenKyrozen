@@ -1132,8 +1132,8 @@ class ActorReadSandboxTests(unittest.TestCase):
                 supervisor.provider_factory, supervisor.provider_config, supervisor.revoke_actor = None, {}, None
                 supervisor.group = SimpleNamespace(uid=os.getgid())
                 owner = SimpleNamespace(uid=os.getuid(), process=None)
-                def popen(command, *, cwd, env, group, stdout, stderr):
-                    owner.process = subprocess.Popen(command, cwd=cwd, env=env, stdout=stdout, stderr=stderr)
+                def popen(command, *, cwd, env, group, stdout, stderr, stdin=None):
+                    owner.process = subprocess.Popen(command, cwd=cwd, env=env, stdin=stdin, stdout=stdout, stderr=stderr)
                     return owner.process
                 def close():
                     if owner.process is not None:

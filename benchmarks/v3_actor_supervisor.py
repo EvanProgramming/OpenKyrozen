@@ -671,7 +671,7 @@ class ActorSupervisor:
             invocation.close()
             raise
 
-    def _spawn(self, command, actor, *, stdout, stderr, home_key=None, outputs=()):
+    def _spawn(self, command, actor, *, stdout, stderr, stdin=None, home_key=None, outputs=()):
         with self.execution_lock:
             if self.closed.is_set():
                 raise RuntimeError('actor supervisor is closed')
@@ -711,7 +711,7 @@ class ActorSupervisor:
                 actor['invocation'] = invocation
                 self.actors[owner.uid] = actor
                 process = owner.popen(invocation.command, cwd=home, env=invocation.env,
-                                      group=self.group.uid, stdout=stdout, stderr=stderr)
+                                      group=self.group.uid, stdin=stdin, stdout=stdout, stderr=stderr)
                 actor['process'] = process
                 return process
             except BaseException:
@@ -723,12 +723,12 @@ class ActorSupervisor:
                 owner.close()
                 raise
 
-    def popen(self, *, stdout=None, stderr=None):
+    def popen(self, *, stdin=None, stdout=None, stderr=None):
         if self.process is not None:
             raise RuntimeError('root actor has already been launched')
         actor = {'root': True, 'policy': self.policy, 'connected': False, 'broker': None}
         result = self._argument('--result')
-        self.process = self._spawn(self.command, actor, stdout=stdout, stderr=stderr,
+        self.process = self._spawn(self.command, actor, stdin=stdin, stdout=stdout, stderr=stderr,
                                    outputs=(Path(result).resolve(),) if result else ())
         self.root_actor = actor
         def monitor():

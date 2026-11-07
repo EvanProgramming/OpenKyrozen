@@ -68,6 +68,9 @@ jobs:
             tests.test_v3_actor_supervisor tests.test_v3_actor_worker tests.test_v3_actor_dispatch \
             tests.test_v3_actor_native_acceptance \
             tests.test_v3_routing_supplement \
+            tests.test_v3_verifier_isolation \
+            tests.test_v3_fixture_strength \
+            tests.test_v3_matched_live.V3MatchedLiveTests.test_fixture_tests_verify_the_actual_workspace_source \
             tests.test_v3_shell_cleanup tests.test_v3_protected_worker -v 2>&1 | tee "$GITHUB_WORKSPACE/isolation-tests.log"
       - name: Verify host security policy was preserved
         if: always() && runner.os == 'Linux'

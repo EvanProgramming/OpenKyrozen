@@ -73,6 +73,8 @@ class MatchedFixtureStrengthTests(unittest.TestCase):
                 result = verify_fixture(case, root, answer, healthy_worker(), prepared)
                 self.assertEqual(result["result"], "failed")
 
+@unittest.skipUnless(hasattr(__import__('os'), 'geteuid') and __import__('os').geteuid() == 0,
+                     'privileged disposable protected-verifier runner required')
 class FixtureOraclePositiveTests(unittest.TestCase):
     def test_inprocess_api_oracle_requires_validation_duplicates_and_shared_state(self):
         case = fixture("implementation-1")
