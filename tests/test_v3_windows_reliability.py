@@ -444,6 +444,22 @@ raise SystemExit(result)
 
 
 class NativeWaitDiagnosticTests(unittest.TestCase):
+    @staticmethod
+    def exported_profile():
+        # The actual GeneralProfile+FileIO export does not list Filename.
+        return '''<WindowsPerformanceRecorder Version="1.0"><Profiles>
+<SystemCollector Id="exported" Name="Exported"><BufferSize Value="1024"/><Buffers Value="40"/></SystemCollector>
+<SystemProvider Id="kernel"><Keywords>
+<Keyword Value="ProcessThread"/><Keyword Value="Loader"/><Keyword Value="ThreadPriority"/>
+<Keyword Value="CSwitch"/><Keyword Value="ReadyThread"/><Keyword Value="DiskIO"/>
+<Keyword Value="DiskIOInit"/><Keyword Value="FileIO"/><Keyword Value="FileIOInit"/>
+<Keyword Value="SampledProfile"/><Keyword Value="Registry"/><Keyword Value="Power"/>
+</Keywords><Stacks><Stack Value="CSwitch"/></Stacks></SystemProvider>
+<EventProvider Id="noise" Name="UnrelatedProvider"/>
+<Profile Id="Exported.Verbose.File" Name="Exported" DetailLevel="Verbose" LoggingMode="File" Description="Exported">
+<Collectors><SystemCollectorId Value="exported"><SystemProviderId Value="kernel"/></SystemCollectorId></Collectors>
+</Profile></Profiles></WindowsPerformanceRecorder>'''
+
     def test_native_snapshot_never_opens_a_database_until_owned_futures_are_done(self):
         import sqlite3
         from contextlib import closing
@@ -524,16 +540,67 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
         def run(command, **kwargs):
             commands.append(command)
             if '-exportprofile' in command:
-                Path(command[-2]).write_text('<Profile keywords="CSwitch ReadyThread DiskIO FileIO"/>', encoding='utf-16')
-            text = 'GeneralProfile FileIO' if '-profiles' in command else '-instancename'
+                Path(command[-2]).write_text(self.exported_profile(), encoding='utf-16')
+            text = ('KyrozenR260' if '-profiles' in command and len(command)==3 else
+                    'GeneralProfile FileIO' if '-profiles' in command else '-instancename')
             return subprocess.CompletedProcess(command, 0, text, '')
         with tempfile.TemporaryDirectory() as directory, \
              patch.object(diagnostic.platform, 'system', return_value='Windows'), \
              patch.object(diagnostic.shutil, 'which', side_effect=lambda name:name), \
              patch.object(diagnostic.subprocess, 'run', side_effect=run):
-            diagnostic.NativeCapture(Path(directory), {}).preflight()
-            self.assertEqual(len(commands), 3)
+            capture = diagnostic.NativeCapture(Path(directory), {})
+            metadata = capture.preflight()
+            import xml.etree.ElementTree as ET
+            selected = Path(directory)/'selected-profile.wprp'
+            document = ET.parse(selected).getroot()
+            self.assertEqual({node.get('Value') for node in document.findall('.//SystemProvider/Keywords/Keyword')},
+                {'ProcessThread','Loader','ThreadPriority','CSwitch','ReadyThread','DiskIO',
+                 'DiskIOInit','FileIO','FileIOInit','Filename'})
+            self.assertTrue(all(node.get('Strict')=='true' for node in document.findall('.//Keyword')))
+            self.assertEqual(len(document.findall('.//SystemCollector')), 1)
+            self.assertEqual(document.find('.//SystemCollector/BufferSize').get('Value'), '64')
+            self.assertEqual(document.find('.//SystemCollector/Buffers').get('Value'), '40')
+            self.assertFalse(any(document.findall('.//'+tag) for tag in ('Stacks','EventProvider','EventCollector')))
+            self.assertEqual({node.get('LoggingMode') for node in document.findall('./Profiles/Profile')}, {'File','Memory'})
+            self.assertEqual(metadata['sha256'], hashlib.sha256(selected.read_bytes()).hexdigest())
+            self.assertEqual(commands[-1], ['wpr.exe','-profiles',str(selected)])
+            self.assertEqual(len(commands), 4)
             self.assertFalse(any('-start' in command or '-cancel' in command for command in commands))
+            selected.write_text('changed after preflight')
+            with self.assertRaises(RuntimeError):capture.start(Path(directory))
+            self.assertEqual(len(commands),4)
+
+    def test_custom_profile_rejection_or_missing_system_keyword_blocks_without_fallback(self):
+        from scripts import v3_windows_reliability as diagnostic
+        for mode in ('missing-keyword','rejected-profile'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory, \
+                 patch.object(diagnostic.platform,'system',return_value='Windows'), \
+                 patch.object(diagnostic.shutil,'which',side_effect=lambda name:name):
+                commands=[]
+                def run(command,**kwargs):
+                    commands.append(command)
+                    if '-exportprofile' in command:
+                        text=self.exported_profile()
+                        if mode=='missing-keyword':text=text.replace('<Keyword Value="CSwitch"/>','')
+                        Path(command[-2]).write_text(text)
+                    custom='-profiles' in command and len(command)==3
+                    text='KyrozenR260' if custom else 'GeneralProfile FileIO -instancename'
+                    return subprocess.CompletedProcess(command,5 if custom else 0,text,'')
+                capture=diagnostic.NativeCapture(Path(directory),{})
+                with patch.object(diagnostic.subprocess,'run',side_effect=run):
+                    with self.assertRaises(RuntimeError):capture.preflight()
+                    with self.assertRaises(RuntimeError):capture.start(Path(directory))
+                self.assertFalse(capture.active)
+                self.assertFalse(any('-start' in command or '-cancel' in command for command in commands))
+
+    def test_capture_cannot_start_without_its_unchanged_preflighted_custom_profile(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(diagnostic.shutil,'which',side_effect=lambda name:name), \
+             patch.object(diagnostic.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'','')) as run:
+            capture=diagnostic.NativeCapture(Path(directory),{})
+            with self.assertRaises(RuntimeError):capture.start(Path(directory))
+            run.assert_not_called()
 
     def test_native_workflow_preserves_existing_controls_and_adds_a_pinned_separate_old_checkout(self):
         import yaml
@@ -553,6 +620,12 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
         commands = []
         def run(command, **kwargs):
             commands.append(command)
+            if '-exportprofile' in command:
+                Path(command[-2]).write_text(self.exported_profile())
+            if '-profiles' in command or '-help' in command:
+                return subprocess.CompletedProcess(command,0,
+                    'KyrozenR260' if len(command)==3 and '-profiles' in command else
+                    'GeneralProfile FileIO -instancename','')
             if '-start' in command:
                 raise subprocess.TimeoutExpired(command, 10)
             if '-status' in command and 'collectors' not in command:
@@ -562,6 +635,9 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
              patch.object(diagnostic.shutil, 'which', side_effect=lambda name:name), \
              patch.object(diagnostic.subprocess, 'run', side_effect=run):
             capture = diagnostic.NativeCapture(Path(directory), {})
+            with patch.object(diagnostic.platform,'system',return_value='Windows'):
+                capture.preflight()
+            commands.clear()
             try:
                 with self.assertRaises(subprocess.TimeoutExpired):
                     capture.start(Path(directory))
@@ -682,6 +758,12 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
         def native_tool(command, **kwargs):
             nonlocal recording
             activity['tools'].append(command)
+            if '-exportprofile' in command:
+                Path(command[-2]).write_text(self.exported_profile())
+            if '-profiles' in command or '-help' in command:
+                return subprocess.CompletedProcess(command,0,
+                    'KyrozenR260' if len(command)==3 and '-profiles' in command else
+                    'GeneralProfile FileIO -instancename','')
             if '-start' in command:
                 self.assertFalse(recording, 'the owned recording was already active')
                 recording = True
@@ -721,7 +803,7 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
                 return {'returncode': int(bad), 'timeout_seconds':45, 'timeout_cleanup':None}
             return {'returncode':0, 'timeout_seconds':45, 'timeout_cleanup':None}
         with patch.object(diagnostic, 'NativeCapture', return_value=capture), \
-             patch.object(capture, 'preflight'), \
+             patch.object(diagnostic.platform, 'system', return_value='Windows'), \
              patch.object(diagnostic.subprocess, 'run', side_effect=native_tool), \
              patch.object(diagnostic, '_product_identity', side_effect=lambda path: {
                  'candidate_sha':diagnostic.HISTORICAL_PRODUCT if path==old else 'c'*40}), \
@@ -765,6 +847,11 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(len(commands), 24)
         self.assertEqual(report['capture_scope'], 'experiment')
+        selected=Path(report['capture_profile']['path'])
+        self.assertEqual(report['capture_profile']['sha256'],hashlib.sha256(selected.read_bytes()).hexdigest())
+        start=next(command for command in activity['tools'] if '-start' in command)
+        self.assertEqual(start[2],str(selected)+'!KyrozenR260')
+        self.assertEqual(start.count('-start'),1)
         self.assertEqual(report['capture']['bytes'], 120*1024*1024)
         self.assertTrue(all(activity['workload_recording']))
         self.assertEqual(sum('-start' in command for command in activity['tools']), 1)

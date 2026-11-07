@@ -519,6 +519,11 @@ def native_limit(directory, deadline):
     return None
 
 
+_NATIVE_WAIT_PROFILE = 'KyrozenR260'
+_NATIVE_WAIT_KEYWORDS = ('ProcessThread', 'Loader', 'ThreadPriority', 'CSwitch', 'ReadyThread',
+                         'DiskIO', 'DiskIOInit', 'FileIO', 'FileIOInit', 'Filename')
+
+
 class NativeCapture:
     """Only controls one uniquely named WPR instance; never cancels a global trace."""
     def __init__(self, output, env):
@@ -528,6 +533,7 @@ class NativeCapture:
         self.case = None
         self.active = False
         self.cleanup_uncertified = False
+        self.profile = self.profile_sha256 = None
 
     def _tool(self, command, label, timeout=10, check=True, allowed_returncodes=(0,)):
         path = (self.case or self.output) / (label + '.json')
@@ -545,6 +551,7 @@ class NativeCapture:
         return result.stdout + result.stderr
 
     def preflight(self):
+        self.profile = self.profile_sha256 = None
         if platform.system() != 'Windows' or not self.wpr or not self.decoder:
             raise RuntimeError('Windows WPR/tracerpt unavailable')
         profiles = self._tool([self.wpr, '-profiles'], 'wpr-profiles')
@@ -553,22 +560,53 @@ class NativeCapture:
             raise RuntimeError('Required WPR GeneralProfile/FileIO profile unavailable')
         if 'instancename' not in advanced.lower():
             raise RuntimeError('Owned WPR instance support unavailable')
-        profile = self.output / 'selected-profile.wprp'
-        self._tool([self.wpr, '-exportprofile', 'GeneralProfile+FileIO', str(profile), '-filemode'], 'wpr-export')
+        exported = self.output / 'available-profile.wprp'
+        self._tool([self.wpr, '-exportprofile', 'GeneralProfile+FileIO', str(exported), '-filemode'], 'wpr-export')
         try:
-            text = ET.tostring(ET.parse(profile).getroot(), encoding='unicode')
+            available = {node.get('Value') for node in ET.parse(exported).findall('.//SystemProvider/Keywords/Keyword')}
         except ET.ParseError as error:
             raise RuntimeError('Exported WPR profile is not valid XML') from error
-        if not all(keyword in text for keyword in ('CSwitch', 'ReadyThread', 'DiskIO', 'FileIO')):
+        # Filename is a documented kernel keyword not listed by this built-in
+        # export. The custom parser and Strict start must support it as well.
+        if not (set(_NATIVE_WAIT_KEYWORDS) - {'Filename'}) <= available:
             raise RuntimeError('Exported WPR profile lacks native wait/I/O events')
+        document = ET.Element('WindowsPerformanceRecorder', Version='1.0')
+        definitions = ET.SubElement(document, 'Profiles')
+        collector = ET.SubElement(definitions, 'SystemCollector', Id='R260Collector', Name='KyrozenR260 System Collector')
+        # ETW recommends <=64 KiB for ordinary event rates; retain 40 buffers.
+        ET.SubElement(collector, 'BufferSize', Value='64')
+        ET.SubElement(collector, 'Buffers', Value='40')
+        provider = ET.SubElement(definitions, 'SystemProvider', Id='R260Provider')
+        keywords = ET.SubElement(provider, 'Keywords')
+        for keyword in _NATIVE_WAIT_KEYWORDS:
+            ET.SubElement(keywords, 'Keyword', Value=keyword, Strict='true')
+        for mode in ('File', 'Memory'):
+            profile = ET.SubElement(definitions, 'Profile', Id=f'{_NATIVE_WAIT_PROFILE}.Verbose.{mode}',
+                Name=_NATIVE_WAIT_PROFILE, DetailLevel='Verbose', LoggingMode=mode,
+                Description='R260 scheduling and file I/O without sampling or stacks')
+            collectors = ET.SubElement(profile, 'Collectors')
+            reference = ET.SubElement(collectors, 'SystemCollectorId', Value='R260Collector')
+            ET.SubElement(reference, 'SystemProviderId', Value='R260Provider')
+        selected = self.output / 'selected-profile.wprp'
+        ET.indent(document)
+        ET.ElementTree(document).write(selected, encoding='utf-8', xml_declaration=True)
+        listed = self._tool([self.wpr, '-profiles', str(selected)], 'wpr-custom-profiles')
+        if not re.search(r'\b' + _NATIVE_WAIT_PROFILE + r'\b', listed):
+            raise RuntimeError('Custom WPR native wait profile unavailable')
+        self.profile = selected
+        self.profile_sha256 = hashlib.sha256(selected.read_bytes()).hexdigest()
+        return {'path': str(selected), 'name': _NATIVE_WAIT_PROFILE, 'sha256': self.profile_sha256,
+                'system_keywords': list(_NATIVE_WAIT_KEYWORDS), 'buffer_size_kb': 64, 'buffers': 40}
 
     def start(self, case):
+        if self.profile is None or hashlib.sha256(self.profile.read_bytes()).hexdigest() != self.profile_sha256:
+            raise RuntimeError('Custom WPR profile has not passed preflight or has changed')
         self.case = case
         temporary = self.output / 'traces' / 'temporary'
         temporary.mkdir(parents=True, exist_ok=True)
         # A timed-out start is uncertain; finally still attempts to save this unique instance.
         self.active = True
-        self._tool([self.wpr, '-start', 'GeneralProfile', '-start', 'FileIO', '-filemode',
+        self._tool([self.wpr, '-start', str(self.profile) + '!' + _NATIVE_WAIT_PROFILE, '-filemode',
                     '-recordtempto', str(temporary), '-instancename', self.instance], 'wpr-start')
 
     def stop(self):
@@ -701,7 +739,7 @@ def run_native_comparison(output, current, historical):
         with tempfile.TemporaryDirectory(prefix='kyrozen-native-wait-') as home:
             env = isolated_environment(Path(home))
             capture = NativeCapture(output, env)
-            capture.preflight()
+            report['capture_profile'] = capture.preflight()
             capture_directory = output / 'native-capture'
             capture_directory.mkdir()
             report['capture_directory'] = str(capture_directory)
