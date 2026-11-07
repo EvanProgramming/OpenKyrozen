@@ -1,4 +1,5 @@
 """The candidate observer must run against the actual immutable V2 snapshot."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,13 +11,14 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from benchmarks.v3_fixtures import FIXTURES
-from benchmarks.v3_matched_live import BASELINE, _extract_baseline, _worker_env, prepare_fixture, verify_fixture
+from benchmarks.v3_matched_live import BASELINE, _extract_baseline, _fixture_prompt, _worker_env, prepare_fixture, verify_fixture
 
 
 class FrozenBaselineWorkerTests(unittest.TestCase):
     def test_actual_frozen_v2_worker_imports_and_observes_eleven_local_transport_turns(self):
         candidate = Path(__file__).resolve().parents[1]
         case = next(item for item in FIXTURES if item["fixture_id"] == "long_context-1")
+        turns = (_fixture_prompt(case), *case["turns"][1:])
         requests = []
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_args): pass
@@ -53,8 +55,8 @@ class FrozenBaselineWorkerTests(unittest.TestCase):
             prepared = prepare_fixture(workspace, case)
             home.mkdir()
             prompt, conversation, result = base / "prompt.txt", base / "conversation.json", base / "result.json"
-            prompt.write_text(case["prompt"])
-            conversation.write_text(json.dumps({"followups": case["turns"][1:], "context_window_tokens": 16384,
+            prompt.write_text(turns[0])
+            conversation.write_text(json.dumps({"followups": turns[1:], "context_window_tokens": 16384,
                                                "output_reserve_tokens": 4096}))
             env = _worker_env(base, case, type("LocalRelay", (), {"client_key": "offline-local"})())
             env["KYROZEN_APPROVAL_MODE"] = "never"
@@ -66,6 +68,8 @@ class FrozenBaselineWorkerTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr[-4000:])
             worker = json.loads(result.read_text())
             self.assertEqual(len(worker["conversation_records"]), 11)
+            self.assertEqual(worker["conversation_records"][0]["prompt_sha256"],
+                             hashlib.sha256(turns[0].encode()).hexdigest())
             self.assertEqual(len(worker["request_context_records"]), len(requests))
             # This immutable V2 ask path loses prior turns. Observation must expose
             # its absent pressure/compaction independently of the physical task oracle.
@@ -73,7 +77,7 @@ class FrozenBaselineWorkerTests(unittest.TestCase):
             self.assertEqual(len({item["component_estimates"]["conversation"] for item in worker["request_context_records"]}), 1)
             for index, request in enumerate(requests):
                 visible_users = [item.get("content") for item in request["input"] if item.get("role") == "user"]
-                self.assertFalse(any(old_prompt in visible_users for old_prompt in case["turns"][:index]))
+                self.assertFalse(any(old_prompt in visible_users for old_prompt in turns[:index]))
             self.assertTrue(all(item["retained_history_tokens"] is None for item in worker["request_context_records"]))
             self.assertTrue(all(item["provider_input_tokens"] is None for item in worker["request_context_records"]))
             verified = verify_fixture(case, workspace, worker["answer"], worker, prepared)

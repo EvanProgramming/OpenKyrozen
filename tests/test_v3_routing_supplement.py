@@ -194,7 +194,7 @@ class RoutingProtocolTests(unittest.TestCase):
             self.assertFalse(row['worker_result_complete'])
             retained.assert_called_once()
 
-    def test_physical_revision_acceptance_keeps_the_original_explicit_reorder_requirement(self):
+    def test_physical_outcome_is_separate_from_required_plan_reordering(self):
         from benchmarks import v3_matched_live as live
         from benchmarks.v3_fixtures import FIXTURES
         fixture=next(row for row in FIXTURES if row['fixture_id']=='implementation-3')
@@ -204,7 +204,9 @@ class RoutingProtocolTests(unittest.TestCase):
                 (root/name).write_text((root/name).read_text()+'\n# verified production change\n')
             verified=live.verify_fixture(fixture,root,'completed',{'provider_error':False,'processes_alive':0},prepared)
             self.assertFalse(verified['plan_scenario_passed'])
-            self.assertFalse(verified['physical_success'])
+            self.assertTrue(verified['physical_success'])
+            self.assertTrue(verified['verified_success'])
+            self.assertFalse(live._workflow_state_correct(fixture,{}))
 
 
 class RoutingRuntimeTests(unittest.TestCase):

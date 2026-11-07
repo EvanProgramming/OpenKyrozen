@@ -52,7 +52,7 @@ class PromptWorkerObservationTests(unittest.TestCase):
 
     def test_real_native_script_observes_compaction_and_bounded_context(self):
         from benchmarks.v3_fixtures import FIXTURES
-        from benchmarks.v3_matched_live import prepare_fixture, verify_fixture
+        from benchmarks.v3_matched_live import _fixture_prompt, prepare_fixture, verify_fixture
         from openkyrozen.providers import ProviderConfig
         from openkyrozen.providers.base import LLMProvider
         from openkyrozen.providers.models import FinishReason, ModelResponse, ProviderCapabilities, provider_continuation
@@ -80,7 +80,9 @@ class PromptWorkerObservationTests(unittest.TestCase):
             runtime.llm_provider = runtime._default_turn.provider = Provider(config)
             observations = _ProviderObservations(runtime, runtime.llm_provider)
             with patch.object(runtime, "_schedule_post_turn_learning"):
-                answer, records = _run_conversation(runtime, runtime.current_session, case["turns"], observations)
+                turns = (_fixture_prompt(case), *case["turns"][1:])
+                answer, records = _run_conversation(runtime, runtime.current_session, turns, observations)
+            self.assertEqual(records[0]["prompt_sha256"], hashlib.sha256(turns[0].encode()).hexdigest())
             worker = {"conversation_records": records, "request_context_records": observations.records,
                       "provider_error": False, "processes_alive": 0}
             result = verify_fixture(case, root, answer, worker, prepared)
