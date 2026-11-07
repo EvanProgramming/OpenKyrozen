@@ -45,6 +45,14 @@ def _actor_socket_directory():
     return directory
 
 
+def _fixture_git_environment(environment, workspace):
+    # Fresh actor UIDs differ from the parent's fixture owner. Trust precisely
+    # that fixture, without inheriting protected-config wildcards or host files.
+    return dict({key: value for key, value in environment.items() if not key.startswith('GIT_CONFIG')},
+        GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_COUNT='1',
+        GIT_CONFIG_KEY_0='safe.directory', GIT_CONFIG_VALUE_0=str(workspace))
+
+
 def _copy(value):
     encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
     if len(encoded.encode()) > 1_000_000:
@@ -334,7 +342,13 @@ class _ActorBroker(ShellBroker):
             if self.actor['root']:
                 raise PermissionError('root actor has no delegated bootstrap')
             return {'payload': self.actor['assignment'].payload,
-                    'provider_config': self.actor['provider_config']}
+                    'provider_config': self.actor['provider_config'],
+                    **({'routing_variant':self.supervisor.routing_variant}
+                       if self.supervisor.routing_variant is not None else {})}
+        if operation == 'routing_policy':
+            if set(request) != {'op'}:
+                raise PermissionError('routing policy is parent-held')
+            return {'variant':self.supervisor.routing_variant}
         if operation == 'delegated_launch':
             if not self.actor['root']:
                 raise PermissionError('only the root actor can launch delegated actors')
@@ -362,7 +376,9 @@ class _ActorBroker(ShellBroker):
                 invocation = None
                 try:
                     home = self.supervisor._home(owner)
-                    environment = dict(_safe_env(original['env']), HOME=str(home), USERPROFILE=str(home))
+                    environment = _fixture_git_environment(
+                        dict(_safe_env(original['env']), HOME=str(home), USERPROFILE=str(home)),
+                        self.supervisor.workspace)
                     invocation = protected_shell_command(original['command'], policy=self.policy,
                         cwd=original['cwd'], env=environment, protected_files=self.protected_files)
                     assignment = self.actor.get('assignment')
@@ -521,10 +537,18 @@ class _ActorBroker(ShellBroker):
 class ActorSupervisor:
     """One privileged parent and listener for a root worker and its isolated actors."""
     def __init__(self, command, *, cwd, env, protected_files, policy, source, provider_config=None,
-                 revoke_actor=None):
+                 revoke_actor=None, routing_variant=None):
         if os.geteuid() != 0:
             raise PermissionError('actor supervisor requires a privileged parent')
         self.command, self.env = list(command), dict(env)
+        if routing_variant is not None:
+            from benchmarks.v3_routing_supplement import VARIANTS
+            if routing_variant not in VARIANTS:
+                raise ValueError('invalid parent routing supplement variant')
+        self.routing_variant = routing_variant
+        self.env.pop('KYROZEN_BENCHMARK_ROUTING_SUPPLEMENT',None)
+        if routing_variant is not None:
+            self.env['KYROZEN_BENCHMARK_ROUTING_SUPPLEMENT']='1'
         self.workspace = Path(cwd).resolve(strict=True)
         if self.workspace != policy.workspace:
             raise ValueError('actor workspace must match the parent fixture')
@@ -615,7 +639,7 @@ class ActorSupervisor:
             KYROZEN_BENCHMARK_ACTOR_SOCKET_INODE=json.dumps([os.stat(self.address).st_dev, os.stat(self.address).st_ino]))
         for key in ('KYROZEN_BENCHMARK_BROKER_FD', 'KYROZEN_BENCHMARK_BROKER_IDENTITY', 'KYROZEN_SKILLS_PATH'):
             environment.pop(key, None)
-        return environment
+        return _fixture_git_environment(environment, self.workspace)
 
     def _protected_actor(self, command, home, outputs=(), scopes=None):
         # Workers receive no direct workspace writes, including the root worker.

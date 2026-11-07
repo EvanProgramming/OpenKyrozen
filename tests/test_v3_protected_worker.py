@@ -550,11 +550,16 @@ class FullCampaignGateTests(unittest.TestCase):
         from unittest.mock import patch
         from benchmarks.v3_matched_live import run
         repository = Path(__file__).resolve().parents[1]
+        verify = protected.verify_worker_protection
+        def unprivileged_protection():
+            # Simulate the protection caller without changing the real lease owner.
+            with patch.object(protected.os, 'geteuid', return_value=501):
+                return verify()
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             with patch('benchmarks.v3_matched_live._source_snapshot', return_value='candidate'), \
                     patch('benchmarks.v3_matched_live.apparatus_identity', return_value={}), \
-                    patch.object(protected.os, 'geteuid', return_value=501), \
+                    patch.object(protected, 'verify_worker_protection', side_effect=unprivileged_protection), \
                     patch('benchmarks.v3_matched_live._credential', side_effect=AssertionError('credential lookup')) as credential:
                 with self.assertRaisesRegex(PermissionError, 'privileged'):
                     run(source=repository, repo=repository, output=base / 'report.json',

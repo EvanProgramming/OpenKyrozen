@@ -261,6 +261,7 @@ def install_delegated_adapter(runtime, client, *, source):
     supports_repair = 'report_repair' in inspect.signature(original).parameters
     source = str(Path(source).resolve(strict=True))
     runtime._benchmark_child_context_records = []
+    runtime._benchmark_child_routing_records = []
 
     def invoke(self, run, *, review, feedback, coordinator, report_repair=False):
         if report_repair and not supports_repair:
@@ -437,6 +438,12 @@ def install_delegated_adapter(runtime, client, *, source):
                         if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
                             raise ValueError('invalid child context observations')
                         self._benchmark_child_context_records.extend(records)
+                        routing_records = result.pop('_benchmark_routing_observations',[])
+                        if (not isinstance(routing_records,list) or any(not isinstance(row,dict)
+                                or row.get('variant') != getattr(self,'_benchmark_routing_variant',None)
+                                for row in routing_records)):
+                            raise ValueError('invalid child routing observations')
+                        self._benchmark_child_routing_records.extend(routing_records)
                         return result
                     if response['state'] == 'failed':
                         raise RuntimeError(response.get('error', 'benchmark actor failed'))
@@ -572,7 +579,7 @@ class _ParentInteractionPort:
         return self.coordinator.call('parent_interaction_state')
 
 
-def run_actor(payload, client, *, source, provider_config):
+def run_actor(payload, client, *, source, provider_config, routing_variant=None):
     """Run the selected snapshot's original child invocation in a fresh process."""
     import inspect
     import os
@@ -596,6 +603,13 @@ def run_actor(payload, client, *, source, provider_config):
     install_read_adapter(client)
     application = build_application(surface='cli', user_id=payload['parent']['user_id'])
     runtime = application.runtime
+    routing = None
+    if routing_variant is not None:
+        try:
+            from v3_routing_supplement import install
+        except ModuleNotFoundError:
+            from benchmarks.v3_routing_supplement import install
+        routing = install(runtime,routing_variant)
     coordinator = _CoordinatorPort(payload, client)
     original = runtime._invoke_delegated
     original_create_session = runtime._create_session
@@ -669,7 +683,8 @@ def run_actor(payload, client, *, source, provider_config):
                 result = original(coordinator.run, **kwargs)
                 records = [dict(record, actor_run_id=coordinator.run_id, review=payload['review'])
                            for observation in observations for record in observation.records]
-                return dict(result, _benchmark_request_context_records=records)
+                return dict(result, _benchmark_request_context_records=records,
+                    **({'_benchmark_routing_observations':routing.records} if routing is not None else {}))
             finally:
                 runtime._active_interaction_mode.reset(mode_token)
                 _export_canonical_history(application.store, coordinator, history_scopes)
@@ -682,6 +697,8 @@ def run_actor(payload, client, *, source, provider_config):
                 coordinator.call('usage_attempts', attempts=attempts)
     finally:
         application.close()
+        if routing is not None:
+            routing.close()
 
 
 def _run_file_tool(payload, *, source, actions):
@@ -741,7 +758,8 @@ def main():
             client = connect_actor_client()
             bootstrap = client.rpc('actor_bootstrap')
             result = run_actor(bootstrap['payload'], client, source=source,
-                               provider_config=ProviderConfig(**bootstrap['provider_config']))
+                               provider_config=ProviderConfig(**bootstrap['provider_config']),
+                               routing_variant=bootstrap.get('routing_variant'))
     print(json.dumps(result, ensure_ascii=False, allow_nan=False))
 
 

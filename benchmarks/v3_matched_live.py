@@ -17,7 +17,9 @@ import sys
 import tempfile
 import time
 from decimal import Decimal, InvalidOperation
+from functools import wraps
 from pathlib import Path
+import stat
 
 from benchmarks.v3_fixtures import FIXTURES, cohort_digest
 from benchmarks.v3_matched import BudgetLedger, MAX_LIMIT_USD, PANSTAR_PRICING, Pricing, PRICING, USD_CNY, _cost, summarize
@@ -35,6 +37,7 @@ def apparatus_identity() -> dict:
     files = ("v3_fixtures.py", "v3_matched_live.py", "prompt_worker.py", "v3_matched.py", "v3_responses_relay.py",
              "v3_shell_launcher.py", "v3_protected_worker.py", "v3_process_owner.py",
              "v3_linux_namespace.py", "v3_actor_supervisor.py", "v3_actor_worker.py")
+    files += ('v3_routing_supplement.py',)
     hashes = {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in files}
     return {"cohort_sha256": cohort_digest(),
             "apparatus_sha256": hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest(),
@@ -410,6 +413,9 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
         scenario_ok = int(worker.get("plan_revisions", 0)) == 0 and int(worker.get("unnecessary_churn", 0)) == 0
     else:
         scenario_ok = True
+    # Explicit fixture revision/verification instructions remain task acceptance;
+    # optional automatic-plan receipt state is assessed separately by the worker.
+    physical_success = bool(accepted and scenario_ok)
     accepted = bool(accepted and scenario_ok)
     components = {"scope_safe": bool(scope_safe), "original_tests_unchanged": test_files_unchanged,
                   "provider_ok": worker.get("provider_error") is False,
@@ -418,6 +424,7 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
     safe = all(components[name] for name in (
         "scope_safe", "original_tests_unchanged", "provider_ok", "no_running_processes"))
     return {"result": "passed" if accepted else "failed", "verified_success": bool(accepted),
+            "physical_success": physical_success,
             "safety_passed": bool(safe), "safety_components": components,
             "context_compaction_observed": _context_compaction_observed(worker) if kind == "long_context" else None,
             "test_files_unchanged": test_files_unchanged,
@@ -429,6 +436,45 @@ def _source_snapshot(source: Path) -> str:
     if subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True).strip():
         raise ValueError("matched live benchmark requires clean source worktrees")
     return subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+
+
+@contextmanager
+def _campaign_lock(output):
+    """One canonical report may spend or transfer its remaining budget at a time."""
+    canonical=Path(output).resolve()
+    path=canonical.with_name(canonical.name+'.campaign-lock')
+    path.parent.mkdir(parents=True,exist_ok=True)
+    descriptor=os.open(path,os.O_CREAT|os.O_RDWR|getattr(os,'O_NOFOLLOW',0),0o600)
+    try:
+        metadata=os.fstat(descriptor)
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink!=1
+                or (os.name!='nt' and (metadata.st_uid!=os.geteuid() or metadata.st_mode & 0o077))):
+            raise ValueError('campaign lease is not private and owned')
+        try:
+            if os.name=='nt':
+                import msvcrt
+                msvcrt.locking(descriptor,msvcrt.LK_NBLCK,1)
+            else:
+                import fcntl
+                fcntl.flock(descriptor,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except OSError: raise ValueError('another campaign is active for this report') from None
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _serialized_campaign(function):
+    @wraps(function)
+    def run(*args,**kwargs):
+        source=Path(kwargs['source']).resolve()
+        if any(Path(kwargs[key]).resolve().is_relative_to(source) for key in ('output','budget_path')):
+            raise ValueError('benchmark output and budget ledger must be outside the source worktree')
+        with _campaign_lock(kwargs['output']) as descriptor:
+            os.lseek(descriptor,0,os.SEEK_SET)
+            if os.read(descriptor,1):
+                raise ValueError('core budget has a bound continuation; resume that supplement')
+            return function(*args,**kwargs)
+    return run
 
 
 def _write_checkpoint(output: Path, budget_path: Path, document: dict) -> None:
@@ -478,7 +524,7 @@ def _load_checkpoint(output: Path, budget_path: Path) -> dict | None:
 
 def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 900,
                 protected_files: list[Path] | None = None, policy=None, source=None,
-                provider_config=None, revoke_actor=None) -> tuple[int, str]:
+                provider_config=None, revoke_actor=None, routing_variant=None) -> tuple[int, str]:
     from benchmarks.v3_actor_supervisor import ActorSupervisor
     from benchmarks.v3_shell_launcher import ShellPolicy
     # Standalone callers have no shell authority; fixture callers supply the
@@ -486,7 +532,8 @@ def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: 
     policy = policy or ShellPolicy(cwd, frozenset())
     with ActorSupervisor(command, cwd=cwd, env=env, protected_files=protected_files or [],
                          policy=policy, source=source or Path(__file__).resolve().parents[1],
-                         provider_config=provider_config, revoke_actor=revoke_actor) as launch:
+                         provider_config=provider_config, revoke_actor=revoke_actor,
+                         **({'routing_variant':routing_variant} if routing_variant is not None else {})) as launch:
         try:
             process = launch.popen(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except OSError as exc:
@@ -723,6 +770,7 @@ def _read_worker_result(path: Path, secrets: tuple[str, ...]) -> tuple[dict, dic
 
 def _evidence_parent(row: dict, candidate: str, identity: dict) -> dict:
     return {"candidate_sha": candidate, "baseline_sha": BASELINE,
+            **({'routing_variant':row['variant']} if 'variant' in row else {}),
             "cohort_sha256": identity["cohort_sha256"],
             "apparatus_sha256": identity["apparatus_sha256"],
             **{key: row.get(key) for key in ("fixture_id", "repeat", "arm", "worker_exit_code",
@@ -832,7 +880,7 @@ def _write_worker_evidence(output: Path, row: dict, candidate: str, identity: di
     row["worker_evidence_verified"] = _validate_worker_evidence(output, row, candidate, identity)
 
 
-def _validate_worker_evidence(output: Path, row: dict, candidate: str, identity: dict) -> bool:
+def _validate_worker_evidence(output: Path, row: dict, candidate: str, identity: dict, *, return_worker=False):
     """Derive proof from contained bytes; no worker or checkpoint flag is trusted."""
     parent = _evidence_parent(row, candidate, identity)
     digest = row.get("worker_evidence_sha256")
@@ -853,8 +901,9 @@ def _validate_worker_evidence(output: Path, row: dict, candidate: str, identity:
                 or document.get("redaction_applied") != row.get("worker_evidence_redacted")):
             raise ValueError("worker evidence lineage does not match this row")
         worker = document.get("worker")
-        return (document.get("classification") == "valid" and isinstance(worker, dict)
-                and not _worker_schema_errors(worker))
+        valid=(document.get("classification") == "valid" and isinstance(worker, dict)
+               and not _worker_schema_errors(worker))
+        return worker if return_worker and valid else valid
     except (ValueError, TypeError, AttributeError, RecursionError) as exc:
         raise ValueError("invalid worker evidence payload") from exc
 
@@ -941,6 +990,146 @@ def _initial_plan(fixture: dict) -> list[str] | dict:
                        "risk_ceiling": "normal"}}
 
 
+def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate, identity,
+                  worker_script, relay, model, output, api_key, budget, routing_variant=None):
+    """Shared unchanged fixture execution, safety oracle and secure evidence boundary."""
+    fixture_id = fixture["fixture_id"]
+    base = temporary_root / f"{repeat}-{fixture_id}-{arm}"
+    workspace, home = base / "workspace", base / "home"
+    workspace.mkdir(parents=True)
+    base.chmod(0o711)
+    home.mkdir(parents=True)
+    prepared = prepare_fixture(workspace, fixture)
+    prompt_file, plan_file, result_file = base / "prompt.txt", base / "plan.json", base / "result.json"
+    prompt_file.write_text(fixture["prompt"], encoding="utf-8")
+    initial_plan = _initial_plan(fixture)
+    plan_file.write_text(json.dumps(initial_plan), encoding="utf-8")
+    conversation_file = base / "conversation.json"
+    turns = fixture.get("turns") or (fixture["prompt"],)
+    if turns[0] != fixture["prompt"]:
+        raise ValueError("scripted fixture initial prompt does not match its frozen prompt")
+    conversation_file.write_text(json.dumps({"followups": turns[1:],
+        "context_window_tokens": fixture["context_window_tokens"],
+        "output_reserve_tokens": fixture["output_reserve_tokens"]}), encoding="utf-8")
+    from benchmarks.v3_shell_launcher import ShellPolicy
+    shell_policy = ShellPolicy(
+        workspace, frozenset(fixture["capabilities"]),
+        accepted_bounds=initial_plan.get("bounds") if isinstance(initial_plan, dict) else None,
+        run_id=f"{candidate}:{repeat}:{fixture_id}:{arm}",
+    )
+    relay.label = (arm, fixture_id, repeat)
+    started = time.monotonic()
+    worker_env = _worker_env(base, fixture, relay)
+    if routing_variant is not None:
+        worker_env['KYROZEN_DECISION_ASSIST_BACKEND']='off'
+    def actor_provider_config(actor_id):
+        return dict(relay.issue_actor_config(actor_id),
+                    context_window_tokens=fixture['context_window_tokens'])
+    parent_failed = False
+    try:
+        code, worker_error = _run_worker(
+            [sys.executable, str(worker_script),
+             "--source", str(arm_source), "--workspace", str(workspace),
+             "--url", relay.url, "--model", model, "--protocol", "responses",
+             "--prompt-file", str(prompt_file), "--plan-file", str(plan_file),
+             "--conversation-file", str(conversation_file), "--result", str(result_file),
+             "--scenario", str(fixture.get("plan_scenario") or ""),
+             "--process-marker", str(fixture["verifier"].get("command_marker") or "")],
+            cwd=workspace, env=worker_env,
+            protected_files=[workspace / name for name in fixture["files"]
+                             if Path(name).name.startswith("test_")],
+            policy=shell_policy,
+            source=arm_source, provider_config=actor_provider_config,
+            revoke_actor=relay.revoke_actor,
+            **({'routing_variant':routing_variant} if routing_variant is not None else {}),
+        )
+    except Exception as exc:
+        parent_failed = True
+        kind = type(exc).__name__ if type(exc) in (
+            RuntimeError, PermissionError, OSError, TimeoutError, ValueError) else 'Exception'
+        code, worker_error = -1, 'parent_execution_failed:' + kind
+    observed_worker, evidence_metadata = _read_worker_result(
+        result_file, (api_key, relay.client_key, *relay.actor_keys))
+    worker_complete = evidence_metadata["classification"] == "valid" and not parent_failed
+    worker = observed_worker if worker_complete else {}
+    if not worker_complete:
+        worker_error = worker_error or "missing_or_invalid_result"
+    answer = worker.get("answer", "")
+    try:
+        verified = (verify_fixture(fixture, workspace, answer, worker, prepared)
+                    if worker_complete else {
+                        "result": "incomplete", "safety_passed": False,
+                        "safety_components": {key: None for key in (
+                            "scope_safe", "original_tests_unchanged", "provider_ok", "no_running_processes")},
+                        "plan_scenario_passed": False, "verified_success": False, "changed_paths": []})
+        calls = [row for row in relay.rows if (row["arm"], row["fixture_id"], row["repeat"]) == (arm, fixture_id, repeat)]
+        usage = [call.get("usage") for call in calls]
+        usage_complete = bool(calls) and all(isinstance(item, dict) for item in usage)
+        row = _empty_row(fixture_id, repeat, arm)
+        row.update({"cohort_sha256": identity["cohort_sha256"],
+                    "apparatus_sha256": identity["apparatus_sha256"],
+                    "context_window_tokens": fixture["context_window_tokens"],
+                    "output_reserve_tokens": fixture["output_reserve_tokens"],
+                    "request_context_records": worker.get("request_context_records"),
+                    "conversation_records": worker.get("conversation_records"),
+                    "context_compaction_observed": verified.get("context_compaction_observed"),
+                    "usage_complete": usage_complete,
+                    "input_tokens": sum(item["input_tokens"] for item in usage if item),
+                    "output_tokens": sum(item["output_tokens"] for item in usage if item),
+                    "cache_read_tokens": sum(item["cache_read_tokens"] for item in usage if item),
+                    "cache_write_tokens": sum(item.get("cache_write_tokens", 0) for item in usage if item),
+                    "latency_ms": round((time.monotonic() - started) * 1000, 2),
+                    "attempts": len(calls), "first_delta_latency_ms": worker.get("first_delta_latency_ms"),
+                    "verifier_result": verified["result"], "safety_passed": verified["safety_passed"],
+                    "plan_scenario": fixture.get("plan_scenario"),
+                    "plan_scenario_passed": verified["plan_scenario_passed"],
+                    "durable_side_effect_expected": fixture["verifier"]["kind"] in {"tests", "tests_and_file"},
+                    "durable_side_effect_verified": bool(verified["verified_success"] and verified["changed_paths"]),
+                    "recovery_required": fixture["category"] == "error_recovery",
+                    "recovery_verified": bool(verified["verified_success"]
+                                               and fixture["category"] == "error_recovery"
+                                               and _recovery_observed(worker)),
+                    "verified_success": bool(code == 0 and worker_complete and verified["verified_success"]),
+                    "workflow_state_correct": worker_complete and _workflow_state_correct(fixture, worker),
+                    "requests": len(calls), "protocol_recovery": worker["protocol_recovery"] if worker_complete else None,
+                    "duplicate_calls": worker["duplicate_calls"] if worker_complete else None,
+                    "plan_revisions": worker["plan_revisions"] if worker_complete else None,
+                    "cancelled_tasks": worker["cancelled_tasks"] if worker_complete else None,
+                    "material_revisions": worker["material_plan_proposals"] if worker_complete else None,
+                    "unnecessary_churn": worker["unnecessary_churn"] if worker_complete else None,
+                    "budget_ok": budget.budget_ok,
+                    "worker_error": worker_error,
+                    "worker_exit_code": code,
+                    "worker_result_complete": worker_complete})
+        components = dict(verified.get("safety_components") or {})
+        components["worker_complete"] = code == 0 and worker_complete
+        row["safety_components"] = components
+        safety_stop = _safety_failure_status(row)
+        row["safety_passed"] = safety_stop is None
+        if not result_file.exists() and not worker_error:
+            row["worker_error"] = "missing_result"
+        if routing_variant is not None:
+            from benchmarks.v3_routing_supplement import validate_observations,active_treatment
+            observations=worker.get('routing_observations')
+            row.update(variant=routing_variant,physical_success=bool(verified.get('physical_success')),
+                routing_evidence_valid=validate_observations(observations,routing_variant),
+                routing_treatment_active=active_treatment(observations,routing_variant))
+    except BaseException:
+        # Even an oracle/metric failure must not discard a valid
+        # answer and its execution trace with the temporary home.
+        interrupted = _empty_row(fixture_id, repeat, arm)
+        interrupted.update(worker_exit_code=code,
+                           worker_result_complete=worker_complete)
+        if routing_variant is not None:
+            interrupted['variant']=routing_variant
+        _write_worker_evidence(output, interrupted, candidate, identity,
+                               observed_worker, evidence_metadata)
+        raise
+    _write_worker_evidence(output, row, candidate, identity, observed_worker, evidence_metadata)
+    return row
+
+
+@_serialized_campaign
 def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         limit_usd: str = str(MAX_LIMIT_USD), repeats: int = REPEATS,
         prior_hold_usd: str | None = None,
@@ -1166,127 +1355,10 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                             continue
                         if previous:
                             rows.remove(previous)
-                        base = temporary_root / f"{repeat}-{fixture_id}-{arm}"
-                        workspace, home = base / "workspace", base / "home"
-                        workspace.mkdir(parents=True)
-                        base.chmod(0o711)
-                        home.mkdir(parents=True)
-                        prepared = prepare_fixture(workspace, fixture)
-                        prompt_file, plan_file, result_file = base / "prompt.txt", base / "plan.json", base / "result.json"
-                        prompt_file.write_text(fixture["prompt"], encoding="utf-8")
-                        initial_plan = _initial_plan(fixture)
-                        plan_file.write_text(json.dumps(initial_plan), encoding="utf-8")
-                        conversation_file = base / "conversation.json"
-                        turns = fixture.get("turns") or (fixture["prompt"],)
-                        if turns[0] != fixture["prompt"]:
-                            raise ValueError("scripted fixture initial prompt does not match its frozen prompt")
-                        conversation_file.write_text(json.dumps({"followups": turns[1:],
-                            "context_window_tokens": fixture["context_window_tokens"],
-                            "output_reserve_tokens": fixture["output_reserve_tokens"]}), encoding="utf-8")
-                        from benchmarks.v3_shell_launcher import ShellPolicy
-                        shell_policy = ShellPolicy(
-                            workspace, frozenset(fixture["capabilities"]),
-                            accepted_bounds=initial_plan.get("bounds") if isinstance(initial_plan, dict) else None,
-                            run_id=f"{candidate}:{repeat}:{fixture_id}:{arm}",
-                        )
-                        relay.label = (arm, fixture_id, repeat)
-                        started = time.monotonic()
-                        worker_env = _worker_env(base, fixture, relay)
-                        def actor_provider_config(actor_id):
-                            return dict(relay.issue_actor_config(actor_id),
-                                        context_window_tokens=fixture['context_window_tokens'])
-                        parent_failed = False
-                        try:
-                            code, worker_error = _run_worker(
-                                [sys.executable, str(worker_script),
-                                 "--source", str(arm_source), "--workspace", str(workspace),
-                                 "--url", relay.url, "--model", model, "--protocol", "responses",
-                                 "--prompt-file", str(prompt_file), "--plan-file", str(plan_file),
-                                 "--conversation-file", str(conversation_file), "--result", str(result_file),
-                                 "--scenario", str(fixture.get("plan_scenario") or ""),
-                                 "--process-marker", str(fixture["verifier"].get("command_marker") or "")],
-                                cwd=workspace, env=worker_env,
-                                protected_files=[workspace / name for name in fixture["files"]
-                                                 if Path(name).name.startswith("test_")],
-                                policy=shell_policy,
-                                source=arm_source, provider_config=actor_provider_config,
-                                revoke_actor=relay.revoke_actor,
-                            )
-                        except Exception as exc:
-                            parent_failed = True
-                            kind = type(exc).__name__ if type(exc) in (
-                                RuntimeError, PermissionError, OSError, TimeoutError, ValueError) else 'Exception'
-                            code, worker_error = -1, 'parent_execution_failed:' + kind
-                        observed_worker, evidence_metadata = _read_worker_result(
-                            result_file, (api_key, relay.client_key, *relay.actor_keys))
-                        worker_complete = evidence_metadata["classification"] == "valid" and not parent_failed
-                        worker = observed_worker if worker_complete else {}
-                        if not worker_complete:
-                            worker_error = worker_error or "missing_or_invalid_result"
-                        answer = worker.get("answer", "")
-                        try:
-                            verified = (verify_fixture(fixture, workspace, answer, worker, prepared)
-                                        if worker_complete else {
-                                            "result": "incomplete", "safety_passed": False,
-                                            "safety_components": {key: None for key in (
-                                                "scope_safe", "original_tests_unchanged", "provider_ok", "no_running_processes")},
-                                            "plan_scenario_passed": False, "verified_success": False, "changed_paths": []})
-                            calls = [row for row in relay.rows if (row["arm"], row["fixture_id"], row["repeat"]) == (arm, fixture_id, repeat)]
-                            usage = [call.get("usage") for call in calls]
-                            usage_complete = bool(calls) and all(isinstance(item, dict) for item in usage)
-                            row = _empty_row(fixture_id, repeat, arm)
-                            row.update({"cohort_sha256": identity["cohort_sha256"],
-                                        "apparatus_sha256": identity["apparatus_sha256"],
-                                        "context_window_tokens": fixture["context_window_tokens"],
-                                        "output_reserve_tokens": fixture["output_reserve_tokens"],
-                                        "request_context_records": worker.get("request_context_records"),
-                                        "conversation_records": worker.get("conversation_records"),
-                                        "context_compaction_observed": verified.get("context_compaction_observed"),
-                                        "usage_complete": usage_complete,
-                                        "input_tokens": sum(item["input_tokens"] for item in usage if item),
-                                        "output_tokens": sum(item["output_tokens"] for item in usage if item),
-                                        "cache_read_tokens": sum(item["cache_read_tokens"] for item in usage if item),
-                                        "cache_write_tokens": sum(item.get("cache_write_tokens", 0) for item in usage if item),
-                                        "latency_ms": round((time.monotonic() - started) * 1000, 2),
-                                        "attempts": len(calls), "first_delta_latency_ms": worker.get("first_delta_latency_ms"),
-                                        "verifier_result": verified["result"], "safety_passed": verified["safety_passed"],
-                                        "plan_scenario": fixture.get("plan_scenario"),
-                                        "plan_scenario_passed": verified["plan_scenario_passed"],
-                                        "durable_side_effect_expected": fixture["verifier"]["kind"] in {"tests", "tests_and_file"},
-                                        "durable_side_effect_verified": bool(verified["verified_success"] and verified["changed_paths"]),
-                                        "recovery_required": fixture["category"] == "error_recovery",
-                                        "recovery_verified": bool(verified["verified_success"]
-                                                                   and fixture["category"] == "error_recovery"
-                                                                   and _recovery_observed(worker)),
-                                        "verified_success": bool(code == 0 and worker_complete and verified["verified_success"]),
-                                        "workflow_state_correct": worker_complete and _workflow_state_correct(fixture, worker),
-                                        "requests": len(calls), "protocol_recovery": worker["protocol_recovery"] if worker_complete else None,
-                                        "duplicate_calls": worker["duplicate_calls"] if worker_complete else None,
-                                        "plan_revisions": worker["plan_revisions"] if worker_complete else None,
-                                        "cancelled_tasks": worker["cancelled_tasks"] if worker_complete else None,
-                                        "material_revisions": worker["material_plan_proposals"] if worker_complete else None,
-                                        "unnecessary_churn": worker["unnecessary_churn"] if worker_complete else None,
-                                        "budget_ok": budget.budget_ok,
-                                        "worker_error": worker_error,
-                                        "worker_exit_code": code,
-                                        "worker_result_complete": worker_complete})
-                            components = dict(verified.get("safety_components") or {})
-                            components["worker_complete"] = code == 0 and worker_complete
-                            row["safety_components"] = components
-                            safety_stop = _safety_failure_status(row)
-                            row["safety_passed"] = safety_stop is None
-                            if not result_file.exists() and not worker_error:
-                                row["worker_error"] = "missing_result"
-                        except BaseException:
-                            # Even an oracle/metric failure must not discard a valid
-                            # answer and its execution trace with the temporary home.
-                            interrupted = _empty_row(fixture_id, repeat, arm)
-                            interrupted.update(worker_exit_code=code,
-                                               worker_result_complete=worker_complete)
-                            _write_worker_evidence(output, interrupted, candidate, identity,
-                                                   observed_worker, evidence_metadata)
-                            raise
-                        _write_worker_evidence(output, row, candidate, identity, observed_worker, evidence_metadata)
+                        row = _execute_cell(temporary_root=temporary_root, repeat=repeat, fixture=fixture,
+                            arm=arm, arm_source=arm_source, candidate=candidate, identity=identity,
+                            worker_script=worker_script, relay=relay, model=model, output=output,
+                            api_key=api_key, budget=budget)
                         safety_stop = _safety_failure_status(row)
                         rows.append(row)
                         held_reservations = _held_reservations(relay.rows)

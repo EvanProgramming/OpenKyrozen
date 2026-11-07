@@ -67,6 +67,7 @@ jobs:
             "$interpreter" -m unittest tests.test_v3_process_owner tests.test_v3_linux_namespace \
             tests.test_v3_actor_supervisor tests.test_v3_actor_worker tests.test_v3_actor_dispatch \
             tests.test_v3_actor_native_acceptance \
+            tests.test_v3_routing_supplement \
             tests.test_v3_shell_cleanup tests.test_v3_protected_worker -v 2>&1 | tee "$GITHUB_WORKSPACE/isolation-tests.log"
       - name: Verify host security policy was preserved
         if: always() && runner.os == 'Linux'

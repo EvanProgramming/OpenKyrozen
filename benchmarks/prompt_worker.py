@@ -131,6 +131,9 @@ class _ProviderObservations:
         # Fingerprint the same source-owned estimate projection without retaining content.
         from openkyrozen.agent.compaction import message_fingerprint
         record["message_projection_sha256"] = message_fingerprint(messages)
+        routing_observer = getattr(runtime, '_benchmark_routing_observer', None)
+        if routing_observer is not None:
+            routing_observer(record, tools)
         self.records.append(record)
         return record
 
@@ -288,7 +291,15 @@ def main():
         raise ValueError("source runtime output reserve differs from the frozen cohort")
     application = build_application(surface="cli")
     runtime = application.runtime
+    routing = None
     try:
+        if os.environ.get('KYROZEN_BENCHMARK_ROUTING_SUPPLEMENT') is not None:
+            if actor_client is None:
+                raise PermissionError('routing supplement requires its parent actor broker')
+            from v3_routing_supplement import install
+            variant = actor_client.rpc('routing_policy')['variant']
+            routing = install(runtime, variant)
+            runtime._benchmark_routing_variant = variant
         if actor_client is not None:
             from v3_actor_worker import install_delegated_adapter
             install_delegated_adapter(runtime, actor_client, source=args.source)
@@ -469,9 +480,13 @@ def main():
             history, accepted_fingerprints, accepted_plan_identity, result["task_records"],
         )
         result["scope_preserved"] = bool(result["accepted_scope_preserved"] and not pending_material)
+        if routing is not None:
+            result['routing_observations'] = routing.records + getattr(runtime,'_benchmark_child_routing_records',[])
         Path(args.result).write_text(json.dumps(result))
     finally:
         application.close()
+        if routing is not None:
+            routing.close()
 
 
 if __name__ == "__main__":

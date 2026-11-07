@@ -236,12 +236,63 @@ class ActorPolicyTests(unittest.TestCase):
     def test_actor_environment_pins_the_native_skills_directory_to_its_private_home(self):
         supervisor = self.module().ActorSupervisor.__new__(self.module().ActorSupervisor)
         supervisor.env = {'KYROZEN_SKILLS_DIR': '/shared-skills', 'KYROZEN_SKILLS_PATH': '/stale-path'}
+        supervisor.workspace = self.workspace
         with socket.socket(socket.AF_UNIX) as listener:
             supervisor.address = str(self.base / 'listener')
             listener.bind(supervisor.address)
             environment = supervisor._environment(self.base / 'private-home')
         self.assertEqual(environment['KYROZEN_SKILLS_DIR'], str(self.base / 'private-home' / 'skills'))
         self.assertNotIn('KYROZEN_SKILLS_PATH', environment)
+
+    def test_actor_git_environment_trusts_only_the_canonical_parent_fixture(self):
+        supervisor = self.module().ActorSupervisor.__new__(self.module().ActorSupervisor)
+        supervisor.workspace = self.workspace
+        supervisor.env = {'PATH': '/trusted/bin', 'GIT_CONFIG_COUNT': '2',
+            'GIT_CONFIG_KEY_0': 'safe.directory', 'GIT_CONFIG_VALUE_0': '*',
+            'GIT_CONFIG_KEY_1': 'safe.directory', 'GIT_CONFIG_VALUE_1': str(self.base / 'sibling'),
+            'GIT_CONFIG_GLOBAL': '/inherited-global', 'GIT_CONFIG_SYSTEM': '/inherited-system',
+            'GIT_CONFIG_PARAMETERS': "'safe.directory=*'", 'GIT_CONFIG': '/inherited-config'}
+        with socket.socket(socket.AF_UNIX) as listener:
+            supervisor.address = str(self.base / 'git-listener')
+            listener.bind(supervisor.address)
+            environment = supervisor._environment(self.base / 'private-home')
+        self.assertEqual({key: value for key, value in environment.items() if key.startswith('GIT_CONFIG')},
+            {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'safe.directory',
+             'GIT_CONFIG_VALUE_0': str(self.workspace), 'GIT_CONFIG_NOSYSTEM': '1',
+             'GIT_CONFIG_GLOBAL': os.devnull})
+        self.assertEqual(environment['PATH'], '/trusted/bin')
+
+    def test_managed_shell_git_environment_is_canonical_before_the_ticket_is_bound(self):
+        module = self.module()
+        from benchmarks.v3_shell_launcher import TicketAuthority
+        request = {key: getattr(self.policy, key) for key in ('run_id', 'actor_id', 'session_id', 'revision')}
+        request.update(call_id='git-call', command='git log -1', cwd=str(self.workspace),
+            env={'PATH': '/trusted/bin', 'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'safe.directory',
+                 'GIT_CONFIG_VALUE_0': '*', 'GIT_CONFIG_PARAMETERS': "'safe.directory=*'"},
+            timeout_seconds=1, background=False)
+        original = json.loads(json.dumps(request))
+        broker = module._ActorBroker.__new__(module._ActorBroker)
+        broker.actor, broker.policy = {'root': True}, self.policy
+        broker.pending, broker.processes, broker.protected_files = {}, {}, []
+        broker.closed, broker.close_lock = threading.Event(), threading.RLock()
+        broker.authority = TicketAuthority(self.policy)
+        owner = SimpleNamespace(close=lambda: None)
+        broker.supervisor = SimpleNamespace(execution_lock=threading.RLock(),
+            workspace=self.workspace, _owner=lambda: owner, _home=lambda owner: self.base / 'command-home')
+        def protected(command, *, env, **kwargs):
+            return SimpleNamespace(command=[sys.executable], env=dict(env), shell=False,
+                                   temporary_directory=None, close=lambda: None)
+        with patch.object(module, 'protected_shell_command', side_effect=protected), \
+                patch.object(module, '_restrict_reads'):
+            ticket = broker._dispatch({'op': 'ticket', 'request': request})
+        concrete = broker.pending[ticket][1]
+        self.assertEqual(concrete['env']['GIT_CONFIG_COUNT'], '1')
+        self.assertEqual(concrete['env']['GIT_CONFIG_VALUE_0'], str(self.workspace))
+        self.assertNotIn('GIT_CONFIG_PARAMETERS', concrete['env'])
+        self.assertEqual(request, original)
+        forged = dict(concrete, env=dict(concrete['env'], GIT_CONFIG_VALUE_0='*'))
+        with self.assertRaises(PermissionError):
+            broker.authority.consume(ticket, forged)
 
     @unittest.skipUnless(os.name == 'posix', 'Unix actor listener directory')
     def test_socket_factory_uses_a_private_directory_under_root_owned_sticky_var_tmp(self):
@@ -279,6 +330,103 @@ class ActorPolicyTests(unittest.TestCase):
 @unittest.skipUnless(hasattr(os, 'geteuid') and os.geteuid() == 0,
                      'privileged disposable benchmark runner required')
 class PrivilegedActorSupervisorTests(unittest.TestCase):
+    def test_native_and_managed_git_trust_only_the_fixture_for_both_sources_and_actor_roles(self):
+        import tarfile
+        from benchmarks.v3_actor_supervisor import ActorAssignment, ActorSupervisor
+        from benchmarks.v3_process_owner import process_snapshot
+        repository = Path(__file__).resolve().parents[1]
+        archive = subprocess.run(['git', '-C', str(repository), 'archive',
+            '1bfc82c793df49e76097061ec5adfef0e4e2e883'], check=True, capture_output=True).stdout
+        managed_probe = '''import json,os,subprocess,sys
+def git(path,*args):
+ p=subprocess.run(['git','-C',path,*args],capture_output=True,text=True)
+ return {'code':p.returncode,'out':p.stdout,'error':p.stderr}
+print(json.dumps({'uid':os.geteuid(),'log':git(sys.argv[1],'log','-1','--format=%s'),
+ 'diff':git(sys.argv[1],'diff','--no-ext-diff','--no-textconv'),
+ 'sibling':git(sys.argv[2],'log','-1'),
+ 'config':{k:v for k,v in os.environ.items() if k.startswith('GIT_CONFIG')}}))
+'''
+        code = '''import json,os,shlex,subprocess,sys
+sys.path.insert(0,sys.argv[2])
+from benchmarks.v3_process_owner import connect_actor_client
+c=connect_actor_client()
+sys.path.insert(0,sys.argv[1])
+from openkyrozen.tools import ToolAdapters
+t=ToolAdapters(root=sys.argv[3])
+sibling=subprocess.run(['git','-C',sys.argv[4],'log','-1'],capture_output=True,text=True)
+out={'uid':os.geteuid(),'owner':os.stat(sys.argv[3]).st_uid,'log':str(t.git_log('-1')),
+ 'diff':str(t.git_diff('')),'sibling':{'code':sibling.returncode,'error':sibling.stderr},
+ 'config':{k:v for k,v in os.environ.items() if k.startswith('GIT_CONFIG')}}
+env=dict(os.environ,GIT_CONFIG_COUNT='1',GIT_CONFIG_KEY_0='safe.directory',GIT_CONFIG_VALUE_0='*')
+p=c.start(shlex.join([sys.executable,'-I','-c',sys.argv[5],sys.argv[3],sys.argv[4]]),sys.argv[3],env,10)
+p.wait(15)
+stdout=bytearray();stderr=bytearray()
+while chunk:=p.stdout.read1(4096): stdout.extend(chunk)
+while chunk:=p.stderr.read1(4096): stderr.extend(chunk)
+assert p.returncode==0,stderr.decode()
+out['managed']=json.loads(stdout)
+print(json.dumps(out))
+'''
+        with tempfile.TemporaryDirectory(dir='/var/tmp', prefix='actor-git-fixture-') as directory:
+            base = Path(directory).resolve();base.chmod(0o755)
+            baseline = base / 'baseline';baseline.mkdir()
+            with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+                tar.extractall(baseline, filter='data')
+            for name, selected in (('v3', repository), ('v2', baseline)):
+                for child in (False, True):
+                    with self.subTest(source=name, child=child):
+                        workspace = base / f'{name}-{child}';workspace.mkdir()
+                        sibling = workspace / 'sibling';sibling.mkdir()
+                        setup_env = {'PATH': os.environ['PATH'], 'HOME': str(base),
+                                     'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull}
+                        for target in (workspace, sibling):
+                            subprocess.run(['git', 'init', '-q', str(target)], env=setup_env, check=True)
+                            (target / 'example.txt').write_text('before\n')
+                            subprocess.run(['git', '-C', str(target), 'add', 'example.txt'], env=setup_env, check=True)
+                            subprocess.run(['git', '-C', str(target), '-c', 'user.name=Fixture',
+                                '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false',
+                                'commit', '-qm', 'synthetic fixture'], env=setup_env, check=True)
+                        (workspace / 'example.txt').write_text('after\n')
+                        command = [sys.executable, '-I', '-c', code, str(selected), str(repository),
+                                   str(workspace), str(sibling), managed_probe]
+                        policy = ShellPolicy(workspace, {'read', 'shell', 'git'})
+                        environment = dict(setup_env, LC_ALL='C', GIT_CONFIG_COUNT='1',
+                            GIT_CONFIG_KEY_0='safe.directory', GIT_CONFIG_VALUE_0='*',
+                            GIT_CONFIG_PARAMETERS="'safe.directory=*'")
+                        with ActorSupervisor(command, cwd=workspace, env=environment,
+                                protected_files=[], policy=policy, source=selected) as supervisor:
+                            if child:
+                                payload = {'schema_version':1, 'source':str(selected), 'workspace':str(workspace),
+                                    'review':False, 'report_repair':False, 'parent':{'model':'fixture-model'},
+                                    'run':{'run_id':'git-author','profile':'coder','assignment':{'scope':['.']}}}
+                                assignment = ActorAssignment(policy, payload, source=selected, model='fixture-model')
+                                actor = {'root':False, 'policy':assignment.shell_policy, 'assignment':assignment,
+                                    'connected':False, 'broker':None, 'condition':threading.Condition(),
+                                    'callbacks':{}, 'cancelled':False, 'disconnected':False, 'state':'running'}
+                                process = supervisor._spawn(command, actor, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            else:
+                                process = supervisor.popen(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            output, error = process.communicate(timeout=30)
+                            self.assertEqual(process.returncode, 0, error)
+                            result = json.loads(output)
+                            self.assertNotEqual(result['uid'], result['owner'])
+                            self.assertIn('synthetic fixture', result['log'])
+                            self.assertIn('+after', result['diff'])
+                            self.assertNotEqual(result['managed']['uid'], result['uid'])
+                            self.assertEqual(result['managed']['log']['code'], 0)
+                            self.assertIn('synthetic fixture', result['managed']['log']['out'])
+                            self.assertEqual(result['managed']['diff']['code'], 0)
+                            self.assertIn('+after', result['managed']['diff']['out'])
+                            for observation in (result, result['managed']):
+                                self.assertNotEqual(observation['sibling']['code'], 0)
+                                self.assertIn('dubious ownership', observation['sibling']['error'])
+                                self.assertEqual(observation['config'], {
+                                    'GIT_CONFIG_COUNT':'1', 'GIT_CONFIG_KEY_0':'safe.directory',
+                                    'GIT_CONFIG_VALUE_0':str(workspace), 'GIT_CONFIG_NOSYSTEM':'1',
+                                    'GIT_CONFIG_GLOBAL':os.devnull})
+                        owners = {owner.uid for owner in supervisor.owners}
+                        self.assertFalse(any(uid in owners and state != 'Z' for uid,state in process_snapshot().values()))
+
     def test_narrowed_root_policy_bounds_raw_and_managed_shell_reads(self):
         from benchmarks.v3_actor_supervisor import ActorSupervisor
         with tempfile.TemporaryDirectory(dir='/var/tmp') as directory:
