@@ -35,13 +35,13 @@ ROOT = Path(__file__).resolve().parents[1]
 TEST = 'test_cancel_during_provider_call_prevents_late_write'
 HISTORICAL_PRODUCT = '0f172f9fe692ff8fafcc0a15a72fe51eaf67e977'
 OFFLINE_ETL_SOURCE = {
-    'repository':'EvanProgramming/OpenKyrozen', 'run_id':42376078599,
-    'artifact_id':13575118412, 'diagnostic_sha':'cb33ddb5418d56cccb42bae6057c875ed3aaff69',
-    'product_sha':'9e9ec702f010c5ebd15ceaa925246353c9ceb463',
-    'artifact_name':'windows-cancellation-3.12.10-9e9ec702f010c5ebd15ceaa925246353c9ceb463-native-vfs',
-    'zip_bytes':44302289, 'zip_sha256':'f256519877377aaf06fb92bda47e7c24e03cbe5c3eeba582fbbec9c60755324c',
-    'etl_member':'traces/native-capture.etl', 'etl_bytes':117964800,
-    'etl_sha256':'67b00842c7bda64e91f83e8a2f2092930af99b9b41900cf0b7f43c9c1f70d09b',
+    'repository':'EvanProgramming/OpenKyrozen', 'run_id':42389772850,
+    'artifact_id':13580264647, 'diagnostic_sha':'7596a9dd6c57d32035a664f69562ededafa9a137',
+    'product_sha':'d668c706af21e9ce855265e14d5384d17cce01d7',
+    'artifact_name':'windows-cancellation-3.12.10-d668c706af21e9ce855265e14d5384d17cce01d7-native-vfs',
+    'zip_bytes':44706507, 'zip_sha256':'de0e073e2efd335935804c0006108dae03113a1bb49f7d8af122757b02316bdf',
+    'etl_member':'traces/native-capture.etl', 'etl_bytes':118226944,
+    'etl_sha256':'3bece9a7a16359dffc09b8e4ba0398f79ca3235c890ba65690d4ddaf0a2835e2',
 }
 OFFLINE_STORAGE_LIMIT = 512 * 1024 * 1024
 OFFLINE_FILEIO_GUID = '{90cbdc39-4a3e-11d1-84f4-0000f80464e3}'
@@ -1385,7 +1385,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--offline-decode-archive', type=Path,
-                        help='Decode only the frozen existing run42376078599 ZIP; never starts a product or WPR')
+                        help='Decode only the frozen existing run42389772850 ZIP; never starts a product or WPR')
     parser.add_argument('--offline-source-metadata', type=Path, help='GitHub source artifact/run metadata for offline decode')
     parser.add_argument('--offline-gzip-child',type=Path,help=argparse.SUPPRESS)
     parser.add_argument('--repository', type=Path, default=ROOT, help='Exact product checkout to test; harness may live separately')
