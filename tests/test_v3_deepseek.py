@@ -451,6 +451,100 @@ class DeepSeekRunnerTests(unittest.TestCase):
 
 
 class DeepSeekSmokeTests(unittest.TestCase):
+    def test_default_thinking_smoke_uses_auto_nonbeta_tools_and_correlated_continuation(self):
+        from benchmarks.v3_deepseek import DEEPSEEK_PRICING, DEEPSEEK_RELAY_CONFIG, run_smoke
+        from benchmarks.v3_responses_relay import ResponsesRelay
+        received, rejected, continuations = [], [], {}
+
+        class Upstream(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                choice = body.get('tool_choice', 'auto')
+                error = None
+                if isinstance(choice, dict) or choice == 'required':
+                    error = 'forced_choice_with_default_thinking'
+                elif any(tool.get('strict') is True for tool in body.get('tools', [])):
+                    error = 'strict_requires_beta'
+                if error:
+                    rejected.append(error)
+                    status, result = 400, {'error': {'type': 'invalid_request_error', 'message': error}}
+                else:
+                    received.append((self.path, body))
+                    probe = body['tools'][0]['parameters']['properties']['value']['enum'][0]
+                    if choice == 'none':
+                        expected = continuations[probe] + [{'type': 'function_call_output',
+                            'call_id': 'call-' + probe, 'output': json.dumps({'value': probe})}]
+                        if body['input'] != expected:
+                            status, result = 400, {'error': {'type': 'invalid_request_error'}}
+                        else:
+                            status, result = 200, {'id': 'final-' + probe, 'output': [
+                                {'type': 'message', 'role': 'assistant', 'content': [
+                                    {'type': 'output_text', 'text': probe}]}]}
+                    else:
+                        output = [{'type': 'reasoning', 'id': 'reasoning-' + probe, 'summary': []},
+                                  {'type': 'function_call', 'name': 'echo_probe', 'call_id': 'call-' + probe,
+                                   'arguments': json.dumps({'value': probe})}]
+                        continuations[probe] = body['input'] + output
+                        status, result = 200, {'id': 'first-' + probe, 'output': output}
+                    if status == 200:
+                        result['usage'] = {'input_tokens': 100, 'output_tokens': 10}
+                payload = json.dumps(result).encode()
+                self.send_response(status)
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        upstream = ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
+        thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        thread.start()
+        try:
+            endpoint = f'http://127.0.0.1:{upstream.server_port}'
+            # These controls specify the offline provider's compatibility contract,
+            # not the unretained free-form error from the actual paid request.
+            for choice, strict in (({'type': 'function', 'name': 'echo_probe'}, False),
+                                   ('required', False), ('auto', True)):
+                response = requests.post(endpoint + '/responses', json={
+                    'tool_choice': choice, 'tools': [{'strict': strict}]}, timeout=3)
+                self.assertEqual(response.status_code, 400)
+            with tempfile.TemporaryDirectory() as directory:
+                ledger = v3_matched.BudgetLedger(Path(directory) / 'budget.db', limit_rmb='15',
+                                                pricing=DEEPSEEK_PRICING)
+                relay = ResponsesRelay(endpoint=endpoint, api_key='fake', budget=ledger,
+                                       config=DEEPSEEK_RELAY_CONFIG)
+                relay.start()
+                try:
+                    for candidate in ('candidate-one', 'candidate-two'):
+                        self.assertTrue(run_smoke(relay, candidate))
+                        self.assertTrue(run_smoke(relay, candidate))
+                        self.assertEqual(len(relay.smoke_verified_attempt_ids), 2)
+                    self.assertIsNone(relay.provider_error)
+                    self.assertEqual([row['status'] for row in relay.rows], ['settled'] * 4)
+                    self.assertTrue(all(row['usage'] == {'input_tokens': 100, 'output_tokens': 10,
+                        'cache_read_tokens': 0, 'cache_write_tokens': 0} for row in relay.rows))
+                    self.assertEqual(ledger.spent_rmb, Decimal('0.00112'))
+                finally:
+                    relay.close()
+            self.assertEqual(rejected, ['forced_choice_with_default_thinking'] * 2 + ['strict_requires_beta'])
+            self.assertEqual(len(received), 4)
+            self.assertEqual(len(continuations), 2)
+            for probe in continuations:
+                self.assertRegex(probe, r'^[0-9a-f]{32}$')
+            for index, (path, body) in enumerate(received):
+                self.assertEqual(path, '/responses')
+                self.assertEqual(body['tool_choice'], 'auto' if index % 2 == 0 else 'none')
+                self.assertIs(body['tools'][0]['strict'], False)
+                self.assertEqual(body['model'], 'deepseek-flash')
+                self.assertEqual(body['max_output_tokens'], 4096)
+                self.assertNotIn('thinking', body)
+                self.assertNotIn('reasoning', body)
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+            thread.join()
+
     def test_smoke_and_retry_use_one_ledger_and_never_release_unknown_usage(self):
         from benchmarks.v3_deepseek import DEEPSEEK_PRICING, DEEPSEEK_RELAY_CONFIG, run_smoke
         from benchmarks.v3_responses_relay import ResponsesRelay
@@ -542,6 +636,10 @@ class DeepSeekSmokeTests(unittest.TestCase):
                     elif mode[0] == 'wrong-value':
                         call['arguments'] = json.dumps({'value': 'wrong'})
                     output = [call]
+                    if mode[0] == 'no-call':
+                        output = []
+                    elif mode[0] == 'two-calls':
+                        output.append(dict(call, call_id='extra-call'))
                 result = {'id': 'response', 'output': output,
                           'usage': {'input_tokens': 100, 'output_tokens': 10}}
                 if continuation and mode[0] == 'unknown-final-usage':
@@ -559,6 +657,7 @@ class DeepSeekSmokeTests(unittest.TestCase):
             for invalid, call_count, remaining in (
                     ('bad-name', 1, '14.99972'), ('no-call-id', 1, '14.99972'),
                     ('bad-args', 1, '14.99972'), ('wrong-value', 1, '14.99972'),
+                    ('no-call', 1, '14.99972'), ('two-calls', 1, '14.99972'),
                     ('bad-final', 2, '14.99944'), ('unknown-final-usage', 2, '12.966952')):
                 with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
                     mode[0] = invalid

@@ -163,7 +163,7 @@ def run_smoke(relay, candidate: str) -> bool:
     tools = [{"type": "function", "name": "echo_probe", "description": "Echo a benchmark probe value.",
               "parameters": {"type": "object", "properties": {
                   "value": {"type": "string", "enum": [probe]}},
-                  "required": ["value"], "additionalProperties": False}, "strict": True}]
+                  "required": ["value"], "additionalProperties": False}, "strict": False}]
     history = [{"role": "user", "content":
                 "Call echo_probe with the allowed value, then repeat the returned value exactly."}]
     relay.label = ("smoke", candidate, -1)
@@ -185,7 +185,7 @@ def run_smoke(relay, candidate: str) -> bool:
 
     try:
         first = request({"input": history, "tools": tools,
-                         "tool_choice": {"type": "function", "name": "echo_probe"},
+                         "tool_choice": "auto",
                          "parallel_tool_calls": False, "stream": False})
         if first is None:
             return False

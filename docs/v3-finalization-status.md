@@ -43,6 +43,6 @@ The repaired 30-fixture cohort and observer/verifier identities are frozen befor
 - Intermediate four-platform privileged isolation: https://github.com/EvanProgramming/OpenKyrozen/actions/runs/42349253524
 - Incomplete continuous Windows native capture: https://github.com/EvanProgramming/OpenKyrozen/actions/runs/42350403044
 - Detailed local execution logs, 266 requirement/comment inventory and historical Windows artifacts are outside the checkout in `/Users/evangong/.codex/worktrees/openkyrozen-v3-evidence/`.
-- Original DeepSeek ledgers independently reconstruct settled 0.58291496 CNY plus held 0.000000000007 CNY, total 0.582914960007 CNY. This work has made no external DeepSeek requests.
+- The initial offline audit reconstructed settled 0.58291496 CNY plus held 0.000000000007 CNY, total 0.582914960007 CNY. This is historical exposure, not a live cumulative balance. Subsequent smoke, retry and cohort charges, including every unknown reservation, must be reconstructed from the original ledgers in the external exact-candidate evidence.
 
 Do not waive the blockers, publish the preview, create a V3 tag/Release, upload package repositories or merge an unverified candidate to main. A changed candidate SHA requires new exact-candidate evidence.
