@@ -872,6 +872,57 @@ class WorkingPlanModelTests(unittest.TestCase):
                 ).fetchone())
                 self.assertIn("revision", {row["name"] for row in db.execute("PRAGMA table_info(working_plans)")})
 
+    def test_native_task_selection_and_completion_suggestion_require_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = TaskManager(EventStore(Path(directory) / "state.sqlite3"), session_id="native-selection")
+            created = manager.edit_plan(expected_revision=0, operations=[
+                {"op": "add", "ref": "first", "task": {"description": "Inspect", "acceptance": ["Inspected"]}},
+                {"op": "add", "ref": "second", "task": {"description": "Verify", "acceptance": ["Verified"], "dependencies": ["first"]}},
+            ])
+            first, second = created["task_ids"]
+            self.assertIsNone(getattr(manager, "execution_task_id", None))
+            with self.assertRaises(ValueError):
+                manager.edit_plan(plan_id=created["plan_id"], expected_revision=1,
+                                  operations=[{"op": "start", "task": second}])
+            selected = manager.edit_plan(plan_id=created["plan_id"], expected_revision=1,
+                                         operations=[{"op": "start", "task": first}])
+            self.assertEqual(manager.execution_task_id, first)
+            self.assertEqual(selected["tasks"][0]["status"], "running")
+            suggested = manager.edit_plan(plan_id=created["plan_id"], expected_revision=2,
+                                          operations=[{"op": "suggest_complete", "task": first}])
+            self.assertEqual(suggested["tasks"][0]["status"], "running")
+            manager.record_evidence(task_id=first, action="read_file", args="a.txt", result="checked",
+                                    success=True, acceptance="Inspected", verification_status="verified")
+            self.assertEqual(manager.tasks[0]["status"], "succeeded")
+            self.assertIsNone(manager.execution_task_id)
+            manager.edit_plan(plan_id=created["plan_id"], expected_revision=3,
+                              operations=[{"op": "start", "task": second}])
+            self.assertEqual(manager.execution_task_id, second)
+
+    def test_completion_suggestion_storage_failure_rolls_back_plan_revision(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as directory:
+            store = EventStore(Path(directory) / "state.sqlite3")
+            manager = TaskManager(store, session_id="completion-atomicity")
+            plan = manager.edit_plan(expected_revision=0, operations=[
+                {"op": "add", "ref": "inspect", "task": {"description": "Inspect", "acceptance": ["Inspected"]}},
+            ])
+            task_id = plan["task_ids"][0]
+            manager.edit_plan(plan_id=plan["plan_id"], expected_revision=1,
+                              operations=[{"op": "start", "task": task_id}])
+            manager.record_evidence(task_id=task_id, action="read_file", args="a", result="checked",
+                                    success=True, acceptance="Inspected", verification_status="verified")
+            with store.database.connection() as db:
+                db.execute("CREATE TRIGGER fail_completion BEFORE UPDATE OF status ON tasks "
+                           "WHEN NEW.status='succeeded' BEGIN SELECT RAISE(ABORT, 'blocked completion'); END")
+            with self.assertRaises(sqlite3.IntegrityError):
+                manager.edit_plan(plan_id=plan["plan_id"], expected_revision=2,
+                                  operations=[{"op": "suggest_complete", "task": task_id}])
+            self.assertEqual(manager.working_plan.revision, 2)
+            self.assertEqual(store.get_working_plan(user_id="local", workspace_id="default",
+                                                   session_id="completion-atomicity")["revision"], 2)
+            self.assertEqual(manager.tasks[0]["status"], "running")
+
     def test_schema_four_working_plan_is_upgraded_without_losing_tasks(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"
@@ -890,6 +941,36 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(recovered.working_plan.revision, 0)
             self.assertEqual(recovered.tasks[0]["description"], "Preserve me")
             self.assertEqual(migrated.SCHEMA_VERSION, 6)
+
+    def test_strategy_execution_is_validated_against_approved_scope_at_tool_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = build_application(memory=build_memory(Path(directory) / "state.sqlite3", index=None),
+                                    tools=ToolAdapters(directory))
+            self.addCleanup(app.close)
+            runtime = app.runtime
+            controller = runtime._interaction_controller
+            proposal = controller.propose_plan({
+                "title": "Page", "summary": "Create page", "bounds": {
+                    "workspace_paths": ["site"], "capabilities": ["read", "write"],
+                    "effects": ["read_only", "filesystem"], "risk_ceiling": "normal",
+                }, "steps": [{"id": "page", "title": "Create page", "description": "Write site/page.txt",
+                              "acceptance": ["Page ready"]}],
+            })
+            accepted, _ = controller.accept_plan(runtime.tasks, plan_id=proposal["plan_id"], version=1)
+            token = issue_capability_token("test", {"read", "write"})
+            anchor = accepted["working_task_ids"][0]
+            for path, success in (("other.txt", False), ("site/page.txt", True)):
+                result = runtime.tool_registry.invoke_result("update_plan", {
+                    "plan_id": runtime.tasks.working_plan.id, "expected_revision": 1,
+                    "operations": [{"op": "add", "anchor": anchor, "ref": "inspect", "task": {
+                        "description": "Inspect page", "acceptance": ["Input checked"],
+                        "execution": {"action": "read_file", "arguments": {"path": path}},
+                    }}],
+                }, token)
+                self.assertEqual(result.success, success, result.error)
+            child = next(task for task in runtime.tasks.tasks if task["id"] != anchor)
+            self.assertEqual(child["checkpoint"]["strategy_anchor"], anchor)
+            self.assertEqual(child["checkpoint"]["action"], "read_file")
 
     def test_update_plan_is_a_typed_registry_tool_with_object_arguments(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -495,8 +495,10 @@ class DelegationTests(unittest.TestCase):
                 return ('Plan:\n1. Inspect workspace structure.\n2. Spawn two specialist agents.\n3. Wait for verified results and synthesize.\n'
                         'Action: {"action":"list_dir","args":"."}'), None
         runtime.llm_provider = MainProvider()
+        original_classifier = runtime._classify_complexity
         with (patch.object(runtime, "dispatch_learning_cycle", return_value={}),
-              patch.object(runtime, "_classify_complexity", return_value="complex"),
+              patch.object(runtime, "_classify_complexity", side_effect=lambda request:
+                  "complex" if request == "Inspect two independent components" else original_classifier(request)),
               patch.object(runtime, "_touch_detached_learning_heartbeat"),
               patch.object(runtime, "_render_tool_result"),
               patch.object(runtime, "_update_tasks_panel")):
@@ -1002,7 +1004,15 @@ class DelegationTests(unittest.TestCase):
         self.runtime._provider_config = ProviderConfig(provider="openai", api_key="fixture-openai", base_url="https://openai.fixture/v1",
             model_simple="gpt-fixture", model_complex="gpt-fixture")
         self.runtime.DEEPSEEK_MODEL = "gpt-fixture"
-        self.runtime.get_provider = get_provider
+        # This fixture checks nonstreaming SDK request shapes; live streaming has separate coverage.
+        from dataclasses import replace
+        def fixture_provider(config):
+            provider = get_provider(config)
+            capabilities = provider.get_capabilities
+            provider.get_capabilities = lambda model=None: replace(
+                capabilities(model), text_streaming=False, streaming_tool_calls=False)
+            return provider
+        self.runtime.get_provider = fixture_provider
         (self.root / "agent.yaml").write_text("subagents:\n  roles:\n    researcher:\n      provider: anthropic\n      model: claude-fixture\n")
         with (patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fixture-claude", "KYROZEN_API_KEY": "wrong-main"}),
               patch("openai.OpenAI", side_effect=lambda **kw: real_openai(**kw, http_client=httpx.Client(transport=transport))),

@@ -7,7 +7,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 
 ## Runtime tools
 
-- Built-in runtime tools: **53**
+- Built-in runtime tools: **55**
 - Names with the `git_` prefix: **14**
 - The CLI Action contract is a plain string in the `args` field.
 - Web and MCP exposure is filtered by the configured capability profile.
@@ -53,10 +53,12 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `list_dir` | `read` | `read_only` | true | List contents of a directory. Args format: "path" (default "."). | `path`: string |
 | `list_subagents` | `read` | `internal` | false | List agents or inspect one run_id from this chat/project; args is JSON. | `run_id`: string |
 | `list_tree` | `read` | `read_only` | true | Recursively list the directory tree of the given path. Args format: "path" (default "."). | `path`: string |
+| `propose_plan` | `read` | `internal` | false | Propose a versioned Strategic Plan after read-only inspection. This never | `assumptions`: array, `bounds`: object, `steps`: array, `summary`: string, `title`: string; required: `title`, `summary`, `bounds`, `steps` |
 | `read_file` | `read` | `read_only` | true | Read content from a file. Args format: "path". | `max_chars`: integer, `max_lines`: integer, `path`: string, `start_line`: integer; required: `path` |
 | `read_process` | `read` | `read_only` | false | Read a bounded page from a session-owned process stream. | `limit`: integer, `offset`: integer, `process_id`: string, `stream`: string; required: `process_id` |
 | `read_tool_artifact` | `read` | `read_only` | false | Read a session-owned tool artifact in pages up to 1,000 characters. | `artifact_id`: string, `limit`: integer, `offset`: integer; required: `artifact_id` |
 | `read_webpage` | `network` | `remote` | false | Fetch the content of a web page and return its plain‑text body. | `url`: string; required: `url` |
+| `request_question` | `read` | `internal` | false | Ask 1-3 structured clarification questions. Questions cannot request | `questions`: array; required: `questions` |
 | `run_cmd` | `shell` | `process` | false | Execute a shell command. Args: the full command string. | `background`: boolean, `command`: string, `cwd`: string, `env`: object, `timeout_seconds`: number; required: `command` |
 | `search_files` | `read` | `read_only` | true | Search literal text with bounded, relative file-and-line results. | `glob`: string, `limit`: integer, `path`: string, `query`: string; required: `query` |
 | `search_memory` | `read` | `read_only` | false | Search stored memories for facts relevant to the query. Args: "query" | `query`: string; required: `query` |
@@ -64,7 +66,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `send_subagent` | `read` | `internal` | false | Reuse a finished sub-agent; args JSON contains run_id and a complete assignment. | `assignment`: object, `run_id`: string; required: `run_id`, `assignment` |
 | `spawn_agents` | `read` | `internal` | false | Automatically start parallel specialist assignments; args is a JSON assignment batch. | `assignments`: array |
 | `stop_process` | `shell` | `process` | false | Stop a process owned by the current actor, workspace, and session. | `process_id`: string; required: `process_id` |
-| `update_plan` | `write` | `internal` | false | Apply revision-checked ordered Working Plan edits or adapt the legacy task list. | `complexity`: string, `expected_revision`: integer, `operations`: array, `plan_id`: string, `reason`: string, `tasks`: array; requires either `operations` and `expected_revision` or `complexity` and `tasks` |
+| `update_plan` | `write` | `internal` | false | Edit a revision-checked Working Plan. Use start with a stable task ID before | `complexity`: string, `expected_revision`: integer, `operations`: array, `plan_id`: string, `reason`: string, `tasks`: array; requires either `operations` and `expected_revision` or `complexity` and `tasks` |
 | `wait_subagents` | `read` | `internal` | false | Wait up to 60 seconds for delegated work and its mandatory reviews; args is JSON. | `run_ids`: array, `timeout`: number |
 | `write_file` | `write` | `filesystem` | false | Write content to a file. Args format: "path\|content". | `content`: string, `path`: string; required: `path`, `content` |
 

@@ -85,7 +85,7 @@ class V2CoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = MemoryBank(Path(directory) / "state.sqlite3").store
             owner = TaskManager(store, user_id="alice", workspace_id="project", session_id="session")
-            index = owner.add_task("resume me")
+            index = owner.add_task("resume read-only work", checkpoint={"action": "read_file", "args": "note.txt"})
             owner.set_status(index, "running")
             recovered = TaskManager(store, user_id="alice", workspace_id="project", session_id="session").recover()
             self.assertEqual(len(recovered), 1)

@@ -150,6 +150,111 @@ class ProcessLifecycleTests(unittest.TestCase):
             self.assertTrue(page['timed_out'])
             manager.close()
 
+    def test_expiry_flags_wait_for_process_stop_to_return(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from openkyrozen.tools.processes import ProcessHandle, SessionProcessManager
+
+        for reason in ("timed_out", "cancelled"):
+            with self.subTest(reason=reason):
+                manager = SessionProcessManager("user", "workspace", "session")
+                process = SimpleNamespace(returncode=None)
+                process.poll = lambda: process.returncode
+                handle = ProcessHandle("process", process, "user", "workspace", "session", 0)
+                manager._handles[handle.process_id] = handle
+                cancelled = threading.Event()
+                if reason == "cancelled":
+                    cancelled.set()
+                stopping, release = threading.Event(), threading.Event()
+
+                def stop(process_id):
+                    self.assertEqual(process_id, handle.process_id)
+                    stopping.set()
+                    if not release.wait(2):
+                        raise AssertionError("test did not release process stop")
+                    process.returncode = -15
+                    return True
+
+                with patch.object(manager, "stop", side_effect=stop):
+                    worker = threading.Thread(target=manager._expire, args=(handle, cancelled))
+                    worker.start()
+                    try:
+                        self.assertTrue(stopping.wait(2))
+                        page = manager.read(handle.process_id)
+                        self.assertTrue(page["running"])
+                        self.assertFalse(page["timed_out"])
+                        self.assertFalse(page["cancelled"])
+                        self.assertIsNone(handle.finished_at)
+                    finally:
+                        release.set()
+                        worker.join(2)
+                    self.assertFalse(worker.is_alive())
+                    page = manager.read(handle.process_id)
+                    self.assertTrue(page[reason])
+                    self.assertFalse(page["running"])
+                    self.assertIsNotNone(handle.finished_at)
+
+    def test_failed_expiry_stop_does_not_claim_process_finished_or_remove_sandbox(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from openkyrozen.tools.processes import ProcessHandle, SessionProcessManager
+
+        manager = SessionProcessManager("user", "workspace", "session")
+        process = SimpleNamespace(poll=lambda: None)
+        sandbox = Mock()
+        handle = ProcessHandle("process", process, "user", "workspace", "session", 0,
+                               temporary_directory=sandbox)
+        manager._handles[handle.process_id] = handle
+        with patch.object(manager, "stop", return_value=False):
+            manager._expire(handle)
+        page = manager.read(handle.process_id)
+        self.assertTrue(page["timed_out"])
+        self.assertTrue(page["running"])
+        self.assertIsNone(page["exit_code"])
+        self.assertIsNone(handle.finished_at)
+        sandbox.cleanup.assert_not_called()
+
+    def test_cancellation_publication_can_follow_observed_os_exit(self):
+        from unittest.mock import patch
+        from openkyrozen.tools.processes import SessionProcessManager
+
+        with tempfile.TemporaryDirectory() as root:
+            manager = SessionProcessManager('user', root, 'session')
+            cancelled, stopped, release = threading.Event(), threading.Event(), threading.Event()
+            original_stop = manager.stop
+
+            def delayed_stop(process_id):
+                result = original_stop(process_id)
+                stopped.set()
+                if not release.wait(2):
+                    raise AssertionError('test did not release process stop')
+                return result
+
+            try:
+                with patch.object(manager, 'stop', side_effect=delayed_stop):
+                    handle = manager.start(shlex.join([sys.executable, '-c', 'import time; time.sleep(30)']),
+                        cwd=root, env=None, timeout_seconds=30, cancelled=cancelled)
+                    cancelled.set()
+                    try:
+                        self.assertTrue(stopped.wait(2))
+                        self.assertIsNotNone(handle.process.poll())
+                        # Observing OS exit is not a cancellation-publication
+                        # barrier while the stopping thread has not returned.
+                        self.assertFalse(manager.read(handle.process_id)['cancelled'])
+                    finally:
+                        release.set()
+                    deadline = time.monotonic() + 2
+                    page = manager.read(handle.process_id)
+                    while not page['cancelled'] and time.monotonic() < deadline:
+                        time.sleep(.01)
+                        page = manager.read(handle.process_id)
+                    self.assertTrue(page['cancelled'])
+                    self.assertFalse(page['running'])
+                    self.assertFalse(page['timed_out'])
+            finally:
+                release.set()
+                manager.close()
+
     def test_process_output_cap_is_reported_and_can_be_paged(self):
         from unittest.mock import patch
         from openkyrozen.tools.processes import SessionProcessManager

@@ -21,6 +21,26 @@ class EventsRepository:
             )
         return event_id
 
+    def _append_control_audit(self, event_type: str, payload: Any, *, user_id: str,
+                              workspace_id: str, session_id: str) -> str:
+        """Bound control-path audit contention; cleanup must not wait 30 seconds."""
+        if event_type not in {"process.lifecycle", "turn.effect_uncertain"}:
+            raise ValueError("unsupported control audit event")
+        encoded = self.database._json(payload)
+        if not self.database._lock.acquire(timeout=.1):
+            raise RuntimeError("control audit journal is busy")
+        try:
+            event_id = f"evt_{uuid.uuid4().hex}"
+            with self.database.connection(timeout=.1, busy_timeout_ms=100) as db:
+                db.execute(
+                    "INSERT INTO events(id,event_type,payload,user_id,workspace_id,session_id,task_id,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (event_id, event_type, encoded, user_id, workspace_id, session_id, None, utc_now()),
+                )
+            return event_id
+        finally:
+            self.database._lock.release()
+
     def conversation_head(self, *, user_id: str, workspace_id: str, session_id: str) -> str | None:
         with self.database.connection() as db:
             row = db.execute(

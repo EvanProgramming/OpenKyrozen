@@ -345,6 +345,110 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
         binding = next(task for task in result["tasks"] if task["id"] == task_id)["checkpoint"]["strategic_plan"]
         self.assertEqual(binding["fingerprint"], accepted["fingerprint"])
 
+    def test_strategic_split_retains_approved_anchor_and_adds_bound_strategy(self):
+        from copy import deepcopy
+        plan = self._proposal()
+        accepted, _ = self.controller.accept_plan(self.manager, plan_id=plan["plan_id"], version=1)
+        anchor_id = accepted["working_task_ids"][0]
+        before = deepcopy(self.manager.tasks[0])
+        result = self.manager.edit_plan(
+            plan_id=self.manager.working_plan.id, expected_revision=1,
+            operations=[{"op": "split", "task": anchor_id, "children": [
+                {"ref": "inspect", "task": {"description": "Inspect page input", "acceptance": ["Input checked"]}},
+                {"ref": "verify", "task": {"description": "Verify page output", "acceptance": ["Output checked"]}},
+            ]}],
+        )
+        anchor = next(task for task in result["tasks"] if task["id"] == anchor_id)
+        self.assertEqual(anchor["status"], "pending")
+        self.assertEqual(anchor["acceptance"], before["acceptance"])
+        self.assertEqual(anchor["description"], before["description"])
+        children = [task for task in result["tasks"] if task["id"] != anchor_id]
+        self.assertEqual(anchor["dependencies"], [task["id"] for task in children])
+        for child in children:
+            self.assertEqual(child["checkpoint"]["strategy_anchor"], anchor_id)
+            self.assertEqual(child["checkpoint"]["strategic_plan"], before["checkpoint"]["strategic_plan"])
+        snapshot = self.manager.working_plan_snapshot()
+        self.assertEqual(snapshot["tasks"][0]["role"], "approved_objective")
+        self.assertEqual(snapshot["tasks"][1]["strategy_anchor"], anchor_id)
+        self.assertEqual(self.controller.state()["executing_plan"], accepted)
+        self.assertFalse(self.manager._has_evidence(0))
+        added = self.manager.edit_plan(
+            plan_id=self.manager.working_plan.id, expected_revision=2,
+            operations=[{"op": "add", "anchor": anchor_id, "ref": "extra", "task": {
+                "description": "Investigate page edge case", "acceptance": ["Edge case checked"],
+            }}],
+        )
+        self.assertIn(added["references"]["extra"], self.manager.tasks[0]["dependencies"])
+        self.assertFalse(self.manager._has_evidence(0))
+        self.assertFalse(self.manager.set_status(0, "succeeded", evidence={
+            "success": True, "acceptance": "Original objective verified",
+            "acceptance_ids": before["checkpoint"]["strategic_plan"]["acceptance_ids"],
+        }))
+
+    def test_strategy_children_can_merge_and_replace_without_replacing_objective(self):
+        proposal = self._proposal()
+        accepted, _ = self.controller.accept_plan(self.manager, plan_id=proposal["plan_id"], version=1)
+        anchor = accepted["working_task_ids"][0]
+        refined = self.manager.edit_plan(plan_id=self.manager.working_plan.id, expected_revision=1, operations=[
+            {"op": "split", "task": anchor, "children": [
+                {"ref": "a", "task": {"description": "Inspect input", "acceptance": ["Input checked"]}},
+                {"ref": "b", "task": {"description": "Inspect output", "acceptance": ["Output checked"]}},
+            ]},
+        ])
+        merged = self.manager.edit_plan(plan_id=self.manager.working_plan.id, expected_revision=2, operations=[
+            {"op": "merge", "tasks": [refined["references"]["a"], refined["references"]["b"]],
+             "replacement": {"ref": "both", "task": {"description": "Inspect both", "acceptance": ["Both checked"]}}},
+        ])
+        merged_id = merged["references"]["both"]
+        self.assertEqual(self.manager.tasks[0]["dependencies"], [merged_id])
+        revised = self.manager.edit_plan(plan_id=self.manager.working_plan.id, expected_revision=3, operations=[
+            {"op": "replace", "task": merged_id, "replacement": {
+                "ref": "new", "task": {"description": "Investigate root cause", "acceptance": ["Cause checked"]},
+            }},
+        ])
+        replacement = next(task for task in revised["tasks"] if task["id"] == revised["references"]["new"])
+        self.assertEqual(replacement["checkpoint"]["strategy_anchor"], anchor)
+        self.assertEqual(self.manager.tasks[0]["status"], "pending")
+        self.assertEqual(self.manager.tasks[0]["checkpoint"]["strategic_plan"]["acceptance_ids"],
+                         proposal["steps"][0]["acceptance_ids"])
+
+    def test_strategic_completion_rejects_unfinished_refinement_even_after_dependency_removal(self):
+        proposal = self._proposal()
+        accepted, _ = self.controller.accept_plan(self.manager, plan_id=proposal["plan_id"], version=1)
+        anchor_id = accepted["working_task_ids"][0]
+        refined = self.manager.edit_plan(plan_id=self.manager.working_plan.id, expected_revision=1, operations=[
+            {"op": "add", "anchor": anchor_id, "ref": "inspect", "task": {
+                "description": "Inspect page", "acceptance": ["Inspected"],
+            }},
+        ])
+        self.manager.edit_plan(plan_id=self.manager.working_plan.id, expected_revision=2, operations=[
+            {"op": "remove_dependency", "task": anchor_id, "depends_on": refined["references"]["inspect"]},
+        ])
+        self.assertTrue(self.manager.set_status(0, "succeeded", evidence={
+            "success": True, "acceptance": "Verified approved objective",
+            "acceptance_ids": self.manager.tasks[0]["checkpoint"]["strategic_plan"]["acceptance_ids"],
+        }))
+        with self.assertRaises(InteractionError):
+            self.controller.complete_plan(accepted, task_manager=self.manager)
+
+    def test_material_reapproval_cancels_previous_strategy_children(self):
+        first = self._proposal()
+        accepted, _ = self.controller.accept_plan(self.manager, plan_id=first["plan_id"], version=1)
+        anchor_id = accepted["working_task_ids"][0]
+        refined = self.manager.edit_plan(plan_id=self.manager.working_plan.id, expected_revision=1, operations=[
+            {"op": "add", "anchor": anchor_id, "ref": "inspect", "task": {
+                "description": "Inspect page", "acceptance": ["Inspected"],
+            }},
+        ])
+        revision = self.controller.propose_plan({
+            "title": "Revised page", "summary": "A revised outcome", "bounds": first["bounds"],
+            "steps": [{"id": "page", "title": "Create revised page", "description": "Write revised page.",
+                       "acceptance": ["Revised content correct"]}],
+        })
+        self.controller.accept_plan(self.manager, plan_id=revision["plan_id"], version=2)
+        child = next(task for task in self.manager.tasks if task["id"] == refined["references"]["inspect"])
+        self.assertEqual(child["status"], "cancelled")
+
     def test_accepting_material_revision_replaces_executing_plan_atomically(self):
         first = self._proposal()
         accepted, _ = self.controller.accept_plan(
@@ -1347,8 +1451,7 @@ class InteractionTests(unittest.TestCase):
         self.addCleanup(restore)
         self.agent.short_term_memory = [{"role": "user", "content": "previous project"}]
         empty_history = type("History", (), {"current": lambda self: None})()
-        with patch.object(self.agent, "TaskManager", return_value=object()), \
-                patch.object(self.agent, "InteractionController", return_value=object()), \
+        with patch.object(self.agent, "InteractionController", return_value=object()), \
                 patch.object(self.agent, "history_manager", return_value=empty_history), \
                 patch.object(self.agent, "_restore_ponytail_level"):
             self.agent.bind_interaction_scope("chat-empty")

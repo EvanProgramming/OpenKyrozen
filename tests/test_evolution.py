@@ -97,10 +97,9 @@ class EvolutionTests(unittest.TestCase):
         })
 
     def _pass_replay(self, candidate):
-        return self.engine.record_shadow_replay(
-            candidate["proposal_id"], [{"case_id": "case-1", "verified_success": True}],
-            [{"case_id": "case-1", "verified_success": True}],
-        )
+        measured = {"case_id": "case-1", "verified_success": True, "tokens": 100,
+                    "latency": 0.5, "cost_rmb": 0.002, "corrections": 0, "repeated_errors": 0}
+        return self.engine.record_shadow_replay(candidate["proposal_id"], [measured], [measured])
 
     def test_profile_isolation_canary_promotion_and_correction_rollback(self):
         candidate = self._candidate()
@@ -264,6 +263,120 @@ class EvolutionTests(unittest.TestCase):
         self.engine.record_outcome(run, [], verified=False, success=False, correction=True)
         self.assertEqual(self.memory.store.list_events(
             "learning.regression_case_created", workspace_id="project"), [])
+
+    def test_direct_activation_cannot_bypass_live_evidence_or_shadow_replay(self):
+        candidate = self._candidate()
+        self.assertFalse(self.engine.validate_and_activate(candidate["proposal_id"], validation={"success": True}))
+        self.assertEqual(self.registry.list()[0]["status"], "canary")
+        for _ in range(2):
+            run = self.engine.begin_run("coder", "run pytest tests")
+            _, receipts = self.engine.artifact_context(run)
+            self.engine.record_outcome(run, receipts, verified=True, success=True)
+        self.assertFalse(self.engine.validate_and_activate(candidate["proposal_id"], validation={"success": True}))
+        self._pass_replay(candidate)
+        self.assertTrue(self.engine.validate_and_activate(candidate["proposal_id"], validation={"success": True}))
+        self.assertEqual(self.registry.list()[0]["status"], "active")
+
+    def test_incomplete_measured_replay_cannot_promote_even_after_verified_uses(self):
+        candidate = self._candidate()
+        for _ in range(2):
+            run = self.engine.begin_run("coder", "run pytest tests")
+            _, receipts = self.engine.artifact_context(run)
+            self.engine.record_outcome(run, receipts, verified=True, success=True)
+        measured = {"case_id": "measured-case", "verified_success": True, "tokens": 100,
+                    "latency": 0.5, "cost_rmb": 0.002, "corrections": 0, "repeated_errors": 0}
+        for missing in (("cost_rmb",), ("latency",), ("corrections",), ("repeated_errors",),
+                        ("cost_rmb", "latency", "corrections", "repeated_errors")):
+            with self.subTest(missing=missing):
+                incomplete = {key: value for key, value in measured.items() if key not in missing}
+                replay = self.engine.record_shadow_replay(candidate["proposal_id"], [incomplete], [incomplete])
+                self.assertFalse(replay["non_regressing"])
+                self.assertFalse(self.engine.validate_and_activate(candidate["proposal_id"], validation={"success": True}))
+                card = self.engine.evidence_card(candidate["proposal_id"])
+                self.assertEqual(card["artifact"]["status"], "canary")
+                self.assertEqual(card["revalidation_status"], "incomplete")
+                self.assertIn("incomplete", card["shadow_replay"]["blocked_reason"].lower())
+        replay = self.engine.record_shadow_replay(candidate["proposal_id"], [measured], [measured])
+        self.assertTrue(replay["non_regressing"])
+        self.assertTrue(self.engine.validate_and_activate(candidate["proposal_id"], validation={"success": True}))
+        self.assertEqual(self.engine.evidence_card(candidate["proposal_id"])["artifact"]["status"], "active")
+
+    def test_replay_requires_a_consistent_explicit_cost_unit(self):
+        candidate = self._candidate()
+        measured = {"case_id": "cost-case", "verified_success": True, "latency": 0.5,
+                    "cost": 0.002, "corrections": 0, "repeated_errors": 0}
+        self.assertFalse(self.engine.record_shadow_replay(candidate["proposal_id"], [measured], [measured])["non_regressing"])
+        dollars = {**measured, "cost_unit": "USD"}
+        euros = {**measured, "cost_unit": "EUR"}
+        self.assertFalse(self.engine.record_shadow_replay(candidate["proposal_id"], [euros], [dollars])["non_regressing"])
+        self.assertTrue(self.engine.record_shadow_replay(candidate["proposal_id"], [dollars], [dollars])["non_regressing"])
+
+    def test_persisted_legacy_success_only_replay_cannot_activate(self):
+        candidate = self._candidate()
+        for _ in range(2):
+            run = self.engine.begin_run("coder", "run pytest tests")
+            _, receipts = self.engine.artifact_context(run)
+            self.engine.record_outcome(run, receipts, verified=True, success=True)
+        proposal = self.engine._proposal_for_skill(candidate["skill_id"])
+        self.memory.store.update_proposal(candidate["proposal_id"], status="canary", validation={
+            **proposal["validation"], "shadow_replay": {"non_regressing": True,
+                "case_ids": ["legacy"], "candidate_successes": 1, "predecessor_successes": 1},
+        })
+        self.assertFalse(self.engine.validate_and_activate(candidate["proposal_id"], validation={"success": True}))
+        run = self.engine.begin_run("coder", "run pytest tests")
+        _, receipts = self.engine.artifact_context(run)
+        self.assertEqual(self.engine.record_outcome(run, receipts, verified=True, success=True), [])
+        self.assertEqual(self.engine.evidence_card(candidate["proposal_id"])["artifact"]["status"], "canary")
+
+    def test_shadow_replay_rejects_individual_regression_hidden_by_aggregate_success(self):
+        candidate = self._candidate()
+        measurements = {"latency": 0.5, "cost_rmb": 0.002, "corrections": 0, "repeated_errors": 0}
+        replay = self.engine.record_shadow_replay(candidate["proposal_id"], [
+            {**measurements, "case_id": "old", "verified_success": False},
+            {**measurements, "case_id": "new", "verified_success": True},
+        ], [
+            {**measurements, "case_id": "old", "verified_success": True},
+            {**measurements, "case_id": "new", "verified_success": False},
+        ])
+        self.assertFalse(replay["non_regressing"])
+
+    def test_shadow_replay_blocks_measured_cost_latency_and_error_regressions(self):
+        candidate = self._candidate()
+        baseline = {"case_id": "case", "verified_success": True, "tokens": 100,
+                    "latency": 1.0, "cost_rmb": 0.002, "corrections": 0, "repeated_errors": 0}
+        for field, value in (("tokens", 101), ("latency", 1.1), ("cost_rmb", 0.003),
+                             ("corrections", 1), ("repeated_errors", 1)):
+            with self.subTest(field=field):
+                changed = {**baseline, field: value}
+                result = self.engine.record_shadow_replay(candidate["proposal_id"], [changed], [baseline])
+                self.assertFalse(result["non_regressing"])
+        result = self.engine.record_shadow_replay(candidate["proposal_id"], [baseline], [baseline])
+        self.assertTrue(result["non_regressing"])
+        self.assertEqual(result["metric_comparisons"]["tokens"], {"candidate": 100, "predecessor": 100, "non_regressing": True})
+
+    def test_measured_replay_rejects_invalid_measurements_and_overflowing_totals(self):
+        candidate = self._candidate()
+        measured = {"case_id": "case-1", "verified_success": True, "latency": 0.5,
+                    "cost_rmb": 0.002, "corrections": 0, "repeated_errors": 0}
+        for field in ("latency", "cost_rmb", "corrections", "repeated_errors"):
+            for value in (None, True, -1, float("inf"), float("nan")):
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    self.engine.record_shadow_replay(candidate["proposal_id"], [{**measured, field: value}], [measured])
+        huge = [{**measured, "case_id": f"case-{index}", "cost_rmb": 1e308} for index in range(2)]
+        with self.assertRaises(ValueError):
+            self.engine.record_shadow_replay(candidate["proposal_id"], huge, huge)
+
+    def test_shadow_replay_cannot_drop_baseline_measurement_or_use_truthy_success(self):
+        candidate = self._candidate()
+        for current, previous in ((
+            {"case_id": "case", "verified_success": True},
+            {"case_id": "case", "verified_success": True, "latency": 1.0},
+        ), (
+            {"case_id": "case", "verified_success": "false"},
+            {"case_id": "case", "verified_success": True},
+        )):
+            with self.subTest(current=current), self.assertRaises(ValueError):
+                self.engine.record_shadow_replay(candidate["proposal_id"], [current], [previous])
 
 
 if __name__ == "__main__":

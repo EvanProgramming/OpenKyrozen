@@ -12,19 +12,19 @@
 
 ## Install
 
-This release is **v3.0.0**. It supports Python 3.12 and 3.13; Python 3.14 is outside the supported range.
+V3 is not yet released. The commands below install the published stable **v2.0.8**. It supports Python 3.12 and 3.13; Python 3.14 is outside the supported range.
 
 macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v3.0.0/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.8/install.sh | sh
 kyrozen
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v3.0.0/install.ps1 | iex
+irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.8/install.ps1 | iex
 kyrozen
 ```
 

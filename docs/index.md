@@ -51,3 +51,7 @@ This index covers the current product guides, developer references, and dated en
 - Machine-readable audit receipts and benchmark inputs remain beside their corresponding reports under `docs/` and `docs/benchmarks/`.
 
 The repository's [English overview](../README.md) links here. Technical guides are maintained in English; README translations provide localized entry points.
+
+- [V3 finalization execution plan](superpowers/plans/2026-11-07-v3-finalization.md)
+
+- [V3 finalization status and release blockers](v3-finalization-status.md)

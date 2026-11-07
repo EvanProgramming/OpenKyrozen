@@ -114,6 +114,74 @@ class ContextCompactionTests(unittest.TestCase):
         self.assertIn("Upgrade the service safely", pinned)
         self.assertIn("Inspect service", pinned)
 
+    def test_standalone_working_plan_state_survives_compaction(self):
+        from openkyrozen.persistence.store import EventStore
+        from openkyrozen.tasks.engine import TaskManager
+
+        with tempfile.TemporaryDirectory() as directory:
+            manager = TaskManager(EventStore(Path(directory) / "state.sqlite3"), session_id="pinned")
+            created = manager.edit_plan(expected_revision=0, operations=[
+                {"op": "add", "ref": "inspect", "task": {
+                    "description": "Inspect current source", "acceptance": ["Source compared"],
+                }},
+                {"op": "add", "ref": "verify", "task": {
+                    "description": "Verify final result", "acceptance": ["Regression passes"],
+                    "dependencies": ["inspect"],
+                }},
+            ])
+            mode = main._active_interaction_mode.set("agent")
+            try:
+                with patch.object(main.current_session, "tasks", manager), patch.object(
+                        main._interaction_controller, "state", return_value={}):
+                    messages = main._build_messages("continue", memory_packet="")
+            finally:
+                main._active_interaction_mode.reset(mode)
+            pinned = [item for item in messages if isinstance(item, dict)
+                      and item.get("role") == "system"
+                      and "Pinned Working Plan state" in item.get("content", "")]
+            self.assertEqual(len(pinned), 1)
+            for text in (created["plan_id"], created["references"]["inspect"],
+                         created["references"]["verify"], "Regression passes", "dependencies", '"revision": 1'):
+                self.assertIn(text, pinned[0]["content"])
+            pressured = messages[:-1] + [{"role": "user", "content": "old" * 5000}] * 8 + messages[-1:]
+            compacted = compact_for_pressure(
+                pressured, ContextState("custom", configured_window=5000, reserve_tokens=50),
+                lambda _text, _limit: "old history summarized",
+            )
+            self.assertTrue(compacted.compacted)
+            self.assertIn(pinned[0], compacted.messages)
+
+    def test_oversized_pinned_plan_retains_full_scoped_artifact_and_refreshes_revision(self):
+        import json
+        from openkyrozen.agent.prompts import _refresh_working_plan_context
+
+        with tempfile.TemporaryDirectory() as directory:
+            app = build_application(memory=MemoryBank(Path(directory) / "state.sqlite3", index=None))
+            self.addCleanup(app.close)
+            runtime = app.runtime
+            plan = runtime.tasks.edit_plan(expected_revision=0, reason="why" * 8000, operations=[
+                {"op": "add", "ref": "large", "task": {
+                    "description": "source " * 3000, "acceptance": ["full criterion retained"],
+                }},
+            ])
+            messages = [{"role": "system", "content": "fixed"}]
+            _refresh_working_plan_context(runtime, messages)
+            self.assertLessEqual(len(messages[1]["content"]), 12000)
+            state = json.loads(messages[1]["content"].split("\n", 2)[2])
+            artifact = runtime.memory_bank.store.artifacts.read_page(
+                state["artifact_id"], user_id=runtime.tasks.user_id,
+                workspace_id=runtime.tasks.workspace_id, session_id=runtime.tasks.session_id, offset=0, limit=4000,
+            )
+            self.assertIsNotNone(artifact)
+            self.assertEqual(state["revision"], 1)
+            runtime.tasks.edit_plan(plan_id=plan["plan_id"], expected_revision=1, operations=[
+                {"op": "update", "task": plan["task_ids"][0], "fields": {"description": "Updated inspection"}},
+            ])
+            _refresh_working_plan_context(runtime, messages)
+            self.assertEqual(sum("Pinned Working Plan state" in item["content"] for item in messages), 1)
+            self.assertIn('"revision": 2', messages[1]["content"])
+            self.assertIn("Updated inspection", messages[1]["content"])
+
     def test_compaction_can_summarize_legacy_prefix_before_native_history(self):
         from openkyrozen.providers.models import FinishReason, ModelResponse, ToolCall, ToolReply
 

@@ -176,12 +176,12 @@ class DistributionTests(unittest.TestCase):
     def test_public_install_paths_pin_the_verified_release(self):
         release_url = (
             "https://github.com/EvanProgramming/OpenKyrozen/releases/download/"
-            "v3.0.0/openkyrozen-3.0.0-py3-none-any.whl"
+            "v2.0.8/openkyrozen-2.0.8-py3-none-any.whl"
         )
         for readme in sorted(ROOT.glob("README*.md")):
             text = readme.read_text(encoding="utf-8")
             with self.subTest(readme=readme.name):
-                self.assertIn("raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v3.0.0/", text)
+                self.assertIn("raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.8/", text)
                 wheel_urls = re.findall(
                     r"https://github\.com/EvanProgramming/OpenKyrozen/releases/download/[^\s)]+\.whl",
                     text,
