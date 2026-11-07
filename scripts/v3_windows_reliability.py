@@ -399,8 +399,9 @@ class WalSharingControl:
             return
         now = time.monotonic_ns() if at_ns is None else at_ns
         if event == 'c_call':
-            self.evidence['close_call_monotonic_ns'] = now
-        elif event in {'c_return','c_exception'} and 'close_call_monotonic_ns' in self.evidence:
+            self.evidence.setdefault('close_call_monotonic_ns',now)
+        elif (event in {'c_return','c_exception'} and 'close_call_monotonic_ns' in self.evidence
+                and 'close_return_monotonic_ns' not in self.evidence):
             self.evidence.update(close_return_monotonic_ns=now, close_event=event,
                 close_interval_ns=now-self.evidence['close_call_monotonic_ns'])
 
@@ -613,6 +614,14 @@ def run_child(output, control='baseline', cpu_workers=2, readonly_anchor=False, 
             trace.record('setup.call')
             super().setUp()
             trace.record('setup.return')
+            if trace.vfs is not None:
+                cleanup = self.temp.cleanup
+                def cleanup_fixture():
+                    trace.record('fixture.filesystem_cleanup.call')
+                    trace.vfs.close()
+                    trace.record('fixture.filesystem_cleanup.ready')
+                    cleanup()
+                self.temp.cleanup = cleanup_fixture
             # Lazy SDK initialization must not consume the cancellation trace's profiling overhead.
             sys.setprofile(trace.profile)
             threading.setprofile(trace.profile)

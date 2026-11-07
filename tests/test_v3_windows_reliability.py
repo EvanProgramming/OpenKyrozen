@@ -444,6 +444,83 @@ raise SystemExit(result)
 
 
 class NativeVfsDiagnosticTests(unittest.TestCase):
+    def test_selected_close_keeps_first_pair_when_later_connection_id_is_reused(self):
+        import threading
+        with tempfile.TemporaryDirectory() as directory:
+            control,_=self.control(Path(directory),'wal',types.SimpleNamespace())
+            control.evidence.update(connection_id=7,worker_native_tid=threading.get_native_id())
+            for end_event in ('c_return','c_exception'):
+                with self.subTest(end_event=end_event):
+                    for key in ('close_call_monotonic_ns','close_return_monotonic_ns',
+                                'close_interval_ns','close_event'):
+                        control.evidence.pop(key,None)
+                    control.note_close('c_return',7,at_ns=290_400_000_000)
+                    control.note_close('c_call',8,at_ns=290_410_000_000)
+                    control.note_close('c_call',7,at_ns=290_421_000_000)
+                    control.note_close(end_event,7,at_ns=291_375_000_000)
+                    control.note_close('c_call',7,at_ns=291_390_000_000)
+                    control.note_close('c_return',7,at_ns=291_406_000_000)
+                    self.assertEqual(control.evidence['close_call_monotonic_ns'],290_421_000_000)
+                    self.assertEqual(control.evidence['close_return_monotonic_ns'],291_375_000_000)
+                    self.assertEqual(control.evidence['close_interval_ns'],954_000_000)
+                    self.assertEqual(control.evidence['close_event'],end_event)
+
+    def test_owned_handle_drains_after_original_application_close_before_fixture_file_cleanup(self):
+        from scripts import v3_windows_reliability as diagnostic
+        order=[];held=False;holder=None;fixture_root=None
+        class API:
+            def open(self,path,probe=False):
+                nonlocal held
+                if probe:return None,32
+                held=True;return 123,0
+            def close(self,handle):
+                nonlocal held
+                order.append('handle.close');held=False
+            def qpc(self):return time.perf_counter_ns()
+        class Fixture(unittest.TestCase):
+            def setUp(self):
+                nonlocal fixture_root
+                self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
+                fixture_root=self.root
+                (self.root/'state.sqlite3-wal').write_bytes(b'x'*100)
+                cleanup=self.temp.cleanup
+                def unlink():
+                    order.append('fixture.unlink')
+                    if held:raise PermissionError(32,'WAL still held by diagnostic')
+                    cleanup()
+                self.temp.cleanup=unlink
+            def test_cancel_during_provider_call_prevents_late_write(self):
+                holder.arm(self.root/'state.sqlite3-wal',connection_id=7,frame=sys._getframe())
+                order.append('future.done')
+            def tearDown(self):
+                order.append('application.close.call')
+                self.assertTrue(held,'intervention must still be active during original application.close')
+                order.append('application.close.return')
+                order.append('environment.stop')
+                self.temp.cleanup()
+        original=diagnostic.WalSharingControl
+        def capture_holder(trace,mode):
+            nonlocal holder
+            holder=original(trace,mode,api=API());return holder
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.dict(sys.modules,{'test_delegation':types.SimpleNamespace(DelegationTests=Fixture)}), \
+             patch.object(diagnostic,'LoadControl') as load, \
+             patch.object(diagnostic,'WalSharingControl',side_effect=capture_holder), \
+             patch.object(diagnostic.faulthandler,'dump_traceback'):
+            load.return_value.close.side_effect=lambda:order.append('load.close')
+            result=diagnostic.run_child(Path(directory),'cpu',2,readonly_anchor=True,
+                                        native_trace=True,vfs_target='wal')
+            self.assertEqual(result,0,(Path(directory)/'unittest.log').read_text())
+            evidence=json.loads((Path(directory)/'vfs-control.json').read_text())
+            self.assertTrue(evidence['cleanup_complete'])
+            self.assertGreaterEqual(evidence['release_call_performance_counter_ns']-
+                                    evidence['arm_performance_counter_ns'],800_000_000)
+        self.assertFalse(fixture_root.exists())
+        self.assertLess(order.index('future.done'),order.index('application.close.call'))
+        self.assertLess(order.index('load.close'),order.index('application.close.call'))
+        self.assertLess(order.index('application.close.return'),order.index('handle.close'))
+        self.assertLess(order.index('handle.close'),order.index('fixture.unlink'))
+
     def test_qualifying_hold_overlaps_actual_close_with_complete_consistent_integer_timestamps(self):
         from scripts.v3_windows_reliability import _vfs_condition
         with tempfile.TemporaryDirectory() as directory:
