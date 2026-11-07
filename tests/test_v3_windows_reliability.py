@@ -446,13 +446,16 @@ raise SystemExit(result)
 class NativeWaitDiagnosticTests(unittest.TestCase):
     def test_native_snapshot_never_opens_a_database_until_owned_futures_are_done(self):
         import sqlite3
+        from contextlib import closing
         from scripts.v3_windows_reliability import Trace
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with sqlite3.connect(root / 'state.sqlite3') as connection:
+            with closing(sqlite3.connect(root / 'state.sqlite3')) as connection, connection:
                 connection.execute('CREATE TABLE events(event_type TEXT, payload TEXT)')
                 connection.execute('INSERT INTO events VALUES(?,?)',
                                    ('subagent.state', json.dumps({'run_id':'owned','status':'cancelled'})))
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute('SELECT 1')
             (root / 'marker.txt').write_text('ok')
             trace = Trace(root, native=True)
             done = False
@@ -664,15 +667,49 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
             self.assertEqual(len(list(root.glob('wpr-stop*.json'))), 2)
             self.assertTrue(capture.active and capture.cleanup_uncertified)
 
-    def comparison(self, failure=False):
+    def comparison(self, failure=False, *, abort_reason=None, launch_error=False, saved_trace_bytes=None):
         from scripts import v3_windows_reliability as diagnostic
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         output = Path(temporary.name)
         old, current = output / 'old', output / 'current'
         commands = []
+        activity = {'tools': [], 'workload_recording': []}
+        recording = False
+        capture = diagnostic.NativeCapture(output, {})
+        capture.wpr, capture.decoder = 'wpr.exe', 'tracerpt.exe'
+
+        def native_tool(command, **kwargs):
+            nonlocal recording
+            activity['tools'].append(command)
+            if '-start' in command:
+                self.assertFalse(recording, 'the owned recording was already active')
+                recording = True
+                temporary_trace = Path(command[command.index('-recordtempto')+1]) / 'recording.etl'
+                # Model the real runner's roughly 120 MiB per-recording allocation.
+                with temporary_trace.open('wb') as stream:
+                    stream.truncate(120*1024*1024)
+            elif '-stop' in command:
+                if saved_trace_bytes is not None:
+                    with (output/'traces/temporary/recording.etl').open('r+b') as stream:
+                        stream.truncate(saved_trace_bytes)
+                (output/'traces/temporary/recording.etl').replace(command[2])
+                recording = False
+            elif '-of' in command:
+                Path(command[command.index('-o')+1]).write_text('<Events/>')
+                Path(command[command.index('-summary')+1]).write_text('synthetic decoder output')
+            text = ('Events Lost : 0' if 'collectors' in command else 'WPR is not recording.')
+            return subprocess.CompletedProcess(command, 0, text, '')
+
         def run(command, log_path, env, **kwargs):
             commands.append((command, kwargs))
+            activity['workload_recording'].append(recording)
+            if launch_error:
+                raise OSError('child launch failed')
+            reason = abort_reason or kwargs['abort']()
+            if reason:
+                return {'returncode':124, 'timeout_seconds':45, 'timeout_cleanup':None,
+                        'abort_reason':reason}
             if '--child' in command:
                 case = Path(command[command.index('--output')+1])
                 bad = failure and len(commands)==1
@@ -683,18 +720,18 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
                     {'event':'future_wait.return','monotonic_ns':5_000_000_001 if bad else 200_000_001,'thread_id':1}]))
                 return {'returncode': int(bad), 'timeout_seconds':45, 'timeout_cleanup':None}
             return {'returncode':0, 'timeout_seconds':45, 'timeout_cleanup':None}
-        capture = types.SimpleNamespace(preflight=lambda: None, start=lambda case:None, active=False,
-                                       stop=lambda: {'status':'CAPTURED'}, decode=lambda capture:None)
         with patch.object(diagnostic, 'NativeCapture', return_value=capture), \
+             patch.object(capture, 'preflight'), \
+             patch.object(diagnostic.subprocess, 'run', side_effect=native_tool), \
              patch.object(diagnostic, '_product_identity', side_effect=lambda path: {
                  'candidate_sha':diagnostic.HISTORICAL_PRODUCT if path==old else 'c'*40}), \
              patch.object(diagnostic, 'historical_environment', return_value={'status':'MATCH'}), \
              patch.object(diagnostic, 'run_process', side_effect=run):
             result = diagnostic.run_native_comparison(output, current, old)
-        return result, json.loads((output/'report.json').read_text()), commands, old, current
+        return result, json.loads((output/'report.json').read_text()), commands, old, current, activity
 
     def test_native_comparison_keeps_identical_cpu_controls_and_pinned_reviewers_and_all_fast_is_inconclusive(self):
-        result, report, commands, old, current = self.comparison()
+        result, report, commands, old, current, _ = self.comparison()
         self.assertEqual(result, 0)
         self.assertEqual(report['status'], 'INCONCLUSIVE')
         self.assertFalse(report['historical_cause_established'])
@@ -716,12 +753,63 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
                          [row['variant']=='anchor' for row in report['iterations']])
 
     def test_native_failure_keeps_the_whole_control_triple_and_never_claims_attribution(self):
-        result, report, commands, _, _ = self.comparison(failure=True)
+        result, report, commands, _, _, _ = self.comparison(failure=True)
         self.assertEqual(result, 1)
         self.assertEqual(len(commands), 6)
         self.assertEqual(report['status'], 'PENDING_NATIVE_ANALYSIS')
         self.assertFalse(report['historical_cause_established'])
         self.assertEqual(report['iterations'][0]['future_wait_seconds'], 5)
+
+    def test_one_owned_recording_covers_all_cells_and_reviewers_with_one_shared_digest(self):
+        result, report, commands, _, _, activity = self.comparison()
+        self.assertEqual(result, 0)
+        self.assertEqual(len(commands), 24)
+        self.assertEqual(report['capture_scope'], 'experiment')
+        self.assertEqual(report['capture']['bytes'], 120*1024*1024)
+        self.assertTrue(all(activity['workload_recording']))
+        self.assertEqual(sum('-start' in command for command in activity['tools']), 1)
+        self.assertEqual(sum('-stop' in command for command in activity['tools']), 1)
+        self.assertEqual(sum('-of' in command for command in activity['tools']), 1)
+        self.assertEqual(len(list((Path(report['capture']['etl']).parent).glob('*.etl'))), 1)
+        for row in report['iterations']:
+            self.assertEqual(row['capture'], report['capture'])
+            self.assertEqual(Path(row['native_events']).name, 'events.jsonl')
+            self.assertTrue(Path(row['native_events']).is_file())
+
+    def test_child_launch_failure_still_saves_the_shared_owned_recording(self):
+        result, report, commands, _, _, activity = self.comparison(launch_error=True)
+        self.assertEqual(result, 2)
+        self.assertEqual(report['status'], 'BLOCKED')
+        self.assertIn('child launch failed', report['error'])
+        self.assertFalse(report['cleanup_uncertified'])
+        self.assertFalse(report['historical_cause_established'])
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(sum('-stop' in command for command in activity['tools']), 1)
+        self.assertIn('capture', report)
+        self.assertEqual(report['iterations'][0]['capture'], report['capture'])
+        self.assertTrue(Path(report['capture']['etl']).is_file())
+
+    def test_size_abort_preserves_the_shared_trace_and_original_limits_without_attribution(self):
+        result, report, commands, _, _, activity = self.comparison(abort_reason='trace_size_limit')
+        self.assertNotEqual(result, 0)
+        self.assertEqual(report['limit_reached'], 'trace_size_limit')
+        self.assertEqual(report['active_limit_seconds'], 300)
+        self.assertEqual(report['trace_limit_bytes'], 512*1024*1024)
+        self.assertEqual(report['iterations'][0]['timeout_seconds'], 45)
+        self.assertFalse(report['historical_cause_established'])
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(sum('-stop' in command for command in activity['tools']), 1)
+        self.assertIn('capture', report)
+        self.assertEqual(report['iterations'][0]['capture'], report['capture'])
+
+    def test_trace_growth_during_final_save_is_reported_against_the_same_size_limit(self):
+        result, report, commands, _, _, _ = self.comparison(saved_trace_bytes=536870913)
+        self.assertEqual(report.get('limit_reached'), 'trace_size_limit')
+        self.assertNotEqual(result, 0)
+        self.assertEqual(len(commands), 24)
+        self.assertEqual(report['status'], 'INCONCLUSIVE')
+        self.assertFalse(report['historical_cause_established'])
+        self.assertEqual(report['capture']['bytes'], 536870913)
 
     def test_native_time_and_trace_size_limits_are_explicit_abort_reasons(self):
         from scripts import v3_windows_reliability as diagnostic

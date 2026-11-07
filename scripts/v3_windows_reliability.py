@@ -670,12 +670,25 @@ def _native_timing(case):
 
 def run_native_comparison(output, current, historical):
     output.mkdir(parents=True, exist_ok=True)
-    report = {'schema_version': 3, 'status': 'BLOCKED', 'historical_cause_established': False,
+    report = {'schema_version': 4, 'status': 'BLOCKED', 'historical_cause_established': False,
+              'capture_scope': 'experiment',
               'active_limit_seconds': 300, 'trace_limit_bytes': 512*1024*1024,
               'test_timeouts_seconds': {'provider_wait':3, 'entry_wait':10, 'future_wait':5},
               'child_limit_seconds':45, 'cpu_workers':2, 'iterations':[], 'execution_order':[],
               'qualification': 'Native traces require wait/phase analysis; all-fast samples are inconclusive.'}
     capture = None
+
+    def save_capture():
+        saved = capture.stop()
+        if saved is not None:
+            report['capture'] = dict(saved, instance_name=capture.instance)
+            for row in report['iterations']:
+                row['capture'] = report['capture']
+            # Saving/merging can first cross the sampled size bound. Cleanup
+            # time is outside the active budget, so only inspect the inventory.
+            if reason := native_limit(output / 'traces', float('inf')):
+                report.setdefault('limit_reached', reason)
+
     try:
         report['historical_environment'] = historical_environment()
         if report['historical_environment']['status'] != 'MATCH':
@@ -689,65 +702,67 @@ def run_native_comparison(output, current, historical):
             env = isolated_environment(Path(home))
             capture = NativeCapture(output, env)
             capture.preflight()
+            capture_directory = output / 'native-capture'
+            capture_directory.mkdir()
+            report['capture_directory'] = str(capture_directory)
+            report['capture_instance'] = capture.instance
             deadline = time.monotonic() + 300
             abort = lambda: native_limit(output / 'traces', deadline)
             orders = (('baseline','anchor','current'), ('current','anchor','baseline'),
                       ('anchor','baseline','current'), ('current','baseline','anchor'))
             slow = False
-            for index, order in enumerate(orders, 1):
-                for variant in order:
-                    if reason := abort():
-                        report['limit_reached'] = reason
-                        break
-                    if deadline - time.monotonic() <= 10:
-                        report['limit_reached'] = 'active_time_limit'
-                        break
-                    case = output / f'{index}-{variant}'
-                    case.mkdir()
-                    repository = current if variant == 'current' else historical
-                    row = {'triple':index, 'variant':variant, 'repository':str(repository)}
-                    report['iterations'].append(row)
-                    report['execution_order'].append('cancellation-' + case.name)
-                    write_json(output / 'report.json', report)
-                    try:
-                        capture.start(case)
+            try:
+                capture.start(capture_directory)
+                for index, order in enumerate(orders, 1):
+                    for variant in order:
+                        if reason := abort():
+                            report['limit_reached'] = reason
+                            break
+                        if deadline - time.monotonic() <= 10:
+                            report['limit_reached'] = 'active_time_limit'
+                            break
+                        case = output / f'{index}-{variant}'
+                        case.mkdir()
+                        repository = current if variant == 'current' else historical
+                        row = {'triple':index, 'variant':variant, 'repository':str(repository),
+                               'native_events':str(case / 'events.jsonl')}
+                        report['iterations'].append(row)
+                        report['execution_order'].append('cancellation-' + case.name)
+                        write_json(output / 'report.json', report)
                         command = [sys.executable, str(Path(__file__).resolve()), '--child', '--output', str(case),
                                    '--repository', str(repository), '--control', 'cpu', '--cpu-workers', '2', '--native-trace']
                         if variant == 'anchor':
                             command.append('--readonly-anchor')
                         row.update(run_process(command, case / 'process.log', env, abort=abort))
-                    finally:
-                        row['capture'] = capture.stop()
+                        if row.get('abort_reason') or abort():
+                            report['limit_reached'] = row.get('abort_reason') or abort()
+                            break
+                        row['future_wait_seconds'] = _native_timing(case)
+                        slow |= row['returncode'] != 0 or (row['future_wait_seconds'] or 0) >= 1
+                        report['execution_order'].append('reviewer-' + case.name)
+                        row['reviewer'] = run_process([sys.executable, str(historical / 'scripts/subagent_workflow_acceptance.py')],
+                            case / 'reviewer.log', env, abort=abort)
+                        if row['reviewer'].get('abort_reason'):
+                            report['limit_reached'] = row['reviewer']['abort_reason']
+                            break
+                        if row['reviewer']['returncode']:
+                            raise RuntimeError('Pinned historical reviewer workload failed; inspect retained row')
                         write_json(output / 'report.json', report)
-                    if row.get('abort_reason') or abort():
-                        report['limit_reached'] = row.get('abort_reason') or abort()
+                    if report.get('limit_reached') or slow:
                         break
-                    row['future_wait_seconds'] = _native_timing(case)
-                    slow |= row['returncode'] != 0 or (row['future_wait_seconds'] or 0) >= 1
-                    report['execution_order'].append('reviewer-' + case.name)
-                    row['reviewer'] = run_process([sys.executable, str(historical / 'scripts/subagent_workflow_acceptance.py')],
-                        case / 'reviewer.log', env, abort=abort)
-                    if row['reviewer'].get('abort_reason'):
-                        report['limit_reached'] = row['reviewer']['abort_reason']
-                        break
-                    if row['reviewer']['returncode']:
-                        raise RuntimeError('Pinned historical reviewer workload failed; inspect retained row')
-                    write_json(output / 'report.json', report)
-                if report.get('limit_reached') or slow:
-                    break
+            finally:
+                save_capture()
+                write_json(output / 'report.json', report)
             report['status'] = 'PENDING_NATIVE_ANALYSIS' if slow else 'INCONCLUSIVE'
-            # Decode one representative or slow/failing trace, outside the active experiment.
-            rows = [row for row in report['iterations'] if row.get('capture')]
-            if rows:
-                selected = max(rows, key=lambda row: (bool(row.get('returncode')), row.get('future_wait_seconds') or 0))
-                capture.case = output / f"{selected['triple']}-{selected['variant']}"
-                capture.decode(selected['capture'])
+            # All cell PID/TID/QPC events join to this one experiment trace.
+            if report['iterations']:
+                capture.decode(report['capture'])
     except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as error:
         report.update(status='BLOCKED', error=f'{type(error).__name__}: {error}')
     finally:
         if capture is not None and capture.active:
             try:
-                capture.stop()
+                save_capture()
             except Exception as error:
                 report.update(status='BLOCKED', cleanup_error=f'{type(error).__name__}: {error}')
         if capture is not None:
@@ -756,8 +771,9 @@ def run_native_comparison(output, current, historical):
     print('Native wait experiment: ' + report['status'], flush=True)
     if report['status'] == 'BLOCKED':
         return 2
-    return int(any(row.get('returncode') or row.get('reviewer', {}).get('returncode')
-                   for row in report['iterations']))
+    return int(bool(report.get('limit_reached')) or any(
+        row.get('returncode') or row.get('reviewer', {}).get('returncode')
+        for row in report['iterations']))
 
 
 def main():
