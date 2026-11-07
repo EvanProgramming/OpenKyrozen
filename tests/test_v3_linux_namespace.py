@@ -147,7 +147,11 @@ print(json.dumps(out))
                 process = subprocess.Popen(namespace.rewrite(command), pass_fds=namespace.pass_fds,
                     cwd='/', env={'PATH': '/usr/bin:/bin'}, extra_groups=[],
                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                namespace.attach(process)
+                try:
+                    namespace.attach(process)
+                except RuntimeError as exc:
+                    process.wait(timeout=5)
+                    self.fail(f'{exc}: {process.stderr.read(4096).decode(errors="replace")}')
                 output, error = process.communicate(timeout=10)
                 self.assertEqual(process.returncode, 0, error)
                 result = json.loads(output)
