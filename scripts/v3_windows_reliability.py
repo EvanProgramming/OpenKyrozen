@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from contextlib import closing
 import faulthandler
 import hashlib
@@ -20,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import unittest
 import uuid
 import xml.etree.ElementTree as ET
@@ -270,6 +272,184 @@ def stop_diagnostic_tree(process):
     return attempt
 
 
+class WindowsFileHandles:
+    """Owned read handle plus a non-mutating DELETE-access open probe."""
+    def __init__(self, *, kernel=None, last_error=None):
+        import ctypes
+        from ctypes import wintypes
+        if kernel is None and os.name != 'nt':
+            raise RuntimeError('Native VFS control requires Windows')
+        self.kernel = kernel or ctypes.WinDLL('kernel32', use_last_error=True)
+        self.last_error = last_error or ctypes.get_last_error
+        self.invalid = ctypes.c_void_p(-1).value
+        self.kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+        self.kernel.CreateFileW.restype = wintypes.HANDLE
+        self.kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        self.kernel.CloseHandle.restype = wintypes.BOOL
+        self.kernel.QueryPerformanceCounter.argtypes = (ctypes.POINTER(ctypes.c_longlong),)
+        self.kernel.QueryPerformanceCounter.restype = wintypes.BOOL
+
+    def open(self, path, probe=False):
+        # OPEN_EXISTING / FILE_ATTRIBUTE_NORMAL; never DeleteFile, disposition,
+        # data write, DELETE_ON_CLOSE, SQLite connect, or byte-range locking.
+        handle = self.kernel.CreateFileW(str(path), 0x10000 if probe else 0x80000000,
+            7 if probe else 3, None, 3, 0x80, None)
+        return ((None, self.last_error()) if handle in (None, -1, self.invalid) else (handle, 0))
+
+    def close(self, handle):
+        if not self.kernel.CloseHandle(handle):
+            raise OSError(self.last_error(), 'owned Windows file handle did not close')
+
+    def qpc(self):
+        import ctypes
+        counter = ctypes.c_longlong()
+        if not self.kernel.QueryPerformanceCounter(ctypes.byref(counter)):
+            raise OSError(self.last_error(), 'QueryPerformanceCounter failed')
+        return counter.value
+
+
+class WalSharingControl:
+    """One 0.8s read handle; WAL versus an unrelated private control file."""
+    def __init__(self, trace, mode, *, api=None):
+        if mode not in {'wal', 'control-file'}:
+            raise ValueError('Unknown native VFS condition')
+        self.trace, self.mode, self.api = trace, mode, api or WindowsFileHandles()
+        self.handle = self.thread = None
+        self.probe_handles = set()
+        self.attempted = False
+        self.release_lock = threading.Lock()
+        self.evidence = {'schema_version':1, 'mode':mode, 'hold_seconds':.8,
+            'timer':'perf_counter_ns',
+            'desired_access':0x80000000, 'share_mode':3, 'creation_disposition':3,
+            'file_flags':0x80, 'attempted':False, 'armed':False, 'released':False,
+            'cleanup_complete':False, 'error':None, 'delete_access_probes':[],
+            'qualification':'Arm-time error 32 can come from SQLite itself; native phase/ETW analysis is required.'}
+        self.control_file = trace.output / 'vfs-control.bin'
+        self.control_file.write_bytes(b'Private unrelated VFS control; never SQLite data.\n')
+
+    def fail(self, error):
+        if self.evidence['error'] is None:
+            self.evidence['error'] = f'{type(error).__name__}: {error}'
+        try:
+            self.trace.record('vfs.error', error=self.evidence['error'])
+        except Exception:
+            pass  # Evidence I/O failure must not skip owned handle cleanup.
+
+    def probe(self, phase):
+        handle, error = self.api.open(self.evidence['target'], probe=True)
+        if handle is not None:
+            self.probe_handles.add(handle)
+        try:
+            row = {'phase':phase, 'error':error, 'qpc_counter':self.api.qpc(),
+                   'desired_access':0x10000, 'share_mode':7, 'mutation':False}
+            self.evidence['delete_access_probes'].append(row)
+            self.trace.record('vfs.delete_access_probe', **row)
+        finally:
+            if handle is not None:
+                self.api.close(handle)
+                self.probe_handles.remove(handle)
+        if error != 32:
+            raise RuntimeError('Owned no-delete-sharing handle did not yield sharing error 32')
+
+    def arm(self, wal, *, connection_id, frame):
+        if self.attempted:
+            return
+        self.attempted = self.evidence['attempted'] = True
+        target = Path(wal) if self.mode == 'wal' else self.control_file
+        self.evidence.update(target=str(target), wal=str(wal), connection_id=connection_id,
+            worker_pid=os.getpid(), worker_native_tid=threading.get_native_id(),
+            preclose_stack=traceback.format_stack(frame))
+        try:
+            self.handle, error = self.api.open(target)
+            self.evidence['open_error'] = error
+            if self.handle is None:
+                raise OSError(error, 'native VFS holder open failed')
+            self.evidence.update(armed=True, arm_monotonic_ns=time.monotonic_ns(),
+                                 arm_performance_counter_ns=time.perf_counter_ns(),
+                                 arm_qpc=self.api.qpc())
+            self.probe('arm')
+            self.trace.record('vfs.armed', **{key:value for key,value in self.evidence.items()
+                                            if key not in {'preclose_stack','delete_access_probes'}})
+            self.thread = threading.Thread(target=self.hold, name='diagnostic-wal-sharing-holder', daemon=True)
+            self.thread.start()
+        except Exception as error:
+            self.fail(error)
+            self.release('arm_failure')
+
+    def hold(self):
+        try:
+            started = self.evidence['arm_performance_counter_ns']
+            threading.Event().wait(max(0, (started+200_000_000-time.perf_counter_ns())/1e9))
+            with (self.trace.output/'vfs-threads.log').open('a', encoding='utf-8') as stream:
+                stream.write(json.dumps({'qpc_counter':self.api.qpc(), 'worker_native_tid':
+                    self.evidence['worker_native_tid'], 'phase':'during-native-hold'})+'\n')
+                stream.flush()
+                faulthandler.dump_traceback(file=stream, all_threads=True)
+            threading.Event().wait(max(0, (started+800_000_000-time.perf_counter_ns())/1e9))
+            self.probe('before_release')
+        except Exception as error:
+            self.fail(error)
+        finally:
+            self.release('fixed_deadline' if self.evidence['error'] is None else 'holder_error')
+
+    def note_close(self, event, connection_id, *, at_ns=None):
+        if (connection_id != self.evidence.get('connection_id')
+                or threading.get_native_id() != self.evidence.get('worker_native_tid')):
+            return
+        now = time.monotonic_ns() if at_ns is None else at_ns
+        if event == 'c_call':
+            self.evidence['close_call_monotonic_ns'] = now
+        elif event in {'c_return','c_exception'} and 'close_call_monotonic_ns' in self.evidence:
+            self.evidence.update(close_return_monotonic_ns=now, close_event=event,
+                close_interval_ns=now-self.evidence['close_call_monotonic_ns'])
+
+    def release(self, reason):
+        with self.release_lock:
+            if self.handle is None:
+                return
+            try:
+                self.evidence.update(release_call_qpc=self.api.qpc(),
+                                     release_call_performance_counter_ns=time.perf_counter_ns(),
+                                     release_call_monotonic_ns=time.monotonic_ns())
+            except Exception as error:
+                self.fail(error)
+            try:
+                self.api.close(self.handle)
+            except Exception as error:
+                self.fail(error)
+                return
+            self.handle = None
+            self.evidence.update(released=True, release_reason=reason,
+                                 release_performance_counter_ns=time.perf_counter_ns(),
+                                 release_monotonic_ns=time.monotonic_ns())
+            try:
+                self.evidence['release_qpc'] = self.api.qpc()
+                self.trace.record('vfs.released', **{key:self.evidence[key] for key in
+                    ('release_reason','release_monotonic_ns','release_qpc','worker_native_tid')})
+            except Exception as error:
+                self.fail(error)
+
+    def close(self):
+        if self.thread:
+            self.thread.join(timeout=2)
+        if self.thread is None or not self.thread.is_alive():
+            self.release('cleanup_retry')
+            for handle in tuple(self.probe_handles):
+                try:
+                    self.api.close(handle)
+                    self.probe_handles.remove(handle)
+                except Exception as error:
+                    self.fail(error)
+        self.evidence['cleanup_complete'] = (self.handle is None and not self.probe_handles
+                                             and not (self.thread and self.thread.is_alive()))
+        if not self.evidence['cleanup_complete']:
+            self.fail(RuntimeError('native VFS handle/thread cleanup_uncertified'))
+        write_json(self.trace.output/'vfs-control.json', self.evidence)
+        if self.evidence['error']:
+            raise RuntimeError('Native VFS control failed; inspect retained evidence')
+
+
 class Trace:
     def __init__(self, output, native=False):
         self.output = output
@@ -279,6 +459,9 @@ class Trace:
         self.coordinator = None
         self.active = True
         self.native = native
+        self.vfs = None
+        self.worker_native_tids = set()
+        self.cancel_returned = False
         if native:
             clock = {'performance_counter_ns': time.perf_counter_ns(), 'unix_time_ns': time.time_ns()}
             if os.name == 'nt':
@@ -311,10 +494,22 @@ class Trace:
     def profile(self, frame, event, arg):
         if event in {'c_call', 'c_return', 'c_exception'}:
             if isinstance(getattr(arg, '__self__', None), sqlite3.Connection):
+                returned_at = time.monotonic_ns() if arg.__name__=='close' else None
                 details = ({'connection_id': id(arg.__self__), 'wal': self.wal_metadata()}
                            if self.native and arg.__name__ == 'close' else {})
+                if self.vfs is not None and arg.__name__ == 'close':
+                    wal = details.get('wal', {})
+                    if (event == 'c_call' and not self.vfs.attempted and self.cancel_returned
+                            and threading.get_native_id() in self.worker_native_tids
+                            and wal.get('exists') and wal.get('bytes',0)>32):
+                        self.vfs.arm(self.case.root/'state.sqlite3-wal',
+                                     connection_id=id(arg.__self__), frame=frame)
+                    if event != 'c_call':
+                        self.vfs.note_close(event,id(arg.__self__),at_ns=returned_at)
                 self.record('sqlite.' + arg.__name__ + '.' + event,
                             caller=frame.f_code.co_qualname, **details)
+                if self.vfs is not None and arg.__name__=='close' and event=='c_call':
+                    self.vfs.note_close(event,id(arg.__self__))
             elif arg is sqlite3.connect:
                 self.record('sqlite.connect.' + event, caller=frame.f_code.co_qualname)
             return
@@ -355,6 +550,12 @@ class Trace:
         elif module == 'openkyrozen.agent.runtime' and name == '_publish_runtime_event':
             label = 'runtime_event'
         if label:
+            if label == 'worker' and event == 'call':
+                self.worker_native_tids.add(threading.get_native_id())
+            elif label == 'worker' and event == 'return':
+                self.worker_native_tids.discard(threading.get_native_id())
+            if label == 'cancel' and event == 'return':
+                self.cancel_returned = True
             self.record(label + '.' + event, function=frame.f_code.co_qualname)
             if self.native and label == 'application_close' and event == 'return':
                 self.snapshot('state-after-completion.json')
@@ -389,17 +590,22 @@ class Trace:
         write_json(self.output / filename, state)
 
 
-def run_child(output, control='baseline', cpu_workers=2, readonly_anchor=False, native_trace=False):
+def run_child(output, control='baseline', cpu_workers=2, readonly_anchor=False, native_trace=False, vfs_target=None):
     # Import the fixture before starting the four-second cancellation watchdog.
     from test_delegation import DelegationTests
 
     output.mkdir(parents=True, exist_ok=True)
     trace = Trace(output, native=native_trace)
+    if vfs_target is not None:
+        if not native_trace or control != 'cpu' or cpu_workers != 2:
+            raise RuntimeError('Native VFS requires unchanged CPU2/native trace conditions')
+        trace.vfs = WalSharingControl(trace,vfs_target)
     if native_trace:
         import openkyrozen
         if not Path(openkyrozen.__file__).resolve().is_relative_to(ROOT):
             raise RuntimeError('Native comparison imported the wrong product source')
         trace.record('product.source', path=str(Path(openkyrozen.__file__).resolve()))
+        trace.record('sqlite.runtime', sqlite_version=sqlite3.sqlite_version)
 
     class DiagnosticCase(DelegationTests):
         def setUp(self):
@@ -423,7 +629,11 @@ def run_child(output, control='baseline', cpu_workers=2, readonly_anchor=False, 
                 try:
                     super().tearDown()
                 finally:
-                    trace.record('cleanup.return')
+                    try:
+                        if trace.vfs is not None:
+                            trace.vfs.close()
+                    finally:
+                        trace.record('cleanup.return')
 
     stopped = threading.Event()
 
@@ -454,6 +664,13 @@ def run_child(output, control='baseline', cpu_workers=2, readonly_anchor=False, 
             threading.setprofile(previous_thread)
             stopped.set()
             watcher.join(timeout=1)
+            if trace.vfs is not None:
+                try:
+                    trace.vfs.close()
+                except RuntimeError:
+                    # Keep the fixture result and explicit control failure;
+                    # the parent refuses incomplete/unarmed intervention data.
+                    pass
             with trace.lock:
                 trace.active = False
                 trace.stream.close()
@@ -690,8 +907,14 @@ def _product_identity(repository):
     revision = git('rev-parse', 'HEAD').decode().strip()
     if git('diff', 'HEAD', '--'):
         raise RuntimeError('Native experiment product has tracked edits')
+    fixture = repository / 'tests/test_delegation.py'
+    tree = ast.parse(fixture.read_text(encoding='utf-8-sig'))
+    original = next(method for node in tree.body if isinstance(node,ast.ClassDef)
+                    and node.name=='DelegationTests' for method in node.body
+                    if isinstance(method,ast.FunctionDef) and method.name==TEST)
     return {'candidate_sha': revision, 'tracked_product_edits': False,
             'fixture_sha256': hashlib.sha256((repository / 'tests/test_delegation.py').read_bytes()).hexdigest(),
+            'cancel_fixture_ast_sha256': hashlib.sha256(ast.dump(original,include_attributes=False).encode()).hexdigest(),
             'database_sha256': hashlib.sha256((repository / 'openkyrozen/persistence/database.py').read_bytes()).hexdigest()}
 
 
@@ -706,15 +929,69 @@ def _native_timing(case):
     return (end['monotonic_ns'] - start['monotonic_ns']) / 1e9 if end else None
 
 
-def run_native_comparison(output, current, historical):
+def _vfs_condition(case, mode):
+    try:
+        value = json.loads((case/'vfs-control.json').read_text(encoding='utf-8'))
+        valid = (value['mode']==mode and value['hold_seconds']==.8 and value['timer']=='perf_counter_ns'
+            and value['desired_access']==0x80000000 and value['share_mode']==3
+            and value['creation_disposition']==3 and value['file_flags']==0x80
+            and all(value.get(key) is True for key in ('attempted','armed','released','cleanup_complete'))
+            and value.get('error') is None and value.get('release_reason')=='fixed_deadline'
+            and all(type(value[key]) is int and value[key]>0 for key in
+                    ('arm_monotonic_ns','release_call_monotonic_ns','release_monotonic_ns',
+                     'close_call_monotonic_ns','close_return_monotonic_ns'))
+            and type(value['close_interval_ns']) is int and value['close_interval_ns']>=0
+            and all(type(value[key]) is int and value[key]>0 for key in
+                    ('arm_performance_counter_ns','release_call_performance_counter_ns'))
+            and value['release_call_performance_counter_ns']-value['arm_performance_counter_ns']>=800_000_000
+            and value['arm_monotonic_ns']<=value['close_call_monotonic_ns']<
+                value['release_call_monotonic_ns']<=value['release_monotonic_ns']
+            and value['close_interval_ns']==value['close_return_monotonic_ns']-value['close_call_monotonic_ns']
+            and value['close_event'] in {'c_return','c_exception'}
+            and all(type(value[key]) is int and value[key]>0 for key in
+                    ('worker_pid','worker_native_tid','arm_qpc','release_qpc'))
+            and Path(value['wal']).name=='state.sqlite3-wal'
+            and (value['target']==value['wal'] if mode=='wal' else
+                 value['target']==str(case/'vfs-control.bin') and value['target']!=value['wal']))
+        return value, bool(valid)
+    except (OSError,ValueError,TypeError,KeyError):
+        return {'error':'missing_or_invalid_vfs_condition'}, False
+
+
+def run_native_comparison(output, current, historical, *, vfs=False):
     output.mkdir(parents=True, exist_ok=True)
     report = {'schema_version': 4, 'status': 'BLOCKED', 'historical_cause_established': False,
               'capture_scope': 'experiment',
+              'sqlite_version':sqlite3.sqlite_version,
               'active_limit_seconds': 300, 'trace_limit_bytes': 512*1024*1024,
               'test_timeouts_seconds': {'provider_wait':3, 'entry_wait':10, 'future_wait':5},
               'child_limit_seconds':45, 'cpu_workers':2, 'iterations':[], 'execution_order':[],
               'qualification': 'Native traces require wait/phase analysis; all-fast samples are inconclusive.'}
+    if vfs:
+        report.update(schema_version=5, vfs_protocol={
+            'conditions':['wal','control-file'], 'hold_seconds':.8,
+            'desired_access':0x80000000, 'share_mode':3,
+            'phase':'first worker-thread positive-size WAL preclose after cancel.return',
+            'sham':'identical raw read handle on unrelated private control file; no SHARE_DELETE sham',
+            'native_signal_seconds':.5,
+            'qualification':'Probe error 32 alone is not causal evidence; native ETW/phase analysis remains required.'})
     capture = None
+
+    def require_owned_cleanup(result):
+        if not vfs:
+            return
+        cleanup = result.get('timeout_cleanup')
+        uncertain = cleanup is not None and (not isinstance(cleanup,dict)
+                    or cleanup.get('descendant_cleanup_certified') is not True)
+        timeout = result.get('returncode')==124 and not result.get('abort_reason')
+        if timeout or uncertain:
+            result['infrastructure_failure'] = True
+            report['cleanup_uncertified'] = bool(report.get('cleanup_uncertified') or
+                uncertain or timeout and not (isinstance(cleanup,dict)
+                                              and cleanup.get('descendant_cleanup_certified') is True))
+            report.update(status='BLOCKED',error='Native VFS infrastructure timeout or uncertified owned child cleanup')
+            write_json(output/'report.json',report)
+            raise RuntimeError('Native VFS infrastructure timeout or uncertified owned child cleanup')
 
     def save_capture():
         saved = capture.stop()
@@ -734,6 +1011,10 @@ def run_native_comparison(output, current, historical):
         report['products'] = {'historical':_product_identity(historical), 'current':_product_identity(current)}
         if report['products']['historical']['candidate_sha'] != HISTORICAL_PRODUCT:
             raise RuntimeError('Historical product must be the pinned original source')
+        if vfs and (not report['products']['historical'].get('cancel_fixture_ast_sha256')
+                or report['products']['historical']['cancel_fixture_ast_sha256'] !=
+                   report['products']['current'].get('cancel_fixture_ast_sha256')):
+            raise RuntimeError('Native VFS comparison requires the unchanged original cancellation fixture')
         report['diagnostic_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         write_json(output / 'report.json', report)
         with tempfile.TemporaryDirectory(prefix='kyrozen-native-wait-') as home:
@@ -748,7 +1029,10 @@ def run_native_comparison(output, current, historical):
             abort = lambda: native_limit(output / 'traces', deadline)
             orders = (('baseline','anchor','current'), ('current','anchor','baseline'),
                       ('anchor','baseline','current'), ('current','baseline','anchor'))
+            if vfs:
+                orders = (('baseline','anchor','current'), ('current','anchor','baseline'))
             slow = False
+            invalid_vfs = False
             try:
                 capture.start(capture_directory)
                 for index, order in enumerate(orders, 1):
@@ -759,11 +1043,14 @@ def run_native_comparison(output, current, historical):
                         if deadline - time.monotonic() <= 10:
                             report['limit_reached'] = 'active_time_limit'
                             break
-                        case = output / f'{index}-{variant}'
+                        condition = ('wal' if index==1 else 'control-file') if vfs else None
+                        case = output / (f'{index}-{condition}-{variant}' if vfs else f'{index}-{variant}')
                         case.mkdir()
                         repository = current if variant == 'current' else historical
                         row = {'triple':index, 'variant':variant, 'repository':str(repository),
                                'native_events':str(case / 'events.jsonl')}
+                        if vfs:
+                            row['vfs_target'] = condition
                         report['iterations'].append(row)
                         report['execution_order'].append('cancellation-' + case.name)
                         write_json(output / 'report.json', report)
@@ -771,27 +1058,38 @@ def run_native_comparison(output, current, historical):
                                    '--repository', str(repository), '--control', 'cpu', '--cpu-workers', '2', '--native-trace']
                         if variant == 'anchor':
                             command.append('--readonly-anchor')
+                        if vfs:
+                            command += ['--vfs-target',condition]
                         row.update(run_process(command, case / 'process.log', env, abort=abort))
+                        require_owned_cleanup(row)
                         if row.get('abort_reason') or abort():
                             report['limit_reached'] = row.get('abort_reason') or abort()
                             break
                         row['future_wait_seconds'] = _native_timing(case)
                         slow |= row['returncode'] != 0 or (row['future_wait_seconds'] or 0) >= 1
+                        if vfs:
+                            row['vfs_control'], row['vfs_condition_valid'] = _vfs_condition(case,condition)
+                            invalid_vfs |= not row['vfs_condition_valid']
+                            slow |= row['vfs_control'].get('close_interval_ns',0)>=500_000_000
                         report['execution_order'].append('reviewer-' + case.name)
                         row['reviewer'] = run_process([sys.executable, str(historical / 'scripts/subagent_workflow_acceptance.py')],
                             case / 'reviewer.log', env, abort=abort)
+                        require_owned_cleanup(row['reviewer'])
                         if row['reviewer'].get('abort_reason'):
                             report['limit_reached'] = row['reviewer']['abort_reason']
                             break
                         if row['reviewer']['returncode']:
                             raise RuntimeError('Pinned historical reviewer workload failed; inspect retained row')
                         write_json(output / 'report.json', report)
-                    if report.get('limit_reached') or slow:
+                    if report.get('limit_reached') or slow and not vfs:
                         break
             finally:
                 save_capture()
                 write_json(output / 'report.json', report)
-            report['status'] = 'PENDING_NATIVE_ANALYSIS' if slow else 'INCONCLUSIVE'
+            report['status'] = ('BLOCKED' if invalid_vfs else
+                                'PENDING_NATIVE_ANALYSIS' if slow else 'INCONCLUSIVE')
+            if invalid_vfs:
+                report['error'] = 'One or more native VFS conditions were unarmed, invalid or not cleaned up'
             # All cell PID/TID/QPC events join to this one experiment trace.
             if report['iterations']:
                 capture.decode(report['capture'])
@@ -804,7 +1102,8 @@ def run_native_comparison(output, current, historical):
             except Exception as error:
                 report.update(status='BLOCKED', cleanup_error=f'{type(error).__name__}: {error}')
         if capture is not None:
-            report['cleanup_uncertified'] = capture.active or getattr(capture, 'cleanup_uncertified', False)
+            report['cleanup_uncertified'] = (report.get('cleanup_uncertified',False) or capture.active
+                                            or getattr(capture, 'cleanup_uncertified', False))
         write_json(output / 'report.json', report)
     print('Native wait experiment: ' + report['status'], flush=True)
     if report['status'] == 'BLOCKED':
@@ -820,7 +1119,7 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--repository', type=Path, default=ROOT, help='Exact product checkout to test; harness may live separately')
     parser.add_argument('--iterations', type=int, default=20)
-    parser.add_argument('--control', choices=('baseline', 'cpu', 'sqlite', 'combined', 'paired-anchor', 'native-wait'), default='baseline')
+    parser.add_argument('--control', choices=('baseline', 'cpu', 'sqlite', 'combined', 'paired-anchor', 'native-wait', 'native-vfs'), default='baseline')
     parser.add_argument('--historical-repository', type=Path, help='Pinned old checkout for native Windows comparison')
     parser.add_argument('--native-trace', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--cpu-workers', type=int, default=2, help='Bounded owned CPU load processes (1–4)')
@@ -829,6 +1128,7 @@ def main():
     parser.add_argument('--write-historical-requirements', type=Path, help='Write original package pins and exit without loading the product')
     parser.add_argument('--child', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--readonly-anchor', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--vfs-target', choices=('wal','control-file'), help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.write_historical_requirements:
         args.write_historical_requirements.parent.mkdir(parents=True, exist_ok=True)
@@ -848,12 +1148,18 @@ def main():
     ROOT = args.repository.resolve()
     sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
     output = args.output.resolve()
+    if args.vfs_target and (not args.child or not args.native_trace or args.control!='cpu' or args.cpu_workers!=2):
+        parser.error('--vfs-target is only an internal CPU2/native child condition')
     if args.child:
-        return run_child(output, args.control, args.cpu_workers, args.readonly_anchor, args.native_trace)
-    if args.control == 'native-wait':
-        if not args.historical_repository or not args.historical_environment or args.iterations != 4:
-            parser.error('native-wait requires historical environment, historical repository and exactly four triples')
-        return run_native_comparison(output, ROOT, args.historical_repository.resolve())
+        return run_child(output, args.control, args.cpu_workers, args.readonly_anchor, args.native_trace,
+                         **({'vfs_target':args.vfs_target} if args.vfs_target else {}))
+    if args.control in {'native-wait','native-vfs'}:
+        iterations = 1 if args.control=='native-vfs' else 4
+        if (not args.historical_repository or not args.historical_environment or args.iterations != iterations
+                or args.control=='native-vfs' and args.cpu_workers!=2):
+            parser.error(f'{args.control} requires historical environment, historical repository and exactly {iterations} campaign iteration(s)')
+        return run_native_comparison(output, ROOT, args.historical_repository.resolve(),
+                                     **({'vfs':True} if args.control=='native-vfs' else {}))
     output.mkdir(parents=True, exist_ok=True)
     if args.historical_environment:
         environment = historical_environment()

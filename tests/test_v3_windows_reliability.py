@@ -10,7 +10,7 @@ import time
 import types
 import unittest
 import zipfile
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -443,6 +443,219 @@ raise SystemExit(result)
                 self.assertEqual(state['persisted_states'][-1]['status'], 'cancelled')
 
 
+class NativeVfsDiagnosticTests(unittest.TestCase):
+    def test_qualifying_hold_overlaps_actual_close_with_complete_consistent_integer_timestamps(self):
+        from scripts.v3_windows_reliability import _vfs_condition
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            valid={'mode':'wal','hold_seconds':.8,'desired_access':0x80000000,'share_mode':3,
+                'creation_disposition':3,'file_flags':0x80,'release_reason':'fixed_deadline',
+                'attempted':True,'armed':True,'released':True,'cleanup_complete':True,'error':None,
+                'arm_monotonic_ns':1,'release_call_monotonic_ns':800_000_001,
+                'timer':'perf_counter_ns','arm_performance_counter_ns':1,
+                'release_call_performance_counter_ns':800_000_001,
+                'release_monotonic_ns':800_000_011,'close_call_monotonic_ns':2,
+                'close_return_monotonic_ns':12,'close_interval_ns':10,'close_event':'c_return',
+                'worker_pid':1,'worker_native_tid':1,'arm_qpc':1,'release_qpc':800_000_011,
+                'wal':str(root/'state.sqlite3-wal'),'target':str(root/'state.sqlite3-wal')}
+            path=root/'vfs-control.json';path.write_text(json.dumps(valid))
+            self.assertTrue(_vfs_condition(root,'wal')[1])  # anchor/current may return before release
+            coarse=dict(valid,release_call_monotonic_ns=796_875_001,release_monotonic_ns=796_875_011)
+            path.write_text(json.dumps(coarse))
+            self.assertTrue(_vfs_condition(root,'wal')[1])  # .8s high-resolution hold, coarse Windows clock ticks
+            path.write_text(json.dumps(dict(valid,close_return_monotonic_ns=2,close_interval_ns=0)))
+            self.assertTrue(_vfs_condition(root,'wal')[1])  # Windows monotonic timestamps can share one tick
+            invalid=[dict(valid,close_call_monotonic_ns=900_000_001,
+                          close_return_monotonic_ns=900_000_011),
+                     dict(valid,close_interval_ns=11),dict(valid,close_call_monotonic_ns=True),
+                     dict(valid,close_return_monotonic_ns=12.0),dict(valid,release_call_monotonic_ns=0),
+                     dict(valid,release_call_performance_counter_ns=799_999_999),
+                     dict(valid,close_interval_ns=False,close_return_monotonic_ns=2),
+                     dict(valid,close_interval_ns=-1,close_return_monotonic_ns=1)]
+            for field in ('close_call_monotonic_ns','close_return_monotonic_ns','release_call_monotonic_ns'):
+                missing=dict(valid);missing.pop(field);invalid.append(missing)
+            for value in invalid:
+                with self.subTest(value=value):
+                    path.write_text(json.dumps(value))
+                    self.assertFalse(_vfs_condition(root,'wal')[1])
+
+    def test_vfs_cli_requires_pinned_historical_environment_and_exact_six_cell_campaign(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory,patch.object(diagnostic,'ROOT',diagnostic.ROOT), \
+                patch.object(diagnostic,'run_native_comparison',return_value=0) as run:
+            root=Path(directory).resolve()
+            base=['diagnostic','--output',str(root/'out'),'--repository',str(root/'current'),
+                  '--control','native-vfs','--iterations','1']
+            with patch.object(sys,'argv',base),self.assertRaises(SystemExit):diagnostic.main()
+            run.assert_not_called()
+            with patch.object(sys,'argv',base+['--historical-environment','--historical-repository',str(root/'old')]):
+                self.assertEqual(diagnostic.main(),0)
+            run.assert_called_once_with(root/'out',root/'current',root/'old',vfs=True)
+
+    def test_only_first_worker_post_cancel_positive_wal_preclose_phase_can_arm(self):
+        import sqlite3
+        import threading
+        from scripts.v3_windows_reliability import Trace
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            connection=sqlite3.connect(root/'state.sqlite3')
+            connection.execute('PRAGMA journal_mode=WAL')
+            connection.execute('CREATE TABLE probe(value TEXT)');connection.commit()
+            trace=Trace(root,native=True);trace.case=types.SimpleNamespace(root=root)
+            holder=types.SimpleNamespace(attempted=False,arm=Mock(),note_close=Mock())
+            def arm(*args,**kwargs):holder.attempted=True
+            holder.arm.side_effect=arm;trace.vfs=holder
+            try:
+                trace.profile(sys._getframe(),'c_call',connection.close)
+                holder.arm.assert_not_called()
+                trace.worker_native_tids.add(threading.get_native_id())
+                trace.profile(sys._getframe(),'c_call',connection.close)
+                holder.arm.assert_not_called()
+                trace.cancel_returned=True
+                with patch.object(trace,'wal_metadata',return_value={'exists':False,'bytes':0}):
+                    trace.profile(sys._getframe(),'c_call',connection.close)
+                holder.arm.assert_not_called()
+                trace.profile(sys._getframe(),'c_call',connection.close)
+                trace.profile(sys._getframe(),'c_call',connection.close)
+                holder.arm.assert_called_once()
+                self.assertEqual(holder.arm.call_args.args[0],root/'state.sqlite3-wal')
+            finally:
+                connection.close();trace.stream.close()
+
+    def test_close_interval_excludes_preclose_arm_and_trace_write_work(self):
+        import sqlite3
+        import threading
+        from scripts.v3_windows_reliability import Trace
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);connection=sqlite3.connect(root/'state.sqlite3')
+            connection.execute('PRAGMA journal_mode=WAL')
+            connection.execute('CREATE TABLE probe(value TEXT)');connection.commit()
+            trace=Trace(root,native=True);trace.case=types.SimpleNamespace(root=root)
+            order=[]
+            holder=types.SimpleNamespace(attempted=False)
+            def arm(*args,**kwargs):holder.attempted=True;order.append('arm')
+            holder.arm=arm;holder.note_close=lambda event,*args,**kwargs:order.append(event)
+            trace.vfs=holder;trace.cancel_returned=True
+            trace.worker_native_tids.add(threading.get_native_id())
+            try:
+                with patch.object(trace,'record',side_effect=lambda *args,**kwargs:order.append('trace-write')):
+                    trace.profile(sys._getframe(),'c_call',connection.close)
+                    trace.profile(sys._getframe(),'c_return',connection.close)
+                self.assertEqual(order,['arm','trace-write','c_call','c_return','trace-write'])
+            finally:
+                connection.close();trace.stream.close()
+
+    def test_winapi_holder_and_delete_access_probe_never_modify_or_delete_the_file(self):
+        from scripts.v3_windows_reliability import WindowsFileHandles
+        kernel=types.SimpleNamespace(CreateFileW=Mock(side_effect=[123, -1]),
+            CloseHandle=Mock(return_value=1),QueryPerformanceCounter=Mock())
+        api=WindowsFileHandles(kernel=kernel,last_error=lambda:32)
+        self.assertEqual(api.open(Path('owned-wal')), (123,0))
+        self.assertEqual(api.open(Path('owned-wal'),probe=True), (None,32))
+        self.assertEqual([call.args[1:6] for call in kernel.CreateFileW.call_args_list],
+                         [(0x80000000,3,None,3,0x80),(0x10000,7,None,3,0x80)])
+        api.close(123)
+        kernel.CloseHandle.assert_called_once_with(123)
+
+    def control(self,root,mode,api):
+        from scripts.v3_windows_reliability import WalSharingControl
+        trace=types.SimpleNamespace(output=root,record=Mock())
+        return WalSharingControl(trace,mode,api=api),trace
+
+    def test_wal_and_unrelated_file_controls_match_resource_flags_lifetime_and_cleanup(self):
+        class API:
+            def __init__(self):self.opened=[];self.closed=[]
+            def open(self,path,probe=False):
+                self.opened.append((Path(path),probe))
+                return (None,32) if probe else (123,0)
+            def close(self,handle):self.closed.append(handle)
+            def qpc(self):return time.perf_counter_ns()
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            wal=root/'state.sqlite3-wal';wal.write_bytes(b'x'*100)
+            for mode in ('wal','control-file'):
+                case=root/mode;case.mkdir();api=API()
+                control,trace=self.control(case,mode,api)
+                with patch('scripts.v3_windows_reliability.sqlite3.connect',
+                           side_effect=AssertionError('raw handle created an SQLite participant')), \
+                     patch('scripts.v3_windows_reliability.faulthandler.dump_traceback'), \
+                     patch('scripts.v3_windows_reliability.time.sleep',side_effect=AssertionError('post-close sleep')):
+                    control.arm(wal,connection_id=7,frame=sys._getframe())
+                    control.close()
+                evidence=json.loads((case/'vfs-control.json').read_text())
+                target=wal if mode=='wal' else case/'vfs-control.bin'
+                self.assertEqual(api.opened,[(target,False),(target,True),(target,True)])
+                self.assertEqual(api.closed,[123])
+                self.assertTrue(evidence['attempted'] and evidence['armed'] and evidence['released'])
+                self.assertTrue(evidence['cleanup_complete'])
+                self.assertEqual(evidence['timer'],'perf_counter_ns')
+                self.assertGreaterEqual(evidence['release_call_performance_counter_ns']-
+                                        evidence['arm_performance_counter_ns'],800_000_000)
+                self.assertEqual(evidence['hold_seconds'],.8)
+                self.assertEqual(evidence['share_mode'],3)
+                self.assertEqual(evidence['desired_access'],0x80000000)
+                self.assertTrue(all(row['error']==32 for row in evidence['delete_access_probes']))
+                self.assertFalse(control.thread.is_alive())
+                control.close()  # resource cleanup is idempotent
+                self.assertEqual(api.closed,[123])
+
+    def test_arm_failure_is_retained_and_never_claims_a_qualifying_condition(self):
+        api=types.SimpleNamespace(open=lambda *args,**kwargs:(None,32),close=Mock(),qpc=lambda:1)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);wal=root/'state.sqlite3-wal';wal.write_bytes(b'x'*100)
+            control,_=self.control(root,'wal',api)
+            control.arm(wal,connection_id=7,frame=sys._getframe())
+            with self.assertRaisesRegex(RuntimeError,'VFS control'):
+                control.close()
+            evidence=json.loads((root/'vfs-control.json').read_text())
+            self.assertTrue(evidence['attempted'])
+            self.assertFalse(evidence['armed'])
+            self.assertIn('32',evidence['error'])
+            api.close.assert_not_called()
+
+    def test_clock_failure_cannot_skip_owned_handle_cleanup_or_claim_clean_evidence(self):
+        api=types.SimpleNamespace(open=Mock(),close=Mock(),qpc=Mock(side_effect=OSError('clock unavailable')))
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);control,_=self.control(root,'wal',api)
+            control.handle=123
+            control.release('cleanup_retry')
+            with self.assertRaises(RuntimeError):control.close()
+            api.close.assert_called_once_with(123)
+            evidence=json.loads((root/'vfs-control.json').read_text())
+            self.assertTrue(evidence['cleanup_complete'])
+            self.assertIn('clock unavailable',evidence['error'])
+
+    def test_failed_holder_and_probe_closes_retain_ownership_for_cleanup_retry(self):
+        closed=[]
+        def close(handle):
+            closed.append(handle)
+            if closed.count(handle)==1:raise OSError('close refused')
+        api=types.SimpleNamespace(open=lambda path,probe=False:(999,0) if probe else (123,0),
+                                 close=close,qpc=time.perf_counter_ns)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);wal=root/'state.sqlite3-wal';wal.write_bytes(b'x'*100)
+            control,_=self.control(root,'wal',api)
+            control.arm(wal,connection_id=7,frame=sys._getframe())
+            self.assertEqual(control.handle,123)
+            self.assertEqual(control.probe_handles,{999})
+            with self.assertRaises(RuntimeError):control.close()
+            self.assertEqual(closed,[999,123,123,999])
+            evidence=json.loads((root/'vfs-control.json').read_text())
+            self.assertTrue(evidence['cleanup_complete'])
+            self.assertIsNotNone(evidence['error'])
+
+    def test_live_holder_thread_cannot_be_falsely_certified_or_double_closed(self):
+        api=types.SimpleNamespace(close=Mock(),qpc=time.perf_counter_ns)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);control,_=self.control(root,'wal',api)
+            control.handle=123
+            control.thread=types.SimpleNamespace(join=Mock(),is_alive=lambda:True)
+            with self.assertRaises(RuntimeError):control.close()
+            control.thread.join.assert_called_once_with(timeout=2)
+            api.close.assert_not_called()
+            self.assertFalse(json.loads((root/'vfs-control.json').read_text())['cleanup_complete'])
+
+
 class NativeWaitDiagnosticTests(unittest.TestCase):
     @staticmethod
     def exported_profile():
@@ -607,10 +820,13 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
         workflow = yaml.safe_load((ROOT/'.github/workflows/v3-windows-reliability.yml').read_text())
         dispatch = workflow.get('on', workflow.get(True))['workflow_dispatch']['inputs']
         self.assertEqual(dispatch['control']['options'],
-                         ['baseline','cpu','sqlite','combined','paired-anchor','native-wait','all'])
+                         ['baseline','cpu','sqlite','combined','paired-anchor','native-wait','native-vfs','all'])
         steps = workflow['jobs']['cancellation']['steps']
         old = next(step for step in steps if step.get('with', {}).get('path')=='historical-product')
         self.assertEqual(old['with']['ref'], '0f172f9fe692ff8fafcc0a15a72fe51eaf67e977')
+        self.assertIn("'native-vfs'",old['if'])
+        validation=next(step['run'] for step in steps if step.get('name')=='Validate exact candidate identity')
+        self.assertIn('native-vfs',validation)
         trace = next(step['run'] for step in steps if step.get('name','').startswith('Trace unchanged'))
         self.assertIn('--cpu-workers 2', trace)
         self.assertIn("'--historical-repository', 'historical-product'", trace)
@@ -743,7 +959,8 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
             self.assertEqual(len(list(root.glob('wpr-stop*.json'))), 2)
             self.assertTrue(capture.active and capture.cleanup_uncertified)
 
-    def comparison(self, failure=False, *, abort_reason=None, launch_error=False, saved_trace_bytes=None):
+    def comparison(self, failure=False, *, abort_reason=None, launch_error=False, saved_trace_bytes=None,
+                   vfs=False, unarmed=False, infrastructure_timeout=False):
         from scripts import v3_windows_reliability as diagnostic
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -772,6 +989,7 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
                 with temporary_trace.open('wb') as stream:
                     stream.truncate(120*1024*1024)
             elif '-stop' in command:
+                activity['checkpoint_at_stop'] = json.loads((output/'report.json').read_text())
                 if saved_trace_bytes is not None:
                     with (output/'traces/temporary/recording.etl').open('r+b') as stream:
                         stream.truncate(saved_trace_bytes)
@@ -800,17 +1018,84 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
                     {'event':'cancel.return','monotonic_ns':1,'thread_id':1},
                     {'event':'future_wait.call','monotonic_ns':1,'thread_id':1},
                     {'event':'future_wait.return','monotonic_ns':5_000_000_001 if bad else 200_000_001,'thread_id':1}]))
+                if '--vfs-target' in command:
+                    mode=command[command.index('--vfs-target')+1]
+                    write={'mode':mode,'hold_seconds':.8,'desired_access':0x80000000,'share_mode':3,
+                           'creation_disposition':3,'file_flags':0x80,'release_reason':'fixed_deadline',
+                           'attempted':not unarmed,'armed':not unarmed,'released':not unarmed,
+                           'cleanup_complete':True,'error':None,'arm_monotonic_ns':1,
+                           'release_monotonic_ns':800_000_001,'close_interval_ns':10,
+                           'release_call_monotonic_ns':800_000_001,
+                           'timer':'perf_counter_ns','arm_performance_counter_ns':1,
+                           'release_call_performance_counter_ns':800_000_001,
+                           'close_call_monotonic_ns':2,'close_return_monotonic_ns':12,
+                           'close_event':'c_return','worker_pid':1,'worker_native_tid':1,
+                           'arm_qpc':1,'release_qpc':800_000_001,'wal':str(case/'state.sqlite3-wal'),
+                           'target':str(case/'state.sqlite3-wal' if mode=='wal' else case/'vfs-control.bin')}
+                    (case/'vfs-control.json').write_text(json.dumps(write))
+                if infrastructure_timeout and len(commands)==1:
+                    return {'returncode':124,'timeout_seconds':45,'abort_reason':None,
+                            'timeout_cleanup':{'descendant_cleanup_certified':False}}
                 return {'returncode': int(bad), 'timeout_seconds':45, 'timeout_cleanup':None}
             return {'returncode':0, 'timeout_seconds':45, 'timeout_cleanup':None}
         with patch.object(diagnostic, 'NativeCapture', return_value=capture), \
              patch.object(diagnostic.platform, 'system', return_value='Windows'), \
              patch.object(diagnostic.subprocess, 'run', side_effect=native_tool), \
              patch.object(diagnostic, '_product_identity', side_effect=lambda path: {
-                 'candidate_sha':diagnostic.HISTORICAL_PRODUCT if path==old else 'c'*40}), \
+                 'candidate_sha':diagnostic.HISTORICAL_PRODUCT if path==old else 'c'*40,
+                 'cancel_fixture_ast_sha256':'same-original-fixture'}), \
              patch.object(diagnostic, 'historical_environment', return_value={'status':'MATCH'}), \
              patch.object(diagnostic, 'run_process', side_effect=run):
-            result = diagnostic.run_native_comparison(output, current, old)
+            result = diagnostic.run_native_comparison(output, current, old, **({'vfs':True} if vfs else {}))
         return result, json.loads((output/'report.json').read_text()), commands, old, current, activity
+
+    def test_native_vfs_preserves_exact_six_cells_original_limits_reviewers_and_inconclusive_boundary(self):
+        result,report,commands,old,current,_=self.comparison(vfs=True)
+        self.assertEqual(result,0)
+        self.assertEqual(report['status'],'INCONCLUSIVE')
+        self.assertFalse(report['historical_cause_established'])
+        self.assertEqual(report['active_limit_seconds'],300)
+        self.assertEqual(report['child_limit_seconds'],45)
+        self.assertEqual(report['test_timeouts_seconds'],{'provider_wait':3,'entry_wait':10,'future_wait':5})
+        self.assertEqual([(row['vfs_target'],row['variant']) for row in report['iterations']],
+            [('wal','baseline'),('wal','anchor'),('wal','current'),
+             ('control-file','current'),('control-file','anchor'),('control-file','baseline')])
+        self.assertEqual(len(commands),12)
+        for command,kwargs in commands[::2]:
+            self.assertIn('--native-trace',command)
+            self.assertIn('--vfs-target',command)
+            self.assertEqual(command[command.index('--control')+1],'cpu')
+            self.assertEqual(command[command.index('--cpu-workers')+1],'2')
+            self.assertIn('abort',kwargs)
+        self.assertTrue(all(command[1]==str(old/'scripts/subagent_workflow_acceptance.py')
+                            for command,_ in commands[1::2]))
+        self.assertTrue(all(row['vfs_condition_valid'] for row in report['iterations']))
+
+    def test_native_vfs_failure_keeps_all_six_cells_but_unarmed_condition_is_blocked(self):
+        result,report,commands,*_=self.comparison(vfs=True,failure=True)
+        self.assertEqual(result,1)
+        self.assertEqual(len(report['iterations']),6)
+        self.assertEqual(len(commands),12)
+        self.assertEqual(report['status'],'PENDING_NATIVE_ANALYSIS')
+        result,report,*_=self.comparison(vfs=True,unarmed=True)
+        self.assertEqual(result,2)
+        self.assertEqual(report['status'],'BLOCKED')
+        self.assertFalse(report['historical_cause_established'])
+
+    def test_native_vfs_uncertified_timeout_stops_before_reviewer_or_any_later_cell_and_saves_trace(self):
+        result,report,commands,_,_,activity=self.comparison(vfs=True,infrastructure_timeout=True)
+        self.assertEqual(result,2)
+        self.assertEqual(len(commands),1)
+        self.assertEqual(len(report['iterations']),1)
+        self.assertEqual(report['status'],'BLOCKED')
+        self.assertTrue(report['cleanup_uncertified'])
+        self.assertFalse(any(name.startswith('reviewer-') for name in report['execution_order']))
+        self.assertEqual(sum('-start' in command for command in activity['tools']),1)
+        self.assertEqual(sum('-stop' in command for command in activity['tools']),1)
+        self.assertEqual(report['capture']['status'],'CAPTURED')
+        self.assertTrue(activity['checkpoint_at_stop']['cleanup_uncertified'])
+        self.assertEqual(activity['checkpoint_at_stop']['status'],'BLOCKED')
+        self.assertTrue(activity['checkpoint_at_stop']['iterations'][0]['infrastructure_failure'])
 
     def test_native_comparison_keeps_identical_cpu_controls_and_pinned_reviewers_and_all_fast_is_inconclusive(self):
         result, report, commands, old, current, _ = self.comparison()
