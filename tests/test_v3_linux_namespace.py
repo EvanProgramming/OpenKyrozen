@@ -125,6 +125,8 @@ class KernelNamespaceTests(unittest.TestCase):
             cwd='/', env={'PATH': '/usr/bin:/bin'}, capture_output=True, timeout=5)
         self.assertNotEqual(denied.returncode, 0)
         self.assertIn(b'bounding capability drop failed: 8', denied.stderr)
+        self.assertIn(b'CapEff:', denied.stderr)
+        self.assertIn(b'CapBnd:', denied.stderr)
 
     def test_actual_host_identity_caps_namespace_denial_and_original_file_protection(self):
         module = namespace_module(self)

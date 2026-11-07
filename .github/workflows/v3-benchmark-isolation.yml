@@ -35,6 +35,15 @@ jobs:
         run: |
           git rev-parse HEAD > isolation-commit.txt
           python -m pip freeze > isolation-dependencies.txt
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            {
+              bwrap --version
+              ls -l /usr/bin/bwrap
+              uname -r
+              cat /proc/self/attr/current
+              if [[ -f /etc/apparmor.d/bwrap ]]; then cat /etc/apparmor.d/bwrap; fi
+            } > isolation-backend.txt
+          fi
       - name: Verify actor isolation and cleanup without persistent accounts
         if: always()
         shell: bash
@@ -73,6 +82,7 @@ jobs:
           path: |
             isolation-commit.txt
             isolation-dependencies.txt
+            isolation-backend.txt
             isolation-tests.log
             isolation-policy-before.txt
             isolation-policy-after.txt
