@@ -278,6 +278,7 @@ class SessionProcessManager:
             return None
         if type(limit) is not int or not 1 <= limit <= 4000:
             return None
+        exit_code = handle.process.poll()
         with handle.lock:
             output = getattr(handle, stream)
             page = output[offset:offset + limit]
@@ -291,8 +292,8 @@ class SessionProcessManager:
             "sandbox_backend": handle.sandbox_backend,
             "sandbox_reason": handle.sandbox_reason,
             "duration_seconds": duration,
-            "running": handle.process.poll() is None,
-            "exit_code": handle.process.poll(),
+            "running": exit_code is None,
+            "exit_code": exit_code,
         }
 
     def stop(self, process_id: str) -> bool | None:

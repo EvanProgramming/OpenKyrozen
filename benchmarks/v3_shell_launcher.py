@@ -422,13 +422,19 @@ class RemoteProcess:
         self.client, self.identifier, self.pid, self.backend = client, identifier, pid, backend
         self.timed_out = False
         self.returncode = None
+        self._benchmark_handle = None
         self.stdout = RemoteStream(self, 'stdout')
         self.stderr = RemoteStream(self, 'stderr')
 
     def poll(self):
         value = self.client.rpc('poll', id=self.identifier)
-        self.returncode = value['exit_code']
-        self.timed_out = value['timed_out']
+        if self.returncode is None:
+            self.returncode = value['exit_code']
+        self.timed_out = self.timed_out or value['timed_out']
+        if self._benchmark_handle is not None:
+            self._benchmark_handle.timed_out = self._benchmark_handle.timed_out or self.timed_out
+            if self.timed_out and not self._benchmark_handle.stop_reason:
+                self._benchmark_handle.stop_reason = 'timed_out'
         return self.returncode
 
     def wait(self, timeout=None):
@@ -513,6 +519,7 @@ def install_worker_adapter(client=None):
                     handle = processes.ProcessHandle(process_id, process, self.owner_id,
                                                       self.workspace_id, self.session_id, timeout_seconds,
                                                       process.backend)
+                    process._benchmark_handle = handle
                     self._handles[handle.process_id] = handle
             except BaseException:
                 if audit:

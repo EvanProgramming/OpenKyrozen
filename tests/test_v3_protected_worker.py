@@ -68,6 +68,74 @@ class TicketTests(unittest.TestCase):
             self.auth.issue(dict(self.request, revision=1, cwd=str(self.root / 'allowed' / 'escape')))
 
 
+class RemoteProcessStateTests(unittest.TestCase):
+    def test_parent_timeout_is_audited_before_a_delayed_expiry_and_preserves_explicit_stop_reason(self):
+        from unittest.mock import Mock
+        from benchmarks.v3_shell_launcher import RemoteProcess
+        from openkyrozen.tools.processes import ProcessHandle, SessionProcessManager
+        for reason in (None, 'cancelled', 'stopped'):
+            with self.subTest(existing_reason=reason):
+                client = Mock()
+                client.rpc.return_value = {'exit_code': -15, 'timed_out': True}
+                process = RemoteProcess(client, 'owned', 42, 'test')
+                manager = SessionProcessManager('owner', 'workspace', 'session')
+                handle = ProcessHandle('handle', process, 'owner', 'workspace', 'session', 1,
+                                       stop_reason=reason)
+                process._benchmark_handle = handle
+                manager._audit_event = Mock()
+                manager._audit_outcome(handle)
+                expected = reason or 'timed_out'
+                self.assertEqual(handle.stop_reason, expected)
+                self.assertEqual(manager._audit_event.call_args.args[0], expected)
+                self.assertEqual(manager._audit_event.call_args.kwargs['reason'], expected)
+
+    def test_first_output_read_includes_the_parent_observed_timeout(self):
+        from unittest.mock import Mock
+        from benchmarks.v3_shell_launcher import RemoteProcess
+        from openkyrozen.tools.processes import ProcessHandle, SessionProcessManager
+        client = Mock()
+        client.rpc.return_value = {'exit_code': -15, 'timed_out': True}
+        process = RemoteProcess(client, 'owned', 42, 'test')
+        manager = SessionProcessManager('owner', 'workspace', 'session')
+        handle = ProcessHandle('handle', process, 'owner', 'workspace', 'session', 1)
+        process._benchmark_handle = handle
+        manager._handles[handle.process_id] = handle
+        result = manager.read(handle.process_id)
+        self.assertTrue(result['timed_out'])
+        self.assertFalse(result['running'])
+        self.assertEqual(result['exit_code'], -15)
+        self.assertEqual(client.rpc.call_count, 1)
+
+    def test_output_read_uses_one_process_state_for_running_and_exit(self):
+        from unittest.mock import Mock
+        from openkyrozen.tools.processes import ProcessHandle, SessionProcessManager
+        process = Mock()
+        process.poll.side_effect = [None, 0]
+        manager = SessionProcessManager('owner', 'workspace', 'session')
+        handle = ProcessHandle('handle', process, 'owner', 'workspace', 'session', 1)
+        manager._handles[handle.process_id] = handle
+        result = manager.read(handle.process_id)
+        self.assertTrue(result['running'])
+        self.assertIsNone(result['exit_code'])
+        self.assertEqual(process.poll.call_count, 1)
+
+    def test_observed_timeout_updates_its_handle_and_terminal_state_cannot_revert(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from benchmarks.v3_shell_launcher import RemoteProcess
+        client = Mock()
+        client.rpc.side_effect = [{'exit_code': -15, 'timed_out': True},
+                                  {'exit_code': None, 'timed_out': False}]
+        process = RemoteProcess(client, 'owned', 42, 'test')
+        handle = SimpleNamespace(timed_out=False, stop_reason=None)
+        process._benchmark_handle = handle
+        self.assertEqual(process.poll(), -15)
+        self.assertTrue(handle.timed_out)
+        self.assertEqual(process.poll(), -15)
+        self.assertTrue(process.timed_out)
+        self.assertTrue(handle.timed_out)
+
+
 @unittest.skipUnless(sys.platform == 'darwin' or sys.platform.startswith('linux'), 'Unix sandbox required')
 class ProtectedWorkerTests(unittest.TestCase):
     def test_security_preflight_executes_direct_and_external_managed_shell_attacks(self):
@@ -130,7 +198,7 @@ class ProtectedWorkerTests(unittest.TestCase):
             guard.write_text('original')
             policy = ShellPolicy(root, frozenset({'read', 'write', 'shell'}))
             script = '''
-import json, os, sys, time
+import json, os, sys, time, threading
 from benchmarks.v3_shell_launcher import install_worker_adapter
 install_worker_adapter()
 from openkyrozen.tools.processes import SessionProcessManager
@@ -141,10 +209,18 @@ time.sleep(.2)
 r = m.read(h.process_id)
 e = m.read(h.process_id, stream='stderr')
 print(json.dumps([r['exit_code'], r['output'], e['output']]), flush=True)
-h = m.start('sleep 100 & wait', cwd=sys.argv[1], env=dict(os.environ), timeout_seconds=.2)
-h.process.wait(10)
-time.sleep(.2)
-print(json.dumps([h.timed_out, h.process.poll() is not None]), flush=True)
+original_expire, gate = m._expire, threading.Event()
+def delayed_expiry(handle, **options):
+    gate.wait(10)
+    original_expire(handle, **options)
+m._expire = delayed_expiry
+try:
+    h = m.start('sleep 100 & wait', cwd=sys.argv[1], env=dict(os.environ), timeout_seconds=.2)
+    h.process.wait(10)
+    print(json.dumps([h.timed_out, h.process.poll() is not None]), flush=True)
+finally:
+    gate.set()
+    m._expire = original_expire
 h = m.start('sleep 100 & wait', cwd=sys.argv[1], env=dict(os.environ), timeout_seconds=100)
 print('started', flush=True)
 os._exit(0)
