@@ -65,8 +65,10 @@ def _rewrite(command, *, uid, gid, descriptors, python, ready):
         raise PermissionError('namespace rewrite requires the original strict userns guard')
     options.remove('--unshare-user')
     options.remove('--disable-userns')
-    return [command[0], '--userns', str(descriptors[0]), '--userns2', str(descriptors[1]),
-            '--uid', str(uid), '--gid', str(gid), '--cap-drop', 'ALL', '--cap-add', 'CAP_SETPCAP',
+    # Enter the locked namespace before setup so bwrap clears bounds before
+    # target exec; child LSM profiles can deny all later capability operations.
+    return [command[0], '--userns', str(descriptors[1]),
+            '--uid', str(uid), '--gid', str(gid), '--cap-drop', 'ALL',
             '--assert-userns-disabled', *options, '--', python, '-I', '-S', '-c', _BOOTSTRAP,
             ready, str(uid), str(gid), *target]
 
