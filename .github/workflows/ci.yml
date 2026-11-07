@@ -78,7 +78,7 @@ jobs:
       - name: Install the required Linux filesystem sandbox
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y bubblewrap
+          sudo apt-get install --no-install-recommends -y bubblewrap ripgrep
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Run non-browser tests
         if: needs.changes.outputs.python == 'true' || needs.changes.outputs.all == 'true'
@@ -87,7 +87,7 @@ jobs:
         if: needs.changes.outputs.docs == 'true' || needs.changes.outputs.all == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y zsh bubblewrap
+          sudo apt-get install --no-install-recommends -y zsh bubblewrap ripgrep
           make docs-check PYTHON=python
 
   python-test:
@@ -112,7 +112,7 @@ jobs:
       - name: Install full development dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y zsh bubblewrap
+          sudo apt-get install --no-install-recommends -y zsh bubblewrap ripgrep
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           python -m pip install --upgrade pip
           pip install -e '.[all]'
@@ -156,7 +156,7 @@ jobs:
       - name: Install all development dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y zsh bubblewrap
+          sudo apt-get install --no-install-recommends -y zsh bubblewrap ripgrep
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           python -m pip install --upgrade pip
           pip install -e '.[all]'
@@ -326,10 +326,13 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y bubblewrap
+          sudo apt-get install --no-install-recommends -y bubblewrap ripgrep
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           python -m pip install playwright
           python -m playwright install-deps chromium
+      - name: Ensure macOS search integration is available
+        if: runner.os == 'macOS'
+        run: command -v rg >/dev/null || brew install ripgrep
       - name: Install project and browser dependencies
         shell: bash
         run: |
