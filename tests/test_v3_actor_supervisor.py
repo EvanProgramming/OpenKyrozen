@@ -661,6 +661,114 @@ class ActorChannelTests(unittest.TestCase):
         return {'root': False, 'parent': parent, 'condition': threading.Condition(),
                 'callbacks': {}, 'cancelled': False, 'disconnected': False, 'state': 'running'}
 
+    def test_live_cancellation_queries_progress_without_root_callback_reply_and_release_shared_client(self):
+        from benchmarks.v3_actor_worker import _CoordinatorPort
+        from benchmarks.v3_shell_launcher import BrokerClient, _encoded
+        from openkyrozen.agent.turn import CancellationEvents
+        supervisor=self.supervisor();parent=object();actor=self.actor(parent)
+        supervisor.handles['owned']=actor
+        ready,handling,resume=(threading.Event() for _ in range(3))
+        complete={name:threading.Event() for name in ('provider','consumer')}
+        results={};requests=[];errors=[]
+        class ObservedCondition(threading.Condition):
+            def wait(self, timeout=None):
+                ready.set()  # old transport has queued a callback and released this lock next
+                return super().wait(timeout)
+        actor['condition']=ObservedCondition()
+        def stop(owned):
+            with owned['condition']:
+                owned['cancelled']=True
+                owned['condition'].notify_all()
+        supervisor._stop_actor=stop
+        server,channel=socket.socketpair();client=BrokerClient(channel.detach(),{})
+        def serve():
+            try:
+                with server.makefile('rwb',buffering=0) as stream:
+                    while line:=stream.readline():
+                        request=json.loads(line);requests.append(request)
+                        try:
+                            value=supervisor._callback(actor,request)
+                            response={'ok':True,'value':value}
+                        except PermissionError as error:
+                            response={'ok':False,'message':str(error)}
+                        ready.set()  # the direct live-state query has already returned
+                        server.sendall(_encoded(response)+b'\n')
+            except OSError:
+                pass
+        def root_poll():
+            try:
+                if not ready.wait(2):raise RuntimeError('child query never reached the broker')
+                response=supervisor._delegated(parent,{'op':'delegated_poll','id':'owned',
+                    'replies':[],'cancelled':False})
+                handling.set()
+                if not resume.wait(3):raise RuntimeError('root callback barrier was not released')
+                supervisor._delegated(parent,{'op':'delegated_poll','id':'owned','cancelled':False,
+                    'replies':[{'id':row['id'],'ok':True,'value':False} for row in response['requests']]})
+            except Exception as error:
+                errors.append(error)
+        threads=[]
+        with tempfile.TemporaryDirectory() as directory:
+            payload={'workspace':directory,'run':{'run_id':'owned'},'review':False,'messages':{},
+                     'parent':{'has_budget':False}}
+            coordinator=_CoordinatorPort(payload,client)
+            flag=coordinator.cancelled['owned']
+            # Match the original delegation -> runtime -> provider composition:
+            # one uncancelled check reaches the same port three times.
+            cancelled=CancellationEvents(CancellationEvents(CancellationEvents(flag,flag),threading.Event()),flag)
+            def check(name):
+                try:results[name]=cancelled.is_set()
+                except Exception as error:errors.append(error)
+                finally:complete[name].set()
+            try:
+                for target in (serve,root_poll,lambda:check('provider')):
+                    thread=threading.Thread(target=target,daemon=True);threads.append(thread);thread.start()
+                self.assertTrue(handling.wait(2),'root did not reach the controlled callback-service barrier')
+                consumer=threading.Thread(target=lambda:check('consumer'),daemon=True)
+                threads.append(consumer);consumer.start()
+                self.assertTrue(complete['provider'].wait(1),
+                    'cancellation waited for root callback service while holding BrokerClient.lock')
+                self.assertTrue(complete['consumer'].wait(1),'the provider cancellation query blocked its peer')
+                self.assertEqual(results,{'provider':False,'consumer':False})
+                self.assertFalse(resume.is_set())
+                self.assertEqual(len(requests),6)
+                self.assertEqual(actor['callbacks'],{})
+                # The same bound parent poll/stop path must still cancel this actor.
+                supervisor._delegated(parent,{'op':'delegated_poll','id':'owned','replies':[],'cancelled':True})
+                self.assertTrue(cancelled.is_set())
+                client.connection.shutdown(socket.SHUT_RDWR)
+                with self.assertRaises((ConnectionError,OSError)):
+                    cancelled.is_set()  # a disconnected transport must never become cached False
+            finally:
+                resume.set();supervisor.closed.set()
+                with actor['condition']:actor['condition'].notify_all()
+                for connection in (client.connection,server):
+                    try:connection.shutdown(socket.SHUT_RDWR)
+                    except OSError:pass
+                for thread in threads:thread.join(timeout=2)
+                client.stream.close();client.connection.close();server.close()
+                self.assertTrue(all(not thread.is_alive() for thread in threads))
+            self.assertEqual(errors,[])
+
+    def test_cancellation_query_reads_each_live_actor_state_without_queueing_or_worker_claims(self):
+        supervisor=self.supervisor();parent=object();actor=self.actor(parent)
+        supervisor.handles['owned']=actor
+        request={'operation':'cancelled','values':{}}
+        for claim in ({'cancelled':False},{'run_id':'sibling'}):
+            with self.subTest(claim=claim),self.assertRaises(PermissionError):
+                supervisor._callback(actor,dict(request,values=claim))
+        for claim in (0,1,'true',None):
+            with self.subTest(parent_claim=claim),self.assertRaises(PermissionError):
+                supervisor._delegated(parent,{'op':'delegated_poll','id':'owned','replies':[],'cancelled':claim})
+        with patch.object(actor['condition'],'wait',side_effect=AssertionError('cancellation entered callback queue')):
+            self.assertIs(supervisor._callback(actor,request),False)
+            actor['cancelled']=True
+            self.assertIs(supervisor._callback(actor,request),True)
+            actor['cancelled']=False;actor['disconnected']=True
+            self.assertIs(supervisor._callback(actor,request),True)
+            actor['disconnected']=False;supervisor.closed.set()
+            self.assertIs(supervisor._callback(actor,request),True)
+        self.assertEqual(actor['callbacks'],{})
+
     def test_callback_only_its_parent_can_reply_and_replays_fail(self):
         supervisor = self.supervisor()
         parent = object()

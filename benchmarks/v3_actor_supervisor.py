@@ -843,6 +843,11 @@ class ActorSupervisor:
         if (operation not in _CALLBACK_FIELDS or not isinstance(values, dict)
                 or set(values) != _CALLBACK_FIELDS[operation]):
             raise PermissionError('unsupported delegated coordinator operation')
+        if operation == 'cancelled':
+            # Provider/consumer threads share one RPC channel. This live,
+            # parent-held leaf must not wait for another root poll/reply cycle.
+            with actor['condition']:
+                return bool(self.closed.is_set() or actor['cancelled'] or actor['disconnected'])
         if operation == 'access_acquire':
             if (any(type(values[key]) is not bool for key in ('reading', 'recursive'))
                     or values['path'] is not None and not isinstance(values['path'], str)):
