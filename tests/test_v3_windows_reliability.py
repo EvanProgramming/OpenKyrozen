@@ -18,6 +18,21 @@ SCRIPT = ROOT / 'scripts' / 'v3_windows_reliability.py'
 
 
 class WindowsReliabilityDiagnosticTests(unittest.TestCase):
+    @staticmethod
+    def _historical_archive(revision):
+        return subprocess.run(['git', '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
+                               'archive', '--format=zip', revision], cwd=ROOT,
+                              capture_output=True, check=True, timeout=10).stdout
+
+    def test_historical_archive_ignores_inherited_windows_line_endings(self):
+        with patch.dict(os.environ, {'GIT_CONFIG_COUNT': '1',
+                                     'GIT_CONFIG_KEY_0': 'core.autocrlf', 'GIT_CONFIG_VALUE_0': 'true'}):
+            archive = self._historical_archive('0f172f9fe692ff8fafcc0a15a72fe51eaf67e977')
+        with zipfile.ZipFile(io.BytesIO(archive)) as source:
+            fixture = source.read('tests/test_delegation.py')
+        self.assertEqual(hashlib.sha256(fixture).hexdigest(),
+                         '7484131880e91a328961ec0b8b99fe2bcaad8ded19b2ebe8efd944028f2aa3a7')
+
     def test_readonly_anchor_materializes_wal_without_a_transaction_and_final_writer_close_checkpoints(self):
         import sqlite3
         from scripts.v3_windows_reliability import LoadControl, Trace
@@ -146,8 +161,7 @@ with patch.object(Trace, 'record', record), patch.object(sqlite3, 'connect', con
         with tempfile.TemporaryDirectory() as directory:
             revision = '0f172f9fe692ff8fafcc0a15a72fe51eaf67e977'
             legacy = Path(directory) / 'historical-product'
-            archive = subprocess.run(['git', 'archive', '--format=zip', revision], cwd=ROOT,
-                                     capture_output=True, check=True, timeout=10).stdout
+            archive = self._historical_archive(revision)
             with zipfile.ZipFile(io.BytesIO(archive)) as source:
                 self.assertTrue(all(not Path(name).is_absolute() and '..' not in Path(name).parts
                                     for name in source.namelist()))
