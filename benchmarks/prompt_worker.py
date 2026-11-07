@@ -53,7 +53,8 @@ def _normalize_tool_receipt(receipt, workspace_root):
             "target_path": target_path, "git_reference": reference,
             "background": arguments.get("background") is True if isinstance(arguments, dict) else None,
             "success": receipt.get("success") is True, "authorized": receipt.get("authorized") is True,
-            "error_code": (receipt.get("tool_error") or {}).get("code")}
+            "error_code": (receipt.get("tool_error") or {}).get("code"),
+            "evidence": json.loads(json.dumps(receipt))}
 
 
 def _context_observation(runtime):
@@ -112,7 +113,7 @@ class _ProviderObservations:
                   "kind": "summary" if summary else "generation", "model": model,
                   "observation_boundary": "provider_port_after_production_preflight",
                   "estimate_method": "source_runtime_stdlib_messages_plus_json_schema_framing",
-                  "window_tokens": getattr(self.provider.config, "context_window_tokens", None),
+                  "window_tokens": getattr(getattr(self.provider, 'config', None), "context_window_tokens", None),
                   "reserve_tokens": getattr(state, "reserve_tokens", DEFAULT_OUTPUT_RESERVE_TOKENS),
                   "estimated_input_tokens": estimated + overhead,
                   "component_estimates": components, "component_attribution_source": "estimated",
@@ -262,11 +263,23 @@ def main():
         raise ValueError("both benchmark arms require the frozen 4096-token output reserve")
     workspace_root = Path(args.workspace).resolve()
     sys.path.insert(0, args.source)
+    sys.path.insert(1, str(Path(__file__).resolve().parent))
+    actor_client = None
+    if os.environ.get('KYROZEN_BENCHMARK_ACTOR_SOCKET') is not None:
+        from v3_process_owner import connect_actor_client
+        from v3_shell_launcher import install_worker_adapter
+        from v3_actor_worker import install_mutation_adapter, install_read_adapter
+        actor_client = connect_actor_client()
+        install_worker_adapter(client=actor_client)
+        install_mutation_adapter(actor_client)
+        install_read_adapter(actor_client)
     if os.environ.get("KYROZEN_BENCHMARK_BROKER_FD") is not None:
         # V2 also has a benchmarks package; load this adapter by its owning file
         # without allowing the current source tree to shadow the frozen snapshot.
         import runpy
         runpy.run_path(str(Path(__file__).with_name("v3_shell_launcher.py")))["install_worker_adapter"]()
+    from v3_actor_worker import _require_selected_source
+    _require_selected_source(args.source)
     from openkyrozen.app.bootstrap import build_application
     from openkyrozen.providers import ProviderConfig
     from openkyrozen.providers.openai import OpenAICompatProvider, OpenAIResponsesProvider
@@ -276,6 +289,9 @@ def main():
     application = build_application(surface="cli")
     runtime = application.runtime
     try:
+        if actor_client is not None:
+            from v3_actor_worker import install_delegated_adapter
+            install_delegated_adapter(runtime, actor_client, source=args.source)
         runtime._set_workspace_root(args.workspace)
         runtime.set_interaction_mode("ask" if followups else "agent")
         provider_name = "openai" if args.protocol == "responses" else "deepseek"
@@ -419,7 +435,7 @@ def main():
                   "tool_actions": [e.get("action") for e in events if e.get("event") == "tool_receipt"],
                   "tool_receipts": receipts, "events": events,
                   "conversation_records": conversation_records,
-                  "request_context_records": observations.records,
+                  "request_context_records": observations.records + getattr(runtime, '_benchmark_child_context_records', []),
                   "tool_successes": sum(e.get("event") == "tool_receipt" and e.get("success") is True for e in events),
                   "tasks": [t["status"] for t in runtime.tasks.tasks],
                   "task_records": [{"id": t["id"], "description": t["description"],
@@ -447,7 +463,8 @@ def main():
                   "process_marker_seen": any(args.process_marker and args.process_marker in handle.stdout
                                               for handle in handles),
                   "first_delta_latency_ms": first_delta_ms,
-                  "provider_error": "[LLM Error]" in answer or any(item["outcome"] == "failed" for item in observations.records)}
+                  "provider_error": "[LLM Error]" in answer or any(item["outcome"] == "failed" for item in
+                      observations.records + getattr(runtime, '_benchmark_child_context_records', []))}
         result["accepted_scope_preserved"] = _accepted_scope_preserved(
             history, accepted_fingerprints, accepted_plan_identity, result["task_records"],
         )

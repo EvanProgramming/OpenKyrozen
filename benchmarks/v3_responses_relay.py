@@ -63,6 +63,8 @@ class ResponsesRelay:
         self.provider_error: str | None = None
         self._request_lock = threading.Lock()
         self._lock = threading.Lock()
+        self._actor_credentials = {}
+        self._issued_actor_keys = set()
         self._upstream_lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -73,6 +75,42 @@ class ResponsesRelay:
 
     def start(self) -> None:
         self._thread.start()
+
+    @property
+    def actor_keys(self):
+        """Retain revoked keys too so evidence redaction cannot omit old secrets."""
+        with self._lock:
+            return tuple(self._issued_actor_keys)
+
+    def issue_actor_config(self, actor_id):
+        if not isinstance(actor_id, str) or not 1 <= len(actor_id) <= 512:
+            raise ValueError('invalid benchmark actor identity')
+        with self._lock:
+            if any(record['actor_id'] == actor_id for record in self._actor_credentials.values()):
+                raise ValueError('benchmark actor already has an active credential')
+            key = secrets.token_urlsafe(32)
+            self._actor_credentials[key] = {'actor_id': actor_id, 'label': tuple(self.label)}
+            self._issued_actor_keys.add(key)
+        return {'provider': 'openai', 'api_key': key, 'base_url': self.url,
+                'model_simple': self.config.model, 'model_complex': self.config.model,
+                'context_window_tokens': self.config.fixed_input_token_bound or 1_000_000}
+
+    def revoke_actor(self, actor_id):
+        with self._lock:
+            self._actor_credentials = {key: value for key, value in self._actor_credentials.items()
+                                       if value['actor_id'] != actor_id}
+
+    def _authorize_client(self, header):
+        if not isinstance(header, str) or not header.startswith('Bearer '):
+            return False, None, None
+        key = header[7:]
+        with self._lock:
+            if secrets.compare_digest(key, self.client_key):
+                return True, None, tuple(self.label)
+            record = self._actor_credentials.get(key)
+            if record is None or record['label'] != tuple(self.label):
+                return False, None, None
+            return True, record['actor_id'], record['label']
 
     def close(self) -> None:
         self._server.shutdown()
@@ -125,7 +163,8 @@ class ResponsesRelay:
                 if self.path.split("?", 1)[0] not in {"/v1/responses", "/responses"}:
                     self._json(404, {"error": {"message": "unsupported benchmark route"}})
                     return
-                if self.headers.get("Authorization") != "Bearer " + relay.client_key:
+                authorized, actor_id, label = relay._authorize_client(self.headers.get('Authorization'))
+                if not authorized:
                     self._json(401, {"error": {"message": "invalid benchmark relay credential"}})
                     return
                 try:
@@ -167,12 +206,14 @@ class ResponsesRelay:
                 encoded = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
                 attempt_id = uuid.uuid4().hex
                 input_bound = relay.config.fixed_input_token_bound or len(encoded) + 512
-                arm, fixture_id, repeat = relay.label
+                arm, fixture_id, repeat = label
                 row = {"attempt_id": attempt_id, "arm": arm, "fixture_id": fixture_id,
                        "repeat": repeat, "request_sha256": hashlib.sha256(encoded).hexdigest(),
                        "model": relay.config.model, "max_output_tokens": relay.config.max_output_tokens,
                        "reserved_rmb": str(relay.budget.cost(input_bound, relay.config.max_output_tokens)),
                        "status": "unknown", "usage": None}
+                if actor_id is not None:
+                    row['actor_id'] = actor_id
                 started = time.monotonic()
                 stream_started = False
                 reserved = False

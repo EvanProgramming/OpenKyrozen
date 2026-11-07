@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -114,6 +115,99 @@ class ProcessOwnerPolicyTests(unittest.TestCase):
             with patch.dict(os.environ, {'KYROZEN_BENCHMARK_ACTOR_SOCKET': address}):
                 with self.assertRaisesRegex(PermissionError, 'privileged'):
                     module.connect_actor_client()
+
+    def test_namespaced_parent_requires_kernel_map_and_pinned_socket(self):
+        module = self.owner_module()
+        self.assertTrue(hasattr(module, '_namespace_parent_pin'))
+        identity = 1_234_567_893
+        connection = SimpleNamespace(getsockopt=lambda *args: __import__('struct').pack('iII', 0, 65534, 65534))
+        socket_metadata = SimpleNamespace(st_dev=7, st_ino=23, st_uid=65534, st_mode=0o140666)
+        directory_metadata = SimpleNamespace(st_uid=65534, st_mode=0o40755)
+        def metadata(path):
+            return socket_metadata if str(path).endswith('/socket') else directory_metadata
+        with patch.object(module.socket, 'SO_PEERCRED', 17, create=True), patch.object(module.sys, 'platform', 'linux'), patch.object(module.os, 'geteuid', return_value=identity), patch.object(
+                module.os, 'getegid', return_value=identity), patch.object(module.Path, 'read_text',
+                return_value=f'{identity} {identity} 1\n'), patch.object(module.Path, 'lstat', metadata):
+            module._namespace_parent_pin(connection, '/var/tmp/parent/socket', '[7,23]')
+            for pin in ('[7,24]', '[true,23]', 'null', ''):
+                with self.subTest(pin=pin), self.assertRaises(PermissionError):
+                    module._namespace_parent_pin(connection, '/var/tmp/parent/socket', pin)
+            with patch.object(module.Path, 'read_text', return_value='0 0 4294967295\n'), self.assertRaises(PermissionError):
+                module._namespace_parent_pin(connection, '/var/tmp/parent/socket', '[7,23]')
+            directory_metadata.st_mode = 0o40777
+            with self.assertRaises(PermissionError):
+                module._namespace_parent_pin(connection, '/var/tmp/parent/socket', '[7,23]')
+
+    def test_linux_bwrap_waits_for_unprivileged_readiness_and_stops_setup_before_uid_sweep(self):
+        from unittest.mock import MagicMock
+        module = self.owner_module()
+        namespace = MagicMock()
+        namespace.rewrite.return_value = ['trusted-bwrap']
+        namespace.pass_fds = (31, 32)
+        leaf = SimpleNamespace(Namespace=MagicMock(return_value=namespace))
+        with patch.object(module.os, 'geteuid', return_value=0), patch.object(
+                module, 'process_snapshot', return_value={}), patch.object(
+                module, 'reserve_identity', return_value=None), patch.object(
+                module, '_registered_identity', return_value=False), patch.object(
+                module.sys, 'platform', 'linux'), patch.dict(sys.modules, {'benchmarks.v3_linux_namespace': leaf}), patch.object(
+                module.subprocess, 'Popen') as popen:
+            owner = module.UIDOwner(uid=1_234_567_894)
+            process = owner.popen(['/usr/bin/bwrap', '--', 'worker'], cwd='/var/tmp', env={}, group=1_234_567_895)
+            leaf.Namespace.assert_called_once_with(owner.uid, 1_234_567_895)
+            namespace.attach.assert_called_once_with(process)
+            self.assertEqual(popen.call_args.args[0], ['trusted-bwrap'])
+            self.assertEqual(popen.call_args.kwargs['pass_fds'], (31, 32))
+            self.assertNotIn('user', popen.call_args.kwargs)
+            self.assertNotIn('group', popen.call_args.kwargs)
+            def drained():
+                namespace.close.assert_called_once()
+                return {}
+            with patch.object(module, 'process_snapshot', side_effect=drained):
+                owner.close()
+            self.assertTrue(owner.closed)
+
+    def test_cleanup_cannot_certify_empty_while_a_native_spawn_is_still_starting(self):
+        import threading
+        from unittest.mock import MagicMock
+        module = self.owner_module()
+        entered, release, closing, finished = (threading.Event() for _ in range(4))
+        process, errors = MagicMock(), []
+        def spawn(*args, **kwargs):
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError('test spawn was not released')
+            return process
+        with patch.object(module.os, 'geteuid', return_value=0), patch.object(
+                module, 'process_snapshot', return_value={}), patch.object(
+                module, 'reserve_identity', return_value=None), patch.object(
+                module, '_registered_identity', return_value=False), patch.object(
+                module.subprocess, 'Popen', side_effect=spawn):
+            owner = module.UIDOwner(uid=1_234_567_896)
+            def launch():
+                try:
+                    owner.popen(['/usr/bin/true'], cwd='/var/tmp', env={})
+                except Exception as exc:
+                    errors.append(exc)
+            def close():
+                closing.set()
+                owner.close()
+                finished.set()
+            launcher, closer = threading.Thread(target=launch), threading.Thread(target=close)
+            launcher.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                closer.start()
+                self.assertTrue(closing.wait(2))
+                self.assertFalse(finished.wait(.1), 'cleanup certified before a pending spawn settled')
+            finally:
+                release.set()
+                launcher.join(3)
+                if closer.ident is not None:
+                    closer.join(3)
+                owner.close()
+            self.assertFalse(errors)
+            self.assertTrue(owner.closed)
+            process.wait.assert_called()
 
 
 @unittest.skipUnless(hasattr(os, 'geteuid') and os.geteuid() == 0,

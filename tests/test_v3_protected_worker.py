@@ -264,9 +264,12 @@ print(p.stdout.read1(4096).decode().strip())
 ''')
         self.assertEqual(output.strip(), 'isolated')
 
-    def test_full_campaign_gate_rejects_unproved_same_process_actor_authentication(self):
-        with self.assertRaisesRegex(ValueError, 'actor isolation is unavailable'):
-            protected.verify_worker_protection()
+    def test_full_campaign_gate_requires_a_privileged_parent_before_probes(self):
+        from unittest.mock import patch
+        with patch.object(protected.os, 'geteuid', return_value=501), patch.object(
+                protected, 'protect_worker_command', side_effect=AssertionError('unprivileged probe')):
+            with self.assertRaisesRegex(PermissionError, 'privileged'):
+                protected.verify_worker_protection()
 
 class ForegroundAdapterTests(_BrokerCase):
     def test_foreground_adapter_uses_external_shell_and_preserves_exit_output_and_cancellation(self):
@@ -374,8 +377,8 @@ class DetachedLifecycleBoundaryTests(unittest.TestCase):
                 # Parent/PGID traversal loses this detached child. The full gate
                 # stays closed until a kernel-owned lifecycle boundary replaces it.
                 os.kill(child_pid, 0)
-                with self.assertRaisesRegex(ValueError, 'Detached macOS descendants'):
-                    protected.verify_worker_protection()
+                evidence = protected.verify_worker_protection(require_authenticated_children=False)
+                self.assertFalse(evidence['daemonized_process_cleanup_proven'])
             finally:
                 if child_pid is not None:
                     try:
@@ -431,18 +434,39 @@ class LinuxMountOrderTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'darwin' or sys.platform.startswith('linux'), 'Unix sandbox required')
 class FullCampaignGateTests(unittest.TestCase):
-    def test_unproved_actor_authentication_blocks_before_credentials(self):
+    def test_unprivileged_actor_authentication_blocks_before_credentials(self):
         from unittest.mock import patch
         from benchmarks.v3_matched_live import run
         repository = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             with patch('benchmarks.v3_matched_live._source_snapshot', return_value='candidate'), \
+                    patch('benchmarks.v3_matched_live.apparatus_identity', return_value={}), \
+                    patch.object(protected.os, 'geteuid', return_value=501), \
                     patch('benchmarks.v3_matched_live._credential', side_effect=AssertionError('credential lookup')) as credential:
-                with self.assertRaisesRegex(ValueError, 'actor isolation is unavailable'):
+                with self.assertRaisesRegex(PermissionError, 'privileged'):
                     run(source=repository, repo=repository, output=base / 'report.json',
                         budget_path=base / 'budget.sqlite3', prior_hold_usd='1')
             credential.assert_not_called()
+
+
+@unittest.skipUnless(hasattr(os, 'geteuid') and os.geteuid() == 0,
+                     'privileged disposable benchmark runner required')
+class PrivilegedFullPreflightTests(unittest.TestCase):
+    def test_full_preflight_executes_real_actor_attacks_and_certifies_all_owned_uids_empty(self):
+        evidence = protected.verify_worker_protection()
+        for name in ('authenticated_child_isolation', 'daemonized_process_cleanup_proven',
+                     'direct_attacks_denied', 'managed_shell_attacks_denied', 'source_write_allowed',
+                     'forged_identity_denied', 'cross_actor_handles_denied', 'ticket_replay_denied',
+                     'private_homes_isolated', 'fresh_file_reads', 'shell_environment_isolated',
+                     'shell_descriptors_isolated', 'actor_tmpdir_writable', 'command_cancel_cleanup',
+                     'actor_disconnect_cleanup', 'shell_disconnect_cleanup', 'all_owned_uids_empty',
+                     'directory_scope_guard_safe', 'closed_pipe_exit_preserved',
+                     'no_read_runtime_started', 'no_read_fixture_data_denied'):
+            with self.subTest(name=name):
+                self.assertIs(evidence[name], True)
+        self.assertGreaterEqual(evidence['checked_uid_count'], 4)
+        self.assertEqual(evidence['owned_uid_live_processes'], [])
 
 @unittest.skipUnless(sys.platform == 'darwin' or sys.platform.startswith('linux'), 'Unix sandbox required')
 class BrokerCancellationCompatibilityTests(unittest.TestCase):

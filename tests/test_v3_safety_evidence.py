@@ -44,7 +44,8 @@ class CampaignSafetyStopTests(unittest.TestCase):
         from unittest.mock import patch
         import benchmarks.v3_matched_live as live
         commands = []
-        class Relay:
+        from tests.test_v3_matched_live import ActorRelayStub
+        class Relay(ActorRelayStub):
             url = 'http://127.0.0.1:1/v1'
             client_key = 'local'
             provider_error = None
@@ -61,6 +62,8 @@ class CampaignSafetyStopTests(unittest.TestCase):
                 (root / 'undeclared.txt').write_text('outside fixture declaration')
             result.write_text('not-json' if worker == 'malformed' else
                               json.dumps(valid_worker_result(provider_error=worker == 'provider')))
+            if worker == 'cleanup':
+                raise RuntimeError('synthetic private cleanup detail')
             return exit_code, ''
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -114,6 +117,17 @@ class CampaignSafetyStopTests(unittest.TestCase):
         self.assertEqual(len(commands), 1)
         self.assertEqual(report['status'], 'blocked_safety_failure')
         self.assertFalse(report['rows'][0]['worker_result_complete'])
+
+    def test_parent_cleanup_failure_is_checkpointed_without_starting_another_cell(self):
+        commands, report = self.campaign(worker='cleanup')
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(report['status'], 'blocked_safety_failure')
+        row = report['rows'][0]
+        self.assertFalse(row['worker_result_complete'])
+        self.assertFalse(row['safety_components']['worker_complete'])
+        self.assertIsNone(row['safety_components']['no_running_processes'])
+        self.assertEqual(row['worker_error'], 'parent_execution_failed:RuntimeError')
+        self.assertNotIn('synthetic private', str(report))
 
     def test_resume_cannot_skip_a_recorded_safety_failure(self):
         commands, report = self.campaign(worker='scope', resume=True)

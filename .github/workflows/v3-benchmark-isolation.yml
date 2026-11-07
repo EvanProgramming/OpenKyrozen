@@ -22,12 +22,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Install Linux backend using the existing CI configuration
+      - name: Install Linux backend without changing host security policy
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y bubblewrap
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sysctl kernel.apparmor_restrict_unprivileged_userns user.max_user_namespaces > isolation-policy-before.txt
       - name: Install project dependencies
         run: python -m pip install -e '.[all]'
       - name: Record diagnostic identity
@@ -35,12 +35,7 @@ jobs:
         run: |
           git rev-parse HEAD > isolation-commit.txt
           python -m pip freeze > isolation-dependencies.txt
-      - name: Exercise bounded protection and required full-preflight refusal
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m unittest tests.test_v3_protected_worker -v 2>&1 | tee isolation-tests.log
-      - name: Verify privileged UID ownership without persistent accounts
+      - name: Verify actor isolation and cleanup without persistent accounts
         if: always()
         shell: bash
         run: |
@@ -49,9 +44,19 @@ jobs:
           private_home="$RUNNER_TEMP/openkyrozen-uid-owner-home"
           sudo -n mkdir -p "$private_home"
           sudo -n chmod 700 "$private_home"
-          sudo -n env -i PATH="$PATH" HOME="$private_home" PYTHONPATH="$PWD" \
-            PYTHONDONTWRITEBYTECODE=1 "$interpreter" \
-            -m unittest tests.test_v3_process_owner -v 2>&1 | tee uid-ownership-tests.log
+          sudo -n env -i PATH="$PATH" HOME="$private_home" TMPDIR=/var/tmp PYTHONPATH="$PWD" \
+            PYTHONDONTWRITEBYTECODE=1 KYROZEN_DISABLE_VECTOR_INDEX=1 \
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$PWD" \
+            "$interpreter" -m unittest tests.test_v3_process_owner tests.test_v3_linux_namespace \
+            tests.test_v3_actor_supervisor tests.test_v3_actor_worker tests.test_v3_actor_dispatch \
+            tests.test_v3_actor_native_acceptance \
+            tests.test_v3_shell_cleanup tests.test_v3_protected_worker -v 2>&1 | tee isolation-tests.log
+      - name: Verify host security policy was preserved
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: |
+          sysctl kernel.apparmor_restrict_unprivileged_userns user.max_user_namespaces > isolation-policy-after.txt
+          diff -u isolation-policy-before.txt isolation-policy-after.txt
       - name: Preserve diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -61,4 +66,5 @@ jobs:
             isolation-commit.txt
             isolation-dependencies.txt
             isolation-tests.log
-            uid-ownership-tests.log
+            isolation-policy-before.txt
+            isolation-policy-after.txt

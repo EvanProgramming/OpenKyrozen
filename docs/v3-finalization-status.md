@@ -1,6 +1,6 @@
 # V3 finalization status
 
-V3 is **not release-ready**. This is an implementation and investigation handoff, not a release manifest. No final-candidate gate bundle, V3 tag or Release has been created by this work.
+V3 is **unpublished**. This document describes implemented safeguards, retained investigation results and required acceptance evidence. Release readiness is established by the external, signed R250–R266 bundle for the exact clean candidate; source changes and intermediate passing tests do not establish it. The final workflow stops before creating a V3 tag or Release.
 
 ## Implemented safeguards
 
@@ -13,15 +13,13 @@ V3 is **not release-ready**. This is an implementation and investigation handoff
 - Learning promotion requires complete paired outcome, verification, cost, latency and regression measurements. Missing dimensions and old success-only replay records remain incomplete. Known failed effects replace unsupported final success claims with receipt-derived results, including valid structured child reports.
 - Public README, installation guide and website commands remain on the published v2.0.8 assets. Candidate package metadata remains 3.0.0. V3 publication must precede switching public download instructions.
 
-## Release blockers
+## Required release evidence
 
-1. **Actor authentication:** runtime subagents share the Python worker process. An inherited root control channel does not prove a request's narrower child identity. Context variables or worker-supplied approval/database state are not independent authorization. Trusted actor creation/dispatch with isolated actor channels is still required.
-2. **Detached macOS descendants:** a command can fork, call setsid, outlive its original parent and close its output. Current ancestry/process-group cleanup cannot reliably find that detached orphan. The regression characterization explicitly kills its escaped test child; it does not certify cleanup. Local SDK headers document that the old kqueue NOTE_TRACK family is unsupported. A supported ownership boundary must be established before the lifecycle gate can pass.
-3. **Bounded platform evidence:** the local Colima VM rejects Bubblewrap UID mapping. Subsequent real Linux/macOS × Python 3.12/3.13 component checks passed in [run 42267305014](https://github.com/EvanProgramming/OpenKyrozen/actions/runs/42267305014) against 1f45401. These prove the bounded component tests, including V2/V3 adapter compatibility and protected file behavior; they do not prove authenticated actors, detached macOS cleanup, or a later final candidate.
-4. **R260 history:** the original failure was a five-second future-completion timeout after cancellation. Instrumented Windows 3.12/3.13 runs completed 50 iterations each against both the old failing product and prior candidate (200 total) without reproducing the timeout. A later historical-product experiment added baseline, CPU, SQLite-writer and combined controls: 10 samples per condition and Python version, 80 total, also passed. These are scheduling observations, not attribution of the original failure. The separately reproduced raw-exit/cancellation-publication test race and database cancellation-wait boundary must not be substituted for that attribution. R260 remains inconclusive.
-5. **Final evidence:** requirement-by-requirement acceptance, final six-platform/30-minute validation, the live 180-row comparison, all 17 signed passing records and the same-SHA main integration remain incomplete.
+1. **Final actor/platform evidence:** fresh-process delegation, kernel UID ownership, immutable parent policy, read-scope protection and UID-based detached-process cleanup are implemented. Real Linux checks cover the complete preflight and original V2/V3 author/reviewer runtimes. The release bundle must establish complete acceptance on all four Linux/macOS Python combinations. Earlier bounded-component and six-platform results remain historical.
+2. **R260 history:** the original failure was a five-second future-completion timeout after cancellation. Reconstructed Python 3.12.10 and dependency pins exposed foreground SQLite close/checkpoint latency. A pinned old-source controlled regression times out at the original deadline; the owned-connection implementation avoids that foreground last-close operation. The fixed intermediate product completed 180 Windows cancellations and 20 interleaved reviewers. Its diagnostic self-check separately failed because Windows archive conversion changed canonical fixture bytes; a config-independent export regression passes locally. The release bundle must include corrected Windows diagnostics and final-candidate acceptance. The original failure had no worker stack, so its precise OS trigger remains qualified rather than proved by repeated passes.
+3. **Complete acceptance:** the release bundle must establish default-on routing benefit, requirement-by-requirement acceptance, final six-platform/30-minute validation, the live 180-row comparison and all 17 signed passing records. Main must then point to that same verified SHA without rewriting it.
 
-The full campaign preflight deliberately rejects the unproven actor/descendant boundary before credential lookup or model requests. The component probe's limited coverage must never be promoted to a full passing gate or used to bypass that rejection.
+The full campaign requires a privileged disposable runner and executes real actor and descendant checks before credential lookup or model requests. The optional bounded component probe returns explicitly incomplete isolation evidence and cannot replace that preflight.
 
 ## Functional acceptance audit
 

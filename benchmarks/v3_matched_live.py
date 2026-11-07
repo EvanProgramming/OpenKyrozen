@@ -33,7 +33,8 @@ def apparatus_identity() -> dict:
     # worker. A changed fixture, oracle, metric, relay, or observer starts a cohort.
     directory = Path(__file__).parent
     files = ("v3_fixtures.py", "v3_matched_live.py", "prompt_worker.py", "v3_matched.py", "v3_responses_relay.py",
-             "v3_shell_launcher.py", "v3_protected_worker.py")
+             "v3_shell_launcher.py", "v3_protected_worker.py", "v3_process_owner.py",
+             "v3_linux_namespace.py", "v3_actor_supervisor.py", "v3_actor_worker.py")
     hashes = {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in files}
     return {"cohort_sha256": cohort_digest(),
             "apparatus_sha256": hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest(),
@@ -476,23 +477,20 @@ def _load_checkpoint(output: Path, budget_path: Path) -> dict | None:
 
 
 def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 900,
-                protected_files: list[Path] | None = None, policy=None) -> tuple[int, str]:
-    from benchmarks.v3_protected_worker import ProtectedWorker
+                protected_files: list[Path] | None = None, policy=None, source=None,
+                provider_config=None, revoke_actor=None) -> tuple[int, str]:
+    from benchmarks.v3_actor_supervisor import ActorSupervisor
     from benchmarks.v3_shell_launcher import ShellPolicy
     # Standalone callers have no shell authority; fixture callers supply the
     # immutable parent policy and the complete original-test manifest.
     policy = policy or ShellPolicy(cwd, frozenset())
-    with ProtectedWorker(command, cwd=cwd, env=env, protected_files=protected_files or [],
-                         policy=policy) as launch:
+    with ActorSupervisor(command, cwd=cwd, env=env, protected_files=protected_files or [],
+                         policy=policy, source=source or Path(__file__).resolve().parents[1],
+                         provider_config=provider_config, revoke_actor=revoke_actor) as launch:
         try:
-            process = subprocess.Popen(launch.command, cwd=cwd, env=launch.env,
-                                       pass_fds=launch.pass_fds,
-                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                       start_new_session=(os.name != "nt"),
-                                       creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0))
+            process = launch.popen(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except OSError as exc:
             return -1, type(exc).__name__
-        launch.attach(process)
         try:
             _, stderr = process.communicate(timeout=timeout)
             if process.returncode == 0:
@@ -508,8 +506,7 @@ def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: 
             suffix = f":{error_type}" if error_type else ""
             return process.returncode, f"worker_exit_{process.returncode}{suffix}"
         except subprocess.TimeoutExpired:
-            _kill_process_tree(process.pid)
-            launch.broker.close()
+            launch.close()
             process.communicate()
             return -1, "timeout"
 
@@ -1134,8 +1131,9 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         relay.smoke_verified_candidate = candidate
         relay.smoke_verified_attempt_ids = tuple(smoke_attempt_ids)
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="openkyrozen-v3-matched-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="openkyrozen-v3-matched-", dir='/var/tmp' if os.name == 'posix' else None) as temporary:
         temporary_root = Path(temporary)
+        temporary_root.chmod(0o711)
         baseline_source = temporary_root / "baseline"
         _extract_baseline(baseline_source, repo, BASELINE)
         relay.start()
@@ -1171,6 +1169,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         base = temporary_root / f"{repeat}-{fixture_id}-{arm}"
                         workspace, home = base / "workspace", base / "home"
                         workspace.mkdir(parents=True)
+                        base.chmod(0o711)
                         home.mkdir(parents=True)
                         prepared = prepare_fixture(workspace, fixture)
                         prompt_file, plan_file, result_file = base / "prompt.txt", base / "plan.json", base / "result.json"
@@ -1193,22 +1192,34 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         relay.label = (arm, fixture_id, repeat)
                         started = time.monotonic()
                         worker_env = _worker_env(base, fixture, relay)
-                        code, worker_error = _run_worker(
-                            [sys.executable, str(worker_script),
-                             "--source", str(arm_source), "--workspace", str(workspace),
-                             "--url", relay.url, "--model", model, "--protocol", "responses",
-                             "--prompt-file", str(prompt_file), "--plan-file", str(plan_file),
-                             "--conversation-file", str(conversation_file), "--result", str(result_file),
-                             "--scenario", str(fixture.get("plan_scenario") or ""),
-                             "--process-marker", str(fixture["verifier"].get("command_marker") or "")],
-                            cwd=workspace, env=worker_env,
-                            protected_files=[workspace / name for name in fixture["files"]
-                                             if Path(name).name.startswith("test_")],
-                            policy=shell_policy,
-                        )
+                        def actor_provider_config(actor_id):
+                            return dict(relay.issue_actor_config(actor_id),
+                                        context_window_tokens=fixture['context_window_tokens'])
+                        parent_failed = False
+                        try:
+                            code, worker_error = _run_worker(
+                                [sys.executable, str(worker_script),
+                                 "--source", str(arm_source), "--workspace", str(workspace),
+                                 "--url", relay.url, "--model", model, "--protocol", "responses",
+                                 "--prompt-file", str(prompt_file), "--plan-file", str(plan_file),
+                                 "--conversation-file", str(conversation_file), "--result", str(result_file),
+                                 "--scenario", str(fixture.get("plan_scenario") or ""),
+                                 "--process-marker", str(fixture["verifier"].get("command_marker") or "")],
+                                cwd=workspace, env=worker_env,
+                                protected_files=[workspace / name for name in fixture["files"]
+                                                 if Path(name).name.startswith("test_")],
+                                policy=shell_policy,
+                                source=arm_source, provider_config=actor_provider_config,
+                                revoke_actor=relay.revoke_actor,
+                            )
+                        except Exception as exc:
+                            parent_failed = True
+                            kind = type(exc).__name__ if type(exc) in (
+                                RuntimeError, PermissionError, OSError, TimeoutError, ValueError) else 'Exception'
+                            code, worker_error = -1, 'parent_execution_failed:' + kind
                         observed_worker, evidence_metadata = _read_worker_result(
-                            result_file, (api_key, relay.client_key))
-                        worker_complete = evidence_metadata["classification"] == "valid"
+                            result_file, (api_key, relay.client_key, *relay.actor_keys))
+                        worker_complete = evidence_metadata["classification"] == "valid" and not parent_failed
                         worker = observed_worker if worker_complete else {}
                         if not worker_complete:
                             worker_error = worker_error or "missing_or_invalid_result"

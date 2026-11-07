@@ -116,6 +116,29 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.assertEqual(self.received, [])
         self.assertEqual(self.budget.spent_rmb, 0)
 
+    def test_actor_credentials_are_distinct_revocable_and_bound_to_the_parent_cell(self):
+        self.assertTrue(hasattr(self.relay, 'issue_actor_config'), 'actor relay authorization is missing')
+        self.relay.label = ('v3', 'fixture', 0)
+        author = self.relay.issue_actor_config('author')
+        reviewer = self.relay.issue_actor_config('reviewer')
+        self.assertNotEqual(author['api_key'], reviewer['api_key'])
+        self.assertNotEqual(author['api_key'], self.relay.client_key)
+        self.relay.revoke_actor('author')
+        denied = requests.post(self.relay.url + '/responses', json={'input': []},
+            headers={'Authorization': 'Bearer ' + author['api_key']}, timeout=3)
+        self.assertEqual(denied.status_code, 401)
+        self.assertEqual(self.received, [])
+        accepted = requests.post(self.relay.url + '/responses', json={'input': []},
+            headers={'Authorization': 'Bearer ' + reviewer['api_key']}, timeout=3)
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(self.relay.rows[-1]['actor_id'], 'reviewer')
+        self.relay.label = ('v2', 'other-fixture', 1)
+        denied = requests.post(self.relay.url + '/responses', json={'input': []},
+            headers={'Authorization': 'Bearer ' + reviewer['api_key']}, timeout=3)
+        self.assertEqual(denied.status_code, 401)
+        self.assertEqual(len(self.received), 1)
+        self.assertIn(author['api_key'], self.relay.actor_keys)
+
     def test_upstream_error_holds_reservation_and_disables_further_forwarding(self):
         self.upstream.RequestHandlerClass.http_status = 400
         headers = {"Authorization": "Bearer " + self.relay.client_key}

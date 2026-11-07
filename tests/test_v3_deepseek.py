@@ -291,7 +291,8 @@ class DeepSeekRunnerTests(unittest.TestCase):
         from unittest.mock import patch
         commands, relay_options = [], []
 
-        class Relay:
+        from tests.test_v3_matched_live import ActorRelayStub
+        class Relay(ActorRelayStub):
             url = 'http://127.0.0.1:1/v1'
             client_key = 'local'
             provider_error = None

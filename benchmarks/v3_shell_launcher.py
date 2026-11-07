@@ -152,13 +152,20 @@ def _kill_tree(process):
     # Bounded cleanup only: detached/reparented macOS descendants are not owned.
     # The full benchmark gate remains closed until kernel-backed ownership exists.
     # Groups alone miss a command which calls setsid(). Discover descendants too.
+    def snapshot():
+        rows = subprocess.run(['/bin/ps', '-axo', 'pid=,ppid=,pgid=,stat='], capture_output=True,
+                              text=True, timeout=3, check=True).stdout.splitlines()
+        return {int(pid): (int(ppid), int(group), state)
+                for pid, ppid, group, state in (row.split() for row in rows if row.strip())}
+
+    def live(record):
+        return record is not None and not record[2].startswith(('Z', 'X'))
+
     descendants = []
     try:
-        rows = subprocess.run(['/bin/ps', '-axo', 'pid=,ppid='], capture_output=True,
-                              text=True, timeout=3, check=False).stdout.splitlines()
+        processes = snapshot()
         children = {}
-        for row in rows:
-            pid, ppid = map(int, row.split())
+        for pid, (ppid, _, _) in processes.items():
             children.setdefault(ppid, []).append(pid)
         pending = [process.pid]
         while pending:
@@ -166,16 +173,36 @@ def _kill_tree(process):
             descendants.append(current)
             pending.extend(children.get(current, ()))
     except (OSError, ValueError, subprocess.SubprocessError):
+        processes = {}
         descendants = [process.pid]
-    for pid in reversed(descendants):
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    # Keep the group leader alive until the group signal: Darwin can report
+    # EPERM for an already-exiting group after individual leader/child kills.
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    except PermissionError as exc:
+        try:
+            processes = snapshot()
+        except (OSError, ValueError, subprocess.SubprocessError):
+            raise exc
+        if any(record[1] == process.pid and live(record) for record in processes.values()):
+            raise
+    for pid in reversed(descendants):
+        record = processes.get(pid)
+        if record is None or pid == process.pid or not live(record):
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError as exc:
+            try:
+                still_live = live(snapshot().get(pid))
+            except (OSError, ValueError, subprocess.SubprocessError):
+                raise exc
+            if still_live:
+                raise
     try:
         process.wait(timeout=3)
     except subprocess.TimeoutExpired:
@@ -307,7 +334,10 @@ class ShellBroker:
                 if self.closed.is_set():
                     record[name].close()
             if len(record['eof']) == 2:
-                record['invocation'].close()
+                self._finish_collection(identifier)
+
+    def _finish_collection(self, identifier):
+        self.records[identifier]['invocation'].close()
 
     def close(self):
         with self.close_lock:
@@ -319,13 +349,22 @@ class ShellBroker:
             except OSError:
                 pass
             self.connection.close()
+            errors = []
             for process in tuple(self.processes.values()):
-                _kill_tree(process)
+                try:
+                    _kill_tree(process)
+                except Exception as exc:
+                    errors.append(exc)
             for record in tuple(self.records.values()):
-                record['invocation'].close()
+                try:
+                    record['invocation'].close()
+                except Exception as exc:
+                    errors.append(exc)
                 with record['lock']:
                     for name in record['eof']:
                         record[name].close()
+            if errors:
+                raise errors[0]
 
 
 class BrokerClient:
@@ -436,15 +475,18 @@ def _install_legacy_adapter(client, shell):
     shell.subprocess = SimpleNamespace(run=run, TimeoutExpired=subprocess.TimeoutExpired)
 
 
-def install_worker_adapter():
+def install_worker_adapter(client=None):
     """Install before loading the selected snapshot's adapter class."""
     raw_fd = os.environ.pop(_FD_ENV, None)
     raw_identity = os.environ.pop('KYROZEN_BENCHMARK_BROKER_IDENTITY', None)
-    if raw_fd is None and raw_identity is None:
-        return False
-    if raw_fd is None or raw_identity is None:
-        raise PermissionError('incomplete benchmark shell broker context')
-    client = BrokerClient(int(raw_fd), json.loads(raw_identity))
+    if client is None:
+        if raw_fd is None and raw_identity is None:
+            return False
+        if raw_fd is None or raw_identity is None:
+            raise PermissionError('incomplete benchmark shell broker context')
+        client = BrokerClient(int(raw_fd), json.loads(raw_identity))
+    elif raw_fd is not None or raw_identity is not None:
+        raise PermissionError('actor cannot inherit a different broker context')
     from openkyrozen.tools import shell
     if not hasattr(shell, '_validated_shell_options'):
         _install_legacy_adapter(client, shell)

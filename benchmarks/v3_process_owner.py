@@ -18,17 +18,50 @@ _LOCK = threading.Lock()
 _ALLOCATED = set()
 
 
+def _namespace_parent_pin(connection, address, expected):
+    """Verify the launcher's immutable socket when outer root is unmapped."""
+    try:
+        if not sys.platform.startswith('linux'):
+            raise ValueError('not a Linux namespace')
+        pid, uid, gid = struct.unpack('iII', connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        if (pid, uid, gid) != (0, 65534, 65534):
+            raise ValueError('unexpected invisible parent credentials')
+        for name, identity in (('uid', os.geteuid()), ('gid', os.getegid())):
+            mapping = [line.split() for line in Path(f'/proc/self/{name}_map').read_text().splitlines()]
+            if not 2**30 <= identity < 2**31 or mapping != [[str(identity), str(identity), '1']]:
+                raise ValueError('unexpected actor namespace map')
+        pin = json.loads(expected)
+        if not isinstance(pin, list) or len(pin) != 2 or any(type(item) is not int for item in pin):
+            raise ValueError('invalid launcher socket pin')
+        path = Path(address)
+        metadata = path.lstat()
+        if (not path.is_absolute() or not stat.S_ISSOCK(metadata.st_mode)
+                or metadata.st_uid != 65534 or [metadata.st_dev, metadata.st_ino] != pin):
+            raise ValueError('launcher socket changed')
+        for parent in path.parents:
+            metadata = parent.lstat()
+            if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 65534
+                    or metadata.st_mode & 0o022 and not metadata.st_mode & stat.S_ISVTX):
+                raise ValueError('launcher socket ancestor is mutable')
+    except (OSError, TypeError, ValueError) as exc:
+        raise PermissionError('benchmark actor requires a pinned privileged parent') from exc
+
+
 def connect_actor_client():
     """Connect only to a kernel-authenticated privileged benchmark parent."""
     address = os.environ.pop('KYROZEN_BENCHMARK_ACTOR_SOCKET', None)
+    pin = os.environ.pop('KYROZEN_BENCHMARK_ACTOR_SOCKET_INODE', None)
     if not address:
         raise PermissionError('benchmark actor socket is missing')
     connection = socket.socket(socket.AF_UNIX)
     try:
         connection.settimeout(10)
         connection.connect(address)
-        if peer_identity(connection)[1] != 0:
-            raise PermissionError('benchmark actor requires a privileged parent')
+        try:
+            if peer_identity(connection)[1] != 0:
+                raise PermissionError('benchmark actor requires a privileged parent')
+        except PermissionError:
+            _namespace_parent_pin(connection, address, pin)
         connection.sendall(b'{"op":"hello"}\n')
         with connection.makefile('rb', buffering=0) as stream:
             response = stream.readline(4097)
@@ -147,8 +180,14 @@ class UIDOwner:
         self.reservation = reservation
         self.closed = False
         self.process = None
+        self.namespace = None
+        self.close_lock = threading.RLock()
 
     def popen(self, command, *, cwd, env, group=None, stdin=None, stdout=None, stderr=None):
+        with self.close_lock:
+            return self._popen(command, cwd=cwd, env=env, group=group, stdin=stdin, stdout=stdout, stderr=stderr)
+
+    def _popen(self, command, *, cwd, env, group, stdin, stdout, stderr):
         """Drop credentials in subprocess' native exec path, never preexec_fn."""
         if self.closed or self.process is not None:
             raise RuntimeError('benchmark UID invocation is already used or closed')
@@ -158,6 +197,19 @@ class UIDOwner:
         group = self.uid if group is None else group
         if type(group) is not int or not 2**30 <= group < 2**31:
             raise ValueError('benchmark group must be an ephemeral numeric identity')
+        if sys.platform.startswith('linux') and Path(command[0]).name == 'bwrap':
+            from benchmarks.v3_linux_namespace import Namespace
+            try:
+                self.namespace = Namespace(self.uid, group)
+                self.namespace.__enter__()
+                self.process = subprocess.Popen(self.namespace.rewrite(command),
+                    cwd=cwd, env=self.namespace.environment(env), pass_fds=self.namespace.pass_fds, extra_groups=[],
+                    stdin=stdin, stdout=stdout, stderr=stderr, close_fds=True, start_new_session=True)
+                self.namespace.attach(self.process)
+                return self.process
+            except BaseException:
+                self.close()
+                raise
         bootstrap = 'import os,resource,sys\n'
         if sys.platform.startswith('linux'):
             bootstrap += ('import ctypes\nlibc=ctypes.CDLL(None,use_errno=True)\n'
@@ -182,8 +234,14 @@ class UIDOwner:
         return self.process
 
     def close(self):
+        with self.close_lock:
+            self._close_owned()
+
+    def _close_owned(self):
         if self.closed:
             return
+        if self.namespace is not None:
+            self.namespace.close()
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             owned = {pid: state for pid, (uid, state) in process_snapshot().items()

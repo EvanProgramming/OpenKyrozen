@@ -44,7 +44,30 @@ TEST_PRIOR_HOLD_USD = "1.25"
 TEST_PRIOR_HOLD_RMB = str(Decimal(TEST_PRIOR_HOLD_USD) * USD_CNY)
 
 
+class ActorRelayStub:
+    actor_keys = ()
+
+    def issue_actor_config(self, actor_id):
+        raise AssertionError('mocked worker must not request real actor configuration')
+
+    def revoke_actor(self, actor_id):
+        raise AssertionError('mocked worker must not revoke a real actor')
+
+
 class V3MatchedLiveTests(unittest.TestCase):
+    def run_error_worker(self, script, directory):
+        import os
+        import subprocess
+        import sys
+        command = [sys.executable, '-I', '-c', script]
+        # These tests concern stderr classification; kernel isolation is tested
+        # by the privileged supervisor suite rather than granting local root.
+        with patch('benchmarks.v3_actor_supervisor.ActorSupervisor') as supervisor:
+            launch = supervisor.return_value.__enter__.return_value
+            launch.popen.side_effect = lambda **options: subprocess.Popen(
+                command, cwd=directory, env={'PATH': os.environ['PATH']}, **options)
+            return _run_worker(command, cwd=Path(directory), env={}, timeout=5)
+
     def test_live_runner_uses_candidate_worker_for_both_matched_arms(self):
         import benchmarks.v3_matched_live as live
         import warnings
@@ -56,8 +79,9 @@ class V3MatchedLiveTests(unittest.TestCase):
             repo.mkdir()
             prepare_candidate_apparatus(source)
             commands = []
+            actor_windows = []
 
-            class Relay:
+            class Relay(ActorRelayStub):
                 url = "http://127.0.0.1:1/v1"
                 client_key = "local"
                 provider_error = None
@@ -74,8 +98,14 @@ class V3MatchedLiveTests(unittest.TestCase):
                 def close(self):
                     pass
 
+                def issue_actor_config(self, actor_id):
+                    return {'api_key': 'offline-actor', 'context_window_tokens': 999999}
+
             def run_worker(command, **kwargs):
                 commands.append(command)
+                declared = json.loads(Path(command[command.index('--conversation-file') + 1]).read_text())
+                actor_windows.append((declared['context_window_tokens'],
+                    kwargs['provider_config']('offline-child')['context_window_tokens']))
                 Path(command[command.index("--result") + 1]).write_text(json.dumps(valid_worker_result(
                     answer="retained answer", events=[{"text": "retained event"}],
                     tool_receipts=[{"action": "read_file", "success": True}], tasks=["succeeded"],
@@ -106,6 +136,8 @@ class V3MatchedLiveTests(unittest.TestCase):
                 run(source=source, repo=repo, output=root / "report.json",
                     budget_path=root / "budget.sqlite3", prior_hold_usd="10.25")
             report = json.loads((root / "report.json").read_text())
+            self.assertTrue(all(expected == actual for expected, actual in actor_windows))
+            self.assertIn((16384, 16384), actor_windows)
             self.assertTrue(report["summary"]["worker_evidence_complete"])
             self.assertNotIn("private-provider-key", (root / "report.json").read_text())
             for row in report["rows"]:
@@ -150,7 +182,7 @@ class V3MatchedLiveTests(unittest.TestCase):
             root = Path(directory)
             source = root / "candidate"
             prepare_candidate_apparatus(source)
-            class Relay:
+            class Relay(ActorRelayStub):
                 url, client_key = "http://127.0.0.1:1/v1", "local-token"
                 provider_error, budget_blocked = None, False
                 def __init__(self, **kwargs): self.rows = []
@@ -260,9 +292,8 @@ class V3MatchedLiveTests(unittest.TestCase):
         import os
         import sys
         with tempfile.TemporaryDirectory() as directory:
-            code, error = _run_worker([sys.executable, "-c",
-                "import sys; sys.stderr.write('private-provider-keyError: private detail\\n'); sys.exit(1)"],
-                cwd=Path(directory), env=os.environ.copy(), timeout=5)
+            code, error = self.run_error_worker(
+                "import sys; sys.stderr.write('private-provider-keyError: private detail\\n'); sys.exit(1)", directory)
         self.assertEqual(code, 1)
         self.assertEqual(error, "worker_exit_1")
         self.assertNotIn("private-provider-key", error)
@@ -272,9 +303,7 @@ class V3MatchedLiveTests(unittest.TestCase):
         import sys
 
         with tempfile.TemporaryDirectory() as directory:
-            code, error = _run_worker(
-                [sys.executable, "-c", "raise RuntimeError('private provider detail')"],
-                cwd=Path(directory), env=os.environ.copy(), timeout=5)
+            code, error = self.run_error_worker("raise RuntimeError('private provider detail')", directory)
 
         self.assertEqual(code, 1)
         self.assertEqual(error, "worker_exit_1:RuntimeError")
@@ -646,7 +675,7 @@ class V3MatchedLiveTests(unittest.TestCase):
             live._write_checkpoint(report, ledger_path, {**identity, "protocol": "openkyrozen-v3-matched-live-v1",
                 "candidate_sha": "candidate", "baseline_sha": BASELINE, "model": MODEL, "repeats": 3,
                 "budget": {"prior_campaign_hold_usd": TEST_PRIOR_HOLD_USD}, "rows": [], "calls": []})
-            class Relay:
+            class Relay(ActorRelayStub):
                 url, client_key = "http://127.0.0.1:1/v1", "offline"
                 provider_error, budget_blocked = None, False
                 def __init__(self, **kwargs): self.rows = []

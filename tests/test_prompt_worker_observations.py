@@ -34,6 +34,9 @@ class PromptWorkerObservationTests(unittest.TestCase):
             observed = _normalize_tool_receipt(raw, root)
             self.assertEqual(observed["target_path"], "notes.txt")
             self.assertEqual(observed["call_id"], "native-write")
+            self.assertEqual(observed['evidence'], raw)
+            raw['arguments']['content'] = 'later mutation'
+            self.assertEqual(observed['evidence']['arguments']['content'], 'value')
             expected = hashlib.sha256(json.dumps({"path": "notes.txt", "content": "value"}, sort_keys=True,
                 ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
             self.assertEqual(observed["args_hash"], expected)
