@@ -2,11 +2,56 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 
 _MAX_PAYLOAD = 1_000_000
 _MUTATIONS = frozenset({'write_file', 'edit_file', 'apply_patch'})
 _READS = frozenset({'read_file', 'search_files', 'list_dir', 'list_tree', 'find_files'})
 _HISTORY_CHUNK = 65_536
+_ROUTING_DIAGNOSTIC_STREAM = None
+
+
+def _routing_phase(phase):
+    if _ROUTING_DIAGNOSTIC_STREAM is not None:
+        import os
+        import threading
+        import time
+        _ROUTING_DIAGNOSTIC_STREAM.write(json.dumps(dict(phase=phase, pid=os.getpid(),
+            native_tid=threading.get_native_id(), monotonic_ns=time.monotonic_ns())) + '\n')
+        _ROUTING_DIAGNOSTIC_STREAM.flush()
+
+
+@contextmanager
+def _routing_diagnostics():
+    """Opt-in stacks for the isolated offline timeout investigation only."""
+    import os
+    if os.environ.get('KYROZEN_BENCHMARK_ROUTING_TIMEOUT_DIAGNOSTICS') != '1':
+        yield
+        return
+    import faulthandler
+    import stat
+    from pathlib import Path
+    global _ROUTING_DIAGNOSTIC_STREAM
+    descriptor = os.open(Path(os.environ['HOME']) / 'routing-timeout.log',
+                         os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077):
+            raise PermissionError('unsafe private actor diagnostic file')
+        with os.fdopen(descriptor, 'a', buffering=1, encoding='utf-8') as stream:
+            descriptor = None
+            _ROUTING_DIAGNOSTIC_STREAM = stream
+            try:
+                faulthandler.dump_traceback_later(60, file=stream)
+                _routing_phase('child.diagnostics-enabled')
+                yield
+            finally:
+                faulthandler.cancel_dump_traceback_later()
+                _ROUTING_DIAGNOSTIC_STREAM = None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _json_copy(value):
@@ -581,6 +626,7 @@ class _ParentInteractionPort:
 
 def run_actor(payload, client, *, source, provider_config, routing_variant=None):
     """Run the selected snapshot's original child invocation in a fresh process."""
+    _routing_phase('child.before-imports')
     import inspect
     import os
     from pathlib import Path
@@ -588,6 +634,7 @@ def run_actor(payload, client, *, source, provider_config, routing_variant=None)
     from openkyrozen.app.bootstrap import build_application
     from openkyrozen.agent.subagents import AgentProfile
     from openkyrozen.security.capabilities import issue_capability_token
+    _routing_phase('child.after-imports')
 
     _require_selected_source(source)
     payload = _json_copy(payload)
@@ -601,7 +648,9 @@ def run_actor(payload, client, *, source, provider_config, routing_variant=None)
         install_worker_adapter(client=client)
     install_mutation_adapter(client)
     install_read_adapter(client)
+    _routing_phase('child.before-app-build')
     application = build_application(surface='cli', user_id=payload['parent']['user_id'])
+    _routing_phase('child.after-app-build')
     runtime = application.runtime
     routing = None
     if routing_variant is not None:
@@ -650,7 +699,9 @@ def run_actor(payload, client, *, source, provider_config, routing_variant=None)
     try:
         runtime._set_workspace_root(payload['workspace'])
         identity = payload['parent']
+        _routing_phase('child.before-parent-session')
         parent = runtime.open_session(identity['session_id'], user_id=identity['user_id'])
+        _routing_phase('child.after-parent-session')
         parent.memory.workspace_id = identity['workspace_id']
         parent.tasks = _ParentTasksPort(coordinator, identity)
         parent.interaction = _ParentInteractionPort(coordinator, identity)
@@ -680,14 +731,18 @@ def run_actor(payload, client, *, source, provider_config, routing_variant=None)
                     raise RuntimeError('selected snapshot does not support delegated report repair')
                 if supports_repair:
                     kwargs['report_repair'] = payload['report_repair']
+                _routing_phase('child.before-native')
                 result = original(coordinator.run, **kwargs)
+                _routing_phase('child.after-native')
                 records = [dict(record, actor_run_id=coordinator.run_id, review=payload['review'])
                            for observation in observations for record in observation.records]
                 return dict(result, _benchmark_request_context_records=records,
                     **({'_benchmark_routing_observations':routing.records} if routing is not None else {}))
             finally:
                 runtime._active_interaction_mode.reset(mode_token)
+                _routing_phase('child.before-history-export')
                 _export_canonical_history(application.store, coordinator, history_scopes)
+                _routing_phase('child.after-history-export')
                 usage = coordinator.run.get('usage', {})
                 prefixes = (coordinator.budget_id + '_review_', coordinator.run_id + '_review_')
                 coordinator.call('usage', usage={key: value for key, value in usage.items()
@@ -695,8 +750,11 @@ def run_actor(payload, client, *, source, provider_config, routing_variant=None)
                         else key in {coordinator.run_id, coordinator.budget_id})})
                 attempts = application.store.list_usage_attempts(user_id=identity['user_id'], limit=10000)
                 coordinator.call('usage_attempts', attempts=attempts)
+                _routing_phase('child.after-usage-export')
     finally:
+        _routing_phase('child.before-app-close')
         application.close()
+        _routing_phase('child.after-app-close')
         if routing is not None:
             routing.close()
 
@@ -734,7 +792,7 @@ def run_file_read(payload, *, source):
 def main():
     import argparse
     import sys
-    from contextlib import redirect_stdout
+    from contextlib import nullcontext, redirect_stdout
     from pathlib import Path
     parser = argparse.ArgumentParser()
     parser.add_argument('--source', required=True)
@@ -745,22 +803,27 @@ def main():
     source = Path(arguments.source).resolve(strict=True)
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     sys.path.insert(0, str(source))
-    with redirect_stdout(sys.stderr):
-        if arguments.file_mutation or arguments.file_read:
-            encoded = sys.stdin.buffer.read(_MAX_PAYLOAD + 1)
-            if len(encoded) > _MAX_PAYLOAD:
-                raise ValueError('file tool request exceeds benchmark limit')
-            operation = run_file_mutation if arguments.file_mutation else run_file_read
-            result = operation(json.loads(encoded), source=source)
-        else:
-            from v3_process_owner import connect_actor_client
-            from openkyrozen.providers.config import ProviderConfig
-            client = connect_actor_client()
-            bootstrap = client.rpc('actor_bootstrap')
-            result = run_actor(bootstrap['payload'], client, source=source,
-                               provider_config=ProviderConfig(**bootstrap['provider_config']),
-                               routing_variant=bootstrap.get('routing_variant'))
-    print(json.dumps(result, ensure_ascii=False, allow_nan=False))
+    with nullcontext() if arguments.file_mutation or arguments.file_read else _routing_diagnostics():
+        with redirect_stdout(sys.stderr):
+            if arguments.file_mutation or arguments.file_read:
+                encoded = sys.stdin.buffer.read(_MAX_PAYLOAD + 1)
+                if len(encoded) > _MAX_PAYLOAD:
+                    raise ValueError('file tool request exceeds benchmark limit')
+                operation = run_file_mutation if arguments.file_mutation else run_file_read
+                result = operation(json.loads(encoded), source=source)
+            else:
+                _routing_phase('child.before-bootstrap')
+                from v3_process_owner import connect_actor_client
+                from openkyrozen.providers.config import ProviderConfig
+                client = connect_actor_client()
+                bootstrap = client.rpc('actor_bootstrap')
+                _routing_phase('child.after-bootstrap')
+                result = run_actor(bootstrap['payload'], client, source=source,
+                                   provider_config=ProviderConfig(**bootstrap['provider_config']),
+                                   routing_variant=bootstrap.get('routing_variant'))
+        _routing_phase('child.before-result-print')
+        print(json.dumps(result, ensure_ascii=False, allow_nan=False), flush=True)
+        _routing_phase('child.after-result-print')
 
 
 if __name__ == '__main__':

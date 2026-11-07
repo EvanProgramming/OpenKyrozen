@@ -1,19 +1,11 @@
-name: V3 benchmark isolation diagnostics
+name: V3 Mac routing timeout diagnostic
 on:
-  push:
-    branches: ['Evan/v3-finalization']
-    paths: ['benchmarks/**', 'tests/test_v3_protected_worker.py', '.github/workflows/v3-benchmark-isolation.yml']
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  isolation:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        python: ['3.12', '3.13']
-    runs-on: ${{ matrix.os }}
+  routing-timeout:
+    runs-on: macos-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -21,37 +13,61 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
-      - name: Install Linux backend without changing host security policy
-        if: runner.os == 'Linux'
+          python-version: '3.13'
+      - name: Verify signed diagnostic and unchanged frozen product
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y bubblewrap
-          sysctl kernel.apparmor_restrict_unprivileged_userns user.max_user_namespaces > isolation-policy-before.txt
+          set -euo pipefail
+          base=4f6bf9c9dd4d4c4f5526d70994e133b55d8a8992
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$base" "$GITHUB_SHA"
+          test "$(git rev-parse "$base:openkyrozen")" = "$(git rev-parse "$GITHUB_SHA:openkyrozen")"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" > routing-diagnostic-github-commit.json
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          base='4f6bf9c9dd4d4c4f5526d70994e133b55d8a8992'
+          sha=os.environ['GITHUB_SHA']
+          commit=json.loads(Path('routing-diagnostic-github-commit.json').read_text())
+          verification=commit['commit']['verification']
+          if commit['sha']!=sha or verification['verified'] is not True or verification['reason']!='valid':
+              raise SystemExit('diagnostic commit must have a valid verified signature')
+          allowed={'tests/test_v3_routing_supplement.py','benchmarks/v3_actor_worker.py',
+                   '.github/workflows/v3-benchmark-isolation.yml'}
+          changed=set(subprocess.check_output(['git','diff','--name-only',base,sha],text=True).splitlines())
+          if not changed or not changed<=allowed:
+              raise SystemExit('diagnostic delta exceeds the three authorized apparatus files')
+          tree=lambda ref:subprocess.check_output(['git','rev-parse',ref+':openkyrozen'],text=True).strip()
+          Path('routing-diagnostic-identity.json').write_text(json.dumps({
+              'schema_version':1,'diagnostic_sha':sha,'origin_sha':base,'changed_paths':sorted(changed),
+              'product_tree':tree(sha),'origin_product_tree':tree(base),
+              'signature_verified':verification['verified'],'signature_reason':verification['reason'],
+              'signature_verified_at':verification.get('verified_at')},indent=2)+'\n')
+          PY
+          git show --no-patch --format=raw HEAD > routing-diagnostic-commit.txt
       - name: Install project dependencies
         run: python -m pip install -e '.[all]'
-      - name: Record diagnostic identity
+      - name: Record platform and dependencies
         shell: bash
         run: |
-          git rev-parse HEAD > isolation-commit.txt
-          python -m pip freeze > isolation-dependencies.txt
-          if [[ "$RUNNER_OS" == Linux ]]; then
-            {
-              bwrap --version
-              ls -l /usr/bin/bwrap
-              uname -r
-              cat /proc/self/attr/current
-              if [[ -f /etc/apparmor.d/bwrap ]]; then cat /etc/apparmor.d/bwrap; fi
-            } > isolation-backend.txt
-          fi
-      - name: Verify actor isolation and cleanup without persistent accounts
-        if: always()
+          set -euo pipefail
+          python -m pip freeze > routing-diagnostic-dependencies.txt
+          {
+            python -VV
+            uname -a
+            sw_vers
+            command -v sandbox-exec
+            sudo -n id
+          } > routing-diagnostic-platform.txt
+      - name: Run the original three variants with bounded phase and stack capture
         shell: bash
         run: |
           set -euo pipefail
           interpreter="$(command -v python)"
           umask 022
-          stage_root="$(mktemp -d /var/tmp/openkyrozen-isolation.XXXXXX)"
+          stage_root="$(mktemp -d /var/tmp/openkyrozen-routing-diagnostic.XXXXXX)"
           trap 'sudo -n rm -rf -- "$stage_root"' EXIT
           chmod 755 "$stage_root"
           git clone --no-checkout --no-hardlinks "$PWD" "$stage_root/source"
@@ -64,26 +80,18 @@ jobs:
           cd "$stage_root/source"
           sudo -n env -i PATH="$PATH" HOME="$private_home" TMPDIR=/var/tmp PYTHONPATH="$PWD" \
             PYTHONDONTWRITEBYTECODE=1 KYROZEN_DISABLE_VECTOR_INDEX=1 \
-            "$interpreter" -m unittest tests.test_v3_process_owner tests.test_v3_linux_namespace \
-            tests.test_v3_actor_supervisor tests.test_v3_actor_worker tests.test_v3_actor_dispatch \
-            tests.test_v3_actor_native_acceptance \
-            tests.test_v3_routing_supplement \
-            tests.test_v3_shell_cleanup tests.test_v3_protected_worker -v 2>&1 | tee "$GITHUB_WORKSPACE/isolation-tests.log"
-      - name: Verify host security policy was preserved
-        if: always() && runner.os == 'Linux'
-        shell: bash
-        run: |
-          sysctl kernel.apparmor_restrict_unprivileged_userns user.max_user_namespaces > isolation-policy-after.txt
-          diff -u isolation-policy-before.txt isolation-policy-after.txt
-      - name: Preserve diagnostics
+            "$interpreter" -m unittest \
+            tests.test_v3_routing_supplement.PrivilegedRoutingSupplementTests.test_parent_bound_root_and_child_routing_variants_use_original_native_runtime \
+            -v 2>&1 | tee "$GITHUB_WORKSPACE/routing-diagnostic-tests.log"
+      - name: Preserve original diagnostic evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: isolation-${{ matrix.os }}-py${{ matrix.python }}
+          name: routing-timeout-macos-py313
           path: |
-            isolation-commit.txt
-            isolation-dependencies.txt
-            isolation-backend.txt
-            isolation-tests.log
-            isolation-policy-before.txt
-            isolation-policy-after.txt
+            routing-diagnostic-identity.json
+            routing-diagnostic-github-commit.json
+            routing-diagnostic-commit.txt
+            routing-diagnostic-dependencies.txt
+            routing-diagnostic-platform.txt
+            routing-diagnostic-tests.log

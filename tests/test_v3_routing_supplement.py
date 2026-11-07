@@ -423,12 +423,165 @@ class SupplementRunnerTests(unittest.TestCase):
         self.assertEqual(len(executed),1)
 
 
+def _routing_timeout_snapshot(error, supervisor, *, stream=None, snapshot=None):
+    """Capture only bounded offline evidence before owned actor homes disappear."""
+    import stat, sys
+    from benchmarks.v3_process_owner import process_snapshot
+    limit=65536
+    def bounded(value):
+        if isinstance(value,bytes):value=value.decode('utf-8',errors='replace')
+        return (value or '')[-limit:]
+    result={'timeout_seconds':error.timeout,'partial_stdout':bounded(error.output),
+            'partial_stderr':bounded(error.stderr),'actors':[]}
+    try:states=(snapshot or process_snapshot)()
+    except Exception as failure:
+        states={};result['snapshot_error']=type(failure).__name__
+    for actor in tuple(supervisor.actors.values()):
+        owner=actor['owner'];process=actor.get('process')
+        row={'uid':owner.uid,'owner_closed':owner.closed,'stopped':actor['stopped'],
+             'pid':process.pid if process else None,
+             'returncode':process.poll() if process else None,
+             'processes':[{'pid':pid,'state':state} for pid,(uid,state) in sorted(states.items())
+                          if uid==owner.uid][:128]}
+        descriptor=None
+        try:
+            descriptor=os.open(Path(actor['home'])/'routing-timeout.log',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+            info=os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid!=owner.uid or info.st_nlink!=1:
+                raise PermissionError('actor diagnostic is not an owned regular file')
+            os.lseek(descriptor,max(0,info.st_size-limit),os.SEEK_SET)
+            row['diagnostic']={'status':'captured','bytes':info.st_size,'truncated':info.st_size>limit,
+                               'text':os.read(descriptor,limit).decode('utf-8',errors='replace')}
+        except OSError as failure:
+            row['diagnostic']={'status':'unavailable','error':type(failure).__name__}
+        finally:
+            if descriptor is not None:os.close(descriptor)
+        result['actors'].append(row)
+    print('ROUTING_TIMEOUT_DIAGNOSTIC '+json.dumps(result),file=stream or sys.stderr,flush=True)
+    return result
+
+
+class RoutingTimeoutDiagnosticTests(unittest.TestCase):
+    @unittest.skipUnless(os.name=='posix','Unix actor private-home ownership')
+    def test_timeout_snapshot_is_bounded_and_only_reads_owned_regular_actor_file(self):
+        import io, subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            home=Path(directory)
+            child=home/'routing-timeout.log'
+            child.write_text('child-phase\n'+'x'*70000)
+            owner=SimpleNamespace(uid=os.geteuid(),closed=False)
+            actor={'owner':owner,'home':home,'process':SimpleNamespace(pid=4321,poll=lambda:None),
+                   'stopped':False,'provider_config':{'api_key':'MUST-NOT-APPEAR'}}
+            supervisor=SimpleNamespace(actors={owner.uid:actor})
+            error=subprocess.TimeoutExpired(['opaque command'],90,output=b'o'*70000,stderr=b'root-phase')
+            stream=io.StringIO()
+            self.assertTrue(callable(globals().get('_routing_timeout_snapshot')))
+            snapshot=_routing_timeout_snapshot(error,supervisor,stream=stream,
+                snapshot=lambda:{4321:(owner.uid,'S'),9999:(owner.uid+1,'S')})
+            self.assertEqual(snapshot['timeout_seconds'],90)
+            self.assertEqual(snapshot['actors'][0]['processes'],[{'pid':4321,'state':'S'}])
+            self.assertEqual(snapshot['actors'][0]['diagnostic']['bytes'],70012)
+            self.assertTrue(snapshot['actors'][0]['diagnostic']['truncated'])
+            self.assertEqual(len(snapshot['partial_stdout']),65536)
+            self.assertNotIn('MUST-NOT-APPEAR',stream.getvalue())
+            child.unlink();child.symlink_to(home/'sensitive-missing')
+            snapshot=_routing_timeout_snapshot(error,supervisor,stream=io.StringIO(),snapshot=lambda:{})
+            self.assertEqual(snapshot['actors'][0]['diagnostic']['status'],'unavailable')
+            child.unlink();target=home/'target';target.write_text('MUST-NOT-READ')
+            os.link(target,child)
+            snapshot=_routing_timeout_snapshot(error,supervisor,stream=io.StringIO(),snapshot=lambda:{})
+            self.assertEqual(snapshot['actors'][0]['diagnostic']['status'],'unavailable')
+            self.assertNotIn('MUST-NOT-READ',json.dumps(snapshot))
+            child.unlink();child.write_text('MUST-NOT-READ-FOREIGN-UID');owner.uid+=1
+            snapshot=_routing_timeout_snapshot(error,supervisor,stream=io.StringIO(),snapshot=lambda:{})
+            self.assertEqual(snapshot['actors'][0]['diagnostic']['status'],'unavailable')
+            self.assertNotIn('MUST-NOT-READ-FOREIGN-UID',json.dumps(snapshot))
+
+    @unittest.skipUnless(os.name=='posix','Unix actor private-home ownership')
+    def test_child_diagnostics_opt_in_uses_private_home_and_cancels_timer(self):
+        from benchmarks import v3_actor_worker as worker
+        self.assertTrue(callable(getattr(worker,'_routing_diagnostics',None)))
+        with tempfile.TemporaryDirectory() as directory:
+            home=Path(directory)
+            with patch.dict(os.environ,{'HOME':directory},clear=True), \
+                 patch('faulthandler.dump_traceback_later') as dump, \
+                 patch('faulthandler.cancel_dump_traceback_later') as cancel:
+                with worker._routing_diagnostics():worker._routing_phase('disabled')
+                dump.assert_not_called();cancel.assert_not_called()
+                self.assertFalse((home/'routing-timeout.log').exists())
+                os.environ['KYROZEN_BENCHMARK_ROUTING_TIMEOUT_DIAGNOSTICS']='1'
+                with self.assertRaisesRegex(RuntimeError,'sentinel'):
+                    with worker._routing_diagnostics():
+                        worker._routing_phase('child.before-native')
+                        raise RuntimeError('sentinel')
+                self.assertEqual(dump.call_args.args,(60,))
+                handle=dump.call_args.kwargs['file']
+                self.assertTrue(handle.closed)
+                cancel.assert_called_once_with()
+                row=json.loads((home/'routing-timeout.log').read_text().splitlines()[-1])
+                self.assertEqual(row['phase'],'child.before-native')
+                self.assertEqual(row['pid'],os.getpid())
+                self.assertGreater(row['native_tid'],0);self.assertGreater(row['monotonic_ns'],0)
+                self.assertEqual((home/'routing-timeout.log').stat().st_mode & 0o777,0o600)
+
+    @unittest.skipUnless(os.name=='posix','Unix actor private-home ownership')
+    def test_existing_fifo_cannot_block_diagnostic_startup_before_native_invocation(self):
+        import subprocess,sys
+        with tempfile.TemporaryDirectory() as directory:
+            os.mkfifo(Path(directory)/'routing-timeout.log',0o600)
+            code='''import sys
+sys.path.insert(0,sys.argv[1])
+from benchmarks.v3_actor_worker import _routing_diagnostics
+try:
+ with _routing_diagnostics():pass
+except OSError:
+ print('rejected')
+'''
+            result=subprocess.run([sys.executable,'-I','-c',code,str(Path(__file__).resolve().parents[1])],
+                cwd=directory,env={'PATH':os.defpath,'HOME':directory,
+                    'KYROZEN_BENCHMARK_ROUTING_TIMEOUT_DIAGNOSTICS':'1',
+                    'PYTHONDONTWRITEBYTECODE':'1'},capture_output=True,text=True,timeout=2)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout.strip(),'rejected')
+
+    def test_embedded_root_has_phase_markers_without_extending_native_timeout(self):
+        self.assertIn('dump_traceback_later(60',_KERNEL_ROUTING)
+        for operation in ('imports','app-build','chat-inspect','chat-refactor','delegated','app-close','result-print'):
+            for boundary in ('before','after'):
+                self.assertIn('root.'+boundary+'-'+operation,_KERNEL_ROUTING)
+        compile(_KERNEL_ROUTING,'<routing-root-diagnostic>','exec')
+
+    def test_workflow_is_dispatch_only_exact_product_source_and_one_mac313_method(self):
+        import yaml
+        path=Path(__file__).resolve().parents[1]/'.github/workflows/v3-benchmark-isolation.yml'
+        self.assertTrue(path.is_file())
+        workflow=yaml.load(path.read_text(),Loader=yaml.BaseLoader)
+        self.assertEqual(set(workflow['on']),{'workflow_dispatch'})
+        job=workflow['jobs']['routing-timeout']
+        self.assertEqual(job['runs-on'],'macos-latest')
+        python=[step for step in job['steps'] if step.get('uses','').startswith('actions/setup-python@')]
+        self.assertEqual(python[0]['with']['python-version'],'3.13')
+        script='\n'.join(step.get('run','') for step in job['steps'])
+        self.assertIn('4f6bf9c9dd4d4c4f5526d70994e133b55d8a8992',script)
+        self.assertIn('verification',script)
+        self.assertIn(':openkyrozen',script)
+        self.assertIn('tests.test_v3_routing_supplement.PrivilegedRoutingSupplementTests.'
+                      'test_parent_bound_root_and_child_routing_variants_use_original_native_runtime',script)
+        self.assertNotIn('sysctl -w',script)
+
+
 _KERNEL_ROUTING = r'''
-import contextlib,json,os,sys
+import contextlib,faulthandler,json,os,sys,threading,time
 from pathlib import Path
+sys.stderr.reconfigure(line_buffering=True,write_through=True)
+faulthandler.dump_traceback_later(60,file=sys.stderr)
+def phase(name):
+ print(json.dumps({'phase':name,'monotonic_ns':time.monotonic_ns(),'pid':os.getpid(),
+                   'native_tid':threading.get_native_id()}),file=sys.stderr,flush=True)
 source,apparatus,workspace,url=sys.argv[1:5]
 sys.path[:0]=[source,apparatus]
 with contextlib.redirect_stdout(sys.stderr):
+ phase('root.before-imports')
  from v3_process_owner import connect_actor_client
  from v3_actor_worker import install_delegated_adapter,install_mutation_adapter,install_read_adapter
  from v3_shell_launcher import install_worker_adapter
@@ -437,10 +590,15 @@ with contextlib.redirect_stdout(sys.stderr):
  from openkyrozen.app.bootstrap import build_application
  from openkyrozen.providers import ProviderConfig
  from openkyrozen.providers.openai import OpenAIResponsesProvider
+ phase('root.after-imports')
+ phase('root.before-bootstrap')
  client=connect_actor_client()
  variant=client.rpc('routing_policy')['variant']
  install_worker_adapter(client=client);install_mutation_adapter(client);install_read_adapter(client)
+ phase('root.after-bootstrap')
+ phase('root.before-app-build')
  app=build_application(surface='cli');runtime=app.runtime
+ phase('root.after-app-build')
  controller=None
  try:
   runtime._set_workspace_root(workspace);runtime.set_interaction_mode('agent')
@@ -454,8 +612,12 @@ with contextlib.redirect_stdout(sys.stderr):
   controller=install(runtime,variant);runtime._benchmark_routing_variant=variant
   observation=_ProviderObservations(runtime,runtime.llm_provider)
   install_delegated_adapter(runtime,client,source=source)
+  phase('root.before-chat-inspect')
   runtime.chat(runtime.current_session,'Inspect catalog.py and report which function sorts products and its exact tie-break rule.',profile='auto')
+  phase('root.after-chat-inspect')
+  phase('root.before-chat-refactor')
   runtime.chat(runtime.current_session,'Refactor source.py, then verify the implementation.',profile='auto')
+  phase('root.after-chat-refactor')
   coordinator=runtime.delegation()
   import threading
   run={'run_id':'routing-author','budget_id':'routing-author','profile':'researcher','name':'Author',
@@ -463,12 +625,19 @@ with contextlib.redirect_stdout(sys.stderr):
        'assignment':{'objective':'Refactor source.py, then verify its evidence.',
                      'context':'Inspect actual source','scope':['source.py']}}
   coordinator.runs[run['run_id']]=run;coordinator.cancelled[run['run_id']]=threading.Event()
+  phase('root.before-delegated')
   runtime._invoke_delegated(run,review=False,feedback=None,coordinator=coordinator)
+  phase('root.after-delegated')
   result={'variant':variant,'root':controller.records,'child':runtime._benchmark_child_routing_records}
  finally:
+  phase('root.before-app-close')
   app.close()
+  phase('root.after-app-close')
   if controller is not None:controller.close()
-print(json.dumps(result))
+phase('root.before-result-print')
+print(json.dumps(result),flush=True)
+phase('root.after-result-print')
+faulthandler.cancel_dump_traceback_later()
 '''
 
 
@@ -524,13 +693,20 @@ class PrivilegedRoutingSupplementTests(unittest.TestCase):
                             str(repository/'benchmarks'),str(workspace),relay.url,'--model','deepseek-flash'],
                             cwd=workspace,env={'PATH':os.environ.get('PATH',os.defpath),
                                 'KYROZEN_CLI_CAPABILITIES':'read,write,shell,network',
+                                'KYROZEN_BENCHMARK_ROUTING_TIMEOUT_DIAGNOSTICS':'1',
                                 'KYROZEN_DISABLE_VECTOR_INDEX':'1','KYROZEN_DECISION_ASSIST_BACKEND':'off'},
                             protected_files=[guard],policy=ShellPolicy(workspace,{'read','write','shell','network'}),
                             source=repository,provider_config=relay.issue_actor_config,revoke_actor=relay.revoke_actor,
                             routing_variant=variant)
                         with supervisor:
                             process=supervisor.popen(stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-                            output,error=process.communicate(timeout=90)
+                            try:
+                                output,error=process.communicate(timeout=90)
+                            except subprocess.TimeoutExpired as failure:
+                                _routing_timeout_snapshot(failure,supervisor)
+                                raise
+                            print('ROUTING_ROOT_PHASES '+variant+'\n'+error.decode(errors='replace'),
+                                  file=sys.stderr,flush=True)
                             self.assertEqual(process.returncode,0,error.decode(errors='replace'))
                             result=json.loads(output)
                             self.assertEqual(result['variant'],variant)
