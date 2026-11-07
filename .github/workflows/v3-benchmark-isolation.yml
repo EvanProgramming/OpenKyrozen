@@ -41,6 +41,7 @@ jobs:
           set -euo pipefail
           python -m unittest tests.test_v3_protected_worker -v 2>&1 | tee isolation-tests.log
       - name: Verify privileged UID ownership without persistent accounts
+        if: always()
         shell: bash
         run: |
           set -euo pipefail

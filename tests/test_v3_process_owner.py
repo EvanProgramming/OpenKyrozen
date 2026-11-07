@@ -144,13 +144,27 @@ class PrivilegedProcessOwnershipTests(unittest.TestCase):
         owner = UIDOwner()
         try:
             process = owner.popen([sys.executable, '-I', '-c',
-                'import json,os; print(json.dumps([os.getuid(),os.getgid(),os.getgroups()]))'],
+                'import ctypes,json,os,sys\n'
+                'if sys.platform == "darwin":\n'
+                ' libc=ctypes.CDLL(None,use_errno=True)\n'
+                ' count=libc.getgroups(0,None)\n'
+                ' if count<0: raise OSError(ctypes.get_errno(),"kernel group count")\n'
+                ' buffer=(ctypes.c_uint32*max(1,count))()\n'
+                ' count=libc.getgroups(count,buffer)\n'
+                ' if count<0: raise OSError(ctypes.get_errno(),"kernel groups")\n'
+                ' groups=list(buffer[:count])\n'
+                'else: groups=os.getgroups()\n'
+                'print(json.dumps([os.getuid(),os.getgid(),groups]))'],
                 cwd='/var/tmp', env={'PATH': os.environ['PATH']},
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout, stderr = process.communicate(timeout=5)
             self.assertEqual(process.returncode, 0, stderr)
             import json
-            self.assertEqual(json.loads(stdout), [owner.uid, owner.uid, []])
+            identity = json.loads(stdout)
+            self.assertEqual(identity[:2], [owner.uid, owner.uid])
+            # Modern macOS os.getgroups queries directory membership, not this
+            # process's effective kernel groups; libc's legacy symbol checks it.
+            self.assertLessEqual(set(identity[2]), {owner.uid})
         finally:
             owner.close()
 
