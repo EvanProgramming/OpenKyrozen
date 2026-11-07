@@ -124,7 +124,7 @@ result.write_text(json.dumps({'cpu_seconds': time.process_time()-cpu,
 class LoadControl:
     """Bounded diagnostic load; never writes fixture data or changes timeouts."""
 
-    def __init__(self, control, workers, case, trace):
+    def __init__(self, control, workers, case, trace, readonly_anchor=False):
         self.control, self.workers, self.case, self.trace = control, workers, case, trace
         self.stopped, self.sqlite_ready = threading.Event(), threading.Event()
         self.cpu = []
@@ -132,8 +132,22 @@ class LoadControl:
         self.acquired_transactions = 0
         self.sqlite_fatal_error = None
         self.closed = False
+        self.anchor = None
+        self.anchor_info = {'enabled': readonly_anchor, 'closed': not readonly_anchor}
 
     def start(self):
+        if self.anchor_info['enabled']:
+            database = self.case.root / 'state.sqlite3'
+            self.anchor = sqlite3.connect(database.as_uri() + '?mode=ro', uri=True,
+                                         timeout=.05, isolation_level=None)
+            # Opening alone is lazy; a finished schema read materializes the WAL client without a transaction.
+            self.anchor.execute('SELECT name FROM sqlite_schema LIMIT 1').fetchall()
+            mode = self.anchor.execute('PRAGMA journal_mode').fetchone()[0]
+            self.anchor_info.update(journal_mode=mode, total_changes=self.anchor.total_changes,
+                                    in_transaction=self.anchor.in_transaction)
+            if mode != 'wal' or self.anchor.total_changes or self.anchor.in_transaction:
+                raise RuntimeError('Read-only anchor did not materialize an idle WAL client')
+            self.trace.record('anchor.opened', **self.anchor_info)
         if self.control in {'sqlite', 'combined'}:
             self.sqlite_thread = threading.Thread(target=self._sqlite_load,
                 name='diagnostic-sqlite-control', daemon=True)
@@ -186,6 +200,23 @@ class LoadControl:
             return
         self.closed = True
         self.stopped.set()
+        anchor_error = None
+        if self.anchor is not None:
+            self.trace.record('anchor.close.call')
+            started = time.monotonic_ns()
+            try:
+                self.anchor_info.update(total_changes=self.anchor.total_changes,
+                                        in_transaction=self.anchor.in_transaction)
+                self.anchor.close()
+                self.anchor_info['closed'] = True
+                self.anchor_info['wal_present_after_close'] = (self.case.root / 'state.sqlite3-wal').exists()
+                self.anchor = None
+            except Exception as error:
+                anchor_error = type(error).__name__
+                self.anchor_info['close_error'] = anchor_error
+            finally:
+                self.anchor_info['close_elapsed_ns'] = time.monotonic_ns() - started
+                self.trace.record('anchor.close.return', **self.anchor_info)
         cpu = []
         for process, stop, result in self.cpu:
             stop.touch()
@@ -203,10 +234,11 @@ class LoadControl:
             self.sqlite_thread.join(timeout=2)
         sqlite_stopped = self.sqlite_thread is None or not self.sqlite_thread.is_alive()
         write_json(self.trace.output / 'load-control.json', {'control': self.control, 'cpu': cpu,
+            'readonly_anchor': self.anchor_info,
             'sqlite': {'acquired_transactions': self.acquired_transactions, 'thread_stopped': sqlite_stopped,
                        'fatal_error': self.sqlite_fatal_error}})
         self.trace.record('load.stopped', control=self.control, cpu=cpu, sqlite_thread_stopped=sqlite_stopped)
-        if (not sqlite_stopped or self.sqlite_fatal_error
+        if (anchor_error or not sqlite_stopped or self.sqlite_fatal_error
                 or any(item['forced_cleanup'] or item['returncode'] != 0
                        or item.get('stopped_by') != 'parent' for item in cpu)):
             raise RuntimeError('Load-control cleanup did not complete normally; inspect diagnostic evidence')
@@ -325,7 +357,7 @@ class Trace:
         write_json(self.output / filename, state)
 
 
-def run_child(output, control='baseline', cpu_workers=2):
+def run_child(output, control='baseline', cpu_workers=2, readonly_anchor=False):
     # Import the fixture before starting the four-second cancellation watchdog.
     from test_delegation import DelegationTests
 
@@ -341,7 +373,7 @@ def run_child(output, control='baseline', cpu_workers=2):
             # Lazy SDK initialization must not consume the cancellation trace's profiling overhead.
             sys.setprofile(trace.profile)
             threading.setprofile(trace.profile)
-            self.load_control = LoadControl(control, cpu_workers, self, trace)
+            self.load_control = LoadControl(control, cpu_workers, self, trace, readonly_anchor)
             self.addCleanup(self.load_control.close)
             self.load_control.start()
 
@@ -391,7 +423,7 @@ def run_child(output, control='baseline', cpu_workers=2):
     return 0 if result.wasSuccessful() else 1
 
 
-def run_process(command, log_path, env):
+def run_process(command, log_path, env, *, timeout=45):
     started = time.monotonic_ns()
     cleanup = None
     with log_path.open('w', encoding='utf-8') as log:
@@ -399,7 +431,7 @@ def run_process(command, log_path, env):
             start_new_session=os.name != 'nt',
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0)
         try:
-            returncode = process.wait(timeout=45)
+            returncode = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             try:
                 cleanup = stop_diagnostic_tree(process)
@@ -412,7 +444,7 @@ def run_process(command, log_path, env):
                     process.wait(timeout=3)
             returncode = 124
     return {'returncode': returncode, 'elapsed_ns': time.monotonic_ns() - started,
-            'command': command, 'timeout_cleanup': cleanup}
+            'command': command, 'timeout_seconds': timeout, 'timeout_cleanup': cleanup}
 
 
 def main():
@@ -421,12 +453,13 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--repository', type=Path, default=ROOT, help='Exact product checkout to test; harness may live separately')
     parser.add_argument('--iterations', type=int, default=20)
-    parser.add_argument('--control', choices=('baseline', 'cpu', 'sqlite', 'combined'), default='baseline')
+    parser.add_argument('--control', choices=('baseline', 'cpu', 'sqlite', 'combined', 'paired-anchor'), default='baseline')
     parser.add_argument('--cpu-workers', type=int, default=2, help='Bounded owned CPU load processes (1–4)')
     parser.add_argument('--interleave-reviewer', action='store_true', help='Run fixture-only reviewer acceptance after each cancellation, matching the original order')
     parser.add_argument('--historical-environment', action='store_true', help='Require Windows Python 3.12.10 and every original package version; mismatch is infrastructure failure')
     parser.add_argument('--write-historical-requirements', type=Path, help='Write original package pins and exit without loading the product')
     parser.add_argument('--child', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--readonly-anchor', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.write_historical_requirements:
         args.write_historical_requirements.parent.mkdir(parents=True, exist_ok=True)
@@ -438,11 +471,16 @@ def main():
         parser.error('--iterations must be positive')
     if not 1 <= args.cpu_workers <= 4:
         parser.error('--cpu-workers must be between 1 and 4')
+    paired = args.control == 'paired-anchor'
+    if paired and (args.child or args.iterations > 10):
+        parser.error('paired-anchor is a parent campaign bounded at 10 pairs')
+    if paired:
+        args.interleave_reviewer = True
     ROOT = args.repository.resolve()
     sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
     output = args.output.resolve()
     if args.child:
-        return run_child(output, args.control, args.cpu_workers)
+        return run_child(output, args.control, args.cpu_workers, args.readonly_anchor)
     output.mkdir(parents=True, exist_ok=True)
     if args.historical_environment:
         environment = historical_environment()
@@ -453,7 +491,7 @@ def main():
     revision = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
     tracked_diff = subprocess.run(['git', 'diff', 'HEAD', '--'], cwd=ROOT, capture_output=True, check=True).stdout
     report = {'tracked_product_edits': bool(tracked_diff),
-        'tracked_product_diff_sha256': hashlib.sha256(tracked_diff).hexdigest(), 'schema_version': 1, 'candidate_sha': revision, 'platform': platform.platform(),
+        'tracked_product_diff_sha256': hashlib.sha256(tracked_diff).hexdigest(), 'schema_version': 2 if paired else 1, 'candidate_sha': revision, 'platform': platform.platform(),
         'python': sys.version, 'sqlite_version': sqlite3.sqlite_version, 'cpu_count': os.cpu_count(),
         'fixture': 'tests.test_delegation.DelegationTests.' + TEST,
         'fixture_sha256': hashlib.sha256((ROOT / 'tests/test_delegation.py').read_bytes()).hexdigest(),
@@ -463,31 +501,45 @@ def main():
         'historical_environment_required': args.historical_environment,
         'interleave_reviewer': args.interleave_reviewer, 'execution_order': [],
         'private_home': True,
-        'control': args.control, 'cpu_workers': args.cpu_workers if args.control in {'cpu', 'combined'} else 0,
+        'control': args.control, 'cpu_workers': args.cpu_workers if args.control in {'cpu', 'combined', 'paired-anchor'} else 0,
+        'paired_readonly_anchor': paired, 'requested_pairs': args.iterations if paired else None,
         'qualification': 'Observational instrumentation changes scheduling; passing samples do not explain the historical timeout.',
         'iterations': []}
     write_json(output / 'report.json', report)
     with tempfile.TemporaryDirectory(prefix='kyrozen-windows-diagnostic-') as home:
         env = isolated_environment(Path(home))
         for index in range(1, args.iterations + 1):
-            directory = output / str(index)
-            directory.mkdir(exist_ok=True)
-            command = [sys.executable, str(Path(__file__).resolve()), '--child', '--output', str(directory),
-                       '--repository', str(ROOT), '--control', args.control, '--cpu-workers', str(args.cpu_workers)]
-            report['execution_order'].append(f'cancellation-{index}')
-            write_json(output / 'report.json', report)
-            result = {'iteration': index, **run_process(command, directory / 'process.log', env)}
-            report['iterations'].append(result)
-            write_json(output / 'report.json', report)
-            print(f"Cancellation iteration {index}: exit={result['returncode']}", flush=True)
-            if args.interleave_reviewer:
-                report['execution_order'].append(f'reviewer-{index}')
+            variants = [('baseline', False), ('anchor', True)] if paired else [('', args.readonly_anchor)]
+            if paired and index % 2 == 0:
+                variants.reverse()
+            for variant, anchor in variants:
+                directory = output / str(index)
+                tag = f'{index}-{variant}' if paired else str(index)
+                if paired:
+                    directory = directory / variant
+                directory.mkdir(parents=True, exist_ok=True)
+                control = 'cpu' if paired else args.control
+                command = [sys.executable, str(Path(__file__).resolve()), '--child', '--output', str(directory),
+                           '--repository', str(ROOT), '--control', control, '--cpu-workers', str(args.cpu_workers)]
+                if anchor:
+                    command.append('--readonly-anchor')
+                report['execution_order'].append(f'cancellation-{tag}')
                 write_json(output / 'report.json', report)
-                result['reviewer'] = run_process(
-                    [sys.executable, str(ROOT / 'scripts/subagent_workflow_acceptance.py')],
-                    directory / 'reviewer.log', env)
+                result = {'iteration': len(report['iterations']) + 1,
+                          **run_process(command, directory / 'process.log', env)}
+                if paired:
+                    result.update(pair=index, variant=variant, control=control, readonly_anchor=anchor)
+                report['iterations'].append(result)
                 write_json(output / 'report.json', report)
-                print(f"Reviewer iteration {index}: exit={result['reviewer']['returncode']}", flush=True)
+                print(f"Cancellation iteration {tag}: exit={result['returncode']}", flush=True)
+                if args.interleave_reviewer:
+                    report['execution_order'].append(f'reviewer-{tag}')
+                    write_json(output / 'report.json', report)
+                    result['reviewer'] = run_process(
+                        [sys.executable, str(ROOT / 'scripts/subagent_workflow_acceptance.py')],
+                        directory / 'reviewer.log', env)
+                    write_json(output / 'report.json', report)
+                    print(f"Reviewer iteration {tag}: exit={result['reviewer']['returncode']}", flush=True)
     return int(any(item['returncode'] != 0 or item.get('reviewer', {}).get('returncode', 0) != 0
                    for item in report['iterations']))
 

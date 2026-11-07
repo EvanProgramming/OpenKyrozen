@@ -11,9 +11,9 @@ on:
         required: true
         default: '7905fb634fe447243668c2d01179ce5cb2cdb275'
       control:
-        description: Diagnostic load control (passing repetitions never establish historical cause)
+        description: Load control; paired-anchor compares equal CPU load with/without read-only anchor (1–10 pairs)
         type: choice
-        options: [baseline, cpu, sqlite, combined, all]
+        options: [baseline, cpu, sqlite, combined, paired-anchor, all]
         default: baseline
       iterations:
         description: Samples per control and Python version (1–50)
@@ -39,6 +39,8 @@ jobs:
       matrix:
         python: ${{ fromJSON(inputs.environment == 'historical' && '["3.12.10"]' || '["3.12","3.13"]') }}
         control: ${{ fromJSON(inputs.control == 'all' && '["baseline","cpu","sqlite","combined"]' || format('["{0}"]', inputs.control || 'baseline')) }}
+    env:
+      LOAD_CONTROL: ${{ matrix.control }}
     steps:
       - name: Validate exact candidate identity
         shell: pwsh
@@ -46,6 +48,7 @@ jobs:
           if ($env:PRODUCT_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'candidate_sha must be a full lowercase commit SHA' }
           if ($env:ITERATIONS -cnotmatch '^[0-9]+$' -or [int]$env:ITERATIONS -lt 1 -or [int]$env:ITERATIONS -gt 50) { throw 'iterations must be 1–50' }
           if ($env:HISTORICAL_ENVIRONMENT -eq '1' -and [int]$env:ITERATIONS -gt 20) { throw 'historical campaign is bounded at 20 iterations' }
+          if ($env:LOAD_CONTROL -eq 'paired-anchor' -and [int]$env:ITERATIONS -gt 10) { throw 'paired-anchor is bounded at 10 pairs' }
       - name: Checkout diagnostic harness
         uses: actions/checkout@v4
         with:
@@ -97,12 +100,38 @@ jobs:
           $env:GITHUB_SHA | Set-Content -Encoding utf8 windows-evidence/diagnostic-commit.txt
       - name: Trace unchanged cancellation test under recorded load control
         shell: pwsh
-        env:
-          LOAD_CONTROL: ${{ matrix.control }}
         run: |
           $historical = @()
           if ($env:HISTORICAL_ENVIRONMENT -eq '1') { $historical = @('--historical-environment', '--interleave-reviewer') }
           python diagnostic-source/scripts/v3_windows_reliability.py --repository product --output windows-evidence --iterations $env:ITERATIONS --control $env:LOAD_CONTROL --cpu-workers 2 @historical
+      - name: Verify diagnostic harness independently of historical product
+        if: always() && steps.python.outcome == 'success'
+        working-directory: diagnostic-source
+        shell: python
+        run: |
+          import json, os, sys, tempfile
+          from pathlib import Path
+          root = Path.cwd().resolve()
+          sys.path.insert(0, str(root))
+          from scripts.v3_windows_reliability import isolated_environment, run_process
+          output = root.parent / 'windows-evidence'
+          output.mkdir(exist_ok=True)
+          code = ("from pathlib import Path; import openkyrozen, unittest; "
+                  "print('Diagnostic product source:', openkyrozen.__file__, flush=True); "
+                  "assert Path(openkyrozen.__file__).resolve().is_relative_to(Path.cwd()); "
+                  "unittest.main(module='tests.test_v3_windows_reliability', verbosity=2)")
+          with tempfile.TemporaryDirectory(prefix='kyrozen-diagnostic-tests-') as home:
+              env = isolated_environment(Path(home))
+              env['PYTHONPATH'] = str(root)
+              env['KYROZEN_DIAGNOSTIC_TEST_OUTPUT'] = str(output / 'diagnostic-test-evidence')
+              result = run_process([sys.executable, '-c', code], output / 'diagnostic-unittest.log', env, timeout=300)
+          returncode = result['returncode']
+          (output / 'diagnostic-unittest.json').write_text(json.dumps({
+              'status': 'INFRASTRUCTURE_FAILURE' if returncode == 124 else 'PASS' if returncode == 0 else 'FAIL',
+              **result, 'diagnostic_commit': os.environ['GITHUB_SHA'],
+              'python': sys.version, 'scope': 'diagnostic-source only; separate from historical product acceptance',
+              }, indent=2), encoding='utf-8')
+          raise SystemExit(returncode)
       - name: Upload investigation evidence
         if: always()
         uses: actions/upload-artifact@v4

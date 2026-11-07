@@ -15,6 +15,150 @@ SCRIPT = ROOT / 'scripts' / 'v3_windows_reliability.py'
 
 
 class WindowsReliabilityDiagnosticTests(unittest.TestCase):
+    def test_readonly_anchor_materializes_wal_without_a_transaction_and_final_writer_close_checkpoints(self):
+        import sqlite3
+        from scripts.v3_windows_reliability import LoadControl, Trace
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / 'state.sqlite3'
+            wal = Path(str(database) + '-wal')
+            connection = sqlite3.connect(database)
+            connection.execute('PRAGMA journal_mode=WAL')
+            connection.execute('CREATE TABLE probe(value TEXT)')
+            connection.commit()
+            connection.close()
+            self.assertFalse(wal.exists())
+            output = root / 'evidence'
+            output.mkdir()
+            trace = Trace(output)
+            control = LoadControl('baseline', 0, types.SimpleNamespace(root=root), trace,
+                                  readonly_anchor=True)
+            try:
+                control.start()
+                anchor = control.anchor
+                self.assertFalse(anchor.in_transaction)
+                writer = sqlite3.connect(database, timeout=.05)
+                try:
+                    writer.execute("INSERT INTO probe VALUES('committed')")
+                    writer.commit()
+                finally:
+                    writer.close()
+                self.assertTrue(wal.is_file(), 'Materialized anchor must prevent last-client WAL cleanup')
+                self.assertEqual(anchor.execute('SELECT value FROM probe').fetchall(), [('committed',)])
+                self.assertFalse(anchor.in_transaction)
+                with self.assertRaises(sqlite3.OperationalError):
+                    anchor.execute("INSERT INTO probe VALUES('forbidden')")
+                self.assertEqual(anchor.total_changes, 0)
+            finally:
+                control.close()
+                trace.stream.close()
+            self.assertTrue(wal.exists(), 'The final read-only client cannot checkpoint the WAL')
+            with self.assertRaises(sqlite3.ProgrammingError):
+                anchor.execute('SELECT 1')
+            connection = sqlite3.connect(database)
+            try:
+                self.assertEqual(connection.execute('SELECT value FROM probe').fetchall(), [('committed',)])
+            finally:
+                connection.close()
+            self.assertFalse(wal.exists(), 'A final writable client must checkpoint the committed WAL')
+
+    def test_paired_anchor_reports_counterbalanced_order_and_identical_bounded_cpu_load(self):
+        from scripts import v3_windows_reliability as diagnostic
+        commands = []
+        def run(command, log_path, env):
+            commands.append(command)
+            return {'returncode': 0, 'elapsed_ns': 1, 'command': command, 'timeout_cleanup': None}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(sys, 'argv', [str(SCRIPT), '--output', directory, '--iterations', '2',
+                 '--control', 'paired-anchor', '--interleave-reviewer']), \
+             patch.object(diagnostic, 'run_process', side_effect=run):
+            self.assertEqual(diagnostic.main(), 0)
+            report = json.loads((Path(directory) / 'report.json').read_text())
+            self.assertEqual(report['execution_order'], [
+                'cancellation-1-baseline', 'reviewer-1-baseline',
+                'cancellation-1-anchor', 'reviewer-1-anchor',
+                'cancellation-2-anchor', 'reviewer-2-anchor',
+                'cancellation-2-baseline', 'reviewer-2-baseline'])
+            self.assertEqual([row['variant'] for row in report['iterations']],
+                             ['baseline', 'anchor', 'anchor', 'baseline'])
+            cancellations = commands[::2]
+            self.assertTrue(all(command[command.index('--control') + 1] == 'cpu' for command in cancellations))
+            self.assertEqual(['--readonly-anchor' in command for command in cancellations],
+                             [False, True, True, False])
+            with patch.object(sys, 'argv', [str(SCRIPT), '--output', directory,
+                    '--control', 'paired-anchor', '--iterations', '11']):
+                with self.assertRaises(SystemExit) as error:
+                    diagnostic.main()
+                self.assertEqual(error.exception.code, 2)
+
+    def test_last_client_checkpoint_latency_hits_original_deadline_until_readonly_anchor(self):
+        from scripts.v3_windows_reliability import isolated_environment, run_process
+        code = """
+from pathlib import Path
+import sqlite3, sys, threading, time
+from unittest.mock import patch
+from scripts.v3_windows_reliability import Trace, run_child
+
+active, injected = threading.Event(), threading.Event()
+state = {}
+original_record, original_connect = Trace.record, sqlite3.connect
+
+def record(trace, event, **fields):
+    state['trace'] = trace
+    if event == 'cancel.return':
+        active.set()
+    original_record(trace, event, **fields)
+
+class CheckpointLatency(sqlite3.Connection):
+    def __init__(self, database, *args, **kwargs):
+        super().__init__(database, *args, **kwargs)
+        self.fixture = str(database).endswith(('state.sqlite3', 'state.sqlite3?mode=ro'))
+
+    def close(self):
+        trace = state.get('trace')
+        wal = trace.case.root / 'state.sqlite3-wal' if trace and active.is_set() and self.fixture else None
+        size = wal.stat().st_size if wal and wal.is_file() else 0
+        super().close()
+        # A dirty WAL disappearing proves this close performed real last-client checkpoint cleanup.
+        if size > 32 and not wal.exists() and not injected.is_set():
+            injected.set()
+            trace.record('injected_checkpoint_close.call', wal_bytes=size)
+            time.sleep(5.3)
+            trace.record('injected_checkpoint_close.return')
+
+def connect(*args, **kwargs):
+    kwargs['factory'] = CheckpointLatency
+    return original_connect(*args, **kwargs)
+
+with patch.object(Trace, 'record', record), patch.object(sqlite3, 'connect', connect):
+    raise SystemExit(run_child(Path(sys.argv[1]), readonly_anchor=sys.argv[2] == 'anchor'))
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(os.environ.get('KYROZEN_DIAGNOSTIC_TEST_OUTPUT', directory))
+            evidence = evidence / f'checkpoint-close-{time.time_ns()}'
+            env = isolated_environment(Path(directory) / 'home')
+            for variant, expected in (('baseline', 1), ('anchor', 0)):
+                output = evidence / variant
+                output.mkdir(parents=True)
+                process = run_process([sys.executable, '-c', code, str(output), variant],
+                                      output / 'process.log', env)
+                (output / 'child-process-result.json').write_text(json.dumps(
+                    {**process, 'expected_returncode': expected, 'readonly_anchor': variant == 'anchor'}, indent=2))
+                self.assertEqual(process['returncode'], expected, (output / 'process.log').read_text())
+                log = (output / 'unittest.log').read_text()
+                events = [json.loads(line)['event'] for line in (output / 'events.jsonl').read_text().splitlines()]
+                state = json.loads((output / 'state-before-cleanup.json').read_text())
+                self.assertEqual(state['marker'], 'ok')
+                self.assertEqual(state['persisted_states'][-1]['status'], 'cancelled')
+                if variant == 'baseline':
+                    self.assertIn('TimeoutError', log)
+                    self.assertIn('injected_checkpoint_close.call', events)
+                    self.assertLess(events.index('injected_checkpoint_close.call'), events.index('future_wait.return'))
+                else:
+                    self.assertNotIn('TimeoutError', log)
+                    self.assertNotIn('injected_checkpoint_close.call', events)
+                    self.assertLess(events.index('future_wait.return'), events.index('anchor.close.call'))
+
     def test_detailed_profiler_starts_after_fixture_setup(self):
         import sqlite3
         from scripts.v3_windows_reliability import run_child
@@ -236,12 +380,17 @@ print('native watchdog unused', flush=True)
 raise SystemExit(result)
 """
         with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(os.environ.get('KYROZEN_DIAGNOSTIC_TEST_OUTPUT', directory))
+            evidence = evidence / f'native-watchdog-{time.time_ns()}'
             for iteration in range(3):
-                path = Path(directory) / str(iteration)
-                process = subprocess.run([sys.executable, '-c', code, str(path)], cwd=ROOT,
-                                         capture_output=True, text=True, timeout=20)
-                self.assertIn('native watchdog unused', process.stdout, process.stderr)
-                self.assertEqual(process.returncode, 1, process.stdout + process.stderr)
+                path = evidence / str(iteration)
+                path.mkdir(parents=True)
+                with (path / 'process.log').open('w') as log:
+                    process = subprocess.run([sys.executable, '-c', code, str(path)], cwd=ROOT,
+                                             stdout=log, stderr=subprocess.STDOUT, timeout=20)
+                output = (path / 'process.log').read_text()
+                self.assertIn('native watchdog unused', output)
+                self.assertEqual(process.returncode, 1, output)
                 self.assertIn('TimeoutError', (path / 'unittest.log').read_text())
                 self.assertIn('Timeout (0:00:04)', (path / 'threads.log').read_text())
                 self.assertTrue((path / 'state-watchdog-1.json').exists())
