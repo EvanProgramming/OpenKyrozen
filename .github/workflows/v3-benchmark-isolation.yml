@@ -40,6 +40,17 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest tests.test_v3_protected_worker -v 2>&1 | tee isolation-tests.log
+      - name: Verify privileged UID ownership without persistent accounts
+        shell: bash
+        run: |
+          set -euo pipefail
+          interpreter="$(command -v python)"
+          private_home="$RUNNER_TEMP/openkyrozen-uid-owner-home"
+          sudo -n mkdir -p "$private_home"
+          sudo -n chmod 700 "$private_home"
+          sudo -n env -i PATH="$PATH" HOME="$private_home" PYTHONPATH="$PWD" \
+            PYTHONDONTWRITEBYTECODE=1 "$interpreter" \
+            -m unittest tests.test_v3_process_owner -v 2>&1 | tee uid-ownership-tests.log
       - name: Preserve diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -49,3 +60,4 @@ jobs:
             isolation-commit.txt
             isolation-dependencies.txt
             isolation-tests.log
+            uid-ownership-tests.log
