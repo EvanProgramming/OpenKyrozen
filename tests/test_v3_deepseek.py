@@ -309,7 +309,8 @@ class DeepSeekRunnerTests(unittest.TestCase):
 
         def worker(command, **kwargs):
             commands.append(command)
-            Path(command[command.index('--result') + 1]).write_text('{}')
+            from tests.test_v3_matched_live import valid_worker_result
+            Path(command[command.index('--result') + 1]).write_text(json.dumps(valid_worker_result()))
             return 0, ''
 
         with tempfile.TemporaryDirectory() as directory:

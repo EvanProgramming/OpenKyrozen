@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import ast
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import asdict
 import hashlib
 import json
@@ -499,8 +499,12 @@ def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: 
                 return 0, ""
             if isinstance(stderr, bytes):
                 stderr = stderr.decode(errors="replace")
+            known_exceptions = {"RuntimeError", "ValueError", "TypeError", "AttributeError", "ImportError",
+                                "ModuleNotFoundError", "OSError", "PermissionError", "FileNotFoundError",
+                                "NotImplementedError", "AssertionError", "KeyError", "IndexError", "TimeoutError",
+                                "ConnectionError", "UnicodeError", "RecursionError", "MemoryError"}
             error_type = next((line.split(":", 1)[0] for line in reversed(stderr.splitlines())
-                               if ":" in line and line.split(":", 1)[0].endswith(("Error", "Exception"))), None)
+                               if ":" in line and line.split(":", 1)[0] in known_exceptions), None)
             suffix = f":{error_type}" if error_type else ""
             return process.returncode, f"worker_exit_{process.returncode}{suffix}"
         except subprocess.TimeoutExpired:
@@ -569,6 +573,305 @@ def _worker_env(base: Path, fixture: dict, relay: ResponsesRelay) -> dict[str, s
     return env
 
 
+# Full worker output is evidence, not a trusted completion flag. Retain at most
+# 64 MiB; malformed/oversized results retain only a content hash and diagnostic.
+_MAX_WORKER_EVIDENCE_BYTES = 64 * 1024 * 1024
+_WORKER_EVIDENCE_PROTOCOL = "openkyrozen-worker-evidence-v1"
+
+
+def _canonical_bytes(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                      allow_nan=False).encode("utf-8")
+
+
+def _read_regular_bytes(path: Path, directory_fd: int | None = None) -> tuple[bytes | None, str | None, int, str, int | None]:
+    """Read at most limit+1 bytes; never follow links or wait on special files.
+
+    The digest is complete only for a stable, bounded file. A growing file may
+    return a prefix digest, which its caller must label rather than claim as raw.
+    """
+    import stat
+    try:
+        before = (path.lstat() if directory_fd is None else
+                  os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False))
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            return None, None, 0, "unsafe_file", None
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        descriptor = (os.open(path, flags) if directory_fd is None else
+                      os.open(path.name, flags, dir_fd=directory_fd))
+        try:
+            stream = os.fdopen(descriptor, "rb")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        with stream:
+            actual = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(actual.st_mode) or actual.st_nlink != 1
+                    or (actual.st_dev, actual.st_ino) != (before.st_dev, before.st_ino)):
+                return None, None, 0, "changed_file", None
+            if actual.st_size > _MAX_WORKER_EVIDENCE_BYTES:
+                return None, None, 0, "oversized", actual.st_size
+            digest, chunks, size = hashlib.sha256(), [], 0
+            while chunk := stream.read(min(1024 * 1024, _MAX_WORKER_EVIDENCE_BYTES + 1 - size)):
+                digest.update(chunk)
+                size += len(chunk)
+                if size > _MAX_WORKER_EVIDENCE_BYTES:
+                    return None, digest.hexdigest(), size, "growing_file", actual.st_size
+                chunks.append(chunk)
+            after = os.fstat(stream.fileno())
+            if after.st_size != size or actual.st_size != size or after.st_mtime_ns != actual.st_mtime_ns:
+                return None, digest.hexdigest(), size, "changed_file", actual.st_size
+        return b"".join(chunks), digest.hexdigest(), size, "valid", actual.st_size
+    except OSError:
+        return None, None, 0, "unavailable", None
+
+
+def _worker_schema_errors(worker: dict) -> list[str]:
+    """Validate the shared candidate observer, independently of product-arm ABI."""
+    import math
+    errors = []
+    for key in ("events", "tool_receipts", "task_records", "request_context_records", "conversation_records"):
+        value = worker.get(key)
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            errors.append(key)
+    for key in ("tasks", "tool_actions", "accepted_plan_fingerprints"):
+        value = worker.get(key)
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            errors.append(key)
+    for key in ("tool_calls", "tool_successes", "material_plan_proposals", "plan_revisions", "cancelled_tasks",
+                "material_revisions", "unnecessary_churn", "duplicate_calls", "protocol_recovery",
+                "processes_started", "processes_cancelled", "processes_alive"):
+        value = worker.get(key)
+        if type(value) is not int or value < 0:
+            errors.append(key)
+    for key in ("provider_error", "pending_material_revision", "process_marker_seen",
+                "accepted_scope_preserved", "scope_preserved"):
+        if type(worker.get(key)) is not bool:
+            errors.append(key)
+    if not isinstance(worker.get("answer"), str):
+        errors.append("answer")
+    pids = worker.get("process_pids")
+    if not isinstance(pids, list) or any(type(pid) is not int or pid <= 0 for pid in pids):
+        errors.append("process_pids")
+    for key in ("working_plan", "initial_plan_fingerprint", "executing_plan_fingerprint", "first_delta_latency_ms"):
+        value = worker.get(key)
+        if key not in worker:
+            errors.append(key)
+        elif value is not None:
+            if key == "working_plan":
+                valid = isinstance(value, dict)
+            elif key == "first_delta_latency_ms":
+                try:
+                    valid = type(value) in (int, float) and math.isfinite(value) and value >= 0
+                except OverflowError:
+                    valid = False
+            else:
+                valid = isinstance(value, str)
+            if not valid:
+                errors.append(key)
+    return sorted(errors)
+
+
+def _read_worker_result(path: Path, secrets: tuple[str, ...]) -> tuple[dict, dict]:
+    raw, digest, size, classification, declared_size = _read_regular_bytes(path)
+    metadata = {"raw_worker_sha256": digest if classification == "valid" else None,
+                "raw_worker_bytes": declared_size, "observed_worker_bytes": size,
+                "raw_hash_scope": "complete" if classification == "valid" else "unavailable",
+                "observed_prefix_sha256": digest if classification in {"growing_file", "changed_file"} else None,
+                "classification": classification, "redaction_count": 0}
+    if classification != "valid":
+        return {}, metadata
+    try:
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate field")
+                result[key] = value
+            return result
+        worker = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object,
+                            parse_constant=lambda value: (_ for _ in ()).throw(ValueError("nonfinite")))
+        if not isinstance(worker, dict):
+            raise ValueError("worker result is not an object")
+        known = tuple(dict.fromkeys(value for value in secrets if value))
+        def redact(value):
+            if isinstance(value, str):
+                for secret in known:
+                    metadata["redaction_count"] += value.count(secret)
+                    value = value.replace(secret, "[REDACTED]")
+                return value
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            if isinstance(value, dict):
+                # Keys are not string values. Reject credential-bearing keys rather
+                # than silently changing their meaning or persisting the literal.
+                if any(secret in key for key in value for secret in known):
+                    raise ValueError("credential-bearing key")
+                return {key: redact(item) for key, item in value.items()}
+            return value
+        worker = redact(worker)
+        if len(_canonical_bytes(worker)) > _MAX_WORKER_EVIDENCE_BYTES:
+            metadata["classification"] = "oversized"
+            return {}, metadata
+        errors = _worker_schema_errors(worker)
+        if errors:
+            metadata.update(classification="incomplete_schema", incomplete_fields=errors)
+        if metadata["redaction_count"]:
+            metadata["classification"] = "credential_exposure"
+        return worker, metadata
+    except (UnicodeError, ValueError, RecursionError):
+        metadata["classification"] = "malformed"
+        return {}, metadata
+
+
+def _evidence_parent(row: dict, candidate: str, identity: dict) -> dict:
+    return {"candidate_sha": candidate, "baseline_sha": BASELINE,
+            "cohort_sha256": identity["cohort_sha256"],
+            "apparatus_sha256": identity["apparatus_sha256"],
+            **{key: row.get(key) for key in ("fixture_id", "repeat", "arm", "worker_exit_code",
+                "worker_result_complete", "verifier_result", "verified_success", "safety_passed")},
+            "safety_components": {key: (row.get("safety_components") or {}).get(key) for key in (
+                "scope_safe", "original_tests_unchanged", "provider_ok", "no_running_processes", "worker_complete")}}
+
+
+def _evidence_directory(output: Path, *, create: bool = False) -> Path:
+    directory = output.parent / (output.name + ".worker-evidence")
+    if create:
+        directory.mkdir(mode=0o700, exist_ok=True)
+    if directory.is_symlink() or not directory.is_dir() or directory.resolve().parent != output.parent.resolve():
+        raise ValueError("worker evidence directory is unavailable or unsafe")
+    return directory
+
+
+def _require_secure_evidence_io() -> None:
+    operations = (os.open, os.stat, os.rename, os.unlink)
+    if (not all(operation in os.supports_dir_fd for operation in operations)
+            or not all(getattr(os, name, 0) for name in ("O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK"))):
+        raise ValueError("secure worker evidence IO is unavailable on this platform")
+
+
+@contextmanager
+def _evidence_access(output: Path, *, create: bool = False):
+    _require_secure_evidence_io()
+    directory = _evidence_directory(output, create=create)
+    before = directory.lstat()
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("worker evidence directory changed")
+        yield directory, descriptor
+    finally:
+        try:
+            after = directory.lstat()
+            if (directory.is_symlink() or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)):
+                raise ValueError("worker evidence directory changed or became unsafe")
+        except OSError as exc:
+            raise ValueError("worker evidence directory is unavailable") from exc
+        finally:
+            os.close(descriptor)
+
+
+def _evidence_name(parent: dict, digest: str) -> str:
+    return hashlib.sha256(_canonical_bytes(parent)).hexdigest() + "-" + digest + ".json"
+
+
+def _write_worker_evidence(output: Path, row: dict, candidate: str, identity: dict,
+                           worker: dict, metadata: dict) -> None:
+    """Atomically write an immutable, parent-named, credential-sanitized result."""
+    if metadata["classification"] != "valid":
+        row.update(worker_result_complete=False, verified_success=False,
+                   verifier_result="incomplete", safety_passed=False)
+        row.setdefault("safety_components", {})["worker_complete"] = False
+    parent = _evidence_parent(row, candidate, identity)
+    document = {"protocol": _WORKER_EVIDENCE_PROTOCOL, "parent": parent,
+                **metadata, "redaction_applied": metadata["redaction_count"] > 0,
+                "worker": worker if metadata["classification"] in {"valid", "incomplete_schema", "credential_exposure"} else None}
+    payload = _canonical_bytes(document)
+    if len(payload) > _MAX_WORKER_EVIDENCE_BYTES:
+        row.update(worker_result_complete=False, verified_success=False,
+                   verifier_result="incomplete", safety_passed=False)
+        row.setdefault("safety_components", {})["worker_complete"] = False
+        metadata = {**metadata, "classification": "oversized"}
+        parent = _evidence_parent(row, candidate, identity)
+        document.update(parent=parent, classification="oversized", worker=None)
+        payload = _canonical_bytes(document)
+    digest = hashlib.sha256(payload).hexdigest()
+    with _evidence_access(output, create=True) as (directory, directory_fd):
+        destination = directory / _evidence_name(parent, digest)
+        try:
+            os.stat(destination.name, dir_fd=directory_fd, follow_symlinks=False)
+            exists = True
+        except FileNotFoundError:
+            exists = False
+        if exists:
+            existing, _, _, status, _ = _read_regular_bytes(destination, directory_fd)
+            if status != "valid" or existing != payload:
+                raise ValueError("worker evidence destination is unsafe or changed")
+        else:
+            name = ".worker-" + os.urandom(16).hex()
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(name, flags, 0o600, dir_fd=directory_fd)
+            try:
+                try:
+                    stream = os.fdopen(descriptor, "wb")
+                except BaseException:
+                    os.close(descriptor)
+                    raise
+                with stream:
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(name, destination.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+            finally:
+                try:
+                    os.unlink(name, dir_fd=directory_fd)
+                except FileNotFoundError:
+                    pass
+    row.update(worker_evidence_file=destination.relative_to(output.parent).as_posix(),
+               worker_evidence_sha256=digest, worker_evidence_raw_sha256=metadata["raw_worker_sha256"],
+               worker_evidence_status=metadata["classification"],
+               worker_evidence_redacted=metadata["redaction_count"] > 0)
+    row["worker_evidence_verified"] = _validate_worker_evidence(output, row, candidate, identity)
+
+
+def _validate_worker_evidence(output: Path, row: dict, candidate: str, identity: dict) -> bool:
+    """Derive proof from contained bytes; no worker or checkpoint flag is trusted."""
+    parent = _evidence_parent(row, candidate, identity)
+    digest = row.get("worker_evidence_sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("worker evidence hash is missing")
+    with _evidence_access(output) as (directory, directory_fd):
+        path = directory / _evidence_name(parent, digest)
+        if row.get("worker_evidence_file") != path.relative_to(output.parent).as_posix():
+            raise ValueError("worker evidence identity does not match this row")
+        raw, actual_digest, _, status, _ = _read_regular_bytes(path, directory_fd)
+    if status != "valid" or actual_digest != digest:
+        raise ValueError("worker evidence is missing, unsafe, or tampered")
+    try:
+        document = json.loads(raw)
+        if (document.get("protocol") != _WORKER_EVIDENCE_PROTOCOL or document.get("parent") != parent
+                or document.get("raw_worker_sha256") != row.get("worker_evidence_raw_sha256")
+                or document.get("classification") != row.get("worker_evidence_status")
+                or document.get("redaction_applied") != row.get("worker_evidence_redacted")):
+            raise ValueError("worker evidence lineage does not match this row")
+        worker = document.get("worker")
+        return (document.get("classification") == "valid" and isinstance(worker, dict)
+                and not _worker_schema_errors(worker))
+    except (ValueError, TypeError, AttributeError, RecursionError) as exc:
+        raise ValueError("invalid worker evidence payload") from exc
+
+
+def _validate_rows_evidence(output: Path, rows: list[dict], candidate: str, identity: dict) -> bool:
+    complete = bool(rows)
+    for row in rows:
+        row["worker_evidence_verified"] = False
+        if row.get("worker_result_complete") is True or row.get("worker_evidence_file"):
+            row["worker_evidence_verified"] = _validate_worker_evidence(output, row, candidate, identity)
+        complete = complete and row["worker_evidence_verified"]
+    return complete
+
+
 def _empty_row(fixture_id: str, repeat: int, arm: str) -> dict:
     return {"fixture_id": fixture_id, "repeat": repeat, "arm": arm, "usage_complete": False,
             "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
@@ -584,8 +887,13 @@ def _empty_row(fixture_id: str, repeat: int, arm: str) -> dict:
             "worker_result_complete": False}
 
 
-def _row_can_resume_as_complete(row: dict) -> bool:
-    return (row.get("worker_result_complete") and row.get("usage_complete")
+def _row_can_resume_as_complete(row: dict, output: Path | None = None,
+                                candidate: str | None = None, identity: dict | None = None) -> bool:
+    if (output is None or candidate is None or identity is None
+            or row.get("worker_result_complete") is not True):
+        return False
+    return (_validate_worker_evidence(output, row, candidate, identity)
+            and row.get("worker_result_complete") and row.get("usage_complete")
             and row.get("attempts", 0) > 0 and row.get("worker_exit_code") == 0
             and _safety_failure_status(row) is None)
 
@@ -808,6 +1116,11 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         prior = {}
         held_reservations = []
     worker_script = _require_dispatched_apparatus(source, identity)
+    _require_secure_evidence_io()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with _evidence_access(output, create=True):
+        pass
+    _validate_rows_evidence(output, rows, candidate, identity)
     credential_endpoint, api_key = _credential()
     relay = ResponsesRelay(endpoint=endpoint or credential_endpoint, api_key=api_key,
                            budget=budget, config=relay_config)
@@ -851,7 +1164,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         previous = next((row for row in rows if
                                          (row["fixture_id"], row["repeat"], row["arm"])
                                          == (fixture_id, repeat, arm)), None)
-                        if previous and _row_can_resume_as_complete(previous):
+                        if previous and _row_can_resume_as_complete(previous, output, candidate, identity):
                             continue
                         if previous:
                             rows.remove(previous)
@@ -893,63 +1206,77 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                                              if Path(name).name.startswith("test_")],
                             policy=shell_policy,
                         )
-                        worker_complete = False
-                        try:
-                            worker = json.loads(result_file.read_text(encoding="utf-8"))
-                            if not isinstance(worker, dict):
-                                raise ValueError("invalid worker result")
-                            worker_complete = True
-                        except (OSError, ValueError):
-                            worker = {}
+                        observed_worker, evidence_metadata = _read_worker_result(
+                            result_file, (api_key, relay.client_key))
+                        worker_complete = evidence_metadata["classification"] == "valid"
+                        worker = observed_worker if worker_complete else {}
+                        if not worker_complete:
                             worker_error = worker_error or "missing_or_invalid_result"
-                        answer = worker.pop("answer", "")
-                        verified = verify_fixture(fixture, workspace, answer, worker, prepared)
-                        calls = [row for row in relay.rows if (row["arm"], row["fixture_id"], row["repeat"]) == (arm, fixture_id, repeat)]
-                        usage = [call.get("usage") for call in calls]
-                        usage_complete = bool(calls) and all(isinstance(item, dict) for item in usage)
-                        row = _empty_row(fixture_id, repeat, arm)
-                        row.update({"cohort_sha256": identity["cohort_sha256"],
-                                    "apparatus_sha256": identity["apparatus_sha256"],
-                                    "context_window_tokens": fixture["context_window_tokens"],
-                                    "output_reserve_tokens": fixture["output_reserve_tokens"],
-                                    "request_context_records": worker.get("request_context_records"),
-                                    "conversation_records": worker.get("conversation_records"),
-                                    "context_compaction_observed": verified.get("context_compaction_observed"),
-                                    "usage_complete": usage_complete,
-                                    "input_tokens": sum(item["input_tokens"] for item in usage if item),
-                                    "output_tokens": sum(item["output_tokens"] for item in usage if item),
-                                    "cache_read_tokens": sum(item["cache_read_tokens"] for item in usage if item),
-                                    "cache_write_tokens": sum(item.get("cache_write_tokens", 0) for item in usage if item),
-                                    "latency_ms": round((time.monotonic() - started) * 1000, 2),
-                                    "attempts": len(calls), "first_delta_latency_ms": worker.get("first_delta_latency_ms"),
-                                    "verifier_result": verified["result"], "safety_passed": verified["safety_passed"],
-                                    "plan_scenario": fixture.get("plan_scenario"),
-                                    "plan_scenario_passed": verified["plan_scenario_passed"],
-                                    "durable_side_effect_expected": fixture["verifier"]["kind"] in {"tests", "tests_and_file"},
-                                    "durable_side_effect_verified": bool(verified["verified_success"] and verified["changed_paths"]),
-                                    "recovery_required": fixture["category"] == "error_recovery",
-                                    "recovery_verified": bool(verified["verified_success"]
-                                                               and fixture["category"] == "error_recovery"
-                                                               and _recovery_observed(worker)),
-                                    "verified_success": bool(code == 0 and verified["verified_success"]),
-                                    "workflow_state_correct": _workflow_state_correct(fixture, worker),
-                                    "requests": len(calls), "protocol_recovery": int(worker.get("protocol_recovery", 0)),
-                                    "duplicate_calls": int(worker.get("duplicate_calls", 0)),
-                                    "plan_revisions": int(worker.get("plan_revisions", 0)),
-                                    "cancelled_tasks": int(worker.get("cancelled_tasks", 0)),
-                                    "material_revisions": int(worker.get("material_plan_proposals", 0)),
-                                    "unnecessary_churn": int(worker.get("unnecessary_churn", 0)),
-                                    "budget_ok": budget.budget_ok,
-                                    "worker_error": worker_error,
-                                    "worker_exit_code": code,
-                                    "worker_result_complete": worker_complete})
-                        components = dict(verified.get("safety_components") or {})
-                        components["worker_complete"] = code == 0 and worker_complete
-                        row["safety_components"] = components
+                        answer = worker.get("answer", "")
+                        try:
+                            verified = (verify_fixture(fixture, workspace, answer, worker, prepared)
+                                        if worker_complete else {
+                                            "result": "incomplete", "safety_passed": False,
+                                            "safety_components": {key: None for key in (
+                                                "scope_safe", "original_tests_unchanged", "provider_ok", "no_running_processes")},
+                                            "plan_scenario_passed": False, "verified_success": False, "changed_paths": []})
+                            calls = [row for row in relay.rows if (row["arm"], row["fixture_id"], row["repeat"]) == (arm, fixture_id, repeat)]
+                            usage = [call.get("usage") for call in calls]
+                            usage_complete = bool(calls) and all(isinstance(item, dict) for item in usage)
+                            row = _empty_row(fixture_id, repeat, arm)
+                            row.update({"cohort_sha256": identity["cohort_sha256"],
+                                        "apparatus_sha256": identity["apparatus_sha256"],
+                                        "context_window_tokens": fixture["context_window_tokens"],
+                                        "output_reserve_tokens": fixture["output_reserve_tokens"],
+                                        "request_context_records": worker.get("request_context_records"),
+                                        "conversation_records": worker.get("conversation_records"),
+                                        "context_compaction_observed": verified.get("context_compaction_observed"),
+                                        "usage_complete": usage_complete,
+                                        "input_tokens": sum(item["input_tokens"] for item in usage if item),
+                                        "output_tokens": sum(item["output_tokens"] for item in usage if item),
+                                        "cache_read_tokens": sum(item["cache_read_tokens"] for item in usage if item),
+                                        "cache_write_tokens": sum(item.get("cache_write_tokens", 0) for item in usage if item),
+                                        "latency_ms": round((time.monotonic() - started) * 1000, 2),
+                                        "attempts": len(calls), "first_delta_latency_ms": worker.get("first_delta_latency_ms"),
+                                        "verifier_result": verified["result"], "safety_passed": verified["safety_passed"],
+                                        "plan_scenario": fixture.get("plan_scenario"),
+                                        "plan_scenario_passed": verified["plan_scenario_passed"],
+                                        "durable_side_effect_expected": fixture["verifier"]["kind"] in {"tests", "tests_and_file"},
+                                        "durable_side_effect_verified": bool(verified["verified_success"] and verified["changed_paths"]),
+                                        "recovery_required": fixture["category"] == "error_recovery",
+                                        "recovery_verified": bool(verified["verified_success"]
+                                                                   and fixture["category"] == "error_recovery"
+                                                                   and _recovery_observed(worker)),
+                                        "verified_success": bool(code == 0 and worker_complete and verified["verified_success"]),
+                                        "workflow_state_correct": worker_complete and _workflow_state_correct(fixture, worker),
+                                        "requests": len(calls), "protocol_recovery": worker["protocol_recovery"] if worker_complete else None,
+                                        "duplicate_calls": worker["duplicate_calls"] if worker_complete else None,
+                                        "plan_revisions": worker["plan_revisions"] if worker_complete else None,
+                                        "cancelled_tasks": worker["cancelled_tasks"] if worker_complete else None,
+                                        "material_revisions": worker["material_plan_proposals"] if worker_complete else None,
+                                        "unnecessary_churn": worker["unnecessary_churn"] if worker_complete else None,
+                                        "budget_ok": budget.budget_ok,
+                                        "worker_error": worker_error,
+                                        "worker_exit_code": code,
+                                        "worker_result_complete": worker_complete})
+                            components = dict(verified.get("safety_components") or {})
+                            components["worker_complete"] = code == 0 and worker_complete
+                            row["safety_components"] = components
+                            safety_stop = _safety_failure_status(row)
+                            row["safety_passed"] = safety_stop is None
+                            if not result_file.exists() and not worker_error:
+                                row["worker_error"] = "missing_result"
+                        except BaseException:
+                            # Even an oracle/metric failure must not discard a valid
+                            # answer and its execution trace with the temporary home.
+                            interrupted = _empty_row(fixture_id, repeat, arm)
+                            interrupted.update(worker_exit_code=code,
+                                               worker_result_complete=worker_complete)
+                            _write_worker_evidence(output, interrupted, candidate, identity,
+                                                   observed_worker, evidence_metadata)
+                            raise
+                        _write_worker_evidence(output, row, candidate, identity, observed_worker, evidence_metadata)
                         safety_stop = _safety_failure_status(row)
-                        row["safety_passed"] = safety_stop is None
-                        if not result_file.exists() and not worker_error:
-                            row["worker_error"] = "missing_result"
                         rows.append(row)
                         held_reservations = _held_reservations(relay.rows)
                         document = {**identity, "protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
@@ -988,7 +1315,12 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                     break
         finally:
             relay.close()
+    evidence_complete = _validate_rows_evidence(output, rows, candidate, identity)
     summary = summarize(rows, pricing=pricing)
+    summary["worker_evidence_complete"] = evidence_complete
+    if not evidence_complete:
+        summary["accounting_complete"] = False
+        summary["comparison_thresholds_met"] = False
     held_reservations = _held_reservations(relay.rows)
     report = {**identity, "protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
               "baseline_sha": BASELINE, "model": model, "pricing": pricing_info, "relay_config": asdict(relay_config), "repeats": repeats,
