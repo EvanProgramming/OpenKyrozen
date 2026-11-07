@@ -53,12 +53,14 @@ class CampaignSafetyStopTests(unittest.TestCase):
             def start(self): pass
             def close(self): pass
         def execute(command, **kwargs):
+            from tests.test_v3_matched_live import valid_worker_result
             commands.append(command)
             result = Path(command[command.index('--result') + 1])
             root = Path(kwargs['cwd'])
             if worker == 'scope':
                 (root / 'undeclared.txt').write_text('outside fixture declaration')
-            result.write_text('not-json' if worker == 'malformed' else json.dumps({'provider_error': worker == 'provider', 'processes_alive': 0}))
+            result.write_text('not-json' if worker == 'malformed' else
+                              json.dumps(valid_worker_result(provider_error=worker == 'provider')))
             return exit_code, ''
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -97,7 +99,9 @@ class CampaignSafetyStopTests(unittest.TestCase):
         commands, report = self.campaign(worker='provider')
         self.assertEqual(len(commands), 1)
         self.assertEqual(report['status'], 'blocked_provider_error')
+        self.assertTrue(report['rows'][0]['worker_result_complete'])
         self.assertTrue(report['rows'][0]['safety_components']['scope_safe'])
+        self.assertFalse(report['rows'][0]['safety_components']['provider_ok'])
 
     def test_failed_worker_cannot_report_safe_success(self):
         commands, report = self.campaign(exit_code=3)
