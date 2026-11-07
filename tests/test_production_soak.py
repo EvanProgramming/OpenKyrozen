@@ -161,22 +161,49 @@ class ProductionSoakProcessTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name=='posix','local POSIX identity-observer smoke')
     def test_native_observer_detects_live_owned_child_then_certifies_its_exit(self):
-        import subprocess,sys
-        process=subprocess.Popen([sys.executable,'-I','-c','import sys;sys.stdin.buffer.read()'],
-                                 stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        try:
-            with tempfile.TemporaryDirectory() as directory:
-                path=Path(directory)
-                tracked=production_soak._capture_process_tree(os.getpid(),path/'before.json')
-                self.assertIn(process.pid,tracked['tracked'])
-                with self.assertRaisesRegex(AssertionError,'orphan gateway child'):
-                    production_soak._assert_processes_stopped(tracked,path/'live.json')
+        import select,signal,subprocess,sys
+        hold='import sys;sys.stdin.buffer.read()'
+        family_code='''
+import subprocess,sys
+child=subprocess.Popen([sys.executable,'-I','-c',sys.argv[1]],stdin=subprocess.PIPE,
+                       stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+try:
+    print(child.pid,flush=True)
+    sys.stdin.buffer.read()
+finally:
+    try:child.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.communicate(timeout=5)
+'''
+        def drain(process):
+            try:process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                if process.poll() is None:
+                    try:os.killpg(process.pid,signal.SIGKILL)
+                    except ProcessLookupError:pass
                 process.communicate(timeout=5)
-                production_soak._assert_processes_stopped(tracked,path/'exited.json')
-                self.assertEqual(json.loads((path/'exited.json').read_text())['status'],'stopped')
-        finally:
-            if process.poll() is None:process.kill()
-            process.communicate(timeout=5)
+        # Other tests may own live siblings beneath the unittest process.
+        unrelated=subprocess.Popen([sys.executable,'-I','-c',hold],stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+        self.addCleanup(drain,unrelated)
+        family=subprocess.Popen([sys.executable,'-I','-c',family_code,hold],stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        self.addCleanup(drain,family)
+        self.assertTrue(select.select([family.stdout],[],[],5)[0],'child family did not become ready')
+        child_pid=int(family.stdout.readline())
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)
+            tracked=production_soak._capture_process_tree(family.pid,path/'before.json')
+            self.assertEqual(tracked['tracked'],{child_pid})
+            self.assertNotIn(unrelated.pid,tracked['tracked'])
+            with self.assertRaisesRegex(AssertionError,'orphan gateway child'):
+                production_soak._assert_processes_stopped(tracked,path/'live.json')
+            _,error=family.communicate(timeout=5)
+            self.assertEqual(family.returncode,0,error.decode(errors='replace'))
+            production_soak._assert_processes_stopped(tracked,path/'exited.json')
+            self.assertEqual(json.loads((path/'exited.json').read_text())['status'],'stopped')
+            self.assertIsNone(unrelated.poll())
 
     def test_candidate_dependency_inventory_does_not_require_psutil(self):
         dependencies = production_soak.candidate_identity()["dependencies"]
