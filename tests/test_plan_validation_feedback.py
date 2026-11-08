@@ -457,6 +457,7 @@ class PlanValidationFeedbackTests(unittest.TestCase):
     def test_native_verified_read_then_completion_confirmation_is_read_only(self):
         case, runtime = self, self.runtime
         before = {}
+        task = self.task()
         class Provider(LLMProvider):
             calls = 0
             def get_capabilities(self, model=None):
@@ -469,43 +470,184 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                 validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=True)
                 if self.calls == 1:
                     call = ToolCall("create-start", "update_plan", {"expected_revision": 0, "operations": [
-                        {"op": "add", "ref": "inspect", "task": case.task()},
+                        {"op": "add", "ref": "inspect", "task": task},
                         {"op": "start", "task": "inspect"}]})
                 elif self.calls == 2:
+                    state = self.plan_state(messages)
+                    case.assertEqual(state["status"], "active")
+                    created = next(item for item in messages if isinstance(item, ToolReply)
+                                   and item.call_id == "create-start")
+                    case.assertEqual(created.output["data"]["plan_id"], state["plan_id"])
+                    before["visible_plan"] = deepcopy(state)
                     call = ToolCall("read", "read_file", {"path": "catalog.py"})
                 elif self.calls == 3:
-                    case.assertEqual(runtime.tasks.working_plan.status, "completed")
-                    case.assertTrue(runtime.tasks._task_has_evidence(runtime.tasks.tasks[0]))
-                    before["plan"] = runtime.tasks.working_plan
-                    before["tasks"] = deepcopy(runtime.tasks.tasks)
-                    before["attempts"] = runtime.tasks._plan_commit_attempts
+                    state = self.plan_state(messages)
+                    case.assertEqual(state["status"], "completed")
+                    case.assertEqual(state["plan_id"], before["visible_plan"]["plan_id"])
+                    case.assertEqual(state["revision"], before["visible_plan"]["revision"])
+                    case.assertEqual(state["tasks"][0]["status"], "succeeded")
+                    # The create reply is already archived, as in the real360 failure.
+                    created = next(item for item in messages if isinstance(item, ToolReply)
+                                   and item.call_id == "create-start")
+                    case.assertIn("artifact_id", created.output["data"])
+                    case.assertNotIn("plan_id", created.output["data"])
                     call = ToolCall("confirm", "update_plan", {
-                        "plan_id": runtime.tasks.working_plan.id,
-                        "expected_revision": runtime.tasks.working_plan.revision,
-                        "operations": [{"op": "suggest_complete", "task": runtime.tasks.working_plan.task_ids[0]}]})
+                        "plan_id": state["plan_id"], "expected_revision": state["revision"],
+                        "operations": [{"op": "suggest_complete", "task": state["tasks"][0]["id"]}]})
                 else:
                     return ModelResponse(text="sorted_products sorts by casefold and original spelling.",
                                          finish_reason=FinishReason.FINAL)
                 return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
                     continuation=provider_continuation(self, model, "fixture", {"step": self.calls}))
+            def plan_state(self, messages):
+                pins = [item["content"] for item in messages if isinstance(item, dict)
+                        and item.get("role") == "system"
+                        and item.get("content", "").startswith("## Pinned Working Plan state\n")]
+                case.assertEqual(len(pins), 1, "Current plan identity must be provider-visible, including after verified completion")
+                return json.loads(pins[0].split("\n", 2)[2])
         provider = Provider(ProviderConfig(provider="custom", model_simple="fixture"))
         answer, events = self._chat(provider)
         self.assertEqual(provider.calls, 4)
         self.assertEqual([event.payload["status"] for event in events if event.kind == "turn.completed"],
                          ["completed"], answer)
-        self.assertEqual(runtime.tasks.working_plan, before["plan"])
-        self.assertEqual(runtime.tasks.tasks, before["tasks"])
-        self.assertEqual(runtime.tasks._plan_commit_attempts, before["attempts"])
-        rows = runtime.tasks.store.list_working_plan_tasks(before["plan"].id,
+        self.assertEqual(runtime.tasks.working_plan.id, before["visible_plan"]["plan_id"])
+        self.assertEqual(runtime.tasks.working_plan.revision, before["visible_plan"]["revision"])
+        self.assertEqual(runtime.tasks._plan_commit_attempts, 1)
+        rows = runtime.tasks.store.list_working_plan_tasks(runtime.tasks.working_plan.id,
             user_id=runtime.tasks.user_id, workspace_id=runtime.tasks.workspace_id, session_id=runtime.tasks.session_id)
-        self.assertEqual(rows[0]["evidence"], before["tasks"][0]["evidence"])
+        self.assertEqual(len(rows[0]["evidence"]), 1)
         receipts = runtime.memory_bank.store.list_events("execution.receipt", user_id=runtime.tasks.user_id,
             workspace_id=runtime.tasks.workspace_id, session_id=runtime.tasks.session_id)
         confirm = next(row["payload"] for row in receipts if row["payload"]["call_id"] == "confirm")
         self.assertTrue(confirm["success"])
         self.assertEqual(confirm["verification"]["method"], "working_plan_confirmation")
-        self.assertEqual(confirm["verification"]["observed"]["revision"], before["plan"].revision)
+        self.assertEqual(confirm["verification"]["observed"]["revision"], before["visible_plan"]["revision"])
         self.assertFalse(any(event.kind in {"protocol_recovery", "protocol.recovery"} for event in events))
+
+    def test_completed_plan_can_read_its_archived_result_without_broadening_tools(self):
+        case, task = self, self.task()
+        class Provider(LLMProvider):
+            calls = 0
+            def get_capabilities(self, model=None):
+                from openkyrozen.providers.models import ProviderCapabilities
+                return ProviderCapabilities(native_tools=True)
+            def chat(self, *_args, **_kwargs):
+                raise AssertionError("legacy API used")
+            def chat_response(self, messages, model=None, *, tools=None):
+                self.calls += 1
+                names = {item["name"] for item in tools}
+                if self.calls == 1:
+                    call = ToolCall("create-start", "update_plan", {"expected_revision": 0, "operations": [
+                        {"op": "add", "ref": "inspect", "task": task}, {"op": "start", "task": "inspect"}]})
+                elif self.calls == 2:
+                    call = ToolCall("read", "read_file", {"path": "catalog.py"})
+                elif self.calls == 3:
+                    case.assertIn("read_tool_artifact", names)
+                    case.assertNotIn("write_file", names)
+                    archived = next(item for item in messages if isinstance(item, ToolReply)
+                                    and item.call_id == "create-start")
+                    self.artifact_id = archived.output["data"]["artifact_id"]
+                    call = ToolCall("archive", "read_tool_artifact", {"artifact_id": self.artifact_id})
+                elif self.calls == 4:
+                    reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "archive")
+                    case.assertFalse(reply.is_error)
+                    case.assertIn("Working Plan updated", reply.output["data"]["content"])
+                    pin = next(item["content"] for item in messages if isinstance(item, dict)
+                               and item.get("content", "").startswith("## Pinned Working Plan state\n"))
+                    state = json.loads(pin.split("\n", 2)[2])
+                    call = ToolCall("confirm", "update_plan", {"plan_id": state["plan_id"],
+                        "expected_revision": state["revision"],
+                        "operations": [{"op": "suggest_complete", "task": state["tasks"][0]["id"]}]})
+                else:
+                    return ModelResponse(text="Source inspected and plan confirmed.", finish_reason=FinishReason.FINAL)
+                return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                    continuation=provider_continuation(self, model, "fixture", {"step": self.calls}))
+        provider = Provider(ProviderConfig(provider="custom", model_simple="fixture"))
+        answer, events = self._chat(provider)
+        self.assertEqual(provider.calls, 5, answer)
+        self.assertEqual([event.payload["status"] for event in events if event.kind == "turn.completed"], ["completed"])
+
+    def test_completed_plan_context_is_bounded_fresh_and_scoped(self):
+        task = {**self.task(), "description": "Inspect catalog.py " + "details " * 3000}
+        created_result = self.invoke({"expected_revision": 0, "operations": [{"op": "add", "ref": "inspect", "task": task}]})
+        self.assertTrue(created_result.success)
+        created = created_result.data
+        self.start(created)
+        self.read()
+        tasks = self.runtime.tasks
+        messages = [{"role": "system", "content": "fixed"}]
+        _refresh_working_plan_context(self.runtime, messages)
+        pin = messages[1]["content"]
+        self.assertLessEqual(len(pin), 12000)
+        self.assertIn(created["plan_id"], pin)
+        self.assertIn(created["task_ids"][0], pin)
+        self.assertIn('"status": "completed"', pin)
+        self.assertNotIn(self.content, pin)
+        _refresh_working_plan_context(self.runtime, messages)
+        self.assertEqual(sum(item.get("content", "").startswith("## Pinned Working Plan state\n")
+                             for item in messages), 1)
+        for field in ("user_id", "workspace_id", "session_id"):
+            with self.subTest(field=field), patch.object(tasks, field, "foreign"):
+                projected = deepcopy(messages)
+                _refresh_working_plan_context(self.runtime, projected)
+                self.assertNotIn(created["plan_id"], json.dumps(projected))
+        for changed in (replace(tasks.working_plan, revision=0), replace(tasks.working_plan, status="cancelled")):
+            with self.subTest(plan=changed), patch.object(tasks, "working_plan", changed):
+                projected = deepcopy(messages)
+                _refresh_working_plan_context(self.runtime, projected)
+                self.assertNotIn(created["plan_id"], json.dumps(projected))
+
+    def test_completed_context_does_not_resurrect_history_after_another_manager(self):
+        from openkyrozen.tasks.engine import TaskManager
+        created = self.create_read_task()
+        self.start(created)
+        self.read()
+        tasks = self.runtime.tasks
+        messages = []
+        _refresh_working_plan_context(self.runtime, messages)
+        self.assertIn(created["plan_id"], json.dumps(messages))
+        scope = {"user_id": tasks.user_id, "workspace_id": tasks.workspace_id, "session_id": tasks.session_id}
+        another = TaskManager(tasks.store, **scope)
+        saved = tasks.store.get_working_plan_by_id(created["plan_id"], **scope)
+        with patch("openkyrozen.tasks.engine.utc_now", return_value=saved["created_at"]):
+            newer = another.edit_plan(expected_revision=0, operations=[
+                {"op": "add", "ref": "new", "task": {"description": "Newer plan", "acceptance": []}}])
+            another.edit_plan(plan_id=newer["plan_id"], expected_revision=1,
+                              operations=[{"op": "cancel", "task": newer["task_ids"][0]}])
+        _refresh_working_plan_context(self.runtime, messages)
+        self.assertNotIn(created["plan_id"], json.dumps(messages))
+
+    def test_previous_completed_plan_cannot_finish_a_new_turn_or_grant_artifact_read(self):
+        created = self.create_read_task()
+        self.start(created)
+        self.read()
+        task_count = len(self.runtime.tasks.tasks)
+        for capabilities in ({"read", "write"}, {"write"}):
+            case = self
+            class Provider(LLMProvider):
+                calls = 0
+                def get_capabilities(self, model=None):
+                    from openkyrozen.providers.models import ProviderCapabilities
+                    return ProviderCapabilities(native_tools=True)
+                def chat(self, *_args, **_kwargs):
+                    raise AssertionError("legacy API used")
+                def chat_response(self, messages, model=None, *, tools=None):
+                    self.calls += 1
+                    case.assertEqual("read_tool_artifact" in {item["name"] for item in tools}, "read" in capabilities)
+                    return ModelResponse(text="Previous plan was complete.", finish_reason=FinishReason.FINAL)
+            provider = Provider(ProviderConfig(provider="custom", model_simple="fixture"))
+            original = self.runtime._execution_capability_token
+            self.runtime._execution_capability_token = issue_capability_token("fixture", capabilities)
+            try:
+                with self.subTest(capabilities=capabilities), patch.object(self.runtime, "MAX_STEPS_PER_TURN", 1):
+                    answer, events = self._chat(provider)
+            finally:
+                self.runtime._execution_capability_token = original
+            self.assertEqual(provider.calls, 2, answer)
+            self.assertIn("not established", answer)
+            self.assertEqual([event.payload["status"] for event in events if event.kind == "turn.completed"], ["incomplete"])
+            self.assertEqual(len(self.runtime.tasks.tasks), task_count)
+            self.assertEqual(self.runtime.tasks._plan_commit_attempts, 2)
 
     def test_native_recovery_keeps_failed_validation_receipt_but_finishes_verified_plan(self):
         case, runtime = self, self.runtime

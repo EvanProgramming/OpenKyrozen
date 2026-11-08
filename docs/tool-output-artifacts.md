@@ -15,6 +15,12 @@ while their call/reply identities remain intact. The tool inventory lists the
 retrieval schema and bounds. Access still requires permission to use
 `read_tool_artifact`.
 
+When native planning restricts the next actions to creating or confirming a
+Working Plan, an already permitted `read_tool_artifact` reader remains available.
+This does not grant read permission or access to another actor's artifacts.
+Current scoped completed-plan identity stays in one bounded pinned state message,
+so confirmation does not require replaying an entire archived result.
+
 Legacy text-protocol turns also replace earlier rounds with scoped artifact
 references. Their reference includes an `Action` example whose `args` is a JSON
 string containing `artifact_id`, `offset`, and `limit`. Archived rounds contain

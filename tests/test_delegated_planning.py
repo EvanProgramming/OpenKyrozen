@@ -178,7 +178,7 @@ class DelegatedPlanningTests(unittest.TestCase):
                 replies = [item for item in messages if isinstance(item, ToolReply)]
                 observed.append(set(item['name'] for item in tools))
                 if not replies:
-                    self_case.assertEqual(observed[-1], {'update_plan'})
+                    self_case.assertEqual(observed[-1], {'update_plan', 'read_tool_artifact'})
                     call = ToolCall('local-plan', 'update_plan', {'expected_revision': 0, 'operations': [
                         {'op': 'add', 'ref': 'inspect', 'task': {'description': 'Inspect assigned marker source',
                             'acceptance': ['Report exact checked source'],

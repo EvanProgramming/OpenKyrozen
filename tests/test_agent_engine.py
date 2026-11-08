@@ -552,7 +552,7 @@ class AgentEngineTests(unittest.TestCase):
                     raise AssertionError("native prompt includes legacy control syntax")
                 if len(self.requests) == 1:
                     self.assert_tool_schema(tools, "update_plan")
-                    if {item["name"] for item in tools} != {"update_plan"}:
+                    if {item["name"] for item in tools} != {"update_plan", "read_tool_artifact"}:
                         raise AssertionError("complex direct turn offered other tools before planning")
                     return ModelResponse(
                         tool_calls=(ToolCall("plan-1", "update_plan", {

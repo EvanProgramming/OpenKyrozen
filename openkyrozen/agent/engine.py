@@ -143,12 +143,12 @@ class AgentEngine:
             needs_plan = turn.planning_required and (plan is None or plan.status != "active")
             if needs_plan:
                 if completed_plan:
-                    tool_names = runtime._permitted_tool_names() & {"update_plan"}
+                    tool_names = runtime._permitted_tool_names() & {"update_plan", "read_tool_artifact"}
                 elif "update_plan" not in runtime._permitted_tool_names():
                     turn.protocol_error_message = "A Working Plan is required, but planning is not permitted."
                     break
                 else:
-                    tool_names = {"update_plan"}
+                    tool_names = runtime._permitted_tool_names() & {"update_plan", "read_tool_artifact"}
             elif turn.planning_required:
                 tool_names |= runtime._permitted_tool_names() & {"update_plan"}
                 if "request_question" in runtime._permitted_tool_names():

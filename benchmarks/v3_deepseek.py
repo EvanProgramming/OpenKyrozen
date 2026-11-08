@@ -178,6 +178,8 @@ def planning_preflight_fixture(candidate: str) -> dict:
         "The verified receipt completes the task.\n"
         "3. Confirm using update_plan with the returned actual plan_id, its unchanged current expected_revision, "
         "and operations [{\"op\":\"suggest_complete\",\"task\":\"<returned actual task ID>\"}]. "
+        "The pinned current Working Plan state retains these IDs after the read completes it; "
+        "if an earlier result is archived, the permitted read_tool_artifact reader can retrieve it. "
         "After the actual completed plan is confirmed, return the file marker as your final answer.",
         "files": {"proof.txt": PLANNING_PREFLIGHT_CONTENT},
         "verifier": {"kind": "answer_contains", "all": [PLANNING_PREFLIGHT_CONTENT.strip()]},
@@ -230,7 +232,7 @@ def planning_preflight_semantics(worker: dict) -> bool:
             or (records[0].get("checkpoint") or {}).get("native_execution_selected") is not True):
         return False
     allowed = {"update_plan", "read_file", "get_file_hash", "list_dir", "list_tree",
-               "find_files", "search_files", "discover_tools"}
+               "find_files", "search_files", "discover_tools", "read_tool_artifact"}
     observed = worker.get("tool_receipts")
     if not isinstance(observed, list) or any(not isinstance(item, dict) for item in observed):
         return False

@@ -522,7 +522,7 @@ class PlanningPreflightTests(unittest.TestCase):
             pricing=deepseek.DEEPSEEK_PRICING, relay_config=deepseek.DEEPSEEK_RELAY_CONFIG)
         return stack, options
 
-    def native_worker(self, candidate='candidate'):
+    def native_worker(self, candidate='candidate', *, retrieve_artifact=False):
         """Real native tools and durable plan state; only the model is scripted."""
         from contextlib import ExitStack, closing
         from unittest.mock import patch
@@ -536,7 +536,7 @@ class PlanningPreflightTests(unittest.TestCase):
         from openkyrozen.providers import ProviderConfig
         from openkyrozen.providers.base import LLMProvider
         from openkyrozen.providers.models import (FinishReason, ModelResponse, ProviderCapabilities,
-            ToolCall, provider_continuation)
+            ToolCall, ToolReply, provider_continuation)
         from openkyrozen.agent.events import runtime_event_as_legacy
         from openkyrozen.tools import ToolAdapters
         with ExitStack() as owners:
@@ -565,12 +565,22 @@ class PlanningPreflightTests(unittest.TestCase):
                         args = {'complexity': 'simple', 'expected_revision': 0, 'operations': [
                             {'op': 'add', 'ref': 'proof', 'task': deepseek.planning_preflight_task()},
                             {'op': 'start', 'task': 'proof'}]}
-                    elif self.calls == 3:
-                        plan = runtime.tasks.working_plan
-                        args = {'plan_id': plan.id, 'expected_revision': plan.revision,
-                            'operations': [{'op': 'suggest_complete', 'task': plan.task_ids[0]}]}
+                    elif retrieve_artifact and self.calls == 3:
+                        if 'read_tool_artifact' not in {item['name'] for item in tools}:
+                            raise AssertionError('archived result reader is not provider-visible')
+                        archived = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == 'plan-1')
+                        return ModelResponse(tool_calls=(ToolCall('archive', 'read_tool_artifact',
+                            {'artifact_id': archived.output['data']['artifact_id']}),),
+                            finish_reason=FinishReason.TOOL_REQUEST,
+                            continuation=provider_continuation(self, model, 'fixture', {'step': self.calls}))
+                    elif self.calls == (4 if retrieve_artifact else 3):
+                        state = self.plan_state(messages)
+                        if state['status'] != 'completed' or state['tasks'][0]['status'] != 'succeeded':
+                            raise AssertionError('verified completed state is not provider-visible')
+                        args = {'plan_id': state['plan_id'], 'expected_revision': state['revision'],
+                            'operations': [{'op': 'suggest_complete', 'task': state['tasks'][0]['id']}]}
                     elif self.calls == 2:
-                        if runtime.tasks.tasks[0]['status'] != 'running':
+                        if self.plan_state(messages)['tasks'][0]['status'] != 'running':
                             raise AssertionError('unverified task completed before reading')
                         return ModelResponse(tool_calls=(ToolCall('read', 'read_file', {'path': 'proof.txt'}),),
                             finish_reason=FinishReason.TOOL_REQUEST,
@@ -580,6 +590,10 @@ class PlanningPreflightTests(unittest.TestCase):
                     return ModelResponse(tool_calls=(ToolCall('plan-' + str(self.calls), 'update_plan', args),),
                         finish_reason=FinishReason.TOOL_REQUEST,
                         continuation=provider_continuation(self, model, 'fixture', {'step': self.calls}))
+                def plan_state(self, messages):
+                    pin = next(item['content'] for item in messages if isinstance(item, dict)
+                               and item.get('content', '').startswith('## Pinned Working Plan state\n'))
+                    return json.loads(pin.split('\n', 2)[2])
             provider = Provider(ProviderConfig(provider='custom', model_simple='fixture'))
             runtime.llm_provider = runtime._default_turn.provider = provider
             def prepare(turn):
@@ -597,7 +611,7 @@ class PlanningPreflightTests(unittest.TestCase):
             legacy = [runtime_event_as_legacy(event) or {} for event in events]
             receipts = [_normalize_tool_receipt(event['tool_receipt'], workspace)
                         for event in legacy if event.get('event') == 'tool_receipt']
-            self.assertEqual(provider.calls, 4, answer)
+            self.assertEqual(provider.calls, 5 if retrieve_artifact else 4, answer)
             return valid_worker_result(answer=answer, tool_receipts=receipts, events=legacy,
                 conversation_records=[{'turn': 0, 'prompt_sha256': __import__('hashlib').sha256(prompt.encode()).hexdigest(),
                                        'completed': True}],
@@ -610,6 +624,25 @@ class PlanningPreflightTests(unittest.TestCase):
         worker = self.native_worker()
         self.assertTrue(planning_preflight_semantics(worker), worker)
         self.assertEqual(worker['working_plan']['status'], 'completed')
+
+    def test_native_scoped_archive_read_preserves_all_three_preflight_proofs(self):
+        from copy import deepcopy
+        from benchmarks.v3_deepseek import planning_preflight_semantics
+        worker = self.native_worker(retrieve_artifact=True)
+        self.assertTrue(planning_preflight_semantics(worker), worker)
+        archive = next(item['evidence'] for item in worker['tool_receipts'] if item['action'] == 'read_tool_artifact')
+        self.assertTrue(archive['success'])
+        for field, value in (('authorized', False), ('success', False), ('user_id', 'foreign'),
+                             ('workspace_id', 'foreign'), ('session_id', 'foreign'), ('side_effects', 'filesystem')):
+            bad = deepcopy(worker)
+            changed = next(item['evidence'] for item in bad['tool_receipts'] if item['action'] == 'read_tool_artifact')
+            changed[field] = value
+            with self.subTest(field=field):
+                self.assertFalse(planning_preflight_semantics(bad))
+        bad = deepcopy(worker)
+        bad['tool_receipts'] = [item for item in bad['tool_receipts']
+            if (item['evidence'].get('verification') or {}).get('method') != 'working_plan_confirmation']
+        self.assertFalse(planning_preflight_semantics(bad))  # Exact360failure shape: succeeded, but never confirmed.
 
     def test_status_prose_unbound_wrong_content_or_any_effect_cannot_pass(self):
         from copy import deepcopy

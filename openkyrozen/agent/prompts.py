@@ -306,7 +306,16 @@ def _refresh_working_plan_context(self, messages: list) -> None:
     manager = getattr(self, "tasks", None)
     plan = getattr(manager, "working_plan", None)
     snapshot = getattr(manager, "working_plan_snapshot", None)
-    if plan is None or plan.status != "active" or not callable(snapshot):
+    completed_tasks = None
+    if plan is not None and plan.status == "completed" and callable(snapshot):
+        completed_tasks = manager.store.list_working_plan_tasks(
+            plan.id, user_id=manager.user_id, workspace_id=manager.workspace_id,
+            session_id=manager.session_id or "", current_completed_revision=plan.revision,
+        )
+        if tuple(task["id"] for task in completed_tasks) != plan.task_ids:
+            completed_tasks = []
+    if (plan is None or plan.status not in {"active", "completed"}
+            or completed_tasks == [] or not callable(snapshot)):
         if plan is None and callable(snapshot) and "update_plan" in self._permitted_tool_names():
             messages.insert(1 if messages else 0, {"role": "system", "content": marker + (
                 "No Working Plan exists. Create one with update_plan: omit plan_id, use expected_revision=0 "
@@ -321,7 +330,11 @@ def _refresh_working_plan_context(self, messages: list) -> None:
     state = snapshot()
     if state is None:
         raise ValueError("Active Working Plan has no authoritative snapshot")
-    tasks_by_id = {task["id"]: task for task in manager.tasks}
+    tasks_by_id = {task["id"]: task for task in (completed_tasks if completed_tasks is not None else manager.tasks)}
+    if completed_tasks is not None:
+        # A completed plan still supplies identity for readonly confirmation; never revive cached history.
+        state["tasks"] = [{"id": task["id"], "description": str(task.get("description", "")),
+                           "status": task["status"]} for task in completed_tasks]
     state["tasks"] = [{
         **item, "dependencies": tasks_by_id.get(item["id"], {}).get("dependencies", []),
         "acceptance": tasks_by_id.get(item["id"], {}).get("acceptance", []),
