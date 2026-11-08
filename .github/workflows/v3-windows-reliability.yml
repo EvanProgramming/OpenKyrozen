@@ -5,6 +5,10 @@ on:
     paths: ['.github/workflows/v3-windows-reliability.yml', 'scripts/v3_windows_reliability.py', 'tests/test_v3_windows_reliability.py']
   workflow_dispatch:
     inputs:
+      history_copyfile2_probe:
+        description: Fixed historical/current CopyFile2 counterfactuals only; no capture or release acceptance
+        type: boolean
+        default: false
       decode_existing_etl:
         description: Decode only the frozen existing 42513800271 ETL; no product or WPR execution
         type: boolean
@@ -36,7 +40,7 @@ permissions:
   contents: read
 jobs:
   cancellation:
-    if: ${{ !inputs.decode_existing_etl }}
+    if: ${{ !inputs.decode_existing_etl && !inputs.history_copyfile2_probe }}
     runs-on: windows-latest
     timeout-minutes: 60
     strategy:
@@ -157,7 +161,7 @@ jobs:
           if-no-files-found: error
 
   offline-decode:
-    if: github.event_name == 'workflow_dispatch' && inputs.decode_existing_etl
+    if: github.event_name == 'workflow_dispatch' && inputs.decode_existing_etl && !inputs.history_copyfile2_probe
     runs-on: windows-latest
     timeout-minutes: 10
     permissions:
@@ -229,4 +233,127 @@ jobs:
             offline-input/source-metadata.json
             offline-input/download-receipt.json
             offline-input/offline-tests.log
+          if-no-files-found: error
+
+  history-copyfile2-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.history_copyfile2_probe
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Validate fixed forensic probe identity
+        shell: pwsh
+        env:
+          DECODE_MODE: ${{ inputs.decode_existing_etl }}
+        run: |
+          if ($env:DECODE_MODE -eq 'true') { throw 'Probe and existing-ETL decoder modes are mutually exclusive' }
+          if ($env:PRODUCT_SHA -cne '8c595f909859b0fda10ff4fdb6e25f4ccb25c96e') { throw 'Probe requires the frozen 8c candidate' }
+          if ($env:HISTORICAL_ENVIRONMENT -cne '1' -or $env:ITERATIONS -cne '1') { throw 'Probe requires historical packages and one fixed counterfactual set' }
+      - name: Checkout diagnostic code
+        uses: actions/checkout@v4
+        with:
+          path: diagnostic-source
+          fetch-depth: 0
+      - name: Checkout exact current source
+        uses: actions/checkout@v4
+        with:
+          ref: '8c595f909859b0fda10ff4fdb6e25f4ccb25c96e'
+          path: product
+          fetch-depth: 0
+      - name: Checkout exact historical source
+        uses: actions/checkout@v4
+        with:
+          ref: '0f172f9fe692ff8fafcc0a15a72fe51eaf67e977'
+          path: historical-product
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.10'
+      - name: Verify exact checked-out probe sources
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force history-copyfile2-evidence | Out-Null
+          $sources = @(
+            @{ path = 'diagnostic-source'; expected = $env:GITHUB_SHA },
+            @{ path = 'product'; expected = '8c595f909859b0fda10ff4fdb6e25f4ccb25c96e' },
+            @{ path = 'historical-product'; expected = '0f172f9fe692ff8fafcc0a15a72fe51eaf67e977' }
+          )
+          $records = @($sources | ForEach-Object {
+            $observed = git -C $_.path rev-parse HEAD
+            $headExit = $LASTEXITCODE
+            $changes = git -C $_.path status --porcelain --untracked-files=no
+            $statusExit = $LASTEXITCODE
+            $dirty = $null
+            if ($statusExit -eq 0) { $dirty = [bool]$changes }
+            @{ path = $_.path; expected = $_.expected; observed = $observed; head_exitcode = $headExit; status_exitcode = $statusExit; tracked_edits = $dirty }
+          })
+          $records | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 history-copyfile2-evidence/source-identities.json
+          foreach ($record in $records) {
+            if ($record.head_exitcode -ne 0 -or $record.status_exitcode -ne 0 -or $record.observed -cne $record.expected -or $record.tracked_edits) { throw 'Probe source identity command or tracked bytes differ' }
+          }
+      - name: Install pinned historical dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force history-copyfile2-evidence | Out-Null
+          python diagnostic-source/scripts/v3_windows_reliability.py --write-historical-requirements history-copyfile2-evidence/historical-requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to prepare historical requirements' }
+          python -m pip install -r history-copyfile2-evidence/historical-requirements.txt -e './product[all]' *> history-copyfile2-evidence/dependency-install.log
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned dependency installation failed; no substitutions allowed' }
+          python -m pip freeze | Set-Content -Encoding utf8 history-copyfile2-evidence/dependencies.txt
+          $env:GITHUB_SHA | Set-Content -Encoding utf8 history-copyfile2-evidence/diagnostic-commit.txt
+      - name: Run bounded private forensic probe and its boundary tests
+        working-directory: diagnostic-source
+        shell: python
+        run: |
+          import json, os, sys, tempfile
+          from pathlib import Path
+          root = Path.cwd().resolve()
+          sys.path.insert(0, str(root))
+          from scripts.v3_windows_reliability import isolated_environment, run_process
+          output = root.parent / 'history-copyfile2-evidence'
+          helper = root / 'scripts/diagnostics/history_copyfile2/probe.py'
+          receipt_path = output / 'process-receipt.json'
+          receipt = {'diagnostic_commit': os.environ['GITHUB_SHA'],
+              'scope': 'CAUSAL_CLASS_ONLY; original capture and R260 remain BLOCKED',
+              'product_or_WPR_campaign_executed': False, 'returncode': None,
+              'cleanup_uncertified': True, 'step_failed': True}
+          phase = 'setup'
+          try:
+              with tempfile.TemporaryDirectory(prefix='kyrozen-copyfile2-probe-') as home:
+                  env = isolated_environment(Path(home))
+                  env['KYROZEN_DISABLE_VECTOR_INDEX'] = '1'
+                  env['COPYFILE2_CURRENT_SOURCE'] = str(root.parent / 'product')
+                  phase = 'boundary_tests'
+                  unit = run_process([sys.executable, '-I', '-m', 'unittest', 'discover', '-s', str(helper.parent), '-p', 'test_*.py', '-v'], output / 'boundary-tests.log', env, timeout=45)
+                  (output / 'boundary-tests.json').write_text(json.dumps(unit, indent=2), encoding='utf-8')
+                  if unit['returncode']:
+                      raise SystemExit(unit['returncode'])
+                  phase = 'probe'
+                  result = run_process([sys.executable, '-I', str(helper),
+                      '--old-source', str(root.parent / 'historical-product'),
+                      '--current-source', str(root.parent / 'product'),
+                      '--output', str(output / 'probe')], output / 'probe-process.log', env, timeout=45)
+                  receipt.update(result)
+                  cleanup = result.get('timeout_cleanup')
+                  certified = isinstance(cleanup, dict) and cleanup.get('descendant_cleanup_certified') is True
+                  code = result.get('returncode')
+                  receipt['cleanup_uncertified'] = type(code) is not int or (cleanup is not None and not certified) or (code == 124 and not certified)
+                  receipt['step_failed'] = type(code) is not int or code != 0 or receipt['cleanup_uncertified']
+                  phase = 'private_home_cleanup'
+                  receipt_path.write_text(json.dumps(receipt, indent=2), encoding='utf-8')
+          except BaseException as error:
+              receipt.update(step_failed=True, failure_phase=phase,
+                  step_error={'type': type(error).__name__, 'winerror': getattr(error, 'winerror', None), 'errno': getattr(error, 'errno', None)})
+              if phase == 'private_home_cleanup':
+                  receipt['cleanup_uncertified'] = True
+              receipt_path.write_text(json.dumps(receipt, indent=2), encoding='utf-8')
+              raise
+          receipt['private_home_cleanup_completed'] = True
+          receipt_path.write_text(json.dumps(receipt, indent=2), encoding='utf-8')
+          raise SystemExit(code if type(code) is int and code != 0 else (1 if receipt['step_failed'] else 0))
+      - name: Preserve every probe outcome
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-history-copyfile2-${{ env.PRODUCT_SHA }}-${{ github.run_id }}
+          path: history-copyfile2-evidence/
           if-no-files-found: error
