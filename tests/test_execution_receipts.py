@@ -615,7 +615,8 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
             receipt = runtime._make_execution_receipt(
                 action=action, args=arguments, authorized=True, started_at="start", success=True,
                 result="verified", operation_scope="test", task_id=task["id"],
-                tool_result=ToolResult(text="verified"),
+                tool_result=ToolResult(text="verified", data=(
+                    {"content": "verified", "truncated": False} if action == "read_file" else None)),
             )
             runtime._record_turn_receipt(verified(receipt))
             if criterion_id == "criterion-content":
