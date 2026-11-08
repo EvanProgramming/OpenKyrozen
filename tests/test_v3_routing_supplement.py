@@ -258,8 +258,9 @@ class RoutingRuntimeTests(unittest.TestCase):
                 self.assertEqual(observer.records[0]['model'],'deepseek-flash')
                 self.assertTrue(controller.records[0]['requests'])
             finally:controller.close()
-        self.assertEqual(observed[0][1],{'update_plan'})
+        self.assertEqual(observed[0][1],{'update_plan','read_tool_artifact'})
         self.assertGreater(len(observed[1][1]),1)
+        self.assertIn('read_file',observed[1][1])
         self.assertTrue(observed[0][0][0]['before']['planning_required'])
         self.assertFalse(observed[1][0][0]['after']['planning_required'])
 
