@@ -15,6 +15,45 @@ Simple work does not require a plan, and a plan is optional for medium work. Com
 
 In native Agent mode, the model can call the structured `update_plan` tool when its effective capabilities include `write`. Ask and Plan modes never receive that schema. Tool authorization still intersects the active capability token, and an accepted Strategic Plan remains bound to its objective, revision, paths, effects, and approval state; plan editing does not grant permission to perform the revised tasks.
 
+### Create, start, and verify a Working Plan
+
+New tasks omit `id`; the runtime allocates their durable IDs. In the compatibility `complexity`/`tasks` form, a supplied `task.id` must already belong to the active plan. Do not mix that form with `operations`, `plan_id`, `expected_revision`, or `reason`. To create a canonical plan, omit `plan_id` and set `expected_revision` to zero. Later edits use the latest returned `plan_id`, revision, and task IDs. An `add.ref` is only a local reference for later operations in the same batch.
+
+For example, these `update_plan` arguments create and explicitly start a read task:
+
+```json
+{
+  "complexity": "simple",
+  "expected_revision": 0,
+  "operations": [
+    {
+      "op": "add",
+      "ref": "inspect",
+      "task": {
+        "description": "Inspect notes.txt for the requested ready marker",
+        "acceptance": [
+          {
+            "criterion": "notes.txt contains the requested marker",
+            "verification": {
+              "action": "read_file",
+              "arguments": {"path": "notes.txt"},
+              "expect": {"contains": "ready"}
+            }
+          }
+        ]
+      }
+    },
+    {"op": "start", "task": "inspect"}
+  ]
+}
+```
+
+Send the plan edit in its own response. Then call `read_file` separately with the exact arguments `{"path":"notes.txt"}`. `start` selects the runtime task before that work; a matching path alone does not select it. `contains` is a nonempty, case-sensitive substring predicate. Use `"expect":{"equals":"ready\n"}` instead when the complete returned content must equal that string, including whitespace. Every declared criterion needs matching evidence.
+
+Read verification uses the successful typed result's complete `data.content`, with `truncated` exactly `false`. Display previews, metadata, truncated or malformed results, and prose-only acceptance do not certify the read. `suggest_complete` checks evidence already recorded; it never creates evidence or makes an unverified task succeed. Matching receipts can complete the plan automatically. A later batch containing only `suggest_complete` can then confirm its verified succeeded tasks without changing the plan, tasks, or revision. Use the current runtime-returned plan ID, task IDs, and revision; stale, historical, cancelled, or unverified targets are rejected, as are batches requesting other edits. This read-only confirmation is distinct from a new plan commit and cannot erase a failed transaction. An executed task with the wrong action/argument contract must be cancelled and replaced rather than rewritten to fit later receipts.
+
+A builtin input error rejected before any plan transaction may be corrected by a later successful plan edit in the same turn. It stops blocking turn completion only after the same scoped, nonempty Working Plan completes with verified task evidence; the failed receipt remains in history. A transaction attempt, including a rollback or unknown/post-commit outcome, is never treated as this no-effect input correction. Denials and failed reads or effects retain their failure evidence.
+
 The TUI and Web chat show the current Working Plan revision, its user-facing revision reason, and tasks in scheduler order. Progress is updated from typed task events; successful tasks are shown as verified, and cancelled replacements remain marked as superseded. The Web view restores the active plan snapshot when a saved session is reopened. These observer projections contain task descriptions, statuses, supersession links, and rationale only; execution evidence and tool arguments remain private.
 
 The tool executor makes at most one automatic retry, and only when a typed error marks a normal-risk read or an allowlisted built-in network lookup as retriable. It rechecks task binding and child cancellation before dispatching the retry. Filesystem, process, Git, stateful, custom network, and other mutation-capable calls are never automatically retried. After interruption or restart, unfinished side effects remain uncertain; inspect the current workspace and recorded receipts before requesting the mutation again.

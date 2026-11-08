@@ -15,6 +15,31 @@ from openkyrozen.tools import ToolAdapters
 
 
 class PromptWorkerObservationTests(unittest.TestCase):
+    def test_task_record_retains_actual_typed_acceptance_and_evidence_without_aliases(self):
+        from benchmarks.prompt_worker import _task_record
+        task = {'id': 'task', 'description': 'Read proof', 'status': 'succeeded',
+            'acceptance': [{'criterion': 'Read', 'expect': {'equals': 'exact\n'}}],
+            'dependencies': [], 'checkpoint': {'native_execution_selected': True},
+            'evidence': [{'receipt_id': 'receipt', 'success': True, 'acceptance_ids': ['criterion']}]}
+        observed = _task_record(task)
+        self.assertEqual(observed['acceptance'], task['acceptance'])
+        self.assertEqual(observed['evidence'], task['evidence'])
+        task['acceptance'][0]['expect']['equals'] = 'changed'
+        self.assertEqual(observed['acceptance'][0]['expect']['equals'], 'exact\n')
+        legacy = _task_record({'id': 'v2', 'description': 'Legacy', 'status': 'pending'})
+        self.assertIsNone(legacy['acceptance'])
+        self.assertIsNone(legacy['checkpoint'])
+        self.assertIsNone(legacy['evidence'])
+
+    def test_retained_task_proof_rejects_wrong_types_but_allows_missing_legacy_fields(self):
+        from benchmarks.v3_matched_live import _worker_schema_errors
+        from tests.test_v3_matched_live import valid_worker_result
+        self.assertEqual(_worker_schema_errors(valid_worker_result(task_records=[{'id': 'legacy'}])), [])
+        for field in ('acceptance', 'dependencies', 'checkpoint', 'evidence'):
+            with self.subTest(field=field):
+                worker = valid_worker_result(task_records=[{'id': 'task', field: 'not structured proof'}])
+                self.assertIn('task_records.' + field, _worker_schema_errors(worker))
+
     def test_real_native_receipts_preserve_background_relative_path_and_git_reference(self):
         from benchmarks.v3_fixtures import FIXTURES
         from benchmarks.v3_matched_live import prepare_fixture

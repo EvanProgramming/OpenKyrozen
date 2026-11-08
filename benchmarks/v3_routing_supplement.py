@@ -268,6 +268,7 @@ def run(*,source,repo,core_output,core_budget,output,budget_path):
     from benchmarks.v3_fixtures import FIXTURES
     from benchmarks.v3_matched import BudgetLedger,summarize
     from benchmarks.v3_deepseek import DEEPSEEK_PRICING,DEEPSEEK_RELAY_CONFIG,DEEPSEEK_ENDPOINT
+    from benchmarks.v3_deepseek import validate_planning_preflight
     from benchmarks.v3_responses_relay import ResponsesRelay
     paths=[Path(item).resolve() for item in (source,repo,core_output,core_budget,output,budget_path)]
     source,repo,core_output,core_budget,output,budget_path=paths
@@ -293,6 +294,16 @@ def run(*,source,repo,core_output,core_budget,output,budget_path):
                 or not 0<config[1]<=15*10**12 or core.get('smoke_passed') is not True
                 or core.get('relay_config')!=asdict(DEEPSEEK_RELAY_CONFIG)):
             raise ValueError('a complete same-candidate secure core campaign is required first')
+        preflight_calls=[]
+        for identifier,reserved,actual,status,usage,metadata,*_rest in original_attempts:
+            call=json.loads(metadata or '{}')
+            if call.get('arm')=='planning_preflight':
+                if reserved!=2032768000000:
+                    raise ValueError('core planning preflight reservation changed')
+                preflight_calls.append(dict(call,attempt_id=identifier,status=status,
+                    usage=json.loads(usage) if usage else None,
+                    actual_rmb=str(Decimal(actual)/Decimal(10**12)) if actual is not None else None))
+        validate_planning_preflight(core_output,core.get('planning_preflight'),preflight_calls,candidate,base_identity)
         from benchmarks.v3_protected_worker import verify_worker_protection
         verify_worker_protection()
         binding={'protocol':PROTOCOL,'candidate_sha':candidate,'core_report_sha256':core_hash,

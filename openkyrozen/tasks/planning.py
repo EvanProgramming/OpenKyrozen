@@ -28,6 +28,29 @@ def _text(value: Any, field: str, limit: int) -> str:
     return value
 
 
+def validate_acceptance_verification(verification):
+    """Shared exact verification contract for approved and ordinary plan criteria."""
+    if (not isinstance(verification, dict)
+            or set(verification) not in ({"action", "arguments"}, {"action", "arguments", "expect"})
+            or not isinstance(verification.get("action"), str) or not verification["action"].strip()
+            or not isinstance(verification.get("arguments"), dict)):
+        raise InteractionError("acceptance verification must contain an action and object arguments")
+    if verification["action"] == "read_file":
+        expect = verification.get("expect")
+        if (not isinstance(expect, dict) or len(expect) != 1
+                or set(expect) not in ({"equals"}, {"contains"})
+                or not isinstance(next(iter(expect.values())), str)
+                or ("contains" in expect and not expect["contains"])):
+            raise InteractionError("read_file verification requires a nonempty equals or contains predicate")
+    elif "expect" in verification:
+        raise InteractionError("expected-result predicates are currently supported only for read_file")
+    try:
+        json.dumps(verification["arguments"], ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise InteractionError("acceptance verification arguments must be JSON-safe") from exc
+    return deepcopy(verification)
+
+
 def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None,
                            original_input: str = "") -> dict[str, Any]:
     if not isinstance(value, dict):
@@ -93,24 +116,7 @@ def validate_plan_proposal(value: Any, *, previous: dict[str, Any] | None = None
             if isinstance(item, dict) and set(item) == {"criterion", "verification"}:
                 verification = item["verification"]
             if verification is not None:
-                if (not isinstance(verification, dict)
-                        or set(verification) not in ({"action", "arguments"}, {"action", "arguments", "expect"})
-                        or not isinstance(verification.get("action"), str)
-                        or not verification["action"].strip() or not isinstance(verification.get("arguments"), dict)):
-                    raise InteractionError("acceptance verification must contain an action and object arguments")
-                if verification["action"] == "read_file":
-                    expect = verification.get("expect")
-                    if (not isinstance(expect, dict) or len(expect) != 1
-                            or set(expect) not in ({"equals"}, {"contains"})
-                            or not isinstance(next(iter(expect.values())), str)
-                            or ("contains" in expect and not expect["contains"])):
-                        raise InteractionError("read_file verification requires a nonempty equals or contains predicate")
-                elif "expect" in verification:
-                    raise InteractionError("expected-result predicates are currently supported only for read_file")
-                try:
-                    json.dumps(verification["arguments"], ensure_ascii=False, allow_nan=False)
-                except (TypeError, ValueError) as exc:
-                    raise InteractionError("acceptance verification arguments must be JSON-safe") from exc
+                verification = validate_acceptance_verification(verification)
             criterion = _text(item.get("criterion") if isinstance(item, dict) else item,
                               "acceptance criterion", 300)
             normalized_acceptance.append(criterion)

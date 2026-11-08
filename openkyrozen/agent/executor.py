@@ -225,6 +225,7 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                             task_plan_id: str | None = None,
                             receipt_arguments: dict[str, Any] | None = None,
                             _duplicate_successful_operation: bool = False,
+                            _precommit_plan_validation: bool = False,
                             expected_spec=None) -> ExecutionReceipt:
     canonical = self._operation_action(action)
     from openkyrozen.agent.delegation import TOOLS
@@ -248,6 +249,8 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                                     sort_keys=True, separators=(",", ":"))
         if len(candidate_json) > _TOOL_ARTIFACT_THRESHOLD:
             tool_result = candidate
+    confirmation_result = (tool_result if tool_result is not None
+                           and tool_result.metadata.get("working_plan_confirmation") is True else None)
     # Keep large outputs out of provider messages and the conversation journal.
     if tool_result is not None and canonical != "read_tool_artifact":
         from openkyrozen.agent.conversation import tool_result_to_dict
@@ -301,6 +304,24 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         }
     elif getattr(expected_spec, "side_effects", None) == "read_only":
         verification = {"status": "not_applicable", "method": "read_only_tool", "observed": None}
+    if canonical == "update_plan" and call_id_source == "native" and expected_spec is not None:
+        from openkyrozen.agent.plan_tools import _update_plan
+        executor = expected_spec.executor
+        trusted = (getattr(executor, "__self__", None) is self
+                   and getattr(executor, "__func__", None) is _update_plan.__tool_result_executor__)
+        turn_id = self._conversation_turn_id.get()
+        if trusted and success and confirmation_result is not None:
+            confirmed = confirmation_result.data
+            verification = {"status": "verified", "method": "working_plan_confirmation", "observed": {
+                "plan_id": confirmed["plan_id"], "revision": confirmed["revision"], "turn_id": turn_id}}
+        elif trusted and success and task_manager.working_plan is not None:
+            plan = task_manager.working_plan
+            verification = {"status": "verified", "method": "working_plan_commit", "observed": {
+                "plan_id": plan.id, "revision": plan.revision, "turn_id": turn_id}}
+        elif (trusted and tool_error is not None and tool_error.code == "invalid_arguments"
+              and (_precommit_plan_validation or tool_error.metadata.get("plan_validation_no_effect") is True)):
+            verification = {"status": "not_applicable", "method": "plan_input_validation",
+                            "observed": {"committed": False, "turn_id": turn_id}}
     if _duplicate_successful_operation:
         verification = {"status": "not_applicable", "method": "duplicate_success_refusal", "observed": None}
 
@@ -366,7 +387,8 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         session_id=(getattr(current_session, "session_id", None) if delegated_parent else None)
         or getattr(task_manager, "session_id", None)
         or getattr(getattr(self, "memory_bank", None), "session_id", None),
-        plan_id=task_plan_id or getattr(getattr(task_manager, "working_plan", None), "id", None),
+        plan_id=(verification["observed"]["plan_id"] if verification.get("method") == "working_plan_confirmation"
+                 else task_plan_id or getattr(getattr(task_manager, "working_plan", None), "id", None)),
         task_id=task_id,
         tool_version=getattr(expected_spec, "version", None),
         tool_source=getattr(expected_spec, "source", None),
@@ -689,6 +711,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                 result=result, operation_scope=operation_scope, failure=outcome.error.code,
                 tool_error=outcome.error, tool_result=outcome, call_id=call_id,
                 call_id_source=call_id_source, task_id=task_id, task_plan_id=task_plan_id, expected_spec=expected_spec,
+                _precommit_plan_validation=canonical == "update_plan",
             )
         typed_arguments = args
     elif spec is not None and spec.source not in {"builtin", "legacy"}:
@@ -887,15 +910,22 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
                      json.dumps(receipt.arguments, ensure_ascii=False, allow_nan=False,
                                 sort_keys=True, separators=(",", ":"))
                      if receipt.arguments is not None else receipt.args)
+    criterion_status = receipt.verification.get("status")
+    read_content = None
+    if receipt.action == "read_file":
+        data = receipt.tool_result.data if receipt.tool_result is not None else None
+        if (isinstance(data, dict) and isinstance(data.get("content"), str)
+                and data.get("truncated") is False):
+            read_content = data["content"]
+        else:
+            criterion_status = "unavailable"
     evidence = {} if not reconcile_locally or receipt.action in TOOLS or not should_reconcile else task_manager.record_evidence(
         task_id=explicit_task_id, action=receipt.action, args=matching_args,
         args_projection=receipt_projection["args"],
         args_fingerprint=None if legacy_contract else receipt.args_sha256,
         result=receipt_projection["result"], success=receipt.success,
         acceptance=task_acceptance, receipt_id=receipt.receipt_id,
-        verification_status=receipt.verification.get("status"),
-        verification_result=(receipt.tool_result.text if receipt.action == "read_file"
-                             and receipt.tool_result is not None else None),
+        verification_status=criterion_status, verification_result=read_content,
     )
     task_id = evidence.get("task_id") if reconcile_locally else explicit_task_id
     effective_acceptance = evidence.get("acceptance") or (
@@ -929,6 +959,7 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
     result = {
         "receipt_id": receipt.receipt_id, "operation_id": receipt.operation_id,
         "call_id": receipt.call_id, "call_id_source": receipt.call_id_source,
+        "user_id": receipt.user_id, "workspace_id": receipt.workspace_id, "session_id": receipt.session_id,
         "action": receipt.action, "args": receipt_projection["args"], "result": receipt_projection["result"],
         "success": receipt.success, "authorized": receipt.authorized,
         "acceptance": effective_acceptance, "failure": receipt_projection["failure"],

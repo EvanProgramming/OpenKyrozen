@@ -29,6 +29,7 @@ class TaskManager:
         self._pending_completions: set[str] = set()
         self._evidence: list[dict[str, Any]] = []
         self.working_plan: WorkingPlan | None = None
+        self._plan_commit_attempts = 0
         self._runtime_event_callback: ContextVar[Any] = ContextVar("task_runtime_event_callback", default=None)
 
     def _persist(self, task: dict[str, Any], *, expected_status: str | None = None) -> bool:
@@ -230,7 +231,29 @@ class TaskManager:
         priority = task.get("priority", 0)
         if not isinstance(description, str) or not description.strip():
             raise ValueError("task description must be a nonempty string")
-        if not isinstance(acceptance, list) or any(not isinstance(value, str) or not value.strip() for value in acceptance):
+        if not isinstance(acceptance, list):
+            raise ValueError("task acceptance must be an array")
+        if any(isinstance(value, dict) for value in acceptance):
+            from .planning import validate_acceptance_verification
+            criteria = []
+            for value in acceptance:
+                if (not isinstance(value, dict) or set(value) != {"criterion", "verification"}
+                        or not isinstance(value.get("criterion"), str) or not value["criterion"].strip()):
+                    raise ValueError("read criteria require criterion/verification objects; do not mix with prose")
+                verification = validate_acceptance_verification(value["verification"])
+                if verification["action"] != "read_file":
+                    raise ValueError("ordinary verified criteria currently support only read_file")
+                criterion = value["criterion"].strip()
+                identity = json.dumps({"criterion": criterion, "verification": verification},
+                                      sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+                criteria.append({"id": "read-ac-" + hashlib.sha256(identity.encode()).hexdigest()[:12],
+                    "criterion": criterion, "action": "read_file", "expect": verification["expect"],
+                    "args": json.dumps(verification["arguments"], ensure_ascii=False, allow_nan=False,
+                                       sort_keys=True, separators=(",", ":"))})
+            if len({value["id"] for value in criteria}) != len(criteria):
+                raise ValueError("read acceptance criteria must be unique")
+            acceptance = criteria
+        elif any(not isinstance(value, str) or not value.strip() for value in acceptance):
             raise ValueError("task acceptance must be an array of nonempty strings")
         if not isinstance(dependencies, list) or any(not isinstance(value, str) or not value for value in dependencies):
             raise ValueError("task dependencies must be an array of task references")
@@ -294,6 +317,28 @@ class TaskManager:
         saved = self.store.get_working_plan(
             user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id or "",
         )
+        current = self.working_plan
+        if saved is None and current is not None and current.status == "completed" and plan_id == current.id:
+            if (expected_revision != current.revision or complexity is not None or reason is not None
+                    or strategic_bindings is not None or transaction_event is not None
+                    or any(not isinstance(op, dict) or set(op) != {"op", "task"}
+                           or op["op"] != "suggest_complete" for op in operations)):
+                raise ValueError("completed plans accept only exact-revision task completion confirmations")
+            confirmed_tasks = self.store.list_working_plan_tasks(
+                plan_id, user_id=self.user_id, workspace_id=self.workspace_id,
+                session_id=self.session_id or "", current_completed_revision=expected_revision,
+            )
+            by_id = {task["id"]: task for task in confirmed_tasks}
+            if (tuple(by_id) != current.task_ids or not confirmed_tasks
+                    or any(task["status"] not in {"succeeded", "cancelled"} or _unknown_recovery_effect(task)
+                           or (task["status"] == "succeeded" and not self._task_has_evidence(task))
+                           for task in confirmed_tasks)
+                    or any(not isinstance(op["task"], str) or op["task"] not in by_id
+                           or by_id[op["task"]]["status"] != "succeeded" for op in operations)):
+                raise ValueError("completion confirmation requires the current scoped plan and verified succeeded tasks")
+            return {"plan_id": plan_id, "revision": current.revision, "status": "completed",
+                    "complexity": current.complexity, "task_ids": list(current.task_ids),
+                    "tasks": confirmed_tasks, "references": {}, "confirmation": True}
         complexity = str(complexity or (saved.get("complexity") if saved else "complex")).strip().lower()
         if complexity not in {"simple", "medium", "complex"}:
             raise ValueError("complexity must be simple, medium, or complex")
@@ -417,7 +462,7 @@ class TaskManager:
                 raise ValueError("task reference must be a nonempty string")
             task_id = references.get(value, value)
             if task_id not in by_id:
-                raise ValueError(f"Unknown task or dependency reference: {value}")
+                raise ValueError("Unknown task or dependency reference; use a returned task ID or an earlier add.ref")
             return task_id
 
         allowed_by_op = {
@@ -692,6 +737,9 @@ class TaskManager:
         plan_status = "completed" if completed else "cancelled" if terminal else "active"
         plan = {"id": plan_id, "complexity": complexity, "status": plan_status,
                 "created_at": created_at, "updated_at": now, "revision": expected_revision + 1}
+        # Crossing the durable boundary rules out a pre-commit validation proof,
+        # including a rollback or a commit followed by a failed observation.
+        self._plan_commit_attempts += 1
         revision = self.store.apply_working_plan_edit(
             plan, tasks, expected_revision=expected_revision, expected_tasks=previous_tasks,
             user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
@@ -825,6 +873,8 @@ class TaskManager:
         if (task.get("checkpoint") or {}).get("strategy_anchor"):
             strategic = {}
         required = set(strategic.get("acceptance_ids", ()))
+        if not required and any(isinstance(value, dict) for value in task.get("acceptance", [])):
+            required = {value["id"] for value in task["acceptance"] if isinstance(value, dict) and value.get("id")}
         if required:
             covered = {
                 criterion_id

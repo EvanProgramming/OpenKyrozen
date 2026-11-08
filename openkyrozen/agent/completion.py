@@ -4,6 +4,41 @@ import time
 import json
 from openkyrozen.tasks.engine import is_complete
 
+
+def _corrected_plan_validation(manager, record, later_records, turn_id):
+    """A committed, verified plan can supersede only its own no-effect input error."""
+    validation = record.get("verification") or {}
+    observed = validation.get("observed") or {}
+    if (not turn_id or record.get("action") != "update_plan" or record.get("success") is not False
+            or record.get("failure") != "invalid_arguments"
+            or validation.get("method") != "plan_input_validation"
+            or observed.get("committed") is not False or observed.get("turn_id") != turn_id):
+        return False
+    plan = manager.working_plan
+    if plan is None or plan.status != "completed" or not plan.task_ids:
+        return False
+    tasks = [task for task in manager.tasks if task.get("id") in plan.task_ids]
+    succeeded = [task for task in tasks if task.get("status") == "succeeded"]
+    if (len(tasks) != len(plan.task_ids) or not succeeded
+            or any(task.get("status") not in {"succeeded", "cancelled"} for task in tasks)
+            or not all(manager._task_has_evidence(task) for task in succeeded)):
+        return False
+    scope = {"user_id": manager.user_id, "workspace_id": manager.workspace_id,
+             "session_id": manager.session_id}
+    if any(record.get(key) != value for key, value in scope.items()):
+        return False
+    for later in later_records:
+        verification = later.get("verification") or {}
+        committed = verification.get("observed") or {}
+        if (later.get("action") == "update_plan" and later.get("success") is True
+                and verification.get("method") == "working_plan_commit"
+                and verification.get("status") == "verified"
+                and committed.get("turn_id") == turn_id and committed.get("plan_id") == plan.id
+                and all(later.get(key) == value for key, value in scope.items())):
+            return True
+    return False
+
+
 def _complete_turn(self, turn):
     from openkyrozen.agent.delegation import TERMINAL
     coordinator = self.subagent_manager.coordinator
@@ -109,6 +144,9 @@ def _complete_turn(self, turn):
     unresolved_effect_blocked = False
     for index, record in enumerate(turn.tool_records):
         verification = record.get("verification") or {}
+        if _corrected_plan_validation(self.tasks, record, turn.tool_records[index + 1:],
+                                      self._conversation_turn_id.get()):
+            continue
         failed_verification = verification.get("status") == "failed"
         effect_action = (record.get("action") in {"write_file", "edit_file", "apply_patch"}
             or record.get("side_effects") in {"filesystem", "remote", "destructive", "mutation", "external"})

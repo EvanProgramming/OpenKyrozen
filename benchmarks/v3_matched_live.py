@@ -38,6 +38,7 @@ def apparatus_identity() -> dict:
              "v3_shell_launcher.py", "v3_protected_worker.py", "v3_process_owner.py",
              "v3_linux_namespace.py", "v3_actor_supervisor.py", "v3_actor_worker.py")
     files += ('v3_routing_supplement.py', 'v3_fixture_verifier.py')
+    files += ('v3_deepseek.py',)
     hashes = {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in files}
     return {"cohort_sha256": cohort_digest(),
             "apparatus_sha256": hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest(),
@@ -756,6 +757,15 @@ def _worker_schema_errors(worker: dict) -> list[str]:
         value = worker.get(key)
         if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
             errors.append(key)
+    if isinstance(worker.get("task_records"), list):
+        for task in worker["task_records"]:
+            if not isinstance(task, dict):
+                continue
+            for key in ("acceptance", "dependencies", "checkpoint", "evidence"):
+                value = task.get(key)
+                expected = dict if key == "checkpoint" else list
+                if value is not None and not isinstance(value, expected):
+                    errors.append("task_records." + key)
     for key in ("tool_calls", "tool_successes", "material_plan_proposals", "plan_revisions", "cancelled_tasks",
                 "material_revisions", "unnecessary_churn", "duplicate_calls", "protocol_recovery",
                 "processes_started", "processes_cancelled", "processes_alive"):
@@ -1213,7 +1223,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         limit_cny: str | None = None, prior_hold_cny: str | None = None,
         prior_hold_records: tuple[str, ...] | None = None,
         pricing: Pricing = PANSTAR_PRICING, relay_config: RelayConfig = DEFAULT_RELAY_CONFIG,
-        endpoint: str | None = None) -> dict:
+        endpoint: str | None = None, planning_preflight_only: bool = False) -> dict:
     source, repo = source.resolve(), repo.resolve()
     candidate = _source_snapshot(source)
     output, budget_path = output.resolve(), budget_path.resolve()
@@ -1226,6 +1236,8 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
     identity = apparatus_identity()
     ledger_existed = budget_path.exists()
     cny_accounting = limit_cny is not None
+    if planning_preflight_only and not cny_accounting:
+        raise ValueError("planning preflight requires the pinned DeepSeek CNY campaign")
     if not cny_accounting and prior_hold_usd is None:
         raise TypeError("prior_hold_usd is required for the default USD campaign")
     try:
@@ -1267,6 +1279,11 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
 
     def is_smoke_call(call: dict) -> bool:
         return (cny_accounting and call.get("arm") == "smoke"
+                and call.get("fixture_id") == candidate and call.get("repeat") == -1
+                and call.get("model") == model and call.get("max_output_tokens") == max_output_tokens)
+
+    def is_preflight_call(call: dict) -> bool:
+        return (cny_accounting and call.get("arm") == "planning_preflight"
                 and call.get("fixture_id") == candidate and call.get("repeat") == -1
                 and call.get("model") == model and call.get("max_output_tokens") == max_output_tokens)
 
@@ -1335,7 +1352,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         held_reservations = prior.get("held_reservations", [])
         expected_call_keys = {(fixture["fixture_id"], repeat, arm)
                               for fixture in fixtures for repeat in range(repeats) for arm in ("v2", "v3")}
-        if any(not is_smoke_call(call) and (
+        if any(not is_smoke_call(call) and not is_preflight_call(call) and (
                 (call.get("fixture_id"), call.get("repeat"), call.get("arm")) not in expected_call_keys
                 or call.get("model") != model) for call in journal_calls):
             raise ValueError("budget-ledger journal contains a call outside the frozen cohort")
@@ -1347,7 +1364,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             raise ValueError("existing benchmark report contains duplicate attempts")
         calls_by_key: dict[tuple, list[dict]] = {}
         for call in journal_calls:
-            if is_smoke_call(call):
+            if is_smoke_call(call) or is_preflight_call(call):
                 continue
             calls_by_key.setdefault((call.get("fixture_id"), call.get("repeat"), call.get("arm")), []).append(call)
         rows_by_key = dict(zip(keys, rows))
@@ -1383,16 +1400,32 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
     with _evidence_access(output, create=True):
         pass
     _validate_rows_evidence(output, rows, candidate, identity)
+    planning_preflight = prior.get("planning_preflight")
+    smoke_calls = {call["attempt_id"]: call for call in journal_calls if is_smoke_call(call)}
+    smoke_attempt_ids = prior.get("smoke_attempt_ids")
+    smoke_checkpoint_valid = (cny_accounting and prior.get("smoke_passed") is True
+        and isinstance(smoke_attempt_ids, list) and all(isinstance(item, str) for item in smoke_attempt_ids)
+        and len(set(smoke_attempt_ids)) == len(smoke_attempt_ids) == 2
+        and all(attempt in smoke_calls and smoke_calls[attempt].get("status") == "settled"
+                and isinstance(smoke_calls[attempt].get("usage"), dict) for attempt in smoke_attempt_ids))
+    if cny_accounting:
+        from benchmarks.v3_deepseek import validate_planning_preflight
+        if planning_preflight is not None:
+            validate_planning_preflight(output, planning_preflight, journal_calls, candidate, identity)
+            if not smoke_checkpoint_valid:
+                raise ValueError("planning preflight lacks its original two-call smoke proof")
+        elif rows or any(call.get("arm") == "planning_preflight" for call in journal_calls):
+            raise ValueError("planning preflight evidence is required before formal evaluation")
+    if planning_preflight_only and rows:
+        raise ValueError("planning-only execution cannot rewrite an existing formal cohort")
     credential_endpoint, api_key = _credential()
     relay = ResponsesRelay(endpoint=endpoint or credential_endpoint, api_key=api_key,
                            budget=budget, config=relay_config)
     relay.rows.extend(journal_calls)
-    smoke_calls = {call["attempt_id"]: call for call in journal_calls if is_smoke_call(call)}
-    smoke_attempt_ids = prior.get("smoke_attempt_ids")
-    if (cny_accounting and prior.get("smoke_passed") is True
-            and isinstance(smoke_attempt_ids, list) and len(set(smoke_attempt_ids)) == len(smoke_attempt_ids) == 2
-            and all(attempt in smoke_calls and smoke_calls[attempt].get("status") == "settled"
-                    and isinstance(smoke_calls[attempt].get("usage"), dict) for attempt in smoke_attempt_ids)):
+    if cny_accounting:
+        relay.planning_preflight_label = ("planning_preflight", candidate, -1)
+        relay.planning_preflight_closed = planning_preflight is not None
+    if smoke_checkpoint_valid:
         relay.smoke_verified_candidate = candidate
         relay.smoke_verified_attempt_ids = tuple(smoke_attempt_ids)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1414,10 +1447,28 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                     "status": ("running" if smoke_ok else "blocked_budget_reservation"
                                if relay.budget_blocked else "blocked_provider_error"),
                     "provider_error": relay.provider_error, "smoke_passed": smoke_ok,
+                    "planning_preflight": planning_preflight,
                     "smoke_attempt_ids": list(getattr(relay, "smoke_verified_attempt_ids", ())),
                     "rows": rows, "calls": relay.rows, "budget": budget_metadata(),
                     "held_reservations": _held_reservations(relay.rows)})
-            for repeat in range(repeats if smoke_ok else 0):
+                if smoke_ok and planning_preflight is None:
+                    from benchmarks.v3_deepseek import _planning_preflight_identity, run_planning_preflight
+                    planning_preflight = {"status": "running", "fixture_sha256": _planning_preflight_identity(candidate)}
+                    pending = _load_checkpoint(output, budget_path)
+                    pending["planning_preflight"] = planning_preflight
+                    pending["status"] = "planning_preflight_running"
+                    _write_checkpoint(output, budget_path, pending)
+                    planning_preflight = run_planning_preflight(temporary_root=temporary_root,
+                        arm_source=source, candidate=candidate, identity=identity,
+                        worker_script=worker_script, relay=relay, model=model, output=output,
+                        api_key=api_key, budget=budget)
+                    pending.update(planning_preflight=planning_preflight,
+                        status="planning_preflight_passed" if planning_preflight["status"] == "passed"
+                               else "blocked_planning_preflight",
+                        calls=relay.rows, budget=budget_metadata(), held_reservations=_held_reservations(relay.rows))
+                    _write_checkpoint(output, budget_path, pending)
+            preflight_ok = not cny_accounting or planning_preflight is not None and planning_preflight.get("status") == "passed"
+            for repeat in range(repeats if smoke_ok and preflight_ok and not planning_preflight_only else 0):
                 for fixture_index, fixture in enumerate(fixtures):
                     ordered_arms = (("v2", baseline_source), ("v3", source))
                     if (repeat + fixture_index) % 2:
@@ -1442,6 +1493,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                                     "baseline_sha": BASELINE, "model": model, "max_output_tokens": max_output_tokens,
                                     "repeats": repeats, "pricing": pricing_info, "relay_config": asdict(relay_config),
                                     "smoke_passed": smoke_ok if cny_accounting else None,
+                                    "planning_preflight": planning_preflight,
                                     "smoke_attempt_ids": list(getattr(relay, "smoke_verified_attempt_ids", ())),
                                     "status": safety_stop or "running", "rows": rows,
                                     "held_reservations": held_reservations,
@@ -1485,9 +1537,12 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
               "baseline_sha": BASELINE, "model": model, "pricing": pricing_info, "relay_config": asdict(relay_config), "repeats": repeats,
               "status": safety_stop or ("blocked_provider_error" if relay.provider_error else
                         "blocked_budget_reservation" if relay.budget_blocked else
+                        "blocked_planning_preflight" if not preflight_ok else
+                        "planning_preflight_passed" if planning_preflight_only else
                         "complete" if summary["complete"] and summary["accounting_complete"] else "incomplete"),
               "provider_error": relay.provider_error,
               "smoke_passed": smoke_ok if cny_accounting else None,
+              "planning_preflight": planning_preflight,
               "smoke_attempt_ids": list(getattr(relay, "smoke_verified_attempt_ids", ())),
               "summary": summary,
               "rows": rows, "held_reservations": held_reservations,

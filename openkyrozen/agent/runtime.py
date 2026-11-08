@@ -916,7 +916,7 @@ class AgentRuntime:
             bound_task_id = task_id
             execution_dispatched = False
 
-            def reject(outcome, *, authorized=False, bound_task=None):
+            def reject(outcome, *, authorized=False, bound_task=None, precommit_plan_validation=False):
                 self._publish_runtime_event(
                     "tool.call", {"tool_name": name,
                                   "argument_keys": sorted(call_arguments)[:64]},
@@ -929,6 +929,7 @@ class AgentRuntime:
                     operation_scope=operation_scope, failure=outcome.error.code if outcome.error else None,
                     tool_error=outcome.error, result_data=outcome.data, tool_result=outcome,
                     call_id=call.id, call_id_source=_call_id_source, task_id=bound_task, expected_spec=spec,
+                    _precommit_plan_validation=precommit_plan_validation,
                 )
                 self._record_turn_receipt(receipt)
                 return receipt
@@ -957,7 +958,7 @@ class AgentRuntime:
                 if validation_error:
                     code = 'contract_error' if spec.source == 'legacy' else 'invalid_arguments'
                     outcome = tool_failure(code, f"Error: {validation_error}")
-                    return reject(outcome, bound_task=bound_task_id)
+                    return reject(outcome, bound_task=bound_task_id, precommit_plan_validation=name == "update_plan")
                 request = ApprovalRequest(
                     call_id=call.id, tool_name=name, arguments=call_arguments,
                     workspace_id=self.memory_bank.workspace_id, session_id=session.session_id,

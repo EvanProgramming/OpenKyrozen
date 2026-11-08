@@ -333,7 +333,7 @@ class ToolRegistry:
         return [{'name':s.name,'description':s.description.splitlines()[0],'inputSchema':s.input_schema} for s in self._visible(token,names)]
 
     def provider_schemas(self,token=None,*,names=None):
-        return [{'name':s.name,'description':s.description.splitlines()[0],'parameters':s.input_schema} for s in self._visible(token,names)]
+        return [{'name':s.name,'description':s.description,'parameters':s.input_schema} for s in self._visible(token,names)]
 
     @staticmethod
     def _argument_error(schema, value, path='$'):
@@ -366,9 +366,11 @@ class ToolRegistry:
             if error: return error
         for keyword in ('anyOf', 'oneOf'):
             if keyword in schema:
-                matches = sum(ToolRegistry._schema_error(item, value, path) is None for item in schema[keyword])
+                errors = [ToolRegistry._schema_error(item, value, path) for item in schema[keyword]]
+                matches = errors.count(None)
                 if (keyword == 'anyOf' and matches == 0) or (keyword == 'oneOf' and matches != 1):
-                    return f'{path} does not match {keyword}'
+                    details = '; '.join(dict.fromkeys(error for error in errors if error))[:800]
+                    return f'{path} does not match {keyword}' + (f': {details}' if details else '')
         kind = schema.get('type')
         valid = {
             'object': isinstance(value, dict), 'array': isinstance(value, list), 'string': isinstance(value, str),
@@ -383,7 +385,7 @@ class ToolRegistry:
             missing = [key for key in schema.get('required', ()) if key not in value]
             if missing: return f'{path} is missing required property {missing[0]}'
             if schema.get('additionalProperties') is False and any(key not in props for key in value):
-                return f'{path} contains an unknown property'
+                return f'{path} contains an unknown property; allowed properties: ' + ', '.join(props)[:400]
             if len(value) < schema.get('minProperties', 0) or len(value) > schema.get('maxProperties', float('inf')):
                 return f'{path} has an invalid number of properties'
             for key, item in value.items():

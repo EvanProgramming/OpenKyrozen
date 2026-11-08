@@ -137,20 +137,37 @@ _SCHEMAS = {'read_file': {'properties': {'path': {'type': 'string'}},
                    'type': 'object',
                    'additionalProperties': False}}
 
+_CONTROL_VERIFICATION = {'type':'object','properties':{
+    'action':{'type':'string','minLength':1},
+    'arguments':{'type':'object','properties':{},'additionalProperties':True},
+    'expect':{'type':'object','properties':{'equals':{'type':'string'},'contains':{'type':'string','minLength':1}},
+              'minProperties':1,'maxProperties':1,'additionalProperties':False},
+},'required':['action','arguments'],'additionalProperties':False}
+_READ_CRITERION = {'type':'object','properties':{
+    'criterion':{'type':'string','minLength':1},
+    'verification':{**_CONTROL_VERIFICATION,'properties':{
+        **_CONTROL_VERIFICATION['properties'],'action':{'type':'string','enum':['read_file']}},
+        'required':['action','arguments','expect']},
+},'required':['criterion','verification'],'additionalProperties':False}
+_WORKING_ACCEPTANCE = {'anyOf':[
+    {'type':'array','items':{'type':'string','minLength':1}},
+    {'type':'array','minItems':1,'items':_READ_CRITERION},
+]}
+
 _PLAN_EXECUTION_SCHEMA = {'type':'object','properties':{
     'action': {'type':'string','minLength':1},
     'arguments': {'type':'object','properties':{},'additionalProperties':True},
 },'required':['action','arguments'],'additionalProperties':False}
 _PLAN_TASK_SCHEMA = {'type':'object','properties':{
     'description': {'type':'string','minLength':1},
-    'acceptance': {'type':'array','items':{'type':'string','minLength':1}},
+    'acceptance': _WORKING_ACCEPTANCE,
     'dependencies': {'type':'array','items':{'type':'string','minLength':1}},
     'priority': {'type':'integer'},
     'execution': _PLAN_EXECUTION_SCHEMA,
 },'required':['description','acceptance'],'additionalProperties':False}
 _PLAN_UPDATE_FIELDS_SCHEMA = {'type':'object','properties':{
     'description': {'type':'string','minLength':1},
-    'acceptance': {'type':'array','items':{'type':'string','minLength':1}},
+    'acceptance': _WORKING_ACCEPTANCE,
     'dependencies': {'type':'array','items':{'type':'string','minLength':1}},
     'priority': {'type':'integer'},
     'execution': _PLAN_EXECUTION_SCHEMA,
@@ -199,14 +216,14 @@ _PLAN_OPERATION_SCHEMAS = [
 
 _OBJECT_FIELDS = {
     'update_plan': {'complexity': {'type':'string','enum':['simple','medium','complex']},
-                    'plan_id': {'type':'string','minLength':1},
+                    'plan_id': {'type':'string','minLength':1,'description':'Runtime-returned existing plan ID. Omit when creating a new plan.'},
                     'expected_revision': {'type':'integer','minimum':0},
                     'reason': {'type':'string','minLength':1},
                     'operations': {'type':'array','items':{'anyOf':_PLAN_OPERATION_SCHEMAS}},
                     'tasks': {'type':'array','minItems':1,'items':{'type':'object','properties':{
-                        'id': {'type':'string','minLength':1},
+                        'id': {'type':'string','minLength':1,'description':'Existing runtime task ID only. Omit for new tasks; use operations.add.ref for local references.'},
                         'description': {'type':'string','minLength':1},
-                        'acceptance': {'type':'array','items':{'type':'string','minLength':1}},
+                        'acceptance': _WORKING_ACCEPTANCE,
                         'execution': {'type':'object','properties':{
                             'action': {'type':'string','minLength':1},
                             'arguments': {'type':'object','properties':{},'additionalProperties':True},
@@ -282,12 +299,6 @@ _SCHEMAS['update_plan']['anyOf'] = [
      'required': ['complexity', 'tasks'], 'additionalProperties': False},
 ]
 
-_CONTROL_VERIFICATION = {'type':'object','properties':{
-    'action':{'type':'string','minLength':1},
-    'arguments':{'type':'object','properties':{},'additionalProperties':True},
-    'expect':{'type':'object','properties':{'equals':{'type':'string'},'contains':{'type':'string','minLength':1}},
-              'minProperties':1,'maxProperties':1,'additionalProperties':False},
-},'required':['action','arguments'],'additionalProperties':False}
 _SCHEMAS['propose_plan'] = {'type':'object','properties':{
     'title':{'type':'string','minLength':1,'maxLength':120},
     'summary':{'type':'string','minLength':1,'maxLength':1000},

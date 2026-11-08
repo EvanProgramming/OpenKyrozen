@@ -14,6 +14,13 @@ from contextvars import ContextVar
 from functools import wraps
 
 
+def _task_record(task):
+    return {"id": task["id"], "description": task["description"], "status": task["status"],
+        "strategic_binding": (task.get("checkpoint") or {}).get("strategic_plan"),
+        **json.loads(json.dumps({key: task.get(key) for key in
+                                ("acceptance", "dependencies", "checkpoint", "evidence")}))}
+
+
 def _normalize_tool_receipt(receipt, workspace_root):
     arguments = receipt.get("arguments")
     if not isinstance(arguments, dict):
@@ -449,10 +456,7 @@ def main():
                   "request_context_records": observations.records + getattr(runtime, '_benchmark_child_context_records', []),
                   "tool_successes": sum(e.get("event") == "tool_receipt" and e.get("success") is True for e in events),
                   "tasks": [t["status"] for t in runtime.tasks.tasks],
-                  "task_records": [{"id": t["id"], "description": t["description"],
-                                    "status": t["status"],
-                                    "strategic_binding": (t.get("checkpoint") or {}).get("strategic_plan")}
-                                   for t in runtime.tasks.tasks],
+                  "task_records": [_task_record(t) for t in runtime.tasks.tasks],
                   "working_plan": working_plan,
                   "initial_plan_fingerprint": accepted_fingerprint,
                   "accepted_plan_fingerprints": accepted_fingerprints,

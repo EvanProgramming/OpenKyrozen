@@ -358,26 +358,52 @@ class SupplementRunnerTests(unittest.TestCase):
                       'model':'deepseek-flash','max_output_tokens':4096}
             ledger.reserve(identifier,input_token_bound=1000000,output_token_bound=4096,metadata=metadata)
             ledger.settle(identifier,{'input_tokens':10,'output_tokens':10,'cache_read_tokens':0,'cache_write_tokens':0})
+        identity={'cohort_sha256':'core-cohort','apparatus_sha256':'apparatus','apparatus_files':{},'context_settings':{}}
+        core={**identity,'protocol':'openkyrozen-v3-matched-live-v1','candidate_sha':'a'*40,
+              'status':'complete','rows':[],'smoke_passed':True,'smoke_attempt_ids':['smoke1','smoke2'],
+              'relay_config':asdict(DEEPSEEK_RELAY_CONFIG)}
+        from benchmarks import v3_matched_live as live
+        from benchmarks.v3_deepseek import _planning_preflight_identity, planning_preflight_fixture
+        from tests.test_v3_deepseek import PlanningPreflightTests
+        worker=PlanningPreflightTests().native_worker('a'*40)
+        attempt_ids=[]
+        for number in range(4):
+            identifier='planning'+str(number);attempt_ids.append(identifier)
+            ledger.reserve(identifier,input_token_bound=1000000,output_token_bound=4096,metadata={
+                'reserved_rmb':'2.032768','arm':'planning_preflight','fixture_id':'a'*40,'repeat':-1,
+                'model':'deepseek-flash','max_output_tokens':4096})
+            ledger.settle(identifier,{'input_tokens':10,'output_tokens':10,'cache_read_tokens':0,'cache_write_tokens':0})
         for index in range(int(Decimal(hold)/2)):
             identifier=f'past-{index}'
             ledger.reserve(identifier,input_token_bound=1000000,output_token_bound=4096,metadata={
                 'reserved_rmb':'2.032768','arm':'v3','fixture_id':'past','repeat':0,
                 'model':'deepseek-flash','max_output_tokens':4096})
             ledger.settle(identifier,{'input_tokens':1000000,'output_tokens':0,'cache_read_tokens':0,'cache_write_tokens':0})
-        identity={'cohort_sha256':'core-cohort','apparatus_sha256':'apparatus','apparatus_files':{},'context_settings':{}}
-        core={**identity,'protocol':'openkyrozen-v3-matched-live-v1','candidate_sha':'a'*40,
-              'status':'complete','rows':[],'smoke_passed':True,'smoke_attempt_ids':['smoke1','smoke2'],
-              'relay_config':asdict(DEEPSEEK_RELAY_CONFIG)}
+        row=live._empty_row('a'*40,-1,'planning_preflight')
+        row.update(cohort_sha256=identity['cohort_sha256'],apparatus_sha256=identity['apparatus_sha256'],
+            worker_exit_code=0,worker_result_complete=True,usage_complete=True,verified_success=True,
+            safety_passed=True,requests=4,attempts=4,input_tokens=40,output_tokens=40,
+            safety_components={key:True for key in ('scope_safe','original_tests_unchanged','provider_ok',
+                                                   'no_running_processes','worker_complete')})
+        result=root/'preflight-result.json';result.write_text(json.dumps(worker))
+        observed,metadata=live._read_worker_result(result,())
+        live._write_worker_evidence(root/'core.json',row,'a'*40,identity,observed,metadata)
+        core['planning_preflight']={'status':'passed','fixture_sha256':_planning_preflight_identity('a'*40),
+            'prompt_sha256':__import__('hashlib').sha256(live._fixture_prompt(planning_preflight_fixture('a'*40)).encode()).hexdigest(),
+            'row':row,'attempt_ids':attempt_ids}
         _write_checkpoint(root/'core.json',root/'core.db',core)
         return root,identity
 
     def call(self,root,identity,execute,credential,relay):
         from contextlib import ExitStack
         from benchmarks import v3_matched_live as live
+        read_worker=live._validate_worker_evidence
         with ExitStack() as stack:
             for target,values in ((live,{'_source_snapshot':lambda source:'a'*40,
                 'apparatus_identity':lambda:identity,'_require_dispatched_apparatus':lambda *args:Path('worker.py'),
-                '_validate_rows_evidence':lambda *args:True,'_validate_worker_evidence':lambda *args:True,
+                '_validate_rows_evidence':lambda *args:True,
+                '_validate_worker_evidence':lambda output,row,*args,**kwargs: read_worker(output,row,*args,**kwargs)
+                    if row.get('arm')=='planning_preflight' else True,
                 '_credential':credential,'_execute_cell':execute}),):
                 stack.enter_context(patch.multiple(target,**values))
             stack.enter_context(patch('benchmarks.v3_matched.summarize',return_value={'complete':True,'accounting_complete':True}))
@@ -397,6 +423,22 @@ class SupplementRunnerTests(unittest.TestCase):
         from benchmarks.v3_deepseek import read_prior_exposure
         self.assertEqual(read_prior_exposure([root/'core.db']).total_cny,
                          read_prior_exposure([root/'core.db',root/'supp.db']).total_cny)
+
+    def test_missing_or_tampered_core_preflight_stops_before_credentials(self):
+        from benchmarks.v3_matched_live import _write_checkpoint
+        for change in ('missing','tampered'):
+            with self.subTest(change=change):
+                root,identity=self.prepare()
+                core=json.loads((root/'core.json').read_text())
+                if change=='missing':
+                    core.pop('planning_preflight')
+                else:
+                    core['planning_preflight']['row']['worker_evidence_sha256']='0'*64
+                _write_checkpoint(root/'core.json',root/'core.db',core)
+                def forbidden(*args,**kwargs):
+                    raise AssertionError('invalid preflight reached provider boundary')
+                with self.assertRaises(ValueError):
+                    self.call(root,identity,forbidden,forbidden,forbidden)
 
     def test_safety_failure_checkpoints_once_and_drops_raw_relay_body(self):
         root,identity=self.prepare()

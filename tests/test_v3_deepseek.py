@@ -321,6 +321,7 @@ class DeepSeekRunnerTests(unittest.TestCase):
             with patch.object(live, '_source_snapshot', return_value='candidate'), \
                     patch('benchmarks.v3_protected_worker.verify_worker_protection', return_value={}), \
                     patch('benchmarks.v3_deepseek.run_smoke', return_value=True), \
+                    patch('benchmarks.v3_deepseek.run_planning_preflight', return_value={'status': 'passed'}), \
                     patch('openkyrozen.tools.sandbox.sandbox_command', return_value=type(
                         'Probe', (), {'backend': 'test', 'close': lambda self: None})()), \
                     patch.object(live, '_credential', return_value=('https://wrong.invalid', 'fake-key')), \
@@ -371,6 +372,18 @@ class DeepSeekRunnerTests(unittest.TestCase):
                 self.assertEqual(runner.call_args.kwargs['prior_hold_cny'], '2.042274')
                 self.assertEqual(runner.call_args.kwargs['limit_cny'], '15')
                 self.assertEqual(runner.call_args.kwargs['endpoint'], 'https://api.deepseek.com')
+            for status, code in (('planning_preflight_passed', 0), ('blocked_planning_preflight', 1)):
+                with patch('sys.argv', argv + ['--planning-preflight-only']), \
+                        patch('benchmarks.v3_matched_live._source_snapshot', return_value='configured-sha'), \
+                        patch('scripts.publish_v3_preview._verify_candidate_signature'), \
+                        patch('benchmarks.v3_matched_live.run', return_value={
+                            'status': status, 'summary': summary, 'budget': {}, 'planning_preflight': {}}) as runner, \
+                        patch('builtins.print'):
+                    with self.assertRaises(SystemExit) as result:
+                        deepseek.main()
+                    self.assertEqual(result.exception.code, code)
+                    self.assertTrue(runner.call_args.kwargs['planning_preflight_only'])
+                    self.assertFalse(summary['complete'])
             with patch('sys.argv', argv + ['--limit-cny', '15.01']), \
                     patch('benchmarks.v3_matched_live._source_snapshot', return_value='configured-sha'), \
                     patch('scripts.publish_v3_preview._verify_candidate_signature'), \
@@ -448,6 +461,446 @@ class DeepSeekRunnerTests(unittest.TestCase):
                                  budget_path=ledger_path, limit_cny='15', prior_hold_cny='0.5',
                                  pricing=DEEPSEEK_PRICING, relay_config=DEEPSEEK_RELAY_CONFIG)
                     credential.assert_not_called()
+
+
+class PlanningPreflightTests(unittest.TestCase):
+    def runner(self, root, worker):
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        from benchmarks import v3_matched_live as live
+        from benchmarks import v3_deepseek as deepseek
+        from tests.test_v3_matched_live import ActorRelayStub, prepare_candidate_apparatus
+        prepare_candidate_apparatus(root / 'source')
+        state = {}
+        class Relay(ActorRelayStub):
+            url, client_key = 'http://127.0.0.1:1/v1', 'fake-local'
+            provider_error, budget_blocked = None, False
+            def __init__(self, **options):
+                self.rows, self.budget, self.config = [], options['budget'], options['config']
+                self._upstream_lock = threading.Lock()
+                self.planning_preflight_closed = False
+                state['relay'] = self
+            def start(self):
+                pass
+            def close(self):
+                pass
+        def charge(relay, arm, prefix, count):
+            relay.label = (arm, 'candidate', -1)
+            for number in range(count):
+                row = {'attempt_id': prefix + str(number), 'arm': arm, 'fixture_id': 'candidate',
+                    'repeat': -1, 'model': 'deepseek-flash', 'max_output_tokens': 4096,
+                    'reserved_rmb': '2.032768'}
+                self.assertTrue(relay.budget.reserve(row['attempt_id'], input_token_bound=1_000_000,
+                    output_token_bound=4096, metadata=row))
+                usage = {'input_tokens': 100, 'output_tokens': 10, 'cache_read_tokens': 0, 'cache_write_tokens': 0}
+                relay.budget.settle(row['attempt_id'], usage)
+                relay.rows.append({**row, 'status': 'settled', 'usage': usage,
+                    'actual_rmb': str(relay.budget.cost(100, 10, 0, 0))})
+        def smoke(relay, candidate):
+            if getattr(relay, 'smoke_verified_candidate', None) != candidate:
+                charge(relay, 'smoke', 'smoke-', 2)
+                relay.smoke_verified_candidate = candidate
+                relay.smoke_verified_attempt_ids = ('smoke-0', 'smoke-1')
+            return True
+        def execute(command, **options):
+            self.assertEqual(state['relay'].label, ('planning_preflight', 'candidate', -1))
+            charge(state['relay'], 'planning_preflight', 'planning-', 4)
+            Path(command[command.index('--result') + 1]).write_text(json.dumps(worker))
+            return 0, ''
+        stack = ExitStack()
+        for mocked in (patch.object(live, '_source_snapshot', return_value='candidate'),
+            patch('benchmarks.v3_protected_worker.verify_worker_protection', return_value={}),
+            patch('openkyrozen.tools.sandbox.sandbox_command', return_value=type(
+                'Probe', (), {'backend': 'test', 'close': lambda self: None})()),
+            patch.object(live, '_credential', return_value=('http://invalid.example', 'fake-key')),
+            patch.object(live, 'ResponsesRelay', Relay), patch.object(live, '_extract_baseline'),
+            patch.object(live, '_run_worker', side_effect=execute),
+            patch.object(deepseek, 'run_smoke', side_effect=smoke)):
+            stack.enter_context(mocked)
+        options = dict(source=root / 'source', repo=root, output=root / 'core.json',
+            budget_path=root / 'budget.sqlite3', limit_cny='15', prior_hold_cny='6.815266400007',
+            pricing=deepseek.DEEPSEEK_PRICING, relay_config=deepseek.DEEPSEEK_RELAY_CONFIG)
+        return stack, options
+
+    def native_worker(self, candidate='candidate'):
+        """Real native tools and durable plan state; only the model is scripted."""
+        from contextlib import ExitStack, closing
+        from unittest.mock import patch
+        import os
+        import time
+        from benchmarks import v3_deepseek as deepseek
+        from benchmarks.v3_matched_live import _fixture_prompt
+        from benchmarks.prompt_worker import _normalize_tool_receipt, _task_record
+        from tests.test_v3_matched_live import valid_worker_result
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.providers import ProviderConfig
+        from openkyrozen.providers.base import LLMProvider
+        from openkyrozen.providers.models import (FinishReason, ModelResponse, ProviderCapabilities,
+            ToolCall, provider_continuation)
+        from openkyrozen.agent.events import runtime_event_as_legacy
+        from openkyrozen.tools import ToolAdapters
+        with ExitStack() as owners:
+            home = Path(owners.enter_context(tempfile.TemporaryDirectory()))
+            workspace = home / 'workspace'
+            workspace.mkdir()
+            owners.enter_context(patch.dict(os.environ, {'HOME': str(home),
+                'KYROZEN_WORKSPACE_ROOT': str(workspace), 'KYROZEN_DISABLE_VECTOR_INDEX': '1',
+                'KYROZEN_CLI_CAPABILITIES': 'read,write', 'KYROZEN_APPROVAL_MODE': 'never'}))
+            memory = owners.enter_context(closing(build_memory(home / 'state.sqlite3', index=None)))
+            app = build_application(surface='cli', memory=memory, tools=ToolAdapters(workspace))
+            owners.callback(app.close)
+            runtime = app.runtime
+            runtime._set_workspace_root(workspace)
+            runtime.set_interaction_mode('agent')
+            (workspace / 'proof.txt').write_text(deepseek.PLANNING_PREFLIGHT_CONTENT)
+            class Provider(LLMProvider):
+                calls = 0
+                def get_capabilities(self, model=None):
+                    return ProviderCapabilities(native_tools=True)
+                def chat(self, *_args, **_kwargs):
+                    raise AssertionError('legacy model API used')
+                def chat_response(self, messages, model=None, *, tools=None):
+                    self.calls += 1
+                    if self.calls == 1:
+                        args = {'complexity': 'simple', 'expected_revision': 0, 'operations': [
+                            {'op': 'add', 'ref': 'proof', 'task': deepseek.planning_preflight_task()},
+                            {'op': 'start', 'task': 'proof'}]}
+                    elif self.calls == 3:
+                        plan = runtime.tasks.working_plan
+                        args = {'plan_id': plan.id, 'expected_revision': plan.revision,
+                            'operations': [{'op': 'suggest_complete', 'task': plan.task_ids[0]}]}
+                    elif self.calls == 2:
+                        if runtime.tasks.tasks[0]['status'] != 'running':
+                            raise AssertionError('unverified task completed before reading')
+                        return ModelResponse(tool_calls=(ToolCall('read', 'read_file', {'path': 'proof.txt'}),),
+                            finish_reason=FinishReason.TOOL_REQUEST,
+                            continuation=provider_continuation(self, model, 'fixture', {'step': self.calls}))
+                    else:
+                        return ModelResponse(text=deepseek.PLANNING_PREFLIGHT_CONTENT.strip(), finish_reason=FinishReason.FINAL)
+                    return ModelResponse(tool_calls=(ToolCall('plan-' + str(self.calls), 'update_plan', args),),
+                        finish_reason=FinishReason.TOOL_REQUEST,
+                        continuation=provider_continuation(self, model, 'fixture', {'step': self.calls}))
+            provider = Provider(ProviderConfig(provider='custom', model_simple='fixture'))
+            runtime.llm_provider = runtime._default_turn.provider = provider
+            def prepare(turn):
+                turn.interaction_mode, turn.complexity = 'agent', 'complex'
+                turn.learning_run, turn.turn_start, turn.learned_context = {'run_id': 'fixture'}, time.time(), ''
+            events = []
+            from contextlib import redirect_stdout
+            import io
+            with redirect_stdout(io.StringIO()), patch.object(runtime, '_prepare_turn', side_effect=prepare), \
+                    patch.object(runtime, '_finish_learning_run', side_effect=lambda _run, _receipts, _task, answer, *_args: answer), \
+                    patch.object(runtime, '_schedule_post_turn_learning'):
+                prompt = _fixture_prompt(deepseek.planning_preflight_fixture(candidate))
+                answer = runtime.chat(runtime.current_session, prompt,
+                                      on_runtime_event=events.append)
+            legacy = [runtime_event_as_legacy(event) or {} for event in events]
+            receipts = [_normalize_tool_receipt(event['tool_receipt'], workspace)
+                        for event in legacy if event.get('event') == 'tool_receipt']
+            self.assertEqual(provider.calls, 4, answer)
+            return valid_worker_result(answer=answer, tool_receipts=receipts, events=legacy,
+                conversation_records=[{'turn': 0, 'prompt_sha256': __import__('hashlib').sha256(prompt.encode()).hexdigest(),
+                                       'completed': True}],
+                tasks=[task['status'] for task in runtime.tasks.tasks],
+                task_records=[_task_record(task) for task in runtime.tasks.tasks],
+                working_plan=runtime.tasks.working_plan_snapshot())
+
+    def test_real_native_explicit_start_typed_read_then_confirmation_completes(self):
+        from benchmarks.v3_deepseek import planning_preflight_semantics
+        worker = self.native_worker()
+        self.assertTrue(planning_preflight_semantics(worker), worker)
+        self.assertEqual(worker['working_plan']['status'], 'completed')
+
+    def test_status_prose_unbound_wrong_content_or_any_effect_cannot_pass(self):
+        from copy import deepcopy
+        from benchmarks.v3_deepseek import planning_preflight_semantics
+        worker = self.native_worker()
+        changes = ('missing_start', 'unbound', 'wrong_content', 'no_suggestion', 'write_then_restore', 'empty_plan',
+            'predicate', 'task_status', 'dependencies', 'legacy', 'confirmation_status', 'confirmation_scope',
+            'confirmation_turn', 'missing_proof', 'malformed_proof')
+        for change in changes:
+            bad = deepcopy(worker)
+            read = next(item['evidence'] for item in bad['tool_receipts'] if item['action'] == 'read_file')
+            if change == 'unbound':
+                read['task_id'] = None
+            elif change == 'wrong_content':
+                read['result_data']['content'] = 'wrong'
+            elif change == 'missing_start':
+                arguments = json.loads(bad['tool_receipts'][0]['evidence']['args'])
+                arguments['operations'].pop()
+                bad['tool_receipts'][0]['evidence']['args'] = json.dumps(arguments)
+            elif change == 'no_suggestion':
+                bad['tool_receipts'].pop(2)
+            elif change == 'empty_plan':
+                bad['working_plan']['tasks'] = []
+            elif change == 'predicate':
+                bad['task_records'][0]['acceptance'][0]['expect']['equals'] = 'wrong'
+            elif change == 'task_status':
+                bad['task_records'][0]['status'] = 'failed'
+            elif change == 'dependencies':
+                bad['task_records'][0]['dependencies'] = ['foreign']
+            elif change == 'legacy':
+                read['call_id_source'] = 'legacy'
+            elif change == 'confirmation_status':
+                bad['tool_receipts'][2]['evidence']['verification']['status'] = 'not_applicable'
+            elif change == 'confirmation_scope':
+                bad['tool_receipts'][2]['evidence']['verification']['observed']['plan_id'] = 'foreign'
+            elif change == 'confirmation_turn':
+                bad['tool_receipts'][2]['evidence']['verification']['observed']['turn_id'] = 'foreign'
+            elif change == 'missing_proof':
+                bad['task_records'][0]['evidence'] = None
+            elif change == 'malformed_proof':
+                bad['task_records'][0]['checkpoint'] = 'not proof'
+            else:
+                bad['tool_receipts'].append({'action': 'write_file', 'evidence': {'side_effects': 'filesystem'}})
+            with self.subTest(change=change):
+                self.assertFalse(planning_preflight_semantics(bad))
+
+    def test_preflight_only_same_ledger_then_resume_does_not_repeat_or_add_formal_rows(self):
+        from benchmarks import v3_matched_live as live
+        from unittest.mock import patch
+        worker = self.native_worker()
+        with tempfile.TemporaryDirectory() as directory:
+            stack, options = self.runner(Path(directory), worker)
+            with stack:
+                report = live.run(**options, planning_preflight_only=True)
+                self.assertEqual(report['status'], 'planning_preflight_passed')
+                self.assertEqual(report['rows'], [])
+                self.assertFalse(report['summary']['complete'])
+                self.assertEqual(report['planning_preflight']['status'], 'passed')
+                self.assertEqual(len(report['smoke_attempt_ids']), 2)
+                self.assertEqual(len(report['planning_preflight']['attempt_ids']), 4)
+                self.assertEqual(len(report['calls']), 6)
+                with patch.object(live, '_execute_cell', side_effect=RuntimeError('formal-start')) as execute:
+                    with self.assertRaisesRegex(RuntimeError, 'formal-start'):
+                        live.run(**options)
+                    self.assertIn(execute.call_args.kwargs['arm'], ('v2', 'v3'))
+                db = sqlite3.connect(options['budget_path'])
+                try:
+                    self.assertEqual(db.execute("SELECT COUNT(*) FROM attempts WHERE id!='prior-campaign-reservations'").fetchone()[0], 6)
+                finally:
+                    db.close()
+
+    def test_resume_rejects_preflight_lies_missing_evidence_or_extra_calls_before_key(self):
+        from copy import deepcopy
+        from benchmarks import v3_matched_live as live
+        from unittest.mock import patch
+        worker = self.native_worker()
+        with tempfile.TemporaryDirectory() as directory:
+            stack, options = self.runner(Path(directory), worker)
+            with stack:
+                original = live.run(**options, planning_preflight_only=True)
+                for change in ('failed', 'interrupted', 'fixture', 'extra-id', 'missing-evidence'):
+                    report = deepcopy(original)
+                    phase = report['planning_preflight']
+                    if change in {'failed', 'interrupted'}:
+                        phase['status'] = change
+                    elif change == 'fixture':
+                        phase['fixture_sha256'] = '0' * 64
+                    elif change == 'extra-id':
+                        phase['attempt_ids'].append('forged')
+                    else:
+                        phase['row']['worker_evidence_sha256'] = '0' * 64
+                    live._write_checkpoint(options['output'], options['budget_path'], report)
+                    with self.subTest(change=change), patch.object(live, '_credential') as credential:
+                        with self.assertRaises(ValueError):
+                            live.run(**options)
+                        credential.assert_not_called()
+
+    def test_preflight_requires_complete_usage_actual_charge_and_exact_row_totals(self):
+        from copy import deepcopy
+        from benchmarks import v3_matched_live as live
+        from benchmarks.v3_deepseek import validate_planning_preflight
+        worker = self.native_worker()
+        with tempfile.TemporaryDirectory() as directory:
+            stack, options = self.runner(Path(directory), worker)
+            with stack:
+                report = live.run(**options, planning_preflight_only=True)
+                for change in ('empty', 'bool', 'negative', 'cache', 'actual', 'tokens', 'attempts'):
+                    record, calls = deepcopy(report['planning_preflight']), deepcopy(report['calls'])
+                    call = next(item for item in calls if item['arm'] == 'planning_preflight')
+                    if change == 'empty':
+                        call['usage'] = {}
+                    elif change == 'bool':
+                        call['usage']['input_tokens'] = True
+                    elif change == 'negative':
+                        call['usage']['output_tokens'] = -1
+                    elif change == 'cache':
+                        call['usage']['cache_read_tokens'] = 101
+                    elif change == 'actual':
+                        call['actual_rmb'] = '0'
+                    elif change == 'tokens':
+                        record['row']['input_tokens'] += 1
+                    else:
+                        record['row']['attempts'] += 1
+                    with self.subTest(change=change), self.assertRaises(ValueError):
+                        validate_planning_preflight(options['output'], record, calls, 'candidate', live.apparatus_identity())
+
+    def test_failed_or_interrupted_preflight_stops_and_preserves_uncheckpointed_hold(self):
+        from copy import deepcopy
+        from benchmarks import v3_matched_live as live
+        from benchmarks.v3_deepseek import DEEPSEEK_PRICING
+        from unittest.mock import patch
+        worker = self.native_worker()
+        for interrupted in (False, True):
+            with self.subTest(interrupted=interrupted), tempfile.TemporaryDirectory() as directory:
+                bad = deepcopy(worker)
+                bad['task_records'][0]['acceptance'] = None
+                stack, options = self.runner(Path(directory), bad)
+                with stack:
+                    if interrupted:
+                        def stop(**_options):
+                            ledger = v3_matched.BudgetLedger(options['budget_path'], limit_rmb='15',
+                                prior_hold_rmb=options['prior_hold_cny'], pricing=DEEPSEEK_PRICING)
+                            ledger.reserve('inflight', input_token_bound=1_000_000, output_token_bound=4096,
+                                metadata={'arm': 'planning_preflight', 'fixture_id': 'candidate', 'repeat': -1,
+                                          'model': 'deepseek-flash', 'max_output_tokens': 4096,
+                                          'reserved_rmb': '2.032768'})
+                            raise KeyboardInterrupt()
+                        with patch.object(live, '_execute_cell', side_effect=stop):
+                            with self.assertRaises(KeyboardInterrupt):
+                                live.run(**options)
+                    else:
+                        report = live.run(**options)
+                        self.assertEqual(report['status'], 'blocked_planning_preflight')
+                        self.assertEqual(report['rows'], [])
+                        self.assertEqual(report['planning_preflight']['status'], 'failed')
+                    with patch.object(live, '_credential') as credential:
+                        with self.assertRaises(ValueError):
+                            live.run(**options)
+                        credential.assert_not_called()
+                    if interrupted:
+                        db = sqlite3.connect(options['budget_path'])
+                        try:
+                            self.assertEqual(db.execute('SELECT status,reserved_picormb,actual_picormb,usage_json '
+                                'FROM attempts WHERE id=\'inflight\'').fetchone(),
+                                ('unknown', 2032768000000, None, None))
+                        finally:
+                            db.close()
+
+    def test_uncheckpointed_extra_preflight_journal_call_blocks_resume_before_key(self):
+        from benchmarks import v3_matched_live as live
+        from benchmarks.v3_deepseek import DEEPSEEK_PRICING
+        from unittest.mock import patch
+        worker = self.native_worker()
+        with tempfile.TemporaryDirectory() as directory:
+            stack, options = self.runner(Path(directory), worker)
+            with stack:
+                live.run(**options, planning_preflight_only=True)
+                ledger = v3_matched.BudgetLedger(options['budget_path'], limit_rmb='15',
+                    prior_hold_rmb=options['prior_hold_cny'], pricing=DEEPSEEK_PRICING)
+                ledger.reserve('extra', input_token_bound=1_000_000, output_token_bound=4096,
+                    metadata={'arm': 'planning_preflight', 'fixture_id': 'candidate', 'repeat': -1,
+                              'model': 'deepseek-flash', 'max_output_tokens': 4096, 'reserved_rmb': '2.032768'})
+                ledger.settle('extra', {'input_tokens': 100, 'output_tokens': 10,
+                                       'cache_read_tokens': 0, 'cache_write_tokens': 0})
+                with patch.object(live, '_credential') as credential:
+                    with self.assertRaisesRegex(ValueError, 'checkpoint or journal'):
+                        live.run(**options)
+                    credential.assert_not_called()
+
+    def test_phase_completion_drains_already_admitted_request_before_success(self):
+        from copy import deepcopy
+        from unittest.mock import patch
+        from benchmarks import v3_deepseek as deepseek, v3_matched_live as live
+        from benchmarks.v3_responses_relay import ResponsesRelay
+        worker = self.native_worker()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stack, options = self.runner(root, worker)
+            with stack:
+                report = live.run(**options, planning_preflight_only=True)
+            budget = v3_matched.BudgetLedger(root / 'admitted.sqlite3', limit_rmb='15', pricing=deepseek.DEEPSEEK_PRICING)
+            for call in report['calls']:
+                self.assertTrue(budget.reserve(call['attempt_id'], input_token_bound=1_000_000,
+                    output_token_bound=4096, metadata=call))
+                budget.settle(call['attempt_id'], call['usage'])
+            received = []
+            class Upstream(BaseHTTPRequestHandler):
+                def log_message(self, *_args):
+                    pass
+                def do_POST(self):
+                    received.append(self.rfile.read(int(self.headers['Content-Length'])))
+                    body = json.dumps({'id': 'local', 'output': [], 'usage': {
+                        'input_tokens': 12, 'output_tokens': 4}}).encode()
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+            upstream = ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
+            server_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+            server_thread.start()
+            relay = ResponsesRelay(endpoint=f'http://127.0.0.1:{upstream.server_port}', api_key='LOCAL-FAKE',
+                budget=budget, config=deepseek.DEEPSEEK_RELAY_CONFIG)
+            relay.rows = deepcopy(report['calls'])
+            relay.label = ('planning_preflight', 'candidate', -1)
+            actor = relay.issue_actor_config('admitted')
+            entered, release, close_waiting, phase_done, progressed, revoked = (threading.Event() for _ in range(6))
+            lock = relay._upstream_lock
+            class ObservedLock:
+                def __enter__(self):
+                    if threading.current_thread().name == 'phase-finisher':
+                        close_waiting.set()
+                        progressed.set()
+                    lock.acquire()
+                def __exit__(self, *_args):
+                    lock.release()
+            relay._upstream_lock = ObservedLock()
+            relay.start()
+            outcomes = {}
+            original_reserve = budget.reserve
+            def paused_reserve(*args, **kwargs):
+                entered.set()
+                if not release.wait(3):
+                    raise AssertionError('test did not release admitted reservation')
+                return original_reserve(*args, **kwargs)
+            def post():
+                outcomes['http'] = requests.post(relay.url + '/responses', json={'input': 'local'},
+                    headers={'Authorization': 'Bearer ' + actor['api_key']}, timeout=5).status_code
+            request_thread = threading.Thread(target=post)
+            def execute(**_kwargs):
+                request_thread.start()
+                if not entered.wait(2):
+                    raise AssertionError('request did not enter reserve after second authentication')
+                relay.revoke_actor('admitted')
+                revoked.set()
+                return deepcopy(report['planning_preflight']['row'])
+            def finish():
+                try:
+                    outcomes['phase'] = deepseek.run_planning_preflight(candidate='candidate', relay=relay,
+                        output=options['output'], identity=live.apparatus_identity())
+                finally:
+                    phase_done.set()
+                    progressed.set()
+            phase_thread = threading.Thread(target=finish, name='phase-finisher')
+            try:
+                with patch.object(budget, 'reserve', side_effect=paused_reserve), \
+                        patch.object(live, '_execute_cell', side_effect=execute):
+                    phase_thread.start()
+                    self.assertTrue(progressed.wait(2))
+                    self.assertTrue(revoked.is_set(), 'actor revocation blocked on upstream I/O')
+                    self.assertTrue(close_waiting.is_set(), 'phase returned without draining the admitted request')
+                    self.assertFalse(phase_done.is_set())
+                    release.set()
+                    phase_thread.join(4)
+                    request_thread.join(4)
+                self.assertFalse(phase_thread.is_alive())
+                self.assertFalse(request_thread.is_alive())
+                self.assertEqual(outcomes['http'], 200)
+                self.assertEqual(outcomes['phase']['status'], 'failed')
+                self.assertEqual(len(outcomes['phase']['attempt_ids']), 5)
+                self.assertEqual(len(received), 1)
+                self.assertEqual(sum(call['arm'] == 'planning_preflight' for call in budget.campaign_calls()), 5)
+                self.assertTrue(relay.planning_preflight_closed)
+            finally:
+                release.set()
+                phase_thread.join(4)
+                if request_thread.ident is not None:
+                    request_thread.join(4)
+                relay.close()
+                upstream.shutdown()
+                upstream.server_close()
+                server_thread.join()
 
 
 class DeepSeekSmokeTests(unittest.TestCase):

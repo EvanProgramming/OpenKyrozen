@@ -109,6 +109,77 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.assertEqual(self.relay.rows[0]["usage"]["cache_read_tokens"], 3)
         self.assertEqual(self.relay.rows[0]["usage"]["cache_write_tokens"], 2)
 
+    def test_planning_preflight_stops_seventh_request_before_reservation_or_upstream(self):
+        self.relay.planning_preflight_label = ("planning_preflight", "candidate", -1)
+        self.relay.label = self.relay.planning_preflight_label
+        for _ in range(6):
+            response = requests.post(self.relay.url + "/responses", json={"input": "fixture"},
+                headers={"Authorization": "Bearer " + self.relay.client_key}, timeout=3)
+            self.assertEqual(response.status_code, 200)
+        spent = self.budget.spent_rmb
+        response = requests.post(self.relay.url + "/responses", json={"input": "fixture"},
+            headers={"Authorization": "Bearer " + self.relay.client_key}, timeout=3)
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(len(self.received), 6)
+        self.assertEqual(len(self.relay.rows), 6)
+        self.assertEqual(self.budget.spent_rmb, spent)
+        self.assertFalse(self.relay.budget_blocked)
+        self.assertEqual(self.relay.provider_error, "planning_preflight_request_limit")
+
+    def test_closed_preflight_rejects_old_label_below_limit_before_reservation(self):
+        from benchmarks import v3_deepseek as deepseek
+        label = ("planning_preflight", "candidate", -1)
+        self.relay.label = self.relay.planning_preflight_label = label
+        for _ in range(1):
+            response = requests.post(self.relay.url + '/responses', json={'input': 'fixture'},
+                headers={'Authorization': 'Bearer ' + self.relay.client_key}, timeout=3)
+            self.assertEqual(response.status_code, 200)
+        with patch('benchmarks.v3_matched_live._execute_cell', return_value={}):
+            deepseek.run_planning_preflight(relay=self.relay, candidate='candidate',
+                output=Path(self.tempdir.name) / 'report.json', identity={})
+        spent = self.budget.spent_rmb
+        response = requests.post(self.relay.url + '/responses', json={'input': 'after-close'},
+            headers={'Authorization': 'Bearer ' + self.relay.client_key}, timeout=3)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(len(self.received), 1)
+        self.assertEqual(len(self.relay.rows), 1)
+        self.assertEqual(self.budget.spent_rmb, spent)
+        self.assertFalse(self.relay.budget_blocked)
+        self.assertEqual(self.relay.planning_preflight_label, label)
+
+    def test_queued_request_rechecks_parent_label_and_actor_revocation_before_spending(self):
+        for revoke in (False, True):
+            self.relay.label = ('planning_preflight', 'candidate', -1)
+            key = self.relay.issue_actor_config('queued')['api_key'] if revoke else self.relay.client_key
+            authorized = threading.Event()
+            original = self.relay._authorize_client
+            def authorize(header):
+                result = original(header)
+                authorized.set()
+                return result
+            responses = []
+            self.relay._upstream_lock.acquire()
+            thread = threading.Thread(target=lambda: responses.append(requests.post(
+                self.relay.url + '/responses', json={'input': 'queued'},
+                headers={'Authorization': 'Bearer ' + key}, timeout=3)))
+            try:
+                with patch.object(self.relay, '_authorize_client', side_effect=authorize):
+                    thread.start()
+                    self.assertTrue(authorized.wait(2))
+                    if revoke:
+                        self.relay.revoke_actor('queued')
+                    else:
+                        self.relay.label = ('v3', 'formal-fixture', 0)
+            finally:
+                self.relay._upstream_lock.release()
+                thread.join(4)
+            self.assertFalse(thread.is_alive())
+            with self.subTest(revoke=revoke):
+                self.assertEqual(responses[0].status_code, 401)
+                self.assertEqual(self.received, [])
+                self.assertEqual(self.relay.rows, [])
+                self.assertEqual(self.budget.spent_rmb, 0)
+
     def test_rejects_unauthenticated_local_requests_without_spending(self):
         response = requests.post(self.relay.url + "/responses", json={"input": []}, timeout=3)
 

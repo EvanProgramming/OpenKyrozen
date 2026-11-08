@@ -57,9 +57,21 @@ def _request_question(self, arguments: dict):
 
 @legacy_text_api
 def _update_plan(self, arguments: dict):
-    """Edit a revision-checked Working Plan. Use start with a stable task ID before
+    """Edit a revision-checked Working Plan. To create one, omit plan_id, set
+    expected_revision=0 and use operations=[{op:add,ref:inspect,task:{description,
+    acceptance}}]. In the complexity/tasks form omit id for every new task;
+    task.id identifies an existing runtime task, never a new client-chosen ID.
+    Do not mix tasks with operations, plan_id, expected_revision or reason.
+    Use returned plan_id/revision for edits and add.ref for same-batch references.
+    Read acceptance can use criterion/verification objects: verification names
+    read_file, exact arguments and expect={equals:content} or {contains:text}.
+    All predicates must match actual complete content after explicit start;
+    prose acceptance never becomes verified merely because a read succeeded.
+    Use start with a stable returned task ID before
     executing native task work, then suggest_complete to check existing verified
-    evidence; a completion suggestion never supplies evidence. Split of an
+    evidence; a completion suggestion never supplies evidence. A pure exact-revision
+    suggestion for verified tasks in the current completed plan is a read-only
+    confirmation; historical plans and other terminal edits remain rejected. Split of an
     approved objective retains its immutable acceptance anchor and adds strategy
     children. Add anchor=<approved task ID> for in-scope investigation/verification.
     """
@@ -81,6 +93,7 @@ def _update_plan(self, arguments: dict):
         if denial:
             raise ValueError(denial)
 
+    commit_attempts = self.tasks._plan_commit_attempts
     try:
         if "operations" in arguments:
             result = self.tasks.update_plan(
@@ -89,12 +102,30 @@ def _update_plan(self, arguments: dict):
                 reason=arguments.get("reason"),
                 strategy_validator=validate_strategy,
             )
-            return tool_success("Working Plan updated.", data=result)
+            pending = [operation["task"] for operation in arguments["operations"]
+                       if operation.get("op") == "suggest_complete"
+                       and any(task["id"] == operation["task"] and task["status"] not in {"succeeded", "cancelled"}
+                               for task in result["tasks"])]
+            confirmation = result.get("confirmation") is True
+            text = ("Working Plan already completed; verified tasks confirmed without changes."
+                    if confirmation else "Working Plan updated.")
+            if pending:
+                text += (" Completion remains unverified; inspect the returned task acceptance and execution contract. "
+                         "A successful tool call does not verify a different task contract; executed task changes require cancellation/replacement.")
+            return tool_success(text, data=result,
+                                metadata={"working_plan_confirmation": True} if confirmation else None)
         plan = self.tasks.update_plan(complexity=arguments["complexity"], tasks=arguments["tasks"])
     except (KeyError, TypeError, ValueError) as exc:
-        return tool_failure("invalid_arguments", f"Error: invalid Working Plan: {exc}")
+        ordinary = not self._interaction_controller.state().get("executing_plan") and not any(
+            (task.get("checkpoint") or {}).get("strategic_plan") for task in self.tasks.tasks)
+        return tool_failure("invalid_arguments", (
+            f"Error: invalid Working Plan: {str(exc)[:300]}. Omit task.id for new tasks; use add.ref for local references. "
+            "Use the runtime plan_id/revision below for edits; if no plan exists, omit plan_id and use expected_revision=0."
+        ), retriable=True, data={"working_plan": self.tasks.working_plan_snapshot()},
+            metadata={"plan_validation_no_effect": self.tasks._plan_commit_attempts == commit_attempts and ordinary})
     return tool_success(
         "Working Plan updated.",
         data={"plan_id": plan.id, "complexity": plan.complexity,
-              "status": plan.status, "task_ids": list(plan.task_ids)},
+              "status": plan.status, "revision": plan.revision,
+              "task_ids": list(plan.task_ids), "tasks": self.tasks.working_plan_snapshot()["tasks"]},
     )

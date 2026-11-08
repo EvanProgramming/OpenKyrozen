@@ -227,9 +227,11 @@ class EventStore:
             plan_id, status, user_id=user_id, workspace_id=workspace_id, session_id=session_id, **expected,
         )
 
-    def list_working_plan_tasks(self, plan_id, *, user_id, workspace_id, session_id):
+    def list_working_plan_tasks(self, plan_id, *, user_id, workspace_id, session_id,
+                                current_completed_revision=None):
         return self.tasks.list_working_plan_tasks(
             plan_id, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+            current_completed_revision=current_completed_revision,
         )
 
     def write_working_plan(self, plan, tasks, *, user_id, workspace_id, session_id):

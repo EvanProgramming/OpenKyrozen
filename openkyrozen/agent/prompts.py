@@ -307,6 +307,13 @@ def _refresh_working_plan_context(self, messages: list) -> None:
     plan = getattr(manager, "working_plan", None)
     snapshot = getattr(manager, "working_plan_snapshot", None)
     if plan is None or plan.status != "active" or not callable(snapshot):
+        if plan is None and callable(snapshot) and "update_plan" in self._permitted_tool_names():
+            messages.insert(1 if messages else 0, {"role": "system", "content": marker + (
+                "No Working Plan exists. Create one with update_plan: omit plan_id, use expected_revision=0 "
+                "and operations with add/ref/task; or use complexity/tasks and omit every new task.id. "
+                "Runtime returns durable IDs. Start a returned task explicitly before its work. "
+                "Prose acceptance and successful reads alone do not certify completion.\n"
+            ) + json.dumps({"plan_id": None, "revision": 0, "tasks": []}, sort_keys=True)})
         update_projection = getattr(self, "_update_context_history_projection", None)
         if callable(update_projection):
             update_projection(messages, previous)
@@ -318,6 +325,8 @@ def _refresh_working_plan_context(self, messages: list) -> None:
     state["tasks"] = [{
         **item, "dependencies": tasks_by_id.get(item["id"], {}).get("dependencies", []),
         "acceptance": tasks_by_id.get(item["id"], {}).get("acceptance", []),
+        "execution": {key: (tasks_by_id.get(item["id"], {}).get("checkpoint") or {}).get(key)
+                      for key in ("action", "args")},
     } for item in state["tasks"]]
     full = json.dumps(state, ensure_ascii=False, sort_keys=True)
     if len(full) > 12000:

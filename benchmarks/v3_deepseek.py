@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 from contextlib import closing
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
 import hashlib
 from pathlib import Path
@@ -154,6 +154,257 @@ def create_budget(path: Path, *, prior_ledgers: list[Path] | tuple[Path, ...],
                         pricing=DEEPSEEK_PRICING, prior_hold_records=exposure.records)
 
 
+PLANNING_PREFLIGHT_CONTENT = "planning-preflight-ok\n"
+
+
+def planning_preflight_task() -> dict:
+    return {"description": "Read and verify proof.txt", "acceptance": [{
+        "criterion": "The complete proof file has the expected marker",
+        "verification": {"action": "read_file", "arguments": {"path": "proof.txt"},
+                         "expect": {"equals": PLANNING_PREFLIGHT_CONTENT}},
+    }]}
+
+
+def planning_preflight_fixture(candidate: str) -> dict:
+    creation = {"complexity": "simple", "expected_revision": 0, "reason": "Verify the planning preflight",
+        "operations": [{"op": "add", "ref": "proof", "task": planning_preflight_task()},
+                       {"op": "start", "task": "proof"}]}
+    return {"fixture_id": candidate, "category": "planning_preflight",
+        "prompt": "This is a planning preflight, separate from the formal evaluation. Do not write files or run commands.\n"
+        "1. Create and explicitly start the Working Plan with update_plan using this object: "
+        + json.dumps(creation, ensure_ascii=False) + "\n"
+        "2. Call read_file with {\"path\":\"proof.txt\"}. The explicitly selected task owns this native receipt; "
+        "do not add unsupported task_id fields to read_file. The complete content must satisfy the typed equals predicate. "
+        "The verified receipt completes the task.\n"
+        "3. Confirm using update_plan with the returned actual plan_id, its unchanged current expected_revision, "
+        "and operations [{\"op\":\"suggest_complete\",\"task\":\"<returned actual task ID>\"}]. "
+        "After the actual completed plan is confirmed, return the file marker as your final answer.",
+        "files": {"proof.txt": PLANNING_PREFLIGHT_CONTENT},
+        "verifier": {"kind": "answer_contains", "all": [PLANNING_PREFLIGHT_CONTENT.strip()]},
+        "plan_tasks": [], "plan_scenario": None, "turns": None,
+        "capabilities": ["read", "write"], "context_window_tokens": 1_000_000,
+        "output_reserve_tokens": 4096}
+
+
+def _preflight_arguments(receipt: dict) -> dict:
+    arguments = receipt.get("arguments", receipt.get("args"))
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except ValueError:
+            return {}
+    return arguments if isinstance(arguments, dict) else {}
+
+
+def planning_preflight_semantics(worker: dict) -> bool:
+    """Require actual ordered native receipts and exact durable task identity."""
+    if (not isinstance(worker, dict) or not isinstance(worker.get("answer"), str)
+            or PLANNING_PREFLIGHT_CONTENT.strip() not in worker["answer"]
+            or worker.get("protocol_recovery") != 0 or worker.get("duplicate_calls") != 0
+            or worker.get("tasks") != ["succeeded"]):
+        return False
+    plan = worker.get("working_plan")
+    if not isinstance(plan, dict):
+        return False
+    tasks = plan.get("tasks", [])
+    if (plan.get("status") != "completed" or not isinstance(tasks, list) or len(tasks) != 1
+            or not isinstance(tasks[0], dict) or tasks[0].get("status") != "succeeded"):
+        return False
+    task_id, plan_id = tasks[0].get("id"), plan.get("plan_id")
+    if not task_id or not plan_id:
+        return False
+    records = worker.get("task_records") or []
+    if (not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], dict)
+            or records[0].get("id") != task_id or records[0].get("status") != "succeeded"
+            or records[0].get("description") != planning_preflight_task()["description"]
+            or records[0].get("dependencies") != [] or not isinstance(records[0].get("checkpoint"), dict)
+            or not isinstance(records[0].get("evidence"), list)
+            or any(not isinstance(item, dict) for item in records[0]["evidence"])):
+        return False
+    criterion = planning_preflight_task()["acceptance"][0]
+    criterion_id = "read-ac-" + hashlib.sha256(json.dumps(criterion, sort_keys=True,
+        ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()[:12]
+    expected = {"id": criterion_id, "criterion": criterion["criterion"], "action": "read_file",
+        "args": '{"path":"proof.txt"}', "expect": {"equals": PLANNING_PREFLIGHT_CONTENT}}
+    if (records[0].get("acceptance") != [expected]
+            or (records[0].get("checkpoint") or {}).get("native_execution_selected") is not True):
+        return False
+    allowed = {"update_plan", "read_file", "get_file_hash", "list_dir", "list_tree",
+               "find_files", "search_files", "discover_tools"}
+    observed = worker.get("tool_receipts")
+    if not isinstance(observed, list) or any(not isinstance(item, dict) for item in observed):
+        return False
+    receipts = [item.get("evidence") for item in observed]
+    if not receipts or any(not isinstance(receipt, dict) or receipt.get("action") not in allowed
+            or receipt.get("call_id_source") != "native" or receipt.get("authorized") is not True
+            or receipt.get("success") is not True
+            or not isinstance(receipt.get("verification"), dict)
+            or receipt.get("side_effects") not in {"internal", "read_only", "read", "none"}
+            for receipt in receipts):
+        return False
+    for field in ("call_id", "receipt_id"):
+        values = [receipt.get(field) for receipt in receipts]
+        if any(not isinstance(value, str) or not value for value in values) or len(set(values)) != len(values):
+            return False
+    stage = 0
+    scope = None
+    turn_id = None
+    for receipt in receipts:
+        arguments = _preflight_arguments(receipt)
+        result = receipt.get("result_data") or {}
+        if not isinstance(result, dict):
+            return False
+        current_scope = tuple(receipt.get(field) for field in ("user_id", "workspace_id", "session_id"))
+        if not all(isinstance(value, str) and value for value in current_scope):
+            return False
+        scope = scope or current_scope
+        if current_scope != scope:
+            return False
+        if receipt["action"] == "update_plan":
+            operations = arguments.get("operations")
+            verification = receipt["verification"]
+            observed = verification.get("observed")
+            if (verification.get("status") != "verified" or not isinstance(observed, dict)
+                    or observed.get("plan_id") != plan_id or observed.get("revision") != 1
+                    or not isinstance(observed.get("turn_id"), str) or not observed["turn_id"]):
+                return False
+            turn_id = turn_id or observed["turn_id"]
+            if observed["turn_id"] != turn_id:
+                return False
+            if (stage == 0 and isinstance(operations, list) and len(operations) == 2
+                    and isinstance(operations[0], dict) and operations[0].get("op") == "add"
+                    and operations[0].get("ref") == "proof"
+                    and operations[1] == {"op": "start", "task": "proof"}):
+                if (arguments.get("expected_revision") != 0 or result.get("plan_id") != plan_id
+                        or result.get("task_ids") != [task_id] or result.get("status") != "active"
+                        or verification.get("method") != "working_plan_commit"):
+                    return False
+                stage = 1
+            elif stage == 2 and operations == [{"op": "suggest_complete", "task": task_id}]:
+                if (arguments.get("plan_id") != plan_id or arguments.get("expected_revision") != 1
+                        or result.get("plan_id") != plan_id or result.get("status") != "completed"
+                        or result.get("revision") != 1 or plan.get("revision") != 1
+                        or (receipt.get("verification") or {}).get("method") != "working_plan_confirmation"):
+                    return False
+                stage = 3
+            else:
+                return False
+        elif receipt["action"] == "read_file":
+            if (stage != 1 or arguments != {"path": "proof.txt"} or receipt.get("task_id") != task_id
+                    or receipt.get("plan_id") != plan_id or result.get("content") != PLANNING_PREFLIGHT_CONTENT
+                    or result.get("sha256") != hashlib.sha256(PLANNING_PREFLIGHT_CONTENT.encode()).hexdigest()
+                    or result.get("truncated") is not False or not receipt.get("acceptance")
+                    or (receipt.get("verification") or {}).get("status") not in {"verified", "not_applicable"}):
+                return False
+            if not any(item.get("receipt_id") == receipt.get("receipt_id") and item.get("success") is True
+                       and item.get("task_id") == task_id
+                       and item.get("acceptance_ids") == [criterion_id]
+                       for item in records[0].get("evidence", [])):
+                return False
+            stage = 2
+    events = worker.get("events")
+    if not isinstance(events, list):
+        return False
+    snapshots = [event.get("working_plan") for event in events if isinstance(event, dict)]
+    return stage == 3 and any(isinstance(snapshot, dict) and snapshot.get("plan_id") == plan_id
+        and snapshot.get("revision") == 1 and snapshot.get("status") == "active"
+        and isinstance(snapshot.get("tasks"), list)
+        and any(task.get("id") == task_id and task.get("status") == "running"
+                for task in snapshot["tasks"] if isinstance(task, dict)) for snapshot in snapshots)
+
+
+def _planning_preflight_identity(candidate: str) -> str:
+    return hashlib.sha256(json.dumps(planning_preflight_fixture(candidate), sort_keys=True,
+        ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+
+def validate_planning_preflight(output: Path, record: dict, calls: list[dict],
+                                candidate: str, identity: dict) -> None:
+    from benchmarks.v3_matched_live import _validate_worker_evidence, _safety_failure_status
+    label = ("planning_preflight", candidate, -1)
+    from benchmarks.v3_matched_live import _fixture_prompt
+    prompt_sha256 = hashlib.sha256(_fixture_prompt(planning_preflight_fixture(candidate)).encode()).hexdigest()
+    phase_calls = [call for call in calls if call.get("arm") == label[0]]
+    if (not isinstance(record, dict) or record.get("status") != "passed"
+            or record.get("fixture_sha256") != _planning_preflight_identity(candidate)
+            or record.get("prompt_sha256") != prompt_sha256
+            or not isinstance(record.get("attempt_ids"), list)
+            or not 1 <= len(record["attempt_ids"]) <= 6
+            or any(not isinstance(item, str) or not item for item in record["attempt_ids"])
+            or len(set(record["attempt_ids"])) != len(record["attempt_ids"])
+            or set(record["attempt_ids"]) != {call.get("attempt_id") for call in phase_calls}
+            or len(phase_calls) != len(record["attempt_ids"])):
+        raise ValueError("planning preflight checkpoint or journal is incomplete")
+    if any((call.get("arm"), call.get("fixture_id"), call.get("repeat")) != label
+            or call.get("model") != DEEPSEEK_RELAY_CONFIG.model
+            or call.get("max_output_tokens") != 4096 or call.get("reserved_rmb") != "2.032768"
+            or call.get("status") != "settled" or not isinstance(call.get("usage"), dict)
+            for call in phase_calls):
+        raise ValueError("planning preflight calls lack exact settled CNY lineage")
+    usage_fields = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+    for call in phase_calls:
+        usage = call["usage"]
+        if (any(type(usage.get(key)) is not int or usage[key] < 0 for key in usage_fields)
+                or usage["cache_read_tokens"] + usage["cache_write_tokens"] > usage["input_tokens"]
+                or usage["input_tokens"] > 1_000_000 or usage["output_tokens"] > 4096):
+            raise ValueError("planning preflight usage is incomplete or invalid")
+        try:
+            actual = Decimal(call.get("actual_rmb"))
+            expected = DEEPSEEK_PRICING.cost(*(usage[key] for key in usage_fields))
+            if not actual.is_finite() or actual < 0 or actual != expected:
+                raise ValueError("planning preflight actual charge differs from its pinned usage")
+        except (InvalidOperation, TypeError):
+            raise ValueError("planning preflight actual charge is invalid") from None
+    row = record.get("row")
+    if (not isinstance(row, dict) or (row.get("arm"), row.get("fixture_id"), row.get("repeat")) != label
+            or row.get("worker_exit_code") != 0 or row.get("worker_result_complete") is not True
+            or row.get("usage_complete") is not True or row.get("verified_success") is not True
+            or row.get("requests") != len(phase_calls) or _safety_failure_status(row) is not None):
+        raise ValueError("planning preflight worker did not complete safely")
+    totals = {key: sum(call["usage"][key] for call in phase_calls) for key in usage_fields}
+    totals.update(attempts=len(phase_calls), requests=len(phase_calls))
+    if any(type(row.get(key)) is not int or row[key] != value for key, value in totals.items()):
+        raise ValueError("planning preflight row differs from its exact journal totals")
+    worker = _validate_worker_evidence(output, row, candidate, identity, return_worker=True)
+    conversation = worker.get("conversation_records") if isinstance(worker, dict) else None
+    if (not isinstance(conversation, list) or len(conversation) != 1 or not isinstance(conversation[0], dict)
+            or conversation[0].get("turn") != 0 or conversation[0].get("prompt_sha256") != prompt_sha256
+            or conversation[0].get("completed") is not True or not planning_preflight_semantics(worker)):
+        raise ValueError("planning preflight lacks actual verified completion")
+
+
+def run_planning_preflight(**options) -> dict:
+    from benchmarks.v3_matched_live import _execute_cell, _fixture_prompt
+    candidate, relay = options["candidate"], options["relay"]
+    record = {"status": "running", "fixture_sha256": _planning_preflight_identity(candidate),
+        "prompt_sha256": hashlib.sha256(_fixture_prompt(planning_preflight_fixture(candidate)).encode()).hexdigest()}
+    # Keep the finite label for this relay's lifetime: queued requests may
+    # already be authorized when the parent advances to a different phase.
+    if relay.planning_preflight_closed:
+        raise ValueError("planning preflight admission is already closed")
+    relay.planning_preflight_label = ("planning_preflight", candidate, -1)
+    try:
+        record["row"] = _execute_cell(**options, repeat=-1, fixture=planning_preflight_fixture(candidate),
+                                     arm="planning_preflight")
+    except BaseException:
+        # Interrupted work cannot succeed; close admission without delaying cancellation.
+        relay.planning_preflight_closed = True
+        raise
+    with relay._upstream_lock:
+        # Drain reserve/append admission before closing and validating a stable
+        # snapshot. A still-unsettled stream fails validation conservatively.
+        relay.planning_preflight_closed = True
+        calls = json.loads(json.dumps(relay.rows))
+        record["attempt_ids"] = [call["attempt_id"] for call in calls
+                                 if call.get("arm") == "planning_preflight"]
+        record["status"] = "passed"
+        try:
+            validate_planning_preflight(options["output"], record, calls, candidate, options["identity"])
+        except ValueError:
+            record["status"] = "failed"
+    return record
+
+
 def run_smoke(relay, candidate: str) -> bool:
     """Verify typed tool continuation through the same metered campaign relay."""
     if getattr(relay, "smoke_verified_candidate", None) == candidate:
@@ -238,6 +489,8 @@ def main() -> None:
     parser.add_argument("--budget-db", type=Path, required=True)
     parser.add_argument("--prior-ledger", type=Path, action="append", required=True)
     parser.add_argument("--limit-cny", default="15")
+    parser.add_argument("--planning-preflight-only", action="store_true",
+                        help="Run the protected planning check, retain costs, and stop before the formal cohort.")
     args = parser.parse_args()
     from benchmarks.v3_matched_live import _source_snapshot, run
     from scripts.publish_v3_preview import _verify_candidate_signature
@@ -253,7 +506,11 @@ def main() -> None:
                  limit_cny=str(limit), prior_hold_cny=str(exposure.total_cny),
                  prior_hold_records=exposure.records,
                  pricing=DEEPSEEK_PRICING, relay_config=DEEPSEEK_RELAY_CONFIG,
-                 endpoint=DEEPSEEK_ENDPOINT)
+                 endpoint=DEEPSEEK_ENDPOINT, planning_preflight_only=args.planning_preflight_only)
+    if args.planning_preflight_only:
+        print(json.dumps({"status": report["status"], "planning_preflight": report.get("planning_preflight"),
+                          "budget": report["budget"]}, indent=2, sort_keys=True))
+        raise SystemExit(0 if report["status"] == "planning_preflight_passed" else 1)
     print(json.dumps(report["summary"], indent=2, sort_keys=True))
     summary = report["summary"]
     raise SystemExit(0 if summary["complete"] and summary["accounting_complete"]

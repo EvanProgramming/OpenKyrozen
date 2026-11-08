@@ -61,6 +61,8 @@ class ResponsesRelay:
         self.rows: list[dict] = []
         self.budget_blocked = False
         self.provider_error: str | None = None
+        self.planning_preflight_label: tuple[str, str, int] | None = None
+        self.planning_preflight_closed = False
         self._request_lock = threading.Lock()
         self._lock = threading.Lock()
         self._actor_credentials = {}
@@ -219,8 +221,22 @@ class ResponsesRelay:
                 reserved = False
                 try:
                     with relay._upstream_lock:
+                        still_authorized, current_actor, current_label = relay._authorize_client(
+                            self.headers.get("Authorization"))
+                        if not still_authorized or current_actor != actor_id or current_label != label:
+                            self._json(401, {"error": {"message": "benchmark request authority changed before admission"}})
+                            return
+                        if label == relay.planning_preflight_label and relay.planning_preflight_closed:
+                            self._json(403, {"error": {"message": "planning preflight admission is closed"}})
+                            return
                         if relay.provider_error:
                             self._json(503, {"error": {"message": "benchmark provider is disabled after an upstream error"}})
+                            return
+                        if label == relay.planning_preflight_label and sum(
+                                    (item.get('arm'), item.get('fixture_id'), item.get('repeat'))
+                                    == relay.planning_preflight_label for item in relay.rows) >= 6:
+                            relay.provider_error = 'planning_preflight_request_limit'
+                            self._json(429, {"error": {"message": relay.provider_error}})
                             return
                         if not relay.budget.reserve(attempt_id, input_token_bound=input_bound,
                                                     output_token_bound=relay.config.max_output_tokens, metadata=row):
