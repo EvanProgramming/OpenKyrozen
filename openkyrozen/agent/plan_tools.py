@@ -71,7 +71,10 @@ def _update_plan(self, arguments: dict):
     executing native task work, then suggest_complete to check existing verified
     evidence; a completion suggestion never supplies evidence. A pure exact-revision
     suggestion for verified tasks in the current completed plan is a read-only
-    confirmation; historical plans and other terminal edits remain rejected. Split of an
+    confirmation: use ONLY plan_id, expected_revision and operations containing
+    suggest_complete; omit reason, complexity, tasks and all other metadata.
+    The snapshot reason is saved state, not a confirmation argument.
+    Historical plans and other terminal edits remain rejected. Split of an
     approved objective retains its immutable acceptance anchor and adds strategy
     children. Add anchor=<approved task ID> for in-scope investigation/verification.
     """

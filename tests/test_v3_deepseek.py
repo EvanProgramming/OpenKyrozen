@@ -522,7 +522,7 @@ class PlanningPreflightTests(unittest.TestCase):
             pricing=deepseek.DEEPSEEK_PRICING, relay_config=deepseek.DEEPSEEK_RELAY_CONFIG)
         return stack, options
 
-    def native_worker(self, candidate='candidate', *, retrieve_artifact=False):
+    def native_worker(self, candidate='candidate', *, retrieve_artifact=False, confirmation_guidance=False):
         """Real native tools and durable plan state; only the model is scripted."""
         from contextlib import ExitStack, closing
         from unittest.mock import patch
@@ -565,6 +565,8 @@ class PlanningPreflightTests(unittest.TestCase):
                         args = {'complexity': 'simple', 'expected_revision': 0, 'operations': [
                             {'op': 'add', 'ref': 'proof', 'task': deepseek.planning_preflight_task()},
                             {'op': 'start', 'task': 'proof'}]}
+                        if confirmation_guidance:
+                            args['reason'] = 'Verify the planning preflight'
                     elif retrieve_artifact and self.calls == 3:
                         if 'read_tool_artifact' not in {item['name'] for item in tools}:
                             raise AssertionError('archived result reader is not provider-visible')
@@ -579,6 +581,17 @@ class PlanningPreflightTests(unittest.TestCase):
                             raise AssertionError('verified completed state is not provider-visible')
                         args = {'plan_id': state['plan_id'], 'expected_revision': state['revision'],
                             'operations': [{'op': 'suggest_complete', 'task': state['tasks'][0]['id']}]}
+                        if confirmation_guidance:
+                            import re
+                            # A client copying the published snapshot needs explicit omission guidance.
+                            args['reason'] = state['reason']
+                            pin = next(item['content'] for item in messages if isinstance(item, dict)
+                                       and item.get('content', '').startswith('## Pinned Working Plan state\n'))
+                            tool = next(item for item in tools if item['name'] == 'update_plan')
+                            reason = tool['parameters']['properties']['reason'].get('description', '')
+                            fields = re.search(r'ONLY (plan_id, expected_revision, operations)', pin)
+                            if fields and 'omit reason' in tool['description'].lower() and 'omit' in reason.lower():
+                                args = {key: args[key] for key in fields[1].split(', ')}
                     elif self.calls == 2:
                         if self.plan_state(messages)['tasks'][0]['status'] != 'running':
                             raise AssertionError('unverified task completed before reading')
@@ -624,6 +637,19 @@ class PlanningPreflightTests(unittest.TestCase):
         worker = self.native_worker()
         self.assertTrue(planning_preflight_semantics(worker), worker)
         self.assertEqual(worker['working_plan']['status'], 'completed')
+
+    def test_published_completion_guidance_omits_snapshot_reason_on_first_confirmation(self):
+        from benchmarks.v3_deepseek import planning_preflight_semantics
+        worker = self.native_worker(retrieve_artifact=True, confirmation_guidance=True)
+        self.assertTrue(planning_preflight_semantics(worker), worker)
+        confirmations = [item['evidence'] for item in worker['tool_receipts']
+                         if item['action'] == 'update_plan'
+                         and (item['evidence'].get('verification') or {}).get('method') == 'working_plan_confirmation']
+        self.assertEqual(len(confirmations), 1)
+        arguments = confirmations[0].get('arguments', confirmations[0].get('args'))
+        if isinstance(arguments, str):
+            arguments = json.loads(arguments)
+        self.assertEqual(set(arguments), {'plan_id', 'expected_revision', 'operations'})
 
     def test_native_scoped_archive_read_preserves_all_three_preflight_proofs(self):
         from copy import deepcopy

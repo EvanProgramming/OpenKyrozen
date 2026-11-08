@@ -323,7 +323,8 @@ class TaskManager:
                     or strategic_bindings is not None or transaction_event is not None
                     or any(not isinstance(op, dict) or set(op) != {"op", "task"}
                            or op["op"] != "suggest_complete" for op in operations)):
-                raise ValueError("completed plans accept only exact-revision task completion confirmations")
+                raise ValueError("Completed-plan confirmation is read-only: use ONLY plan_id, expected_revision and "
+                                 "operations containing suggest_complete. Omit reason, complexity, tasks and other metadata.")
             confirmed_tasks = self.store.list_working_plan_tasks(
                 plan_id, user_id=self.user_id, workspace_id=self.workspace_id,
                 session_id=self.session_id or "", current_completed_revision=expected_revision,

@@ -301,6 +301,38 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         return {"plan_id": plan.id, "expected_revision": plan.revision,
                 "operations": [{"op": "suggest_complete", "task": plan.task_ids[0]}]}
 
+    def test_completed_confirmation_reason_reports_omission_without_plan_mutation(self):
+        created = self.invoke({"expected_revision": 0, "reason": "Verify the planning preflight",
+            "operations": [{"op": "add", "ref": "inspect", "task": self.task()},
+                           {"op": "start", "task": "inspect"}]})
+        self.assertTrue(created.success, created.text)
+        self.assertTrue(self.read().success)
+        tasks = self.runtime.tasks
+        scope = {"user_id": tasks.user_id, "workspace_id": tasks.workspace_id,
+                 "session_id": tasks.session_id}
+        plan_id = created.data["plan_id"]
+        before = (tasks.store.get_working_plan_by_id(plan_id, **scope),
+                  tasks.store.list_working_plan_tasks(plan_id, **scope))
+        attempts = tasks._plan_commit_attempts
+        arguments = {**self._confirmation_arguments(), "reason": "Verify the planning preflight"}
+        rejected = self.runtime.execute_call(self.runtime.current_session,
+            ToolCall("confirm-with-reason", "update_plan", arguments))
+        self.assertFalse(rejected.success)
+        self.assertTrue(rejected.tool_error["metadata"]["plan_validation_no_effect"])
+        self.assertEqual(rejected.verification["method"], "plan_input_validation")
+        self.assertIn("ONLY plan_id, expected_revision and operations", rejected.result)
+        self.assertIn("Omit reason, complexity, tasks", rejected.result)
+        del arguments["reason"]
+        confirmed = self.runtime.execute_call(self.runtime.current_session,
+            ToolCall("confirm-without-reason", "update_plan", arguments))
+        self.assertTrue(confirmed.success, confirmed.result)
+        self.assertEqual(confirmed.verification["method"], "working_plan_confirmation")
+        self.assertEqual(confirmed.verification["observed"]["plan_id"], plan_id)
+        self.assertEqual(confirmed.verification["observed"]["revision"], 1)
+        self.assertEqual(tasks._plan_commit_attempts, attempts)
+        self.assertEqual((tasks.store.get_working_plan_by_id(plan_id, **scope),
+                          tasks.store.list_working_plan_tasks(plan_id, **scope)), before)
+
     def test_completed_confirmation_rejects_bad_scope_revision_evidence_and_edits(self):
         created = self.invoke({"expected_revision": 0, "operations": [
             {"op": "add", "ref": "inspect", "task": self.task()},

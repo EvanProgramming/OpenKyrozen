@@ -218,7 +218,8 @@ _OBJECT_FIELDS = {
     'update_plan': {'complexity': {'type':'string','enum':['simple','medium','complex']},
                     'plan_id': {'type':'string','minLength':1,'description':'Runtime-returned existing plan ID. Omit when creating a new plan.'},
                     'expected_revision': {'type':'integer','minimum':0},
-                    'reason': {'type':'string','minLength':1},
+                    'reason': {'type':'string','minLength':1,
+                               'description':'Rationale for plan edits; omit for completed-plan confirmation.'},
                     'operations': {'type':'array','items':{'anyOf':_PLAN_OPERATION_SCHEMAS}},
                     'tasks': {'type':'array','minItems':1,'items':{'type':'object','properties':{
                         'id': {'type':'string','minLength':1,'description':'Existing runtime task ID only. Omit for new tasks; use operations.add.ref for local references.'},

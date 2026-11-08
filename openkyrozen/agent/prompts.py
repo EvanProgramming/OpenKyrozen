@@ -357,8 +357,12 @@ def _refresh_working_plan_context(self, messages: list) -> None:
         full = json.dumps(state, ensure_ascii=False, sort_keys=True)
     messages.insert(1 if messages else 0, {"role": "system", "content": marker + (
         "Runtime-owned task identity, order, status and acceptance. Strategy may adapt within approved scope; "
-        "tool/security approval remains separate. If artifact_id is present, use read_tool_artifact for the full plan.\n"
-    ) + full})
+        "tool/security approval remains separate. If artifact_id is present, use read_tool_artifact for the full plan. "
+    ) + (
+        "If completed-plan confirmation is requested, use ONLY plan_id, expected_revision, operations (suggest_complete). "
+        "Omit reason, complexity, tasks and other metadata. Snapshot reason is saved state, not a confirmation argument. "
+        if completed_tasks is not None else ""
+    ) + "\n" + full})
     update_projection = getattr(self, "_update_context_history_projection", None)
     if callable(update_projection):
         update_projection(messages, previous)
