@@ -21,6 +21,86 @@ SCRIPT = ROOT / 'scripts' / 'v3_windows_reliability.py'
 
 
 class OfflineNativeDecodeTests(unittest.TestCase):
+    def test_xperf_version_metadata_uses_isolated_native_query_with_the_original_five_second_bound(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);tool=root/'xperf.exe';tool.write_bytes(b'opaque native metadata fixture')
+            version=json.dumps({'file_version':'1.2.3.4','product_version':'5.6.7.8'})
+            with patch.object(diagnostic.shutil,'which',side_effect=lambda name:str(tool) if name=='xperf.exe' else None), \
+                 patch.object(diagnostic.subprocess,'run',return_value=subprocess.CompletedProcess([],0,version,'')) as query:
+                try:
+                    info=diagnostic._offline_xperf_tool(root,{'HOME':str(root)})
+                except RuntimeError:
+                    self.fail('Version metadata must not require or launch PowerShell')
+            command=query.call_args.args[0]
+            self.assertEqual(command[:3],[sys.executable,'-I','-c'])
+            self.assertEqual(command[3],diagnostic._OFFLINE_FILE_VERSION_QUERY)
+            self.assertEqual(command[4],str(tool.resolve()))
+            self.assertEqual(query.call_args.kwargs['timeout'],5)
+            self.assertTrue(query.call_args.kwargs['check'])
+            self.assertNotIn('KYROZEN_XPERF_FILE',query.call_args.kwargs['env'])
+            self.assertEqual(info['file_version'],'1.2.3.4')
+            self.assertIn('VS_FIXEDFILEINFO',info['version_source'])
+
+    def test_native_version_query_validates_sdk_resource_and_pointer_before_reading_fixed_fields(self):
+        import ctypes
+        import struct
+        from contextlib import redirect_stdout
+        from scripts import v3_windows_reliability as diagnostic
+        self.assertTrue(hasattr(diagnostic,'_OFFLINE_FILE_VERSION_QUERY'),'native version query missing')
+        class Function:
+            def __init__(self,call):self.call=call
+            def __call__(self,*args):return self.call(*args)
+        modes=('valid','missing','oversized','get-info-failure','query-failure','null','short','outside','span-overrun','signature')
+        with tempfile.TemporaryDirectory() as directory:
+            tool=Path(directory)/'unicode-工具.exe';tool.write_bytes(b'private SDK-boundary fixture')
+            for mode in modes:
+                with self.subTest(mode=mode):
+                    buffer_address=[]
+                    def size(path,ignored):return 0 if mode=='missing' else 1024*1024+1 if mode=='oversized' else 64
+                    def read(path,ignored,length,buffer):
+                        buffer_address.append(ctypes.addressof(buffer))
+                        fields=[0 if mode=='signature' else 0xFEEF04BD,0x10000,0x000A000B,0x000C000D,0x000E000F,0x00100011]+[0]*7
+                        ctypes.memmove(buffer_address[0]+8,struct.pack('<13I',*fields),52)
+                        return 0 if mode=='get-info-failure' else 1
+                    def query(buffer,subblock,pointer,length):
+                        self.assertEqual(subblock,'\\')
+                        address=0 if mode=='null' else buffer_address[0]+64 if mode=='outside' else buffer_address[0]+8
+                        ctypes.cast(pointer,ctypes.POINTER(ctypes.c_void_p))[0]=address
+                        ctypes.cast(length,ctypes.POINTER(ctypes.c_uint32))[0]=51 if mode=='short' else 65 if mode=='span-overrun' else 52
+                        return 0 if mode=='query-failure' else 1
+                    library=types.SimpleNamespace(GetFileVersionInfoSizeW=Function(size),GetFileVersionInfoW=Function(read),VerQueryValueW=Function(query))
+                    output=io.StringIO()
+                    with patch.object(ctypes,'WinDLL',return_value=library,create=True), \
+                         patch.object(sys,'argv',['native-version-query',str(tool)]),redirect_stdout(output):
+                        if mode=='valid':
+                            exec(compile(diagnostic._OFFLINE_FILE_VERSION_QUERY,'native-version-query','exec'),{})
+                            self.assertEqual(json.loads(output.getvalue()),{'file_version':'10.11.12.13','product_version':'14.15.16.17'})
+                        else:
+                            with self.assertRaises((RuntimeError,OSError)):
+                                exec(compile(diagnostic._OFFLINE_FILE_VERSION_QUERY,'native-version-query','exec'),{})
+                            self.assertEqual(output.getvalue(),'')
+
+    @unittest.skipUnless(os.name=='nt','actual Windows version.dll query')
+    def test_native_version_query_reads_real_python_executable_version(self):
+        from scripts import v3_windows_reliability as diagnostic
+        result=subprocess.run([sys.executable,'-I','-c',diagnostic._OFFLINE_FILE_VERSION_QUERY,str(Path(sys.executable).resolve())],
+            capture_output=True,text=True,timeout=5,check=True)
+        version=json.loads(result.stdout)
+        for field in ('file_version','product_version'):
+            self.assertRegex(version[field],r'^\d+\.\d+\.\d+\.\d+$')
+            self.assertTrue(all(0<=int(part)<=65535 for part in version[field].split('.')))
+
+    @unittest.skipUnless(os.name=='nt','actual Windows missing version-resource rejection')
+    def test_native_version_query_rejects_real_file_without_version_resource(self):
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'no-version.exe';path.write_bytes(b'not a PE version resource')
+            result=subprocess.run([sys.executable,'-I','-c',diagnostic._OFFLINE_FILE_VERSION_QUERY,str(path)],
+                capture_output=True,text=True,timeout=5)
+            self.assertNotEqual(result.returncode,0)
+            self.assertEqual(result.stdout.strip(),'')
+
     def stream_fixture(self, root):
         tool=root/'xperf.exe';tool.write_bytes(b'opaque test tool bytes')
         (root/'xperf-tool.json').write_text(json.dumps({'path':str(tool),'sha256':hashlib.sha256(tool.read_bytes()).hexdigest()}))
@@ -416,7 +496,7 @@ threading.Event().wait()
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);archive,metadata,source=self.archive(root)
             with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source),self.installed_tool(root), \
-                 patch.object(diagnostic.subprocess,'run',side_effect=subprocess.TimeoutExpired(['powershell.exe'],5)), \
+                 patch.object(diagnostic.subprocess,'run',side_effect=subprocess.TimeoutExpired([sys.executable,'-I','-c','native version query'],5)), \
                  patch.object(diagnostic,'run_process',side_effect=AssertionError('dump started after metadata timeout')):
                 self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),2)
             receipt=json.loads((root/'output'/'decode-receipt.json').read_text())
@@ -446,7 +526,7 @@ threading.Event().wait()
                 with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source), \
                      patch.object(diagnostic.platform,'system',return_value='Windows'), \
                      patch.dict(os.environ,{'ProgramFiles(x86)':str(root)}), \
-                     patch.object(diagnostic.shutil,'which',side_effect=lambda name:'powershell.exe' if name=='powershell.exe' else None), \
+                     patch.object(diagnostic.shutil,'which',return_value=None), \
                      patch.object(diagnostic.subprocess,'run',return_value=subprocess.CompletedProcess([],0,version,'')), \
                      patch.object(diagnostic,'run_process',side_effect=run):
                     self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'output'),0 if version_ok else 2)
@@ -1387,6 +1467,9 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
         self.assertIn('--offline-decode-archive',commands)
         self.assertNotIn('--historical-repository',commands)
         self.assertNotIn('pip install',commands)
+        diagnostic_checkout = next(step for step in workflow['jobs']['diagnostic-regression']['steps']
+                                   if step.get('uses', '').startswith('actions/checkout@'))
+        self.assertEqual(diagnostic_checkout['with'].get('fetch-depth'), 0)
 
     def test_native_capture_stops_only_its_owned_instance_even_when_start_is_uncertain(self):
         from scripts import v3_windows_reliability as diagnostic

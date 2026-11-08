@@ -367,6 +367,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: diagnostic-source
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         id: python
         with:

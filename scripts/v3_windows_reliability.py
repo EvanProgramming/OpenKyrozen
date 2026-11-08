@@ -99,6 +99,48 @@ def _offline_storage_bytes(output, archive):
     return archive.stat().st_size + sum(path.lstat().st_size for path in output.rglob('*') if path.is_file())
 
 
+_OFFLINE_FILE_VERSION_QUERY = r'''
+import ctypes as c, json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+if not path.is_absolute() or not path.is_file():
+    raise RuntimeError('Absolute version-resource file required')
+DWORD = c.c_uint32
+class FixedInfo(c.Structure):
+    _fields_ = [(name, DWORD) for name in (
+        'signature', 'structure_version', 'file_ms', 'file_ls', 'product_ms', 'product_ls',
+        'flags_mask', 'flags', 'os', 'type', 'subtype', 'date_ms', 'date_ls')]
+api = c.WinDLL('version.dll', use_last_error=True, winmode=0x00000800)
+api.GetFileVersionInfoSizeW.argtypes = [c.c_wchar_p, c.POINTER(DWORD)]
+api.GetFileVersionInfoSizeW.restype = DWORD
+api.GetFileVersionInfoW.argtypes = [c.c_wchar_p, DWORD, DWORD, c.c_void_p]
+api.GetFileVersionInfoW.restype = c.c_int32
+api.VerQueryValueW.argtypes = [c.c_void_p, c.c_wchar_p, c.POINTER(c.c_void_p), c.POINTER(DWORD)]
+api.VerQueryValueW.restype = c.c_int32
+ignored = DWORD()
+size = api.GetFileVersionInfoSizeW(str(path), c.byref(ignored))
+if not c.sizeof(FixedInfo) <= size <= 1024 * 1024:
+    raise RuntimeError('Missing or oversized version resource')
+buffer = c.create_string_buffer(size)
+if not api.GetFileVersionInfoW(str(path), 0, size, buffer):
+    raise RuntimeError('GetFileVersionInfoW failed')
+pointer, length = c.c_void_p(), DWORD()
+if not api.VerQueryValueW(buffer, '\\', c.byref(pointer), c.byref(length)):
+    raise RuntimeError('VerQueryValueW root resource unavailable')
+base, address = c.addressof(buffer), pointer.value
+if (not address or length.value < c.sizeof(FixedInfo) or address < base
+        or address + length.value > base + size):
+    raise RuntimeError('Invalid fixed version-resource span')
+value = c.cast(pointer, c.POINTER(FixedInfo)).contents
+if value.signature != 0xFEEF04BD:
+    raise RuntimeError('Invalid VS_FIXEDFILEINFO signature')
+def version(ms, ls):
+    return '.'.join(str(part) for part in (ms >> 16, ms & 65535, ls >> 16, ls & 65535))
+print(json.dumps({'file_version': version(value.file_ms, value.file_ls),
+                  'product_version': version(value.product_ms, value.product_ls)}))
+'''
+
+
 def _offline_xperf_tool(output, env):
     known = (Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')) /
              'Windows Kits' / '10' / 'Windows Performance Toolkit' / 'xperf.exe')
@@ -110,14 +152,9 @@ def _offline_xperf_tool(output, env):
             raise RuntimeError('Installed Windows xperf unavailable; no installation or decoder was executed')
         with path.open('rb') as stream:
             info.update(bytes=path.stat().st_size, sha256=hashlib.file_digest(stream,'sha256').hexdigest())
-        shell = shutil.which('powershell.exe') or shutil.which('pwsh.exe')
-        if not shell:
-            raise RuntimeError('xperf file-version metadata tool unavailable')
-        query = ("$v=(Get-Item -LiteralPath $env:KYROZEN_XPERF_FILE -ErrorAction Stop).VersionInfo; "
-                 "[pscustomobject]@{file_version=$v.FileVersion;product_version=$v.ProductVersion}|ConvertTo-Json -Compress")
         try:
-            result = subprocess.run([shell,'-NoProfile','-NonInteractive','-Command',query],
-                env={**env,'KYROZEN_XPERF_FILE':str(path)}, capture_output=True,text=True,timeout=5,check=True)
+            result = subprocess.run([sys.executable,'-I','-c',_OFFLINE_FILE_VERSION_QUERY,str(path)],
+                env=env, capture_output=True,text=True,timeout=5,check=True)
         except subprocess.TimeoutExpired as error:
             info.update(version_status='TIMED_OUT', metadata_error=type(error).__name__,
                         metadata_timeout_seconds=error.timeout, metadata_cleanup_uncertified=True)
@@ -127,7 +164,7 @@ def _offline_xperf_tool(output, env):
                                                for key in ('file_version','product_version'))):
             raise RuntimeError('xperf file-version metadata unavailable')
         info.update({key:version[key] for key in ('file_version','product_version')})
-        info.update(version_status='READ',version_source='Windows FileVersionInfo via PowerShell')
+        info.update(version_status='READ',version_source='VS_FIXEDFILEINFO fixed numeric versions via Windows version.dll')
         return info
     finally:
         write_json(output / 'xperf-tool.json',info)
