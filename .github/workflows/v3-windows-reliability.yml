@@ -10,7 +10,7 @@ on:
         type: boolean
         default: false
       decode_existing_etl:
-        description: Decode only the frozen existing 42513800271 ETL; no product or WPR execution
+        description: Decode only the frozen existing 42521583044 ETL; no product or WPR execution
         type: boolean
         default: false
       candidate_sha:
@@ -182,8 +182,8 @@ jobs:
             const fs = require('fs');
             fs.mkdirSync('offline-input');
             const request = {owner: context.repo.owner, repo: context.repo.repo};
-            const source = {repository: 'EvanProgramming/OpenKyrozen', run_id: 42513800271,
-              artifact_id: 13630393287, head_sha: '3adc81ba37da744e70141f2ba3de142b54751b74'};
+            const source = {repository: 'EvanProgramming/OpenKyrozen', run_id: 42521583044,
+              artifact_id: 13634081142, head_sha: '085141807a5aee1231c8b467663848671beaad37'};
             fs.writeFileSync('offline-input/download-receipt.json', JSON.stringify({status:'STARTED',source}));
             try {
               if (request.owner + '/' + request.repo !== source.repository) throw new Error('repository mismatch');
@@ -197,14 +197,14 @@ jobs:
               if (run.id !== source.run_id || run.head_sha !== source.head_sha || run.status !== 'completed' ||
                   artifact.id !== source.artifact_id || artifact.workflow_run?.id !== source.run_id ||
                   artifact.workflow_run?.head_sha !== source.head_sha || artifact.expired ||
-                  artifact.size_in_bytes !== 20194248 ||
-                  artifact.digest !== 'sha256:2d3a8559b22655daddd2d1d7d927334f049cc192ae374b33b60f257c0772c17a') {
+                  artifact.size_in_bytes !== 49821978 ||
+                  artifact.digest !== 'sha256:658a74f4c8c20883d5f91e2165c5b1f01e86d0cfd64c515d344256355e93393a') {
                 throw new Error('source metadata mismatch');
               }
               const download = await github.rest.actions.downloadArtifact({...request,
                 artifact_id:source.artifact_id, archive_format:'zip', request:{timeout:30000}});
               const bytes = Buffer.from(download.data);
-              if (bytes.length !== 20194248) throw new Error('archive size mismatch');
+              if (bytes.length !== 49821978) throw new Error('archive size mismatch');
               fs.writeFileSync('offline-input/source.zip',bytes,{flag:'wx'});
               fs.writeFileSync('offline-input/download-receipt.json',JSON.stringify({status:'DOWNLOADED',source,bytes:bytes.length}));
             } catch (error) {
@@ -356,4 +356,84 @@ jobs:
         with:
           name: windows-history-copyfile2-${{ env.PRODUCT_SHA }}-${{ github.run_id }}
           path: history-copyfile2-evidence/
+          if-no-files-found: error
+
+  diagnostic-regression:
+    if: github.event_name == 'workflow_dispatch' && inputs.decode_existing_etl && !inputs.history_copyfile2_probe
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout diagnostic harness only
+        uses: actions/checkout@v4
+        with:
+          path: diagnostic-source
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: '3.12.10'
+      - name: Install unchanged historical pins and diagnostic package only
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force diagnostic-regression-evidence | Out-Null
+          $head = (git -C diagnostic-source rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:GITHUB_SHA) { throw 'Diagnostic checkout identity mismatch' }
+          @{diagnostic_commit=$head; declared_product_sha=$env:PRODUCT_SHA; product_checked_out=$false} | ConvertTo-Json | Set-Content -Encoding utf8 diagnostic-regression-evidence/source-identity.json
+          python diagnostic-source/scripts/v3_windows_reliability.py --write-historical-requirements diagnostic-regression-evidence/historical-requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Historical requirements preparation failed' }
+          python -m pip install -r diagnostic-regression-evidence/historical-requirements.txt -e './diagnostic-source[all]' *> diagnostic-regression-evidence/dependency-install.log
+          $installed = $LASTEXITCODE
+          python -m pip freeze | Set-Content -Encoding utf8 diagnostic-regression-evidence/dependencies.txt
+          if ($installed -ne 0) { throw 'Pinned diagnostic dependencies failed; no substitutions allowed' }
+      - name: Run the complete diagnostic unittest module in a private home
+        if: always() && steps.python.outcome == 'success'
+        working-directory: diagnostic-source
+        shell: python
+        run: |
+          import json, os, sys, tempfile
+          from pathlib import Path
+          root = Path.cwd().resolve()
+          sys.path.insert(0, str(root))
+          from scripts.v3_windows_reliability import historical_environment, isolated_environment, run_process
+          output = root.parent / 'diagnostic-regression-evidence'
+          output.mkdir(exist_ok=True)
+          receipt = {'status': 'INFRASTRUCTURE_FAILURE', 'cleanup_uncertified': True,
+              'diagnostic_commit': os.environ['GITHUB_SHA'], 'declared_product_sha': os.environ['PRODUCT_SHA'],
+              'python': sys.version, 'scope': 'diagnostic-source unit tests only; no product/native acceptance'}
+          code = 1
+          try:
+              historical = historical_environment()
+              (output / 'historical-environment.json').write_text(json.dumps(historical, indent=2), encoding='utf-8')
+              if historical['status'] != 'MATCH':
+                  raise RuntimeError('Original pinned runtime/dependencies unavailable')
+              command = ("import json; from pathlib import Path; import openkyrozen, unittest; "
+                  "source = Path(openkyrozen.__file__).resolve(); "
+                  "print('Diagnostic product source:', source, flush=True); "
+                  "assert source.is_relative_to(Path.cwd()); "
+                  "Path(" + repr(str(output / 'import-source.json')) + ").write_text("
+                  "json.dumps({'module':'openkyrozen','path':str(source),'cwd':str(Path.cwd())}), encoding='utf-8'); "
+                  "unittest.main(module='tests.test_v3_windows_reliability', verbosity=2)")
+              with tempfile.TemporaryDirectory(prefix='kyrozen-diagnostic-tests-') as home:
+                  env = isolated_environment(Path(home))
+                  env['PYTHONPATH'] = str(root)
+                  env['KYROZEN_DIAGNOSTIC_TEST_OUTPUT'] = str(output / 'diagnostic-test-evidence')
+                  result = run_process([sys.executable, '-c', command], output / 'diagnostic-unittest.log', env, timeout=300)
+                  receipt.update(result)
+                  code = result.get('returncode')
+                  cleanup = result.get('timeout_cleanup')
+                  certified = isinstance(cleanup, dict) and cleanup.get('descendant_cleanup_certified') is True
+                  receipt['cleanup_uncertified'] = type(code) is not int or (cleanup is not None and not certified) or (code == 124 and not certified)
+                  (output / 'diagnostic-unittest.json').write_text(json.dumps(receipt, indent=2), encoding='utf-8')
+              receipt['private_home_cleanup_completed'] = True
+              receipt['status'] = 'PASS' if type(code) is int and code == 0 and not receipt['cleanup_uncertified'] else 'INFRASTRUCTURE_FAILURE' if code == 124 else 'FAIL'
+          except BaseException as error:
+              receipt.update(status='INFRASTRUCTURE_FAILURE', cleanup_uncertified=True, error_class=type(error).__name__)
+          finally:
+              (output / 'diagnostic-unittest.json').write_text(json.dumps(receipt, indent=2), encoding='utf-8')
+          raise SystemExit(code if type(code) is int and code != 0 else (0 if receipt['status'] == 'PASS' else 1))
+      - name: Preserve diagnostic-only regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-diagnostic-regression-${{ github.run_id }}-${{ github.sha }}
+          path: diagnostic-regression-evidence/
           if-no-files-found: error

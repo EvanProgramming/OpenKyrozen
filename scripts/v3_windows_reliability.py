@@ -35,13 +35,13 @@ ROOT = Path(__file__).resolve().parents[1]
 TEST = 'test_cancel_during_provider_call_prevents_late_write'
 HISTORICAL_PRODUCT = '0f172f9fe692ff8fafcc0a15a72fe51eaf67e977'
 OFFLINE_ETL_SOURCE = {
-    'repository':'EvanProgramming/OpenKyrozen', 'run_id':42513800271,
-    'artifact_id':13630393287, 'diagnostic_sha':'3adc81ba37da744e70141f2ba3de142b54751b74',
+    'repository':'EvanProgramming/OpenKyrozen', 'run_id':42521583044,
+    'artifact_id':13634081142, 'diagnostic_sha':'085141807a5aee1231c8b467663848671beaad37',
     'product_sha':'8c595f909859b0fda10ff4fdb6e25f4ccb25c96e',
     'artifact_name':'windows-cancellation-3.12.10-8c595f909859b0fda10ff4fdb6e25f4ccb25c96e-native-vfs',
-    'zip_bytes':20194248, 'zip_sha256':'2d3a8559b22655daddd2d1d7d927334f049cc192ae374b33b60f257c0772c17a',
-    'etl_member':'traces/native-capture.etl', 'etl_bytes':137625600,
-    'etl_sha256':'4d2c0a03a87d25654e2bb5f9c19cefe1b66dcdd331c2b04f9cd183d2046bc8a5',
+    'zip_bytes':49821978, 'zip_sha256':'658a74f4c8c20883d5f91e2165c5b1f01e86d0cfd64c515d344256355e93393a',
+    'etl_member':'traces/native-capture.etl', 'etl_bytes':145227776,
+    'etl_sha256':'9c91d1e97a0f067a91b073ada15dd843a311c701e70bad4445897e208ba44641',
 }
 OFFLINE_STORAGE_LIMIT = 512 * 1024 * 1024
 OFFLINE_FILEIO_GUID = '{90cbdc39-4a3e-11d1-84f4-0000f80464e3}'
@@ -1385,7 +1385,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--offline-decode-archive', type=Path,
-                        help='Decode only the frozen existing run42513800271 ZIP; never starts a product or WPR')
+                        help='Decode only the frozen existing run42521583044 ZIP; never starts a product or WPR')
     parser.add_argument('--offline-source-metadata', type=Path, help='GitHub source artifact/run metadata for offline decode')
     parser.add_argument('--offline-gzip-child',type=Path,help=argparse.SUPPRESS)
     parser.add_argument('--repository', type=Path, default=ROOT, help='Exact product checkout to test; harness may live separately')
