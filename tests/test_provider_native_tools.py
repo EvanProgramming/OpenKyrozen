@@ -76,6 +76,79 @@ class NativeHistoryTests(unittest.TestCase):
 
 
 class NativeRequestTests(unittest.TestCase):
+    def test_current_guidance_replaces_stale_write_claim_without_authorizing_history(self):
+        import copy
+        import tempfile
+        from pathlib import Path
+        from openkyrozen.app.bootstrap import build_application, build_memory
+        from openkyrozen.providers.base import LLMProvider
+        from openkyrozen.providers.config import ProviderConfig
+        from openkyrozen.providers.models import provider_continuation, provider_identity
+        from openkyrozen.tools import ToolAdapters
+
+        class CaptureProvider(LLMProvider):
+            def __init__(self):
+                super().__init__(ProviderConfig(provider="custom", model_simple="fixture"))
+                self.requests = []
+            def chat(self, messages, model=None):
+                raise AssertionError("legacy transport used")
+            def chat_response(self, messages, model=None, *, tools=None):
+                self.requests.append((copy.deepcopy(messages), copy.deepcopy(tools)))
+                validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=True)
+                if len(self.requests) > 2:
+                    return ModelResponse(text="Finished", finish_reason=FinishReason.FINAL)
+                call = ToolCall(f"write-{len(self.requests)}", "write_file",
+                               {"path": "note.txt", "content": str(len(self.requests))})
+                return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                    continuation=provider_continuation(self, model, "fixture", {"call": call.id}))
+
+        def projection(messages):
+            blocks = [item["content"] for item in messages if isinstance(item, dict)
+                      and item.get("role") == "system"
+                      and item.get("content", "").startswith("## Current native tool availability\n")]
+            self.assertEqual(len(blocks), 1)
+            return blocks[0], json.loads(blocks[0].splitlines()[1])
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {
+                "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_APPROVAL_MODE": "never"}):
+            root = Path(directory)
+            app = build_application(surface="cli", memory=build_memory(root / "state.sqlite3", index=None),
+                                    tools=ToolAdapters(root))
+            self.addCleanup(app.close)
+            runtime = app.runtime
+            runtime._set_workspace_root(root)
+            runtime.set_interaction_mode("agent")
+            provider = CaptureProvider()
+            runtime.llm_provider = provider
+            messages = [{"role": "user", "content": "Write then inspect the requested note"}]
+            response = runtime._get_model_response(messages, "fixture", tool_names=["READ_FILE", "write_file", "unknown"])
+            _, initial = projection(provider.requests[-1][0])
+            self.assertEqual(initial, {"current_call_tools": ["read_file", "write_file"], "history_only_declarations": []})
+            receipt = runtime.execute_call(runtime.current_session, response.tool_calls[0],
+                capabilities={"read", "write"}, approve=lambda _request: True)
+            self.assertTrue(receipt.success, receipt.as_dict())
+            messages.extend((response, ToolReply("write-1", "write_file", {"success": True, "result": receipt.result})))
+            with patch.object(runtime, "_effective_execution_capabilities", return_value=frozenset({"read"})):
+                narrowed = runtime._get_model_response(messages, "fixture", tool_names=["read_file", "write_file"],
+                                                       history_tool_names={"write_file"})
+                sent, tools = provider.requests[-1]
+                self.assertEqual([tool["name"] for tool in tools], ["read_file", "write_file"])
+                block, current = projection(sent)
+                self.assertEqual(current, {"current_call_tools": ["read_file"], "history_only_declarations": ["write_file"]})
+                self.assertIn("History-only declarations do not grant execution permission", block)
+                denied = runtime.execute_call(runtime.current_session, narrowed.tool_calls[0],
+                    capabilities={"read"}, approve=lambda _request: True)
+                self.assertFalse(denied.success, denied.as_dict())
+            self.assertEqual((root / "note.txt").read_text(), "1")
+            runtime._get_model_response(messages, "fixture", tool_names=set(), history_tool_names=set())
+            block, empty = projection(provider.requests[-1][0])
+            self.assertEqual(empty, {"current_call_tools": [], "history_only_declarations": []})
+            self.assertNotIn("Planning-required", block)
+            self.assertNotIn("Completed-plan", block)
+            legacy = [{"role": "user", "content": "Legacy question"}]
+            runtime._get_model_response(legacy, "fixture")
+            self.assertEqual(provider.requests[-1], (legacy, None))
+
     def test_openai_chat_sends_registry_schemas_and_correlated_results(self):
         from openkyrozen.providers.openai import OpenAICompatProvider
         provider = OpenAICompatProvider.__new__(OpenAICompatProvider)

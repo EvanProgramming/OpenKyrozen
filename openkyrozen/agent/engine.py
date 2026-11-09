@@ -141,6 +141,8 @@ class AgentEngine:
             completed_plan = (observed_plan_id is not None and plan is not None
                               and plan.id == observed_plan_id and plan.status == "completed")
             needs_plan = turn.planning_required and (plan is None or plan.status != "active")
+            native_tool_phase = ("plan_completed" if completed_plan else "plan_required" if needs_plan
+                                 else "plan_active" if turn.planning_required else None)
             if needs_plan:
                 if completed_plan:
                     tool_names = runtime._permitted_tool_names() & {"update_plan", "read_tool_artifact"}
@@ -165,6 +167,7 @@ class AgentEngine:
             def request_response():
                 return runtime._get_model_response(
                     messages, tool_names=tool_names, history_tool_names=history_tool_names, stream=stream,
+                    _native_tool_phase=native_tool_phase,
                     on_event=observe_native_content if stream else None,
                 )
 

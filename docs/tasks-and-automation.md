@@ -15,6 +15,8 @@ Simple work does not require a plan, and a plan is optional for medium work. Com
 
 In native Agent mode, the model can call the structured `update_plan` tool when its effective capabilities include `write`. Ask and Plan modes never receive that schema. Tool authorization still intersects the active capability token, and an accepted Strategic Plan remains bound to its objective, revision, paths, effects, and approval state; plan editing does not grant permission to perform the revised tasks.
 
+Every native request includes a current tool list derived from the actual filtered schemas. It supersedes earlier request lists and separates current tools from declarations retained only to correlate historical replies. Required-plan exposure is temporary: creating and starting a Working Plan can expand the next request's tools; a completed plan leaves only confirmation exposure for that turn. Schemas define argument contracts, and neither current nor historical list membership bypasses workspace, capability, approval, or plan checks.
+
 ### Create, start, and verify a Working Plan
 
 New tasks omit `id`; the runtime allocates their durable IDs. In the compatibility `complexity`/`tasks` form, a supplied `task.id` must already belong to the active plan. Do not mix that form with `operations`, `plan_id`, `expected_revision`, or `reason`. To create a canonical plan, omit `plan_id` and set `expected_revision` to zero. Later edits use the latest returned `plan_id`, revision, and task IDs. An `add.ref` is only a local reference for later operations in the same batch.
