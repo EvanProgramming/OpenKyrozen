@@ -45,12 +45,20 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             helper = gateway_tests.DurableTaskGatewayTests()
+            log_path = root / 'gateway.log'
             started = time.monotonic()
-            with patch('test_durable_tasks_gateway.subprocess.Popen', side_effect=noisy_server):
-                process, url = helper._start_server(root, root / 'state.db', root / 'skills')
+            def ready_after_output(_url, path):
+                self.assertEqual(path, '/api/health')
+                if 'startup-marker' not in log_path.read_text(encoding='utf-8'):
+                    raise OSError('startup output is incomplete')
+                return {'status': 'ok'}
+            with patch('test_durable_tasks_gateway.subprocess.Popen', side_effect=noisy_server), \
+                 patch.object(helper, '_request', side_effect=ready_after_output):
+                process, _url = helper._start_server(
+                    root, root / 'state.db', root / 'skills', log_path=log_path)
             try:
                 self.assertLess(time.monotonic() - started, 5)
-                self.assertEqual(helper._request(url, '/api/health')['status'], 'ok')
-                self.assertIn('startup-marker', (root / 'gateway.log').read_text())
+                self.assertIsNone(process.poll())
+                self.assertIn('startup-marker', log_path.read_text(encoding='utf-8'))
             finally:
                 helper._stop_server(process)

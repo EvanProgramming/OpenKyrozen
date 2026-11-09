@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import os
 import tempfile
 import unittest
@@ -12,11 +13,14 @@ server = WebService(None)
 class MultiPartyMemoryTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
-        self.memory = MemoryBank(Path(self.directory.name) / "state.sqlite3", workspace_id="project",
-                                 session_id="session")
+        self._sqlite_owners = ExitStack()
+        self.addCleanup(self._sqlite_owners.close)
+        self.memory = self._sqlite_owners.enter_context(closing(MemoryBank(Path(self.directory.name) / "state.sqlite3", workspace_id="project",
+                                 session_id="session")))
         self.engine = LearningEngine(self.memory)
 
     def tearDown(self):
+        self._sqlite_owners.close()
         self.directory.cleanup()
 
     def _belief(self, speaker, value):
@@ -95,8 +99,8 @@ class MultiPartyMemoryTests(unittest.TestCase):
         self.assertEqual(receipt["payload"]["attributions"][0]["speaker"], "alice")
 
     def test_memory_bank_reads_are_scoped_to_its_user(self):
-        alice = MemoryBank(self.memory.db_path, user_id="alice", workspace_id="project", session_id="alice-session")
-        bob = MemoryBank(self.memory.db_path, user_id="bob", workspace_id="project", session_id="bob-session")
+        alice = self._sqlite_owners.enter_context(closing(MemoryBank(self.memory.db_path, user_id="alice", workspace_id="project", session_id="alice-session")))
+        bob = self._sqlite_owners.enter_context(closing(MemoryBank(self.memory.db_path, user_id="bob", workspace_id="project", session_id="bob-session")))
         memory_id = alice.add_log(
             "Private fact from alice — medical note: diagnosis-8x",
             kind="fact", metadata={"visibility": "private", "speaker": "alice", "claim_type": "private_fact"},
@@ -107,10 +111,10 @@ class MultiPartyMemoryTests(unittest.TestCase):
 
     def test_chroma_recall_filters_user_and_session_before_returning_documents(self):
         with patch.dict(os.environ, {"KYROZEN_VECTOR_PATH": str(Path(self.directory.name) / "chroma")}):
-            alice = MemoryBank(self.memory.db_path, user_id="alice", workspace_id="shared",
-                               session_id="alice-session")
-            bob = MemoryBank(self.memory.db_path, user_id="bob", workspace_id="shared",
-                             session_id="bob-session")
+            alice = self._sqlite_owners.enter_context(closing(MemoryBank(self.memory.db_path, user_id="alice", workspace_id="shared",
+                               session_id="alice-session")))
+            bob = self._sqlite_owners.enter_context(closing(MemoryBank(self.memory.db_path, user_id="bob", workspace_id="shared",
+                             session_id="bob-session")))
             self.assertIsNotNone(alice._collection)
             alice.add_log(
                 "PRIVATE_MARKER_ALICE",
@@ -118,14 +122,14 @@ class MultiPartyMemoryTests(unittest.TestCase):
                 metadata={"visibility": "private", "speaker": "alice"},
             )
             alice.add_log("SESSION_MARKER_ALICE", kind="fact")
-            MemoryBank(self.memory.db_path, user_id="alice", workspace_id="shared").add_log(
+            self._sqlite_owners.enter_context(closing(MemoryBank(self.memory.db_path, user_id="alice", workspace_id="shared"))).add_log(
                 "GLOBAL_MARKER_ALICE", kind="fact"
             )
 
             self.assertEqual(bob.recall("PRIVATE_MARKER_ALICE", n_results=5), [])
             self.assertEqual(bob.recall_records("PRIVATE_MARKER_ALICE", n_results=5), [])
-            other_session = MemoryBank(self.memory.db_path, user_id="alice", workspace_id="shared",
-                                       session_id="other-session")
+            other_session = self._sqlite_owners.enter_context(closing(MemoryBank(self.memory.db_path, user_id="alice", workspace_id="shared",
+                                       session_id="other-session")))
             self.assertNotIn("SESSION_MARKER_ALICE", other_session.recall("SESSION_MARKER_ALICE", n_results=5))
             self.assertIn("GLOBAL_MARKER_ALICE", alice.recall("GLOBAL_MARKER_ALICE", n_results=5))
             self.assertIn(
@@ -136,13 +140,13 @@ class MultiPartyMemoryTests(unittest.TestCase):
             )
 
     def test_api_memory_recall_does_not_return_another_user_vector_document(self):
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-memory-api-") as directory:
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-memory-api-") as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             with patch.dict(os.environ, {"KYROZEN_VECTOR_PATH": str(root / "chroma")}):
-                owner = MemoryBank(root / "state.sqlite3", user_id=server._SERVER_ACTOR_ID,
-                                   workspace_id="api-project", session_id="api-session")
-                other = MemoryBank(root / "state.sqlite3", user_id="other-user",
-                                   workspace_id="api-project", session_id="api-session")
+                owner = sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3", user_id=server._SERVER_ACTOR_ID,
+                                   workspace_id="api-project", session_id="api-session")))
+                other = sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3", user_id="other-user",
+                                   workspace_id="api-project", session_id="api-session")))
                 other.add_log(
                     "API_PRIVATE_MARKER_OTHER",
                     kind="fact",

@@ -52,8 +52,9 @@ class LearningEngine:
             "typescript", "swift", "rust", "function", "class", "terminal", "shell", "api", "database",
             "代码", "仓库", "修复", "测试", "构建", "提交", "终端", "数据库",
         }
-        tokens = set(re.findall(r"[\w+#.-]+", text, re.UNICODE))
-        return "coder" if coder_terms & tokens else "researcher"
+        english = "|".join(re.escape(term) for term in coder_terms if term.isascii())
+        return "coder" if (re.search(r"\b(?:" + english + r")(?:s|es|ed|ing)?\b", text, re.ASCII)
+                           or any(term in text for term in coder_terms if not term.isascii())) else "researcher"
 
 
     @staticmethod

@@ -11,6 +11,7 @@ import time
 import datetime
 from pathlib import Path
 from typing import Any
+from openkyrozen import __version__
 from openkyrozen.security.capabilities import issue_capability_token
 from openkyrozen.workspace.context import LaunchContext
 from openkyrozen.security.tool_policy import resolve_capabilities
@@ -38,7 +39,7 @@ def initialise(self):
 
     self.UTC = datetime.timezone.utc
 
-    self.RELEASE_VERSION = "2.0.8"
+    self.RELEASE_VERSION = __version__
 
     self.RELEASE_TAG = f"v{self.RELEASE_VERSION}"
 
@@ -282,10 +283,6 @@ def initialise(self):
     self._technology_in_flight: set[str] = set()
 
     self._technology_lock = threading.Lock()
-
-    self._SPINNER_STOP = threading.Event()
-
-    self._SPINNER_THREAD: threading.Thread | None = None
 
     self._active_context_state: ContextVar[ContextState | None] = ContextVar("active_context_state", default=None)
 

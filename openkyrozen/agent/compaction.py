@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -86,12 +87,9 @@ def _accounting_message(message: Any) -> dict[str, Any]:
     """Create a text-only estimate without changing native provider history."""
     from openkyrozen.providers.models import ModelResponse, ToolReply
 
-    if isinstance(message, ModelResponse):
-        calls = [{"name": call.name, "arguments": call.arguments} for call in message.tool_calls]
-        content = message.text + ("\n" + str(calls) if calls else "")
-        return {"role": "assistant", "content": content}
-    if isinstance(message, ToolReply):
-        return {"role": "tool", "content": str(message.output)}
+    if isinstance(message, (ModelResponse, ToolReply)):
+        from openkyrozen.providers.context import context_accounting_messages
+        return context_accounting_messages([message])[0]
     return message
 
 
@@ -124,7 +122,7 @@ def message_fingerprint(messages: list[Any]) -> str:
 
 
 def is_context_digest(message: dict[str, Any]) -> bool:
-    return str(message.get("content", "")).startswith((DIGEST_PREFIX, OMISSION_PREFIX))
+    return isinstance(message, dict) and str(message.get("content", "")).startswith((DIGEST_PREFIX, OMISSION_PREFIX))
 
 
 def retain_context_digests(messages: list[dict[str, Any]], limit: int = 32) -> list[dict[str, Any]]:
@@ -147,18 +145,29 @@ class ContextState:
     reported_inputs: dict[str, int] = field(default_factory=dict)
     status: dict[str, Any] = field(default_factory=dict)
     overflow_retried: bool = False
+    native_input_overhead_tokens: int = 0
+    native_schema_fingerprint: str = ""
+    request_provider_id: str = ""
+    request_model: str | None = None
 
     def __post_init__(self) -> None:
         self.window_tokens, self.window_source = resolve_context_window(self.model, self.configured_window)
 
+    def request_fingerprint(self, messages) -> str:
+        identity = [message_fingerprint(messages), self.request_model or self.model,
+                    self.request_provider_id, self.native_schema_fingerprint]
+        return hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode("utf-8")).hexdigest()
+
     def update(self, messages: list[dict[str, Any]], *, compaction: dict[str, Any] | None = None) -> dict[str, Any]:
-        fingerprint = message_fingerprint(messages)
+        fingerprint = self.request_fingerprint(messages)
         estimated, breakdown = estimate_messages(messages)
+        estimated += self.native_input_overhead_tokens
+        breakdown["fixed_instructions"] += self.native_input_overhead_tokens
         reported = self.reported_inputs.get(fingerprint)
         input_tokens = reported if reported is not None else estimated
         remaining = None if self.window_tokens is None else max(0, self.window_tokens - input_tokens - self.reserve_tokens)
         self.status = {
-            "model": self.model,
+            "model": self.request_model or self.model,
             "window_tokens": self.window_tokens,
             "window_source": self.window_source,
             "input_tokens": input_tokens,
@@ -166,6 +175,8 @@ class ContextState:
             "breakdown": breakdown,
             "breakdown_source": "estimated",
             "reserve_tokens": self.reserve_tokens,
+            "native_input_overhead_tokens": self.native_input_overhead_tokens,
+            "native_overhead_method": "stdlib_json_estimate_plus_framing" if self.native_schema_fingerprint else "none",
             "remaining_tokens": remaining,
             "compaction": compaction or self.status.get("compaction", {"status": "not_needed"}),
         }
@@ -173,7 +184,7 @@ class ContextState:
 
     def note_provider_usage(self, messages: list[dict[str, Any]], prompt_tokens: int) -> None:
         if prompt_tokens > 0:
-            self.reported_inputs[message_fingerprint(messages)] = int(prompt_tokens)
+            self.reported_inputs[self.request_fingerprint(messages)] = int(prompt_tokens)
         self.update(messages)
 
 
@@ -262,6 +273,57 @@ def compact_for_pressure(messages: list[Any], state: ContextState, summarize: Su
     from openkyrozen.providers.models import ModelResponse, ToolReply
 
     if any(isinstance(item, (ModelResponse, ToolReply)) for item in working):
+        # Only authoritative projected history can be evicted. Current-turn work,
+        # system state, orphan replies, and incomplete groups remain fixed.
+        units: list[list[int]] = []
+        index = 0
+        while index < len(working):
+            item = working[index]
+            unit = None
+            if id(item) in state.history_message_ids:
+                if isinstance(item, dict) and item.get("role") in {"user", "assistant"}:
+                    unit = [index]
+                elif isinstance(item, ModelResponse) and not item.tool_calls:
+                    from openkyrozen.providers.models import FinishReason
+                    if item.finish_reason == FinishReason.FINAL:
+                        unit = [index]
+                elif isinstance(item, ModelResponse) and item.tool_calls:
+                    positions = list(range(index + 1, index + 1 + len(item.tool_calls)))
+                    replies = [working[position] for position in positions if position < len(working)]
+                    expected = {call.id: call.name for call in item.tool_calls}
+                    if (len(replies) == len(item.tool_calls)
+                            and all(isinstance(reply, ToolReply) for reply in replies)
+                            and len(expected) == len(item.tool_calls)
+                            and {reply.call_id for reply in replies} == set(expected)
+                            and all(expected[reply.call_id] == reply.name for reply in replies)
+                            and all(id(reply) in state.history_message_ids for reply in replies)):
+                        unit = [index, *positions]
+            if unit is not None:
+                units.append(unit)
+                index = unit[-1] + 1
+            else:
+                index += 1
+        candidates = [position for unit in units[:-KEEP_RECENT_MESSAGES] for position in unit]
+        native_history_digest = None
+        history_compacted = bool(candidates)
+        if candidates:
+            raw = _format_entries([_accounting_message(working[position]) for position in candidates])
+            window_budget = ((state.window_tokens or 16_384) - state.reserve_tokens) // 2
+            output_chars = max(400, min(6_000, max(400, window_budget) * 3))
+            input_chars = max(1_000, min(12_000, max(1_000, window_budget) * 3))
+            summary = _bounded_summary(raw, summarize, max_chars=input_chars, output_chars=output_chars)
+            native_history_digest = _digest(summary, len(candidates), kind="native history messages")
+            removed = set(candidates)
+            first = candidates[0]
+            working = [message for position, message in enumerate(working) if position not in removed]
+            working.insert(first, native_history_digest)
+            status = state.update(working, compaction={
+                "status": "summarized" if summary else "trimmed_after_summary_failure",
+                "kind": "native_history", "omitted_entries": len(candidates),
+            })
+            if not under_pressure(status):
+                return CompactionResult(working, compacted=True, history_digest=native_history_digest)
+
         # Compact old outputs in complete native call/result groups. Replacing only
         # the payload preserves provider continuation structure and call correlation.
         native_groups: list[list[int]] = []
@@ -284,8 +346,8 @@ def compact_for_pressure(messages: list[Any], state: ContextState, summarize: Su
         if pending:
             native_groups.append(pending)
 
-        compacted = False
-        details: dict[str, Any] = {"status": "not_needed"}
+        compacted = history_compacted
+        details: dict[str, Any] = dict(state.status.get("compaction", {})) if history_compacted else {"status": "not_needed"}
         for group in native_groups[:-1]:
             if not all(isinstance(working[index], (ModelResponse, ToolReply)) for index in group):
                 continue
@@ -305,15 +367,16 @@ def compact_for_pressure(messages: list[Any], state: ContextState, summarize: Su
         # oversized tool receipts so recent reasoning has the available budget.
         first_native = next((index for index, item in enumerate(working)
                              if isinstance(item, (ModelResponse, ToolReply))), len(working))
-        prefix = compact_for_pressure(working[:first_native], state, summarize, force=force)
+        prefix = compact_for_pressure(working[:first_native], state, summarize,
+                                      force=force or under_pressure(state.update(working)))
         working = prefix.messages + working[first_native:]
         status = state.update(working, compaction=details)
         if under_pressure(status):
             status["compaction"] = {"status": "fixed_context_too_large"}
             return CompactionResult(working, compacted=compacted or prefix.compacted,
-                                    history_digest=prefix.history_digest, impossible=True)
+                                    history_digest=native_history_digest or prefix.history_digest, impossible=True)
         return CompactionResult(working, compacted=compacted or prefix.compacted,
-                                history_digest=prefix.history_digest)
+                                history_digest=native_history_digest or prefix.history_digest)
 
     non_system = [item for item in working if item.get("role") != "system" and not is_context_digest(item)]
     tracked_history = [item for item in non_system if id(item) in state.history_message_ids]

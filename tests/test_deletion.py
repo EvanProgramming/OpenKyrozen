@@ -1,4 +1,5 @@
 from __future__ import annotations
+from contextlib import ExitStack, closing
 
 import tempfile
 import unittest
@@ -10,9 +11,12 @@ from openkyrozen.persistence.store import EventStore
 class DeletionPersistenceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.store = EventStore(Path(self.temp.name) / "state.sqlite3")
+        self._sqlite_owners = ExitStack()
+        self.addCleanup(self._sqlite_owners.close)
+        self.store = self._sqlite_owners.enter_context(closing(EventStore(Path(self.temp.name) / "state.sqlite3")))
 
     def tearDown(self):
+        self._sqlite_owners.close()
         self.temp.cleanup()
 
     def add_history(self, *, user_id: str, workspace_id: str, session_id: str):

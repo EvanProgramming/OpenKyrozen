@@ -1,0 +1,151 @@
+name: V3 Windows cancellation investigation
+on:
+  push:
+    branches: ['Evan/v3-windows-cancellation-investigation-20261107']
+    paths: ['.github/workflows/v3-windows-reliability.yml', 'scripts/v3_windows_reliability.py', 'tests/test_v3_windows_reliability.py']
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact 40-character product commit to test (diagnostic code remains separate)
+        type: string
+        required: true
+        default: '7905fb634fe447243668c2d01179ce5cb2cdb275'
+      control:
+        description: Load control; paired-anchor compares equal CPU load with/without read-only anchor (1–10 pairs)
+        type: choice
+        options: [baseline, cpu, sqlite, combined, paired-anchor, native-wait, all]
+        default: baseline
+      iterations:
+        description: Samples per control and Python version (1–50)
+        type: number
+        default: 50
+      environment:
+        description: Current packages, or exact original Python 3.12.10/packages with reviewer interleaving
+        type: choice
+        options: [current, historical]
+        default: current
+env:
+  PRODUCT_SHA: ${{ inputs.candidate_sha || '7905fb634fe447243668c2d01179ce5cb2cdb275' }}
+  ITERATIONS: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.iterations) || '50' }}
+  HISTORICAL_ENVIRONMENT: ${{ inputs.environment == 'historical' && '1' || '0' }}
+permissions:
+  contents: read
+jobs:
+  cancellation:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJSON(inputs.environment == 'historical' && '["3.12.10"]' || '["3.12","3.13"]') }}
+        control: ${{ fromJSON(inputs.control == 'all' && '["baseline","cpu","sqlite","combined"]' || format('["{0}"]', inputs.control || 'baseline')) }}
+    env:
+      LOAD_CONTROL: ${{ matrix.control }}
+    steps:
+      - name: Validate exact candidate identity
+        shell: pwsh
+        run: |
+          if ($env:PRODUCT_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'candidate_sha must be a full lowercase commit SHA' }
+          if ($env:ITERATIONS -cnotmatch '^[0-9]+$' -or [int]$env:ITERATIONS -lt 1 -or [int]$env:ITERATIONS -gt 50) { throw 'iterations must be 1–50' }
+          if ($env:HISTORICAL_ENVIRONMENT -eq '1' -and [int]$env:ITERATIONS -gt 20) { throw 'historical campaign is bounded at 20 iterations' }
+          if ($env:LOAD_CONTROL -eq 'paired-anchor' -and [int]$env:ITERATIONS -gt 10) { throw 'paired-anchor is bounded at 10 pairs' }
+          if ($env:LOAD_CONTROL -eq 'native-wait' -and ($env:HISTORICAL_ENVIRONMENT -ne '1' -or [int]$env:ITERATIONS -ne 4)) { throw 'native-wait requires historical environment and exactly four triples' }
+      - name: Checkout diagnostic harness
+        uses: actions/checkout@v4
+        with:
+          path: diagnostic-source
+          fetch-depth: 0
+      - name: Checkout exact product
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          path: product
+          fetch-depth: 0
+      - name: Checkout original product for native wait comparison
+        if: matrix.control == 'native-wait'
+        uses: actions/checkout@v4
+        with:
+          ref: '0f172f9fe692ff8fafcc0a15a72fe51eaf67e977'
+          path: historical-product
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Retain unavailable historical runtime evidence
+        if: failure() && steps.python.outcome == 'failure'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force windows-evidence | Out-Null
+          '{"status":"INFRASTRUCTURE_FAILURE","reason":"Requested Python runtime could not be provisioned"}' | Set-Content -Encoding utf8 windows-evidence/historical-environment.json
+      - name: Verify checked-out product
+        shell: pwsh
+        working-directory: product
+        run: |
+          if ((git rev-parse HEAD) -cne $env:PRODUCT_SHA) { throw 'Checked-out candidate differs from requested commit' }
+          if (git status --porcelain --untracked-files=no) { throw 'Product checkout has tracked edits' }
+      - name: Install exact product dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force windows-evidence | Out-Null
+          if ($env:HISTORICAL_ENVIRONMENT -eq '1') {
+            python diagnostic-source/scripts/v3_windows_reliability.py --write-historical-requirements windows-evidence/historical-requirements.txt
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to prepare historical requirements' }
+            python -m pip install -r windows-evidence/historical-requirements.txt -e './product[all]' *> windows-evidence/dependency-install.log
+            if ($LASTEXITCODE -ne 0) {
+              '{"status":"INFRASTRUCTURE_FAILURE","reason":"Original pinned dependencies could not be installed; no substitutions allowed"}' | Set-Content -Encoding utf8 windows-evidence/historical-environment.json
+              throw 'Historical dependency installation failed; inspect dependency-install.log'
+            }
+          } else {
+            python -m pip install -e './product[all]'
+            if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+          }
+      - name: Record dependency versions
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force windows-evidence | Out-Null
+          python -m pip freeze | Set-Content -Encoding utf8 windows-evidence/dependencies.txt
+          $env:GITHUB_SHA | Set-Content -Encoding utf8 windows-evidence/diagnostic-commit.txt
+      - name: Trace unchanged cancellation test under recorded load control
+        shell: pwsh
+        run: |
+          $historical = @()
+          if ($env:HISTORICAL_ENVIRONMENT -eq '1') { $historical = @('--historical-environment', '--interleave-reviewer') }
+          $native = @()
+          if ($env:LOAD_CONTROL -eq 'native-wait') { $native = @('--historical-repository', 'historical-product') }
+          python diagnostic-source/scripts/v3_windows_reliability.py --repository product --output windows-evidence --iterations $env:ITERATIONS --control $env:LOAD_CONTROL --cpu-workers 2 @historical @native
+      - name: Verify diagnostic harness independently of historical product
+        if: always() && steps.python.outcome == 'success'
+        working-directory: diagnostic-source
+        shell: python
+        run: |
+          import json, os, sys, tempfile
+          from pathlib import Path
+          root = Path.cwd().resolve()
+          sys.path.insert(0, str(root))
+          from scripts.v3_windows_reliability import isolated_environment, run_process
+          output = root.parent / 'windows-evidence'
+          output.mkdir(exist_ok=True)
+          code = ("from pathlib import Path; import openkyrozen, unittest; "
+                  "print('Diagnostic product source:', openkyrozen.__file__, flush=True); "
+                  "assert Path(openkyrozen.__file__).resolve().is_relative_to(Path.cwd()); "
+                  "unittest.main(module='tests.test_v3_windows_reliability', verbosity=2)")
+          with tempfile.TemporaryDirectory(prefix='kyrozen-diagnostic-tests-') as home:
+              env = isolated_environment(Path(home))
+              env['PYTHONPATH'] = str(root)
+              env['KYROZEN_DIAGNOSTIC_TEST_OUTPUT'] = str(output / 'diagnostic-test-evidence')
+              result = run_process([sys.executable, '-c', code], output / 'diagnostic-unittest.log', env, timeout=300)
+          returncode = result['returncode']
+          (output / 'diagnostic-unittest.json').write_text(json.dumps({
+              'status': 'INFRASTRUCTURE_FAILURE' if returncode == 124 else 'PASS' if returncode == 0 else 'FAIL',
+              **result, 'diagnostic_commit': os.environ['GITHUB_SHA'],
+              'python': sys.version, 'scope': 'diagnostic-source only; separate from historical product acceptance',
+              }, indent=2), encoding='utf-8')
+          raise SystemExit(returncode)
+      - name: Upload investigation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cancellation-${{ matrix.python }}-${{ env.PRODUCT_SHA }}-${{ matrix.control }}
+          path: windows-evidence/
+          if-no-files-found: error

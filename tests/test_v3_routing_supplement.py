@@ -1,0 +1,904 @@
+"""Offline mechanism/protocol checks; no provider or credential access."""
+import copy
+from contextlib import closing
+from dataclasses import asdict
+from decimal import Decimal
+import importlib
+import json
+import os
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+
+def supplement():
+    return importlib.import_module('benchmarks.v3_routing_supplement')
+
+
+class RoutingProtocolTests(unittest.TestCase):
+    def test_model_exposure_joins_real_root_order_usage_and_rejects_ambiguous_calls(self):
+        from benchmarks.v3_gemini import GeminiPolicy
+        policy=GeminiPolicy();model=policy.role_models['simple']
+        request={'kind':'generation','model':model,'message_projection_sha256':'a'*64,
+                 'schema_sha256':'b'*64,'window_tokens':32000,'reserve_tokens':4096}
+        routing=[{'child':False,'before':{'model':policy.role_models['complex']},'after':{'model':model},
+                  'model_control_applied':True,'requests':[request]}]
+        ports=[dict(request,outcome='returned',provider_input_tokens=100,provider_output_tokens=20)]
+        usage={'input_tokens':100,'output_tokens':20,'served_model':model}
+        calls=[{'attempt_id':'real-physical','model':model,'actor_id':'root','actor_role':'root',
+                'root_actor_id':'root','admission_sequence':7,'status':'settled','usage':usage}]
+        result=supplement().model_exposure(routing,ports,calls,policy)
+        self.assertTrue(result['complete']);self.assertEqual(result['generation_calls'][0]['attempt_id'],'real-physical')
+        self.assertTrue(result['generation_calls'][0]['control_applied'])
+        self.assertFalse(supplement().model_exposure(routing,ports,calls+calls,policy)['complete'])
+        for field,value in [('actor_role','descendant'),('model',policy.role_models['complex'])]:
+            with self.subTest(field=field):
+                self.assertFalse(supplement().model_exposure(routing,ports,[dict(calls[0],**{field:value})],policy)['complete'])
+
+    def test_model_control_only_substitutes_auto_callback_with_symmetric_pure_decisions(self):
+        import openkyrozen.agent.preparation as preparation
+        from openkyrozen.providers import ProviderConfig
+        from unittest.mock import Mock
+        for variant in ('model-auto','model-simple'):
+            for mode in ('parent','child','main-pin','advisory'):
+                with self.subTest(variant=variant,mode=mode):
+                    config=ProviderConfig(provider='google',model_simple='simple-slot',model_complex='complex-slot',
+                        model_main='pinned' if mode=='main-pin' else 'auto')
+                    advice={'model':'reasoning'} if mode=='advisory' else {}
+                    config_before,advice_before=asdict(config),copy.deepcopy(advice)
+                    selected=[];classified=[];results=[];provider=Mock()
+                    def select(text):selected.append(text);return 'complex-slot'
+                    def classify(text):classified.append(text);return 'complex'
+                    def prepare(turn):
+                        value=preparation.decide_request(config,advice,'Review code',select,classify,'coder','auto','agent')
+                        results.append(value);turn.learning_run={'profile':value[0].profile};turn.learned_context=''
+                    runtime=SimpleNamespace(_prepare_turn=prepare,_interaction_controller=SimpleNamespace(state=lambda:{'system_one_backend':'off'}),
+                        execution_context=SimpleNamespace(child_run_id='child' if mode=='child' else None),
+                        _ponytail_context=lambda profile:profile,_execution_capability_token=SimpleNamespace(capabilities={'read'}),
+                        tasks=SimpleNamespace(working_plan_snapshot=lambda:None),llm_provider=provider)
+                    original=preparation.decide_request
+                    with patch.object(preparation,'decide_request',wraps=original) as decide:
+                        controller=supplement().install(runtime,variant)
+                        try:runtime._prepare_turn(SimpleNamespace(fast_backend='off'))
+                        finally:controller.close()
+                        self.assertEqual(decide.call_count,2)
+                    self.assertEqual(len(classified),2);provider.assert_not_called()
+                    record=controller.records[0]
+                    expected=('simple-slot' if variant=='model-simple' and mode=='parent' else
+                              'pinned' if mode=='main-pin' else 'complex-slot')
+                    self.assertEqual(results[-1][0].model,expected)
+                    self.assertEqual(results[-1][0].reasoning,'extended' if expected=='complex-slot' else 'standard')
+                    self.assertEqual(record['model_control_applied'],variant=='model-simple' and mode=='parent')
+                    self.assertEqual(asdict(config),config_before);self.assertEqual(advice,advice_before)
+                    self.assertEqual({key:value for key,value in record['before'].items() if key not in {'model','reasoning'}},
+                                     {key:value for key,value in record['after'].items() if key not in {'model','reasoning'}})
+
+    def test_model_contrast_is_separate_balanced_36_without_changing_original_54(self):
+        from collections import Counter
+        module=supplement();original=copy.deepcopy(module.schedule())
+        rows=module.model_schedule()
+        self.assertEqual(len(rows),36)
+        self.assertEqual(len({(row['fixture_id'],row['repeat'],row['variant']) for row in rows}),36)
+        self.assertEqual(Counter(tuple(row['variant'] for row in rows[index:index+2])
+            for index in range(0,36,2)),{('model-auto','model-simple'):9,('model-simple','model-auto'):9})
+        self.assertEqual(module.schedule(),original)
+
+    def model_rows(self):
+        from benchmarks.v3_gemini import GeminiPolicy,GeminiPricing
+        from openkyrozen.providers import ProviderConfig
+        policy=GeminiPolicy(config=ProviderConfig(provider='google',model_main='auto',
+            model_simple='gemini-3.5-flash-lite',model_complex='gemini-2.5-flash'),pricing=GeminiPricing())
+        rows=[]
+        for cell in supplement().model_schedule():
+            model=policy.role_models['complex' if cell['variant']=='model-auto' else 'simple']
+            rows.append(dict(cell,physical_success=True,verified_success=True,workflow_state_correct=True,
+                safety_passed=True,usage_complete=True,worker_result_complete=True,evidence_valid=True,
+                routing_evidence_valid=True,cost_cny='0',requests=1,input_tokens=10,output_tokens=2,
+                latency_ms=10 if cell['variant']=='model-auto' else 20,
+                model_exposure={'complete':True,'generation_calls':[{'natural_model':policy.role_models['complex'],
+                    'selected_model':model,'requested_model':model,'served_model':model,
+                    'attempt_id':f"{cell['fixture_id']}:{cell['repeat']}:{cell['variant']}",
+                    'control_applied':cell['variant']=='model-simple'}]}))
+        return rows,policy
+
+    def test_model_analysis_requires_real_exposure_then_quality_or_real_latency_not_free_savings(self):
+        rows,policy=self.model_rows();module=supplement()
+        result=module.model_analyze(rows,policy)
+        self.assertTrue(result['identifiable']);self.assertTrue(result['benefit_passed'])
+        self.assertEqual(result['endpoint'],'latency_per_accepted_task')
+        self.assertFalse(result['monetary_savings_claimed'])
+        self.assertEqual(result['fixture_effects'],[10]*6)
+        for row in rows:row['latency_ms']=20
+        self.assertFalse(module.model_analyze(rows,policy)['benefit_passed'])
+        for row in rows:
+            if row['variant']=='model-simple':row['verified_success']=row['physical_success']=False
+        quality=module.model_analyze(rows,policy)
+        self.assertTrue(quality['benefit_passed']);self.assertEqual(quality['endpoint'],'accepted_task_success')
+        rows[0]['model_exposure']['complete']=False
+        self.assertEqual(module.model_analyze(rows,policy)['status'],'UNIDENTIFIABLE')
+
+    def test_schedule_is_the_frozen_balanced_54_cells_without_modifying_core(self):
+        from benchmarks.v3_fixtures import FIXTURES, cohort_digest
+        module = supplement()
+        original = copy.deepcopy(FIXTURES), cohort_digest()
+        schedule = module.schedule()
+        self.assertEqual(len(schedule), 54)
+        self.assertEqual(len({(row['fixture_id'], row['repeat'], row['variant']) for row in schedule}), 54)
+        self.assertEqual([row['fixture_id'] for row in schedule[::9]], list(module.FIXTURE_IDS))
+        from collections import Counter
+        orders = Counter(tuple(row['variant'] for row in schedule[index:index+3])
+                         for index in range(0,54,3))
+        self.assertEqual(sorted(orders.values()), [3]*6)
+        self.assertEqual((FIXTURES,cohort_digest()), original)
+
+    def test_only_one_resolved_field_changes_and_explicit_roles_and_modes_are_preserved(self):
+        from openkyrozen.routing.router import RoutingDecision
+        module = supplement()
+        before = RoutingDecision('openai','deepseek-flash','standard',None,'coder',True)
+        for variant, expected in [('default',{}),('planning-never',{'planning_required':False}),
+                                  ('profile-fixed-researcher',{'profile':'researcher'})]:
+            after = module.intervene(before, variant, profile_override='auto', interaction_mode='agent')
+            self.assertEqual(asdict(after), dict(asdict(before), **expected))
+        for role in ('coder','researcher','reviewer','custom-role',None):
+            self.assertEqual(module.intervene(before,'profile-fixed-researcher',profile_override=role,
+                interaction_mode='agent'), before)
+        for mode in ('ask','plan'):
+            decision = type(before)(**dict(asdict(before),planning_required=False))
+            self.assertEqual(module.intervene(decision,'planning-never',profile_override='auto',
+                interaction_mode=mode), decision)
+        with self.assertRaises(ValueError):
+            module.intervene(before,'planning-always',profile_override='auto',interaction_mode='agent')
+
+    def test_analysis_never_turns_labels_or_incomplete_cells_into_a_benefit(self):
+        module = supplement()
+        self.assertFalse(module.analyze([])['complete'])
+        rows = [dict(row, physical_success=True, verified_success=True, workflow_state_correct=True,
+                     safety_passed=True, usage_complete=True, worker_result_complete=True,
+                     evidence_valid=True, routing_evidence_valid=True, cost_cny='0.01',requests=1,
+                     input_tokens=100,output_tokens=20,latency_ms=10,
+                     routing_treatment_active=row['variant']!='default') for row in module.schedule()]
+        equal = module.analyze(rows)
+        self.assertTrue(equal['complete'])
+        self.assertFalse(equal['benefit_passed'])
+        for row in rows:
+            if row['variant']=='default': row['cost_cny']='0.005'
+        efficient = module.analyze(rows)
+        self.assertTrue(efficient['benefit_passed'])
+        self.assertTrue(all(item['endpoint']=='cost_per_accepted_task' for item in efficient['contrasts'].values()))
+        rows[0]['routing_evidence_valid']=False
+        self.assertFalse(module.analyze(rows)['benefit_passed'])
+
+    def test_fixture_cluster_interval_preserves_all_three_repeats_and_receipt_only_gain_is_rejected(self):
+        module=supplement()
+        rows=[dict(row,physical_success=True,verified_success=True,workflow_state_correct=True,
+                   safety_passed=True,usage_complete=True,worker_result_complete=True,evidence_valid=True,
+                   routing_evidence_valid=True,routing_treatment_active=row['variant']!='default',
+                   cost_cny='0.01',requests=1,input_tokens=100,output_tokens=20,latency_ms=10)
+              for row in module.schedule()]
+        for row in rows:
+            if row['variant']!='default' and row['fixture_id'] in module.FIXTURE_IDS[:3]:
+                row['physical_success']=row['verified_success']=False
+        result=module.analyze(rows)
+        for contrast in result['contrasts'].values():
+            self.assertEqual(contrast['endpoint'],'accepted_task_success')
+            self.assertEqual(contrast['fixture_effects'],[1,1,1,0,0,0])
+            self.assertAlmostEqual(contrast['interval'][0],1/6)
+            self.assertAlmostEqual(contrast['interval'][1],5/6)
+        for row in rows:row['physical_success']=True
+        self.assertFalse(module.analyze(rows)['benefit_passed'])
+        rows[0]['cost_cny']='unavailable'
+        self.assertFalse(module.analyze(rows)['complete'])
+
+    def test_summary_cost_totals_include_failed_work_and_keep_fixture_balanced_denominators(self):
+        module=supplement()
+        rows=[]
+        for cell in module.schedule():
+            accepted=cell['fixture_id']!=module.FIXTURE_IDS[0] or cell['repeat']==0
+            rows.append(dict(cell,physical_success=accepted,verified_success=accepted,
+                workflow_state_correct=True,safety_passed=True,usage_complete=True,
+                worker_result_complete=True,evidence_valid=True,routing_evidence_valid=True,
+                routing_treatment_active=cell['variant']!='default',requests=1,input_tokens=100,
+                output_tokens=20,latency_ms=10,
+                cost_cny='1.1' if cell['variant']!='default' and cell['repeat']==1 else '0.1'))
+        result=module.analyze(rows)
+        self.assertTrue(result['complete'])
+        for contrast in result['contrasts'].values():
+            self.assertEqual(contrast['cost_cny'],{0:'1.8',1:'7.8'})
+            self.assertEqual(contrast['endpoint'],'cost_per_accepted_task')
+            self.assertAlmostEqual(contrast['fixture_effects'][0],1)
+            self.assertTrue(all(abs(effect-1/3)<1e-12 for effect in contrast['fixture_effects'][1:]))
+            mean=sum(contrast['fixture_effects'])/6
+            self.assertAlmostEqual(mean,4/9)
+            self.assertNotAlmostEqual(mean,6/16)  # pooled cost / pooled successes is a different estimand
+
+    def test_parent_routing_rpc_cannot_be_selected_by_claimed_child_payload(self):
+        from benchmarks.v3_actor_supervisor import _ActorBroker
+        broker=_ActorBroker.__new__(_ActorBroker)
+        broker.supervisor=SimpleNamespace(routing_variant='planning-never')
+        broker.actor={'root':False,'assignment':SimpleNamespace(payload={'routing_variant':'profile-fixed-researcher'}),
+                      'provider_config':{}}
+        self.assertEqual(broker._dispatch({'op':'routing_policy'}),{'variant':'planning-never'})
+        self.assertEqual(broker._dispatch({'op':'actor_bootstrap'})['routing_variant'],'planning-never')
+        with self.assertRaises(PermissionError):
+            broker._dispatch({'op':'routing_policy','variant':'default'})
+
+    def test_readonly_ledger_backup_retains_attempt_ids_costs_holds_and_cap(self):
+        from benchmarks.v3_deepseek import DEEPSEEK_PRICING
+        from benchmarks.v3_matched import BudgetLedger
+        module = supplement()
+        import sqlite3
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            core, target = root/'core.sqlite3', root/'supp.sqlite3'
+            ledger = BudgetLedger(core,limit_rmb='15',pricing=DEEPSEEK_PRICING)
+            for identifier in ('settled','unknown'):
+                ledger.reserve(identifier,input_token_bound=1_000_000,output_token_bound=4096,
+                    metadata={'reserved_rmb':'2.032768','arm':'v3','fixture_id':'fixture','repeat':0})
+            ledger.settle('settled',{'input_tokens':100,'output_tokens':10,'cache_read_tokens':0,'cache_write_tokens':0})
+            ledger.settle('unknown',None)
+            before = core.read_bytes()
+            module.backup_ledger(core,target)
+            copied = BudgetLedger(target,limit_rmb='15',pricing=DEEPSEEK_PRICING)
+            self.assertEqual(copied.remaining_rmb,ledger.remaining_rmb)
+            with closing(sqlite3.connect(target)) as db:
+                self.assertEqual(db.execute('SELECT id,status FROM attempts ORDER BY id').fetchall(),
+                                 [('settled','settled'),('unknown','unknown')])
+            self.assertEqual(core.read_bytes(),before)
+            with self.assertRaises(ValueError): module.backup_ledger(core,target)
+
+    def test_core_and_supplement_share_an_exclusive_canonical_report_lease(self):
+        from benchmarks.v3_matched_live import _campaign_lock
+        with tempfile.TemporaryDirectory() as directory:
+            report=Path(directory)/'core.json'
+            report.write_text('{}')
+            alias=Path(directory)/'alias.json';alias.symlink_to(report)
+            with _campaign_lock(report):
+                with self.assertRaisesRegex(ValueError,'active'):
+                    with _campaign_lock(report): self.fail('concurrent campaign entered')
+                with self.assertRaisesRegex(ValueError,'active'):
+                    with _campaign_lock(alias): self.fail('alias bypassed canonical report lease')
+
+    def test_one_core_continuation_cannot_be_forked_to_a_new_budget(self):
+        from benchmarks.v3_matched_live import _campaign_lock
+        module=supplement()
+        with tempfile.TemporaryDirectory() as directory:
+            with _campaign_lock(Path(directory)/'core.json') as descriptor:
+                module._bind_continuation(descriptor,{'budget':'one'})
+                module._bind_continuation(descriptor,{'budget':'one'})
+                with self.assertRaisesRegex(ValueError,'different continuation'):
+                    module._bind_continuation(descriptor,{'budget':'two'})
+
+    def test_report_variant_label_never_changes_actual_v3_worker_abi_or_secure_retention(self):
+        from benchmarks import v3_matched_live as live
+        from benchmarks.v3_fixtures import FIXTURES
+        fixture=next(row for row in FIXTURES if row['fixture_id']=='investigation-1')
+        relay=SimpleNamespace(label=None,url='http://localhost',client_key='local-token',actor_keys=(),rows=[],
+            issue_actor_config=lambda actor:{},revoke_actor=lambda actor:None)
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(live,'_run_worker',return_value=(-1,'blocked')) as execute, \
+             patch.object(live,'_read_worker_result',return_value=({}, {'classification':'missing'})), \
+             patch.object(live,'_write_worker_evidence') as retained:
+            source=Path(__file__).resolve().parents[1]
+            row=live._execute_cell(temporary_root=Path(directory),repeat=0,fixture=fixture,
+                arm='routing-planning-never',arm_source=source,candidate='candidate',identity={
+                    'cohort_sha256':'cohort','apparatus_sha256':'apparatus'},worker_script=source/'benchmarks/prompt_worker.py',
+                relay=relay,model='deepseek-flash',output=Path(directory)/'report.json',api_key='offline',
+                budget=SimpleNamespace(budget_ok=True),routing_variant='planning-never')
+            command=execute.call_args.args[0]
+            self.assertEqual(command[command.index('--source')+1],str(source))
+            self.assertEqual(command[command.index('--protocol')+1],'responses')
+            self.assertEqual(execute.call_args.kwargs['routing_variant'],'planning-never')
+            self.assertEqual(row['arm'],'routing-planning-never')
+            self.assertEqual(row['variant'],'planning-never')
+            self.assertFalse(row['worker_result_complete'])
+            retained.assert_called_once()
+
+    def test_physical_outcome_is_separate_from_required_plan_reordering(self):
+        from benchmarks import v3_matched_live as live
+        from benchmarks.v3_fixtures import FIXTURES
+        fixture=next(row for row in FIXTURES if row['fixture_id']=='implementation-3')
+        with tempfile.TemporaryDirectory() as directory, patch.object(live,'_run_fixture_tests',return_value=True):
+            root=Path(directory);prepared=live.prepare_fixture(root,fixture)
+            for name in ('flags.py','consumer.py'):
+                (root/name).write_text((root/name).read_text()+'\n# verified production change\n')
+            verified=live.verify_fixture(fixture,root,'completed',{'provider_error':False,'processes_alive':0},prepared)
+            self.assertFalse(verified['plan_scenario_passed'])
+            self.assertTrue(verified['physical_success'])
+            self.assertTrue(verified['verified_success'])
+            self.assertFalse(live._workflow_state_correct(fixture,{}))
+
+
+class RoutingRuntimeTests(unittest.TestCase):
+    def runtime(self):
+        from openkyrozen.app.bootstrap import build_application,build_memory
+        from openkyrozen.tools import ToolAdapters
+        from openkyrozen.providers import ProviderConfig
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        workspace = root/'workspace';workspace.mkdir()
+        env = patch.dict(os.environ,{'HOME':str(root),'KYROZEN_WORKSPACE_ROOT':str(workspace),
+            'KYROZEN_DB_PATH':str(root/'state.sqlite3'),'KYROZEN_SKILLS_DIR':str(root/'skills'),
+            'KYROZEN_DISABLE_VECTOR_INDEX':'1','KYROZEN_DECISION_ASSIST_BACKEND':'off'})
+        env.start();self.addCleanup(env.stop)
+        app = build_application(surface='cli',memory=build_memory(root/'state.sqlite3',index=None),
+                                tools=ToolAdapters(workspace))
+        self.addCleanup(app.close)
+        runtime=app.runtime;runtime._set_workspace_root(workspace);runtime.set_interaction_mode('agent')
+        runtime._provider_config=ProviderConfig(provider='openai',api_key='offline',
+            model_simple='deepseek-flash',model_complex='deepseek-flash',context_window_tokens=1000000)
+        runtime.dispatch_learning_cycle=lambda **kwargs:None
+        runtime._plugin_runtime_for_surface=lambda *args:SimpleNamespace(
+            turn_start=lambda **kwargs:None,turn_end=lambda **kwargs:None)
+        return runtime
+
+    def test_real_preparation_and_native_engine_observe_plan_schema_intervention(self):
+        from benchmarks.prompt_worker import _ProviderObservations
+        from openkyrozen.providers.base import LLMProvider
+        from openkyrozen.providers.models import ModelResponse,FinishReason,ProviderCapabilities,provider_continuation
+        schemas=[]
+        class Provider(LLMProvider):
+            def get_capabilities(self,model=None):return ProviderCapabilities(native_tools=True)
+            def chat(self,messages,model=None):return self.chat_response(messages,model).as_legacy_tuple()
+            def chat_response(self,messages,model=None,*,tools=None):
+                schemas.append({row.get('name') or row.get('function',{}).get('name') for row in tools or []})
+                return ModelResponse(text='Offline final.',finish_reason=FinishReason.FINAL,
+                    continuation=provider_continuation(self,model,'fixture',{'assistant':{'role':'assistant','content':'Offline final.'}}))
+        observed=[]
+        for variant in ('default','planning-never'):
+            runtime=self.runtime();runtime.MAX_STEPS_PER_TURN=1
+            provider=Provider(runtime._provider_config);runtime.llm_provider=provider;runtime._default_turn.provider=provider
+            observer=_ProviderObservations(runtime,provider)
+            controller=supplement().install(runtime,variant)
+            try:
+                runtime.chat(runtime.current_session,'Refactor the implementation in source.py.',profile='auto')
+                observed.append((copy.deepcopy(controller.records),schemas[-1]))
+                self.assertTrue(observer.records)
+                self.assertEqual(observer.records[0]['model'],'deepseek-flash')
+                self.assertTrue(controller.records[0]['requests'])
+            finally:controller.close()
+        self.assertEqual(observed[0][1],{'update_plan','read_tool_artifact'})
+        self.assertGreater(len(observed[1][1]),1)
+        self.assertIn('read_file',observed[1][1])
+        self.assertTrue(observed[0][0][0]['before']['planning_required'])
+        self.assertFalse(observed[1][0][0]['after']['planning_required'])
+
+    def test_real_preparation_preserves_child_role_and_accepted_plan_and_changes_cold_profile_context(self):
+        from openkyrozen.agent.turn import TurnContext
+        runtime=self.runtime()
+        runtime.tasks.edit_plan(complexity='complex',expected_revision=0,operations=[{'op':'add','ref':'one',
+            'task':{'description':'Keep seeded task','acceptance':['preserve']}}],reason='Frozen seed')
+        initial=runtime.tasks.working_plan_snapshot()
+        controller=supplement().install(runtime,'profile-fixed-researcher')
+        try:
+            turn=TurnContext('Inspect catalog.py and report which function sorts products and its exact tie-break rule.',profile='auto')
+            runtime._prepare_turn(turn)
+            record=controller.records[-1]
+            self.assertEqual(record['before']['profile'],'coder')
+            self.assertEqual(record['after']['profile'],'researcher')
+            self.assertNotEqual(*record['profile_guidance_hashes'])
+            self.assertEqual(runtime.tasks.working_plan_snapshot(),initial)
+            runtime.execution_context.child_run_id='bound-child'
+            explicit=TurnContext('Refactor module source.py.',profile='reviewer')
+            runtime._prepare_turn(explicit)
+            self.assertEqual(controller.records[-1]['before'],controller.records[-1]['after'])
+            self.assertTrue(controller.records[-1]['child'])
+        finally:controller.close()
+
+    def test_planning_treatment_keeps_actual_accepted_strategic_bounds_and_explicit_plan_steps(self):
+        from openkyrozen.agent.turn import TurnContext
+        runtime=self.runtime()
+        proposal={'title':'Approved source','summary':'One file only','bounds':{'workspace_paths':['source.py'],
+            'capabilities':['read','write'],'effects':['read_only','filesystem'],'risk_ceiling':'normal'},
+            'steps':[{'id':'source','title':'Source','description':'Write source.py','acceptance':[
+                {'criterion':'Source preserved','verification':{'action':'read_file','arguments':{'path':'source.py'},
+                                                           'expect':{'equals':'approved'}}}]}]}
+        pending=runtime._interaction_controller.propose_plan(proposal)
+        runtime._interaction_controller.accept_plan(runtime.tasks,plan_id=pending['plan_id'],version=1)
+        before=copy.deepcopy(runtime._interaction_controller.state()['executing_plan'])
+        tasks=runtime.tasks.working_plan_snapshot()
+        controller=supplement().install(runtime,'planning-never')
+        try:
+            turn=TurnContext('Implement source.py, then verify the approved plan.',profile='auto')
+            runtime._prepare_turn(turn)
+            self.assertFalse(turn.planning_required)
+            self.assertEqual(runtime._interaction_controller.state()['executing_plan'],before)
+            self.assertEqual(runtime.tasks.working_plan_snapshot(),tasks)
+        finally:controller.close()
+
+    def test_symbolic_distinct_slots_and_main_pins_survive_the_actual_boundary(self):
+        from openkyrozen.agent.turn import TurnContext
+        runtime=self.runtime()
+        runtime._provider_config.model_simple='symbolic-simple'
+        runtime._provider_config.model_complex='symbolic-complex'
+        controller=supplement().install(runtime,'planning-never')
+        try:
+            runtime._prepare_turn(TurnContext('Implement source.py, then verify.',profile='auto'))
+            self.assertEqual(controller.records[-1]['before']['model'],'symbolic-complex')
+            self.assertEqual(controller.records[-1]['after']['model'],'symbolic-complex')
+            runtime._provider_config.model_main='explicit-main'
+            runtime._prepare_turn(TurnContext('Hello',profile='coder'))
+            self.assertEqual(controller.records[-1]['after']['model'],'explicit-main')
+        finally:controller.close()
+
+    def test_original_child_driver_receives_parent_variant_and_preserves_explicit_roles(self):
+        from benchmarks import v3_actor_worker as actor
+        from tests.test_v3_actor_worker import ActorDriverTests
+        original=actor.run_actor
+        observations=[]
+        def run(payload,client,**kwargs):
+            payload=copy.deepcopy(payload)
+            payload['run']['assignment']['objective']='Refactor source.py, then verify the source evidence.'
+            result=original(payload,client,**kwargs,routing_variant='planning-never')
+            observations.extend(result['_benchmark_routing_observations'])
+            return result
+        with patch.object(actor,'run_actor',side_effect=run):
+            ActorDriverTests('test_driver_keeps_real_author_and_review_scope_receipts_and_report_contract').test_driver_keeps_real_author_and_review_scope_receipts_and_report_contract()
+        authors=[row for row in observations if row['interaction_mode']=='agent']
+        reviews=[row for row in observations if row['interaction_mode']=='ask']
+        self.assertTrue(authors and reviews)
+        self.assertTrue(all(row['child'] for row in observations))
+        self.assertTrue(any(row['before']['planning_required'] and not row['after']['planning_required'] for row in authors))
+        self.assertTrue(all(row['before']==row['after'] for row in reviews))
+        self.assertTrue(all(row['before']['profile']==row['after']['profile'] for row in observations))
+        self.assertTrue(any(row['requests'] for row in observations))
+
+
+class SupplementRunnerTests(unittest.TestCase):
+    def test_model_origin_revalidates_original54_workers_costs_and_foreign_attempts(self):
+        from benchmarks import v3_matched_live as live
+        from benchmarks.v3_matched import BudgetLedger
+        from benchmarks.v3_gemini import GeminiPolicy,GeminiPricing,INPUT_BOUND
+        from benchmarks.v3_fixtures import FIXTURES
+        from openkyrozen.providers import ProviderConfig
+        from openkyrozen.routing.router import RoutingDecision
+        module=supplement()
+        policy=GeminiPolicy(config=ProviderConfig(provider='google',model_main='auto',
+            model_simple='gemini-3.5-flash-lite',model_complex='gemini-3.8-flash'),pricing=GeminiPricing(billing_tier='free'))
+        fixtures={row['fixture_id']:row for row in FIXTURES if row['fixture_id'] in module.FIXTURE_IDS}
+        identity=module._experiment_identity({'apparatus_sha256':'fixed','provider_policy':policy.identity()},fixtures)
+        workers={};rows=[]
+        with tempfile.TemporaryDirectory() as directory:
+            ledger=BudgetLedger(Path(directory)/'54.db',limit_rmb=15,pricing=policy.pricing)
+            for index,cell in enumerate(module.schedule()):
+                arm='routing-'+cell['variant'];model=policy.role_models['complex'];identifier=f'physical-{index:03}'
+                before=RoutingDecision('google',model,'extended',None,'coder',True)
+                after=module.intervene(before,cell['variant'],profile_override='auto',interaction_mode='agent')
+                workers[identifier]={'routing_observations':[{'before':asdict(before),'after':asdict(after),
+                    'variant':cell['variant'],'interaction_mode':'agent','profile_override':'auto',
+                    'system_one_backend':'off','decision_assist_backend':'off','requests':[{'model':model,
+                        'reserve_tokens':4096,'message_projection_sha256':'a'*64}]}]}
+                metadata=dict(policy.metadata(model),arm=arm,fixture_id=cell['fixture_id'],repeat=cell['repeat'],
+                              max_output_tokens=4096,reserved_rmb='0')
+                ledger.reserve(identifier,input_token_bound=INPUT_BOUND,output_token_bound=4096,metadata=metadata)
+                ledger.settle(identifier,{'input_tokens':100,'output_tokens':20,'cache_read_tokens':0,'cache_write_tokens':0,
+                    'reasoning_tokens':3,'served_model':model,'raw_usage':{'promptTokenCount':100,'candidatesTokenCount':17,
+                                                                          'thoughtsTokenCount':3,'totalTokenCount':120}})
+                call=next(row for row in ledger.campaign_calls() if row['attempt_id']==identifier)
+                rows.append(dict(cell,arm=arm,physical_success=True,verified_success=True,workflow_state_correct=True,
+                    safety_passed=True,usage_complete=True,worker_result_complete=True,evidence_valid=True,
+                    routing_evidence_valid=True,routing_treatment_active=False,cost_cny='0',cost_calls=[call],
+                    requests=1,attempts=1,input_tokens=100,output_tokens=20,cache_read_tokens=0,cache_write_tokens=0,
+                    latency_ms=10,worker_id=identifier))
+            report={**identity,'protocol':module.PROTOCOL,'candidate_sha':'a'*40,'status':'complete','rows':rows,
+                    'schedule':module.schedule(),'pricing':policy.pricing.as_dict(),'origin':{'original_attempt_ids':[]}}
+            def attempts():
+                with closing(__import__('sqlite3').connect(ledger.path)) as db:return db.execute('SELECT * FROM attempts ORDER BY id').fetchall()
+            with patch.object(live,'_validate_rows_evidence',return_value=True), \
+                 patch.object(live,'_validate_worker_evidence',side_effect=lambda _,row,*a,**k:workers[row['worker_id']]):
+                module._validate_54_origin(report,attempts(),Path(directory)/'54.json','a'*40,identity,policy)
+                workers['physical-000']['routing_observations'][0]['after']['profile']='unexpected'
+                with self.assertRaisesRegex(ValueError,'worker or physical journal'):
+                    module._validate_54_origin(report,attempts(),Path(directory)/'54.json','a'*40,identity,policy)
+                workers['physical-000']['routing_observations'][0]['after']['profile']=rows[0]['variant']=='profile-fixed-researcher' and 'researcher' or 'coder'
+                ledger.reserve('foreign',input_token_bound=INPUT_BOUND,output_token_bound=4096,metadata=dict(
+                    policy.metadata(model),reserved_rmb='0',arm='routing-model-simple',fixture_id=cell['fixture_id'],repeat=0,max_output_tokens=4096))
+                ledger.settle('foreign',None)
+                with self.assertRaisesRegex(ValueError,'foreign physical'):
+                    module._validate_54_origin(report,attempts(),Path(directory)/'54.json','a'*40,identity,policy)
+
+    def test_model_phase_uses_one_linear54_child_and_shared36_loop_without_mutating_parents(self):
+        self._model_phase_run()
+
+    def test_model_phase_preserves_durable_final_operational_stop_before_checkpoint_or_key(self):
+        for model_routing in (False,True):
+            with self.subTest(model_routing=model_routing):
+                self._model_phase_run(durable_overrun=True,model_routing=model_routing)
+
+    def _model_phase_run(self, *, durable_overrun=False,model_routing=True):
+        """Synthetic workers/gates test SQLite scheduling/lineage, not formal quality."""
+        from benchmarks import v3_matched_live as live
+        from benchmarks.v3_matched import BudgetLedger
+        from benchmarks.v3_gemini import GeminiPolicy,GeminiPricing,INPUT_BOUND
+        from benchmarks.v3_responses_relay import RelayConfig
+        from benchmarks.v3_fixtures import FIXTURES
+        from openkyrozen.providers import ProviderConfig
+        from contextlib import ExitStack
+        policy=GeminiPolicy(config=ProviderConfig(provider='google',model_main='auto',
+            model_simple='gemini-3.5-flash-lite',model_complex='gemini-3.8-flash'),pricing=GeminiPricing(billing_tier='free'))
+        module=supplement();identity=live.apparatus_identity();identity['provider_policy']=policy.identity()
+        cells=module.model_schedule() if model_routing else module.schedule()
+        protocol=module.MODEL_PROTOCOL if model_routing else module.PROTOCOL
+        fixtures={item['fixture_id']:item for item in FIXTURES if item['fixture_id'] in module.FIXTURE_IDS}
+        proof={'proof_sha256':'b'*64}
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve();core_output=root/'core.json';core_budget=root/'core.db'
+            parent_output=root/'54.json';parent_budget=root/'54.db';output=root/'36.json';budget_path=root/'36.db'
+            ledger=BudgetLedger(core_budget,limit_rmb=15,prior_hold_rmb='12.151991600007',pricing=policy.pricing)
+            def record(budget,arm,fixture,repeat,model):
+                number=len(budget.campaign_calls());identifier=f'call-{number:04}'
+                metadata=dict(policy.metadata(model),attempt_id=identifier,arm=arm,fixture_id=fixture,repeat=repeat,
+                    max_output_tokens=4096,reserved_rmb='0',admission_sequence=number,
+                    actor_id='root',actor_role='root',root_actor_id='root')
+                budget.reserve(identifier,input_token_bound=INPUT_BOUND,output_token_bound=4096,metadata=metadata)
+                count=(1_000_001 if durable_overrun and arm=='routing-'+cells[-1]['variant']
+                       and fixture=='implementation-3' and repeat==2 else 100)
+                budget.settle(identifier,{'input_tokens':count,'output_tokens':20,'cache_read_tokens':0,'cache_write_tokens':0,
+                    'reasoning_tokens':3,'served_model':model,'raw_usage':{'promptTokenCount':count,'candidatesTokenCount':17,
+                        'thoughtsTokenCount':3,'totalTokenCount':count+20}})
+                return next(call for call in budget.campaign_calls() if call['attempt_id']==identifier)
+            smoke=[record(ledger,'smoke','a'*40,-1,policy.role_models['simple'])['attempt_id'] for _ in range(4)]
+            core={**identity,'protocol':'openkyrozen-v3-matched-live-v1','candidate_sha':'a'*40,
+                  'status':'complete','rows':[],'smoke_passed':True,'smoke_attempt_ids':smoke,
+                  'relay_config':asdict(RelayConfig('auto',4096,INPUT_BOUND,True)),'billing_proof':proof}
+            live._write_checkpoint(core_output,core_budget,core)
+            core_hash=__import__('hashlib').sha256(core_output.read_bytes()).hexdigest()
+            with live._campaign_lock(core_output) as lease:
+                module._activate_continuation(lease,{'protocol':module.PROTOCOL,'candidate_sha':'a'*40,
+                    'core_report_sha256':core_hash,'output':str(parent_output),'budget_path':str(parent_budget)})
+            module.backup_ledger(core_budget,parent_budget)
+            with closing(__import__('sqlite3').connect(core_budget)) as db:
+                original_ids=[row[0] for row in db.execute('SELECT id FROM attempts ORDER BY id')]
+            parent={'protocol':module.PROTOCOL,'candidate_sha':'a'*40,'status':'complete','rows':[],
+                    'origin':{'core_output':str(core_output),'core_budget':str(core_budget),
+                              'core_report_sha256':core_hash,'original_attempt_ids':original_ids}}
+            if model_routing:live._write_checkpoint(parent_output,parent_budget,parent)
+            else:output,budget_path=parent_output,parent_budget
+            parents=(core_output,core_budget,parent_output,parent_budget) if model_routing else (core_output,core_budget)
+            preserved=[path.read_bytes() for path in parents]
+            executed=[]
+            class Relay:
+                def __init__(self,**options):
+                    self.budget=options['budget'];self.rows=[];self.provider_error=None;self.budget_blocked=False
+                def start(self):pass
+                def close(self):pass
+            def execute(**options):
+                fixture=options['fixture']['fixture_id'];repeat=options['repeat'];variant=options['routing_variant']
+                executed.append((fixture,repeat,variant))
+                model=policy.role_models['simple' if variant=='model-simple' else 'complex']
+                call=record(options['budget'],options['arm'],fixture,repeat,model)
+                options['relay'].rows[:]=options['budget'].campaign_calls()
+                if durable_overrun and len(executed)==len(cells):options['relay'].provider_error='native_usage_overrun'
+                success=model_routing or variant=='default'
+                row={'fixture_id':fixture,'repeat':repeat,'arm':options['arm'],'variant':variant,
+                    'physical_success':success,'verified_success':success,'workflow_state_correct':True,
+                    'safety_passed':True,'usage_complete':True,'worker_result_complete':True,'worker_exit_code':0,
+                    'evidence_valid':True,'routing_evidence_valid':True,'requests':1,'attempts':1,
+                    'routing_treatment_active':variant in module.VARIANTS[1:],
+                    'input_tokens':call['usage']['input_tokens'],'output_tokens':20,'cache_read_tokens':0,'cache_write_tokens':0,
+                    'cost_calls':[call],'cost_cny':'0','latency_ms':10 if variant=='model-auto' else 20,
+                    'safety_components':{key:True for key in ('scope_safe','original_tests_unchanged','provider_ok',
+                                                            'no_running_processes','worker_complete')},
+                    'model_exposure':{'complete':True,'generation_calls':[{'natural_model':policy.role_models['complex'],
+                        'selected_model':model,'requested_model':model,'served_model':model,'attempt_id':call['attempt_id'],
+                        'control_applied':variant=='model-simple'}]}}
+                if not model_routing:row.pop('model_exposure')
+                return row
+            with ExitStack() as stack:
+                stack.enter_context(patch.multiple(live,_source_snapshot=lambda *_:'a'*40,
+                    _require_dispatched_apparatus=lambda *_:Path('worker.py'),_validate_rows_evidence=lambda *_:True,
+                    _validate_worker_evidence=lambda *_,**__:True,_execute_cell=execute))
+                stack.enter_context(patch('benchmarks.v3_matched.summarize',return_value={'complete':True,'accounting_complete':True}))
+                stack.enter_context(patch.object(module,'_validate_54_origin'))
+                stack.enter_context(patch('benchmarks.v3_deepseek.validate_planning_preflight'))
+                stack.enter_context(patch('benchmarks.v3_protected_worker.verify_worker_protection'))
+                stack.enter_context(patch('benchmarks.v3_gemini.GeminiRelay',Relay))
+                stack.enter_context(patch.object(policy,'verify_billing',return_value=proof))
+                credential=stack.enter_context(patch.object(policy,'credential',return_value=('http://127.0.0.1:1','synthetic-key')))
+                args=dict(source=Path(__file__).resolve().parents[1],repo=Path(__file__).resolve().parents[1],
+                    core_output=parent_output if model_routing else core_output,
+                    core_budget=parent_budget if model_routing else core_budget,output=output,budget_path=budget_path,
+                    provider_policy=policy,model_routing=model_routing)
+                report=module.run(**args)
+                self.assertEqual(report['protocol'],protocol)
+                self.assertEqual(executed,[(row['fixture_id'],row['repeat'],row['variant']) for row in cells])
+                self.assertTrue(report['summary']['complete'])
+                if model_routing:self.assertTrue(report['summary']['identifiable'])
+                self.assertEqual(report['budget']['remaining_cny'],'2.848008399993')
+                self.assertEqual(credential.call_count,1)
+                if durable_overrun:
+                    self.assertEqual(report['status'],'blocked_provider_error')
+                    self.assertTrue(report['summary']['benefit_passed'])
+                    self.assertEqual(report['rows'][-1]['input_tokens'],1_000_001)
+                    self.assertEqual(report['rows'][-1]['cost_calls'][0]['usage']['raw_usage']['promptTokenCount'],1_000_001)
+                    stopped=output.read_bytes()
+                    with closing(__import__('sqlite3').connect(budget_path)) as db:
+                        original_checkpoint=db.execute('SELECT report_json FROM benchmark_checkpoint WHERE id=1').fetchone()[0]
+                    with self.assertRaisesRegex(ValueError,'native physical.*operational'):
+                        module.run(**args)
+                    self.assertEqual(output.read_bytes(),stopped)
+                    with closing(__import__('sqlite3').connect(budget_path)) as db:
+                        self.assertEqual(db.execute('SELECT report_json FROM benchmark_checkpoint WHERE id=1').fetchone()[0],original_checkpoint)
+                    self.assertEqual(credential.call_count,1)
+                    from benchmarks.v3_deepseek import read_prior_exposure
+                    self.assertEqual(read_prior_exposure([budget_path]).total_cny,Decimal('12.151991600007'))
+                    self.assertEqual([path.read_bytes() for path in parents],preserved)
+                    return
+                report['active_cell']=dict(module.model_schedule()[0])
+                live._write_checkpoint(output,budget_path,report)
+                with self.assertRaisesRegex(ValueError,'interrupted model cell'):
+                    module.run(**args)
+                self.assertEqual(credential.call_count,1)
+                report['active_cell']=None;live._write_checkpoint(output,budget_path,report)
+                with self.assertRaisesRegex(ValueError,'different continuation'):
+                    module.run(**dict(args,output=root/'fork.json',budget_path=root/'fork.db'))
+                budget_path.unlink()
+                with self.assertRaisesRegex(ValueError,'missing original continuation ledger'):
+                    module.run(**args)
+                self.assertEqual(credential.call_count,1)
+            self.assertEqual([path.read_bytes() for path in parents],preserved)
+
+    def test_bound54_parent_refuses_spend_before_any_provider_or_rewrite(self):
+        root,identity=self.prepare()
+        from benchmarks import v3_matched_live as live
+        module=supplement()
+        with live._campaign_lock(root/'supp.json') as lease:
+            binding={'protocol':'openkyrozen-v3-model-routing-v1','output':str(root/'model.json'),
+                     'budget_path':str(root/'model.db')}
+            module._activate_continuation(lease,binding)
+        def forbidden(*_,**__):raise AssertionError('bound54 reached provider boundary')
+        with self.assertRaisesRegex(ValueError,'bound continuation'):
+            self.call(root,identity,forbidden,forbidden,forbidden)
+
+    def prepare(self,hold='0'):
+        from dataclasses import asdict
+        from benchmarks.v3_matched import BudgetLedger
+        from benchmarks.v3_deepseek import DEEPSEEK_PRICING,DEEPSEEK_RELAY_CONFIG
+        from benchmarks.v3_matched_live import _write_checkpoint
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        root=Path(temporary.name)
+        ledger=BudgetLedger(root/'core.db',limit_rmb='15',pricing=DEEPSEEK_PRICING)
+        for identifier in ('smoke1','smoke2'):
+            metadata={'reserved_rmb':'2.032768','arm':'smoke','fixture_id':'a'*40,'repeat':-1,
+                      'model':'deepseek-flash','max_output_tokens':4096}
+            ledger.reserve(identifier,input_token_bound=1000000,output_token_bound=4096,metadata=metadata)
+            ledger.settle(identifier,{'input_tokens':10,'output_tokens':10,'cache_read_tokens':0,'cache_write_tokens':0})
+        identity={'cohort_sha256':'core-cohort','apparatus_sha256':'apparatus','apparatus_files':{},'context_settings':{}}
+        core={**identity,'protocol':'openkyrozen-v3-matched-live-v1','candidate_sha':'a'*40,
+              'status':'complete','rows':[],'smoke_passed':True,'smoke_attempt_ids':['smoke1','smoke2'],
+              'relay_config':asdict(DEEPSEEK_RELAY_CONFIG)}
+        from benchmarks import v3_matched_live as live
+        from benchmarks.v3_deepseek import _planning_preflight_identity, planning_preflight_fixture
+        from tests.test_v3_deepseek import PlanningPreflightTests
+        worker=PlanningPreflightTests().native_worker('a'*40)
+        attempt_ids=[]
+        for number in range(4):
+            identifier='planning'+str(number);attempt_ids.append(identifier)
+            ledger.reserve(identifier,input_token_bound=1000000,output_token_bound=4096,metadata={
+                'reserved_rmb':'2.032768','arm':'planning_preflight','fixture_id':'a'*40,'repeat':-1,
+                'model':'deepseek-flash','max_output_tokens':4096})
+            ledger.settle(identifier,{'input_tokens':10,'output_tokens':10,'cache_read_tokens':0,'cache_write_tokens':0})
+        for index in range(int(Decimal(hold)/2)):
+            identifier=f'past-{index}'
+            ledger.reserve(identifier,input_token_bound=1000000,output_token_bound=4096,metadata={
+                'reserved_rmb':'2.032768','arm':'v3','fixture_id':'past','repeat':0,
+                'model':'deepseek-flash','max_output_tokens':4096})
+            ledger.settle(identifier,{'input_tokens':1000000,'output_tokens':0,'cache_read_tokens':0,'cache_write_tokens':0})
+        row=live._empty_row('a'*40,-1,'planning_preflight')
+        row.update(cohort_sha256=identity['cohort_sha256'],apparatus_sha256=identity['apparatus_sha256'],
+            worker_exit_code=0,worker_result_complete=True,usage_complete=True,verified_success=True,
+            safety_passed=True,requests=4,attempts=4,input_tokens=40,output_tokens=40,
+            safety_components={key:True for key in ('scope_safe','original_tests_unchanged','provider_ok',
+                                                   'no_running_processes','worker_complete')})
+        result=root/'preflight-result.json';result.write_text(json.dumps(worker))
+        observed,metadata=live._read_worker_result(result,())
+        live._write_worker_evidence(root/'core.json',row,'a'*40,identity,observed,metadata)
+        core['planning_preflight']={'status':'passed','fixture_sha256':_planning_preflight_identity('a'*40),
+            'prompt_sha256':__import__('hashlib').sha256(live._fixture_prompt(planning_preflight_fixture('a'*40)).encode()).hexdigest(),
+            'row':row,'attempt_ids':attempt_ids}
+        _write_checkpoint(root/'core.json',root/'core.db',core)
+        return root,identity
+
+    def call(self,root,identity,execute,credential,relay):
+        from contextlib import ExitStack
+        from benchmarks import v3_matched_live as live
+        read_worker=live._validate_worker_evidence
+        with ExitStack() as stack:
+            for target,values in ((live,{'_source_snapshot':lambda source:'a'*40,
+                'apparatus_identity':lambda:identity,'_require_dispatched_apparatus':lambda *args:Path('worker.py'),
+                '_validate_rows_evidence':lambda *args:True,
+                '_validate_worker_evidence':lambda output,row,*args,**kwargs: read_worker(output,row,*args,**kwargs)
+                    if row.get('arm')=='planning_preflight' else True,
+                '_credential':credential,'_execute_cell':execute}),):
+                stack.enter_context(patch.multiple(target,**values))
+            stack.enter_context(patch('benchmarks.v3_matched.summarize',return_value={'complete':True,'accounting_complete':True}))
+            stack.enter_context(patch('benchmarks.v3_protected_worker.verify_worker_protection'))
+            stack.enter_context(patch('benchmarks.v3_responses_relay.ResponsesRelay',relay))
+            return supplement().run(source=Path(__file__).resolve().parents[1],repo=Path(__file__).resolve().parents[1],
+                core_output=root/'core.json',core_budget=root/'core.db',output=root/'supp.json',budget_path=root/'supp.db')
+
+    def test_exhausted_continuation_stops_before_any_credential_or_relay_access_and_keeps_core_readonly(self):
+        root,identity=self.prepare(hold='14')
+        original=(root/'core.db').read_bytes(),(root/'core.json').read_bytes()
+        def forbidden(*args,**kwargs):raise AssertionError('budget refusal accessed provider boundary')
+        report=self.call(root,identity,forbidden,forbidden,forbidden)
+        self.assertEqual(report['status'],'blocked_budget_reservation')
+        self.assertFalse(report['summary']['benefit_passed'])
+        self.assertEqual(((root/'core.db').read_bytes(),(root/'core.json').read_bytes()),original)
+        from benchmarks.v3_deepseek import read_prior_exposure
+        self.assertEqual(read_prior_exposure([root/'core.db']).total_cny,
+                         read_prior_exposure([root/'core.db',root/'supp.db']).total_cny)
+
+    def test_missing_or_tampered_core_preflight_stops_before_credentials(self):
+        from benchmarks.v3_matched_live import _write_checkpoint
+        for change in ('missing','tampered'):
+            with self.subTest(change=change):
+                root,identity=self.prepare()
+                core=json.loads((root/'core.json').read_text())
+                if change=='missing':
+                    core.pop('planning_preflight')
+                else:
+                    core['planning_preflight']['row']['worker_evidence_sha256']='0'*64
+                _write_checkpoint(root/'core.json',root/'core.db',core)
+                def forbidden(*args,**kwargs):
+                    raise AssertionError('invalid preflight reached provider boundary')
+                with self.assertRaises(ValueError):
+                    self.call(root,identity,forbidden,forbidden,forbidden)
+
+    def test_safety_failure_checkpoints_once_and_drops_raw_relay_body(self):
+        root,identity=self.prepare()
+        executed=[];relays=[]
+        class Relay:
+            def __init__(self,**values):
+                self.rows=[];self.provider_error=None;self.budget_blocked=False;self.closed=False
+                relays.append(self)
+            def start(self):pass
+            def close(self):self.closed=True
+        def execute(**values):
+            executed.append(values)
+            values['relay'].rows.append({'attempt_id':'synthetic-only','arm':'routing-default',
+                'fixture_id':'investigation-1','repeat':0,'response_body':'must-not-retain','status':'unknown'})
+            return {'fixture_id':values['fixture']['fixture_id'],'repeat':values['repeat'],
+                'arm':values['arm'],'variant':values['routing_variant'],'worker_result_complete':False,
+                'safety_components':{'worker_complete':False},'routing_evidence_valid':False,'safety_passed':False}
+        report=self.call(root,identity,execute,lambda:('unused','offline'),Relay)
+        self.assertEqual(len(executed),1)
+        self.assertEqual(report['status'],'blocked_safety_failure')
+        self.assertTrue(relays[0].closed)
+        self.assertNotIn('must-not-retain',(root/'supp.json').read_text())
+        (root/'supp.json').unlink();(root/'supp.db').unlink()
+        with self.assertRaisesRegex(ValueError,'missing.*continuation ledger'):
+            self.call(root,identity,execute,lambda:('unused','offline'),Relay)
+        self.assertEqual(len(executed),1)
+
+
+_KERNEL_ROUTING = r'''
+import contextlib,json,os,sys
+from pathlib import Path
+source,apparatus,workspace,url=sys.argv[1:5]
+sys.path[:0]=[source,apparatus]
+with contextlib.redirect_stdout(sys.stderr):
+ from v3_process_owner import connect_actor_client
+ from v3_actor_worker import install_delegated_adapter,install_mutation_adapter,install_read_adapter
+ from v3_shell_launcher import install_worker_adapter
+ from v3_routing_supplement import install
+ from prompt_worker import _ProviderObservations
+ from openkyrozen.app.bootstrap import build_application
+ from openkyrozen.providers import ProviderConfig
+ from openkyrozen.providers.openai import OpenAIResponsesProvider
+ client=connect_actor_client()
+ variant=client.rpc('routing_policy')['variant']
+ install_worker_adapter(client=client);install_mutation_adapter(client);install_read_adapter(client)
+ app=build_application(surface='cli');runtime=app.runtime
+ controller=None
+ try:
+  runtime._set_workspace_root(workspace);runtime.set_interaction_mode('agent')
+  config=ProviderConfig(provider='openai',api_key=os.environ['KYROZEN_BENCHMARK_API_KEY'],base_url=url,
+      model_simple='deepseek-flash',model_complex='deepseek-flash',context_window_tokens=1000000)
+  runtime._provider_config=config;runtime.llm_provider=OpenAIResponsesProvider(config)
+  runtime._default_turn.provider=runtime.llm_provider
+  runtime.DEEPSEEK_MODEL=runtime.DEEPSEEK_MODEL_SIMPLE=runtime.DEEPSEEK_MODEL_COMPLEX='deepseek-flash'
+  runtime.MAX_STEPS_PER_TURN=1
+  runtime.dispatch_learning_cycle=lambda **kwargs:None
+  controller=install(runtime,variant);runtime._benchmark_routing_variant=variant
+  observation=_ProviderObservations(runtime,runtime.llm_provider)
+  install_delegated_adapter(runtime,client,source=source)
+  runtime.chat(runtime.current_session,'Inspect catalog.py and report which function sorts products and its exact tie-break rule.',profile='auto')
+  runtime.chat(runtime.current_session,'Refactor source.py, then verify the implementation.',profile='auto')
+  coordinator=runtime.delegation()
+  import threading
+  run={'run_id':'routing-author','budget_id':'routing-author','profile':'researcher','name':'Author',
+       'reviewer':'Reviewer','review_agent':{},'usage':{},'reviews':[],'status':'succeeded',
+       'assignment':{'objective':'Refactor source.py, then verify its evidence.',
+                     'context':'Inspect actual source','scope':['source.py']}}
+  coordinator.runs[run['run_id']]=run;coordinator.cancelled[run['run_id']]=threading.Event()
+  runtime._invoke_delegated(run,review=False,feedback=None,coordinator=coordinator)
+  result={'variant':variant,'root':controller.records,'child':runtime._benchmark_child_routing_records}
+ finally:
+  app.close()
+  if controller is not None:controller.close()
+print(json.dumps(result))
+'''
+
+
+@unittest.skipUnless(hasattr(os,'geteuid') and os.geteuid()==0 and os.name=='posix',
+                     'disposable privileged Unix native routing acceptance required')
+class PrivilegedRoutingSupplementTests(unittest.TestCase):
+    def test_parent_bound_root_and_child_routing_variants_use_original_native_runtime(self):
+        import subprocess,sys,threading
+        from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+        from benchmarks.v3_actor_supervisor import ActorSupervisor
+        from benchmarks.v3_shell_launcher import ShellPolicy
+        from benchmarks.v3_process_owner import process_snapshot
+        from benchmarks.v3_matched import BudgetLedger
+        from benchmarks.v3_deepseek import DEEPSEEK_PRICING,DEEPSEEK_RELAY_CONFIG
+        from benchmarks.v3_responses_relay import ResponsesRelay
+        requests=[]
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self,*args):pass
+            def do_POST(self):
+                body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                requests.append(body)
+                text=json.dumps({'status':'completed','summary':'Offline source observation','findings':[],
+                    'evidence':['source.py'],'artifacts':[],'checks':['offline'],
+                    'uncertainties':[],'suggested_followups':[]})
+                response={'id':'routing-local','object':'response','status':'completed','model':'deepseek-flash',
+                    'output':[{'type':'message','id':'routing-message','role':'assistant','status':'completed',
+                               'content':[{'type':'output_text','text':text,'annotations':[]}]}],
+                    'usage':{'input_tokens':100,'output_tokens':20}}
+                payload=(('event: response.completed\ndata: '+json.dumps({'type':'response.completed','response':response})+'\n\n')
+                         if body.get('stream') else json.dumps(response)).encode()
+                self.send_response(200);self.send_header('Content-Length',str(len(payload)))
+                self.send_header('Content-Type','text/event-stream' if body.get('stream') else 'application/json')
+                self.end_headers();self.wfile.write(payload)
+        server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        self.addCleanup(server.server_close);self.addCleanup(server.shutdown)
+        repository=Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(dir='/var/tmp',prefix='routing-kernel-') as directory:
+            base=Path(directory).resolve();base.chmod(0o711)
+            for variant in supplement().VARIANTS:
+                with self.subTest(variant=variant):
+                    case=base/variant;case.mkdir(mode=0o711)
+                    workspace=case/'workspace';workspace.mkdir()
+                    (workspace/'source.py').write_text('original source')
+                    guard=workspace/'test_guard.py';guard.write_text('original guard')
+                    budget=BudgetLedger(case/'fake-relay.sqlite3',limit_rmb='15',pricing=DEEPSEEK_PRICING)
+                    relay=ResponsesRelay(endpoint=f'http://127.0.0.1:{server.server_port}/v1',api_key='offline-only',
+                                         budget=budget,config=DEEPSEEK_RELAY_CONFIG)
+                    relay.label=('routing-'+variant,'kernel-routing',0);relay.start()
+                    supervisor=None
+                    try:
+                        supervisor=ActorSupervisor([sys.executable,'-I','-c',_KERNEL_ROUTING,str(repository),
+                            str(repository/'benchmarks'),str(workspace),relay.url,'--model','deepseek-flash'],
+                            cwd=workspace,env={'PATH':os.environ.get('PATH',os.defpath),
+                                'KYROZEN_CLI_CAPABILITIES':'read,write,shell,network',
+                                'KYROZEN_DISABLE_VECTOR_INDEX':'1','KYROZEN_DECISION_ASSIST_BACKEND':'off'},
+                            protected_files=[guard],policy=ShellPolicy(workspace,{'read','write','shell','network'}),
+                            source=repository,provider_config=relay.issue_actor_config,revoke_actor=relay.revoke_actor,
+                            routing_variant=variant)
+                        with supervisor:
+                            process=supervisor.popen(stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                            output,error=process.communicate(timeout=90)
+                            self.assertEqual(process.returncode,0,error.decode(errors='replace'))
+                            result=json.loads(output)
+                            self.assertEqual(result['variant'],variant)
+                            self.assertTrue(result['root'] and result['child'])
+                            for row in result['root']+result['child']:
+                                self.assertEqual(row['variant'],variant)
+                                self.assertEqual(row['after'],asdict(supplement().intervene(
+                                    __import__('openkyrozen.routing.router',fromlist=['RoutingDecision']).RoutingDecision(**row['before']),
+                                    variant,profile_override=row['profile_override'],interaction_mode=row['interaction_mode'])))
+                            self.assertTrue(any(row['requests'] for row in result['root']))
+                            if variant=='planning-never':
+                                self.assertTrue(any(row['before']['planning_required'] and not row['after']['planning_required']
+                                                    and row['requests'] for row in result['child']))
+                            self.assertTrue(all(row['before']['profile']==row['after']['profile'] for row in result['child']))
+                    finally:relay.close()
+                    owners={owner.uid for owner in supervisor.owners}
+                    self.assertFalse(any(uid in owners and state!='Z' for uid,state in process_snapshot().values()))
+                    self.assertEqual(guard.read_text(),'original guard')
+            self.assertTrue(requests)
+            self.assertTrue(all(row['model']=='deepseek-flash' and row['max_output_tokens']==4096 for row in requests))

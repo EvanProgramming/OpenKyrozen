@@ -19,3 +19,5 @@
 Add a linked issue-specific plan here before coding any later V3 issue.
 
 - [V3 #246 — Reapproval for material Strategic Plan revisions](2026-10-16-v3-issue-246.md)
+
+- [V3 finalization and exact-candidate acceptance](2026-11-07-v3-finalization.md)

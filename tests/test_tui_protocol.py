@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 from openkyrozen.updates.models import UpdateResult
 import io
 import json
@@ -125,9 +126,9 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertEqual(event["text"], "Permissions set to full_jev.")
 
     def test_navigation_groups_global_project_and_legacy_chats_without_leakage(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             memory = SimpleNamespace(store=store, user_id="local", workspace_id="global",
                                      _collection=None, _files_collection=None, _last_error=None)
             project = root / "project"
@@ -161,9 +162,9 @@ class TUIProtocolTests(unittest.TestCase):
             )
 
     def test_empty_chat_is_not_persisted_until_the_first_user_message(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             memory = SimpleNamespace(store=store, user_id="local", workspace_id="global",
                                      _collection=None, _files_collection=None, _last_error=None)
             project = root / "project"
@@ -193,9 +194,9 @@ class TUIProtocolTests(unittest.TestCase):
                 )
 
     def test_repeated_empty_project_startup_does_not_add_empty_chats_or_duplicate_projects(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             memory = SimpleNamespace(store=store, user_id="local", workspace_id="global")
             project = root / "project"
             project.mkdir()
@@ -219,14 +220,37 @@ class TUIProtocolTests(unittest.TestCase):
             self.backend._run_submit("   ", "blank-chat")
         chat.assert_not_called()
 
+    def test_completed_turn_emits_ready_after_busy_clears(self):
+        self.backend._busy = True
+        with patch.object(self.backend.agent, "llm_provider", object()), \
+                patch.object(self.backend.agent, "_sanitize_input", return_value=("question", False)), \
+                patch.object(self.backend.agent, "interaction_envelope", return_value={
+                    "pending_question": None, "pending_plan": None,
+                }), \
+                patch.object(self.backend.agent, "is_plan_acceptance", return_value=False), \
+                patch.object(self.backend.agent, "chat", return_value="answer"), \
+                patch.object(self.backend.agent, "_clean_final_response", return_value="answer"), \
+                patch.object(self.backend.agent, "_split_reply", return_value=("", "answer")), \
+                patch.object(self.backend.agent.memory_bank, "add_log"), \
+                patch.object(self.backend, "interaction"), \
+                patch.object(self.backend, "usage"), \
+                patch.object(self.backend, "navigation"):
+            self.backend._run_submit("question", "turn-ready")
+
+        events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        ready = [event for event in events if event.get("event") == "status"
+                 and event.get("state") == "ready"]
+        self.assertTrue(ready)
+        self.assertFalse(ready[-1]["busy"])
+
     def test_delete_chat_requires_confirmation_and_keeps_workspace_files(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             project = root / "project"
             project.mkdir()
             file = project / "keep.txt"
             file.write_text("workspace survives", encoding="utf-8")
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             scope_id = source_scope_id(project)
             store.append_event("tui.chat_metadata", {"title": "Keep me"}, user_id="local",
                                workspace_id=scope_id, session_id="chat-delete")
@@ -255,12 +279,12 @@ class TUIProtocolTests(unittest.TestCase):
             self.assertEqual(file.read_text(encoding="utf-8"), "workspace survives")
 
     def test_delete_project_trashes_workspace_and_purges_scoped_data(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             project = root / "project"
             project.mkdir()
             (project / "keep-until-trash.txt").write_text("project content", encoding="utf-8")
-            store = EventStore(root / "state.sqlite3")
+            store = sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3")))
             scope_id = source_scope_id(project)
             memory = SimpleNamespace(store=store, user_id="local", workspace_id="global")
             store.append_event("tui.project_opened", {
@@ -495,10 +519,11 @@ class TUIProtocolTests(unittest.TestCase):
         thread = threading.Thread(target=lambda: result.setdefault("approved", self.backend._approval(request)))
         thread.start()
         deadline = time.monotonic() + 1
-        while "request_id" not in self.output.getvalue() and time.monotonic() < deadline:
+        while "approval_detail_complete" not in self.output.getvalue() and time.monotonic() < deadline:
             time.sleep(0.005)
         events = [json.loads(line) for line in self.output.getvalue().splitlines()]
         event = events[0]
+        self.assertTrue(any(item.get("event") == "approval_detail_complete" for item in events))
         self.assertEqual(event["request_id"], request.request_id)
         encoded = event["args"] + "".join(item.get("text", "") for item in events[1:])
         displayed = json.loads(encoded)
@@ -821,10 +846,10 @@ class TUIProtocolTests(unittest.TestCase):
         self.assertEqual(event["request_id"], "assist-key")
 
     def test_interaction_envelope_and_structured_commands_are_correlated(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             original = self.backend.agent._interaction_controller
             controller = InteractionController(
-                EventStore(Path(directory) / "state.sqlite3"),
+                sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3"))),
                 workspace_id="tui", session_id="surface:tui",
             )
             self.backend.agent._interaction_controller = controller

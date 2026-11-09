@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -120,6 +120,42 @@ def _deepseek_v4_pricing_snapshot(model: str, occurred_at: datetime) -> tuple[di
     }, current_schedule
 
 
+def _google_pricing_snapshot(model: str, prompt_tokens: int | None,
+                             occurred_at: datetime) -> dict[str, Any]:
+    """Estimate Developer API Standard charges, never an account invoice."""
+    canonical = model.strip().removeprefix("models/")
+    canonical = {
+        "gemini-3.5-flash-lite-07-2026": "gemini-3.5-flash-lite",
+        "gemini-3.1-pro-preview-01-2026": "gemini-3.1-pro-preview",
+    }.get(canonical, canonical)
+    instant = occurred_at.astimezone(timezone.utc)
+    snapshot = {
+        "version": "google-standard-pricing-2026-11-09",
+        "source": "https://ai.google.dev/gemini-api/docs/pricing",
+        "currency": "USD", "model": canonical, "priced_at": instant.isoformat(),
+        "rate_policy": "standard_paid_rate_estimate", "pricing_status": "unknown",
+        "cache_miss_picos_per_million": 0, "output_picos_per_million": 0,
+    }
+    if instant < datetime(2026, 11, 9, tzinfo=timezone.utc):
+        return snapshot
+    if canonical in {"gemini-3.5-flash-lite", "gemini-2.5-flash"}:
+        # The December 2.5 -> 3.5 migration has the same text tariffs.
+        rates = ("0.03", "0.30", "2.50")
+    elif canonical == "gemini-3.1-pro-preview":
+        rates = (("0.40", "4", "18") if prompt_tokens is None or prompt_tokens > 200_000
+                 else ("0.20", "2", "12"))
+    elif canonical == "gemini-3.8-flash":
+        rates = (("0.15", "1.50", "7.50") if instant >= datetime(2027, 1, 1, tzinfo=timezone.utc)
+                 else ("0.075", "0.75", "3.75"))
+    else:
+        return snapshot
+    snapshot.update(zip(("cache_hit_picos_per_million", "cache_miss_picos_per_million",
+                         "output_picos_per_million"),
+                        (int(Decimal(rate) * _PICOS_PER_DOLLAR) for rate in rates)))
+    snapshot["pricing_status"] = "estimated_standard_paid_rates"
+    return snapshot
+
+
 def _usage_integer(usage: dict | None, key: str) -> int | None:
     if usage is None or usage.get(key) is None:
         return None
@@ -144,9 +180,8 @@ def _openai_usage_dict(usage: Any) -> dict[str, int | None] | None:
 
 def _track_cost(provider: str, usage: dict | None, *, model: str = "unknown",
                 latency_ms: int | None = None, completion_state: str = "completed",
-                occurred_at: datetime | None = None) -> str:
+                occurred_at: datetime | None = None, requested_model: str | None = None) -> str:
     """Write one immutable provider attempt; summaries always read this ledger."""
-    scope = _current_usage_scope()
     prompt_tokens = _usage_integer(usage, "prompt_tokens")
     completion_tokens = _usage_integer(usage, "completion_tokens")
     cache_hit_tokens = _usage_integer(usage, "cache_hit_tokens")
@@ -162,12 +197,28 @@ def _track_cost(provider: str, usage: dict | None, *, model: str = "unknown",
         pricing_snapshot, current_schedule = _deepseek_v4_pricing_snapshot(
             model, occurred_at or datetime.now(timezone.utc),
         )
+    elif provider == "google":
+        pricing_snapshot = _google_pricing_snapshot(model, prompt_tokens, occurred_at or datetime.now(timezone.utc))
+        current_schedule = False  # Account tier, discounts and invoice remain unverified.
+        if requested_model is not None:
+            pricing_snapshot["requested_model"] = requested_model
     if pricing_snapshot is None:
         pricing_snapshot, input_rate, output_rate = _legacy_pricing_snapshot(provider)
     else:
         input_rate = int(pricing_snapshot["cache_miss_picos_per_million"])
         output_rate = int(pricing_snapshot["output_picos_per_million"])
     pricing_known = pricing_snapshot.get("pricing_status") != "unknown"
+    if provider == "google":
+        # Incomplete counters cannot meter money, including local stream token guesses.
+        counts = usage or {}
+        pricing_known = pricing_known and not counts.get("_estimated") and all(
+            type(counts.get(key)) is int and counts[key] >= 0
+            for key in ("prompt_tokens", "completion_tokens")
+        ) and all(
+            value is None or type(value) is int and 0 <= value <= (prompt_tokens or 0)
+            for value in (counts.get("cache_hit_tokens"), counts.get("cache_miss_tokens"),
+                          counts.get("prompt_cache_hit_tokens"), counts.get("prompt_cache_miss_tokens"))
+        )
     cost_picos = None
     if pricing_known and (prompt_tokens is not None or completion_tokens is not None):
         prompt = prompt_tokens or 0
@@ -192,16 +243,22 @@ def _track_cost(provider: str, usage: dict | None, *, model: str = "unknown",
         else "estimated"
     )
     attempt_id = f"usage_{uuid.uuid4().hex}"
-    scope.store.record_usage_attempt(
-        attempt_id=attempt_id, provider=provider, model=model, surface=scope.surface,
-        user_id=scope.user_id, workspace_id=scope.workspace_id, session_id=scope.session_id,
-        run_id=scope.run_id, cache_status=cache_status, prompt_tokens=prompt_tokens,
-        cache_hit_tokens=cache_hit_tokens, cache_miss_tokens=cache_miss_tokens,
-        completion_tokens=completion_tokens, reasoning_tokens=reasoning_tokens,
-        latency_ms=latency_ms, completion_state=completion_state,
-        usage_status=usage_status,
-        cost_picos=cost_picos, pricing_snapshot=pricing_snapshot,
-    )
+    owns_store = _usage_scope.get() is None
+    scope = _current_usage_scope()
+    try:
+        scope.store.record_usage_attempt(
+            attempt_id=attempt_id, provider=provider, model=model, surface=scope.surface,
+            user_id=scope.user_id, workspace_id=scope.workspace_id, session_id=scope.session_id,
+            run_id=scope.run_id, cache_status=cache_status, prompt_tokens=prompt_tokens,
+            cache_hit_tokens=cache_hit_tokens, cache_miss_tokens=cache_miss_tokens,
+            completion_tokens=completion_tokens, reasoning_tokens=reasoning_tokens,
+            latency_ms=latency_ms, completion_state=completion_state,
+            usage_status=usage_status,
+            cost_picos=cost_picos, pricing_snapshot=pricing_snapshot,
+        )
+    finally:
+        if owns_store:
+            scope.store.close()
     if scope.delegation_budget is not None and scope.delegation_budget_run_id:
         scope.delegation_budget.record_cost(scope.delegation_budget_run_id, cost_picos)
     return attempt_id
@@ -250,7 +307,10 @@ def get_cost_report(*, store: EventStore | None = None, user_id: str = "local",
         raise ValueError("scope must be installation, workspace, or session")
     if scope == "session" and not session_id:
         raise ValueError("session scope requires a session_id")
-    store = store or EventStore()
+    if store is None:
+        with closing(EventStore()) as owned:
+            return get_cost_report(store=owned, user_id=user_id, workspace_id=workspace_id,
+                                   session_id=session_id, scope=scope)
     totals = {
         "installation": _scope_totals(store, scope="installation", user_id=user_id,
                                        workspace_id=workspace_id),
@@ -272,6 +332,10 @@ def reset_cost_tracker(*, store: EventStore | None = None, user_id: str = "local
                        workspace_id: str = "default", session_id: str | None = None,
                        scope: str = "workspace") -> dict[str, str]:
     """Create an audited reporting-window reset without deleting usage attempts."""
-    return (store or EventStore()).create_usage_reset(
+    if store is None:
+        with closing(EventStore()) as owned:
+            return reset_cost_tracker(store=owned, user_id=user_id, workspace_id=workspace_id,
+                                      session_id=session_id, scope=scope)
+    return store.create_usage_reset(
         scope=scope, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
     )

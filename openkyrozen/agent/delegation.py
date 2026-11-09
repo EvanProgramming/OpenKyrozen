@@ -700,10 +700,17 @@ class Delegation:
                                   if review.get("session_id"))
             for child_session in child_sessions:
                 from .conversation import ConversationHistory
-                child_messages = ConversationHistory(
+                history = ConversationHistory(
                     self.memory.store, user_id=self.memory.user_id,
-                    workspace_id=self.memory.file_scope_id, session_id=child_session,
-                ).display_messages()
+                    workspace_id=self.runs[run_id].get("conversation_workspace_id", self.memory.file_scope_id),
+                    session_id=child_session,
+                )
+                if "conversation_workspace_id" not in self.runs[run_id] and history.head is None:
+                    history = ConversationHistory(
+                        self.memory.store, user_id=self.memory.user_id,
+                        workspace_id=self.memory.workspace_id, session_id=child_session,
+                    )
+                child_messages = history.display_messages()
                 if child_session in {run_id, self.runs[run_id].get("budget_id", run_id)}:
                     messages = child_messages
                 else:

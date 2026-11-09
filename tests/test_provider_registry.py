@@ -11,6 +11,21 @@ from openkyrozen.routing.router import RoutingDecision, decide_request, model_fo
 
 
 class ProviderRegistryTests(unittest.TestCase):
+    def test_default_deepseek_uses_flash_without_losing_complex_planning(self):
+        with patch.dict(os.environ, {"KYROZEN_MODEL_SIMPLE": "", "KYROZEN_MODEL_COMPLEX": ""}):
+            config = providers.ProviderConfig(provider="deepseek")
+        for complex_task in (False, True):
+            with self.subTest(complex_task=complex_task):
+                decision, _ = decide_request(
+                    config, {}, "task",
+                    lambda _: providers.model_for_complexity(config, complex_task),
+                    lambda _: "complex" if complex_task else "simple",
+                    "coder", "auto", "agent",
+                )
+                self.assertEqual(decision.model, "deepseek-flash")
+                self.assertEqual(decision.reasoning, "standard")
+                self.assertEqual(decision.planning_required, complex_task)
+
     def test_main_model_override_applies_to_both_complexity_routes(self):
         config = providers.ProviderConfig(provider="deepseek", model_simple="quick", model_complex="reasoning", model_main="pinned")
         self.assertEqual(providers.model_for_complexity(config, False), "pinned")

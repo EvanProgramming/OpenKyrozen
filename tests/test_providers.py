@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import stat
 import tempfile
@@ -78,6 +79,36 @@ class ProviderConfigTests(unittest.TestCase):
         ))
         self.assertEqual(detect_provider().model_main, "")
 
+    def test_deepseek_missing_slots_use_flash_without_replacing_saved_models(self):
+        cases = (
+            ({}, ("deepseek-flash", "deepseek-flash", "")),
+            ({"model_simple": "legacy-simple"}, ("legacy-simple", "deepseek-flash", "")),
+            ({"model_complex": "deepseek-v4-pro"}, ("deepseek-flash", "deepseek-v4-pro", "")),
+            ({"model_simple": "legacy-simple", "model_complex": "deepseek-v4-pro"},
+             ("legacy-simple", "deepseek-v4-pro", "")),
+            ({"model_simple": "legacy-simple", "model_complex": "deepseek-v4-pro", "model_main": "auto"},
+             ("legacy-simple", "deepseek-v4-pro", "auto")),
+            ({"model_main": "pinned-model"}, ("deepseek-flash", "deepseek-flash", "pinned-model")),
+        )
+        with patch.dict(os.environ, {"KYROZEN_MODEL_SIMPLE": "", "KYROZEN_MODEL_COMPLEX": ""}):
+            for saved, expected in cases:
+                with self.subTest(saved=saved):
+                    (Path.home() / ".kyrozen_config.json").write_text(json.dumps({"provider": "deepseek", **saved}))
+                    config = detect_provider()
+                    self.assertEqual((config.model_simple, config.model_complex, config.model_main), expected)
+
+    def test_explicit_deepseek_slot_environment_overrides_saved_models(self):
+        (Path.home() / ".kyrozen_config.json").write_text(json.dumps({
+            "provider": "deepseek", "model_simple": "saved-simple", "model_complex": "saved-complex",
+        }))
+        with patch.dict(os.environ, {
+            "KYROZEN_MODEL_SIMPLE": "chosen-simple", "KYROZEN_MODEL_COMPLEX": "deepseek-v4-pro",
+            "KYROZEN_MODEL_MAIN": "auto",
+        }):
+            config = detect_provider()
+        self.assertEqual((config.model_simple, config.model_complex, config.model_main),
+                         ("chosen-simple", "deepseek-v4-pro", "auto"))
+
     def test_legacy_xor_ciphertext_remains_readable(self):
         plaintext = "sk-legacy"
         key = _get_encryption_key()
@@ -108,6 +139,39 @@ class FallbackModelTests(unittest.TestCase):
         self.assertEqual(result[0], "fallback")
         self.assertEqual(primary.models, ["deepseek-reasoner"])
         self.assertEqual(fallback.models, ["gpt-4o"])
+
+    def test_legacy_deepseek_pro_pin_keeps_primary_model_and_maps_fallback_complex_slot(self):
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                primary = _ProbeProvider("deepseek", "deepseek-flash", "deepseek-flash",
+                                         error=ConnectionError("primary down"))
+                primary.config.model_main = "deepseek-v4-pro"
+                fallback = _ProbeProvider("openai", "fallback-simple", "fallback-complex", response="fallback")
+                wrapper = self._fallback(primary, fallback)
+                if stream:
+                    self.assertEqual(list(wrapper.chat_stream([], primary.config.model_main)), ["fallback"])
+                    self.assertEqual(primary.stream_models, ["deepseek-v4-pro"])
+                    self.assertEqual(fallback.stream_models, ["fallback-complex"])
+                else:
+                    self.assertEqual(wrapper.chat([], primary.config.model_main)[0], "fallback")
+                    self.assertEqual(primary.models, ["deepseek-v4-pro"])
+                    self.assertEqual(fallback.models, ["fallback-complex"])
+
+    def test_legacy_deepseek_complex_alias_respects_explicit_simple_slot(self):
+        primary = _ProbeProvider("deepseek", "deepseek-v4-pro", "deepseek-flash",
+                                 error=ConnectionError("primary down"))
+        fallback = _ProbeProvider("openai", "fallback-simple", "fallback-complex", response="fallback")
+        self.assertEqual(self._fallback(primary, fallback).chat([], "deepseek-v4-pro")[0], "fallback")
+        self.assertEqual(primary.models, ["deepseek-v4-pro"])
+        self.assertEqual(fallback.models, ["fallback-simple"])
+
+    def test_deepseek_legacy_alias_does_not_rewrite_other_providers_explicit_names(self):
+        primary = _ProbeProvider("openai", "primary-simple", "primary-complex",
+                                 error=ConnectionError("primary down"))
+        fallback = _ProbeProvider("anthropic", "fallback-simple", "fallback-complex", response="fallback")
+        self.assertEqual(self._fallback(primary, fallback).chat([], "deepseek-v4-pro")[0], "fallback")
+        self.assertEqual(primary.models, ["deepseek-v4-pro"])
+        self.assertEqual(fallback.models, ["deepseek-v4-pro"])
 
     def test_stream_maps_anthropic_simple_model_to_deepseek_default(self):
         primary = _ProbeProvider("anthropic", "claude-sonnet-4-20250514", "claude-sonnet-4-20250514",

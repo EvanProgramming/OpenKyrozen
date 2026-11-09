@@ -24,8 +24,8 @@ class AgentRuntime:
     from openkyrozen.agent.completion import _complete_turn
     from openkyrozen.agent.response_recovery import _observe_turn_response, _recover_plan_response
 
-    # agent.protocol
-    from openkyrozen.agent.protocol import (
+    # Lazy legacy compatibility; native formatting does not load the parser.
+    from openkyrozen.agent.legacy_compat import (
         _is_valid_action,
         _detect_unknown_action,
         _has_unsupported_action_protocol,
@@ -37,18 +37,17 @@ class AgentRuntime:
         _action_marker_is_protocol,
         _control_marker_is_protocol,
         _remove_protocol_headings,
-        _clean_final_response,
         _stream_buffer_has_tool_prefix,
         _clean_stream_buffer,
-        _remove_task_blocks,
         _legacy_plan_value,
         _parse_model_response,
         _observe_model_response,
         _persist_interaction_control,
         _interaction_gate,
-        _deterministic_tool_summary,
-        _safe_fstring,
-        _split_reply,
+    )
+
+    from openkyrozen.agent.presentation import (
+        _clean_final_response, _deterministic_tool_summary, _safe_fstring, _split_reply, _remove_task_blocks,
     )
 
     # security.permissions
@@ -172,7 +171,7 @@ class AgentRuntime:
         _subagent_provider_model,
     )
 
-    from openkyrozen.agent.plan_tools import _update_plan
+    from openkyrozen.agent.plan_tools import _update_plan, _propose_plan, _request_question
     from openkyrozen.agent.delegation_runtime import (
         _plan_delegation,
         delegation, _invoke_delegated, spawn_agents, send_subagent, list_subagents,
@@ -289,6 +288,7 @@ class AgentRuntime:
         self._session_context = ContextVar("agent_session", default=None)
         self._surface_capability_override = ContextVar("agent_surface_capabilities", default=None)
         self._conversation_turn_id = ContextVar("conversation_turn_id", default=None)
+        self._conversation_append_lock = threading.Lock()
         self._last_model_response = ContextVar("last_model_response", default=None)
         self._record_foreground_model = ContextVar("record_foreground_model", default=False)
         self._turn_completion_status = ContextVar("turn_completion_status", default="completed")
@@ -300,9 +300,19 @@ class AgentRuntime:
         self._sessions = {}
         self._workspaces = {workspace.root: workspace}
         from openkyrozen.agent.engine import AgentEngine
-        from openkyrozen.agent.protocol import LegacyProtocolAdapter
         self._agent_engine = AgentEngine(self)
-        self.legacy_protocol = LegacyProtocolAdapter(self)
+        self._legacy_protocol = None
+
+    @property
+    def legacy_protocol(self):
+        if self._legacy_protocol is None:
+            from openkyrozen.agent.protocol import LegacyProtocolAdapter
+            self._legacy_protocol = LegacyProtocolAdapter(self)
+        return self._legacy_protocol
+
+    @legacy_protocol.setter
+    def legacy_protocol(self, adapter):
+        self._legacy_protocol = adapter
 
     @property
     def current_session(self):
@@ -425,18 +435,23 @@ class AgentRuntime:
                     )
                 except BaseException as exc:
                     from openkyrozen.providers.errors import ProviderError, ProviderErrorKind
-                    cancelled = isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError)) or (
-                        isinstance(exc, ProviderError) and exc.kind == ProviderErrorKind.CANCELLED
-                    )
+                    cancelled = (turn_context.cancelled.is_set()
+                                 or isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError))
+                                 or (isinstance(exc, ProviderError) and exc.kind == ProviderErrorKind.CANCELLED))
                     publisher.publish(
                         "turn.cancelled" if cancelled else "turn.failed",
                         {"error_type": type(exc).__name__},
                     )
                     raise
-                if publisher.last_model_failed or self._turn_failed.get():
+                if turn_context.cancelled.is_set():
+                    publisher.publish("turn.cancelled", {"status": "cancelled"})
+                elif publisher.last_model_failed or self._turn_failed.get():
                     publisher.publish("turn.failed", {"error_type": "provider_error"})
                 else:
                     publisher.publish("turn.completed", {"status": self._turn_completion_status.get()})
+                if self._last_response_is_native.get():
+                    from openkyrozen.agent.presentation import _NativeResponseText
+                    return _NativeResponseText(reply)
                 return reply
             finally:
                 with self._active_turns_lock:
@@ -483,16 +498,17 @@ class AgentRuntime:
     def _record_conversation_entry(self, kind, payload, *, call_id=None, task_id=None, request_id=None):
         history = self.conversation_history
         active_turn = self._conversation_turn_id.get()
-        parent = self._conversation_expected_head.get() if active_turn else history.head
-        entry = history.entry(
-            kind, payload, parent_id=parent, turn_id=self._conversation_turn_id.get(),
-            request_id=request_id or self._last_model_request_id.get(),
-            call_id=call_id, task_id=task_id,
-        )
-        history.append(entry, expected_head=parent)
-        if active_turn:
-            self._conversation_expected_head.set(entry.id)
-        return entry
+        with self._conversation_append_lock:
+            parent = history.head
+            entry = history.entry(
+                kind, payload, parent_id=parent, turn_id=self._conversation_turn_id.get(),
+                request_id=request_id or self._last_model_request_id.get(),
+                call_id=call_id, task_id=task_id,
+            )
+            history.append(entry, expected_head=parent)
+            if active_turn:
+                self._conversation_expected_head.set(entry.id)
+            return entry
 
     def reconcile_conversation_messages(self, messages):
         """Explicit adapter for callers that still supply a replacement message list."""
@@ -545,6 +561,9 @@ class AgentRuntime:
         return cached[1]
 
     def run_command(self, args):
+        if self.execution_context.cancelled is not None and self.execution_context.cancelled.is_set():
+            from openkyrozen.tools.models import CommandResult
+            return CommandResult("Command cancelled before it started.", False, failure="cancelled")
         if isinstance(args, dict) and args.get("background") is True:
             from openkyrozen.tools.models import CommandResult
             from openkyrozen.tools.sandbox import SandboxUnavailableError
@@ -556,6 +575,7 @@ class AgentRuntime:
             try:
                 handle = self.current_session.process_manager.start(
                     command, cwd=cwd, env=env, timeout_seconds=timeout,
+                    cancelled=self.execution_context.cancelled,
                 )
                 message = f"Started background process {handle.process_id}"
                 if handle.sandbox_backend == "unavailable":
@@ -571,9 +591,6 @@ class AgentRuntime:
             except (OSError, RuntimeError, ValueError) as exc:
                 return CommandResult(f"Error starting background process: {exc}", False,
                                      failure="execution_error")
-        if self.execution_context.cancelled is not None and self.execution_context.cancelled.is_set():
-            from openkyrozen.tools.models import CommandResult
-            return CommandResult("Command cancelled before it started.", False, failure="cancelled")
         return self.current_session.workspace.adapters.run_command(args, cancelled=self.execution_context.cancelled)
 
     @legacy_text_api
@@ -608,6 +625,11 @@ class AgentRuntime:
     def _read_tool_artifact(self, args):
         """Read a session-owned tool artifact in pages up to 1,000 characters."""
         from openkyrozen.tools.models import ToolResult, tool_failure
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (TypeError, ValueError):
+                args = None
         artifact_id = args.get("artifact_id") if isinstance(args, dict) else None
         offset = args.get("offset", 0) if isinstance(args, dict) else 0
         limit = args.get("limit", 1000) if isinstance(args, dict) else 1000
@@ -616,8 +638,7 @@ class AgentRuntime:
                 or type(limit) is not int or not 1 <= limit <= 1000):
             return tool_failure("invalid_arguments", "Error: artifact_id, nonnegative offset, and limit from 1 to 1000 are required.")
         memory = self.memory_bank
-        task_owner = getattr(self.current_session, "_delegation_parent", None) or self
-        tasks = getattr(task_owner, "tasks", None)
+        tasks = getattr(self, "tasks", None)
         page = memory.store.artifacts.read_page(
             artifact_id, offset, limit,
             user_id=getattr(tasks, "user_id", None) or memory.user_id,
@@ -895,7 +916,7 @@ class AgentRuntime:
             bound_task_id = task_id
             execution_dispatched = False
 
-            def reject(outcome, *, authorized=False, bound_task=None):
+            def reject(outcome, *, authorized=False, bound_task=None, precommit_plan_validation=False):
                 self._publish_runtime_event(
                     "tool.call", {"tool_name": name,
                                   "argument_keys": sorted(call_arguments)[:64]},
@@ -908,6 +929,7 @@ class AgentRuntime:
                     operation_scope=operation_scope, failure=outcome.error.code if outcome.error else None,
                     tool_error=outcome.error, result_data=outcome.data, tool_result=outcome,
                     call_id=call.id, call_id_source=_call_id_source, task_id=bound_task, expected_spec=spec,
+                    _precommit_plan_validation=precommit_plan_validation,
                 )
                 self._record_turn_receipt(receipt)
                 return receipt
@@ -936,7 +958,7 @@ class AgentRuntime:
                 if validation_error:
                     code = 'contract_error' if spec.source == 'legacy' else 'invalid_arguments'
                     outcome = tool_failure(code, f"Error: {validation_error}")
-                    return reject(outcome, bound_task=bound_task_id)
+                    return reject(outcome, bound_task=bound_task_id, precommit_plan_validation=name == "update_plan")
                 request = ApprovalRequest(
                     call_id=call.id, tool_name=name, arguments=call_arguments,
                     workspace_id=self.memory_bank.workspace_id, session_id=session.session_id,
