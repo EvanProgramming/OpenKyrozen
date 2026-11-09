@@ -1,5 +1,6 @@
 """Native engine context checks using real runtime/compaction and offline providers."""
 import copy
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -231,6 +232,299 @@ class NativeContextTests(unittest.TestCase):
                 self.assertTrue(any(record["action"] == "read_file" and record["success"]
                                     and record.get("task_id") for record in turn.tool_records))
 
+    def continuation_plan(self, *, typed=True):
+        (self.root / "notes.txt").write_text("ready\n")
+        return self.runtime.tasks.edit_plan(complexity="complex", expected_revision=0, operations=[{
+            "op": "add", "ref": "inspect", "task": {"description": "Inspect notes.txt",
+                "acceptance": [{"criterion": "ready marker", "verification": {
+                    "action": "read_file", "arguments": {"path": "notes.txt"},
+                    "expect": {"contains": "ready"}}}] if typed else ["Read and explain notes.txt"]},
+        }])
+
+    def test_native_missing_plan_refusal_gets_one_structured_handoff_within_steps(self):
+        for max_steps, expected in ((0, 1), (50, 2)):
+            with self.subTest(max_steps=max_steps):
+                self.runtime.tasks.clear()
+                self.runtime.execution_context.max_steps = max_steps
+                turn_id = f"missing-{max_steps}"
+                token = self.runtime._conversation_turn_id.set(turn_id)
+                self.addCleanup(self.runtime._conversation_turn_id.reset, token)
+                def respond(provider, messages, model):
+                    return ModelResponse(text="I will not create a plan.", finish_reason=FinishReason.FINAL,
+                        usage={"prompt_tokens": 7, "completion_tokens": 3})
+                provider = self.provider(respond)
+                answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Inspect the source"}],
+                    complexity="complex", permitted=self.runtime._permitted_tool_names())
+                self.assertEqual(len(provider.requests), expected, answer)
+                if expected == 2:
+                    messages = provider.requests[1]
+                    state = json.loads(messages[-1]["content"])["working_plan_continuation"]
+                    self.assertEqual((state["plan_id"], state["revision"], state["status"]), (None, 0, "required"))
+                    self.assertEqual(self.availability(messages)[1]["current_call_tools"],
+                                     ["read_tool_artifact", "update_plan"])
+                self.assertEqual((turn.turn_prompt_total, turn.turn_completion_total), (7 * expected, 3 * expected))
+                self.assertEqual(turn.runtime_status, "incomplete")
+                self.assertIsNone(self.runtime.tasks.working_plan)
+                self.assertFalse(turn.tool_records)
+                entries = [e for e in self.runtime.conversation_history.entries()
+                           if e.kind == "plan.continuation" and e.turn_id == turn_id]
+                self.assertEqual(len(entries), expected - 1)
+                if entries:
+                    self.assertEqual(entries[0].payload, {"plan_id": None, "revision": 0, "reason": "plan_required"})
+
+    def test_native_missing_plan_feedback_allows_creation_without_rearming_the_allowance(self):
+        (self.root / "notes.txt").write_text("ready\n")
+        for verify, expected in ((True, 4), (False, 3)):
+            with self.subTest(verify=verify):
+                self.runtime.tasks.clear()
+                self.runtime.execution_context.max_steps = 10
+                def respond(provider, messages, model):
+                    step = len(provider.requests)
+                    usage = {"prompt_tokens": 7, "completion_tokens": 3}
+                    if step == 2:
+                        call = ToolCall("create", "update_plan", {"expected_revision": 0, "operations": [
+                            {"op": "add", "ref": "inspect", "task": {"description": "Read ready marker",
+                                "acceptance": [{"criterion": "ready marker", "verification": {
+                                    "action": "read_file", "arguments": {"path": "notes.txt"},
+                                    "expect": {"contains": "ready"}}}]}},
+                            {"op": "start", "task": "inspect"}]})
+                    elif step == 3 and verify:
+                        call = ToolCall("read", "read_file", {"path": "notes.txt"})
+                    else:
+                        return ModelResponse(text="The source is ready.", finish_reason=FinishReason.FINAL, usage=usage)
+                    return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST, usage=usage,
+                        continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+                provider = self.provider(respond)
+                answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Verify notes.txt"}],
+                    complexity="complex", permitted=self.runtime._permitted_tool_names())
+                self.assertEqual(len(provider.requests), expected, answer)
+                self.assertEqual((turn.turn_prompt_total, turn.turn_completion_total), (7 * expected, 3 * expected))
+                self.assertEqual(turn.runtime_status, "completed" if verify else "incomplete")
+                self.assertEqual(self.runtime.tasks.tasks[0]["status"], "succeeded" if verify else "running")
+
+    def test_native_plan_feedback_preserves_bounded_pinned_context_and_full_acceptance(self):
+        criterion = "unverified " + "x" * 400000
+        plan = self.runtime.tasks.edit_plan(complexity="complex", expected_revision=0, operations=[{
+            "op": "add", "ref": f"inspect-{i}", "task": {"description": f"Inspect source {i}",
+                "acceptance": [criterion if i == 0 else "Source must be checked"]},
+        } for i in range(13)])
+        provider = self.provider(lambda *_: ModelResponse(text="This work is still pending.", finish_reason=FinishReason.FINAL))
+        answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Inspect source"}],
+            window=30000, complexity="complex", permitted=self.runtime._permitted_tool_names())
+        self.assertEqual(len(provider.requests), 2, answer)
+        feedback = provider.requests[1][-1]["content"]
+        self.assertLess(len(feedback), 3000)
+        payload = json.loads(feedback)["working_plan_continuation"]
+        self.assertEqual(payload["eligible_task_count"], 13)
+        self.assertEqual(len(payload["eligible_tasks"]), 12)
+        self.assertEqual(payload["eligible_tasks"][0], {"id": plan["task_ids"][0], "status": "pending"})
+        pinned = next(m["content"] for m in provider.requests[1] if isinstance(m, dict)
+                      and m.get("content", "").startswith("## Pinned Working Plan state\n"))
+        self.assertIn("artifact_id", json.loads(pinned.splitlines()[-1]))
+        self.assertEqual(self.runtime.tasks.tasks[0]["acceptance"], [criterion])
+        self.assertEqual(turn.runtime_status, "incomplete")
+        self.assertFalse(turn.tool_records)
+
+    def test_native_planned_empty_or_length_preserves_single_handoff_and_simple_fallback(self):
+        for kind, expected in (("planned", 2), ("length", 1), ("blocked", 1), ("unknown", 1), ("simple", 3)):
+            with self.subTest(kind=kind):
+                self.runtime.tasks.recover()
+                self.runtime.tasks.clear()
+                plan = self.continuation_plan()
+                if kind == "blocked":
+                    self.runtime.tasks.edit_plan(plan_id=plan["plan_id"], expected_revision=1, operations=[{
+                        "op": "block", "task": plan["task_ids"][0], "reason": "Access unavailable"}])
+                elif kind == "unknown":
+                    task = self.runtime.tasks.tasks[0]
+                    task["checkpoint"] = {"recovery_effect": {"status": "unknown"}}
+                    self.assertTrue(self.runtime.tasks._persist(task, expected_status="pending"))
+                def respond(provider, messages, model):
+                    if kind == "simple" and len(provider.requests) == 3:
+                        return ModelResponse(text="The simple answer recovered.", finish_reason=FinishReason.FINAL)
+                    return ModelResponse(text="Truncated" if kind == "length" else "",
+                        finish_reason=FinishReason.LENGTH if kind == "length" else FinishReason.FINAL)
+                provider = self.provider(respond)
+                answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Inspect source"}],
+                    complexity="simple" if kind == "simple" else "complex", permitted=self.runtime._permitted_tool_names())
+                self.assertEqual(len(provider.requests), expected, answer)
+                self.assertEqual(turn.runtime_status, "completed" if kind == "simple" else "blocked" if kind == "blocked" else "incomplete")
+                if kind == "length":
+                    self.assertIn("length limit", turn.protocol_error_message)
+                self.assertFalse(turn.tool_records)
+
+    def test_native_premature_final_continues_verified_plan_without_starting_work_itself(self):
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                self.runtime.tasks.clear()
+                plan = self.continuation_plan()
+                turn_id = f"r164-{streaming}"
+                token = self.runtime._conversation_turn_id.set(turn_id)
+                self.addCleanup(self.runtime._conversation_turn_id.reset, token)
+                def respond(provider, messages, model):
+                    step = len(provider.requests)
+                    validate_tool_history(messages, provider_id=provider_identity(provider), model=model, native=True)
+                    usage = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+                    if step in {1, 4}:
+                        return ModelResponse(text="The ready marker is verified.", finish_reason=FinishReason.FINAL, usage=usage)
+                    if step == 2:
+                        self.assertEqual(self.runtime.tasks.tasks[0]["status"], "pending")
+                        self.assertEqual(self.runtime.tasks.tasks[0].get("evidence", []), [])
+                        payload = json.loads(messages[-1]["content"])["working_plan_continuation"]
+                        self.assertEqual((payload["plan_id"], payload["revision"]), (plan["plan_id"], 1))
+                        self.assertEqual(payload["eligible_tasks"][0]["id"], plan["task_ids"][0])
+                        self.assertEqual(payload["eligible_tasks"][0]["status"], "pending")
+                        call = ToolCall("start", "update_plan", {"plan_id": plan["plan_id"], "expected_revision": 1,
+                            "operations": [{"op": "start", "task": plan["task_ids"][0]}]})
+                    else:
+                        self.assertEqual(step, 3)
+                        call = ToolCall("verify", "read_file", {"path": "notes.txt"})
+                    return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST, usage=usage,
+                        continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+                def stream(provider, messages, model):
+                    yield ResponseComplete(respond(provider, messages, model))
+                provider = self.provider(stream if streaming else respond, stream=streaming)
+                answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Verify notes.txt"}],
+                    complexity="complex", permitted=self.runtime._permitted_tool_names())
+                self.assertEqual(len(provider.requests), 4, answer)
+                self.assertEqual((turn.turn_prompt_total, turn.turn_completion_total), (28, 12))
+                self.assertEqual(turn.runtime_status, "completed", answer)
+                self.assertEqual(self.runtime.tasks.working_plan.status, "completed")
+                self.assertEqual([r["action"] for r in turn.tool_records], ["update_plan", "read_file"])
+                entries = [e for e in self.runtime.conversation_history.entries()
+                           if e.kind == "plan.continuation" and e.turn_id == turn_id]
+                self.assertEqual(len(entries), 1)
+                self.assertEqual(entries[0].payload, {"plan_id": plan["plan_id"], "revision": 1,
+                                                     "reason": "required_work_remains"})
+                self.assertTrue(entries[0].request_id)
+                self.assertFalse(any("required_work_remains" in json.dumps(m)
+                                     for m in self.runtime.conversation_history.display_messages()))
+
+    def test_native_continuation_does_not_rearm_on_revision_only_churn_or_exceed_steps(self):
+        for max_steps, expected_requests in ((0, 1), (4, 3)):
+            with self.subTest(max_steps=max_steps):
+                self.runtime.tasks.clear()
+                plan = self.continuation_plan()
+                self.runtime.execution_context.max_steps = max_steps
+                def respond(provider, messages, model):
+                    if len(provider.requests) == 2:
+                        return ModelResponse(tool_calls=(ToolCall("reorder", "update_plan", {
+                            "plan_id": plan["plan_id"], "expected_revision": 1, "reason": "same strategy",
+                            "operations": [{"op": "reorder", "tasks": plan["task_ids"]}]}),),
+                            finish_reason=FinishReason.TOOL_REQUEST,
+                            usage={"prompt_tokens": 7, "completion_tokens": 3})
+                    return ModelResponse(text="I have no further actions.", finish_reason=FinishReason.FINAL,
+                        usage={"prompt_tokens": 7, "completion_tokens": 3})
+                provider = self.provider(respond)
+                answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Verify notes.txt"}],
+                    complexity="complex", permitted=self.runtime._permitted_tool_names())
+                self.assertEqual(len(provider.requests), expected_requests, answer)
+                self.assertEqual((turn.turn_prompt_total, turn.turn_completion_total),
+                                 (7 * expected_requests, 3 * expected_requests))
+                self.assertEqual(turn.runtime_status, "incomplete")
+                self.assertEqual(self.runtime.tasks.tasks[0]["status"], "pending")
+                self.assertEqual(self.runtime.tasks.tasks[0].get("evidence", []), [])
+
+    def test_native_plan_continuation_stops_for_unverified_or_unsafe_state(self):
+        for kind in ("blocked", "unknown_effect", "stale", "question", "approval", "scope", "unknown_manager", "child"):
+            with self.subTest(kind=kind), ExitStack() as stack:
+                self.runtime.tasks.recover()
+                self.runtime.tasks.clear()
+                plan = self.continuation_plan()
+                task = self.runtime.tasks.tasks[0]
+                if kind == "blocked":
+                    self.runtime.tasks.edit_plan(plan_id=plan["plan_id"], expected_revision=1, operations=[{
+                        "op": "block", "task": task["id"], "reason": "Repository unavailable"}])
+                elif kind in {"unknown_effect", "stale"}:
+                    changed = copy.deepcopy(task)
+                    if kind == "unknown_effect":
+                        changed["checkpoint"] = {"recovery_effect": {"status": "unknown"}}
+                    else:
+                        changed["status"] = "blocked"
+                    self.runtime.tasks._persist(changed, expected_status="pending")
+                elif kind in {"question", "approval", "scope"}:
+                    state = self.runtime._interaction_controller.state()
+                    if kind == "scope":
+                        state["executing_plan"] = {"bounds": {"capabilities": ["read"], "effects": ["read_only"],
+                                                              "workspace_paths": ["other"], "risk_ceiling": "normal"}}
+                    else:
+                        state["pending_question" if kind == "question" else "pending_plan"] = {"request_id": "pending"}
+                    stack.enter_context(patch.object(self.runtime._interaction_controller, "state", return_value=state))
+                elif kind == "child":
+                    stack.enter_context(patch.object(self.runtime.execution_context, "child_run_id", "child"))
+                elif kind == "unknown_manager":
+                    stack.enter_context(patch.object(self.runtime.current_session, "process_manager", None))
+                provider = self.provider(lambda *_: ModelResponse(text="This remains incomplete.", finish_reason=FinishReason.FINAL))
+                answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Verify notes.txt"}],
+                    complexity="complex", permitted=self.runtime._permitted_tool_names())
+                self.assertEqual(len(provider.requests), 1, answer)
+                self.assertNotEqual(turn.runtime_status, "completed")
+                self.assertFalse(turn.tool_records)
+                self.assertEqual(self.runtime.tasks.tasks[0].get("evidence", []), [])
+
+    def test_native_cancelled_this_turn_is_final_but_prior_cancelled_plan_can_be_replaced(self):
+        plan = self.continuation_plan()
+        def cancel(provider, messages, model):
+            if len(provider.requests) == 1:
+                return ModelResponse(tool_calls=(ToolCall("cancel", "update_plan", {
+                    "plan_id": plan["plan_id"], "expected_revision": 1,
+                    "operations": [{"op": "cancel", "task": plan["task_ids"][0]}]}),),
+                    finish_reason=FinishReason.TOOL_REQUEST)
+            self.assertEqual(self.availability(messages)[1]["current_call_tools"], [])
+            return ModelResponse(text="The requested work was cancelled.", finish_reason=FinishReason.FINAL)
+        provider = self.provider(cancel)
+        answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Cancel this work"}],
+            complexity="complex", permitted=self.runtime._permitted_tool_names())
+        self.assertEqual(len(provider.requests), 2, answer)
+        self.assertEqual(turn.runtime_status, "cancelled")
+        self.assertEqual(self.runtime.tasks.working_plan.status, "cancelled")
+        def replace(provider, messages, model):
+            if len(provider.requests) == 1:
+                self.assertEqual({t["name"] for t in provider.tool_requests[-1]}, {"update_plan", "read_tool_artifact"})
+                call = ToolCall("new", "update_plan", {"expected_revision": 0, "operations": [
+                    {"op": "add", "ref": "inspect", "task": {"description": "Read ready marker",
+                        "acceptance": [{"criterion": "ready marker", "verification": {
+                            "action": "read_file", "arguments": {"path": "notes.txt"},
+                            "expect": {"contains": "ready"}}}]}}, {"op": "start", "task": "inspect"}]})
+            elif len(provider.requests) == 2:
+                call = ToolCall("read", "read_file", {"path": "notes.txt"})
+            else:
+                return ModelResponse(text="The new task is verified.", finish_reason=FinishReason.FINAL)
+            return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST)
+        provider = self.provider(replace)
+        answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "A new request: verify notes.txt"}],
+            complexity="complex", permitted=self.runtime._permitted_tool_names())
+        self.assertEqual(len(provider.requests), 3, answer)
+        self.assertEqual(turn.runtime_status, "completed", answer)
+        self.assertNotEqual(self.runtime.tasks.working_plan.id, plan["plan_id"])
+
+    def test_native_plan_continuation_does_not_retry_a_denied_tool(self):
+        self.continuation_plan()
+        def respond(provider, messages, model):
+            if len(provider.requests) == 1:
+                return ModelResponse(tool_calls=(ToolCall("outside", "read_file", {"path": "../outside.txt"}),),
+                    finish_reason=FinishReason.TOOL_REQUEST)
+            return ModelResponse(text="This work cannot be completed.", finish_reason=FinishReason.FINAL)
+        provider = self.provider(respond)
+        answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Verify notes.txt"}],
+            complexity="complex", permitted=self.runtime._permitted_tool_names())
+        self.assertEqual(len(provider.requests), 2, answer)
+        self.assertEqual(len(turn.tool_records), 1)
+        self.assertFalse(turn.tool_records[0]["success"])
+        self.assertEqual(turn.runtime_status, "incomplete")
+
+    def test_native_continuation_hands_off_owned_process_or_delegation_uncertainty(self):
+        from types import SimpleNamespace
+        self.continuation_plan()
+        turn = TurnContext("Verify notes.txt", interaction_mode="agent", complexity="complex", tool_records=[])
+        engine = AgentEngine(self.runtime)
+        self.assertIsNotNone(engine._working_plan_continuation(turn))
+        with patch.object(self.runtime.subagent_manager, "coordinator", SimpleNamespace(list=lambda: [
+                {"run_id": "outstanding", "status": "running", "version": 1}])):
+            self.assertIsNone(engine._working_plan_continuation(turn))
+        processes = self.runtime.current_session.process_manager
+        processes._audit_event("started", "unknown-owned-process", owned_process_state="unknown")
+        self.assertIsNone(engine._working_plan_continuation(turn))
+
     def run_discovery_plan(self, *, typed, streaming):
         (self.root / "catalog.py").write_text("def sorted_products(names):\n    return sorted(names, key=lambda n: (n.casefold(), n))\n")
         acceptance = ([{"criterion": "sorting implementation exists", "verification": {
@@ -262,6 +556,11 @@ class NativeContextTests(unittest.TestCase):
                     "plan_id": self.runtime.tasks.working_plan.id, "expected_revision": 1,
                     "operations": [{"op": "suggest_complete", "task": task["id"]}]})
             else:
+                if not typed and step == 7:
+                    feedback = json.loads(messages[-1]["content"])["working_plan_continuation"]
+                    self.assertEqual(feedback["eligible_tasks"][0]["status"], "running")
+                    self.assertEqual(feedback["completion_evidence"], "required; prose and suggestions are not evidence")
+                    self.assertEqual(task["status"], "running")
                 return ModelResponse(text="Read the sorting implementation.", finish_reason=FinishReason.FINAL)
             return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
                 continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
@@ -269,9 +568,12 @@ class NativeContextTests(unittest.TestCase):
         def stream(provider, messages, model):
             yield ResponseComplete(respond(provider, messages, model))
         provider = self.provider(stream if streaming else respond, stream=streaming)
-        return self.run_native(provider, [{"role": "system", "content": "Inspect the requested file."},
+        result = self.run_native(provider, [{"role": "system", "content": "Inspect the requested file."},
             {"role": "user", "content": "Find the sorting function and its tie-break rule."}],
             complexity="complex", permitted=self.runtime._permitted_tool_names())
+        if not typed:
+            self.assertEqual(len(provider.requests), 7, result[0])
+        return result
 
     def test_native_discovery_does_not_claim_prose_task_execution(self):
         for streaming in (False, True):

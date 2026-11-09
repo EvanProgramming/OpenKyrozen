@@ -143,12 +143,12 @@ class AgentEngineTests(unittest.TestCase):
         self.assertEqual(runtime._execute_tool_batch.call_count, 1)
         self.assertEqual(runtime._execute_tool_batch.call_args.args[0][0]["action"], "update_plan")
 
-    def test_complex_native_turn_retries_final_answer_without_plan_then_stops(self):
+    def test_complex_native_turn_without_observable_authority_stops_without_reprompt(self):
         runtime = self.complex_native_runtime()
         runtime._get_model_response.return_value = ModelResponse(text="Done", finish_reason=FinishReason.FINAL)
         result = AgentEngine(runtime).run(TurnContext("Complex task"))
         self.assertIn("not established", result)
-        self.assertEqual(runtime._get_model_response.call_count, 3)
+        self.assertEqual(runtime._get_model_response.call_count, 1)
         runtime._execute_tool_batch.assert_not_called()
 
     def test_complex_native_turn_runs_other_tools_after_plan_succeeds(self):
@@ -613,6 +613,8 @@ class AgentEngineTests(unittest.TestCase):
                     patch.object(runtime, "_collect_tool_calls", side_effect=AssertionError("legacy parser used")), \
                     patch.object(runtime, "_collect_unwrapped_tool_calls", side_effect=AssertionError("legacy parser used")):
                 answer = runtime.chat(runtime.current_session, "Read note.txt")
+            first_turn_requests = len(provider.requests)
+            self.assertEqual(first_turn_requests, 4)
 
             older = next(item for item in provider.requests[2][0]
                          if isinstance(item, ToolReply) and item.call_id == "plan-1")
@@ -630,20 +632,23 @@ class AgentEngineTests(unittest.TestCase):
                     patch.object(runtime, "_build_memory_context", return_value=packet):
                 next_answer = runtime.chat(runtime.current_session, "Continue")
             self.assertIn("verified text", next_answer)
-            historical = [item for item in provider.requests[3][0] if isinstance(item, ToolReply)]
+            historical = [item for item in provider.requests[first_turn_requests][0] if isinstance(item, ToolReply)]
             self.assertTrue(historical)
             self.assertTrue(all("artifact_id" in item.output["data"] for item in historical))
             self.assertEqual(historical[0].output["data"]["artifact_id"], artifact_id)
+            self.assertEqual(provider.calls_attempted, 6)
+            attempts_before_failure = provider.calls_attempted
+            requests_before_failure = len(provider.requests)
             with patch.object(runtime.memory_bank.store.artifacts, "get_or_create", side_effect=OSError("offline")), \
                     patch.object(runtime, "_schedule_post_turn_learning"):
                 failure = runtime.chat(runtime.current_session, "Continue again")
             self.assertIn("Could not retain earlier tool results", failure)
-            self.assertEqual(provider.calls_attempted, 4)
+            self.assertEqual(provider.calls_attempted, attempts_before_failure)
 
         self.assertIn("verified text", answer)
         retrieve_memory.assert_called_once()
-        self.assertEqual(provider.calls_attempted, 4)
-        self.assertEqual(len(provider.requests), 4)
+        self.assertEqual(provider.calls_attempted, attempts_before_failure)
+        self.assertEqual(len(provider.requests), requests_before_failure)
         self.assertTrue(all(any(packet in item.get("content", "") for item in request[0]
                                 if isinstance(item, dict)) for request in provider.requests))
         self.assertEqual(provider.requests[1][0][-1].call_id, "plan-1")

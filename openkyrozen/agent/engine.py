@@ -1,6 +1,8 @@
 """Canonical foreground turn engine with a bounded structured-tool loop."""
 from __future__ import annotations
 
+import json
+
 from openkyrozen.agent.turn import TurnContext
 from openkyrozen.providers.models import FinishReason, TextDelta, ToolCallDelta, ToolReply
 
@@ -86,6 +88,98 @@ class AgentEngine:
                 "metadata": {"artifact_id": artifact_id},
             }, reply.is_error)
 
+    def _working_plan_continuation(self, turn, *, needs_plan=False):
+        """Offer state once, without scheduling work or granting tool authority."""
+        from openkyrozen.agent.delegation import TERMINAL
+        from openkyrozen.agent.executor import _strategic_plan_denial
+        from openkyrozen.tasks.engine import _unknown_recovery_effect
+        from openkyrozen.tools.processes import SessionProcessManager
+
+        runtime = self.runtime
+        try:
+            context = runtime.execution_context
+            if (turn.interaction_mode != "agent" or not turn.planning_required or context.child_run_id
+                    or turn.protocol_error_message or turn.pending_interaction_reply is not None
+                    or (context.cancelled is not None and context.cancelled.is_set())):
+                return None
+            interaction = runtime._interaction_controller.state()
+            if (interaction.get("pending_question") or interaction.get("pending_plan")
+                    or runtime._approval_request.get() is not None):
+                return None
+            processes = runtime.current_session.process_manager
+            if type(processes) is not SessionProcessManager or processes._audit_store is None:
+                return None
+            with processes._lock:
+                if processes._closed or any(h.process.poll() is None for h in processes._handles.values()):
+                    return None
+            if processes._recovery_context() or any(r["potentially_active"] for r in processes._audit_records()):
+                return None
+            coordinator = runtime.subagent_manager.coordinator
+            if coordinator and any(r["status"] not in TERMINAL or r["version"] !=
+                    getattr(turn, "agent_versions", {}).get(r["run_id"]) for r in coordinator.list()):
+                return None
+            for record in turn.tool_records:
+                verification = record.get("verification") or {}
+                no_effect_plan_input = (record.get("action") == "update_plan"
+                    and record.get("failure") == "invalid_arguments"
+                    and verification.get("method") == "plan_input_validation"
+                    and (verification.get("observed") or {}).get("committed") is False)
+                if ((record.get("success") is not True and not no_effect_plan_input)
+                        or verification.get("status") == "failed"):
+                    return None
+            manager = runtime.tasks
+            plan = manager.working_plan
+            scope = {"user_id": manager.user_id, "workspace_id": manager.workspace_id,
+                     "session_id": manager.session_id or ""}
+            permitted = runtime._permitted_tool_names()
+            if "update_plan" not in permitted:
+                return None
+            if needs_plan:
+                if manager.store.get_working_plan(**scope) is not None:
+                    return None
+                return {"plan_id": None, "revision": 0, "status": "required",
+                        "eligible_tasks": [], "completion_evidence": "a plan and verified receipts are required",
+                        "decisions": ["create a Working Plan with update_plan and runtime-owned IDs",
+                                      "explicitly start a task before its work; never fabricate completion"]}
+            if plan is None or plan.status != "active":
+                return None
+            saved = manager.store.get_working_plan_by_id(plan.id, **scope)
+            tasks = manager.store.list_working_plan_tasks(plan.id, **scope)
+            if (not saved or saved["status"] != "active" or saved["revision"] != plan.revision
+                    or tuple(t["id"] for t in tasks) != plan.task_ids):
+                return None
+            cached = {t["id"]: t for t in manager.tasks}
+            eligible = []
+            for task in tasks:
+                if (task["status"] in {"blocked", "failed"} or _unknown_recovery_effect(task)
+                        or any(task.get(k) != cached.get(task["id"], {}).get(k)
+                               for k in ("status", "checkpoint", "acceptance", "dependencies"))):
+                    return None
+                if manager.active_working_task(task["id"]) is None:
+                    continue
+                checkpoint = task.get("checkpoint") or {}
+                contracts = ([(checkpoint["action"], checkpoint.get("args"))] if checkpoint.get("action")
+                             else [(c["action"], c.get("args")) for c in task.get("acceptance", [])
+                                   if isinstance(c, dict) and c.get("action")])
+                for action, arguments in contracts:
+                    spec = runtime.tool_registry.specs.get(action)
+                    if action not in permitted or (interaction.get("executing_plan") and _strategic_plan_denial(
+                            interaction["executing_plan"], action, arguments, spec, runtime._get_workspace_root())):
+                        return None
+                eligible.append({"id": task["id"], "status": task["status"]})
+            if eligible:
+                return {"plan_id": plan.id, "revision": plan.revision, "status": "active",
+                        "eligible_tasks": eligible[:12], "eligible_task_count": len(eligible),
+                        "plan_state": "Use the current pinned Working Plan state; read its artifact_id if present.",
+                        "completion_evidence": "required; prose and suggestions are not evidence",
+                        "decisions": ["continue permitted work with explicit task selection",
+                                      "request clarification or record a genuine blocker",
+                                      "use existing plan rules to cancel/replace; require new receipts, never rewrite executed criteria"]}
+        except Exception:
+            # Unavailable authority or lifecycle state is a handoff, not permission to retry.
+            return None
+        return None
+
     def _run_native(self, turn: TurnContext) -> None:
         runtime = self.runtime
         runtime._last_response_is_native.set(True)
@@ -118,6 +212,7 @@ class AgentEngine:
         runtime.execution_context.native_plan_inspected = False
         control_failures = 0
         pending_plan_validation = None
+        plan_continuation_used = False
 
         max_steps = getattr(runtime.execution_context, "max_steps", None)
         if max_steps is None:
@@ -140,10 +235,14 @@ class AgentEngine:
                 observed_plan_id = plan.id
             completed_plan = (observed_plan_id is not None and plan is not None
                               and plan.id == observed_plan_id and plan.status == "completed")
-            needs_plan = turn.planning_required and (plan is None or plan.status != "active")
+            cancelled_plan = (observed_plan_id is not None and plan is not None
+                              and plan.id == observed_plan_id and plan.status == "cancelled")
+            needs_plan = turn.planning_required and not cancelled_plan and (plan is None or plan.status != "active")
             native_tool_phase = ("plan_completed" if completed_plan else "plan_required" if needs_plan
-                                 else "plan_active" if turn.planning_required else None)
-            if needs_plan:
+                                 else "plan_active" if turn.planning_required and not cancelled_plan else None)
+            if cancelled_plan:
+                tool_names = set()
+            elif needs_plan:
                 if completed_plan:
                     tool_names = runtime._permitted_tool_names() & {"update_plan", "read_tool_artifact"}
                 elif "update_plan" not in runtime._permitted_tool_names():
@@ -262,17 +361,26 @@ class AgentEngine:
                         continue
                     turn.protocol_error_message = "A valid Strategic Plan proposal was not prepared; no proposed changes were executed."
                     break
-                if needs_plan and not completed_plan:
-                    final_text = ""
-                    if step < max_steps:
+                if (response.finish_reason == FinishReason.FINAL and not final_text.startswith("[LLM Error]")
+                        and not plan_continuation_used and not pending_plan_validation and step < max_steps):
+                    state = self._working_plan_continuation(turn, needs_plan=needs_plan and not completed_plan)
+                    if state is not None:
+                        plan_continuation_used = True
+                        if runtime._conversation_turn_id.get() is not None:
+                            runtime._record_conversation_entry("plan.continuation", {
+                                "plan_id": state["plan_id"], "revision": state["revision"],
+                                "reason": "plan_required" if state["status"] == "required" else "required_work_remains",
+                            }, request_id=runtime._last_model_request_id.get())
                         messages.extend((response if response.continuation else {
                             "role": "assistant", "content": response.text,
-                        }, {"role": "user", "content":
-                            "Create a Working Plan with the update_plan tool before continuing."}))
+                        }, {"role": "user", "content": json.dumps({
+                            "working_plan_continuation": state}, ensure_ascii=False, sort_keys=True)}))
                         continue
+                if needs_plan and not completed_plan:
+                    final_text = ""
                     turn.protocol_error_message = "A Working Plan was not established; no further tools were run."
                     break
-                if (not final_text or response.finish_reason == FinishReason.LENGTH) and step < 2:
+                if (not final_text or response.finish_reason == FinishReason.LENGTH) and step < 2 and not turn.planning_required:
                     messages.extend((response if response.continuation else {
                         "role": "assistant", "content": response.text,
                     }, {"role": "user", "content": (

@@ -167,6 +167,25 @@ also requests other tools, retries a planless final response within the turn's
 step limit, and reports an incomplete turn if planning is unavailable or fails.
 Existing Strategic Plan and tool permission checks still apply. Once a plan
 completes, the model may finish or establish a new plan before further tools.
+If a direct native agent responds FINAL before establishing its required plan or
+while runnable required work remains, the engine may provide one shared structured,
+scoped plan-state continuation per turn,
+within the existing request/step budget. This grants no tool authority and never
+starts tasks, replays work, changes acceptance or supplies completion evidence.
+Prose criteria remain unverified; any cancellation/replacement follows the normal
+plan rules and requires new receipts. Pending interactions/approval, denied or
+uncertain effects, active/unknown processes and outstanding delegation preserve
+handoff. Further refusal ends honestly incomplete. A plan cancelled after being
+observed active in this turn gets a final response without new tools; an older
+cancelled plan may be replaced for a new request. The conversation journal records
+only the continuation's plan ID, revision and reason, correlated to the preceding
+model request; its raw state is not added to replay history.
+Feedback includes at most twelve eligible task IDs/statuses and the total count,
+referring to the bounded pinned plan or its existing artifact for details. It
+does not duplicate full acceptance criteria or execution arguments.
+Missing-plan and active-plan feedback share the same allowance, which creation or
+revision cannot reset. Planned empty/truncated replies do not enter the generic
+empty-response retry path; non-planned turns retain that existing fallback.
 
 Permitted feature dependencies follow the responsibilities above: `agent` coordinates
 `tasks`, `tools` catalog/model contracts, `security`, provider contracts, `routing`,
