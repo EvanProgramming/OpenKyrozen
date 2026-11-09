@@ -85,13 +85,24 @@ class GoogleProvider(LLMProvider):
         meta = getattr(response, "usage_metadata", None)
         if meta is None:
             return None
+        prompt = getattr(meta, "prompt_token_count", None)
+        candidate = getattr(meta, "candidates_token_count", None)
         thoughts = getattr(meta, "thoughts_token_count", None)
+        cached = getattr(meta, "cached_content_token_count", None)
+        if (any(type(count) is not int or count < 0 for count in (prompt, candidate))
+                or any(count is not None and (type(count) is not int or count < 0)
+                       for count in (thoughts, cached))
+                or cached is not None and cached > prompt):
+            return None
         usage = {
-            "prompt_tokens": getattr(meta, "prompt_token_count", 0) or 0,
-            "completion_tokens": (getattr(meta, "candidates_token_count", 0) or 0) + (thoughts or 0),
+            "prompt_tokens": prompt,
+            "completion_tokens": candidate + (thoughts or 0),
         }
         if thoughts is not None:
             usage["reasoning_tokens"] = thoughts
+        if cached is not None:
+            usage["prompt_cache_hit_tokens"] = cached
+            usage["prompt_cache_miss_tokens"] = max(0, usage["prompt_tokens"] - cached)
         return usage
 
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
@@ -147,7 +158,8 @@ class GoogleProvider(LLMProvider):
         response = _retry_with_backoff(_call)
         with received_response():
             usage_dict = self._usage(response)
-            usage_ledger._track_cost(self.config.provider, usage_dict, model=model,
+            usage_ledger._track_cost(self.config.provider, usage_dict,
+                        model=getattr(response, "model_version", None) or model, requested_model=model,
                         latency_ms=round((time.monotonic() - started) * 1000))
             candidates = getattr(response, "candidates", None) or ()
             candidate = candidates[0] if candidates else None
@@ -221,7 +233,8 @@ class GoogleProvider(LLMProvider):
                 response_id = getattr(chunk, "response_id", None) or response_id
                 actual_model = getattr(chunk, "model_version", None) or actual_model
                 prompt_block_reason = getattr(getattr(chunk, "prompt_feedback", None), "block_reason", None) or prompt_block_reason
-                usage = self._usage(chunk) or usage
+                if getattr(chunk, "usage_metadata", None) is not None:
+                    usage = self._usage(chunk)
                 if usage is not None:
                     yield UsageUpdate(usage)
                 candidates = getattr(chunk, "candidates", None) or ()
@@ -259,6 +272,7 @@ class GoogleProvider(LLMProvider):
                          "completion_tokens": len(text) // 4, "_estimated": 1}
                 yield UsageUpdate(usage)
             usage_ledger._track_cost(self.config.provider, usage, model=actual_model or model,
+                requested_model=model,
                 latency_ms=round((time.monotonic() - started) * 1000))
             response = model_response(provider=self.name, model=model, actual_model=actual_model,
                 text=text, usage=usage,

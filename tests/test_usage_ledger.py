@@ -17,6 +17,135 @@ from openkyrozen.providers import OpenAICompatProvider, ProviderConfig, _track_c
 from openkyrozen.interfaces.web.service import WebService
 server = WebService(None)
 class UsageLedgerTests(unittest.TestCase):
+    def test_google_model_tariffs_meter_children_and_reconstruct_display(self):
+        from openkyrozen.agent.delegation import DelegationBudget
+
+        with tempfile.TemporaryDirectory() as directory, closing(EventStore(Path(directory) / "usage.db")) as store:
+            budget = DelegationBudget()
+            budget.reserve("child", review=False)
+            with usage_scope(store=store, delegation_budget=budget, delegation_budget_run_id="child"):
+                for _ in range(4):
+                    _track_cost("google", {"prompt_tokens": 100_000, "completion_tokens": 1000},
+                                model="gemini-3.5-flash-lite",
+                                occurred_at=datetime(2026, 11, 9, tzinfo=timezone.utc))
+            totals = store.usage_totals()
+            self.assertEqual(totals["cost_picos"], 130_000_000_000)
+            self.assertFalse(budget.can_continue("child", cost_picos=totals["cost_picos"]))
+            budget.settle("child", cost_picos=totals["cost_picos"])
+            self.assertEqual(budget.remaining_picos, budget.TURN_LIMIT - 130_000_000_000)
+            self.assertEqual(get_cost_summary(store=store), "google: 400K in / 4K out ~$0.13")
+            attempts = store.list_usage_attempts()
+            self.assertTrue(all(row["usage_status"] == "estimated" for row in attempts))
+            self.assertTrue(all(row["pricing_snapshot"]["rate_policy"] == "standard_paid_rate_estimate"
+                                for row in attempts))
+
+    def test_google_cache_tiers_dates_and_unknown_model_pricing(self):
+        cases = [
+            ("gemini-3.5-flash-lite", 2026, 11, 200_000, 50_000, 1000, 49_000_000_000),
+            ("gemini-2.5-flash", 2026, 11, 200_000, 50_000, 1000, 49_000_000_000),
+            ("gemini-3.1-pro-preview", 2026, 11, 200_000, 50_000, 1000, 322_000_000_000),
+            ("gemini-3.1-pro-preview", 2026, 11, 200_001, 50_000, 1000, 638_004_000_000),
+            ("gemini-3.8-flash", 2026, 12, 200_000, 50_000, 1000, 120_000_000_000),
+            ("gemini-3.8-flash", 2027, 1, 200_000, 50_000, 1000, 240_000_000_000),
+            ("gemini-unknown", 2026, 11, 200_000, 50_000, 1000, None),
+            ("3.0", 2026, 11, 200_000, 50_000, 1000, None),
+        ]
+        with tempfile.TemporaryDirectory() as directory, closing(EventStore(Path(directory) / "usage.db")) as store:
+            for model, year, month, prompt, hit, output, expected in cases:
+                with self.subTest(model=model, year=year, month=month), usage_scope(store=store):
+                    attempt_id = _track_cost("google", {
+                        "prompt_tokens": prompt, "completion_tokens": output,
+                        "prompt_cache_hit_tokens": hit, "prompt_cache_miss_tokens": prompt - hit,
+                    }, model=model, occurred_at=datetime(year, month, 9, tzinfo=timezone.utc))
+                    row = next(row for row in store.list_usage_attempts() if row["id"] == attempt_id)
+                    self.assertEqual(row["cost_picos"], expected)
+                    self.assertEqual(row["usage_status"], "unknown" if expected is None else "estimated")
+                    self.assertEqual(row["cache_status"], "mixed")
+
+    def test_google_adapter_preserves_cache_and_served_identity(self):
+        from openkyrozen.providers.google import GoogleProvider
+        from unittest.mock import Mock, patch
+
+        provider = GoogleProvider.__new__(GoogleProvider)
+        provider.config = ProviderConfig(provider="google", model_simple="gemini-3.5-flash-lite")
+        wire = SimpleNamespace(text="ok", candidates=[], model_version="gemini-3.5-flash-lite-07-2026",
+            usage_metadata=SimpleNamespace(prompt_token_count=100, candidates_token_count=3,
+                thoughts_token_count=11, cached_content_token_count=40))
+        provider._client = SimpleNamespace(models=SimpleNamespace(generate_content=Mock(return_value=wire)))
+        with patch("openkyrozen.providers.usage._track_cost") as charge:
+            response = provider.chat_response([])
+        self.assertEqual(response.usage["prompt_cache_hit_tokens"], 40)
+        self.assertEqual(response.usage["prompt_cache_miss_tokens"], 60)
+        self.assertEqual(response.usage["completion_tokens"], 14)
+        self.assertEqual(charge.call_args.kwargs["model"], wire.model_version)
+        self.assertEqual(charge.call_args.kwargs["requested_model"], provider.config.model_simple)
+
+    def test_google_sync_stream_share_tariff_and_unknown_coverage(self):
+        from openkyrozen.providers.google import GoogleProvider
+        from tests.test_provider_native_tools import _google_schema_sdk
+        from unittest.mock import Mock
+
+        with tempfile.TemporaryDirectory() as directory, closing(EventStore(Path(directory) / "usage.db")) as store:
+            provider = GoogleProvider.__new__(GoogleProvider)
+            provider.config = ProviderConfig(provider="google", model_simple="gemini-3.5-flash-lite")
+            wire = SimpleNamespace(response_id="r", prompt_feedback=None,
+                model_version="gemini-3.5-flash-lite-07-2026",
+                candidates=[SimpleNamespace(finish_reason="STOP", content=SimpleNamespace(
+                    parts=[SimpleNamespace(text="ok", thought=False, function_call=None)]))],
+                usage_metadata=SimpleNamespace(prompt_token_count=20, candidates_token_count=3,
+                    thoughts_token_count=11, cached_content_token_count=5))
+            provider._client = SimpleNamespace(models=SimpleNamespace(
+                generate_content=Mock(return_value=wire),
+                generate_content_stream=Mock(side_effect=lambda **kwargs: iter([wire]))))
+            with usage_scope(store=store), _google_schema_sdk():
+                provider.chat_response([])
+                list(provider.chat_response_stream([]))
+                wire.model_version = "3.0"
+                list(provider.chat_response_stream([]))
+                wire.model_version = "gemini-3.5-flash-lite-07-2026"
+                invalid_terminal = SimpleNamespace(**vars(wire))
+                invalid_terminal.usage_metadata = SimpleNamespace(prompt_token_count=20,
+                    candidates_token_count=None)
+                provider._client.models.generate_content_stream.side_effect = lambda **kwargs: iter([wire, invalid_terminal])
+                list(provider.chat_response_stream([]))
+            rows = store.list_usage_attempts()
+            known = [row for row in rows if row["usage_status"] == "estimated"]
+            self.assertEqual(len(known), 2)
+            self.assertEqual({row["cost_picos"] for row in known}, {39_650_000})
+            self.assertTrue(all(row["pricing_snapshot"]["requested_model"] == provider.config.model_simple
+                                for row in rows))
+            unknown = next(row for row in rows if row["model"] == "3.0")
+            self.assertIsNone(unknown["cost_picos"])
+            report = store.usage_totals()
+            self.assertEqual(report["estimated_attempts"], 2)
+            self.assertEqual(report["unknown_attempts"], 2)
+            self.assertEqual(report["authoritative_attempts"], 0)
+            self.assertEqual(report["cost_picos"], 79_300_000)
+
+    def test_google_incomplete_or_invalid_usage_never_meters_a_known_amount(self):
+        from openkyrozen.providers.google import GoogleProvider
+
+        for prompt, candidate, thoughts, cached in [
+            (None, 3, 11, None), (20, None, 11, None),
+            (-1, 3, 11, None), (20, 3, -1, None), (20, 3, 11, 21),
+        ]:
+            with self.subTest(prompt=prompt, candidate=candidate, thoughts=thoughts, cached=cached):
+                self.assertIsNone(GoogleProvider._usage(SimpleNamespace(usage_metadata=SimpleNamespace(
+                    prompt_token_count=prompt, candidates_token_count=candidate,
+                    thoughts_token_count=thoughts, cached_content_token_count=cached))))
+        with tempfile.TemporaryDirectory() as directory, closing(EventStore(Path(directory) / "usage.db")) as store:
+            with usage_scope(store=store):
+                for data in [{"completion_tokens": 14}, {"prompt_tokens": 20},
+                             {"prompt_tokens": 20, "completion_tokens": 14, "prompt_cache_hit_tokens": 21},
+                             {"prompt_tokens": 20, "completion_tokens": 14, "_estimated": 1}]:
+                    _track_cost("google", data, model="gemini-3.5-flash-lite")
+            self.assertTrue(all(row["cost_picos"] is None and row["usage_status"] == "unknown"
+                                for row in store.list_usage_attempts()))
+            totals = store.usage_totals()
+            self.assertEqual(totals["cost_picos"], 0)
+            self.assertEqual(totals["unknown_attempts"], 4)
+            self.assertEqual(totals["providers"][0]["unknown_attempts"], 4)
+
     @staticmethod
     def _record(store: EventStore, *, workspace: str = "project", session: str | None = "session") -> None:
         with usage_scope(
