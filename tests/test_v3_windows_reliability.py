@@ -20,6 +20,74 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts' / 'v3_windows_reliability.py'
 
 
+class HistoricalReviewerObserverTests(unittest.TestCase):
+    def test_observer_preserves_original_returns_exceptions_argv_source_and_call_count(self):
+        from contextlib import redirect_stderr
+        from inspect import signature
+        from scripts import v3_windows_reliability as diagnostic
+        self.observer_evidence=[]
+        with tempfile.TemporaryDirectory() as directory:
+            script=Path(directory)/'subagent_workflow_acceptance.py'
+            script.write_bytes(b'unchanged historical fixture source bytes\n')
+            original_bytes=script.read_bytes()
+            for failure in (None,RuntimeError('synthetic original error'),KeyboardInterrupt()):
+                with self.subTest(error=type(failure).__name__):
+                    result=('original result',{'prompt_tokens':16});calls=[];answers=[]
+                    class Fixture:
+                        def chat(self,messages,model=None):
+                            calls.append((messages,model))
+                            if failure is not None:raise failure
+                            return result
+                    original_chat=Fixture.chat;messages=[{'role':'user','content':'fixture-only'}]
+                    def acceptance(*,live):
+                        self.assertIs(live,False)
+                        self.assertEqual(sys.argv,[str(script)])
+                        self.assertEqual(signature(Fixture.chat),signature(original_chat))
+                        self.assertIs(Fixture.chat.__wrapped__,original_chat)
+                        answers.append(Fixture().chat(messages,model='fixture'))
+                    stderr=io.StringIO();incoming_argv=['observer',str(script)]
+                    with patch('runpy.run_path',return_value={'Fixture':Fixture,'acceptance':acceptance}) as load, \
+                         patch.object(sys,'argv',incoming_argv),redirect_stderr(stderr):
+                        if failure is None:
+                            exec(compile(diagnostic._HISTORICAL_REVIEWER_OBSERVER,'historical-reviewer-observer','exec'),{})
+                            self.assertIs(answers[0],result)
+                        else:
+                            with self.assertRaises(type(failure)) as raised:
+                                exec(compile(diagnostic._HISTORICAL_REVIEWER_OBSERVER,'historical-reviewer-observer','exec'),{})
+                            self.assertIs(raised.exception,failure)
+                        self.observer_evidence.append({'case':type(failure).__name__,'original_call_count':len(calls),
+                            'argv_restored_identity':sys.argv is incoming_argv,'source_unchanged':script.read_bytes()==original_bytes,
+                            'return_identity':answers[0] is result if failure is None else None,
+                            'exception_identity':raised.exception is failure if failure is not None else None})
+                        self.assertIs(sys.argv,incoming_argv)
+                    self.assertEqual(calls,[(messages,'fixture')])
+                    self.assertIs(calls[0][0],messages)
+                    self.assertIs(Fixture.chat,original_chat)
+                    self.assertEqual(script.read_bytes(),original_bytes)
+                    load.assert_called_once_with(str(script),run_name='_kyrozen_historical_reviewer_observed')
+                    provenance=json.loads(stderr.getvalue().splitlines()[0].removeprefix('HISTORICAL_REVIEWER_OBSERVER '))
+                    self.assertEqual(provenance['source_sha256'],hashlib.sha256(original_bytes).hexdigest())
+                    self.assertEqual(provenance['original_argv'],[sys.executable,str(script)])
+                    self.assertEqual('Traceback (most recent call last)' in stderr.getvalue(),failure is not None)
+
+
+    def test_observer_restores_original_argv_on_original_script_load_failure(self):
+        from contextlib import redirect_stderr
+        from scripts import v3_windows_reliability as diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            script=Path(directory)/'subagent_workflow_acceptance.py';script.write_bytes(b'unchanged original source')
+            original_bytes=script.read_bytes();incoming_argv=['observer',str(script)];failure=RuntimeError('synthetic original load error')
+            with patch('runpy.run_path',side_effect=failure) as load,patch.object(sys,'argv',incoming_argv),redirect_stderr(io.StringIO()):
+                with self.assertRaises(RuntimeError) as raised:
+                    exec(compile(diagnostic._HISTORICAL_REVIEWER_OBSERVER,'historical-reviewer-observer','exec'),{})
+                self.observer_evidence=[{'case':'load_failure','original_call_count':0,
+                    'argv_restored_identity':sys.argv is incoming_argv,'source_unchanged':script.read_bytes()==original_bytes,
+                    'exception_identity':raised.exception is failure}]
+                self.assertIs(raised.exception,failure);self.assertIs(sys.argv,incoming_argv)
+            load.assert_called_once_with(str(script),run_name='_kyrozen_historical_reviewer_observed')
+            self.assertEqual(script.read_bytes(),original_bytes)
+
+
 class OfflineNativeDecodeTests(unittest.TestCase):
     def test_xperf_version_metadata_uses_isolated_native_query_with_the_original_five_second_bound(self):
         from scripts import v3_windows_reliability as diagnostic
@@ -1690,6 +1758,7 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
         return result, json.loads((output/'report.json').read_text()), commands, old, current, activity
 
     def test_native_vfs_preserves_exact_six_cells_original_limits_reviewers_and_inconclusive_boundary(self):
+        from scripts import v3_windows_reliability as diagnostic
         result,report,commands,old,current,_=self.comparison(vfs=True)
         self.assertEqual(result,0)
         self.assertEqual(report['status'],'INCONCLUSIVE')
@@ -1707,7 +1776,8 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
             self.assertEqual(command[command.index('--control')+1],'cpu')
             self.assertEqual(command[command.index('--cpu-workers')+1],'2')
             self.assertIn('abort',kwargs)
-        self.assertTrue(all(command[1]==str(old/'scripts/subagent_workflow_acceptance.py')
+        self.assertTrue(all(command[1:3]==['-c',diagnostic._HISTORICAL_REVIEWER_OBSERVER]
+                            and command[3]==str(old/'scripts/subagent_workflow_acceptance.py')
                             for command,_ in commands[1::2]))
         self.assertTrue(all(row['vfs_condition_valid'] for row in report['iterations']))
 
@@ -1738,6 +1808,7 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
         self.assertTrue(activity['checkpoint_at_stop']['iterations'][0]['infrastructure_failure'])
 
     def test_native_comparison_keeps_identical_cpu_controls_and_pinned_reviewers_and_all_fast_is_inconclusive(self):
+        from scripts import v3_windows_reliability as diagnostic
         result, report, commands, old, current, _ = self.comparison()
         self.assertEqual(result, 0)
         self.assertEqual(report['status'], 'INCONCLUSIVE')
@@ -1754,7 +1825,8 @@ class NativeWaitDiagnosticTests(unittest.TestCase):
             self.assertEqual(command[command.index('--cpu-workers')+1], '2')
             self.assertIn('abort', kwargs)
         for command, _ in commands[1::2]:
-            self.assertEqual(command[1], str(old/'scripts/subagent_workflow_acceptance.py'))
+            self.assertEqual(command[1:3], ['-c',diagnostic._HISTORICAL_REVIEWER_OBSERVER])
+            self.assertEqual(command[3], str(old/'scripts/subagent_workflow_acceptance.py'))
         cancellations = [command for command, _ in commands[::2]]
         self.assertEqual(['--readonly-anchor' in command for command in cancellations],
                          [row['variant']=='anchor' for row in report['iterations']])

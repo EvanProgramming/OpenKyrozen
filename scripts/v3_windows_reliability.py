@@ -34,6 +34,38 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 TEST = 'test_cancel_during_provider_call_prevents_late_write'
 HISTORICAL_PRODUCT = '0f172f9fe692ff8fafcc0a15a72fe51eaf67e977'
+# Observe only swallowed historical fixture exceptions; preserve the original workload.
+_HISTORICAL_REVIEWER_OBSERVER = r'''import functools, hashlib, json, runpy, sys, traceback
+from pathlib import Path
+script = sys.argv[1]
+original_argv = sys.argv
+sys.argv = [script]
+try:
+    print('HISTORICAL_REVIEWER_OBSERVER ' + json.dumps({
+        'observer': 'fixture-chat-exception-only-v1', 'script': script,
+        'source_sha256': hashlib.sha256(Path(script).read_bytes()).hexdigest(),
+        'original_argv': [sys.executable, script]}, sort_keys=True), file=sys.stderr, flush=True)
+    namespace = runpy.run_path(script, run_name='_kyrozen_historical_reviewer_observed')
+    fixture = namespace['Fixture']
+    original_chat = fixture.chat
+    @functools.wraps(original_chat)
+    def observed_chat(self, *args, **kwargs):
+        try:
+            return original_chat(self, *args, **kwargs)
+        except BaseException:
+            try:
+                traceback.print_exc(file=sys.stderr)
+            except Exception:
+                pass
+            raise
+    fixture.chat = observed_chat
+    try:
+        namespace['acceptance'](live=False)
+    finally:
+        fixture.chat = original_chat
+finally:
+    sys.argv = original_argv
+'''
 OFFLINE_ETL_SOURCE = {
     'repository':'EvanProgramming/OpenKyrozen', 'run_id':42532040045,
     'artifact_id':13637758059, 'diagnostic_sha':'a7b2cb8074192165ef5a8de1ac5304f3fda59a93',
@@ -1376,7 +1408,8 @@ def run_native_comparison(output, current, historical, *, vfs=False):
                             invalid_vfs |= not row['vfs_condition_valid']
                             slow |= row['vfs_control'].get('close_interval_ns',0)>=500_000_000
                         report['execution_order'].append('reviewer-' + case.name)
-                        row['reviewer'] = run_process([sys.executable, str(historical / 'scripts/subagent_workflow_acceptance.py')],
+                        row['reviewer'] = run_process([sys.executable, '-c', _HISTORICAL_REVIEWER_OBSERVER,
+                            str(historical / 'scripts/subagent_workflow_acceptance.py')],
                             case / 'reviewer.log', env, abort=abort)
                         require_owned_cleanup(row['reviewer'])
                         if row['reviewer'].get('abort_reason'):
