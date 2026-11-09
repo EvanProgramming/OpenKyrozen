@@ -18,6 +18,107 @@ def supplement():
 
 
 class RoutingProtocolTests(unittest.TestCase):
+    def test_model_exposure_joins_real_root_order_usage_and_rejects_ambiguous_calls(self):
+        from benchmarks.v3_gemini import GeminiPolicy
+        policy=GeminiPolicy();model=policy.role_models['simple']
+        request={'kind':'generation','model':model,'message_projection_sha256':'a'*64,
+                 'schema_sha256':'b'*64,'window_tokens':32000,'reserve_tokens':4096}
+        routing=[{'child':False,'before':{'model':policy.role_models['complex']},'after':{'model':model},
+                  'model_control_applied':True,'requests':[request]}]
+        ports=[dict(request,outcome='returned',provider_input_tokens=100,provider_output_tokens=20)]
+        usage={'input_tokens':100,'output_tokens':20,'served_model':model}
+        calls=[{'attempt_id':'real-physical','model':model,'actor_id':'root','actor_role':'root',
+                'root_actor_id':'root','admission_sequence':7,'status':'settled','usage':usage}]
+        result=supplement().model_exposure(routing,ports,calls,policy)
+        self.assertTrue(result['complete']);self.assertEqual(result['generation_calls'][0]['attempt_id'],'real-physical')
+        self.assertTrue(result['generation_calls'][0]['control_applied'])
+        self.assertFalse(supplement().model_exposure(routing,ports,calls+calls,policy)['complete'])
+        for field,value in [('actor_role','descendant'),('model',policy.role_models['complex'])]:
+            with self.subTest(field=field):
+                self.assertFalse(supplement().model_exposure(routing,ports,[dict(calls[0],**{field:value})],policy)['complete'])
+
+    def test_model_control_only_substitutes_auto_callback_with_symmetric_pure_decisions(self):
+        import openkyrozen.agent.preparation as preparation
+        from openkyrozen.providers import ProviderConfig
+        from unittest.mock import Mock
+        for variant in ('model-auto','model-simple'):
+            for mode in ('parent','child','main-pin','advisory'):
+                with self.subTest(variant=variant,mode=mode):
+                    config=ProviderConfig(provider='google',model_simple='simple-slot',model_complex='complex-slot',
+                        model_main='pinned' if mode=='main-pin' else 'auto')
+                    advice={'model':'reasoning'} if mode=='advisory' else {}
+                    config_before,advice_before=asdict(config),copy.deepcopy(advice)
+                    selected=[];classified=[];results=[];provider=Mock()
+                    def select(text):selected.append(text);return 'complex-slot'
+                    def classify(text):classified.append(text);return 'complex'
+                    def prepare(turn):
+                        value=preparation.decide_request(config,advice,'Review code',select,classify,'coder','auto','agent')
+                        results.append(value);turn.learning_run={'profile':value[0].profile};turn.learned_context=''
+                    runtime=SimpleNamespace(_prepare_turn=prepare,_interaction_controller=SimpleNamespace(state=lambda:{'system_one_backend':'off'}),
+                        execution_context=SimpleNamespace(child_run_id='child' if mode=='child' else None),
+                        _ponytail_context=lambda profile:profile,_execution_capability_token=SimpleNamespace(capabilities={'read'}),
+                        tasks=SimpleNamespace(working_plan_snapshot=lambda:None),llm_provider=provider)
+                    original=preparation.decide_request
+                    with patch.object(preparation,'decide_request',wraps=original) as decide:
+                        controller=supplement().install(runtime,variant)
+                        try:runtime._prepare_turn(SimpleNamespace(fast_backend='off'))
+                        finally:controller.close()
+                        self.assertEqual(decide.call_count,2)
+                    self.assertEqual(len(classified),2);provider.assert_not_called()
+                    record=controller.records[0]
+                    expected=('simple-slot' if variant=='model-simple' and mode=='parent' else
+                              'pinned' if mode=='main-pin' else 'complex-slot')
+                    self.assertEqual(results[-1][0].model,expected)
+                    self.assertEqual(results[-1][0].reasoning,'extended' if expected=='complex-slot' else 'standard')
+                    self.assertEqual(record['model_control_applied'],variant=='model-simple' and mode=='parent')
+                    self.assertEqual(asdict(config),config_before);self.assertEqual(advice,advice_before)
+                    self.assertEqual({key:value for key,value in record['before'].items() if key not in {'model','reasoning'}},
+                                     {key:value for key,value in record['after'].items() if key not in {'model','reasoning'}})
+
+    def test_model_contrast_is_separate_balanced_36_without_changing_original_54(self):
+        from collections import Counter
+        module=supplement();original=copy.deepcopy(module.schedule())
+        rows=module.model_schedule()
+        self.assertEqual(len(rows),36)
+        self.assertEqual(len({(row['fixture_id'],row['repeat'],row['variant']) for row in rows}),36)
+        self.assertEqual(Counter(tuple(row['variant'] for row in rows[index:index+2])
+            for index in range(0,36,2)),{('model-auto','model-simple'):9,('model-simple','model-auto'):9})
+        self.assertEqual(module.schedule(),original)
+
+    def model_rows(self):
+        from benchmarks.v3_gemini import GeminiPolicy,GeminiPricing
+        from openkyrozen.providers import ProviderConfig
+        policy=GeminiPolicy(config=ProviderConfig(provider='google',model_main='auto',
+            model_simple='gemini-3.5-flash-lite',model_complex='gemini-2.5-flash'),pricing=GeminiPricing())
+        rows=[]
+        for cell in supplement().model_schedule():
+            model=policy.role_models['complex' if cell['variant']=='model-auto' else 'simple']
+            rows.append(dict(cell,physical_success=True,verified_success=True,workflow_state_correct=True,
+                safety_passed=True,usage_complete=True,worker_result_complete=True,evidence_valid=True,
+                routing_evidence_valid=True,cost_cny='0',requests=1,input_tokens=10,output_tokens=2,
+                latency_ms=10 if cell['variant']=='model-auto' else 20,
+                model_exposure={'complete':True,'generation_calls':[{'natural_model':policy.role_models['complex'],
+                    'selected_model':model,'requested_model':model,'served_model':model,
+                    'attempt_id':f"{cell['fixture_id']}:{cell['repeat']}:{cell['variant']}",
+                    'control_applied':cell['variant']=='model-simple'}]}))
+        return rows,policy
+
+    def test_model_analysis_requires_real_exposure_then_quality_or_real_latency_not_free_savings(self):
+        rows,policy=self.model_rows();module=supplement()
+        result=module.model_analyze(rows,policy)
+        self.assertTrue(result['identifiable']);self.assertTrue(result['benefit_passed'])
+        self.assertEqual(result['endpoint'],'latency_per_accepted_task')
+        self.assertFalse(result['monetary_savings_claimed'])
+        self.assertEqual(result['fixture_effects'],[10]*6)
+        for row in rows:row['latency_ms']=20
+        self.assertFalse(module.model_analyze(rows,policy)['benefit_passed'])
+        for row in rows:
+            if row['variant']=='model-simple':row['verified_success']=row['physical_success']=False
+        quality=module.model_analyze(rows,policy)
+        self.assertTrue(quality['benefit_passed']);self.assertEqual(quality['endpoint'],'accepted_task_success')
+        rows[0]['model_exposure']['complete']=False
+        self.assertEqual(module.model_analyze(rows,policy)['status'],'UNIDENTIFIABLE')
+
     def test_schedule_is_the_frozen_balanced_54_cells_without_modifying_core(self):
         from benchmarks.v3_fixtures import FIXTURES, cohort_digest
         module = supplement()
@@ -346,6 +447,211 @@ class RoutingRuntimeTests(unittest.TestCase):
 
 
 class SupplementRunnerTests(unittest.TestCase):
+    def test_model_origin_revalidates_original54_workers_costs_and_foreign_attempts(self):
+        from benchmarks import v3_matched_live as live
+        from benchmarks.v3_matched import BudgetLedger
+        from benchmarks.v3_gemini import GeminiPolicy,GeminiPricing,INPUT_BOUND
+        from benchmarks.v3_fixtures import FIXTURES
+        from openkyrozen.providers import ProviderConfig
+        from openkyrozen.routing.router import RoutingDecision
+        module=supplement()
+        policy=GeminiPolicy(config=ProviderConfig(provider='google',model_main='auto',
+            model_simple='gemini-3.5-flash-lite',model_complex='gemini-3.8-flash'),pricing=GeminiPricing(billing_tier='free'))
+        fixtures={row['fixture_id']:row for row in FIXTURES if row['fixture_id'] in module.FIXTURE_IDS}
+        identity=module._experiment_identity({'apparatus_sha256':'fixed','provider_policy':policy.identity()},fixtures)
+        workers={};rows=[]
+        with tempfile.TemporaryDirectory() as directory:
+            ledger=BudgetLedger(Path(directory)/'54.db',limit_rmb=15,pricing=policy.pricing)
+            for index,cell in enumerate(module.schedule()):
+                arm='routing-'+cell['variant'];model=policy.role_models['complex'];identifier=f'physical-{index:03}'
+                before=RoutingDecision('google',model,'extended',None,'coder',True)
+                after=module.intervene(before,cell['variant'],profile_override='auto',interaction_mode='agent')
+                workers[identifier]={'routing_observations':[{'before':asdict(before),'after':asdict(after),
+                    'variant':cell['variant'],'interaction_mode':'agent','profile_override':'auto',
+                    'system_one_backend':'off','decision_assist_backend':'off','requests':[{'model':model,
+                        'reserve_tokens':4096,'message_projection_sha256':'a'*64}]}]}
+                metadata=dict(policy.metadata(model),arm=arm,fixture_id=cell['fixture_id'],repeat=cell['repeat'],
+                              max_output_tokens=4096,reserved_rmb='0')
+                ledger.reserve(identifier,input_token_bound=INPUT_BOUND,output_token_bound=4096,metadata=metadata)
+                ledger.settle(identifier,{'input_tokens':100,'output_tokens':20,'cache_read_tokens':0,'cache_write_tokens':0,
+                    'reasoning_tokens':3,'served_model':model,'raw_usage':{'promptTokenCount':100,'candidatesTokenCount':17,
+                                                                          'thoughtsTokenCount':3,'totalTokenCount':120}})
+                call=next(row for row in ledger.campaign_calls() if row['attempt_id']==identifier)
+                rows.append(dict(cell,arm=arm,physical_success=True,verified_success=True,workflow_state_correct=True,
+                    safety_passed=True,usage_complete=True,worker_result_complete=True,evidence_valid=True,
+                    routing_evidence_valid=True,routing_treatment_active=False,cost_cny='0',cost_calls=[call],
+                    requests=1,attempts=1,input_tokens=100,output_tokens=20,cache_read_tokens=0,cache_write_tokens=0,
+                    latency_ms=10,worker_id=identifier))
+            report={**identity,'protocol':module.PROTOCOL,'candidate_sha':'a'*40,'status':'complete','rows':rows,
+                    'schedule':module.schedule(),'pricing':policy.pricing.as_dict(),'origin':{'original_attempt_ids':[]}}
+            def attempts():
+                with closing(__import__('sqlite3').connect(ledger.path)) as db:return db.execute('SELECT * FROM attempts ORDER BY id').fetchall()
+            with patch.object(live,'_validate_rows_evidence',return_value=True), \
+                 patch.object(live,'_validate_worker_evidence',side_effect=lambda _,row,*a,**k:workers[row['worker_id']]):
+                module._validate_54_origin(report,attempts(),Path(directory)/'54.json','a'*40,identity,policy)
+                workers['physical-000']['routing_observations'][0]['after']['profile']='unexpected'
+                with self.assertRaisesRegex(ValueError,'worker or physical journal'):
+                    module._validate_54_origin(report,attempts(),Path(directory)/'54.json','a'*40,identity,policy)
+                workers['physical-000']['routing_observations'][0]['after']['profile']=rows[0]['variant']=='profile-fixed-researcher' and 'researcher' or 'coder'
+                ledger.reserve('foreign',input_token_bound=INPUT_BOUND,output_token_bound=4096,metadata=dict(
+                    policy.metadata(model),reserved_rmb='0',arm='routing-model-simple',fixture_id=cell['fixture_id'],repeat=0,max_output_tokens=4096))
+                ledger.settle('foreign',None)
+                with self.assertRaisesRegex(ValueError,'foreign physical'):
+                    module._validate_54_origin(report,attempts(),Path(directory)/'54.json','a'*40,identity,policy)
+
+    def test_model_phase_uses_one_linear54_child_and_shared36_loop_without_mutating_parents(self):
+        self._model_phase_run()
+
+    def test_model_phase_preserves_durable_final_operational_stop_before_checkpoint_or_key(self):
+        for model_routing in (False,True):
+            with self.subTest(model_routing=model_routing):
+                self._model_phase_run(durable_overrun=True,model_routing=model_routing)
+
+    def _model_phase_run(self, *, durable_overrun=False,model_routing=True):
+        """Synthetic workers/gates test SQLite scheduling/lineage, not formal quality."""
+        from benchmarks import v3_matched_live as live
+        from benchmarks.v3_matched import BudgetLedger
+        from benchmarks.v3_gemini import GeminiPolicy,GeminiPricing,INPUT_BOUND
+        from benchmarks.v3_responses_relay import RelayConfig
+        from benchmarks.v3_fixtures import FIXTURES
+        from openkyrozen.providers import ProviderConfig
+        from contextlib import ExitStack
+        policy=GeminiPolicy(config=ProviderConfig(provider='google',model_main='auto',
+            model_simple='gemini-3.5-flash-lite',model_complex='gemini-3.8-flash'),pricing=GeminiPricing(billing_tier='free'))
+        module=supplement();identity=live.apparatus_identity();identity['provider_policy']=policy.identity()
+        cells=module.model_schedule() if model_routing else module.schedule()
+        protocol=module.MODEL_PROTOCOL if model_routing else module.PROTOCOL
+        fixtures={item['fixture_id']:item for item in FIXTURES if item['fixture_id'] in module.FIXTURE_IDS}
+        proof={'proof_sha256':'b'*64}
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve();core_output=root/'core.json';core_budget=root/'core.db'
+            parent_output=root/'54.json';parent_budget=root/'54.db';output=root/'36.json';budget_path=root/'36.db'
+            ledger=BudgetLedger(core_budget,limit_rmb=15,prior_hold_rmb='12.151991600007',pricing=policy.pricing)
+            def record(budget,arm,fixture,repeat,model):
+                number=len(budget.campaign_calls());identifier=f'call-{number:04}'
+                metadata=dict(policy.metadata(model),attempt_id=identifier,arm=arm,fixture_id=fixture,repeat=repeat,
+                    max_output_tokens=4096,reserved_rmb='0',admission_sequence=number,
+                    actor_id='root',actor_role='root',root_actor_id='root')
+                budget.reserve(identifier,input_token_bound=INPUT_BOUND,output_token_bound=4096,metadata=metadata)
+                count=(1_000_001 if durable_overrun and arm=='routing-'+cells[-1]['variant']
+                       and fixture=='implementation-3' and repeat==2 else 100)
+                budget.settle(identifier,{'input_tokens':count,'output_tokens':20,'cache_read_tokens':0,'cache_write_tokens':0,
+                    'reasoning_tokens':3,'served_model':model,'raw_usage':{'promptTokenCount':count,'candidatesTokenCount':17,
+                        'thoughtsTokenCount':3,'totalTokenCount':count+20}})
+                return next(call for call in budget.campaign_calls() if call['attempt_id']==identifier)
+            smoke=[record(ledger,'smoke','a'*40,-1,policy.role_models['simple'])['attempt_id'] for _ in range(4)]
+            core={**identity,'protocol':'openkyrozen-v3-matched-live-v1','candidate_sha':'a'*40,
+                  'status':'complete','rows':[],'smoke_passed':True,'smoke_attempt_ids':smoke,
+                  'relay_config':asdict(RelayConfig('auto',4096,INPUT_BOUND,True)),'billing_proof':proof}
+            live._write_checkpoint(core_output,core_budget,core)
+            core_hash=__import__('hashlib').sha256(core_output.read_bytes()).hexdigest()
+            with live._campaign_lock(core_output) as lease:
+                module._activate_continuation(lease,{'protocol':module.PROTOCOL,'candidate_sha':'a'*40,
+                    'core_report_sha256':core_hash,'output':str(parent_output),'budget_path':str(parent_budget)})
+            module.backup_ledger(core_budget,parent_budget)
+            with closing(__import__('sqlite3').connect(core_budget)) as db:
+                original_ids=[row[0] for row in db.execute('SELECT id FROM attempts ORDER BY id')]
+            parent={'protocol':module.PROTOCOL,'candidate_sha':'a'*40,'status':'complete','rows':[],
+                    'origin':{'core_output':str(core_output),'core_budget':str(core_budget),
+                              'core_report_sha256':core_hash,'original_attempt_ids':original_ids}}
+            if model_routing:live._write_checkpoint(parent_output,parent_budget,parent)
+            else:output,budget_path=parent_output,parent_budget
+            parents=(core_output,core_budget,parent_output,parent_budget) if model_routing else (core_output,core_budget)
+            preserved=[path.read_bytes() for path in parents]
+            executed=[]
+            class Relay:
+                def __init__(self,**options):
+                    self.budget=options['budget'];self.rows=[];self.provider_error=None;self.budget_blocked=False
+                def start(self):pass
+                def close(self):pass
+            def execute(**options):
+                fixture=options['fixture']['fixture_id'];repeat=options['repeat'];variant=options['routing_variant']
+                executed.append((fixture,repeat,variant))
+                model=policy.role_models['simple' if variant=='model-simple' else 'complex']
+                call=record(options['budget'],options['arm'],fixture,repeat,model)
+                options['relay'].rows[:]=options['budget'].campaign_calls()
+                if durable_overrun and len(executed)==len(cells):options['relay'].provider_error='native_usage_overrun'
+                success=model_routing or variant=='default'
+                row={'fixture_id':fixture,'repeat':repeat,'arm':options['arm'],'variant':variant,
+                    'physical_success':success,'verified_success':success,'workflow_state_correct':True,
+                    'safety_passed':True,'usage_complete':True,'worker_result_complete':True,'worker_exit_code':0,
+                    'evidence_valid':True,'routing_evidence_valid':True,'requests':1,'attempts':1,
+                    'routing_treatment_active':variant in module.VARIANTS[1:],
+                    'input_tokens':call['usage']['input_tokens'],'output_tokens':20,'cache_read_tokens':0,'cache_write_tokens':0,
+                    'cost_calls':[call],'cost_cny':'0','latency_ms':10 if variant=='model-auto' else 20,
+                    'safety_components':{key:True for key in ('scope_safe','original_tests_unchanged','provider_ok',
+                                                            'no_running_processes','worker_complete')},
+                    'model_exposure':{'complete':True,'generation_calls':[{'natural_model':policy.role_models['complex'],
+                        'selected_model':model,'requested_model':model,'served_model':model,'attempt_id':call['attempt_id'],
+                        'control_applied':variant=='model-simple'}]}}
+                if not model_routing:row.pop('model_exposure')
+                return row
+            with ExitStack() as stack:
+                stack.enter_context(patch.multiple(live,_source_snapshot=lambda *_:'a'*40,
+                    _require_dispatched_apparatus=lambda *_:Path('worker.py'),_validate_rows_evidence=lambda *_:True,
+                    _validate_worker_evidence=lambda *_,**__:True,_execute_cell=execute))
+                stack.enter_context(patch('benchmarks.v3_matched.summarize',return_value={'complete':True,'accounting_complete':True}))
+                stack.enter_context(patch.object(module,'_validate_54_origin'))
+                stack.enter_context(patch('benchmarks.v3_deepseek.validate_planning_preflight'))
+                stack.enter_context(patch('benchmarks.v3_protected_worker.verify_worker_protection'))
+                stack.enter_context(patch('benchmarks.v3_gemini.GeminiRelay',Relay))
+                stack.enter_context(patch.object(policy,'verify_billing',return_value=proof))
+                credential=stack.enter_context(patch.object(policy,'credential',return_value=('http://127.0.0.1:1','synthetic-key')))
+                args=dict(source=Path(__file__).resolve().parents[1],repo=Path(__file__).resolve().parents[1],
+                    core_output=parent_output if model_routing else core_output,
+                    core_budget=parent_budget if model_routing else core_budget,output=output,budget_path=budget_path,
+                    provider_policy=policy,model_routing=model_routing)
+                report=module.run(**args)
+                self.assertEqual(report['protocol'],protocol)
+                self.assertEqual(executed,[(row['fixture_id'],row['repeat'],row['variant']) for row in cells])
+                self.assertTrue(report['summary']['complete'])
+                if model_routing:self.assertTrue(report['summary']['identifiable'])
+                self.assertEqual(report['budget']['remaining_cny'],'2.848008399993')
+                self.assertEqual(credential.call_count,1)
+                if durable_overrun:
+                    self.assertEqual(report['status'],'blocked_provider_error')
+                    self.assertTrue(report['summary']['benefit_passed'])
+                    self.assertEqual(report['rows'][-1]['input_tokens'],1_000_001)
+                    self.assertEqual(report['rows'][-1]['cost_calls'][0]['usage']['raw_usage']['promptTokenCount'],1_000_001)
+                    stopped=output.read_bytes()
+                    with closing(__import__('sqlite3').connect(budget_path)) as db:
+                        original_checkpoint=db.execute('SELECT report_json FROM benchmark_checkpoint WHERE id=1').fetchone()[0]
+                    with self.assertRaisesRegex(ValueError,'native physical.*operational'):
+                        module.run(**args)
+                    self.assertEqual(output.read_bytes(),stopped)
+                    with closing(__import__('sqlite3').connect(budget_path)) as db:
+                        self.assertEqual(db.execute('SELECT report_json FROM benchmark_checkpoint WHERE id=1').fetchone()[0],original_checkpoint)
+                    self.assertEqual(credential.call_count,1)
+                    from benchmarks.v3_deepseek import read_prior_exposure
+                    self.assertEqual(read_prior_exposure([budget_path]).total_cny,Decimal('12.151991600007'))
+                    self.assertEqual([path.read_bytes() for path in parents],preserved)
+                    return
+                report['active_cell']=dict(module.model_schedule()[0])
+                live._write_checkpoint(output,budget_path,report)
+                with self.assertRaisesRegex(ValueError,'interrupted model cell'):
+                    module.run(**args)
+                self.assertEqual(credential.call_count,1)
+                report['active_cell']=None;live._write_checkpoint(output,budget_path,report)
+                with self.assertRaisesRegex(ValueError,'different continuation'):
+                    module.run(**dict(args,output=root/'fork.json',budget_path=root/'fork.db'))
+                budget_path.unlink()
+                with self.assertRaisesRegex(ValueError,'missing original continuation ledger'):
+                    module.run(**args)
+                self.assertEqual(credential.call_count,1)
+            self.assertEqual([path.read_bytes() for path in parents],preserved)
+
+    def test_bound54_parent_refuses_spend_before_any_provider_or_rewrite(self):
+        root,identity=self.prepare()
+        from benchmarks import v3_matched_live as live
+        module=supplement()
+        with live._campaign_lock(root/'supp.json') as lease:
+            binding={'protocol':'openkyrozen-v3-model-routing-v1','output':str(root/'model.json'),
+                     'budget_path':str(root/'model.db')}
+            module._activate_continuation(lease,binding)
+        def forbidden(*_,**__):raise AssertionError('bound54 reached provider boundary')
+        with self.assertRaisesRegex(ValueError,'bound continuation'):
+            self.call(root,identity,forbidden,forbidden,forbidden)
+
     def prepare(self,hold='0'):
         from dataclasses import asdict
         from benchmarks.v3_matched import BudgetLedger

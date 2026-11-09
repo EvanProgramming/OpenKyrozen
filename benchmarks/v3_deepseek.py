@@ -60,6 +60,8 @@ def read_prior_exposure(paths: list[Path] | tuple[Path, ...]) -> PriorExposure:
     amounts: dict[str, tuple[int, int]] = {}
     sources: list[tuple[set[str], list[set[str]]]] = []
     opaque_anchors: list[set[str]] = []
+    from benchmarks.v3_gemini import GeminiPricing, INPUT_BOUND
+    native_prices = {price.sha256: price for price in (GeminiPricing(), GeminiPricing(billing_tier="free"))}
 
     def add(record: dict) -> tuple[int, int]:
         attempt_id = record.get("id")
@@ -68,8 +70,19 @@ def read_prior_exposure(paths: list[Path] | tuple[Path, ...]) -> PriorExposure:
         if (not isinstance(attempt_id, str) or not attempt_id or type(reserved) is not int
                 or reserved < 0 or status not in {"settled", "reserved", "unknown"}):
             raise ValueError("invalid or overrun attempt in prior campaign ledger")
-        normalized = json.dumps({"id": attempt_id, "reserved": reserved, "actual": actual,
-                                 "status": status, "usage": usage}, sort_keys=True)
+        normalized_record = {"id": attempt_id, "reserved": reserved, "actual": actual,
+                             "status": status, "usage": usage}
+        native_price = native_prices.get(record.get("pricing_sha256"))
+        metadata = record.get("metadata")
+        if "pricing_sha256" in record:
+            if (native_price is None or not isinstance(metadata, dict)
+                    or metadata.get("pricing_sha256") != record["pricing_sha256"]):
+                raise ValueError("unknown prior native model/rate provenance")
+            quote = native_price.for_metadata(metadata, input_tokens=INPUT_BOUND).cost(INPUT_BOUND, 4096)
+            if reserved != _picormb(quote):
+                raise ValueError("prior native reservation differs from its immutable model quote")
+            normalized_record.update(pricing_sha256=record["pricing_sha256"], metadata=metadata)
+        normalized = json.dumps(normalized_record, sort_keys=True)
         if attempt_id in seen:
             if seen[attempt_id] != normalized:
                 raise ValueError("conflicting copies of a prior campaign attempt")
@@ -80,7 +93,12 @@ def read_prior_exposure(paths: list[Path] | tuple[Path, ...]) -> PriorExposure:
             required = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
             if any(field not in usage for field in required):
                 raise ValueError("settled prior attempt has incomplete usage accounting")
-            reconstructed = _picormb(DEEPSEEK_PRICING.cost(*(usage[field] for field in required)))
+            price = (native_price.for_metadata(metadata, input_tokens=usage["input_tokens"])
+                     if native_price is not None else DEEPSEEK_PRICING)
+            reconstructed = _picormb(price.cost(*(usage[field] for field in required)))
+            if native_price is not None:
+                native_price.row_cost(dict(metadata, cost_calls=[dict(metadata, usage=usage, status='settled',
+                    actual_rmb=str(Decimal(actual)/Decimal(10**12)))], **{key:usage[key] for key in required}))
             if actual != reconstructed:
                 raise ValueError("prior attempt charge differs from reconstructed CNY usage")
             amount = (reconstructed, 0)
@@ -96,7 +114,8 @@ def read_prior_exposure(paths: list[Path] | tuple[Path, ...]) -> PriorExposure:
             with closing(sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)) as db:
                 db.execute("PRAGMA query_only=ON")
                 config = db.execute("SELECT currency_code,pricing_sha256 FROM budget_config WHERE id=1").fetchone()
-                if config not in {("CNY", _LEGACY_PRICING_SHA256), ("CNY", DEEPSEEK_PRICING.sha256)}:
+                if config not in {("CNY", _LEGACY_PRICING_SHA256), ("CNY", DEEPSEEK_PRICING.sha256),
+                                   *(("CNY", digest) for digest in native_prices)}:
                     raise ValueError("prior ledger does not pin the approved DeepSeek CNY prices")
                 attempts = db.execute(
                     "SELECT id,reserved_picormb,actual_picormb,status,usage_json,metadata_json FROM attempts"
@@ -125,8 +144,11 @@ def read_prior_exposure(paths: list[Path] | tuple[Path, ...]) -> PriorExposure:
                     if reconstructed != reserved:
                         raise ValueError("carried prior campaign hold differs from its underlying attempts")
                     continue
-                add({"id": attempt_id, "reserved": reserved, "actual": actual,
-                     "status": status, "usage": json.loads(usage_json) if usage_json else None})
+                item = {"id": attempt_id, "reserved": reserved, "actual": actual,
+                        "status": status, "usage": json.loads(usage_json) if usage_json else None}
+                if config[1] in native_prices and attempt_id != "prior-campaign-reservations":
+                    item.update(pricing_sha256=config[1], metadata=metadata)
+                add(item)
                 source_ids.add(attempt_id)
                 direct_opaque = direct_opaque or attempt_id == "prior-campaign-reservations"
             sources.append((source_ids, manifests))
@@ -321,7 +343,7 @@ def _planning_preflight_identity(candidate: str) -> str:
 
 
 def validate_planning_preflight(output: Path, record: dict, calls: list[dict],
-                                candidate: str, identity: dict) -> None:
+                                candidate: str, identity: dict, provider_policy=None) -> None:
     from benchmarks.v3_matched_live import _validate_worker_evidence, _safety_failure_status
     label = ("planning_preflight", candidate, -1)
     from benchmarks.v3_matched_live import _fixture_prompt
@@ -338,8 +360,9 @@ def validate_planning_preflight(output: Path, record: dict, calls: list[dict],
             or len(phase_calls) != len(record["attempt_ids"])):
         raise ValueError("planning preflight checkpoint or journal is incomplete")
     if any((call.get("arm"), call.get("fixture_id"), call.get("repeat")) != label
-            or call.get("model") != DEEPSEEK_RELAY_CONFIG.model
-            or call.get("max_output_tokens") != 4096 or call.get("reserved_rmb") != "2.032768"
+            or (not provider_policy.accepts_call(call) if provider_policy is not None else
+                call.get("model") != DEEPSEEK_RELAY_CONFIG.model or call.get("max_output_tokens") != 4096
+                or call.get("reserved_rmb") != "2.032768")
             or call.get("status") != "settled" or not isinstance(call.get("usage"), dict)
             for call in phase_calls):
         raise ValueError("planning preflight calls lack exact settled CNY lineage")
@@ -352,7 +375,15 @@ def validate_planning_preflight(output: Path, record: dict, calls: list[dict],
             raise ValueError("planning preflight usage is incomplete or invalid")
         try:
             actual = Decimal(call.get("actual_rmb"))
-            expected = DEEPSEEK_PRICING.cost(*(usage[key] for key in usage_fields))
+            if provider_policy is not None:
+                from benchmarks.v3_gemini import INPUT_BOUND
+                price = provider_policy.pricing.for_metadata(call, input_tokens=usage["input_tokens"])
+                reserve = provider_policy.pricing.for_metadata(call, input_tokens=INPUT_BOUND).cost(INPUT_BOUND, 4096)
+                if Decimal(call["reserved_rmb"]) != reserve:
+                    raise ValueError("planning preflight reservation differs from its native model")
+            else:
+                price = DEEPSEEK_PRICING
+            expected = price.cost(*(usage[key] for key in usage_fields))
             if not actual.is_finite() or actual < 0 or actual != expected:
                 raise ValueError("planning preflight actual charge differs from its pinned usage")
         except (InvalidOperation, TypeError):
@@ -367,6 +398,16 @@ def validate_planning_preflight(output: Path, record: dict, calls: list[dict],
     totals.update(attempts=len(phase_calls), requests=len(phase_calls))
     if any(type(row.get(key)) is not int or row[key] != value for key, value in totals.items()):
         raise ValueError("planning preflight row differs from its exact journal totals")
+    if provider_policy is not None:
+        costs = row.get('cost_calls')
+        by_id = {call['attempt_id']:call for call in phase_calls}
+        if (not isinstance(costs,list) or len(costs)!=len(by_id)
+                or {call.get('attempt_id') for call in costs}!=set(by_id)
+                or any(call.get('usage')!=by_id[call['attempt_id']].get('usage')
+                       or any(call.get(key)!=by_id[call['attempt_id']].get(key)
+                              for key in ('model','billing_tier','price_date','pricing_sha256')) for call in costs)):
+            raise ValueError('planning preflight native call lineage changed')
+        provider_policy.pricing.row_cost(row)
     worker = _validate_worker_evidence(output, row, candidate, identity, return_worker=True)
     conversation = worker.get("conversation_records") if isinstance(worker, dict) else None
     if (not isinstance(conversation, list) or len(conversation) != 1 or not isinstance(conversation[0], dict)
@@ -378,6 +419,7 @@ def validate_planning_preflight(output: Path, record: dict, calls: list[dict],
 def run_planning_preflight(**options) -> dict:
     from benchmarks.v3_matched_live import _execute_cell, _fixture_prompt
     candidate, relay = options["candidate"], options["relay"]
+    provider_policy = getattr(relay, "policy", None)
     record = {"status": "running", "fixture_sha256": _planning_preflight_identity(candidate),
         "prompt_sha256": hashlib.sha256(_fixture_prompt(planning_preflight_fixture(candidate)).encode()).hexdigest()}
     # Keep the finite label for this relay's lifetime: queued requests may
@@ -401,7 +443,7 @@ def run_planning_preflight(**options) -> dict:
                                  if call.get("arm") == "planning_preflight"]
         record["status"] = "passed"
         try:
-            validate_planning_preflight(options["output"], record, calls, candidate, options["identity"])
+            validate_planning_preflight(options["output"], record, calls, candidate, options["identity"], provider_policy)
         except ValueError:
             record["status"] = "failed"
     return record

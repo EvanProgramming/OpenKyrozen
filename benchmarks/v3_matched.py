@@ -72,6 +72,14 @@ class Pricing:
                 + cache_read_tokens * self.cache_read_rate
                 + output_tokens * self.output_rate) / _MILLION
 
+    def for_metadata(self, metadata: dict | None, *, input_tokens: int):
+        """Fixed-price campaigns retain their original immutable schedule."""
+        return self
+
+    def row_cost(self, row: dict) -> Decimal:
+        return self.cost(*(int(row[key]) for key in (
+            "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")))
+
 
 PANSTAR_PRICING = Pricing(INPUT_RATE, OUTPUT_RATE, CACHE_READ_RATE, CACHE_WRITE_RATE,
                           MAX_LIMIT_RMB, json.dumps(PRICING, sort_keys=True))
@@ -125,7 +133,7 @@ class BudgetLedger:
             current = db.execute("SELECT currency_code,limit_picormb,pricing_sha256 FROM budget_config WHERE id=1").fetchone()
             if current is None:
                 db.execute("INSERT INTO budget_config VALUES(1,'CNY',?,?)", (self.limit_picormb, self.pricing.sha256))
-                if prior_hold:
+                if prior_hold or prior_hold_records:
                     prior_metadata = {"archived_reservation": True,
                                       "prior_cny_reservations": str(prior_hold)}
                     if prior_hold_records is not None:
@@ -151,15 +159,15 @@ class BudgetLedger:
                     if overruns or int(spent) + int(held) > self.limit_picormb:
                         raise ValueError("existing benchmark commitments exceed the requested cap")
                 db.execute("UPDATE budget_config SET limit_picormb=? WHERE id=1", (self.limit_picormb,))
-            if prior_hold and db.execute(
+            if (prior_hold or prior_hold_records) and db.execute(
                     "SELECT reserved_picormb FROM attempts WHERE id='prior-campaign-reservations'"
             ).fetchone() != (_picormb(prior_hold),):
                 raise ValueError("the persisted ledger is missing the prior campaign reservation")
             if prior_hold_records is not None:
                 record = db.execute("SELECT metadata_json FROM attempts WHERE id='prior-campaign-reservations'").fetchone()
                 metadata = json.loads(record[0]) if record else {}
-                if ((not prior_hold and (record is not None or prior_hold_records))
-                        or (prior_hold and metadata.get("prior_attempts") != list(prior_hold_records))):
+                if ((not prior_hold and not prior_hold_records and record is not None)
+                        or ((prior_hold or prior_hold_records) and metadata.get("prior_attempts") != list(prior_hold_records))):
                     raise ValueError("the persisted ledger prior campaign provenance does not match")
             db.commit()
 
@@ -196,7 +204,10 @@ class BudgetLedger:
                 metadata: dict | None = None) -> bool:
         if not attempt_id or min(input_token_bound, output_token_bound) < 0:
             raise ValueError("attempt ID and nonnegative token bounds are required")
-        reserve = _picormb(self.cost(input_token_bound, output_token_bound))
+        metadata_json = json.dumps(metadata, sort_keys=True) if metadata is not None else None
+        price = self.pricing.for_metadata(json.loads(metadata_json) if metadata_json is not None else None,
+                                          input_tokens=input_token_bound)
+        reserve = _picormb(price.cost(input_token_bound, output_token_bound))
         with closing(sqlite3.connect(self.path, timeout=30, isolation_level=None)) as db:
             db.execute("BEGIN IMMEDIATE")
             spent, held, overruns = db.execute(
@@ -211,7 +222,7 @@ class BudgetLedger:
             try:
                 db.execute("INSERT INTO attempts(id,reserved_picormb,status,metadata_json) "
                            "VALUES(?,?,'reserved',?)",
-                           (attempt_id, reserve, json.dumps(metadata, sort_keys=True) if metadata is not None else None))
+                           (attempt_id, reserve, metadata_json))
             except sqlite3.IntegrityError:
                 db.rollback()
                 raise ValueError("attempt ID has already been reserved") from None
@@ -247,7 +258,7 @@ class BudgetLedger:
     def settle(self, attempt_id: str, usage: dict | None) -> None:
         with closing(sqlite3.connect(self.path, timeout=30, isolation_level=None)) as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT reserved_picormb,status FROM attempts WHERE id=?",
+            row = db.execute("SELECT reserved_picormb,status,metadata_json FROM attempts WHERE id=?",
                              (attempt_id,)).fetchone()
             if row is None:
                 db.rollback()
@@ -265,7 +276,9 @@ class BudgetLedger:
                 output_tokens = usage.get("output_tokens", 0)
                 cached = usage.get("cache_read_tokens", 0)
                 cache_write = usage.get("cache_write_tokens", 0)
-                actual = _picormb(self.cost(input_tokens, output_tokens, cached, cache_write))
+                metadata = json.loads(row[2]) if row[2] else None
+                price = self.pricing.for_metadata(metadata, input_tokens=input_tokens)
+                actual = _picormb(price.cost(input_tokens, output_tokens, cached, cache_write))
                 status = "settled" if actual <= row[0] else "overrun"
                 db.execute("UPDATE attempts SET status=?,actual_picormb=?,usage_json=? WHERE id=?",
                            (status, actual, json.dumps(usage, sort_keys=True), attempt_id))
@@ -340,9 +353,7 @@ def summarize(rows: list[dict], *, bootstrap_samples: int = 10_000,
         cache_read_tokens = sum(int(row.get("cache_read_tokens", 0)) for row in arm_rows)
         cache_write_tokens = sum(int(row.get("cache_write_tokens", 0)) for row in arm_rows)
         successful_tasks = sum(bool(row.get("verified_success")) for row in arm_rows)
-        cost = sum((pricing.cost(int(row["input_tokens"]), int(row["output_tokens"]),
-                           int(row["cache_read_tokens"]), int(row["cache_write_tokens"]))
-                    for row in arm_rows), Decimal(0))
+        cost = sum((pricing.row_cost(row) for row in arm_rows), Decimal(0))
         result["summary"][arm] = {
             "verified_success": successful_tasks,
             "workflow_state_correct": sum(bool(row.get("workflow_state_correct")) for row in arm_rows),

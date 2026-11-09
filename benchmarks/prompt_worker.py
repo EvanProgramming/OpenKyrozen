@@ -252,7 +252,7 @@ def main():
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--url", required=True)
     parser.add_argument("--model", default="deepseek-v4-flash")
-    parser.add_argument("--protocol", choices=("chat", "responses"), default="chat")
+    parser.add_argument("--protocol", choices=("chat", "responses", "google"), default="chat")
     parser.add_argument("--scenario", default="")
     parser.add_argument("--process-marker", default="")
     parser.add_argument("--prompt-file", required=True)
@@ -312,17 +312,30 @@ def main():
             install_delegated_adapter(runtime, actor_client, source=args.source)
         runtime._set_workspace_root(args.workspace)
         runtime.set_interaction_mode("ask" if followups else "agent")
-        provider_name = "openai" if args.protocol == "responses" else "deepseek"
+        provider_name = "google" if args.protocol == "google" else "openai" if args.protocol == "responses" else "deepseek"
         config = ProviderConfig(provider=provider_name,
                                 api_key=os.environ.get("KYROZEN_BENCHMARK_API_KEY", "benchmark-local"),
                                 base_url=args.url, model_simple=args.model,
                                 model_complex=args.model, context_window_tokens=window)
+        if args.protocol == 'google':
+            policy = json.loads(os.environ['KYROZEN_BENCHMARK_GOOGLE_POLICY'])
+            if (set(policy) != {'provider', 'model_main', 'model_simple', 'model_complex', 'base_url'}
+                    or policy['provider'] != 'google' or policy['model_main'] != 'auto'
+                    or policy['base_url'] != args.url or args.model != 'auto'
+                    or policy['model_simple'] == policy['model_complex']):
+                raise PermissionError('root native Google policy does not match its trusted parent')
+            config = ProviderConfig(**policy, api_key=config.api_key, context_window_tokens=window)
         runtime._provider_config = config
         provider_type = OpenAIResponsesProvider if args.protocol == "responses" else OpenAICompatProvider
-        runtime.llm_provider = provider_type(config)
+        if args.protocol == 'google':
+            from v3_actor_worker import benchmark_google_provider
+            from openkyrozen.providers import get_provider
+            runtime.llm_provider = benchmark_google_provider(config, get_provider)
+        else:
+            runtime.llm_provider = provider_type(config)
         observations = _ProviderObservations(runtime, runtime.llm_provider)
         runtime._default_turn.provider = runtime.llm_provider
-        runtime.DEEPSEEK_MODEL_SIMPLE = runtime.DEEPSEEK_MODEL_COMPLEX = args.model
+        runtime.DEEPSEEK_MODEL_SIMPLE, runtime.DEEPSEEK_MODEL_COMPLEX = config.model_simple, config.model_complex
         # Keep production planning, tools, recovery, receipts and completion active.
         runtime.dispatch_learning_cycle = lambda **kwargs: None
         runtime._plugin_runtime_for_surface = lambda *args: SimpleNamespace(

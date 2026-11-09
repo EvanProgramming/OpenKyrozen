@@ -233,6 +233,32 @@ class ActorPolicyTests(unittest.TestCase):
                 self.module().ActorSupervisor([sys.executable, '-c', 'pass'], cwd=self.workspace,
                     env={}, protected_files=[self.guard], policy=self.policy, source=self.source)
 
+    def test_google_child_parent_model_is_gateway_selected_not_other_allowed_slot(self):
+        module = self.module()
+        supervisor = module.ActorSupervisor.__new__(module.ActorSupervisor)
+        supervisor.execution_lock = threading.RLock()
+        supervisor.receipt_paths = {}
+        supervisor.policy, supervisor.source = self.policy, self.source
+        supervisor.model = 'auto'
+        selected = []
+        supervisor.selected_actor_model = lambda actor: selected.append(actor) or 'simple-slot'
+        parent = {'provider_config': {'provider': 'google'}, 'policy': self.policy}
+        payload = self.payload()
+        payload['parent']['model'] = 'complex-slot'
+        with self.assertRaisesRegex(PermissionError, 'parent source, workspace, or model'):
+            supervisor._launch_child(parent, payload)
+        self.assertEqual(selected, ['root'])
+        payload['parent']['model'] = 'simple-slot'
+        payload['run']['assignment']['model'] = 'complex-slot'
+        with self.assertRaisesRegex(PermissionError, 'override'):
+            supervisor._launch_child(parent, payload)
+        payload['run']['assignment']['model'] = 'simple-slot'
+        # After real ActorAssignment validates identity/override, stop before any actor launch.
+        supervisor.handles = {'prior': {'assignment': SimpleNamespace(run_id='subagent_author'),
+                                       'state': 'running', 'owner': SimpleNamespace(closed=False)}}
+        with self.assertRaisesRegex(PermissionError, 'prior author'):
+            supervisor._launch_child(parent, payload)
+
     def test_actor_environment_pins_the_native_skills_directory_to_its_private_home(self):
         supervisor = self.module().ActorSupervisor.__new__(self.module().ActorSupervisor)
         supervisor.env = {'KYROZEN_SKILLS_DIR': '/shared-skills', 'KYROZEN_SKILLS_PATH': '/stale-path'}

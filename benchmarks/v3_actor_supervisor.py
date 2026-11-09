@@ -537,13 +537,13 @@ class _ActorBroker(ShellBroker):
 class ActorSupervisor:
     """One privileged parent and listener for a root worker and its isolated actors."""
     def __init__(self, command, *, cwd, env, protected_files, policy, source, provider_config=None,
-                 revoke_actor=None, routing_variant=None):
+                 revoke_actor=None, routing_variant=None, selected_actor_model=None):
         if os.geteuid() != 0:
             raise PermissionError('actor supervisor requires a privileged parent')
         self.command, self.env = list(command), dict(env)
         if routing_variant is not None:
-            from benchmarks.v3_routing_supplement import VARIANTS
-            if routing_variant not in VARIANTS:
+            from benchmarks.v3_routing_supplement import VARIANTS, MODEL_VARIANTS
+            if routing_variant not in VARIANTS+MODEL_VARIANTS:
                 raise ValueError('invalid parent routing supplement variant')
         self.routing_variant = routing_variant
         self.env.pop('KYROZEN_BENCHMARK_ROUTING_SUPPLEMENT',None)
@@ -559,6 +559,7 @@ class ActorSupervisor:
         self.provider_factory = provider_config if callable(provider_config) else None
         self.provider_config = {} if self.provider_factory else _copy(provider_config or {})
         self.revoke_actor = revoke_actor
+        self.selected_actor_model = selected_actor_model
         self.model = (self.provider_config.get('model_main') or self.provider_config.get('model_complex')
                       or self._argument('--model'))
         self.protected_files = _validated_files(self.workspace, protected_files)
@@ -708,6 +709,10 @@ class ActorSupervisor:
                     if not isinstance(key, str) or not key:
                         raise PermissionError('actor relay factory returned no bound authorization')
                     invocation.env['KYROZEN_BENCHMARK_API_KEY'] = key
+                    if actor['root'] and actor['provider_config'].get('provider') == 'google':
+                        invocation.env['KYROZEN_BENCHMARK_GOOGLE_POLICY'] = json.dumps({
+                            name: actor['provider_config'][name] for name in
+                            ('provider', 'base_url', 'model_main', 'model_simple', 'model_complex')}, sort_keys=True)
                 actor['invocation'] = invocation
                 self.actors[owner.uid] = actor
                 process = owner.popen(invocation.command, cwd=home, env=invocation.env,
@@ -800,7 +805,12 @@ class ActorSupervisor:
                         path = _path(self.workspace, value)
                         if path in prior:
                             artifacts.append(path)
-            assignment = ActorAssignment(self.policy, payload, source=self.source, model=self.model,
+            selected_model = self.model
+            if parent['provider_config'].get('provider') == 'google':
+                if not callable(self.selected_actor_model):
+                    raise PermissionError('native Google parent model must be held by the gateway')
+                selected_model = self.selected_actor_model(parent['policy'].actor_id)
+            assignment = ActorAssignment(self.policy, payload, source=self.source, model=selected_model,
                                          provider=parent['provider_config'].get('provider', 'custom'),
                                          review_artifacts=artifacts)
             key = assignment.run_id

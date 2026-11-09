@@ -9,6 +9,22 @@ _READS = frozenset({'read_file', 'search_files', 'list_dir', 'list_tree', 'find_
 _HISTORY_CHUNK = 65_536
 
 
+def benchmark_google_provider(config, factory):
+    """Change only native SDK transport; retain the selected product's provider."""
+    from google import genai
+    from urllib.parse import urlsplit
+    parsed = urlsplit(config.base_url or '')
+    if (config.provider != 'google' or parsed.scheme != 'http' or parsed.hostname != '127.0.0.1'
+            or not parsed.port or parsed.path or parsed.query or parsed.fragment or parsed.username):
+        raise ValueError('benchmark Google SDK endpoint must be a loopback parent gateway')
+    provider = factory(config)
+    provider._client.close()
+    provider._client = genai.Client(api_key=config.api_key, http_options={
+        'base_url': config.base_url, 'api_version': 'v1beta', 'timeout': 180_000,
+        'retry_options': {'attempts': 1}})
+    return provider
+
+
 def _json_copy(value):
     encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
     if len(encoded.encode('utf-8')) > _MAX_PAYLOAD:
@@ -622,7 +638,8 @@ def run_actor(payload, client, *, source, provider_config, routing_variant=None)
     history_scopes = {}
 
     def get_provider(config):
-        provider = original_provider(config)
+        provider = (benchmark_google_provider(config, original_provider) if config.provider == 'google'
+                    else original_provider(config))
         observation = _ProviderObservations(runtime, provider)
         observations.append(observation)
         return provider

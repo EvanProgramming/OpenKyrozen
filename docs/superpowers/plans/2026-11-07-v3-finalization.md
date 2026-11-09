@@ -2,6 +2,37 @@
 
 Approved by the user on 2026-11-07 in the V3 finalization chat.
 
+## User amendment, 2026-11-09
+
+Use the supplied Gemini API preferentially, with OpenKyrozen's built-in automatic
+model selector and no single main-model pin. The user explicitly applies this to
+the formal 180-row V2/V3 comparison as well. This replaces step 5's fixed
+DeepSeek model and Responses protocol for the new campaign; the original text
+below records the former policy, not permission to combine old results.
+
+Predeclare identical simple/complex role configuration for both arms through the
+existing provider settings, retaining each arm's selector and native Google
+transport. Record actual selections and served versions. The role configuration
+may differ from factory defaults; it cannot change after results are observed.
+Keep the cumulative 15 CNY cap, all historical unknown holds, the 1M operational
+input limit, 4,096 total output tokens and every original acceptance threshold.
+Native Gemini financial reservations cover its full listed 1,048,576-token input
+maximum, so the budget bound does not depend on byte-to-token estimates. Verify
+account-specific free-tier evidence before zero-price admission; a published free
+tier or successful model listing alone cannot authorize zero-cost settlement.
+An unknown account tier may use a fully reserved paid Standard upper bound,
+without claiming the account is paid or free.
+Retain the original 180-row comparison and 54-row routing supplement. Add a
+prospectively fixed 36-row Auto-versus-configured-simple contrast for model-routing
+benefit, using the same six supplement fixtures and three repeats. Continue one
+linear ledger history from 180 to 54 to 36; no new cap or parent-spend fork. Require
+actual selected/served exposure and the declared quality or matched-outcome
+end-to-end latency endpoint. This additional contrast cannot substitute for the
+original gates or turn zero-price calls into monetary savings.
+Any new candidate or provider policy requires a fresh cohort and exact-candidate
+offline evidence. A budget or provider blocker must remain explicit while
+independent offline work continues.
+
 ## Binding requirements
 
 Audit all 266 source requirements in milestone issues #227–#268 and the #319 regression, including issue comments and dependent PRs. Require all seventeen R250–R266 full-release gates to pass against one clean signed candidate. No preview waiver qualifies. Preserve Python 3.12/3.13 and the documented Windows supported-feature exceptions.

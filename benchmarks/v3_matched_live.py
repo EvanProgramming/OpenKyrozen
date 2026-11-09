@@ -38,7 +38,7 @@ def apparatus_identity() -> dict:
              "v3_shell_launcher.py", "v3_protected_worker.py", "v3_process_owner.py",
              "v3_linux_namespace.py", "v3_actor_supervisor.py", "v3_actor_worker.py")
     files += ('v3_routing_supplement.py', 'v3_fixture_verifier.py')
-    files += ('v3_deepseek.py',)
+    files += ('v3_deepseek.py', 'v3_gemini.py')
     hashes = {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in files}
     return {"cohort_sha256": cohort_digest(),
             "apparatus_sha256": hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest(),
@@ -599,7 +599,8 @@ def _load_checkpoint(output: Path, budget_path: Path) -> dict | None:
 
 def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 900,
                 protected_files: list[Path] | None = None, policy=None, source=None,
-                provider_config=None, revoke_actor=None, routing_variant=None) -> tuple[int, str]:
+                provider_config=None, revoke_actor=None, routing_variant=None,
+                selected_actor_model=None) -> tuple[int, str]:
     from benchmarks.v3_actor_supervisor import ActorSupervisor
     from benchmarks.v3_shell_launcher import ShellPolicy
     # Standalone callers have no shell authority; fixture callers supply the
@@ -608,6 +609,7 @@ def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: 
     with ActorSupervisor(command, cwd=cwd, env=env, protected_files=protected_files or [],
                          policy=policy, source=source or Path(__file__).resolve().parents[1],
                          provider_config=provider_config, revoke_actor=revoke_actor,
+                         **({'selected_actor_model': selected_actor_model} if selected_actor_model is not None else {}),
                          **({'routing_variant':routing_variant} if routing_variant is not None else {})) as launch:
         try:
             process = launch.popen(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -1107,6 +1109,8 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
     if routing_variant is not None:
         worker_env['KYROZEN_DECISION_ASSIST_BACKEND']='off'
     def actor_provider_config(actor_id):
+        if getattr(relay,'protocol',None)=='google':
+            relay.root_actor_id_by_label.setdefault((arm,fixture_id,repeat),actor_id)
         return dict(relay.issue_actor_config(actor_id),
                     context_window_tokens=fixture['context_window_tokens'])
     parent_failed = False
@@ -1114,7 +1118,7 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
         code, worker_error = _run_worker(
             [sys.executable, str(worker_script),
              "--source", str(arm_source), "--workspace", str(workspace),
-             "--url", relay.url, "--model", model, "--protocol", "responses",
+             "--url", relay.url, "--model", model, "--protocol", getattr(relay, 'protocol', 'responses'),
              "--prompt-file", str(prompt_file), "--plan-file", str(plan_file),
              "--conversation-file", str(conversation_file), "--result", str(result_file),
              "--scenario", str(fixture.get("plan_scenario") or ""),
@@ -1125,6 +1129,7 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
             policy=shell_policy,
             source=arm_source, provider_config=actor_provider_config,
             revoke_actor=relay.revoke_actor,
+            **({'selected_actor_model': relay.selected_actor_model} if getattr(relay, 'protocol', None) == 'google' else {}),
             **({'routing_variant':routing_variant} if routing_variant is not None else {}),
         )
     except Exception as exc:
@@ -1185,6 +1190,9 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
                     "worker_error": worker_error,
                     "worker_exit_code": code,
                     "worker_result_complete": worker_complete})
+        if getattr(relay, 'protocol', None) == 'google':
+            row['cost_calls'] = [call for call in budget.campaign_calls()
+                if (call['arm'], call['fixture_id'], call['repeat']) == (arm, fixture_id, repeat)]
         if verified.get('verification_error'):
             row['verification_error'] = verified['verification_error']
         components = dict(verified.get("safety_components") or {})
@@ -1195,11 +1203,14 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
         if not result_file.exists() and not worker_error:
             row["worker_error"] = "missing_result"
         if routing_variant is not None:
-            from benchmarks.v3_routing_supplement import validate_observations,active_treatment
+            from benchmarks.v3_routing_supplement import validate_observations,active_treatment,MODEL_VARIANTS,model_exposure
             observations=worker.get('routing_observations')
             row.update(variant=routing_variant,physical_success=bool(verified.get('physical_success')),
-                routing_evidence_valid=validate_observations(observations,routing_variant),
+                routing_evidence_valid=validate_observations(observations,routing_variant,getattr(relay,'policy',None)),
                 routing_treatment_active=active_treatment(observations,routing_variant))
+            if routing_variant in MODEL_VARIANTS:
+                row['model_exposure']=model_exposure(observations,worker.get('request_context_records'),
+                                                    row.get('cost_calls',[]),relay.policy)
     except BaseException:
         # Even an oracle/metric failure must not discard a valid
         # answer and its execution trace with the temporary home.
@@ -1223,7 +1234,8 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         limit_cny: str | None = None, prior_hold_cny: str | None = None,
         prior_hold_records: tuple[str, ...] | None = None,
         pricing: Pricing = PANSTAR_PRICING, relay_config: RelayConfig = DEFAULT_RELAY_CONFIG,
-        endpoint: str | None = None, planning_preflight_only: bool = False) -> dict:
+        endpoint: str | None = None, planning_preflight_only: bool = False,
+        provider_policy=None, billing_proof: Path | None = None) -> dict:
     source, repo = source.resolve(), repo.resolve()
     candidate = _source_snapshot(source)
     output, budget_path = output.resolve(), budget_path.resolve()
@@ -1234,6 +1246,14 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
     if fixtures != FIXTURES:
         raise ValueError("release evaluation requires the exact frozen fixture content")
     identity = apparatus_identity()
+    if provider_policy is not None:
+        from benchmarks.v3_gemini import GeminiPolicy, INPUT_BOUND
+        if (type(provider_policy) is not GeminiPolicy or pricing != provider_policy.pricing
+                or relay_config != RelayConfig(model='auto', max_output_tokens=4096,
+                    fixed_input_token_bound=INPUT_BOUND, serial_requests=True)
+                or limit_cny is None or endpoint is not None):
+            raise ValueError('native Google campaign requires its exact policy, fixed bounds and official endpoint')
+        identity['provider_policy'] = provider_policy.identity()
     ledger_existed = budget_path.exists()
     cny_accounting = limit_cny is not None
     if planning_preflight_only and not cny_accounting:
@@ -1280,12 +1300,14 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
     def is_smoke_call(call: dict) -> bool:
         return (cny_accounting and call.get("arm") == "smoke"
                 and call.get("fixture_id") == candidate and call.get("repeat") == -1
-                and call.get("model") == model and call.get("max_output_tokens") == max_output_tokens)
+                and (provider_policy.accepts_call(call) if provider_policy is not None else
+                     call.get("model") == model and call.get("max_output_tokens") == max_output_tokens))
 
     def is_preflight_call(call: dict) -> bool:
         return (cny_accounting and call.get("arm") == "planning_preflight"
                 and call.get("fixture_id") == candidate and call.get("repeat") == -1
-                and call.get("model") == model and call.get("max_output_tokens") == max_output_tokens)
+                and (provider_policy.accepts_call(call) if provider_policy is not None else
+                     call.get("model") == model and call.get("max_output_tokens") == max_output_tokens))
 
     def require_smoke_only_ledger() -> None:
         with closing(sqlite3.connect(budget_path)) as db:
@@ -1354,7 +1376,8 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                               for fixture in fixtures for repeat in range(repeats) for arm in ("v2", "v3")}
         if any(not is_smoke_call(call) and not is_preflight_call(call) and (
                 (call.get("fixture_id"), call.get("repeat"), call.get("arm")) not in expected_call_keys
-                or call.get("model") != model) for call in journal_calls):
+                or (not provider_policy.accepts_call(call) if provider_policy is not None else
+                    call.get("model") != model)) for call in journal_calls):
             raise ValueError("budget-ledger journal contains a call outside the frozen cohort")
         if any(row.get("cohort_sha256") != identity["cohort_sha256"]
                or row.get("apparatus_sha256") != identity["apparatus_sha256"] for row in rows):
@@ -1388,6 +1411,10 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                            and all(isinstance(item, dict) for item in usage),
                            worker_result_complete=False,
                            worker_error="interrupted before fixture result was checkpointed")
+            if provider_policy is not None:
+                if row.get('cost_calls') is not None and row['cost_calls'] != calls_for_key:
+                    raise ValueError('native row costs differ from its original physical-call ledger')
+                row['cost_calls'] = calls_for_key
     else:
         require_smoke_only_ledger()
         if output.exists():
@@ -1405,22 +1432,34 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
     smoke_attempt_ids = prior.get("smoke_attempt_ids")
     smoke_checkpoint_valid = (cny_accounting and prior.get("smoke_passed") is True
         and isinstance(smoke_attempt_ids, list) and all(isinstance(item, str) for item in smoke_attempt_ids)
-        and len(set(smoke_attempt_ids)) == len(smoke_attempt_ids) == 2
+        and len(set(smoke_attempt_ids)) == len(smoke_attempt_ids) == (provider_policy.smoke_calls if provider_policy is not None else 2)
         and all(attempt in smoke_calls and smoke_calls[attempt].get("status") == "settled"
                 and isinstance(smoke_calls[attempt].get("usage"), dict) for attempt in smoke_attempt_ids))
     if cny_accounting:
         from benchmarks.v3_deepseek import validate_planning_preflight
         if planning_preflight is not None:
-            validate_planning_preflight(output, planning_preflight, journal_calls, candidate, identity)
+            validate_planning_preflight(output, planning_preflight, journal_calls, candidate, identity, provider_policy)
             if not smoke_checkpoint_valid:
                 raise ValueError("planning preflight lacks its original two-call smoke proof")
         elif rows or any(call.get("arm") == "planning_preflight" for call in journal_calls):
             raise ValueError("planning preflight evidence is required before formal evaluation")
     if planning_preflight_only and rows:
         raise ValueError("planning-only execution cannot rewrite an existing formal cohort")
-    credential_endpoint, api_key = _credential()
-    relay = ResponsesRelay(endpoint=endpoint or credential_endpoint, api_key=api_key,
-                           budget=budget, config=relay_config)
+    if provider_policy is not None:
+        provider_policy.check_budget(budget)
+        billing = provider_policy.verify_billing(billing_proof, candidate)
+        if prior.get('billing_proof') is not None and prior['billing_proof'] != billing:
+            raise ValueError('native billing proof cannot change while resuming a campaign')
+        if any(not provider_policy.accepts_call(call) for call in journal_calls):
+            raise ValueError('native call account provenance differs from the signed billing proof')
+        identity['billing_proof'] = billing
+        credential_endpoint, api_key = provider_policy.credential()
+        from benchmarks.v3_gemini import GeminiRelay
+        relay = GeminiRelay(endpoint=credential_endpoint, api_key=api_key, budget=budget, policy=provider_policy)
+    else:
+        credential_endpoint, api_key = _credential()
+        relay = ResponsesRelay(endpoint=endpoint or credential_endpoint, api_key=api_key,
+                               budget=budget, config=relay_config)
     relay.rows.extend(journal_calls)
     if cny_accounting:
         relay.planning_preflight_label = ("planning_preflight", candidate, -1)
@@ -1438,7 +1477,10 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         try:
             smoke_ok = True
             if cny_accounting:
-                from benchmarks.v3_deepseek import run_smoke
+                if provider_policy is not None:
+                    from benchmarks.v3_gemini import run_smoke
+                else:
+                    from benchmarks.v3_deepseek import run_smoke
                 smoke_ok = run_smoke(relay, candidate)
                 _write_checkpoint(output, budget_path, {
                     **identity, "protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,

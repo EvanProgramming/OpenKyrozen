@@ -8,7 +8,49 @@ Linux prepares private user namespaces without changing the host's AppArmor or n
 
 The `--repo` checkout must contain the pinned V2 commit so the runner can extract its source with `git archive`. The CI full-suite jobs fetch complete history and verify that exact commit before running tests; for a shallow local checkout, fetch the V2 baseline first.
 
-The formal finalization campaign uses the [DeepSeek CNY command below](#deepseek-cny-campaign), with its cumulative CNY 15 cap. The Panstar configuration remains a separate compatibility path; its historical USD allowance does not authorize spending in that campaign.
+The current formal finalization policy uses the Gemini API and OpenKyrozen's built-in automatic model selection, as requested on 2026-11-09. It replaces the former fixed DeepSeek model/Responses policy, including for the 180 matched rows. The cumulative CNY 15 cap includes the previous campaigns and all unknown reservations. The historical DeepSeek and Panstar commands below remain separate compatibility paths; neither authorizes spending beyond that cap.
+
+## Gemini automatic-selection campaign
+
+Both arms must use their own production selector with the same configured Google simple/complex slots and no main-model pin. Record the selected and served model for every request, including summaries, delegated agents, smoke checks and retries. Automatic selection does not guarantee the same selected model in each paired row; retain those differences and report the comparison as whole-product behavior. A separate routing ablation is still required to establish routing benefit.
+
+Use the native Google Gen AI transport and preserve native tool results and thought signatures. A benchmark-only loopback gateway holds the real credential in the trusted parent, authenticates each actor independently, enforces the approved model policy and caps total generated output, including thinking, at 4,096 tokens. The selected product still owns planning, execution, permissions and completion. Do not translate Responses fixtures into fabricated Gemini continuation evidence or give workers the upstream credential.
+
+Admission requires current model-specific prices, billing-tier evidence, a predeclared conservative CNY upper rate and sufficient cumulative budget for both automatic model slots. Gemini financial reservations cover the listed backend input maximum of 1,048,576 tokens plus 4,096 total output tokens. The original 1,000,000 operational context/body limit and stop on input usage above 1,000,000 remain; byte admission is not the financial token-bound proof. Unknown models, prices or usage retain their reservation and stop further inference; a model-list response alone establishes neither a free tier nor billing status. Settle from authoritative raw prompt, cached, candidate and thinking counts, independently of the application's displayed cost estimate. Paid reservations and settlements use 8 CNY/USD as a budget upper bound, not an invoice conversion. Do not release historical unknown use, force a single model or change the frozen role configuration after observing results. A new campaign may predeclare an available model in each existing role slot; the selector and acceptance thresholds remain unchanged. Historical DeepSeek reservations remain unchanged.
+
+At the 2026-11-09 preparation snapshot, the unchanged Google defaults are `gemini-3.5-flash-lite` and `gemini-3.1-pro-preview`, both listed by the official API. The [official standard pricing](https://ai.google.dev/gemini-api/docs/pricing/) makes the Pro financial reservation USD 4.268032, or CNY 34.144256 under the conservative budget rate, exceeding the entire CNY 15 cap. The campaign therefore remains **blocked before inference** under that policy. Metadata access and offline adapter tests are not a passing model evaluation.
+
+The official API also lists `gemini-3.8-flash`, whose published free tier supports an alternative complex slot alongside Flash-Lite. Such a two-model configuration uses the existing selector; it does not change the public defaults. It requires account-specific free-tier evidence before zero-price admission, followed by the same native and planning preflights. Published free-tier availability is not proof that this account is unbilled.
+
+An unknown account tier can instead use the full paid Standard rate as an upper bound, retaining that uncertainty explicitly. The predeclared simple `gemini-3.5-flash-lite` / complex `gemini-2.5-flash` configuration has a CNY 2.5985024 maximum token reservation per request under the native financial bound and rate. This establishes affordability of the next request only. The 2.5 Flash slot must stop before its announced December 1, 2026 automatic reroute; an alias change cannot silently turn a two-model policy into one model. Neither profile permits provider grounding, audio, explicit cache storage or other unreserved paid services.
+
+Use the guarded native entry point after exact-candidate offline acceptance. Its signed admission proof binds the candidate, credential digest, role configuration, rate tier, validity period and retained nonsecret supporting evidence. A paid-rate upper authorization does not assert the account is paid; a zero-rate authorization additionally requires account-specific proof that both models are unbilled. The supplied credential remains in the trusted parent; worker credentials are local relay nonces.
+
+```sh
+python -m benchmarks.v3_gemini \
+  --source "$FROZEN_SOURCE" --candidate-sha "$FROZEN_CANDIDATE_SHA" \
+  --repo "$REPOSITORY_WITH_V2_HISTORY" \
+  --output "$CAMPAIGN_OUTPUT/report.json" \
+  --budget-db "$CAMPAIGN_OUTPUT/budget.sqlite3" \
+  --prior-ledger "$ORIGINAL_PRIOR_LEDGER" \
+  --model-simple "$DECLARED_SIMPLE_MODEL" \
+  --model-complex "$DECLARED_COMPLEX_MODEL" \
+  --billing-tier "$VERIFIED_RATE_TIER" \
+  --billing-proof "$SIGNED_ADMISSION_PROOF" \
+  --limit-cny 15 --planning-preflight-only --execute
+```
+
+Repeat `--prior-ledger` for each original source needed to reconstruct the cumulative exposure. Remove only `--planning-preflight-only` to continue the same accepted candidate and policy into the 180-row cohort. The separate 54-row supplement uses the same candidate, role, tier, proof and execution flags, adds `--core-output` and `--core-budget` pointing to the complete original core campaign, and uses distinct output/budget paths without `--prior-ledger` or `--planning-preflight-only`. An incomplete core cannot authorize the supplement. Imports and offline tests do not opt into provider execution; `--execute` is required.
+
+After the original 54 rows are complete, `--model-routing` runs a separate 36-row contrast: the same six supplement fixtures, three repeats, built-in Auto versus its configured simple-model callback. Pass `--core-output` and `--core-budget` pointing to the original **54-row** campaign, with distinct 36-row output and budget paths. This is one linear 180 → 54 → 36 accounting chain; the parent cannot resume spending after binding its child. An interrupted cell without a complete retained latency measurement cannot be replayed. All historical costs and unknown holds remain included under CNY 15.
+
+The 36-row contrast must observe a real selected-and-served model change through ordered parent-owned physical-call records. Ambiguous joins are unidentifiable. Benefit requires positive fixture-cluster lower bounds for both accepted and physical success; pairwise identical outcomes instead require improved measured end-to-end latency per accepted task, including failures and retries. This adds model-routing evidence without replacing the original 180 or 54 rows or changing their thresholds. Zero-priced calls do not establish monetary savings. A positive summary cannot override a blocked phase status, and this contrast alone cannot close every default-on decision-assist requirement.
+
+Origin and resume admission for the native routing supplements recheck physical input/output bounds before modifying a checkpoint or looking up credentials. Known over-limit usage remains accounted; restoring a complete set of rows cannot erase that operational stop.
+
+The frozen 30 fixtures, three repeats, independent oracles, original-test protection, complete usage, paired 95% success-interval lower bound greater than zero, at least 10% token and request reductions, zero V3 protocol recovery and all V3 independent/planning acceptance remain required. A new provider policy or candidate starts a fresh cohort; stopped DeepSeek results cannot be reused or rescored as Gemini rows. Run the metered native-tool and actual-planning preflights only after the candidate's offline acceptance and budget admission pass.
+
+## Historical Responses compatibility
 
 Independent acceptance also needs the worker's answer, tool receipts, task state and plan events after its temporary workspace is removed. Each normalized receipt retains an independent snapshot of its original arguments, results, status and timing for reproduction and planning review. The parent retains those results outside the checkout with exact candidate/cohort/apparatus/row identity and content hashes. Each actor has a distinct revocable relay credential bound to its fixture cell; credentials, including revoked ones, are redacted from retained worker strings. Credential-bearing output remains incomplete, so redaction cannot turn a failed observation into a passing verdict. The relay's accounting journal continues to store request hashes and usage rather than prompts or answers. Missing, modified or foreign worker artifacts cannot qualify a reusable row or a complete report. Parent execution or cleanup failures retain an incomplete checkpoint and stop before another cell or acceptance command. Automated outcome checks and the identical-task-snapshot churn proxy do not replace the predeclared independent QA, reproduction and planning review; no comparison or routing benefit is claimed without the required evidence.
 
