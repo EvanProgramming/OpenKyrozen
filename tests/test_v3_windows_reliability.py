@@ -447,10 +447,10 @@ threading.Event().wait()
     def test_frozen842_identity_and_authenticated_offline_path_alone_use_30_seconds(self):
         from scripts import v3_windows_reliability as diagnostic
         source=diagnostic.OFFLINE_ETL_SOURCE
-        self.assertEqual((source['run_id'],source['artifact_id']),(42626720110,13678703440))
-        self.assertEqual(source['zip_sha256'],'23043cce643822e8dea7499b8cb33e7f152a3a29f3d2f943bf7e0740b89f597b')
-        self.assertEqual((source['zip_bytes'],source['etl_bytes']),(44221984,119013376))
-        self.assertEqual(source['etl_sha256'],'c9aa451d118ae919743b11c025a2f44a06a6927a5731838cc1ec2a32d56b2cc0')
+        self.assertEqual((source['run_id'],source['artifact_id']),(42624705084,13677333492))
+        self.assertEqual(source['zip_sha256'],'8c4567c8628ce6f8b64e9facc90c3cb60fe374891717883d03f5e54a01456227')
+        self.assertEqual((source['zip_bytes'],source['etl_bytes']),(10997792,70778880))
+        self.assertEqual(source['etl_sha256'],'32224acb2baa8f67bf5567e512495a3b06b75d12370982791758b71e8cbf58fb')
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);archive,metadata,fixture=self.archive(root)
             def run(command,*args,**options):
