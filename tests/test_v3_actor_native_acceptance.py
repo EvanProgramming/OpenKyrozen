@@ -144,7 +144,7 @@ class NativeActorAcceptanceTests(unittest.TestCase):
     def _actual_v2_v3_author_review(self, *, google):
         if google:
             try:
-                import google.genai
+                from google import genai
             except ImportError:
                 self.skipTest('optional google-genai SDK is not installed')
         from benchmarks import v3_actor_supervisor as supervisor_module
