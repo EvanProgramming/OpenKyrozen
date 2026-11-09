@@ -9,6 +9,19 @@ _READS = frozenset({'read_file', 'search_files', 'list_dir', 'list_tree', 'find_
 _HISTORY_CHUNK = 65_536
 
 
+def benchmark_provider_config(values, **extra):
+    """The original baseline has implicit Auto routing and no model_main field."""
+    from dataclasses import fields
+    from openkyrozen.providers.config import ProviderConfig
+    if set(values) & set(extra):
+        raise TypeError('duplicate benchmark provider configuration option')
+    options = dict(values, **extra)
+    if 'model_main' not in {field.name for field in fields(ProviderConfig)} and 'model_main' in options:
+        if options.pop('model_main') != 'auto':
+            raise ValueError('original baseline supports only implicit Auto routing')
+    return ProviderConfig(**options)
+
+
 def benchmark_google_provider(config, factory):
     """Change only native SDK transport; retain the selected product's provider."""
     from google import genai
@@ -771,11 +784,10 @@ def main():
             result = operation(json.loads(encoded), source=source)
         else:
             from v3_process_owner import connect_actor_client
-            from openkyrozen.providers.config import ProviderConfig
             client = connect_actor_client()
             bootstrap = client.rpc('actor_bootstrap')
             result = run_actor(bootstrap['payload'], client, source=source,
-                               provider_config=ProviderConfig(**bootstrap['provider_config']),
+                               provider_config=benchmark_provider_config(bootstrap['provider_config']),
                                routing_variant=bootstrap.get('routing_variant'))
     print(json.dumps(result, ensure_ascii=False, allow_nan=False))
 

@@ -26,7 +26,7 @@ def _google_schema_sdk():
         package = ModuleType("google")
         package.__path__ = []
         genai = ModuleType("google.genai")
-        genai.types = NS(Schema=Schema)
+        genai.types = NS(Schema=Schema, FunctionDeclaration=NS(model_fields={"parameters_json_schema": None}))
         package.genai = genai
         with patch.dict(sys.modules, {"google": package, "google.genai": genai}):
             yield
@@ -554,7 +554,7 @@ class NativeRequestTests(unittest.TestCase):
                 elif transport == "messages":
                     self.assertEqual(request["tools"][0]["input_schema"], schema)
                 elif transport == "google":
-                    self.assertEqual(request["config"]["tools"][0]["function_declarations"][0]["parameters"], schema)
+                    self.assertEqual(request["config"]["tools"][0]["function_declarations"][0]["parameters_json_schema"], schema)
                 elif transport == "bedrock":
                     self.assertEqual(request["toolConfig"]["tools"][0]["toolSpec"]["inputSchema"]["json"], schema)
                 elif transport == "ollama":
@@ -589,7 +589,7 @@ class NativeRequestTests(unittest.TestCase):
                     self.assertEqual(result["tool_call_id"], call.id)
                     self.assertTrue(json.loads(result["content"])["is_error"])
 
-    def test_google_rejects_unrepresentable_nested_schema_before_transport(self):
+    def test_google_rejects_invalid_nested_schema_before_transport(self):
         from openkyrozen.providers.config import ProviderConfig
         from openkyrozen.providers.google import GoogleProvider
 
@@ -598,8 +598,7 @@ class NativeRequestTests(unittest.TestCase):
         send = Mock()
         provider._client = NS(models=NS(generate_content=send))
         tools = [{"name": "lookup", "description": "Lookup", "parameters": {
-            "type": "object", "properties": {"value": {"oneOf": [
-                {"type": "string"}, {"type": "integer"}]}}}}]
+            "type": "object", "properties": {"value": {"oneOf": []}}}}]
         with _google_schema_sdk(), self.assertRaises(ProviderContractError):
             provider.chat_response([{"role": "user", "content": "go"}], tools=tools)
         send.assert_not_called()

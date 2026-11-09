@@ -11,6 +11,72 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 
+def _fixture_response_bytes(response, body, path, *, google):
+    """Wire bytes from the acceptance upstream, shared by rootless and kernel tests."""
+    streaming=(path.split('?',1)[0].endswith(':streamGenerateContent') if google else bool(body.get('stream')))
+    if streaming:
+        if google:
+            payload=('data: '+json.dumps(response)+'\n\n').encode()
+        else:
+            events=[{'type':'response.completed','response':response}]
+            payload=''.join('event: '+event['type']+'\ndata: '+json.dumps(event)+'\n\n' for event in events).encode()
+    else:
+        payload=json.dumps(response).encode()
+    return ('text/event-stream' if streaming else 'application/json'),payload
+
+
+class NativeFixtureWireTests(unittest.TestCase):
+    def test_responses_fixture_keeps_its_original_event_envelope(self):
+        response={'id':'offline','status':'completed'}
+        content_type,payload=_fixture_response_bytes(response,{'stream':True},'/v1/responses',google=False)
+        self.assertEqual(content_type,'text/event-stream')
+        self.assertEqual(payload,('event: response.completed\ndata: '+json.dumps({
+            'type':'response.completed','response':response})+'\n\n').encode())
+        content_type,payload=_fixture_response_bytes(response,{},'/v1/responses',google=False)
+        self.assertEqual((content_type,payload),('application/json',json.dumps(response).encode()))
+
+    def test_real_google_stream_and_tool_continuation_use_native_fixture_bytes(self):
+        from tests.test_v3_gemini import NativeSdkGatewayTests,HAS_GOOGLE_SDK
+        if not HAS_GOOGLE_SDK:self.skipTest('optional google-genai SDK is not installed')
+        from benchmarks.v3_gemini import make_google_provider
+        from openkyrozen.providers import ProviderConfig
+        from openkyrozen.providers.models import ResponseComplete,ResponseError,ToolReply
+        from openkyrozen.tools.catalog import builtin_metadata
+        from openkyrozen.agent.engine import _COMPACT_CORE_TOOLS
+        fixture=NativeSdkGatewayTests('test_real_sdk_native_function_continuation_and_parent_selected_model')
+        fixture.setUp();self.addCleanup(fixture.doCleanups)
+        model=fixture.policy.role_models['simple'];captured=[]
+        tools=[{'name':name,'description':name,'parameters':builtin_metadata(name)['input_schema']}
+            for name in sorted(_COMPACT_CORE_TOOLS) if builtin_metadata(name)['capability'] in {'read','network'}]
+        def upstream(url,**options):
+            body=json.loads(options['data']);captured.append((url,body))
+            response=fixture.response(model,[{'functionCall':{'name':'read_file','args':{'path':'source.py'}},
+                'thoughtSignature':'b3BhcXVlLXNpZw=='}] if len(captured)==1 else [{'text':'continued'}])
+            content_type,payload=_fixture_response_bytes(json.loads(response.content),body,url,google=True)
+            response.headers['Content-Type']=content_type;response._content=payload
+            return response
+        provider=make_google_provider(ProviderConfig(**fixture.config));transport=type(provider._client._api_client._httpx_client)
+        original_send=transport.send
+        def send(client,request,*args,**kwargs):
+            self.assertEqual(request.url.host,'127.0.0.1')
+            return original_send(client,request,*args,**kwargs)
+        with patch.object(transport,'send',new=send),patch('benchmarks.v3_gemini.requests.post',side_effect=upstream):
+            try:
+                messages=[{'role':'user','content':'Read assigned source.py'}]
+                events=list(provider.chat_response_stream(messages,model=model,tools=tools))
+                errors=[str(event.error) for event in events if isinstance(event,ResponseError)]
+                self.assertFalse(errors,errors)
+                first=next(event.response for event in events if isinstance(event,ResponseComplete))
+                self.assertEqual(first.tool_calls[0].name,'read_file')
+                final=provider.chat_response(messages+[first,ToolReply(first.tool_calls[0].id,'read_file',
+                    {'data':{'content':'kernel actor evidence'}})],model=model,tools=tools)
+                self.assertEqual(final.text,'continued')
+            finally:provider._client.close()
+        self.assertIn(':streamGenerateContent?alt=sse',captured[0][0]);self.assertNotIn('stream',captured[0][1])
+        self.assertEqual(captured[1][1]['contents'][1]['parts'][0]['thoughtSignature'],'b3BhcXVlLXNpZw==')
+        self.assertEqual(len(fixture.budget.campaign_calls()),2)
+
+
 _ROOT = r'''
 import json,os,sys,threading
 from pathlib import Path
@@ -32,10 +98,10 @@ try:
     base_url=url,model_simple='offline-actor',model_complex='offline-actor',context_window_tokens=1000000)
  runtime.DEEPSEEK_MODEL=runtime.DEEPSEEK_MODEL_SIMPLE=runtime.DEEPSEEK_MODEL_COMPLEX='offline-actor'
  if os.environ.get('KYROZEN_BENCHMARK_GOOGLE_POLICY'):
-  from v3_actor_worker import benchmark_google_provider
+  from v3_actor_worker import benchmark_google_provider,benchmark_provider_config
   from openkyrozen.providers import get_provider
   policy=json.loads(os.environ['KYROZEN_BENCHMARK_GOOGLE_POLICY'])
-  runtime._provider_config=ProviderConfig(**policy,api_key=os.environ['KYROZEN_BENCHMARK_API_KEY'],context_window_tokens=1000000)
+  runtime._provider_config=benchmark_provider_config(policy,api_key=os.environ['KYROZEN_BENCHMARK_API_KEY'],context_window_tokens=1000000)
   runtime.DEEPSEEK_MODEL_SIMPLE=policy['model_simple'];runtime.DEEPSEEK_MODEL_COMPLEX=policy['model_complex']
   runtime.DEEPSEEK_MODEL=policy['model_simple']
   provider=benchmark_google_provider(runtime._provider_config,get_provider)
@@ -136,14 +202,9 @@ class NativeActorAcceptanceTests(unittest.TestCase):
                         'content':{'role':'model','parts':parts}}],
                         'usageMetadata':{'promptTokenCount':100,'candidatesTokenCount':20,
                                          'thoughtsTokenCount':3,'totalTokenCount':123}}
-                if body.get('stream'):
-                    events = [{'type': 'response.completed', 'response': response}]
-                    payload = ''.join('event: ' + event['type'] + '\ndata: ' + json.dumps(event) + '\n\n'
-                                      for event in events).encode()
-                else:
-                    payload = json.dumps(response).encode()
+                content_type,payload=_fixture_response_bytes(response,body,self.path,google=google)
                 self.send_response(200)
-                self.send_header('Content-Type', 'text/event-stream' if body.get('stream') else 'application/json')
+                self.send_header('Content-Type', content_type)
                 self.send_header('Content-Length', str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)

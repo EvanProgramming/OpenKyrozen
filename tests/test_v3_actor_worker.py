@@ -18,6 +18,41 @@ def actor_module(case):
     return importlib.import_module('benchmarks.v3_actor_worker')
 
 
+class ProviderConfigCompatibilityTests(unittest.TestCase):
+    def test_original_baseline_implicit_auto_keeps_both_role_models(self):
+        import subprocess
+        import sys
+        import types
+        source = subprocess.run(['git', 'show',
+            '1bfc82c793df49e76097061ec5adfef0e4e2e883:openkyrozen/providers/config.py'],
+            cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True).stdout
+        baseline = types.ModuleType('_benchmark_original_provider_config')
+        with patch.dict(sys.modules, {baseline.__name__: baseline}):
+            exec(compile(source, '<original-baseline-provider-config>', 'exec'), baseline.__dict__)
+            with patch('openkyrozen.providers.config.ProviderConfig', baseline.ProviderConfig):
+                config = actor_module(self).benchmark_provider_config(self.policy(), api_key='offline',
+                    context_window_tokens=1_000_000)
+                self.assertFalse(hasattr(config, 'model_main'))
+                self.assertEqual(baseline.model_for_complexity(config, False), 'simple-role')
+                self.assertEqual(baseline.model_for_complexity(config, True), 'complex-role')
+                for extra in ({'model_main': 'complex-role'}, {'unknown_field': True}):
+                    with self.subTest(extra=extra), self.assertRaises((TypeError, ValueError)):
+                        actor_module(self).benchmark_provider_config({**self.policy(), **extra})
+
+    @staticmethod
+    def policy():
+        return {'provider': 'google', 'model_main': 'auto', 'model_simple': 'simple-role',
+                'model_complex': 'complex-role', 'base_url': 'http://127.0.0.1:1'}
+
+    def test_current_auto_and_duplicate_option_rejection(self):
+        module = actor_module(self)
+        config = module.benchmark_provider_config(self.policy(), api_key='offline')
+        self.assertEqual(config.model_main, 'auto')
+        self.assertEqual((config.model_simple, config.model_complex), ('simple-role', 'complex-role'))
+        with self.assertRaises(TypeError):
+            module.benchmark_provider_config({**self.policy(), 'api_key': 'one'}, api_key='two')
+
+
 class MutationAdapterTests(unittest.TestCase):
     def test_mutations_preserve_real_atomic_edit_results_without_local_authority(self):
         module = actor_module(self)

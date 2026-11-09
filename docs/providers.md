@@ -85,6 +85,10 @@ provider-neutral `{name, description, parameters}` catalog and preserve native
 call/reply history. Unknown custom endpoints keep native tools unadvertised, but
 an explicit tool request still uses the endpoint's adapter wire format. Strict
 schema controls, parallel execution and reasoning controls remain unadvertised.
+Gemini and Vertex native tools require `google-genai>=1.26.0`. Their canonical
+registry schemas use the SDK's raw JSON Schema field, preserving exclusive
+numeric bounds and nested alternatives; malformed schemas fail before transport.
+Existing OpenAPI `format`/`nullable` descriptors retain the typed SDK route.
 Fallback capabilities intersect configured, model-mapped candidates and clear
 `streaming_tool_calls` because the fallback wrapper buffers a complete response.
 Once a native call is returned, its

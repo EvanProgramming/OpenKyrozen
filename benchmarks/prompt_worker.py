@@ -324,7 +324,8 @@ def main():
                     or policy['base_url'] != args.url or args.model != 'auto'
                     or policy['model_simple'] == policy['model_complex']):
                 raise PermissionError('root native Google policy does not match its trusted parent')
-            config = ProviderConfig(**policy, api_key=config.api_key, context_window_tokens=window)
+            from v3_actor_worker import benchmark_provider_config
+            config = benchmark_provider_config(policy, api_key=config.api_key, context_window_tokens=window)
         runtime._provider_config = config
         provider_type = OpenAIResponsesProvider if args.protocol == "responses" else OpenAICompatProvider
         if args.protocol == 'google':

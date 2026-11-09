@@ -163,6 +163,7 @@ class LazyLegacyProtocolTests(unittest.TestCase):
     def test_native_plan_and_auto_modes_inspect_then_stage_a_typed_proposal(self):
         script = r'''
             import importlib.abc
+            import json
             import os
             import sys
             from pathlib import Path
@@ -186,6 +187,7 @@ class LazyLegacyProtocolTests(unittest.TestCase):
                     "execution": {"action": "write_file", "arguments": {"path": "result.txt", "content": "ready"}}}]}
             class PlanProvider(LLMProvider):
                 calls = 0
+                continuation_states = []
                 def get_capabilities(self, model=None):
                     return ProviderCapabilities(native_tools=True)
                 def chat(self, messages, model=None):
@@ -194,6 +196,8 @@ class LazyLegacyProtocolTests(unittest.TestCase):
                     self.calls += 1
                     validate_replied_tool_definitions(messages, tools)
                     if self.calls > (3 if DISCOVER_REQUEST else 2):
+                        if self.calls == (5 if DISCOVER_REQUEST else 4):
+                            self.continuation_states.append(json.loads(messages[-1]["content"])["working_plan_continuation"])
                         return ModelResponse(text="Approved execution remains pending.", finish_reason=FinishReason.FINAL)
                     names = {item["name"] for item in tools}
                     if not DISCOVER_REQUEST or self.calls == 1:
@@ -249,12 +253,28 @@ class LazyLegacyProtocolTests(unittest.TestCase):
                 assert not (root / "result.txt").exists()
                 if not QUESTION_REQUEST:
                     pending = state["pending_plan"]
+                    calls_before_acceptance = provider.calls
                     followup = runtime.chat(runtime.current_session, "accept plan", plan_acceptance={
                         "plan_id": pending["plan_id"], "version": pending["version"], "fingerprint": pending["fingerprint"],
                     })
                     assert "Native model request failed" not in followup, followup
                     assert "Approved execution remains pending" in followup, followup
-                    assert provider.calls == (4 if DISCOVER_REQUEST else 3), provider.calls
+                    assert "Plan status: incomplete; required work remains." in followup, followup
+                    assert provider.calls - calls_before_acceptance == 2, provider.calls
+                    working = runtime.tasks.working_plan
+                    assert working.status == "active", working
+                    assert len(provider.continuation_states) == 1, provider.continuation_states
+                    feedback = provider.continuation_states[0]
+                    assert (feedback["plan_id"], feedback["revision"], feedback["status"]) == (working.id, working.revision, "active"), feedback
+                    assert feedback["eligible_tasks"] == [{"id": task_id, "status": "pending"} for task_id in working.task_ids], feedback
+                    assert all(task["status"] == "pending" and not task.get("evidence") for task in runtime.tasks.tasks), runtime.tasks.tasks
+                    accepted = runtime._interaction_controller.state()
+                    assert accepted["pending_plan"] is None, accepted
+                    assert accepted["executing_plan"]["fingerprint"] == pending["fingerprint"], accepted
+                    continuations = [entry for entry in runtime.conversation_history.entries() if entry.kind == "plan.continuation"]
+                    assert len(continuations) == 1 and continuations[0].payload == {"plan_id": working.id,
+                        "revision": working.revision, "reason": "required_work_remains"}, continuations
+                    assert not (root / "result.txt").exists()
                 assert "openkyrozen.agent.protocol" not in sys.modules
             finally:
                 app.close()

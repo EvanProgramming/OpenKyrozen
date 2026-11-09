@@ -37,15 +37,15 @@ dependencies = [
 [project.optional-dependencies]
 web = ["fastapi", "uvicorn"]
 claude = ["anthropic>=0.30.0"]
-gemini = ["google-genai>=1.0.0"]
+gemini = ["google-genai>=1.26.0"]
 perplexity = ["perplexityai>=0.1.0"]
 bedrock = ["boto3>=1.35.0"]
-vertex = ["google-genai>=1.0.0"]
+vertex = ["google-genai>=1.26.0"]
 azure = ["azure-identity>=1.17.0"]
-cloud = ["perplexityai>=0.1.0", "boto3>=1.35.0", "google-genai>=1.0.0", "azure-identity>=1.17.0"]
+cloud = ["perplexityai>=0.1.0", "boto3>=1.35.0", "google-genai>=1.26.0", "azure-identity>=1.17.0"]
 browser = ["playwright>=1.40"]
 all = [
-    "fastapi", "uvicorn", "anthropic>=0.30.0", "google-genai>=1.0.0",
+    "fastapi", "uvicorn", "anthropic>=0.30.0", "google-genai>=1.26.0",
     "perplexityai>=0.1.0", "boto3>=1.35.0", "azure-identity>=1.17.0",
     "playwright>=1.40",
 ]

@@ -108,35 +108,36 @@ class GoogleProvider(LLMProvider):
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         return self.chat_response(messages, model).as_legacy_tuple()
 
+    @staticmethod
+    def _tool_declarations(tools):
+        if not tools:
+            return []
+        from google.genai import types
+        from openkyrozen.schema import validate_schema
+        if "parameters_json_schema" not in types.FunctionDeclaration.model_fields:
+            raise ProviderContractError("Native Gemini/Vertex tools require google-genai>=1.26.0")
+        declarations = []
+        for item in tools:
+            schema = item["parameters"]
+            field = "parameters_json_schema"
+            try:
+                try:
+                    validate_schema(schema)
+                except ValueError:
+                    # Preserve existing OpenAPI format/nullable descriptors on the typed SDK route.
+                    validate_schema(schema, openapi=True)
+                    types.Schema.model_validate(schema)
+                    field = "parameters"
+            except (ValueError, TypeError) as exc:
+                raise ProviderContractError("Gemini/Vertex rejected the provider tool schema") from exc
+            declarations.append({"name": item["name"], "description": item["description"], field: schema})
+        return declarations
+
     @provider_call
     def chat_response(self, messages: list[dict[str, str]] | list, model: str | None = None, *, tools=None) -> ModelResponse:
         model = model or self.config.model_simple
         tools = validate_tool_definitions(tools)
-        if tools:
-            from google.genai import types
-            supported = {"type", "properties", "required", "items", "enum", "description", "title", "default",
-                         "examples", "minLength", "maxLength", "minItems", "maxItems", "minProperties",
-                         "maxProperties", "minimum", "maximum", "pattern", "additionalProperties", "anyOf",
-                         "format", "nullable"}
-
-            def check_schema(schema):
-                if set(schema) - supported:
-                    raise ProviderContractError("Gemini/Vertex cannot represent every field in this tool schema")
-                for nested in schema.get("properties", {}).values():
-                    check_schema(nested)
-                if "items" in schema:
-                    check_schema(schema["items"])
-                for nested in schema.get("anyOf", ()):
-                    check_schema(nested)
-
-            for tool in tools:
-                try:
-                    check_schema(tool["parameters"])
-                    types.Schema.model_validate(tool["parameters"])
-                except ProviderContractError:
-                    raise
-                except Exception as exc:
-                    raise ProviderContractError("Gemini/Vertex rejected the provider tool schema") from exc
+        declarations = self._tool_declarations(tools)
         validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=tools is not None)
         validate_replied_tool_definitions(messages, tools)
         started = time.monotonic()
@@ -146,9 +147,7 @@ class GoogleProvider(LLMProvider):
         if system_instruction:
             request_config["system_instruction"] = system_instruction
         if tools:
-            request_config["tools"] = [{"function_declarations": [
-                {"name": item["name"], "description": item["description"], "parameters": item["parameters"]}
-                for item in tools]}]
+            request_config["tools"] = [{"function_declarations": declarations}]
 
         def _call():
             return self._client.models.generate_content(
@@ -188,35 +187,13 @@ class GoogleProvider(LLMProvider):
         tools = validate_tool_definitions(tools)
         validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=tools is not None)
         validate_replied_tool_definitions(messages, tools)
-        if tools:
-            from google.genai import types
-            supported = {"type", "properties", "required", "items", "enum", "description", "title", "default",
-                "examples", "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties",
-                "minimum", "maximum", "pattern", "additionalProperties", "anyOf", "format", "nullable"}
-            def check_schema(schema):
-                if set(schema) - supported:
-                    raise ProviderContractError("Gemini/Vertex cannot represent every field in this tool schema")
-                for nested in schema.get("properties", {}).values():
-                    check_schema(nested)
-                if "items" in schema:
-                    check_schema(schema["items"])
-                for nested in schema.get("anyOf", ()):
-                    check_schema(nested)
-            for tool in tools:
-                try:
-                    check_schema(tool["parameters"])
-                    types.Schema.model_validate(tool["parameters"])
-                except ProviderContractError:
-                    raise
-                except Exception as exc:
-                    raise ProviderContractError("Gemini/Vertex rejected the provider tool schema") from exc
+        declarations = self._tool_declarations(tools)
         contents, system_instruction = self._contents(messages, model, self)
         config: dict[str, Any] = {"http_options": self._http_options()}
         if system_instruction:
             config["system_instruction"] = system_instruction
         if tools:
-            config["tools"] = [{"function_declarations": [{"name": item["name"],
-                "description": item["description"], "parameters": item["parameters"]} for item in tools]}]
+            config["tools"] = [{"function_declarations": declarations}]
         started = time.monotonic()
         stream = self._client.models.generate_content_stream(model=model, contents=contents, config=config)
         text_parts = []
