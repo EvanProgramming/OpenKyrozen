@@ -231,6 +231,143 @@ class NativeContextTests(unittest.TestCase):
                 self.assertTrue(any(record["action"] == "read_file" and record["success"]
                                     and record.get("task_id") for record in turn.tool_records))
 
+    def run_discovery_plan(self, *, typed, streaming):
+        (self.root / "catalog.py").write_text("def sorted_products(names):\n    return sorted(names, key=lambda n: (n.casefold(), n))\n")
+        acceptance = ([{"criterion": "sorting implementation exists", "verification": {
+            "action": "read_file", "arguments": {"path": "catalog.py"},
+            "expect": {"contains": "def sorted_products(names):"}}}] if typed else
+            ["catalog.py is read and its sorting function and tie-break rule are reported"])
+
+        def respond(provider, messages, model):
+            step = len(provider.requests)
+            task = self.runtime.tasks.tasks[-1] if self.runtime.tasks.tasks else None
+            if step == 1:
+                call = ToolCall("create-plan", "update_plan", {"expected_revision": 0, "operations": [
+                    {"op": "add", "ref": "inspect", "task": {
+                        "description": "Inspect catalog.py read-only", "acceptance": acceptance}},
+                    {"op": "start", "task": "inspect"}]})
+            elif step == 2:
+                call = ToolCall("discover", "discover_tools", {"names": ["read_file", "list_dir"]})
+            elif step == 3:
+                call = ToolCall("inspect-file", "read_file", {"path": "catalog.py"})
+            elif step == 4 and not typed:
+                call = ToolCall("rewrite-acceptance", "update_plan", {
+                    "plan_id": self.runtime.tasks.working_plan.id, "expected_revision": 1,
+                    "operations": [{"op": "update", "task": task["id"], "fields": {
+                        "acceptance": [{"criterion": "sorting implementation exists", "verification": {
+                            "action": "read_file", "arguments": {"path": "catalog.py"},
+                            "expect": {"contains": "def sorted_products(names):"}}}]}}]})
+            elif step == (4 if typed else 5):
+                call = ToolCall("confirm-plan", "update_plan", {
+                    "plan_id": self.runtime.tasks.working_plan.id, "expected_revision": 1,
+                    "operations": [{"op": "suggest_complete", "task": task["id"]}]})
+            else:
+                return ModelResponse(text="Read the sorting implementation.", finish_reason=FinishReason.FINAL)
+            return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+        def stream(provider, messages, model):
+            yield ResponseComplete(respond(provider, messages, model))
+        provider = self.provider(stream if streaming else respond, stream=streaming)
+        return self.run_native(provider, [{"role": "system", "content": "Inspect the requested file."},
+            {"role": "user", "content": "Find the sorting function and its tie-break rule."}],
+            complexity="complex", permitted=self.runtime._permitted_tool_names())
+
+    def test_native_discovery_does_not_claim_prose_task_execution(self):
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                if streaming:
+                    self.runtime.tasks.clear()
+                answer, turn, _state = self.run_discovery_plan(typed=False, streaming=streaming)
+                discovery = next(record for record in turn.tool_records if record["action"] == "discover_tools")
+                read = next(record for record in turn.tool_records if record["action"] == "read_file")
+                task = self.runtime.tasks.tasks[-1]
+                self.assertTrue(discovery["success"])
+                self.assertIsNone(discovery["task_id"])
+                self.assertIsNone(discovery["requested_task_id"])
+                self.assertEqual(read["task_id"], task["id"])
+                self.assertEqual(task["checkpoint"]["action"], "read_file")
+                self.assertEqual([item["action"] for item in task["evidence"]], ["read_file"])
+                self.assertEqual(task["status"], "running")
+                self.assertEqual(self.runtime.tasks.working_plan.status, "active")
+                self.assertEqual(turn.runtime_status, "incomplete", answer)
+                rewrite = next(record for record in turn.tool_records if record["call_id"] == "rewrite-acceptance")
+                self.assertFalse(rewrite["success"])
+                self.assertIn("executed task changes require cancellation", rewrite["result"])
+
+    def test_native_discovery_preserves_typed_read_verification(self):
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                if streaming:
+                    self.runtime.tasks.clear()
+                answer, turn, _state = self.run_discovery_plan(typed=True, streaming=streaming)
+                discovery = next(record for record in turn.tool_records if record["action"] == "discover_tools")
+                self.assertTrue(discovery["success"])
+                self.assertIsNone(discovery["task_id"])
+                self.assertIsNone(discovery["requested_task_id"])
+                self.assertEqual(self.runtime.tasks.tasks[-1]["status"], "succeeded")
+                self.assertEqual(self.runtime.tasks.working_plan.status, "completed")
+                self.assertEqual(turn.runtime_status, "completed", answer)
+
+    def test_native_discovery_does_not_inherit_delegated_task_binding(self):
+        self.runtime.tasks.update_plan(complexity="simple", expected_revision=0, operations=[
+            {"op": "add", "ref": "inspect", "task": {"description": "Inspect catalog", "acceptance": []}},
+            {"op": "start", "task": "inspect"}])
+        task = self.runtime.tasks.tasks[-1]
+        (self.root / "catalog.py").write_text("catalog")
+        with patch.object(self.runtime.current_session, "_delegation_task_id", task["id"], create=True):
+            discovery = self.runtime._execute_turn_action("discover_tools", {"names": ["read_file"]},
+                operation_scope="delegated-discovery", successful_operations=set(), call_id_source="native")
+            self.runtime._record_turn_receipt(discovery)
+            read = self.runtime._execute_turn_action("read_file", {"path": "catalog.py"},
+                operation_scope="delegated-read", successful_operations=set(), call_id_source="native")
+            record = self.runtime._record_turn_receipt(read)
+        self.assertTrue(discovery.success)
+        self.assertIsNone(discovery.task_id)
+        self.assertEqual(record["task_id"], task["id"])
+        task = self.runtime.tasks.tasks[-1]
+        self.assertEqual(task["checkpoint"]["action"], "read_file")
+        self.assertEqual(task["status"], "running")
+
+    def test_replaced_discovery_retains_native_task_selection_guard(self):
+        from types import MethodType
+        from openkyrozen.agent.prompts import _discover_tools
+        from openkyrozen.tools.models import tool_success
+        original = self.runtime.tool_registry.get_spec("discover_tools")
+
+        class SpoofedDiscovery:
+            @property
+            def __class__(self):
+                return MethodType
+
+            def __call__(self, arguments):
+                return tool_success("replacement")
+
+        spoofed = SpoofedDiscovery()
+        spoofed.__self__ = self.runtime
+        spoofed.__func__ = _discover_tools.__tool_result_executor__
+        self.runtime.tasks.update_plan(complexity="simple", expected_revision=0, operations=[
+            {"op": "add", "ref": "inspect", "task": {"description": "Inspect catalog", "acceptance": [],
+                "execution": {"action": "discover_tools", "arguments": {"names": ["read_file"]}}}},
+            {"op": "start", "task": "inspect"}])
+        task_id = self.runtime.tasks.tasks[-1]["id"]
+        for replacement in (lambda arguments: tool_success("replacement"), spoofed):
+            with self.subTest(replacement=type(replacement).__name__):
+                self.runtime.tool_registry.register_spec(original.replace(executor=replacement), replace=True)
+                receipt = self.runtime._execute_turn_action("discover_tools", {"names": ["read_file"]},
+                    task_id="stale-task", task_plan_id="stale-plan", operation_scope="replaced-discovery",
+                    successful_operations=set(), call_id_source="native")
+                self.assertFalse(receipt.success)
+                self.assertEqual(receipt.failure, "invalid_arguments")
+                self.assertEqual(receipt.task_id, "stale-task")
+                receipt = self.runtime._execute_turn_action("discover_tools", {"names": ["read_file"]},
+                    task_id=task_id, task_plan_id=self.runtime.tasks.working_plan.id,
+                    operation_scope="matching-replacement", successful_operations=set(), call_id_source="native")
+                record = self.runtime._record_turn_receipt(receipt)
+                self.assertTrue(receipt.success)
+                self.assertEqual(record["task_id"], task_id)
+                self.assertEqual(self.runtime.tasks.tasks[-1]["status"], "running")
+
     def test_pressure_compacts_real_native_history_before_the_provider_request(self):
         provider = self.provider(lambda _provider, _messages, _model:
             ModelResponse(text="The cedar decision is preserved.", finish_reason=FinishReason.FINAL))

@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from pathlib import Path
+from types import MethodType
 from typing import Any
 from openkyrozen.persistence.models import stable_hash, utc_now
 from openkyrozen.app.config import AgentConfigError, effective_capabilities, load_agent_config
@@ -649,6 +650,12 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
     started_at = utc_now()
     call_id = call_id or f"synthetic_{uuid.uuid4().hex}"
     expected_spec = self.tool_registry.specs.get(canonical)
+    if call_id_source == "native" and canonical == "discover_tools" and expected_spec is not None:
+        from openkyrozen.agent.prompts import _discover_tools
+        executor = expected_spec.executor
+        if (expected_spec.source == "builtin" and type(executor) is MethodType
+                and executor.__self__ is self and executor.__func__ is _discover_tools.__tool_result_executor__):
+            task_id = task_plan_id = None
     def emit_rejected_call():
         self._publish_runtime_event(
             "tool.call", {"tool_name": canonical,
