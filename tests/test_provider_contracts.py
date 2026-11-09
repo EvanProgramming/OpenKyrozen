@@ -157,6 +157,19 @@ class ContractTests(unittest.TestCase):
 
 
 class AdapterContractTests(unittest.TestCase):
+    def test_gemini_and_vertex_charge_thinking_tokens_as_output(self):
+        for cls, wire in self.wires(calls=False):
+            if cls not in {GoogleProvider, VertexProvider}:
+                continue
+            with self.subTest(provider=cls.__name__):
+                wire.usage_metadata = NS(prompt_token_count=20, candidates_token_count=3,
+                                         thoughts_token_count=11)
+                with patch("openkyrozen.providers.usage._track_cost") as charge:
+                    response = self.adapter(cls, wire).chat_response([])
+                self.assertEqual(response.usage["completion_tokens"], 14)
+                self.assertEqual(response.usage["reasoning_tokens"], 11)
+                self.assertEqual(charge.call_args.args[1], response.usage)
+
     def adapter(self, cls, wire):
         provider = cls.__new__(cls)
         provider.config = ProviderConfig(provider="custom", model_simple="quick", model_complex="slow")

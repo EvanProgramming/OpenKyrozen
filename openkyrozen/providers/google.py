@@ -85,10 +85,14 @@ class GoogleProvider(LLMProvider):
         meta = getattr(response, "usage_metadata", None)
         if meta is None:
             return None
-        return {
+        thoughts = getattr(meta, "thoughts_token_count", None)
+        usage = {
             "prompt_tokens": getattr(meta, "prompt_token_count", 0) or 0,
-            "completion_tokens": getattr(meta, "candidates_token_count", 0) or 0,
+            "completion_tokens": (getattr(meta, "candidates_token_count", 0) or 0) + (thoughts or 0),
         }
+        if thoughts is not None:
+            usage["reasoning_tokens"] = thoughts
+        return usage
 
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         return self.chat_response(messages, model).as_legacy_tuple()

@@ -338,7 +338,7 @@ class StreamEventContractTests(unittest.TestCase):
         from tests.test_provider_native_tools import _google_schema_sdk
 
         chunk = SimpleNamespace(response_id="response", model_version="gemini", usage_metadata=
-            SimpleNamespace(prompt_token_count=2, candidates_token_count=2), prompt_feedback=None,
+            SimpleNamespace(prompt_token_count=2, candidates_token_count=2, thoughts_token_count=11), prompt_feedback=None,
             candidates=[SimpleNamespace(finish_reason="STOP", content=SimpleNamespace(role="model", parts=[
                 SimpleNamespace(text="", thought=False, thought_signature="signed", function_call=None),
                 SimpleNamespace(text="working", thought=False, function_call=None),
@@ -350,12 +350,17 @@ class StreamEventContractTests(unittest.TestCase):
         provider._continuation_id = "gemini-stream"
         provider._client = SimpleNamespace(models=SimpleNamespace(generate_content_stream=Mock(return_value=iter([chunk]))))
         tools = [{"name": "read_file", "description": "read", "parameters": {"type": "object"}}]
-        with _google_schema_sdk(), patch("openkyrozen.providers.usage._track_cost"):
+        with _google_schema_sdk(), patch("openkyrozen.providers.usage._track_cost") as charge:
             events = list(get_model_events(provider, [{"role": "user", "content": "go"}], "gemini", tools=tools))
         response = events[-1].response
         self.assertEqual(response.tool_calls[0].arguments, {"path": "x"})
         self.assertEqual(response.continuation.payload["parts"][0]["thought_signature"], "signed")
         self.assertEqual(sum(isinstance(event, TextDelta) for event in events), 1)
+        self.assertEqual(response.usage["completion_tokens"], 13)
+        self.assertEqual(response.usage["reasoning_tokens"], 11)
+        self.assertTrue(any(isinstance(event, UsageUpdate) and event.usage["completion_tokens"] == 13
+                            for event in events))
+        self.assertEqual(charge.call_args.args[1], response.usage)
 
     def test_bedrock_stream_collects_text_tools_usage_and_reasoning_signature(self):
         from openkyrozen.providers.bedrock import BedrockProvider

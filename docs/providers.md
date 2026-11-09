@@ -127,7 +127,7 @@ accounting behavior.
 
 ## Costs and changing provider catalogs
 
-The cost ledger attributes usage to the provider and model returned by the integration, including streaming usage when provided. Displayed costs can be estimates when a provider does not report token usage or published pricing is missing. Do not use a README model label or price as evidence that your account can access that model. See [usage and cost](usage-and-cost.md) for price provenance and interpretation.
+The cost ledger attributes usage to the provider and model returned by the integration, including streaming usage when provided. Gemini and Vertex output totals include thinking tokens; the reasoning count is also retained separately when reported. Displayed costs can be estimates when a provider does not report token usage or published pricing is missing. Do not use a README model label or price as evidence that your account can access that model. See [usage and cost](usage-and-cost.md) for price provenance and interpretation.
 
 ## Provider failures and request limits
 
