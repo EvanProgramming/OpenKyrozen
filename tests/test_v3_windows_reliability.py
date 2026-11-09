@@ -362,7 +362,7 @@ threading.Event().wait()
             self.assertEqual(receipt['status'],'DECODE_COMPLETED_UNANALYZED')
             self.assertFalse(receipt['historical_cause_established'])
             self.assertFalse(receipt['native_fields_validated'])
-            self.assertEqual(receipt['actual_product_sha'],'842588da6e4d98b2b28601af4e4c40796f68b481')
+            self.assertEqual(receipt['actual_product_sha'],'5368395733ef2d5ec9cc721df2ad0494c6d27838')
             self.assertEqual(receipt['source_capture_head'],'8b5d07032d9a2dac9ecc2ca73662840231e97961')
             self.assertEqual(receipt['storage_limit_bytes'],512*1024*1024)
             self.assertEqual(receipt['stream']['raw_bytes'],18)
@@ -444,13 +444,13 @@ threading.Event().wait()
                 diagnostic._extract_offline_etl(archive,value,output)
             self.assertFalse(list(output.iterdir()))
 
-    def test_frozen842_identity_and_authenticated_offline_path_alone_use_30_seconds(self):
+    def test_frozen536_identity_and_authenticated_offline_path_alone_use_30_seconds(self):
         from scripts import v3_windows_reliability as diagnostic
         source=diagnostic.OFFLINE_ETL_SOURCE
-        self.assertEqual((source['run_id'],source['artifact_id']),(42624705084,13677333492))
-        self.assertEqual(source['zip_sha256'],'8c4567c8628ce6f8b64e9facc90c3cb60fe374891717883d03f5e54a01456227')
-        self.assertEqual((source['zip_bytes'],source['etl_bytes']),(10997792,70778880))
-        self.assertEqual(source['etl_sha256'],'32224acb2baa8f67bf5567e512495a3b06b75d12370982791758b71e8cbf58fb')
+        self.assertEqual((source['run_id'],source['artifact_id']),(42666450068,13696767421))
+        self.assertEqual(source['zip_sha256'],'f7c58ca1be58622d15a9732657cb46ad173ee8c358703ae83cd3f347c3e86522')
+        self.assertEqual((source['zip_bytes'],source['etl_bytes']),(9466855,68812800))
+        self.assertEqual(source['etl_sha256'],'2ac416f9f0ee955df7be22bb018f50b048f1ca17d9049d28340869a071299a85')
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);archive,metadata,fixture=self.archive(root)
             def run(command,*args,**options):
