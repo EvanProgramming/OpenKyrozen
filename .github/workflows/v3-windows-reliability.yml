@@ -10,7 +10,7 @@ on:
         type: boolean
         default: false
       decode_existing_etl:
-        description: Decode only the frozen existing 42532040045 ETL; no product or WPR execution
+        description: Decode only the frozen existing 42626720110 ETL; no product or WPR execution
         type: boolean
         default: false
       candidate_sha:
@@ -182,8 +182,8 @@ jobs:
             const fs = require('fs');
             fs.mkdirSync('offline-input');
             const request = {owner: context.repo.owner, repo: context.repo.repo};
-            const source = {repository: 'EvanProgramming/OpenKyrozen', run_id: 42532040045,
-              artifact_id: 13637758059, head_sha: 'a7b2cb8074192165ef5a8de1ac5304f3fda59a93'};
+            const source = {repository: 'EvanProgramming/OpenKyrozen', run_id: 42626720110,
+              artifact_id: 13678703440, head_sha: '8b5d07032d9a2dac9ecc2ca73662840231e97961'};
             fs.writeFileSync('offline-input/download-receipt.json', JSON.stringify({status:'STARTED',source}));
             try {
               if (request.owner + '/' + request.repo !== source.repository) throw new Error('repository mismatch');
@@ -197,14 +197,14 @@ jobs:
               if (run.id !== source.run_id || run.head_sha !== source.head_sha || run.status !== 'completed' ||
                   artifact.id !== source.artifact_id || artifact.workflow_run?.id !== source.run_id ||
                   artifact.workflow_run?.head_sha !== source.head_sha || artifact.expired ||
-                  artifact.size_in_bytes !== 44247689 ||
-                  artifact.digest !== 'sha256:4fe8752ee64d58dfb40dfa79fe5674ece6d99a9379f18559675f38de12c92b56') {
+                  artifact.size_in_bytes !== 44221984 ||
+                  artifact.digest !== 'sha256:23043cce643822e8dea7499b8cb33e7f152a3a29f3d2f943bf7e0740b89f597b') {
                 throw new Error('source metadata mismatch');
               }
               const download = await github.rest.actions.downloadArtifact({...request,
                 artifact_id:source.artifact_id, archive_format:'zip', request:{timeout:30000}});
               const bytes = Buffer.from(download.data);
-              if (bytes.length !== 44247689) throw new Error('archive size mismatch');
+              if (bytes.length !== 44221984) throw new Error('archive size mismatch');
               fs.writeFileSync('offline-input/source.zip',bytes,{flag:'wx'});
               fs.writeFileSync('offline-input/download-receipt.json',JSON.stringify({status:'DOWNLOADED',source,bytes:bytes.length}));
             } catch (error) {

@@ -362,8 +362,8 @@ threading.Event().wait()
             self.assertEqual(receipt['status'],'DECODE_COMPLETED_UNANALYZED')
             self.assertFalse(receipt['historical_cause_established'])
             self.assertFalse(receipt['native_fields_validated'])
-            self.assertEqual(receipt['actual_product_sha'],'02aa70d826020d522cdadcb63f5a8b6e4ab18747')
-            self.assertEqual(receipt['source_capture_head'],'a7b2cb8074192165ef5a8de1ac5304f3fda59a93')
+            self.assertEqual(receipt['actual_product_sha'],'842588da6e4d98b2b28601af4e4c40796f68b481')
+            self.assertEqual(receipt['source_capture_head'],'8b5d07032d9a2dac9ecc2ca73662840231e97961')
             self.assertEqual(receipt['storage_limit_bytes'],512*1024*1024)
             self.assertEqual(receipt['stream']['raw_bytes'],18)
             self.assertIn('native-events.csv.gz',receipt['outputs'])
@@ -443,6 +443,32 @@ threading.Event().wait()
             with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',source),self.assertRaises(ValueError):
                 diagnostic._extract_offline_etl(archive,value,output)
             self.assertFalse(list(output.iterdir()))
+
+    def test_frozen842_identity_and_authenticated_offline_path_alone_use_30_seconds(self):
+        from scripts import v3_windows_reliability as diagnostic
+        source=diagnostic.OFFLINE_ETL_SOURCE
+        self.assertEqual((source['run_id'],source['artifact_id']),(42626720110,13678703440))
+        self.assertEqual(source['zip_sha256'],'23043cce643822e8dea7499b8cb33e7f152a3a29f3d2f943bf7e0740b89f597b')
+        self.assertEqual((source['zip_bytes'],source['etl_bytes']),(44221984,119013376))
+        self.assertEqual(source['etl_sha256'],'c9aa451d118ae919743b11c025a2f44a06a6927a5731838cc1ec2a32d56b2cc0')
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);archive,metadata,fixture=self.archive(root)
+            def run(command,*args,**options):
+                self.assertEqual(options['timeout'],30)
+                self.completed_stream(Path(command[4]))
+                return {'returncode':0,'timeout_cleanup':None}
+            with patch.object(diagnostic,'OFFLINE_ETL_SOURCE',fixture),self.installed_tool(root), \
+                 patch.object(diagnostic,'run_process',side_effect=run) as decoder, \
+                 patch.object(diagnostic,'NativeCapture',side_effect=AssertionError('capture invoked')), \
+                 patch.object(diagnostic,'run_native_comparison',side_effect=AssertionError('campaign invoked')), \
+                 patch.object(diagnostic,'run_child',side_effect=AssertionError('product child invoked')):
+                self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'accepted'),0)
+                receipt=json.loads((root/'accepted/decode-receipt.json').read_text())
+                self.assertEqual(receipt['decode_timeout_seconds'],30)
+                bad=json.loads(metadata.read_text());bad['artifact']['digest']='sha256:'+'0'*64
+                metadata.write_text(json.dumps(bad))
+                self.assertEqual(diagnostic.run_offline_decode(archive,metadata,root/'rejected'),2)
+                self.assertEqual(decoder.call_count,1)
 
     def test_cli_offline_branch_never_enters_product_or_capture_campaign(self):
         from scripts import v3_windows_reliability as diagnostic
