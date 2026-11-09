@@ -24,6 +24,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--source', type=Path, required=True)
 parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--public-key', type=Path, required=True)
+parser.add_argument('--reuse-install', action='store_true', help='Reuse only the successful first cell install in this bounded same-job diagnosis')
 args = parser.parse_args()
 source, output = args.source.resolve(strict=True), args.output.resolve()
 output.mkdir(parents=True, exist_ok=False)
@@ -31,6 +32,8 @@ report = {'scope': 'ONE_ORIGINAL_20S_DIAGNOSIS_NOT_1800S_ACCEPTANCE', 'status': 
           'candidate_sha': SHA, 'python': sys.version, 'executable': sys.executable,
           'platform': platform.platform(), 'core_limits': resource.getrlimit(resource.RLIMIT_CORE),
           'runner': {k: os.environ.get(k) for k in ('ImageOS', 'ImageVersion', 'RUNNER_OS', 'RUNNER_ARCH')}}
+report['reuse_install'] = args.reuse_install
+report['retention_scope'] = 'Core diagnostic files; private-home installer/cache tree intentionally excluded from index and upload'
 # Inspect only new Python reports for this process's owned gateway PIDs.
 crash_dirs = {Path.home() / 'Library/Logs/DiagnosticReports',
               Path(pwd.getpwuid(os.getuid()).pw_dir) / 'Library/Logs/DiagnosticReports'}
@@ -87,7 +90,8 @@ try:
         report['public_key_sha256'] = hashlib.sha256(args.public_key.read_bytes()).hexdigest()
         report['private_gpg_keys'] = 0
         del os.environ['GNUPGHOME']
-    record_command([sys.executable, '-m', 'pip', 'install', str(source) + '[all]'], 'install.log')
+    if not args.reuse_install:
+        record_command([sys.executable, '-m', 'pip', 'install', str(source) + '[all]'], 'install.log')
     record_command([sys.executable, '-m', 'pip', 'freeze'], 'dependencies.txt')
     sys.path[:0] = [str(source), str(source / 'tests'), str(source / 'scripts')]
     import production_soak
@@ -194,9 +198,9 @@ finally:
     (output / 'diagnostic.json').write_text(json.dumps(report, indent=2) + '\n')
     rows = []
     for path in sorted(output.rglob('*')):
-        if path.is_file():
+        if path.is_file() and not path.is_relative_to(output / 'private-home'):
             raw = path.read_bytes()
             rows.append({'path': path.relative_to(output).as_posix(), 'bytes': len(raw),
                          'sha256': hashlib.sha256(raw).hexdigest()})
-    (output / 'index.json').write_text(json.dumps({'scope': report['scope'], 'files': rows}, indent=2) + '\n')
+    (output / 'index.json').write_text(json.dumps({'scope': report['scope'], 'excluded_subtrees': [{'path': 'private-home', 'reason': 'Task-owned dependency/cache files intentionally excluded; index covers core diagnostics, not this cache tree'}], 'files': rows}, indent=2) + '\n')
 sys.exit(0 if report['status'] == 'PASS_20S_ONLY' else 1)

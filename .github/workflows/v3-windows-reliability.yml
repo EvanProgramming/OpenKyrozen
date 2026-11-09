@@ -1,5 +1,5 @@
 # Preparation only: Root and independent review before commit/push/dispatch.
-name: Isolated macOS soak diagnosis
+name: Bounded macOS soak repeat-to-capture diagnosis
 on: workflow_dispatch
 permissions:
   contents: read
@@ -15,7 +15,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12.10'
-      - name: Diagnose one unchanged signed product
+      - name: Diagnose up to ten unchanged20s cells after one install
         shell: bash
         run: |
           set -euo pipefail
@@ -24,13 +24,34 @@ jobs:
           mkdir -m 700 "$HOME"
           git clone --no-checkout --no-hardlinks https://github.com/EvanProgramming/OpenKyrozen.git "$RUNNER_TEMP/mac-soak-product"
           git -C "$RUNNER_TEMP/mac-soak-product" checkout --detach 6ebc93f19e87fc29fb8ee88df9d9948bfaea5d5a
-          python -I -B "$GITHUB_WORKSPACE/diagnostic/scripts/v3_macos_soak_diagnostic.py" \
-            --source "$RUNNER_TEMP/mac-soak-product" --output "$RUNNER_TEMP/mac-soak-evidence" \
-            --public-key "$GITHUB_WORKSPACE/diagnostic/scripts/signer-public.gpg"
+          python -I -B -c 'import sys; from pathlib import Path; assert sys.version_info[:3] == (3, 12, 10); assert Path(sys.executable).resolve().is_relative_to(Path("/Library/Frameworks/Python.framework/Versions/3.12"))'
+          evidence_root="$RUNNER_TEMP/mac-soak-repeat-evidence"
+          mkdir -m 700 "$evidence_root"
+          printf 'cell\texit_code\n' > "$evidence_root/cell-status.tsv"
+          status=0
+          for cell in $(seq -w 1 10); do
+            set --
+            if [ "$cell" != 01 ]; then set -- --reuse-install; fi
+            if python -I -B "$GITHUB_WORKSPACE/diagnostic/scripts/v3_macos_soak_diagnostic.py" \
+              --source "$RUNNER_TEMP/mac-soak-product" --output "$evidence_root/cell-$cell" \
+              --public-key "$GITHUB_WORKSPACE/diagnostic/scripts/signer-public.gpg" "$@" \
+              > "$evidence_root/cell-$cell-driver.log" 2>&1; then
+              status=0
+            else
+              status=$?
+            fi
+            printf '%s\t%s\n' "$cell" "$status" >> "$evidence_root/cell-status.tsv"
+            if [ "$status" -ne 0 ]; then break; fi
+          done
+          printf 'Bounded diagnosis only; no original-failure explanation follows from successful cells.\n'
+          exit "$status"
       - name: Retain all diagnostic outcomes
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: original-macos31210-20s-6ebc93f
-          path: ${{ runner.temp }}/mac-soak-evidence/
+          name: macos31210-up-to10x20s-6ebc93f
+          path: |
+            ${{ runner.temp }}/mac-soak-repeat-evidence/
+            !${{ runner.temp }}/mac-soak-repeat-evidence/cell-*/private-home/**
+          include-hidden-files: true
           if-no-files-found: warn
