@@ -542,7 +542,9 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
                 or any(ancestor.get(key)!=value for key,value in base_identity.items())
                 or not live._validate_rows_evidence(ancestor_output,ancestor['rows'],candidate,base_identity)
                 or config[0]!='CNY' or config[2]!=pricing.sha256
-                or not 0<config[1]<=15*10**12 or ancestor.get('smoke_passed') is not True
+                or (config[1] is None and (provider_policy is None or pricing.max_limit_cny is not None))
+                or (config[1] is not None and (pricing.max_limit_cny is None or not 0<config[1]<=15*10**12))
+                or ancestor.get('smoke_passed') is not True
                 or ancestor.get('relay_config')!=asdict(relay_config)):
             raise ValueError('a complete same-candidate secure core campaign is required first')
         preflight_calls=[]
@@ -575,7 +577,7 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
         original_ids={row[0] for row in original_attempts}
         origin={'core_report_sha256':core_hash,'core_output':str(core_output),'core_budget':str(core_budget),
                 'original_attempt_ids':sorted(original_ids)}
-        limit=str(Decimal(config[1])/Decimal(10**12))
+        limit=str(Decimal(config[1])/Decimal(10**12)) if config[1] is not None else None
         budget=BudgetLedger(budget_path,limit_rmb=limit,pricing=pricing)
         native_calls=budget.campaign_calls() if provider_policy is not None else None
         if native_calls is not None and any(not provider_policy.accepts_call(call) for call in native_calls):
@@ -637,7 +639,8 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
                 calls=[{key:value for key,value in call.items() if key!='response_body'} for call in calls],
                 held_reservations=live._held_reservations(calls),
                 budget={'currency':'CNY','limit_cny':limit,'spent_cny':str(budget.spent_rmb),
-                        'remaining_cny':str(budget.remaining_rmb)})
+                        'held_cny':str(budget.held_rmb),
+                        'remaining_cny':str(budget.remaining_rmb) if budget.remaining_rmb is not None else None})
             live._write_checkpoint(output,budget_path,report)
         checkpoint('running')
         # Only a preparing ledger may be recovered from an interrupted backup.
@@ -650,7 +653,7 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
             return report
         reservation=(max(pricing.for_metadata(provider_policy.metadata(model),input_tokens=INPUT_BOUND).cost(INPUT_BOUND,4096)
                          for model in provider_policy.role_models.values()) if provider_policy is not None else budget.cost(1_000_000,4096))
-        if not budget.budget_ok or budget.remaining_rmb<reservation:
+        if not budget.budget_ok or (budget.remaining_rmb is not None and budget.remaining_rmb<reservation):
             checkpoint('blocked_budget_reservation')
             report['summary']=analyze_phase(rows);checkpoint(report['status'])
             return report
@@ -682,7 +685,7 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
                     if previous:
                         report.setdefault('prior_rows',[]).append(dict(previous))
                         rows.remove(previous)
-                    if budget.remaining_rmb<reservation:
+                    if budget.remaining_rmb is not None and budget.remaining_rmb<reservation:
                         checkpoint('blocked_budget_reservation');break
                     if model_routing:
                         report['active_cell']=dict(cell)

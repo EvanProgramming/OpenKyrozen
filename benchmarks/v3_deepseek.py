@@ -61,7 +61,8 @@ def read_prior_exposure(paths: list[Path] | tuple[Path, ...]) -> PriorExposure:
     sources: list[tuple[set[str], list[set[str]]]] = []
     opaque_anchors: list[set[str]] = []
     from benchmarks.v3_gemini import GeminiPricing, INPUT_BOUND
-    native_prices = {price.sha256: price for price in (GeminiPricing(), GeminiPricing(billing_tier="free"))}
+    native_prices = {price.sha256: price for price in (GeminiPricing(), GeminiPricing(billing_tier="free"),
+        GeminiPricing(max_limit_cny=None), GeminiPricing(billing_tier="free", max_limit_cny=None))}
 
     def add(record: dict) -> tuple[int, int]:
         attempt_id = record.get("id")

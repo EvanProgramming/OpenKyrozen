@@ -52,15 +52,16 @@ class GeminiPrice(Pricing):
 class GeminiPricing:
     """Model/date prices, with a fixed conservative CNY upper rather than invoice FX."""
     billing_tier: str = "paid"
-    max_limit_cny: Decimal = Decimal("15")
+    max_limit_cny: Decimal | None = Decimal("15")
 
     def __post_init__(self):
-        if self.billing_tier not in {"free", "paid"} or self.max_limit_cny != Decimal("15"):
+        if self.billing_tier not in {"free", "paid"} or self.max_limit_cny not in (None, Decimal("15")):
             raise ValueError("unknown Google billing tier or changed cumulative cap")
 
     def as_dict(self):
         return {"currency": "CNY", "provider": "Google native", "source_currency": "USD",
-                "billing_tier": self.billing_tier, "max_limit_cny": "15",
+                "billing_tier": self.billing_tier,
+                "max_limit_cny": str(self.max_limit_cny) if self.max_limit_cny is not None else None,
                 "billing_tier_semantics": "standard paid rate upper, or verified account-free rates",
                 'financial_input_reservation':INPUT_BOUND,'operational_input_token_limit':OPERATIONAL_INPUT_BOUND,
                 "cost_basis": "conservative CNY upper; not invoice conversion",
@@ -206,7 +207,7 @@ class GeminiPolicy:
     def check_budget(self, budget):
         for model in self.role_models.values():
             quote = self.pricing.for_metadata(self.metadata(model), input_tokens=INPUT_BOUND).cost(INPUT_BOUND, OUTPUT_BOUND)
-            if not budget.budget_ok or quote > budget.remaining_rmb:
+            if not budget.budget_ok or (budget.remaining_rmb is not None and quote > budget.remaining_rmb):
                 raise ValueError("Google both-slot reservation is unaffordable before credentials or inference")
 
     def verify_billing(self, proof, candidate_sha, *, verify_signature=None, now=None):
@@ -637,7 +638,7 @@ def main():
     parser.add_argument('--billing-tier',choices=('free','paid'),required=True)
     parser.add_argument('--model-simple')
     parser.add_argument('--model-complex')
-    parser.add_argument('--limit-cny',default='15')
+    parser.add_argument('--limit-cny',default='15',help='Cumulative CNY cap (default15), or explicit unlimited accounting')
     parser.add_argument('--planning-preflight-only',action='store_true')
     parser.add_argument('--execute',action='store_true')
     args=parser.parse_args()
@@ -649,7 +650,8 @@ def main():
     _verify_candidate_signature(args.source.resolve(),candidate)
     config=ProviderConfig(provider='google',model_main='auto',**{
         key:value for key,value in {'model_simple':args.model_simple,'model_complex':args.model_complex}.items() if value is not None})
-    policy=GeminiPolicy(config=config,pricing=GeminiPricing(billing_tier=args.billing_tier))
+    policy=GeminiPolicy(config=config,pricing=GeminiPricing(billing_tier=args.billing_tier,
+        max_limit_cny=None if args.limit_cny=='unlimited' else Decimal(15)))
     if args.core_output is not None or args.core_budget is not None:
         if args.core_output is None or args.core_budget is None or args.planning_preflight_only or args.prior_ledger:
             raise ValueError('routing supplement requires both original core paths without new prior admission')
@@ -664,11 +666,11 @@ def main():
     if not args.prior_ledger:
         raise ValueError('original prior ledgers are required for the shared cumulative campaign')
     exposure=read_prior_exposure(args.prior_ledger)
-    limit=Decimal(args.limit_cny)
-    if not limit.is_finite() or not 0<limit<=15 or exposure.total_cny>limit:
-        raise ValueError('native Google campaign shares the unchanged cumulative 15 CNY cap')
+    limit=None if args.limit_cny=='unlimited' else Decimal(args.limit_cny)
+    if limit is not None and (not limit.is_finite() or not 0<limit<=15 or exposure.total_cny>limit):
+        raise ValueError('native Google campaign requires a cap up to 15 CNY or explicit unlimited accounting')
     report=run(source=args.source,repo=args.repo,output=args.output,budget_path=args.budget_db,
-        limit_cny=str(limit),prior_hold_cny=str(exposure.total_cny),prior_hold_records=exposure.records,
+        limit_cny='unlimited' if limit is None else str(limit),prior_hold_cny=str(exposure.total_cny),prior_hold_records=exposure.records,
         pricing=policy.pricing,relay_config=RelayConfig('auto',4096,INPUT_BOUND,True),provider_policy=policy,
         billing_proof=args.billing_proof,planning_preflight_only=args.planning_preflight_only)
     print(json.dumps(report.get('summary',{}),sort_keys=True,indent=2))

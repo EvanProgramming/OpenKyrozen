@@ -145,7 +145,7 @@ class GeminiCatalogTests(unittest.TestCase):
         from openkyrozen.providers.config import ProviderConfig
         from datetime import datetime, timezone
         policy=GeminiPolicy(config=ProviderConfig(provider='google',model_main='auto',
-            model_simple='gemini-3.5-flash-lite',model_complex='gemini-3.8-flash'),pricing=GeminiPricing(billing_tier='free'))
+            model_simple='gemini-3.5-flash-lite',model_complex='gemini-3.8-flash'),pricing=GeminiPricing(billing_tier='free'),price_date='2026-11-09')
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'proof.json';support=Path(directory)/'account.txt';support.write_bytes(b'synthetic account evidence')
             record={'schema_version':1,'provider':'google','official_endpoint':OFFICIAL_ENDPOINT,
@@ -763,6 +763,129 @@ class GeminiRunnerTests(unittest.TestCase):
         self.assertFalse(validate_observations([row],'planning-never',policy))
         row['after']['profile']='coder';row['requests'][0]['model']='unpriced'
         self.assertFalse(validate_observations([row],'planning-never',policy))
+
+class GeminiUnlimitedBudgetTests(unittest.TestCase):
+    def test_uncapped_catalog_reserves_above15_and_retains_prior_and_unknowns(self):
+        from benchmarks.v3_gemini import GeminiPricing, GeminiPolicy, INPUT_BOUND
+        from benchmarks.v3_deepseek import read_prior_exposure
+        pricing=GeminiPricing(max_limit_cny=None)
+        self.assertIsNone(pricing.as_dict()['max_limit_cny'])
+        self.assertNotEqual(pricing.sha256,GeminiPricing().sha256)
+        policy=GeminiPolicy(pricing=pricing)
+        records=tuple(json.dumps({'id':f'prior-{number:03}',
+            'reserved':12_151_991_600_007 if number==0 else 0,'actual':None,
+            'status':'unknown','usage':None},sort_keys=True) for number in range(648))
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'new.db'
+            budget=BudgetLedger(path,limit_rmb=None,prior_hold_rmb='12.151991600007',
+                                prior_hold_records=records,pricing=pricing)
+            policy.check_budget(budget)  # Default Pro remains selectable above the old ceiling.
+            model=policy.role_models['complex']
+            quote=pricing.for_metadata(policy.metadata(model),input_tokens=INPUT_BOUND).cost(INPUT_BOUND,4096)
+            self.assertGreater(quote,15)
+            for identifier in ('known','unknown'):
+                metadata=dict(policy.metadata(model),reserved_rmb=str(quote),max_output_tokens=4096)
+                self.assertTrue(budget.reserve(identifier,input_token_bound=INPUT_BOUND,
+                                               output_token_bound=4096,metadata=metadata))
+            budget.settle('known',{'input_tokens':100,'output_tokens':20,'cache_read_tokens':0,'cache_write_tokens':0,
+                'reasoning_tokens':3,'served_model':model,'raw_usage':{'promptTokenCount':100,
+                    'candidatesTokenCount':17,'thoughtsTokenCount':3,'totalTokenCount':120}})
+            budget.settle('unknown',None)
+            self.assertIsNone(budget.remaining_rmb)
+            self.assertTrue(budget.budget_ok)
+            self.assertEqual(budget.held_rmb,Decimal('12.151991600007')+quote)
+            self.assertGreater(budget.spent_rmb,0)
+            with closing(sqlite3.connect(path)) as db:
+                self.assertIsNone(db.execute('SELECT limit_picormb FROM budget_config').fetchone()[0])
+                archived=json.loads(db.execute("SELECT metadata_json FROM attempts WHERE id='prior-campaign-reservations'").fetchone()[0])
+                self.assertEqual(archived['prior_attempts'],list(records))
+                self.assertEqual(db.execute("SELECT status FROM attempts WHERE id='unknown'").fetchone()[0],'unknown')
+            exposure=read_prior_exposure([path])
+            self.assertEqual(exposure.total_cny,budget.spent_rmb+budget.held_rmb)
+            self.assertEqual(exposure.attempt_count,650)
+            carried=BudgetLedger(Path(directory)/'carried.db',limit_rmb=None,pricing=pricing,
+                prior_hold_rmb=str(exposure.total_cny),prior_hold_records=exposure.records)
+            self.assertEqual(read_prior_exposure([path,carried.path]),exposure)
+            BudgetLedger(path,limit_rmb=None,prior_hold_rmb='12.151991600007',
+                         prior_hold_records=records,pricing=pricing)
+            with self.assertRaises(ValueError):
+                BudgetLedger(path,limit_rmb=15,pricing=GeminiPricing(),allow_limit_increase=True)
+
+    def test_uncapped_per_call_overrun_still_stops_and_finite_modes_cannot_mix(self):
+        from benchmarks.v3_gemini import GeminiPricing, GeminiPolicy
+        from benchmarks.v3_matched import PANSTAR_PRICING
+        from benchmarks.v3_deepseek import DEEPSEEK_PRICING
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            for pricing in (PANSTAR_PRICING,DEEPSEEK_PRICING,GeminiPricing()):
+                with self.subTest(pricing=pricing.sha256),self.assertRaises(ValueError):
+                    BudgetLedger(root/'denied.db',limit_rmb=None,pricing=pricing)
+            capped=root/'capped.db'
+            BudgetLedger(capped,limit_rmb=15,pricing=GeminiPricing())
+            with self.assertRaises(ValueError):
+                BudgetLedger(capped,limit_rmb=None,pricing=GeminiPricing(max_limit_cny=None),allow_limit_increase=True)
+            policy=GeminiPolicy(pricing=GeminiPricing(max_limit_cny=None))
+            budget=BudgetLedger(root/'overrun.db',limit_rmb=None,pricing=policy.pricing)
+            metadata=policy.metadata(policy.role_models['complex'])
+            self.assertTrue(budget.reserve('overrun',input_token_bound=1,output_token_bound=1,metadata=metadata))
+            budget.settle('overrun',{'input_tokens':2,'output_tokens':2})
+            self.assertFalse(budget.budget_ok)
+            self.assertIsNone(budget.remaining_rmb)
+            self.assertFalse(budget.reserve('later',input_token_bound=1,output_token_bound=1,metadata=metadata))
+            with self.assertRaises(ValueError):policy.check_budget(budget)
+
+    def test_native_cli_explicit_unlimited_in_all_three_phases(self):
+        from benchmarks import v3_gemini as native, v3_matched_live as live, v3_routing_supplement as routing
+        from types import SimpleNamespace
+        for phase in ('180','54','36'):
+            args=['v3_gemini','--source','source','--repo','repo','--output','out','--budget-db','db',
+                  '--candidate-sha','a'*40,'--billing-tier','paid','--limit-cny','unlimited','--execute']
+            args+=['--prior-ledger','prior'] if phase=='180' else ['--core-output','core','--core-budget','core.db']
+            if phase=='36':args+=['--model-routing']
+            report={'status':'complete','summary':{'release_comparison_passed':False,'benefit_passed':False}}
+            with self.subTest(phase=phase),patch('sys.argv',args),patch.object(live,'_source_snapshot',return_value='a'*40), \
+                 patch('scripts.publish_v3_preview._verify_candidate_signature'), \
+                 patch('benchmarks.v3_deepseek.read_prior_exposure',return_value=SimpleNamespace(total_cny=Decimal('18'),records=('prior',))), \
+                 patch.object(live,'run',return_value=report) as core,patch.object(routing,'run',return_value=report) as child, \
+                 patch('builtins.print'),self.assertRaises(SystemExit) as stopped:
+                native.main()
+            self.assertEqual(stopped.exception.code,1)
+            options=(core if phase=='180' else child).call_args.kwargs
+            self.assertIsNone(options['provider_policy'].pricing.max_limit_cny)
+            if phase=='180':self.assertEqual(options['limit_cny'],'unlimited')
+
+    def test_core_unlimited_reports_null_and_held_before_any_formal_cells(self):
+        from benchmarks import v3_gemini as native, v3_matched_live as live
+        from benchmarks.v3_responses_relay import RelayConfig
+        from tests.test_v3_matched_live import prepare_candidate_apparatus
+        policy=native.GeminiPolicy(pricing=native.GeminiPricing(max_limit_cny=None))
+        class Relay:
+            def __init__(self,**options):
+                self.rows=[];self.provider_error='offline-stop';self.budget_blocked=False
+            def start(self):pass
+            def close(self):pass
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'source';source.mkdir();prepare_candidate_apparatus(source)
+            output=root/'out.json';budget_path=root/'new.db'
+            options=dict(source=source,repo=source,output=output,budget_path=budget_path,limit_cny='unlimited',
+                prior_hold_cny='18',prior_hold_records=('unchanged-prior',),pricing=policy.pricing,
+                relay_config=RelayConfig('auto',4096,native.INPUT_BOUND,True),provider_policy=policy)
+            with patch.object(live,'_source_snapshot',return_value='a'*40), \
+                 patch('openkyrozen.tools.sandbox.sandbox_command',return_value=type('Probe',(),{'backend':'landlock','close':lambda self:None})()), \
+                 patch('benchmarks.v3_protected_worker.verify_worker_protection'),patch.object(live,'_extract_baseline'), \
+                 patch.object(policy,'verify_billing',return_value={'proof_sha256':'b'*64}), \
+                 patch.object(policy,'credential',return_value=('unused','synthetic')), \
+                 patch.object(native,'GeminiRelay',Relay),patch.object(native,'run_smoke',return_value=False):
+                report=live.run(**options)
+            self.assertEqual(report['status'],'blocked_provider_error')
+            self.assertEqual(report['budget'],{'currency':'CNY','limit_cny':None,'remaining_cny':None,
+                'spent_cny':'0','held_cny':'18','prior_campaign_hold_cny':'18'})
+            self.assertEqual(json.loads(output.read_text())['budget'],report['budget'])
+            for policy_arg,pricing in ((None,policy.pricing),(None,__import__('benchmarks.v3_deepseek',fromlist=['DEEPSEEK_PRICING']).DEEPSEEK_PRICING)):
+                with patch.object(live,'_source_snapshot',return_value='a'*40),self.assertRaises(ValueError):
+                    live.run(**dict(options,output=root/'denied.json',budget_path=root/'denied.db',
+                                    provider_policy=policy_arg,pricing=pricing))
+
 
 class GeminiCliCompletionTests(unittest.TestCase):
     def test_native_cli_requires_complete_status_and_existing_success_predicate_in_all_three_phases(self):

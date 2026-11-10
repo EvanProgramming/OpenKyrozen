@@ -40,13 +40,14 @@ class Pricing:
     output_rate: Decimal
     cache_read_rate: Decimal
     cache_write_rate: Decimal
-    max_limit_cny: Decimal
+    max_limit_cny: Decimal | None
     metadata_json: str
 
     def __post_init__(self) -> None:
         rates = (self.input_rate, self.output_rate, self.cache_read_rate, self.cache_write_rate)
         if (any(not rate.is_finite() or rate < 0 for rate in rates)
-                or not self.max_limit_cny.is_finite() or self.max_limit_cny <= 0):
+                or (self.max_limit_cny is not None and
+                    (not self.max_limit_cny.is_finite() or self.max_limit_cny <= 0))):
             raise ValueError("pricing rates and cumulative CNY cap must be finite and nonnegative")
         metadata = self.as_dict()
         if (metadata.get("currency") != "CNY" or any(
@@ -97,18 +98,20 @@ def _picormb(amount: Decimal) -> int:
 class BudgetLedger:
     """Atomically reserve worst-case API spend and retain unknown attempts."""
 
-    def __init__(self, path: Path, *, limit_rmb: str | Decimal = MAX_LIMIT_RMB,
+    def __init__(self, path: Path, *, limit_rmb: str | Decimal | None = MAX_LIMIT_RMB,
                  prior_hold_rmb: str | Decimal = "0", allow_limit_increase: bool = False,
                  pricing: Pricing = PANSTAR_PRICING,
                  prior_hold_records: tuple[str, ...] | None = None):
         self.path = Path(path)
         self.pricing = pricing
-        limit = Decimal(limit_rmb)
+        limit = Decimal(limit_rmb) if limit_rmb is not None else None
         prior_hold = Decimal(prior_hold_rmb)
-        if (not limit.is_finite() or not prior_hold.is_finite()
-                or not Decimal(0) < limit <= pricing.max_limit_cny or not Decimal(0) <= prior_hold <= limit):
+        if (not prior_hold.is_finite() or prior_hold < 0
+                or (limit is None) != (pricing.max_limit_cny is None)
+                or (limit is not None and (not limit.is_finite()
+                    or not 0 < limit <= pricing.max_limit_cny or prior_hold > limit))):
             raise ValueError("the cumulative benchmark cap exceeds the immutable pricing configuration")
-        self.limit_picormb = _picormb(limit)
+        self.limit_picormb = _picormb(limit) if limit is not None else None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.path)) as db:
             db.execute("PRAGMA journal_mode=WAL")
@@ -121,7 +124,7 @@ class BudgetLedger:
                 columns = {row[1] for row in db.execute("PRAGMA table_info(attempts)")}
                 if "reserved_microdollars" in columns:
                     raise ValueError("legacy USD budget ledger cannot be reused under the RMB cap")
-            db.execute("CREATE TABLE IF NOT EXISTS budget_config (id INTEGER PRIMARY KEY CHECK(id=1), currency_code TEXT NOT NULL, limit_picormb INTEGER NOT NULL, pricing_sha256 TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS budget_config (id INTEGER PRIMARY KEY CHECK(id=1), currency_code TEXT NOT NULL, limit_picormb INTEGER, pricing_sha256 TEXT NOT NULL)")
             db.execute("""CREATE TABLE IF NOT EXISTS attempts (
                 id TEXT PRIMARY KEY, reserved_picormb INTEGER NOT NULL,
                 actual_picormb INTEGER, status TEXT NOT NULL,
@@ -145,7 +148,9 @@ class BudgetLedger:
                                 json.dumps(prior_metadata, sort_keys=True)))
             elif current[0] != "CNY" or current[2] != self.pricing.sha256:
                 raise ValueError("the persisted RMB benchmark cap and pricing cannot be changed")
-            elif int(current[1]) != self.limit_picormb:
+            elif (current[1] is None) != (self.limit_picormb is None):
+                raise ValueError("the persisted benchmark accounting mode cannot be changed")
+            elif current[1] != self.limit_picormb:
                 if int(current[1]) < self.limit_picormb:
                     if not allow_limit_increase:
                         raise ValueError("the persisted RMB benchmark cap and pricing cannot be changed")
@@ -190,11 +195,17 @@ class BudgetLedger:
         return Decimal(self._totals()[0]) / _PICORMB
 
     @property
+    def held_rmb(self) -> Decimal:
+        return Decimal(self._totals()[1]) / _PICORMB
+
+    @property
     def budget_ok(self) -> bool:
         return not self._totals()[2]
 
     @property
-    def remaining_rmb(self) -> Decimal:
+    def remaining_rmb(self) -> Decimal | None:
+        if self.limit_picormb is None:
+            return None
         spent, held, overrun = self._totals()
         if overrun:
             return Decimal(0)
@@ -216,7 +227,7 @@ class BudgetLedger:
                 "THEN reserved_picormb ELSE 0 END), 0), "
                 "SUM(CASE WHEN status='overrun' THEN 1 ELSE 0 END) FROM attempts"
             ).fetchone()
-            if overruns or spent + held + reserve > self.limit_picormb:
+            if overruns or (self.limit_picormb is not None and spent + held + reserve > self.limit_picormb):
                 db.rollback()
                 return False
             try:

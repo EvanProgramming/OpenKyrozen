@@ -507,7 +507,12 @@ class SupplementRunnerTests(unittest.TestCase):
             with self.subTest(model_routing=model_routing):
                 self._model_phase_run(durable_overrun=True,model_routing=model_routing)
 
-    def _model_phase_run(self, *, durable_overrun=False,model_routing=True):
+    def test_uncapped_native_54_and36_inherit_null_without_resetting_prior_holds(self):
+        for model_routing in (False,True):
+            with self.subTest(model_routing=model_routing):
+                self._model_phase_run(model_routing=model_routing,uncapped=True)
+
+    def _model_phase_run(self, *, durable_overrun=False,model_routing=True,uncapped=False):
         """Synthetic workers/gates test SQLite scheduling/lineage, not formal quality."""
         from benchmarks import v3_matched_live as live
         from benchmarks.v3_matched import BudgetLedger
@@ -517,7 +522,8 @@ class SupplementRunnerTests(unittest.TestCase):
         from openkyrozen.providers import ProviderConfig
         from contextlib import ExitStack
         policy=GeminiPolicy(config=ProviderConfig(provider='google',model_main='auto',
-            model_simple='gemini-3.5-flash-lite',model_complex='gemini-3.8-flash'),pricing=GeminiPricing(billing_tier='free'))
+            model_simple='gemini-3.5-flash-lite',model_complex='gemini-3.8-flash'),pricing=GeminiPricing(
+                billing_tier='free',max_limit_cny=None if uncapped else Decimal(15)))
         module=supplement();identity=live.apparatus_identity();identity['provider_policy']=policy.identity()
         cells=module.model_schedule() if model_routing else module.schedule()
         protocol=module.MODEL_PROTOCOL if model_routing else module.PROTOCOL
@@ -526,7 +532,8 @@ class SupplementRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory).resolve();core_output=root/'core.json';core_budget=root/'core.db'
             parent_output=root/'54.json';parent_budget=root/'54.db';output=root/'36.json';budget_path=root/'36.db'
-            ledger=BudgetLedger(core_budget,limit_rmb=15,prior_hold_rmb='12.151991600007',pricing=policy.pricing)
+            ledger=BudgetLedger(core_budget,limit_rmb=None if uncapped else 15,
+                prior_hold_rmb='18' if uncapped else '12.151991600007',pricing=policy.pricing)
             def record(budget,arm,fixture,repeat,model):
                 number=len(budget.campaign_calls());identifier=f'call-{number:04}'
                 metadata=dict(policy.metadata(model),attempt_id=identifier,arm=arm,fixture_id=fixture,repeat=repeat,
@@ -606,7 +613,13 @@ class SupplementRunnerTests(unittest.TestCase):
                 self.assertEqual(executed,[(row['fixture_id'],row['repeat'],row['variant']) for row in cells])
                 self.assertTrue(report['summary']['complete'])
                 if model_routing:self.assertTrue(report['summary']['identifiable'])
-                self.assertEqual(report['budget']['remaining_cny'],'2.848008399993')
+                if uncapped:
+                    self.assertIsNone(report['budget']['limit_cny'])
+                    self.assertIsNone(report['budget']['remaining_cny'])
+                    self.assertEqual(report['budget']['held_cny'],'18')
+                    with closing(__import__('sqlite3').connect(budget_path)) as db:
+                        self.assertIsNone(db.execute('SELECT limit_picormb FROM budget_config').fetchone()[0])
+                else:self.assertEqual(report['budget']['remaining_cny'],'2.848008399993')
                 self.assertEqual(credential.call_count,1)
                 if durable_overrun:
                     self.assertEqual(report['status'],'blocked_provider_error')
@@ -628,9 +641,10 @@ class SupplementRunnerTests(unittest.TestCase):
                     return
                 report['active_cell']=dict(module.model_schedule()[0])
                 live._write_checkpoint(output,budget_path,report)
-                with self.assertRaisesRegex(ValueError,'interrupted model cell'):
-                    module.run(**args)
-                self.assertEqual(credential.call_count,1)
+                if model_routing:
+                    with self.assertRaisesRegex(ValueError,'interrupted model cell'):
+                        module.run(**args)
+                    self.assertEqual(credential.call_count,1)
                 report['active_cell']=None;live._write_checkpoint(output,budget_path,report)
                 with self.assertRaisesRegex(ValueError,'different continuation'):
                     module.run(**dict(args,output=root/'fork.json',budget_path=root/'fork.db'))

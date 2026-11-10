@@ -2,6 +2,24 @@
 
 Approved by the user on 2026-11-07 in the V3 finalization chat.
 
+## User amendment and status, 2026-11-10 (Asia/Shanghai)
+
+The user explicitly cancelled the cumulative 15 CNY ceiling for the Gemini
+campaign and reiterated that V3 must not be published. Select the new policy
+with `--limit-cny unlimited`; omitted CLI limits remain 15 for compatibility,
+and the historical DeepSeek/Panstar paths retain their finite caps. A fresh
+Gemini ledger pins this accounting-only mode with a distinct pricing identity
+and null limit/remaining fields. Carry all 648 prior attempts and their exact
+settled/unknown provenance; do not convert an existing capped ledger or release
+unknown holds. Continue recording actual costs and outstanding reservations,
+including the aggregate prior exposure. All per-call token/reservation bounds,
+provider and security checks, offline acceptance and original quality gates
+remain binding. The older cap statements below preserve the former policy.
+
+R260 remains blocked by the unexplained historical macOS listener failure.
+Removing the spending ceiling neither resolves that blocker nor authorizes
+provider execution before the required offline evidence or any publication.
+
 ## User amendment, 2026-11-09
 
 Use the supplied Gemini API preferentially, with OpenKyrozen's built-in automatic

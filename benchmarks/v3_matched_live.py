@@ -1264,12 +1264,15 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         if cny_accounting:
             if prior_hold_usd is not None or prior_hold_cny is None:
                 raise ValueError("CNY campaigns require a CNY prior hold without a USD workaround")
-            limit = Decimal(limit_cny)
+            limit = None if limit_cny == 'unlimited' else Decimal(limit_cny)
             prior_hold = Decimal(prior_hold_cny)
-            if (not limit.is_finite() or not prior_hold.is_finite()
-                    or not 0 < limit <= pricing.max_limit_cny or not 0 <= prior_hold <= limit):
+            if (not prior_hold.is_finite() or prior_hold < 0
+                    or (limit is None and provider_policy is None)
+                    or (limit is None) != (pricing.max_limit_cny is None)
+                    or (limit is not None and (not limit.is_finite()
+                        or not 0 < limit <= pricing.max_limit_cny or prior_hold > limit))):
                 raise ValueError("the cumulative CNY cap and prior exposure must fit the pricing configuration")
-            limit_rmb, prior_hold_rmb = str(limit), str(prior_hold)
+            limit_rmb, prior_hold_rmb = (str(limit) if limit is not None else None), str(prior_hold)
             prior_hold_key = "prior_campaign_hold_cny"
         else:
             if pricing != PANSTAR_PRICING or prior_hold_cny is not None:
@@ -1291,7 +1294,9 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
     def budget_metadata() -> dict:
         if cny_accounting:
             return {"currency": "CNY", "spent_cny": str(budget.spent_rmb),
-                    "remaining_cny": str(budget.remaining_rmb), "limit_cny": str(limit),
+                    "held_cny": str(budget.held_rmb),
+                    "remaining_cny": str(budget.remaining_rmb) if budget.remaining_rmb is not None else None,
+                    "limit_cny": str(limit) if limit is not None else None,
                     "prior_campaign_hold_cny": str(prior_hold)}
         return {"spent_usd": str(budget.spent_rmb / USD_CNY),
                 "remaining_usd": str(budget.remaining_rmb / USD_CNY), "limit_usd": str(limit),
@@ -1546,7 +1551,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         print(json.dumps({"fixture_id": fixture_id, "repeat": repeat, "arm": arm,
                                           "verified_success": row["verified_success"],
                                           "requests": row["requests"],
-                                          **({"remaining_cny": str(budget.remaining_rmb)} if cny_accounting else
+                                          **({"remaining_cny": str(budget.remaining_rmb) if budget.remaining_rmb is not None else None} if cny_accounting else
                                              {"remaining_usd": str(budget.remaining_rmb / USD_CNY)})},
                                          sort_keys=True), flush=True)
                         if not budget.budget_ok:
