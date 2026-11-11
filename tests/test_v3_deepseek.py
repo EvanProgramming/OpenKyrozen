@@ -553,6 +553,7 @@ class PlanningPreflightTests(unittest.TestCase):
             runtime._set_workspace_root(workspace)
             runtime.set_interaction_mode('agent')
             (workspace / 'proof.txt').write_text(deepseek.PLANNING_PREFLIGHT_CONTENT)
+            case = self
             class Provider(LLMProvider):
                 calls = 0
                 def get_capabilities(self, model=None):
@@ -570,7 +571,19 @@ class PlanningPreflightTests(unittest.TestCase):
                     elif retrieve_artifact and self.calls == 3:
                         if 'read_tool_artifact' not in {item['name'] for item in tools}:
                             raise AssertionError('archived result reader is not provider-visible')
+                        # Model an earlier archived reply using the real scoped artifact store.
+                        from openkyrozen.agent.engine import AgentEngine
+                        index = next(i for i, item in enumerate(messages)
+                                     if isinstance(item, ToolReply) and item.call_id == 'plan-1')
+                        original = json.dumps(messages[index].output, ensure_ascii=False,
+                                              sort_keys=True, separators=(',', ':'))
+                        AgentEngine(runtime)._archive_replies(messages, [index])
                         archived = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == 'plan-1')
+                        page = memory.store.artifacts.read_page(archived.output['data']['artifact_id'],
+                            0, 1000, user_id=runtime.tasks.user_id, workspace_id=runtime.tasks.workspace_id,
+                            session_id=runtime.tasks.session_id)
+                        case.assertEqual(page['content'], original)
+                        case.assertEqual(page['total_chars'], len(original))
                         return ModelResponse(tool_calls=(ToolCall('archive', 'read_tool_artifact',
                             {'artifact_id': archived.output['data']['artifact_id']}),),
                             finish_reason=FinishReason.TOOL_REQUEST,

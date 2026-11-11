@@ -518,11 +518,11 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                     case.assertEqual(state["plan_id"], before["visible_plan"]["plan_id"])
                     case.assertEqual(state["revision"], before["visible_plan"]["revision"])
                     case.assertEqual(state["tasks"][0]["status"], "succeeded")
-                    # The create reply is already archived, as in the real360 failure.
+                    # Bounded results stay available until the current turn ends.
                     created = next(item for item in messages if isinstance(item, ToolReply)
                                    and item.call_id == "create-start")
-                    case.assertIn("artifact_id", created.output["data"])
-                    case.assertNotIn("plan_id", created.output["data"])
+                    case.assertNotIn("artifact_id", created.output["data"])
+                    case.assertEqual(created.output["data"]["plan_id"], state["plan_id"])
                     call = ToolCall("confirm", "update_plan", {
                         "plan_id": state["plan_id"], "expected_revision": state["revision"],
                         "operations": [{"op": "suggest_complete", "task": state["tasks"][0]["id"]}]})
@@ -558,6 +558,7 @@ class PlanValidationFeedbackTests(unittest.TestCase):
 
     def test_completed_plan_can_read_its_archived_result_without_broadening_tools(self):
         case, task = self, self.task()
+        task["description"] += " details" * 2000
         class Provider(LLMProvider):
             calls = 0
             def get_capabilities(self, model=None):
@@ -583,7 +584,10 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                 elif self.calls == 4:
                     reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "archive")
                     case.assertFalse(reply.is_error)
-                    case.assertIn("Working Plan updated", reply.output["data"]["content"])
+                    page = reply.output["data"]
+                    case.assertEqual(page["artifact_id"], self.artifact_id)
+                    case.assertGreater(page["total_chars"], 12000)
+                    case.assertIn("Inspect catalog.py details", page["content"])
                     pin = next(item["content"] for item in messages if isinstance(item, dict)
                                and item.get("content", "").startswith("## Pinned Working Plan state\n"))
                     state = json.loads(pin.split("\n", 2)[2])
