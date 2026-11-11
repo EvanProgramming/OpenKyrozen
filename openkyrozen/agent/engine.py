@@ -73,11 +73,23 @@ class AgentEngine:
             session_id=getattr(tasks, "session_id", None) or memory.session_id,
         )
 
-    def _archive_replies(self, messages, indexes):
+    def _archive_replies(self, messages, indexes, *, archive_small=True):
         import json
+        from openkyrozen.agent.executor import _TOOL_ARTIFACT_THRESHOLD
         for index in indexes:
             reply = messages[index]
+            if reply.name == "read_tool_artifact":
+                continue
+            output = reply.output
+            data = output.get("data") if isinstance(output, dict) else None
+            metadata = output.get("metadata") if isinstance(output, dict) else None
+            if (isinstance(data, dict) and isinstance(metadata, dict)
+                    and isinstance(data.get("artifact_id"), str) and data["artifact_id"]
+                    and metadata.get("artifact_id") == data["artifact_id"]):
+                continue
             content = json.dumps(reply.output, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            if not archive_small and len(content) <= _TOOL_ARTIFACT_THRESHOLD:
+                continue
             artifact_id = self._store_tool_output(content)
             summary = {"artifact_id": artifact_id, "total_chars": len(content)}
             messages[index] = ToolReply(reply.call_id, reply.name, {
@@ -415,7 +427,7 @@ class AgentEngine:
                             "output": output, "is_error": True,
                         }, call_id=call.id, request_id=runtime._last_model_request_id.get())
                 try:
-                    self._archive_replies(messages, previous_reply_indexes)
+                    self._archive_replies(messages, previous_reply_indexes, archive_small=False)
                 except Exception:
                     turn.protocol_error_message = "Could not retain earlier tool results; no further tools were run."
                     break
@@ -471,7 +483,7 @@ class AgentEngine:
                     turn.protocol_error_message = "Interactive control validation failed after bounded retries; no proposed changes were executed."
                     break
             try:
-                self._archive_replies(messages, previous_reply_indexes)
+                self._archive_replies(messages, previous_reply_indexes, archive_small=False)
             except Exception:
                 turn.protocol_error_message = "Could not retain earlier tool results; no further tools were run."
                 break

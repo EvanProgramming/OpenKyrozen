@@ -522,6 +522,49 @@ class AgentEngineTests(unittest.TestCase):
             AgentEngine(runtime)._archive_replies(second, [0])
             self.assertEqual(second[0].output["data"]["artifact_id"], artifact_id)
 
+    def test_current_small_tool_result_stays_inline_for_its_final_answer(self):
+        output = {"data": {"content": "planning-preflight-ok\n"}, "text": "Read proof.txt"}
+        reply = ToolReply("read-proof", "read_file", output)
+        messages = [reply]
+        engine = AgentEngine(SimpleNamespace())
+        with patch.object(engine, "_store_tool_output") as store:
+            engine._archive_replies(messages, [0], archive_small=False)
+        self.assertIs(messages[0], reply)
+        store.assert_not_called()
+
+    def test_large_current_tool_result_still_archives_with_its_failure_identity(self):
+        output = {"text": "x" * 13000, "error": {"code": "denied"}}
+        messages = [ToolReply("large-call", "read_file", output, True)]
+        engine = AgentEngine(SimpleNamespace())
+        with patch.object(engine, "_store_tool_output", return_value="large") as store:
+            engine._archive_replies(messages, [0], archive_small=False)
+        store.assert_called_once()
+        self.assertEqual(messages[0].output["data"]["artifact_id"], "large")
+        self.assertTrue(messages[0].is_error)
+        self.assertEqual(messages[0].output["error"]["code"], "archived_result")
+
+    def test_existing_artifact_reference_is_not_archived_again(self):
+        output = {"data": {"artifact_id": "original", "total_chars": 20000},
+                  "metadata": {"artifact_id": "original"}, "error": None}
+        reply = ToolReply("original-call", "read_file", output)
+        messages = [reply]
+        engine = AgentEngine(SimpleNamespace())
+        with patch.object(engine, "_store_tool_output", return_value="nested") as store:
+            engine._archive_replies(messages, [0])
+        self.assertIs(messages[0], reply)
+        store.assert_not_called()
+
+    def test_bounded_artifact_page_remains_readable_without_creating_an_artifact_of_itself(self):
+        output = {"data": {"artifact_id": "original", "offset": 0, "next_offset": None,
+                           "content": "complete original proof", "total_chars": 23}}
+        reply = ToolReply("page-call", "read_tool_artifact", output)
+        messages = [reply]
+        engine = AgentEngine(SimpleNamespace())
+        with patch.object(engine, "_store_tool_output", return_value="nested") as store:
+            engine._archive_replies(messages, [0])
+        self.assertIs(messages[0], reply)
+        store.assert_not_called()
+
     def test_runtime_native_provider_executes_and_continues_without_text_parsing(self):
         from openkyrozen.app.bootstrap import build_application, build_memory
         from openkyrozen.tools import ToolAdapters
@@ -619,14 +662,7 @@ class AgentEngineTests(unittest.TestCase):
             older = next(item for item in provider.requests[2][0]
                          if isinstance(item, ToolReply) and item.call_id == "plan-1")
             original = provider.requests[1][0][-1].output
-            self.assertNotEqual(older.output, original)
-            artifact_id = older.output["data"]["artifact_id"]
-            page = runtime.tool_registry.get_spec("read_tool_artifact").executor({"artifact_id": artifact_id})
-            import json
-            self.assertEqual(json.loads(page.data["content"]), original)
-            self.assertIsNone(runtime.memory_bank.store.artifacts.read_page(
-                artifact_id, 0, 1000, user_id="another-user", workspace_id=runtime.tasks.workspace_id,
-                session_id=runtime.tasks.session_id))
+            self.assertEqual(older.output, original)
             with patch.object(runtime, "_schedule_post_turn_learning"), \
                     patch.object(runtime, "_prepare_turn", side_effect=prepare_complex), \
                     patch.object(runtime, "_build_memory_context", return_value=packet):
@@ -635,7 +671,13 @@ class AgentEngineTests(unittest.TestCase):
             historical = [item for item in provider.requests[first_turn_requests][0] if isinstance(item, ToolReply)]
             self.assertTrue(historical)
             self.assertTrue(all("artifact_id" in item.output["data"] for item in historical))
-            self.assertEqual(historical[0].output["data"]["artifact_id"], artifact_id)
+            artifact_id = historical[0].output["data"]["artifact_id"]
+            page = runtime.tool_registry.get_spec("read_tool_artifact").executor({"artifact_id": artifact_id})
+            import json
+            self.assertEqual(json.loads(page.data["content"]), original)
+            self.assertIsNone(runtime.memory_bank.store.artifacts.read_page(
+                artifact_id, 0, 1000, user_id="another-user", workspace_id=runtime.tasks.workspace_id,
+                session_id=runtime.tasks.session_id))
             self.assertEqual(provider.calls_attempted, 6)
             attempts_before_failure = provider.calls_attempted
             requests_before_failure = len(provider.requests)
