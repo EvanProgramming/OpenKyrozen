@@ -44,6 +44,16 @@ TEST_PRIOR_HOLD_USD = "1.25"
 TEST_PRIOR_HOLD_RMB = str(Decimal(TEST_PRIOR_HOLD_USD) * USD_CNY)
 
 
+def record_offline_call(budget, label, attempt_id, usage):
+    arm, fixture_id, repeat = label
+    metadata = dict(attempt_id=attempt_id, arm=arm, fixture_id=fixture_id, repeat=repeat,
+        model=MODEL, max_output_tokens=100, request_sha256=attempt_id,
+        reserved_rmb=str(budget.cost(100, 100, 0, 0)))
+    assert budget.reserve(attempt_id, input_token_bound=100, output_token_bound=100, metadata=metadata)
+    budget.settle(attempt_id, usage)
+    return next(call for call in budget.campaign_calls() if call['attempt_id'] == attempt_id)
+
+
 class ActorRelayStub:
     actor_keys = ()
 
@@ -55,6 +65,163 @@ class ActorRelayStub:
 
 
 class V3MatchedLiveTests(unittest.TestCase):
+    def test_cell_provider_safety_requires_parent_error_and_settlement_evidence(self):
+        from types import SimpleNamespace
+        from benchmarks import v3_matched_live as live
+        fixture = next(item for item in FIXTURES if item['fixture_id'] == 'investigation-1')
+        source = Path(live.__file__).resolve().parents[1]
+        cases = (
+            (None, 'settled', False, True),
+            ('upstream_transport_ConnectionError', 'unknown', False, False),
+            ('upstream_response_failed:backend', 'settled', False, False),
+            (None, 'unknown', False, False),
+            (None, None, False, False),
+            (None, 'settled', True, False),
+        )
+        for error, status, worker_error, expected in cases:
+            with self.subTest(error=error, status=status, worker_error=worker_error), \
+                    tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                budget = BudgetLedger(root / 'budget.sqlite3', prior_hold_rmb='0')
+                if status is not None:
+                    record_offline_call(budget, ('v2', fixture['fixture_id'], 0), 'physical-call',
+                        dict(input_tokens=100, output_tokens=10, cache_read_tokens=0,
+                             cache_write_tokens=0) if status == 'settled' else None)
+                relay = SimpleNamespace(label=None, url='http://localhost', client_key='local',
+                    actor_keys=(), rows=budget.campaign_calls(), provider_error=error,
+                    issue_actor_config=lambda _actor: {}, revoke_actor=lambda _actor: None)
+                remaining = budget.remaining_rmb
+                def worker(command, **_options):
+                    Path(command[command.index('--result') + 1]).write_bytes(worker_result_bytes(
+                        answer='catalog.py sorted_products casefold original spelling',
+                        provider_error=worker_error))
+                    return 0, ''
+                with patch.object(live, '_run_worker', side_effect=worker):
+                    row = live._execute_cell(temporary_root=root, repeat=0, fixture=fixture,
+                        arm='v2', arm_source=source, candidate='candidate', identity=live.apparatus_identity(),
+                        worker_script=source / 'benchmarks/prompt_worker.py', relay=relay,
+                        model=MODEL, output=root / 'report.json', api_key='offline', budget=budget)
+                self.assertIs(row['safety_components']['provider_ok'], expected)
+                self.assertIs(row['safety_passed'], expected)
+                self.assertEqual(live._safety_failure_status(row), None if expected else 'blocked_provider_error')
+                self.assertEqual(budget.remaining_rmb, remaining)
+                self.assertEqual([call['status'] for call in budget.campaign_calls()],
+                                 [] if status is None else [status])
+
+    def test_recorded_provider_failure_requires_a_fresh_campaign_before_credentials(self):
+        from benchmarks import v3_matched_live as live
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output, ledger = root / 'source', root / 'report.json', root / 'budget.sqlite3'
+            prepare_candidate_apparatus(source)
+            BudgetLedger(ledger, prior_hold_rmb=TEST_PRIOR_HOLD_RMB)
+            live._write_checkpoint(output, ledger, {**live.apparatus_identity(),
+                'protocol': 'openkyrozen-v3-matched-live-v1', 'candidate_sha': 'candidate',
+                'baseline_sha': BASELINE, 'model': MODEL, 'repeats': 3,
+                'budget': {'prior_campaign_hold_usd': TEST_PRIOR_HOLD_USD}, 'rows': [], 'calls': [],
+                'status': 'blocked_provider_error', 'provider_error': 'upstream_transport_ConnectionError'})
+            with patch.object(live, '_source_snapshot', return_value='candidate'), \
+                    patch('benchmarks.v3_protected_worker.verify_worker_protection', return_value={}), \
+                    patch('openkyrozen.tools.sandbox.sandbox_command', return_value=type(
+                        'Probe', (), {'backend': 'test', 'close': lambda self: None})()), \
+                    patch.object(live, '_credential', side_effect=AssertionError('credential read')) as credential:
+                with self.assertRaisesRegex(ValueError, 'recorded provider failure'):
+                    live.run(source=source, repo=root, output=output, budget_path=ledger,
+                             prior_hold_usd=TEST_PRIOR_HOLD_USD)
+            credential.assert_not_called()
+
+    def test_cell_waits_for_serial_gateway_settlement_before_reading_its_journal(self):
+        import threading
+        from types import SimpleNamespace
+        from benchmarks import v3_matched_live as live
+        fixture = next(item for item in FIXTURES if item['fixture_id'] == 'investigation-1')
+        source = Path(live.__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            budget = BudgetLedger(root / 'budget.sqlite3', prior_hold_rmb='0')
+            call = dict(attempt_id='pending', arm='v3', fixture_id=fixture['fixture_id'], repeat=0,
+                model=MODEL, max_output_tokens=100, request_sha256='request',
+                reserved_rmb=str(budget.cost(100, 100, 0, 0)), status='unknown', usage=None)
+            self.assertTrue(budget.reserve('pending', input_token_bound=100,
+                                          output_token_bound=100, metadata=call))
+            lock = threading.Lock()
+            relay = SimpleNamespace(label=None, url='http://localhost', client_key='offline', actor_keys=(),
+                protocol='google', rows=[call], provider_error=None, _request_lock=lock,
+                issue_actor_config=lambda *_: {}, revoke_actor=lambda *_: None, selected_actor_model=lambda *_: None)
+            release, handler_entered, worker_done, cell_done = (threading.Event() for _ in range(4))
+            rows, errors = [], []
+            def handler():
+                try:
+                    with lock:
+                        handler_entered.set()
+                        if not release.wait(5):
+                            raise TimeoutError('test did not release the gateway')
+                        budget.settle('pending', dict(input_tokens=100, output_tokens=10,
+                            cache_read_tokens=0, cache_write_tokens=0))
+                        relay.rows = budget.campaign_calls()
+                except BaseException as error:
+                    errors.append(error)
+            def worker(command, **_options):
+                Path(command[command.index('--result') + 1]).write_bytes(worker_result_bytes())
+                worker_done.set()
+                return 0, ''
+            def execute():
+                try:
+                    rows.append(live._execute_cell(temporary_root=root, repeat=0, fixture=fixture,
+                        arm='v3', arm_source=source, candidate='candidate', identity=live.apparatus_identity(),
+                        worker_script=source / 'benchmarks/prompt_worker.py', relay=relay, model=MODEL,
+                        output=root / 'report.json', api_key='offline', budget=budget))
+                except BaseException as error:
+                    errors.append(error)
+                finally:
+                    cell_done.set()
+            producer, consumer = threading.Thread(target=handler), threading.Thread(target=execute)
+            with patch.object(live, '_run_worker', side_effect=worker):
+                producer.start()
+                self.assertTrue(handler_entered.wait(3))
+                consumer.start()
+                try:
+                    self.assertTrue(worker_done.wait(3))
+                    self.assertFalse(cell_done.wait(.1), 'cell read a still-reserved physical call')
+                finally:
+                    release.set()
+                    producer.join(5)
+                    consumer.join(5)
+            self.assertFalse(producer.is_alive() or consumer.is_alive())
+            self.assertEqual(errors, [])
+            self.assertTrue(rows[0]['usage_complete'])
+            self.assertTrue(rows[0]['safety_components']['provider_ok'])
+            self.assertEqual([call['status'] for call in budget.campaign_calls()], ['settled'])
+
+    def test_cancellation_during_settlement_wait_retains_the_completed_worker_trace(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from benchmarks import v3_matched_live as live
+        source = Path(live.__file__).resolve().parents[1]
+        lock = MagicMock()
+        lock.__enter__.side_effect = KeyboardInterrupt
+        relay = SimpleNamespace(url='http://localhost', client_key='offline', actor_keys=(),
+            rows=[], provider_error=None, _request_lock=lock,
+            issue_actor_config=lambda *_: {}, revoke_actor=lambda *_: None)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / 'report.json'
+            def worker(command, **_options):
+                Path(command[command.index('--result') + 1]).write_bytes(
+                    worker_result_bytes(answer='Retain this completed observation'))
+                return 0, ''
+            with patch.object(live, '_run_worker', side_effect=worker), \
+                    self.assertRaises(KeyboardInterrupt):
+                live._execute_cell(temporary_root=root, repeat=0, fixture=FIXTURES[0], arm='v3',
+                    arm_source=source, candidate='candidate', identity=live.apparatus_identity(),
+                    worker_script=source / 'benchmarks/prompt_worker.py', relay=relay, model=MODEL,
+                    output=output, api_key='offline', budget=SimpleNamespace(budget_ok=True))
+            files = list((root / 'report.json.worker-evidence').glob('*.json'))
+            self.assertEqual(len(files), 1)
+            retained = json.loads(files[0].read_text())
+            self.assertEqual(retained['worker']['answer'], 'Retain this completed observation')
+            self.assertTrue(retained['parent']['worker_result_complete'])
+
     def run_error_worker(self, script, directory):
         import os
         import subprocess
@@ -81,6 +248,7 @@ class V3MatchedLiveTests(unittest.TestCase):
             commands = []
             prompt_texts = []
             actor_windows = []
+            state = {}
 
             class Relay(ActorRelayStub):
                 url = "http://127.0.0.1:1/v1"
@@ -89,9 +257,10 @@ class V3MatchedLiveTests(unittest.TestCase):
                 budget_blocked = False
 
                 def __init__(self, **kwargs):
-                    self.rows = [{"attempt_id": "unknown-attempt", "arm": "v2",
-                                  "fixture_id": "investigation-1", "repeat": 0,
-                                  "reserved_rmb": "0.010", "status": "unknown"}]
+                    self.budget = kwargs['budget']
+                    state['relay'] = self
+                    record_offline_call(self.budget, ('smoke', 'candidate', -1), 'unknown-attempt', None)
+                    self.rows = self.budget.campaign_calls()
 
                 def start(self):
                     pass
@@ -104,6 +273,11 @@ class V3MatchedLiveTests(unittest.TestCase):
 
             def run_worker(command, **kwargs):
                 commands.append(command)
+                relay = state['relay']
+                attempt = f'offline-call-{len(commands):03}'
+                record_offline_call(relay.budget, relay.label, attempt, dict(input_tokens=100,
+                    output_tokens=10, cache_read_tokens=0, cache_write_tokens=0))
+                relay.rows = relay.budget.campaign_calls()
                 prompt_texts.append(Path(command[command.index('--prompt-file') + 1]).read_text())
                 declared = json.loads(Path(command[command.index('--conversation-file') + 1]).read_text())
                 actor_windows.append((declared['context_window_tokens'],
@@ -163,9 +337,9 @@ class V3MatchedLiveTests(unittest.TestCase):
             self.assertEqual(json.loads((root / "report.json").read_text())[
                 "budget"]["prior_campaign_hold_usd"], "10.25")
             self.assertEqual(json.loads((root / "report.json").read_text())[
-                "held_reservations"], [{"attempt_id": "unknown-attempt", "arm": "v2",
-                    "fixture_id": "investigation-1", "repeat": 0,
-                    "reserved_rmb": "0.010", "status": "unknown"}])
+                "held_reservations"], [{"attempt_id": "unknown-attempt", "arm": "smoke",
+                    "fixture_id": "candidate", "repeat": -1,
+                    "reserved_rmb": str(state['relay'].budget.cost(100, 100, 0, 0)), "status": "unknown"}])
 
         candidate_worker = str(source.resolve() / "benchmarks" / "prompt_worker.py")
         self.assertEqual(len(commands), len(FIXTURES) * 3 * 2)
@@ -735,17 +909,24 @@ class V3MatchedLiveTests(unittest.TestCase):
                 with sqlite3.connect(ledger_path) as db:
                     return db.execute("SELECT id,reserved_picormb,actual_picormb,status,usage_json FROM attempts ORDER BY id").fetchall()
             held_state = ledger_state()
+            state = {}
             live._write_checkpoint(report, ledger_path, {**identity, "protocol": "openkyrozen-v3-matched-live-v1",
                 "candidate_sha": "candidate", "baseline_sha": BASELINE, "model": MODEL, "repeats": 3,
                 "budget": {"prior_campaign_hold_usd": TEST_PRIOR_HOLD_USD}, "rows": [], "calls": []})
             class Relay(ActorRelayStub):
                 url, client_key = "http://127.0.0.1:1/v1", "offline"
                 provider_error, budget_blocked = None, False
-                def __init__(self, **kwargs): self.rows = []
+                def __init__(self, **kwargs):
+                    self.rows, self.budget = [], kwargs['budget']
+                    state['relay'] = self
                 def start(self): pass
                 def close(self): pass
             def extract(destination, *_args): destination.mkdir(parents=True)
             def worker(command, **kwargs):
+                relay = state['relay']
+                record_offline_call(relay.budget, relay.label, 'unrelated-settled',
+                    dict(input_tokens=100, output_tokens=10, cache_read_tokens=0, cache_write_tokens=0))
+                relay.rows = relay.budget.campaign_calls()
                 Path(command[command.index("--result") + 1]).write_text(json.dumps(valid_worker_result()))
                 return 0, ""
             def checkpoint_then_interrupt(*args):
@@ -786,9 +967,10 @@ class V3MatchedLiveTests(unittest.TestCase):
                     stack.enter_context(context)
                 with self.assertRaisesRegex(RuntimeError, "second resume accepted"):
                     live.run(source=source, repo=root, output=report, budget_path=ledger_path, prior_hold_usd=TEST_PRIOR_HOLD_USD)
-            self.assertEqual(ledger_state(), held_state)
-            self.assertEqual(budget.remaining_rmb, remaining)
-            self.assertEqual(budget.spent_rmb, 0)
+            self.assertEqual([row for row in ledger_state() if row[0] != 'unrelated-settled'], held_state)
+            charged = budget.cost(100, 10, 0, 0).quantize(Decimal('0.000000000001'), rounding='ROUND_CEILING')
+            self.assertEqual(budget.remaining_rmb, remaining - charged)
+            self.assertEqual(budget.spent_rmb, charged)
 
     def test_cancellation_verifier_requires_a_started_and_stopped_process(self):
         fixture = next(item for item in FIXTURES if item["fixture_id"] == "cancellation-1")

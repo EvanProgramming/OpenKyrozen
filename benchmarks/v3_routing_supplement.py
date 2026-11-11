@@ -586,6 +586,8 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
                 raise ValueError('supplement checkpoint identity changed')
             if report.get('status')=='blocked_safety_failure':
                 raise ValueError('recorded supplement safety failure cannot be skipped')
+            if report.get('status')=='blocked_provider_error':
+                raise ValueError('recorded supplement provider failure requires investigation and a fresh campaign')
             if model_routing and report.get('active_cell') is not None:
                 raise ValueError('interrupted model cell cannot replay unmeasured end-to-end latency')
         else:

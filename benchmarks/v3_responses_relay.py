@@ -369,8 +369,6 @@ class ResponsesRelay:
                     for chunk in upstream.iter_content(chunk_size=4096):
                         if not chunk:
                             continue
-                        self.wfile.write(chunk)
-                        self.wfile.flush()
                         frame.extend(chunk)
                         while True:
                             normalized = bytes(frame).replace(b"\r\n", b"\n")
@@ -398,6 +396,8 @@ class ResponsesRelay:
                                     upstream.close()
                                     terminal = True
                                     break
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
                         if terminal:
                             break
                 except (requests.RequestException, OSError) as exc:

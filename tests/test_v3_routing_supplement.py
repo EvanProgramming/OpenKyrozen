@@ -512,7 +512,12 @@ class SupplementRunnerTests(unittest.TestCase):
             with self.subTest(model_routing=model_routing):
                 self._model_phase_run(model_routing=model_routing,uncapped=True)
 
-    def _model_phase_run(self, *, durable_overrun=False,model_routing=True,uncapped=False):
+    def test_provider_failure_with_settled_usage_cannot_resume54_or36_before_credentials(self):
+        for model_routing in (False, True):
+            with self.subTest(model_routing=model_routing):
+                self._model_phase_run(model_routing=model_routing, provider_stop=True)
+
+    def _model_phase_run(self, *, durable_overrun=False,model_routing=True,uncapped=False,provider_stop=False):
         """Synthetic workers/gates test SQLite scheduling/lineage, not formal quality."""
         from benchmarks import v3_matched_live as live
         from benchmarks.v3_matched import BudgetLedger
@@ -565,7 +570,7 @@ class SupplementRunnerTests(unittest.TestCase):
             else:output,budget_path=parent_output,parent_budget
             parents=(core_output,core_budget,parent_output,parent_budget) if model_routing else (core_output,core_budget)
             preserved=[path.read_bytes() for path in parents]
-            executed=[]
+            executed=[];workers={}
             class Relay:
                 def __init__(self,**options):
                     self.budget=options['budget'];self.rows=[];self.provider_error=None;self.budget_blocked=False
@@ -577,7 +582,24 @@ class SupplementRunnerTests(unittest.TestCase):
                 model=policy.role_models['simple' if variant=='model-simple' else 'complex']
                 call=record(options['budget'],options['arm'],fixture,repeat,model)
                 options['relay'].rows[:]=options['budget'].campaign_calls()
-                if durable_overrun and len(executed)==len(cells):options['relay'].provider_error='native_usage_overrun'
+                if (durable_overrun or provider_stop) and len(executed)==len(cells):
+                    options['relay'].provider_error=('native_usage_overrun' if durable_overrun
+                                                     else 'upstream_response_failed:backend')
+                from openkyrozen.routing.router import RoutingDecision
+                from dataclasses import replace
+                before=RoutingDecision('google',policy.role_models['complex'],'extended',None,'coder',True)
+                after=(replace(before,model=model,reasoning='standard') if variant=='model-simple' else before
+                       if model_routing else module.intervene(before,variant,profile_override='auto',interaction_mode='agent'))
+                request={'kind':'generation','model':model,'message_projection_sha256':'a'*64,
+                         'schema_sha256':'b'*64,'window_tokens':1_000_000,'reserve_tokens':4096}
+                observation={'before':asdict(before),'after':asdict(after),'variant':variant,
+                    'interaction_mode':'agent','profile_override':'auto','child':False,
+                    'system_one_backend':'off','decision_assist_backend':'off','requests':[request],
+                    'model_policy':dict(policy.role_models,main='auto'),'advisory_model':None,
+                    'model_control_eligible':model_routing,'model_control_applied':variant=='model-simple'}
+                worker={'routing_observations':[observation],'request_context_records':[dict(request,
+                    outcome='returned',provider_input_tokens=call['usage']['input_tokens'],provider_output_tokens=20)]}
+                workers[(fixture,repeat,variant)]=worker
                 success=model_routing or variant=='default'
                 row={'fixture_id':fixture,'repeat':repeat,'arm':options['arm'],'variant':variant,
                     'physical_success':success,'verified_success':success,'workflow_state_correct':True,
@@ -588,15 +610,16 @@ class SupplementRunnerTests(unittest.TestCase):
                     'cost_calls':[call],'cost_cny':'0','latency_ms':10 if variant=='model-auto' else 20,
                     'safety_components':{key:True for key in ('scope_safe','original_tests_unchanged','provider_ok',
                                                             'no_running_processes','worker_complete')},
-                    'model_exposure':{'complete':True,'generation_calls':[{'natural_model':policy.role_models['complex'],
-                        'selected_model':model,'requested_model':model,'served_model':model,'attempt_id':call['attempt_id'],
-                        'control_applied':variant=='model-simple'}]}}
+                    'model_exposure':module.model_exposure(worker['routing_observations'],
+                        worker['request_context_records'],[call],policy)}
                 if not model_routing:row.pop('model_exposure')
                 return row
+            def validate_worker(_output,row,*_args,return_worker=False,**_options):
+                return workers[(row['fixture_id'],row['repeat'],row['variant'])] if return_worker else True
             with ExitStack() as stack:
                 stack.enter_context(patch.multiple(live,_source_snapshot=lambda *_:'a'*40,
                     _require_dispatched_apparatus=lambda *_:Path('worker.py'),_validate_rows_evidence=lambda *_:True,
-                    _validate_worker_evidence=lambda *_,**__:True,_execute_cell=execute))
+                    _validate_worker_evidence=validate_worker,_execute_cell=execute))
                 stack.enter_context(patch('benchmarks.v3_matched.summarize',return_value={'complete':True,'accounting_complete':True}))
                 stack.enter_context(patch.object(module,'_validate_54_origin'))
                 stack.enter_context(patch('benchmarks.v3_deepseek.validate_planning_preflight'))
@@ -621,16 +644,20 @@ class SupplementRunnerTests(unittest.TestCase):
                         self.assertIsNone(db.execute('SELECT limit_picormb FROM budget_config').fetchone()[0])
                 else:self.assertEqual(report['budget']['remaining_cny'],'2.848008399993')
                 self.assertEqual(credential.call_count,1)
-                if durable_overrun:
+                if durable_overrun or provider_stop:
                     self.assertEqual(report['status'],'blocked_provider_error')
-                    self.assertTrue(report['summary']['benefit_passed'])
-                    self.assertEqual(report['rows'][-1]['input_tokens'],1_000_001)
-                    self.assertEqual(report['rows'][-1]['cost_calls'][0]['usage']['raw_usage']['promptTokenCount'],1_000_001)
+                    if durable_overrun:
+                        self.assertTrue(report['summary']['benefit_passed'])
+                        self.assertEqual(report['rows'][-1]['input_tokens'],1_000_001)
+                        self.assertEqual(report['rows'][-1]['cost_calls'][0]['usage']['raw_usage']['promptTokenCount'],1_000_001)
                     stopped=output.read_bytes()
                     with closing(__import__('sqlite3').connect(budget_path)) as db:
                         original_checkpoint=db.execute('SELECT report_json FROM benchmark_checkpoint WHERE id=1').fetchone()[0]
-                    with self.assertRaisesRegex(ValueError,'native physical.*operational'):
+                    with self.assertRaisesRegex(ValueError,'native physical.*operational' if durable_overrun
+                                                else 'recorded supplement provider failure'):
                         module.run(**args)
+                    self.assertEqual(credential.call_count,1)
+                    self.assertEqual(len(executed),len(cells))
                     self.assertEqual(output.read_bytes(),stopped)
                     with closing(__import__('sqlite3').connect(budget_path)) as db:
                         self.assertEqual(db.execute('SELECT report_json FROM benchmark_checkpoint WHERE id=1').fetchone()[0],original_checkpoint)

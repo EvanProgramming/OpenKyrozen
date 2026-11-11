@@ -20,6 +20,8 @@ The account quote observed on 2026-11-11 is USD per million tokens: input 0.132 
 
 Use 8 CNY/USD as a conservative accounting upper bound, not an invoice exchange rate. Each request reserves the full 1,048,576-token financial input bound at the maximum priced input/cache-write rate plus 4,096 output tokens: CNY 2.80068096. The original 1,000,000 operational input limit remains. Only consistent raw terminal usage with an admitted served model can settle. Missing/unpriced usage keeps its full reservation and stops inference; a known failed response is charged and also stops inference. Existing unknown holds are never silently released. Account-wide wallet changes from other clients are not this campaign's costs.
 
+The trusted parent's transport error and physical-call settlements override an optimistic worker provider flag. Responses completion is forwarded after settlement, and cells wait for serial gateway cleanup before recording safety or reading the journal. Cancellation during that wait preserves the worker trace. A recorded provider failure requires investigation and a fresh campaign before credentials are read again; its original results and unknown holds remain retained.
+
 After all exact-candidate offline gates pass, use the guarded entry point with every original prior ledger:
 
 ```sh

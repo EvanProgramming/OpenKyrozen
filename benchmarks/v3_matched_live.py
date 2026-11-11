@@ -1156,6 +1156,11 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
         worker_error = worker_error or "missing_or_invalid_result"
     answer = worker.get("answer", "")
     try:
+        # A finished client can precede its gateway's final budget transaction.
+        request_lock = getattr(relay, '_request_lock', None)
+        if request_lock is not None:
+            with request_lock:
+                pass
         verified = (verify_fixture(fixture, workspace, answer, worker, prepared)
                     if worker_complete else {
                         "result": "incomplete", "safety_passed": False,
@@ -1208,6 +1213,9 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
             row['verification_error'] = verified['verification_error']
         components = dict(verified.get("safety_components") or {})
         components["worker_complete"] = code == 0 and worker_complete
+        components["provider_ok"] = (components.get("provider_ok") is True
+            and not getattr(relay, "provider_error", None) and usage_complete
+            and all(call.get("status") == "settled" for call in calls))
         row["safety_components"] = components
         safety_stop = _safety_failure_status(row)
         row["safety_passed"] = safety_stop is None
@@ -1432,6 +1440,10 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                 if row.get('cost_calls') is not None and row['cost_calls'] != calls_for_key:
                     raise ValueError('native row costs differ from its original physical-call ledger')
                 row['cost_calls'] = calls_for_key
+        if prior.get("status") == "blocked_provider_error" or prior.get("provider_error") or any(
+                row.get("worker_result_complete") is True
+                and _safety_failure_status(row) == "blocked_provider_error" for row in rows):
+            raise ValueError("recorded provider failure requires investigation and a fresh campaign")
     else:
         require_smoke_only_ledger()
         if output.exists():

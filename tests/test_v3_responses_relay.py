@@ -109,6 +109,43 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.assertEqual(self.relay.rows[0]["usage"]["cache_read_tokens"], 3)
         self.assertEqual(self.relay.rows[0]["usage"]["cache_write_tokens"], 2)
 
+    def test_sdk_terminal_cannot_arrive_before_its_usage_is_settled(self):
+        from openai import OpenAI
+        entered, release, completed, committed = (threading.Event() for _ in range(4))
+        original = self.relay._settle_response
+        errors = []
+        client = OpenAI(base_url=self.relay.url, api_key=self.relay.client_key, max_retries=0, timeout=4)
+        self.addCleanup(client.close)
+        def settle(row, response):
+            entered.set()
+            release.wait(5)
+            original(row, response)
+            committed.set()
+        def consume():
+            try:
+                with client.responses.create(model=MODEL, input='fixture', stream=True) as stream:
+                    for event in stream:
+                        if event.type == 'response.completed':
+                            completed.set()
+                            break
+            except BaseException as error:
+                errors.append(error)
+        thread = threading.Thread(target=consume)
+        with patch.object(self.relay, '_settle_response', side_effect=settle):
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(3))
+                self.assertFalse(completed.wait(1), 'SDK observed completion before durable usage')
+            finally:
+                release.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertTrue(completed.is_set())
+        self.assertTrue(committed.wait(3))
+        self.assertEqual(self.relay.rows[0]['status'], 'settled')
+        self.assertEqual([call['status'] for call in self.budget.campaign_calls()], ['settled'])
+
     def test_planning_preflight_stops_seventh_request_before_reservation_or_upstream(self):
         self.relay.planning_preflight_label = ("planning_preflight", "candidate", -1)
         self.relay.label = self.relay.planning_preflight_label
