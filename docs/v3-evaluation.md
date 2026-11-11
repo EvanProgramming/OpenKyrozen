@@ -8,9 +8,35 @@ Linux prepares private user namespaces without changing the host's AppArmor or n
 
 The `--repo` checkout must contain the pinned V2 commit so the runner can extract its source with `git archive`. The CI full-suite jobs fetch complete history and verify that exact commit before running tests; for a shallow local checkout, fetch the V2 baseline first.
 
-The current formal finalization policy uses the Gemini API and OpenKyrozen's built-in automatic model selection, as requested on 2026-11-09. It replaces the former fixed DeepSeek model/Responses policy, including for the 180 matched rows. On 2026-11-10 (Asia/Shanghai), the user explicitly removed the cumulative CNY 15 ceiling for this Gemini campaign while retaining the instruction not to publish. Use `--limit-cny unlimited` for that policy. The CLI default remains CNY 15 for compatibility; the historical DeepSeek and Panstar commands below retain their finite caps.
+The current formal finalization policy uses PanstarCloud GPT through OpenKyrozen's built-in automatic model selector, as requested on 2026-11-11. It replaces the stopped Gemini campaign, including for the 180 matched rows. The owner removed the cumulative CNY 15 ceiling and still prohibits publication. All settled costs and unknown reservations from earlier providers remain counted. Historical finite DeepSeek/Panstar commands below retain their original caps; they do not implement this new native Auto policy.
 
-## Gemini automatic-selection campaign
+## PanstarCloud automatic-selection campaign
+
+Predeclare simple `gpt-6-sol` and complex `gpt-6.1-sol`, with `model_main=auto`, identically for both arms. Both are listed by the authenticated model API and priced in the owner's Dia account. The original production selector owns every choice. Record selected and exactly served model IDs for every physical call, including coordinator, delegated author/reviewer, smoke and retry calls. An unknown or changed served identity cannot pass. No expensive Astra slot, hosted tools, media, priority tier or unquoted service is admitted.
+
+Use native Responses at `https://ai.panstar.ai/v1`. The trusted parent keeps the upstream credential, owns the per-actor relay credentials and binds each child to its parent's actual selected model. Workers cannot override model grants. Four metered native smoke calls prove correlated function-call continuation in both configured slots; the actual V3 planning preflight must then pass before formal rows start. The unchanged original cohorts run as one linear 180 → 54 → 36 accounting chain with the original strict quality, request/token reduction, routing and completeness gates. Stopped Gemini or historical Panstar rows cannot be pooled into this cohort.
+
+The account quote observed on 2026-11-11 is USD per million tokens: input 0.132 and output 0.66 for both slots; cache read 0.0132 for 6-sol and 0.0066 for 6.1-sol. For input strictly above 272,000 tokens, the entire request uses input 0.264, output 0.99, cache write 0.33 and cache read 0.0264 / 0.0132 respectively. Reasoning is included in output and is not charged twice. Short-context cache writes have no observed price and fail closed. The signed proof retains the actual nonsecret price/model evidence bytes and binds the candidate, credential digest, role configuration, paid upper policy and expiry.
+
+Use 8 CNY/USD as a conservative accounting upper bound, not an invoice exchange rate. Each request reserves the full 1,048,576-token financial input bound at the maximum priced input/cache-write rate plus 4,096 output tokens: CNY 2.80068096. The original 1,000,000 operational input limit remains. Only consistent raw terminal usage with an admitted served model can settle. Missing/unpriced usage keeps its full reservation and stops inference; a known failed response is charged and also stops inference. Existing unknown holds are never silently released. Account-wide wallet changes from other clients are not this campaign's costs.
+
+After all exact-candidate offline gates pass, use the guarded entry point with every original prior ledger:
+
+```sh
+python -m benchmarks.v3_panstar \
+  --source "$FROZEN_SOURCE" --candidate-sha "$FROZEN_CANDIDATE_SHA" \
+  --repo "$REPOSITORY_WITH_V2_HISTORY" \
+  --output "$CAMPAIGN_OUTPUT/report.json" --budget-db "$CAMPAIGN_OUTPUT/budget.sqlite3" \
+  --prior-ledger "$ORIGINAL_PRIOR_LEDGER" \
+  --billing-tier paid --billing-proof "$SIGNED_ADMISSION_PROOF" \
+  --limit-cny unlimited --planning-preflight-only --execute
+```
+
+Remove only `--planning-preflight-only` to continue the same candidate/policy into 180 rows. The separate 54-row invocation supplies `--core-output` and `--core-budget` pointing to the complete original 180-row campaign, distinct output/budget paths, and no `--prior-ledger`. The 36-row invocation adds `--model-routing` and points those parent paths to the complete original 54-row campaign. A parent cannot resume spending after binding its child. Imports, model-list access and offline fake transports do not establish provider acceptance. No publication is authorized.
+
+## Historical Gemini automatic-selection campaign
+
+This section preserves the stopped campaign's policy and accounting. It does not authorize additional Gemini inference for the current Panstar campaign.
 
 Both arms must use their own production selector with the same configured Google simple/complex slots and no main-model pin. Record the selected and served model for every request, including summaries, delegated agents, smoke checks and retries. Automatic selection does not guarantee the same selected model in each paired row; retain those differences and report the comparison as whole-product behavior. A separate routing ablation is still required to establish routing benefit.
 

@@ -312,20 +312,9 @@ def main():
             install_delegated_adapter(runtime, actor_client, source=args.source)
         runtime._set_workspace_root(args.workspace)
         runtime.set_interaction_mode("ask" if followups else "agent")
-        provider_name = "google" if args.protocol == "google" else "openai" if args.protocol == "responses" else "deepseek"
-        config = ProviderConfig(provider=provider_name,
-                                api_key=os.environ.get("KYROZEN_BENCHMARK_API_KEY", "benchmark-local"),
-                                base_url=args.url, model_simple=args.model,
-                                model_complex=args.model, context_window_tokens=window)
-        if args.protocol == 'google':
-            policy = json.loads(os.environ['KYROZEN_BENCHMARK_GOOGLE_POLICY'])
-            if (set(policy) != {'provider', 'model_main', 'model_simple', 'model_complex', 'base_url'}
-                    or policy['provider'] != 'google' or policy['model_main'] != 'auto'
-                    or policy['base_url'] != args.url or args.model != 'auto'
-                    or policy['model_simple'] == policy['model_complex']):
-                raise PermissionError('root native Google policy does not match its trusted parent')
-            from v3_actor_worker import benchmark_provider_config
-            config = benchmark_provider_config(policy, api_key=config.api_key, context_window_tokens=window)
+        from v3_actor_worker import benchmark_root_provider_config
+        config = benchmark_root_provider_config(args.protocol, args.model, args.url,
+            os.environ.get('KYROZEN_BENCHMARK_API_KEY', 'benchmark-local'), window)
         runtime._provider_config = config
         provider_type = OpenAIResponsesProvider if args.protocol == "responses" else OpenAICompatProvider
         if args.protocol == 'google':

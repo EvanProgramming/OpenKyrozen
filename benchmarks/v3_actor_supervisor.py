@@ -713,6 +713,11 @@ class ActorSupervisor:
                         invocation.env['KYROZEN_BENCHMARK_GOOGLE_POLICY'] = json.dumps({
                             name: actor['provider_config'][name] for name in
                             ('provider', 'base_url', 'model_main', 'model_simple', 'model_complex')}, sort_keys=True)
+                    elif (actor['root'] and actor['provider_config'].get('provider') == 'openai'
+                          and actor['provider_config'].get('model_main') == 'auto'):
+                        invocation.env['KYROZEN_BENCHMARK_RESPONSES_POLICY'] = json.dumps({
+                            name: actor['provider_config'][name] for name in
+                            ('provider', 'base_url', 'model_main', 'model_simple', 'model_complex')}, sort_keys=True)
                 actor['invocation'] = invocation
                 self.actors[owner.uid] = actor
                 process = owner.popen(invocation.command, cwd=home, env=invocation.env,
@@ -806,9 +811,11 @@ class ActorSupervisor:
                         if path in prior:
                             artifacts.append(path)
             selected_model = self.model
-            if parent['provider_config'].get('provider') == 'google':
+            if (parent['provider_config'].get('provider') == 'google'
+                    or (parent['provider_config'].get('provider') == 'openai'
+                        and parent['provider_config'].get('model_main') == 'auto')):
                 if not callable(self.selected_actor_model):
-                    raise PermissionError('native Google parent model must be held by the gateway')
+                    raise PermissionError('native parent model must be held by the gateway')
                 selected_model = self.selected_actor_model(parent['policy'].actor_id)
             assignment = ActorAssignment(self.policy, payload, source=self.source, model=selected_model,
                                          provider=parent['provider_config'].get('provider', 'custom'),

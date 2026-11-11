@@ -234,6 +234,12 @@ class ActorPolicyTests(unittest.TestCase):
                     env={}, protected_files=[self.guard], policy=self.policy, source=self.source)
 
     def test_google_child_parent_model_is_gateway_selected_not_other_allowed_slot(self):
+        self._assert_native_parent_model({'provider': 'google'})
+
+    def test_responses_auto_child_parent_model_is_gateway_selected_not_other_allowed_slot(self):
+        self._assert_native_parent_model({'provider': 'openai', 'model_main': 'auto'})
+
+    def _assert_native_parent_model(self, provider_config):
         module = self.module()
         supervisor = module.ActorSupervisor.__new__(module.ActorSupervisor)
         supervisor.execution_lock = threading.RLock()
@@ -242,7 +248,7 @@ class ActorPolicyTests(unittest.TestCase):
         supervisor.model = 'auto'
         selected = []
         supervisor.selected_actor_model = lambda actor: selected.append(actor) or 'simple-slot'
-        parent = {'provider_config': {'provider': 'google'}, 'policy': self.policy}
+        parent = {'provider_config': provider_config, 'policy': self.policy}
         payload = self.payload()
         payload['parent']['model'] = 'complex-slot'
         with self.assertRaisesRegex(PermissionError, 'parent source, workspace, or model'):

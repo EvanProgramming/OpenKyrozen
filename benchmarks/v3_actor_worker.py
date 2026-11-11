@@ -22,6 +22,27 @@ def benchmark_provider_config(values, **extra):
     return ProviderConfig(**options)
 
 
+def benchmark_root_provider_config(protocol, model, url, api_key, context_window_tokens):
+    import os
+    provider = 'google' if protocol == 'google' else 'openai' if protocol == 'responses' else 'deepseek'
+    if protocol == 'google' or protocol == 'responses' and model == 'auto':
+        name = 'KYROZEN_BENCHMARK_GOOGLE_POLICY' if protocol == 'google' else 'KYROZEN_BENCHMARK_RESPONSES_POLICY'
+        try:
+            policy = json.loads(os.environ[name])
+        except (KeyError, TypeError, ValueError):
+            raise PermissionError('root native policy is missing or invalid') from None
+        if (not isinstance(policy, dict)
+                or set(policy) != {'provider', 'model_main', 'model_simple', 'model_complex', 'base_url'}
+                or policy['provider'] != provider or policy['model_main'] != 'auto'
+                or policy['base_url'] != url or model != 'auto'
+                or any(not isinstance(policy[key], str) or not policy[key] for key in ('model_simple', 'model_complex'))
+                or policy['model_simple'] == policy['model_complex']):
+            raise PermissionError('root native policy does not match its trusted parent')
+        return benchmark_provider_config(policy, api_key=api_key, context_window_tokens=context_window_tokens)
+    return benchmark_provider_config({'provider': provider, 'api_key': api_key, 'base_url': url,
+        'model_simple': model, 'model_complex': model, 'context_window_tokens': context_window_tokens})
+
+
 def benchmark_google_provider(config, factory):
     """Change only native SDK transport; retain the selected product's provider."""
     from google import genai

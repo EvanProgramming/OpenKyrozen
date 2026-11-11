@@ -147,6 +147,8 @@ class GeminiPricing:
 
 class GeminiPolicy:
     protocol = "google"
+    provider = "google"
+    endpoint = OFFICIAL_ENDPOINT
     model = "auto"
     smoke_calls = 4
 
@@ -202,7 +204,7 @@ class GeminiPolicy:
         # Read only after runner OS, source, budget and signed-account admission checks.
         key = os.environ.get("KYROZEN_BENCHMARK_API_KEY", "")
         self.check_credential(key)
-        return OFFICIAL_ENDPOINT, key
+        return self.endpoint, key
 
     def check_budget(self, budget):
         for model in self.role_models.values():
@@ -229,7 +231,7 @@ class GeminiPolicy:
             raise ValueError("Google billing proof has invalid validity dates") from None
         if (not verified or raw != canonical or not signature or issued.tzinfo is None or expires.tzinfo is None
                 or not issued <= now < expires or now.date().isoformat()!=self.price_date or record.get("schema_version") != 1
-                or record.get("provider") != "google" or record.get("official_endpoint") != OFFICIAL_ENDPOINT
+                or record.get("provider") != self.provider or record.get("official_endpoint") != self.endpoint
                 or record.get("candidate_sha") != candidate_sha or record.get("role_models") != self.role_models
                 or record.get("model_main") != "auto" or record.get("billing_tier") != self.pricing.billing_tier
                 or not re.fullmatch(r"[0-9a-f]{64}", record.get("credential_sha256", ""))
@@ -261,6 +263,9 @@ class GeminiPolicy:
         if (self.billing_record is None or not isinstance(api_key, str) or not api_key
                 or hashlib.sha256(api_key.encode()).hexdigest() != self.billing_record["credential_sha256"]):
             raise ValueError("Google credential does not match the verified billing proof")
+
+    def served_identity(self, model, served_model):
+        return served_identity(model, {'modelVersion': served_model})
 
     def check_transport(self):
         now=datetime.now(timezone.utc)

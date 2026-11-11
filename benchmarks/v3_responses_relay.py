@@ -47,12 +47,16 @@ def _safe_error_code(error: object) -> str | None:
 
 class ResponsesRelay:
     def __init__(self, *, endpoint: str, api_key: str, budget: BudgetLedger,
-                 config: RelayConfig = DEFAULT_RELAY_CONFIG):
+                 config: RelayConfig = DEFAULT_RELAY_CONFIG, responses_policy=None):
         if config.model == "deepseek-flash" or budget.pricing.as_dict().get("provider") == "DeepSeek official":
             from benchmarks.v3_deepseek import DEEPSEEK_PRICING, DEEPSEEK_RELAY_CONFIG
             if budget.pricing != DEEPSEEK_PRICING or config != DEEPSEEK_RELAY_CONFIG:
                 raise ValueError("DeepSeek relay requires its pinned CNY prices, model, and fixed reservation")
         self.config = config
+        self.responses_policy = responses_policy
+        if responses_policy is not None and (config != RelayConfig('auto', 4096, 1048576, True)
+                                              or budget.pricing != responses_policy.pricing):
+            raise ValueError('native Responses policy requires its exact Auto bounds and pricing')
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
         self.client_key = secrets.token_urlsafe(24)
@@ -118,6 +122,36 @@ class ResponsesRelay:
         self._server.shutdown()
         self._server.server_close()
         self._thread.join()
+
+    def _settle_response(self, row, response):
+        policy = self.responses_policy
+        usage = policy.response_usage(row['model'], response) if policy else self._usage(response)
+        amount = None
+        try:
+            if usage is not None:
+                price = (policy.pricing.for_metadata(row, input_tokens=usage['input_tokens']) if policy
+                         else self.budget.pricing)
+                amount = str(price.cost(*(usage[key] for key in
+                    ('input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens'))))
+            self.budget.settle(row['attempt_id'], usage)
+        except (ValueError, TypeError, KeyError):
+            if policy is None:
+                raise
+            usage, amount = None, None
+            self.budget.settle(row['attempt_id'], None)
+        row.update(usage=usage, status='settled' if usage is not None else 'unknown', actual_rmb=amount)
+        if policy:
+            if usage is None:
+                self.provider_error = 'unknown_native_usage_or_price'
+            else:
+                row['served_model'] = usage['served_model']
+                if response.get('status') == 'failed':
+                    self.provider_error = 'upstream_response_failed'
+                if not self.budget.budget_ok:
+                    row['status'] = 'overrun'
+                if (not self.budget.budget_ok or usage['input_tokens'] > 1000000
+                        or usage['output_tokens'] > self.config.max_output_tokens):
+                    self.provider_error = 'native_usage_overrun'
 
     @staticmethod
     def _usage(result: dict) -> dict | None:
@@ -201,26 +235,49 @@ class ResponsesRelay:
                             ([instructions] if instructions else []) + system_messages)
                         body["input"] = forwarded_items or "Continue."
 
-                body["model"] = relay.config.model
+                policy = relay.responses_policy
+                if policy is not None:
+                    try:
+                        body = policy.validate_body(body)
+                        metadata = policy.metadata(body['model'])
+                    except (ValueError, TypeError):
+                        self._json(400, {"error": {"message": "request exceeds the priced native policy"}})
+                        return
+                else:
+                    body["model"] = relay.config.model
+                    metadata = {}
                 body["max_output_tokens"] = relay.config.max_output_tokens
                 wants_stream = body.get("stream") is True
                 body["stream"] = wants_stream
                 encoded = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+                if policy is not None and len(encoded) + 512 > 1000000:
+                    self._json(413, {"error": {"message": "native input exceeds its operational bound"}})
+                    return
                 attempt_id = uuid.uuid4().hex
                 input_bound = relay.config.fixed_input_token_bound or len(encoded) + 512
                 arm, fixture_id, repeat = label
-                row = {"attempt_id": attempt_id, "arm": arm, "fixture_id": fixture_id,
+                quote = (policy.pricing.for_metadata(metadata, input_tokens=input_bound).cost(
+                    input_bound, relay.config.max_output_tokens) if policy else
+                    relay.budget.cost(input_bound, relay.config.max_output_tokens))
+                row = {**metadata, "attempt_id": attempt_id, "arm": arm, "fixture_id": fixture_id,
                        "repeat": repeat, "request_sha256": hashlib.sha256(encoded).hexdigest(),
-                       "model": relay.config.model, "max_output_tokens": relay.config.max_output_tokens,
-                       "reserved_rmb": str(relay.budget.cost(input_bound, relay.config.max_output_tokens)),
+                       "model": body['model'], "max_output_tokens": relay.config.max_output_tokens,
+                       "reserved_rmb": str(quote),
                        "status": "unknown", "usage": None}
                 if actor_id is not None:
                     row['actor_id'] = actor_id
+                if policy is not None:
+                    row.update(protocol='openai-responses', admission_sequence=len(relay.rows))
+                    root = relay.root_actor_id_by_label.get(label)
+                    if actor_id is not None and root is not None:
+                        row.update(root_actor_id=root, actor_role='root' if actor_id == root else 'descendant')
                 started = time.monotonic()
                 stream_started = False
                 reserved = False
                 try:
                     with relay._upstream_lock:
+                        if policy is not None and relay.official:
+                            policy.check_transport()
                         still_authorized, current_actor, current_label = relay._authorize_client(
                             self.headers.get("Authorization"))
                         if not still_authorized or current_actor != actor_id or current_label != label:
@@ -246,6 +303,8 @@ class ResponsesRelay:
                         reserved = True
                         with relay._lock:
                             relay.rows.append(row)
+                            if policy is not None and actor_id is not None:
+                                relay._selected_models[(actor_id, label)] = body['model']
                         try:
                             upstream = requests.post(
                                 relay.endpoint + "/responses", data=encoded,
@@ -297,13 +356,7 @@ class ResponsesRelay:
                                 self._json(502, {"error": {"message": "benchmark upstream returned invalid JSON"}})
                                 return
                     if not wants_stream:
-                        usage = relay._usage(response_body)
-                        relay.budget.settle(attempt_id, usage)
-                        row["usage"] = usage
-                        row["status"] = "settled" if usage is not None else "unknown"
-                        row["actual_rmb"] = (str(relay.budget.cost(usage["input_tokens"], usage["output_tokens"],
-                                                         usage["cache_read_tokens"], usage["cache_write_tokens"]))
-                                              if usage is not None else None)
+                        relay._settle_response(row, response_body)
                         self._json(200, response_body)
                         return
                     self.send_response(200)
@@ -341,13 +394,7 @@ class ResponsesRelay:
                                         suffix = f":{code}" if code else ""
                                         with relay._upstream_lock:
                                             relay.provider_error = f"upstream_response_failed{suffix}"
-                                    usage = relay._usage(message.get("response", {}))
-                                    relay.budget.settle(attempt_id, usage)
-                                    row["usage"] = usage
-                                    row["status"] = "settled" if usage is not None else "unknown"
-                                    row["actual_rmb"] = (str(relay.budget.cost(usage["input_tokens"], usage["output_tokens"],
-                                                                     usage["cache_read_tokens"], usage["cache_write_tokens"]))
-                                                          if usage is not None else None)
+                                    relay._settle_response(row, message.get('response', {}))
                                     upstream.close()
                                     terminal = True
                                     break
@@ -368,6 +415,8 @@ class ResponsesRelay:
                 finally:
                     if reserved and row["status"] == "unknown":
                         relay.budget.settle(attempt_id, None)
+                        if relay.responses_policy and relay.provider_error is None:
+                            relay.provider_error = 'unknown_native_usage_or_price'
                     if "upstream" in locals():
                         upstream.close()
                     row["latency_ms"] = round((time.monotonic() - started) * 1000, 2)

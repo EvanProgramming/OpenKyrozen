@@ -162,7 +162,7 @@ def validate_observations(records, variant, provider_policy=None):
     try:
         for row in records:
             before=RoutingDecision(**row['before'])
-            policy_valid = (before.provider == 'google' and before.model in provider_policy.role_models.values()
+            policy_valid = (before.provider == provider_policy.provider and before.model in provider_policy.role_models.values()
                             and before.reasoning in {'standard', 'extended'} if provider_policy is not None else
                             before.provider == 'openai' and before.model == 'deepseek-flash' and before.reasoning == 'standard')
             if (type(before.planning_required) is not bool or not policy_valid
@@ -237,7 +237,7 @@ def analyze(rows, provider_policy=None):
             'scope':'six frozen tasks; Flash/Flash; model-selection benefit not identifiable',
             'analysis':{'cluster':'fixture','resamples':20000,'seed':132,'one_sided_lower_probability':.025}}
     if provider_policy is not None:
-        result['scope']='six frozen tasks; native Google automatic role selection; no separate model-selection intervention'
+        result['scope']='six frozen tasks; native automatic role selection; no separate model-selection intervention'
         result['provider_policy']=provider_policy.identity()
     if not complete:
         return result
@@ -283,7 +283,6 @@ def analyze(rows, provider_policy=None):
 
 def model_analyze(rows, provider_policy):
     """Prospectively separate36 contrast; never changes the original54 endpoints."""
-    from benchmarks.v3_gemini import served_identity
     expected={(row['fixture_id'],row['repeat'],row['variant']) for row in model_schedule()}
     keyed={(row.get('fixture_id'),row.get('repeat'),row.get('variant')):row for row in rows}
     result={'protocol':MODEL_PROTOCOL,'complete':False,'identifiable':False,'benefit_passed':False,
@@ -306,13 +305,13 @@ def model_analyze(rows, provider_policy):
     identifiable=identifiable and all(isinstance(value,str) and value for value in ids) and len(set(ids))==len(ids)
     result['selected_role_fixture_coverage']={role:sorted({row['fixture_id'] for row in rows
         if row.get('model_exposure',{}).get('complete') is True and any(call.get('requested_model')==model
-            and served_identity(model,{'modelVersion':call.get('served_model')})
+            and provider_policy.served_identity(model,call.get('served_model'))
             for call in row['model_exposure'].get('generation_calls',[]))})
         for role,model in provider_policy.role_models.items()}
     def exposed(row,model,controlled):
         return any(call.get('natural_model')==complex_model and call.get('selected_model')==model
             and call.get('requested_model')==model and call.get('control_applied') is controlled
-            and served_identity(model,{'modelVersion':call.get('served_model')})
+            and provider_policy.served_identity(model,call.get('served_model'))
             for call in row.get('model_exposure',{}).get('generation_calls',[]))
     identifiable=identifiable and any(exposed(left,complex_model,False) and exposed(right,simple,True)
                                      for left,right in pairs)
@@ -349,7 +348,6 @@ def model_analyze(rows, provider_policy):
 
 def model_exposure(routing,ports,calls,provider_policy):
     """Strict join; ambiguous retries stay accounted but cannot prove treatment exposure."""
-    from benchmarks.v3_gemini import served_identity
     result={'complete':False,'generation_calls':[],'reason':'ambiguous parent provider/physical lineage'}
     if not isinstance(routing,list) or not isinstance(ports,list) or not isinstance(calls,list):return result
     roots={call.get('actor_id') for call in calls if call.get('actor_role')=='root'}
@@ -373,7 +371,7 @@ def model_exposure(routing,ports,calls,provider_policy):
                 or any(port.get(key)!=request.get(key) for key in ('kind','model','message_projection_sha256','schema_sha256','window_tokens','reserve_tokens'))
                 or port.get('provider_input_tokens')!=usage.get('input_tokens')
                 or port.get('provider_output_tokens')!=usage.get('output_tokens')
-                or not served_identity(call['model'],{'modelVersion':usage.get('served_model')})):
+                or not provider_policy.served_identity(call['model'],usage.get('served_model'))):
             return result
         item={'attempt_id':call['attempt_id'],'actor_id':root,'admission_sequence':call['admission_sequence'],
               'kind':port['kind'],'natural_model':decision['before']['model'],
@@ -492,11 +490,10 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
     analyze_phase=(lambda rows:model_analyze(rows,provider_policy)) if model_routing else (lambda rows:analyze(rows,provider_policy))
     pricing,relay_config,endpoint=DEEPSEEK_PRICING,DEEPSEEK_RELAY_CONFIG,DEEPSEEK_ENDPOINT
     if provider_policy is not None:
-        from benchmarks.v3_gemini import GeminiPolicy,OFFICIAL_ENDPOINT,INPUT_BOUND
+        from benchmarks.v3_gemini import INPUT_BOUND
         from benchmarks.v3_responses_relay import RelayConfig
-        if type(provider_policy) is not GeminiPolicy:
-            raise ValueError('unsupported native supplement policy')
-        pricing,relay_config,endpoint=provider_policy.pricing,RelayConfig('auto',4096,INPUT_BOUND,True),OFFICIAL_ENDPOINT
+        live._native_relay_class(provider_policy)
+        pricing,relay_config,endpoint=provider_policy.pricing,RelayConfig('auto',4096,INPUT_BOUND,True),provider_policy.endpoint
     paths=[Path(item).resolve() for item in (source,repo,core_output,core_budget,output,budget_path)]
     source,repo,core_output,core_budget,output,budget_path=paths
     if (any(path.is_relative_to(source) for path in paths[2:]) or len(set(paths[2:]))!=4):
@@ -665,8 +662,8 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
             if any(not provider_policy.accepts_call(call) for call in calls):
                 raise ValueError('supplement physical calls differ from their signed account proof')
             _,api_key=provider_policy.credential()
-            from benchmarks.v3_gemini import GeminiRelay
-            relay=GeminiRelay(endpoint=endpoint,api_key=api_key,budget=budget,policy=provider_policy)
+            relay=live._native_relay_class(provider_policy)(endpoint=endpoint,api_key=api_key,
+                                                           budget=budget,policy=provider_policy)
         else:
             _,api_key=live._credential()
             relay=ResponsesRelay(endpoint=endpoint,api_key=api_key,budget=budget,config=relay_config)

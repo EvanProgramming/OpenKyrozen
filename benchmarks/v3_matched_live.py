@@ -30,6 +30,16 @@ BASELINE = "1bfc82c793df49e76097061ec5adfef0e4e2e883"
 REPEATS = 3
 
 
+def _native_relay_class(policy):
+    from benchmarks.v3_gemini import GeminiPolicy, GeminiRelay
+    from benchmarks.v3_panstar import PanstarPolicy, PanstarRelay
+    if type(policy) is GeminiPolicy:
+        return GeminiRelay
+    if type(policy) is PanstarPolicy:
+        return PanstarRelay
+    raise ValueError('unsupported native benchmark policy')
+
+
 def apparatus_identity() -> dict:
     # Both arms execute this candidate-owned observer/verifier, never a historical
     # worker. A changed fixture, oracle, metric, relay, or observer starts a cohort.
@@ -38,7 +48,7 @@ def apparatus_identity() -> dict:
              "v3_shell_launcher.py", "v3_protected_worker.py", "v3_process_owner.py",
              "v3_linux_namespace.py", "v3_actor_supervisor.py", "v3_actor_worker.py")
     files += ('v3_routing_supplement.py', 'v3_fixture_verifier.py')
-    files += ('v3_deepseek.py', 'v3_gemini.py')
+    files += ('v3_deepseek.py', 'v3_gemini.py', 'v3_panstar.py')
     hashes = {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in files}
     return {"cohort_sha256": cohort_digest(),
             "apparatus_sha256": hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest(),
@@ -1109,7 +1119,7 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
     if routing_variant is not None:
         worker_env['KYROZEN_DECISION_ASSIST_BACKEND']='off'
     def actor_provider_config(actor_id):
-        if getattr(relay,'protocol',None)=='google':
+        if getattr(relay,'protocol',None)=='google' or getattr(relay,'responses_policy',None) is not None:
             relay.root_actor_id_by_label.setdefault((arm,fixture_id,repeat),actor_id)
         return dict(relay.issue_actor_config(actor_id),
                     context_window_tokens=fixture['context_window_tokens'])
@@ -1129,7 +1139,8 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
             policy=shell_policy,
             source=arm_source, provider_config=actor_provider_config,
             revoke_actor=relay.revoke_actor,
-            **({'selected_actor_model': relay.selected_actor_model} if getattr(relay, 'protocol', None) == 'google' else {}),
+            **({'selected_actor_model': relay.selected_actor_model} if getattr(relay, 'protocol', None) == 'google'
+               or getattr(relay, 'responses_policy', None) is not None else {}),
             **({'routing_variant':routing_variant} if routing_variant is not None else {}),
         )
     except Exception as exc:
@@ -1190,7 +1201,7 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
                     "worker_error": worker_error,
                     "worker_exit_code": code,
                     "worker_result_complete": worker_complete})
-        if getattr(relay, 'protocol', None) == 'google':
+        if getattr(relay, 'protocol', None) == 'google' or getattr(relay, 'responses_policy', None) is not None:
             row['cost_calls'] = [call for call in budget.campaign_calls()
                 if (call['arm'], call['fixture_id'], call['repeat']) == (arm, fixture_id, repeat)]
         if verified.get('verification_error'):
@@ -1247,12 +1258,13 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         raise ValueError("release evaluation requires the exact frozen fixture content")
     identity = apparatus_identity()
     if provider_policy is not None:
-        from benchmarks.v3_gemini import GeminiPolicy, INPUT_BOUND
-        if (type(provider_policy) is not GeminiPolicy or pricing != provider_policy.pricing
+        from benchmarks.v3_gemini import INPUT_BOUND
+        _native_relay_class(provider_policy)
+        if (pricing != provider_policy.pricing
                 or relay_config != RelayConfig(model='auto', max_output_tokens=4096,
                     fixed_input_token_bound=INPUT_BOUND, serial_requests=True)
                 or limit_cny is None or endpoint is not None):
-            raise ValueError('native Google campaign requires its exact policy, fixed bounds and official endpoint')
+            raise ValueError('native campaign requires its exact policy, fixed bounds and pinned endpoint')
         identity['provider_policy'] = provider_policy.identity()
     ledger_existed = budget_path.exists()
     cny_accounting = limit_cny is not None
@@ -1459,8 +1471,8 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             raise ValueError('native call account provenance differs from the signed billing proof')
         identity['billing_proof'] = billing
         credential_endpoint, api_key = provider_policy.credential()
-        from benchmarks.v3_gemini import GeminiRelay
-        relay = GeminiRelay(endpoint=credential_endpoint, api_key=api_key, budget=budget, policy=provider_policy)
+        relay = _native_relay_class(provider_policy)(endpoint=credential_endpoint, api_key=api_key,
+                                                    budget=budget, policy=provider_policy)
     else:
         credential_endpoint, api_key = _credential()
         relay = ResponsesRelay(endpoint=endpoint or credential_endpoint, api_key=api_key,
@@ -1483,7 +1495,10 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             smoke_ok = True
             if cny_accounting:
                 if provider_policy is not None:
-                    from benchmarks.v3_gemini import run_smoke
+                    if provider_policy.protocol == 'google':
+                        from benchmarks.v3_gemini import run_smoke
+                    else:
+                        from benchmarks.v3_panstar import run_smoke
                 else:
                     from benchmarks.v3_deepseek import run_smoke
                 smoke_ok = run_smoke(relay, candidate)

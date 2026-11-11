@@ -2,6 +2,18 @@
 
 Approved by the user on 2026-11-07 in the V3 finalization chat.
 
+## Provider amendment, 2026-11-11 (Asia/Shanghai)
+
+The owner replaces Gemini with PanstarCloud GPT and asks for inexpensive models
+whose prices are checked directly in Dia. Use the existing automatic selector,
+with simple `gpt-6-sol`, complex `gpt-6.1-sol` and no main-model pin, for both arms.
+The cancellation of the cumulative spending ceiling and prohibition on publishing
+remain effective. Record costs at the observed dated model/context rates and
+retain every historical unknown hold. The native Responses adapter uses the
+existing trusted parent, protected actors, original cohorts and unchanged gates;
+it is benchmark-internal and adds no public API. Freeze and revalidate the new
+candidate before paid inference. The earlier Gemini policy below is historical.
+
 ## Owner acceptance amendment, 2026-11-11 (Asia/Shanghai)
 
 The owner explicitly excludes retrospective attribution of the one retired
@@ -16,7 +28,7 @@ Current-candidate Windows reliability, all six supported platform combinations,
 30-minute soaks, process/protection/usage evidence and all other release gates
 remain required. Record this incident-specific owner amendment with the final
 candidate evidence. Preserve the 180/54/36 cohorts, original statistical and
-resource thresholds, paid Gemini Auto accounting and unknown historical holds.
+resource thresholds, the current paid Auto accounting and unknown historical holds.
 Complete preparation and verified non-force integration only; do not create a
 V3 tag, draft/public Release, upload packages or run the preview publisher.
 
