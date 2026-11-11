@@ -386,9 +386,39 @@ class PanstarAutoTests(unittest.TestCase):
                     self.assertTrue(self.native.run_smoke(relay, 'a'*40))
                 self.assertEqual([body['model'] for body in captured],
                                  ['gpt-6-sol', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.1-sol'])
+                self.assertTrue(all('repeat the returned value exactly' in body['input'][0]['content']
+                                    for body in captured), 'The prompt must request the final answer that smoke verifies')
                 self.assertEqual(len(budget.campaign_calls()), 4)
                 self.assertTrue(all(row['status'] == 'settled' for row in relay.rows))
                 self.assertEqual(len(relay.smoke_verified_attempt_ids), 4)
+            finally:
+                relay.close()
+
+    def test_completed_tool_acknowledgement_reports_the_continuation_contract_failure(self):
+        from benchmarks.v3_matched import BudgetLedger
+        captured = []
+        def upstream(_url, **options):
+            body = json.loads(options['data']); captured.append(body)
+            output = ([{'type': 'function_call', 'id': 'fc-fixture', 'call_id': 'call-fixture',
+                        'name': 'benchmark_echo', 'arguments': '{"value":"ready"}'}] if len(captured) == 1 else
+                      [{'type': 'message', 'id': 'msg', 'role': 'assistant', 'status': 'completed',
+                        'content': [{'type': 'output_text', 'text': 'Done.', 'annotations': []}]}])
+            response = requests.Response(); response.status_code = 200
+            response._content = json.dumps({'id': 'fixture', 'status': 'completed', 'model': body['model'],
+                'output': output, 'usage': {'input_tokens': 100, 'output_tokens': 20, 'total_tokens': 120}}).encode()
+            return response
+        with tempfile.TemporaryDirectory() as temporary:
+            budget = BudgetLedger(Path(temporary)/'budget.sqlite3', limit_rmb=None, pricing=self.policy.pricing)
+            relay = self.native.PanstarRelay(endpoint='http://127.0.0.1:9/v1', api_key='synthetic-only',
+                                            budget=budget, policy=self.policy)
+            relay.start()
+            try:
+                with patch('benchmarks.v3_responses_relay.requests.post', side_effect=upstream):
+                    self.assertFalse(self.native.run_smoke(relay, 'a'*40))
+                self.assertEqual(relay.provider_error, 'native_smoke_continuation_contract')
+                self.assertEqual(len(captured), 2)
+                self.assertTrue(all(call['status'] == 'settled' for call in budget.campaign_calls()))
+                self.assertFalse(hasattr(relay, 'smoke_verified_candidate'))
             finally:
                 relay.close()
 

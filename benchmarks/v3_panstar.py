@@ -242,7 +242,8 @@ def run_smoke(relay, candidate):
     client = OpenAI(api_key=relay.client_key, base_url=relay.url, max_retries=0, timeout=180)
     tools = [{'type': 'function', 'name': 'benchmark_echo', 'parameters': {
         'type': 'object', 'properties': {'value': {'type': 'string'}}, 'required': ['value']}}]
-    prompt = [{'role': 'user', 'content': 'Call benchmark_echo with value ready.'}]
+    prompt = [{'role': 'user', 'content':
+               'Call benchmark_echo with value ready, then repeat the returned value exactly.'}]
     try:
         for model in relay.policy.role_models.values():
             first = client.responses.create(model=model, input=prompt, tools=tools,
@@ -250,15 +251,18 @@ def run_smoke(relay, candidate):
             calls = [item for item in first.output if item.type == 'function_call']
             if (len(calls) != 1 or calls[0].name != 'benchmark_echo'
                     or json.loads(calls[0].arguments) != {'value': 'ready'}):
+                relay.provider_error = relay.provider_error or 'native_smoke_function_contract'
                 raise ValueError('native_smoke_function_contract')
             second = client.responses.create(model=model, input=prompt + [item.model_dump(exclude_none=True)
                 for item in first.output] + [{'type': 'function_call_output', 'call_id': calls[0].call_id,
                     'output': '{"value":"ready"}'}], tools=tools, tool_choice='none', max_output_tokens=OUTPUT_BOUND)
             if not second.output_text or 'ready' not in second.output_text.lower() or any(
                     item.type == 'function_call' for item in second.output):
+                relay.provider_error = relay.provider_error or 'native_smoke_continuation_contract'
                 raise ValueError('native_smoke_continuation_contract')
         calls = relay.rows[before:]
         if len(calls) != 4 or any(call['status'] != 'settled' for call in calls):
+            relay.provider_error = relay.provider_error or 'native_smoke_usage_contract'
             raise ValueError('native_smoke_usage_contract')
         relay.smoke_verified_candidate = candidate
         relay.smoke_verified_attempt_ids = tuple(call['attempt_id'] for call in calls)
