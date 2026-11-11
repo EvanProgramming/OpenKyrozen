@@ -25,6 +25,7 @@ jobs:
       - name: Install Linux backend without changing host security policy
         if: runner.os == 'Linux'
         run: |
+          sudo "$(command -v python)" scripts/ci_ubuntu_mirror.py
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y bubblewrap
           sysctl kernel.apparmor_restrict_unprivileged_userns user.max_user_namespaces > isolation-policy-before.txt
