@@ -19,6 +19,17 @@ The current formal provider policy is Gemini with the built-in automatic selecto
 
 Model-routing acceptance also requires the separate 36-row Auto-versus-configured-simple contrast after the original 54-row supplement. Its ordered physical-call exposure and measured quality/latency evidence remain unproven until executed on the final candidate; distinct configured slot names alone cannot establish a routing benefit. The three phases share one linear ledger history and inherit the same finite or explicitly unlimited accounting policy.
 
+## Owner acceptance amendment, 2026-11-11 (Asia/Shanghai)
+
+The retired historical macOS incident is no longer a release blocker: the owner
+explicitly waived its retrospective attribution and requested removal of the
+canonical local failed soak record. No further incident-specific capture or
+repetition is required. The external ledger records the scope/removal rather
+than relabeling the old run as passed. This amendment supersedes older status
+statements about that incident only. Current-candidate six-platform and
+30-minute acceptance, Windows reliability, isolation, provider evaluation and
+all remaining release requirements still need their own evidence.
+
 ## Required release evidence
 
 1. **Final actor/platform evidence:** fresh-process delegation, kernel UID ownership, immutable parent policy, read-scope protection and UID-based detached-process cleanup are implemented. All four Linux/macOS Python combinations passed the privileged suite for intermediate commit `c87ecef`; the earlier six-platform workflow also completed all six 30-minute soaks. Both results remain historical after source changes. The release bundle must establish all of these checks for the final clean candidate.
@@ -54,4 +65,4 @@ The repaired 30-fixture cohort and observer/verifier identities are frozen befor
 - Detailed local execution logs, 266 requirement/comment inventory and historical Windows artifacts are outside the checkout in `/Users/evangong/.codex/worktrees/openkyrozen-v3-evidence/`.
 - The initial offline audit reconstructed settled 0.58291496 CNY plus held 0.000000000007 CNY, total 0.582914960007 CNY. This is historical exposure, not a live cumulative balance. Subsequent smoke, retry and cohort charges, including every unknown reservation, must be reconstructed from the original ledgers in the external exact-candidate evidence.
 
-Do not waive the blockers, publish the preview, create a V3 tag/Release, upload package repositories or merge an unverified candidate to main. A changed candidate SHA requires new exact-candidate evidence.
+Apply only the incident-specific owner amendment above; do not waive any remaining blocker, publish the preview, create a V3 tag/Release, upload package repositories or merge an unverified candidate to main. A changed candidate SHA requires new exact-candidate evidence.

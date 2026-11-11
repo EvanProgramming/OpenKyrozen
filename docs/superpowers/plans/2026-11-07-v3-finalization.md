@@ -2,6 +2,24 @@
 
 Approved by the user on 2026-11-07 in the V3 finalization chat.
 
+## Owner acceptance amendment, 2026-11-11 (Asia/Shanghai)
+
+The owner explicitly excludes retrospective attribution of the one retired
+historical macOS listener incident from the release prerequisites. Stop its
+investigation and incident-specific repetitions; remove it from the current
+blocking list. The owner also requested deletion of its canonical local failed
+soak record; the external execution ledger records that removal and its scope.
+This decision supersedes older blocking statements about that incident below.
+It does not convert the retired failed run into a passed test.
+
+Current-candidate Windows reliability, all six supported platform combinations,
+30-minute soaks, process/protection/usage evidence and all other release gates
+remain required. Record this incident-specific owner amendment with the final
+candidate evidence. Preserve the 180/54/36 cohorts, original statistical and
+resource thresholds, paid Gemini Auto accounting and unknown historical holds.
+Complete preparation and verified non-force integration only; do not create a
+V3 tag, draft/public Release, upload packages or run the preview publisher.
+
 ## User amendment and status, 2026-11-10 (Asia/Shanghai)
 
 The user explicitly cancelled the cumulative 15 CNY ceiling for the Gemini
