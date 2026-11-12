@@ -93,11 +93,12 @@ class _ProviderObservations:
     def __init__(self, runtime, provider):
         self.runtime, self.provider = runtime, provider
         self.records, self.turn, self.prompt_sha256 = [], None, None
+        self.native_answer = None
         self.depth = ContextVar("benchmark_provider_observation_depth", default=0)
         for name in ("chat", "chat_stream", "chat_response", "chat_response_stream"):
             method = getattr(provider, name, None)
             if callable(method):
-                setattr(provider, name, self._wrap(method, name.endswith("stream")))
+                setattr(provider, name, self._wrap(method, name.endswith("stream"), native=name.startswith('chat_response')))
 
     def _begin(self, messages, model, tools):
         from openkyrozen.agent.compaction import estimate_messages, _text_tokens, DEFAULT_OUTPUT_RESERVE_TOKENS
@@ -116,7 +117,9 @@ class _ProviderObservations:
         metrics = metrics_var.get() if not summary and metrics_var is not None else None
         metrics = metrics if isinstance(metrics, dict) else {}
         new_history, repeated_history = metrics.get("new_context_tokens"), metrics.get("retransmitted_history_tokens")
+        child = bool(getattr(getattr(runtime, 'execution_context', None), 'child_run_id', None))
         record = {"turn": self.turn, "prompt_sha256": self.prompt_sha256,
+                  "child": child, "observation_index": len(self.records),
                   "kind": "summary" if summary else "generation", "model": model,
                   "observation_boundary": "provider_port_after_production_preflight",
                   "estimate_method": "source_runtime_stdlib_messages_plus_json_schema_framing",
@@ -142,7 +145,24 @@ class _ProviderObservations:
         if routing_observer is not None:
             routing_observer(record, tools)
         self.records.append(record)
+        if not summary and not child:
+            self.native_answer = None
         return record
+
+    def _capture_native_answer(self, record, response):
+        if record['kind'] != 'generation' or record['child']:
+            return
+        try:
+            from openkyrozen.providers.models import ModelResponse
+        except ImportError:  # Original legacy providers have no native response object.
+            return
+        if (not isinstance(response, ModelResponse) or response.tool_calls
+                or response.metadata.get('legacy') or not isinstance(response.text, str) or not response.text.strip()):
+            return
+        digest = hashlib.sha256(response.text.encode('utf-8')).hexdigest()
+        record['native_answer_sha256'] = digest
+        self.native_answer = dict(text=response.text, sha256=digest, turn=record['turn'],
+                                  prompt_sha256=record['prompt_sha256'], record_index=record['observation_index'])
 
     @staticmethod
     def _usage(record, usage):
@@ -155,7 +175,7 @@ class _ProviderObservations:
         if record["provider_input_tokens"] is not None:
             record["provider_usage_source"] = "provider_reported_total"
 
-    def _wrap(self, original, streaming):
+    def _wrap(self, original, streaming, *, native=False):
         def begin(args, kwargs):
             messages = args[0] if args else kwargs["messages"]
             model = args[1] if len(args) > 1 else kwargs.get("model")
@@ -177,12 +197,20 @@ class _ProviderObservations:
                         self._usage(record, getattr(response, "usage", None) or usage)
                         if type(event).__name__ == "ResponseError":
                             record["outcome"] = "failed"
+                            if record['kind'] == 'generation' and not record['child']:
+                                self.native_answer = None
                         elif type(event).__name__ == "ResponseComplete":
-                            record["outcome"] = "returned"
+                            if record['outcome'] != 'failed':
+                                record["outcome"] = "returned"
+                                if native:
+                                    self._capture_native_answer(record, response)
                         yield event
                     if record["outcome"] == "pending":
                         record["outcome"] = "returned"
-                except BaseException:
+                except BaseException as exc:
+                    if (record['kind'] == 'generation' and not record['child']
+                            and not (isinstance(exc, GeneratorExit) and record['outcome'] == 'returned')):
+                        self.native_answer = None
                     if record["outcome"] == "pending":
                         record["outcome"] = "failed"
                     raise
@@ -190,6 +218,11 @@ class _ProviderObservations:
                     try:
                         if callable(getattr(iterator, "close", None)):
                             iterator.close()
+                    except BaseException:
+                        record['outcome'] = 'failed'
+                        if record['kind'] == 'generation' and not record['child']:
+                            self.native_answer = None
+                        raise
                     finally:
                         self.depth.reset(token)
             return stream
@@ -204,6 +237,8 @@ class _ProviderObservations:
                 usage = response[1] if isinstance(response, tuple) and len(response) == 2 else getattr(response, "usage", None)
                 self._usage(record, usage)
                 record["outcome"] = "returned"
+                if native:
+                    self._capture_native_answer(record, response)
                 return response
             except BaseException:
                 record["outcome"] = "failed"
@@ -218,6 +253,7 @@ def _run_conversation(runtime, session, turns, observations=None):
     answer = ""
     for index, prompt in enumerate(turns):
         if observations is not None:
+            observations.native_answer = None
             observations.turn = index
             observations.prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         answer = runtime.chat(session, prompt, clear_tasks=False, profile="auto")
@@ -452,7 +488,8 @@ def main():
         accepted_fingerprints = [proposal.get("fingerprint") for proposal in proposals
                                  if (proposal.get("plan_id"), proposal.get("version")) in accepted_versions]
         pending_material = (interaction_state.get("pending_plan") or {}).get("revision_materiality") == "material"
-        result = {"answer": answer, "tool_calls": sum(e.get("event") == "tool_receipt" for e in events),
+        result = {"answer": answer, "native_answer": observations.native_answer,
+                  "tool_calls": sum(e.get("event") == "tool_receipt" for e in events),
                   "tool_actions": [e.get("action") for e in events if e.get("event") == "tool_receipt"],
                   "tool_receipts": receipts, "events": events,
                   "conversation_records": conversation_records,

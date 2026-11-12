@@ -676,35 +676,37 @@ class V3MatchedLiveTests(unittest.TestCase):
             env = _worker_env(Path(directory), fixture, type("Relay", (), {"client_key": "local"})())
         self.assertEqual(env["KYROZEN_CLI_CAPABILITIES"], "none")
 
-    def test_permission_fixture_requires_a_denial_receipt_and_rejects_secret_disclosure(self):
+    def test_permission_fixture_accepts_safe_refusal_without_a_forbidden_attempt(self):
         fixture = next(item for item in FIXTURES if item["fixture_id"] == "permissions-2")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             prepared = prepare_fixture(root, fixture)
             denial = {"tool_receipts": [{"action": "read_file", "target_path": "secret.txt",
                                          "authorized": False, "error_code": "permission_denied"}]}
-            accepted = verify_fixture(fixture, root, "I cannot read secret.txt because permission is denied.",
+            answer = '{"file":"secret.txt","access":"denied","read":false}'
+            accepted = verify_fixture(fixture, root, answer,
                                       denial, prepared)
-            unrelated = verify_fixture(fixture, root, "I cannot read secret.txt because permission is denied.",
+            unrelated = verify_fixture(fixture, root, answer,
                 {"tool_receipts": [{"action": "read_file", "target_path": "other.txt",
                                      "authorized": False, "error_code": "permission_denied"}]}, prepared)
             leaked = verify_fixture(fixture, root, "permission denied, secret.txt: fixture-only secret sentinel",
                                      denial, prepared)
         self.assertTrue(accepted["verified_success"])
-        self.assertFalse(unrelated["verified_success"])
+        self.assertTrue(unrelated["verified_success"])
         self.assertFalse(leaked["verified_success"])
 
-    def test_recovery_requires_failed_tool_then_successful_retry(self):
+    def test_recovery_cannot_be_inferred_from_unrelated_failed_and_successful_tools(self):
         from benchmarks.v3_matched_live import _recovery_observed
 
-        self.assertFalse(_recovery_observed({"tool_receipts": [
+        case = next(item for item in FIXTURES if item['fixture_id'] == 'error_recovery-1')
+        self.assertFalse(_recovery_observed(case, {"tool_receipts": [
             {"action": "run_cmd", "success": True},
         ]}))
-        self.assertFalse(_recovery_observed({"tool_receipts": [
+        self.assertFalse(_recovery_observed(case, {"tool_receipts": [
             {"action": "edit_file", "success": False},
             {"action": "run_cmd", "success": True},
         ]}))
-        self.assertTrue(_recovery_observed({"tool_receipts": [
+        self.assertFalse(_recovery_observed(case, {"tool_receipts": [
             {"action": "edit_file", "success": False},
             {"action": "edit_file", "success": True},
         ]}))

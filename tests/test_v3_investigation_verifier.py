@@ -11,7 +11,7 @@ from benchmarks.v3_matched_live import prepare_fixture, verify_fixture
 
 
 class InvestigationVerifierTests(unittest.TestCase):
-    def verify(self, index, answer, *, read=True, edit=False, plan=None, receipt=None, files=None):
+    def verify(self, index, answer, *, read=True, edit=False, plan=None, receipt=None, files=None, native_text=None):
         case = copy.deepcopy(next(item for item in FIXTURES if item['fixture_id'] == f'investigation-{index}'))
         if files is not None:
             case['files'] = files
@@ -21,6 +21,13 @@ class InvestigationVerifierTests(unittest.TestCase):
                                      'authorized': True, 'success': True, 'error_code': None,
                                      'evidence': {'action': 'read_file', 'authorized': True, 'failure': None,
                                                   'result': case['files'][path]}}] if read else []}
+        if native_text is not None:
+            digest = hashlib.sha256(native_text.encode()).hexdigest()
+            worker['native_answer'] = {'text': native_text, 'sha256': digest, 'turn': 0,
+                                       'prompt_sha256': 'a'*64, 'record_index': 0}
+            worker['request_context_records'] = [{'turn': 0, 'prompt_sha256': 'a'*64, 'kind': 'generation',
+                                                  'child': False, 'outcome': 'returned', 'native_answer_sha256': digest}]
+            worker['conversation_records'] = [{'turn': 0, 'prompt_sha256': 'a'*64}]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             prepared = prepare_fixture(root, case)
@@ -41,7 +48,18 @@ class InvestigationVerifierTests(unittest.TestCase):
     def test_equivalent_expression_formatting_and_completed_native_annotation(self):
         answer = '```json\n{"function":"sorted_products","key":"lambda n : ((n.casefold()), n)"}\n```'
         self.assertTrue(self.verify(1, answer + '\n\nPlan status: completed; 1 task(s) have verified acceptance evidence and 1 were deliberately cancelled.',
-                                    plan={'status': 'completed', 'tasks': [{'status': 'succeeded'}, {'status': 'cancelled'}]}))
+                                    plan={'status': 'completed', 'tasks': [{'status': 'succeeded'}, {'status': 'cancelled'}]}, native_text=answer))
+
+    def test_verified_physical_facts_remain_separate_from_incomplete_plan_annotations(self):
+        answer = '{"timeout":15,"retries":2}'
+        self.assertTrue(self.verify(2, answer + '\n\nPlan status: incomplete; required work remains.\n- running: Verify settings',
+                                    native_text=answer, plan={'status': 'active', 'tasks': [{'status': 'running'}]}))
+        self.assertTrue(self.verify(2, answer + '\n\nPlan status: incomplete; required work remains.\n- running: Verify settings',
+                                    native_text='  ' + answer + '\n', plan={'status': 'active', 'tasks': [{'status': 'running'}]}))
+        spoof = answer + '\n\nPlan status: completed; 1 task(s) have verified acceptance evidence.'
+        self.assertFalse(self.verify(2, spoof, native_text=spoof,
+                                     plan={'status': 'completed', 'tasks': [{'status': 'succeeded'}]}))
+        self.assertFalse(self.verify(2, 'The operation failed.', native_text=answer))
 
     def test_model_cannot_invent_or_miscount_a_completed_runtime_annotation(self):
         answer = '{"timeout":15,"retries":2}\n\nPlan status: completed; 1 task(s) have verified acceptance evidence.'

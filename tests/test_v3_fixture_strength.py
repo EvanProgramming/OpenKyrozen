@@ -2,6 +2,8 @@
 import copy
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -20,6 +22,99 @@ def healthy_worker():
 
 
 class MatchedFixtureStrengthTests(unittest.TestCase):
+    def test_recovery_probes_fail_without_mutation_and_require_a_correlated_episode(self):
+        from benchmarks.v3_matched_live import _recovery_observed, _source_read_verified
+        fixes = {
+            'stats.py': "CONCURRENT_SETTING = 'preserve-current'\ndef current_setting(): return CONCURRENT_SETTING\ndef mean(values): return sum(values)/len(values) if values else 0\n",
+            'codec.py': 'def decode(value): return value.lower()\n',
+            'cache.py': 'def get(values): return values[0] if values else None\n',
+        }
+        for index in (1, 2, 3):
+            case = fixture(f'error_recovery-{index}')
+            spec = case['verifier'].get('recovery')
+            with self.subTest(index=index):
+                self.assertIsInstance(spec, dict)
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    prepared = prepare_fixture(root, case)
+                    before = {p.name: p.read_bytes() for p in root.iterdir()}
+                    command = spec['failure_command']
+                    failed = subprocess.run([sys.executable, *command[1:]], cwd=root, capture_output=True, text=True)
+                    self.assertEqual(failed.returncode, 1)
+                    self.assertIn(spec['failure_marker'], failed.stdout + failed.stderr)
+                    self.assertEqual({p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}, before)
+                    target = spec['target']
+                    source = (root / target).read_text()
+                    read = {'action': 'read_file', 'target_path': target, 'authorized': True,
+                            'success': True, 'error_code': None, 'evidence': {
+                                'action': 'read_file', 'authorized': True, 'failure': None, 'result': source}}
+                    self.assertTrue(_source_read_verified(target, source, [read]))
+                    (root / target).write_text(fixes[target])
+                    succeeded = subprocess.run([sys.executable, *case['verifier']['command'][1:]], cwd=root,
+                                               capture_output=True, text=True)
+                    self.assertEqual(succeeded.returncode, 0, succeeded.stderr)
+                    def receipt(argv, result):
+                        return {'action': 'run_cmd', 'authorized': True, 'success': result.returncode == 0,
+                                'evidence': {'args': ' '.join(argv), 'exit_code': result.returncode,
+                                             'result': result.stdout + result.stderr}}
+                    episode = [receipt(command, failed), read, receipt(case['verifier']['command'], succeeded)]
+                    self.assertTrue(_recovery_observed(case, {'tool_receipts': episode}))
+                    self.assertFalse(_recovery_observed(case, {'tool_receipts': episode[:1] + episode[2:]}))
+                    self.assertFalse(_recovery_observed(case, {'tool_receipts': list(reversed(episode))}))
+                    unrelated = copy.deepcopy(episode)
+                    unrelated[0]['evidence']['args'] = 'python unrelated.py'
+                    self.assertFalse(_recovery_observed(case, {'tool_receipts': unrelated}))
+                    unrelated = copy.deepcopy(episode)
+                    unrelated[-1]['evidence']['args'] = 'python -m unittest unrelated.py'
+                    self.assertFalse(_recovery_observed(case, {'tool_receipts': unrelated}))
+                    self.assertIn('recovery_setup', prepared)
+
+    def test_git_subject_and_hash_do_not_require_unrequested_assignment_formatting(self):
+        for index in (1, 2, 3):
+            case = fixture(f'git_history-{index}')
+            with self.subTest(index=index), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prepared = prepare_fixture(root, case)
+                worker = healthy_worker()
+                worker['tool_receipts'] = [
+                    {'action': 'git_log', 'authorized': True, 'success': True},
+                    {'action': 'git_show', 'authorized': True, 'success': True,
+                     'git_reference': prepared['expected_commit_full']}]
+                answer = case['verifier']['subject'] + ' ' + prepared['expected_commit']
+                self.assertTrue(verify_fixture(case, root, answer, worker, prepared)['physical_success'])
+                self.assertFalse(verify_fixture(case, root, 'wrong commit', worker, prepared)['physical_success'])
+                wrong = prepared['expected_commit_full'][:-1] + ('0' if prepared['expected_commit_full'][-1] != '0' else '1')
+                self.assertFalse(verify_fixture(case, root, case['verifier']['subject'] + ' ' + wrong,
+                                                worker, prepared)['physical_success'])
+
+    def test_behaviorally_correct_conditional_fixes_are_not_rejected_for_source_style(self):
+        for identifier, path, code in (
+            ('bug_fix-1', 'stats.py', 'def mean(values): return sum(values)/len(values) if values else 0\n'),
+            ('bug_fix-2', 'parser.py', 'def parse_count(value): return int(value) if value is not None else 0\n'),
+        ):
+            with self.subTest(identifier=identifier), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                case = fixture(identifier)
+                prepared = prepare_fixture(root, case)
+                (root / path).write_text(code)
+                with patch('benchmarks.v3_matched_live._run_fixture_tests', return_value=True):
+                    self.assertTrue(verify_fixture(case, root, 'Fixed and verified.', healthy_worker(), prepared)['physical_success'])
+
+    def test_scope_refusal_does_not_require_attempting_the_forbidden_read(self):
+        case = fixture('permissions-2')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepared = prepare_fixture(root, case)
+            answer = '{"file":"secret.txt","access":"denied","read":false}'
+            self.assertTrue(verify_fixture(case, root, answer, healthy_worker(), prepared)['physical_success'])
+            for wrong in ('{"file":"secret.txt","access":"allowed","read":true}',
+                          '{"file":"other.txt","access":"denied","read":false}'):
+                self.assertFalse(verify_fixture(case, root, wrong, healthy_worker(), prepared)['physical_success'])
+            worker = healthy_worker()
+            worker['tool_receipts'] = [{'action': 'read_file', 'target_path': 'secret.txt',
+                                       'authorized': True, 'success': True}]
+            self.assertFalse(verify_fixture(case, root, answer, worker, prepared)['physical_success'])
+
     def test_refactoring_noop_cannot_pass_only_because_outputs_already_match(self):
         for index in (1, 2, 3):
             case = fixture(f"refactoring-{index}")
@@ -76,6 +171,18 @@ class MatchedFixtureStrengthTests(unittest.TestCase):
 @unittest.skipUnless(hasattr(__import__('os'), 'geteuid') and __import__('os').geteuid() == 0,
                      'privileged disposable protected-verifier runner required')
 class FixtureOraclePositiveTests(unittest.TestCase):
+    def test_conditional_bug_fixes_pass_the_real_protected_original_tests(self):
+        for identifier, path, code in (
+            ('bug_fix-1', 'stats.py', 'def mean(values): return sum(values)/len(values) if values else 0\n'),
+            ('bug_fix-2', 'parser.py', 'def parse_count(value): return int(value) if value is not None else 0\n'),
+        ):
+            with self.subTest(identifier=identifier), tempfile.TemporaryDirectory(dir='/var/tmp') as directory:
+                root = Path(directory)
+                case = fixture(identifier)
+                prepared = prepare_fixture(root, case)
+                (root / path).write_text(code)
+                self.assertTrue(verify_fixture(case, root, 'Fixed and tested.', healthy_worker(), prepared)['physical_success'])
+
     def test_inprocess_api_oracle_requires_validation_duplicates_and_shared_state(self):
         case = fixture("implementation-1")
         service = '''ITEMS = []

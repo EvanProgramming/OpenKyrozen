@@ -15,6 +15,117 @@ from openkyrozen.tools import ToolAdapters
 
 
 class PromptWorkerObservationTests(unittest.TestCase):
+    def test_legacy_shims_summaries_and_empty_native_bodies_are_not_final_answers(self):
+        from contextvars import ContextVar
+        from openkyrozen.providers.models import ModelResponse
+        response = ModelResponse(text='{}')
+        runtime = SimpleNamespace(_in_context_compaction=ContextVar('summary', default=False))
+        provider = SimpleNamespace(config=None, chat_response=lambda *args, **kwargs: response)
+        observed = _ProviderObservations(runtime, provider)
+        provider.chat_response([], 'fixture')
+        root_answer = observed.native_answer
+        runtime._in_context_compaction.set(True)
+        provider.chat_response([], 'fixture')
+        self.assertEqual(observed.native_answer, root_answer)
+        runtime._in_context_compaction.set(False)
+        response = ModelResponse(text='{}', metadata={'legacy': True})
+        provider.chat_response([], 'fixture')
+        self.assertIsNone(observed.native_answer)
+        response = ModelResponse(text='')
+        provider.chat_response([], 'fixture')
+        self.assertIsNone(observed.native_answer)
+
+    def test_iterator_close_failure_clears_a_terminal_native_answer(self):
+        from openkyrozen.providers.models import ModelResponse, ResponseComplete
+        class Stream:
+            def __iter__(self): return self
+            def __next__(self): return ResponseComplete(ModelResponse(text='{}'))
+            def close(self): raise RuntimeError('close failed')
+        provider = SimpleNamespace(config=None, chat_response_stream=lambda *args, **kwargs: Stream())
+        observed = _ProviderObservations(SimpleNamespace(), provider)
+        stream = provider.chat_response_stream([], 'fixture')
+        next(stream)
+        with self.assertRaisesRegex(RuntimeError, 'close failed'):
+            stream.close()
+        self.assertIsNone(observed.native_answer)
+        self.assertEqual(observed.records[-1]['outcome'], 'failed')
+
+    def test_replaced_native_body_does_not_invalidate_an_otherwise_complete_worker(self):
+        from benchmarks.v3_matched_live import _worker_schema_errors, _physical_answer_text
+        from tests.test_v3_matched_live import valid_worker_result
+        text = '{"timeout":15,"retries":2}'
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        worker = valid_worker_result(answer='The requested effects were not verified.',
+            native_answer={'text': text, 'sha256': digest, 'turn': 0, 'prompt_sha256': 'a'*64, 'record_index': 0},
+            request_context_records=[{'turn': 0, 'prompt_sha256': 'a'*64, 'kind': 'generation',
+                                      'child': False, 'outcome': 'returned', 'native_answer_sha256': digest}],
+            conversation_records=[{'turn': 0, 'prompt_sha256': 'a'*64}])
+        self.assertEqual(_worker_schema_errors(worker), [])
+        self.assertEqual(_physical_answer_text(worker['answer'], worker), worker['answer'])
+        for field, invalid in (('turn', -1), ('prompt_sha256', None)):
+            malformed = json.loads(json.dumps(worker))
+            malformed['native_answer'][field] = invalid
+            malformed['request_context_records'][0][field] = invalid
+            malformed['conversation_records'][0][field] = invalid
+            with self.subTest(field=field):
+                self.assertIn('native_answer', _worker_schema_errors(malformed))
+
+    def test_native_answer_capture_preserves_response_and_binds_the_root_generation(self):
+        from openkyrozen.providers.models import ModelResponse
+        response = ModelResponse(text='{"timeout":15,"retries":2}')
+        runtime = SimpleNamespace(execution_context=SimpleNamespace(child_run_id=None))
+        provider = SimpleNamespace(config=SimpleNamespace(context_window_tokens=1000000),
+                                   chat_response=lambda *args, **kwargs: response)
+        observed = _ProviderObservations(runtime, provider)
+        self.assertTrue(hasattr(observed, 'native_answer'))
+        observed.turn, observed.prompt_sha256 = 0, 'a'*64
+        self.assertIs(provider.chat_response([{'role': 'user', 'content': 'Read settings'}], 'fixture'), response)
+        self.assertEqual(observed.native_answer['text'], response.text)
+        self.assertEqual(observed.native_answer['record_index'], 0)
+        self.assertEqual(observed.native_answer['sha256'], hashlib.sha256(response.text.encode()).hexdigest())
+        runtime.execution_context.child_run_id = 'child'
+        provider.chat_response([], 'fixture')
+        self.assertEqual(observed.native_answer['record_index'], 0)
+
+    def test_new_native_tool_round_and_later_failure_cannot_reuse_an_earlier_answer(self):
+        from openkyrozen.providers.models import ModelResponse
+        replies = iter([ModelResponse(text='{}'), ModelResponse(text='ignored',
+            tool_calls=[ToolCall('read', 'read_file', {'path': 'source.py'})]), ModelResponse(text='{}')])
+        def call(*args, **kwargs):
+            return next(replies)
+        runtime = SimpleNamespace()
+        provider = SimpleNamespace(config=None, chat_response=call)
+        observed = _ProviderObservations(runtime, provider)
+        self.assertTrue(hasattr(observed, 'native_answer'))
+        provider.chat_response([], 'fixture')
+        self.assertIsNotNone(observed.native_answer)
+        provider.chat_response([], 'fixture')
+        self.assertIsNone(observed.native_answer)
+        provider.chat_response([], 'fixture')
+        with self.assertRaises(StopIteration):
+            provider.chat_response([], 'fixture')
+        self.assertIsNone(observed.native_answer)
+
+    def test_stream_answer_requires_real_terminal_and_survives_normal_terminal_close(self):
+        from openkyrozen.providers.models import ModelResponse, ResponseComplete, TextDelta
+        response = ModelResponse(text='{"file":"secret.txt","access":"denied","read":false}')
+        def stream(*args, **kwargs):
+            yield TextDelta(response.text)
+            yield ResponseComplete(response)
+        provider = SimpleNamespace(config=None, chat_response_stream=stream)
+        observed = _ProviderObservations(SimpleNamespace(), provider)
+        self.assertTrue(hasattr(observed, 'native_answer'))
+        iterator = provider.chat_response_stream([], 'fixture')
+        next(iterator)
+        self.assertIsNone(observed.native_answer)
+        self.assertIsInstance(next(iterator), ResponseComplete)
+        iterator.close()
+        self.assertEqual(observed.native_answer['text'], response.text)
+        iterator = provider.chat_response_stream([], 'fixture')
+        next(iterator)
+        iterator.close()
+        self.assertIsNone(observed.native_answer)
+
     def test_task_record_retains_actual_typed_acceptance_and_evidence_without_aliases(self):
         from benchmarks.prompt_worker import _task_record
         task = {'id': 'task', 'description': 'Read proof', 'status': 'succeeded',

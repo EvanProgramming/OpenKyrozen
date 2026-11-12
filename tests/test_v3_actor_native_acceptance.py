@@ -137,9 +137,93 @@ finally: app.close()
 '''
 
 
+_ROOT_RECOVERY = r'''
+import json,sys
+from pathlib import Path
+source,apparatus,workspace,identifier=sys.argv[1:5]
+sys.path[:0]=[source,apparatus]
+from v3_process_owner import connect_actor_client
+from v3_actor_worker import install_mutation_adapter,install_read_adapter
+from v3_shell_launcher import install_worker_adapter
+from prompt_worker import _normalize_tool_receipt
+from v3_fixtures import FIXTURES
+from openkyrozen.app.bootstrap import build_application
+client=connect_actor_client()
+install_worker_adapter(client=client)
+install_mutation_adapter(client);install_read_adapter(client)
+case=next(item for item in FIXTURES if item['fixture_id']==identifier)
+spec=case['verifier']['recovery'];target=spec['target']
+fixes={'stats.py':"CONCURRENT_SETTING = 'preserve-current'\ndef current_setting(): return CONCURRENT_SETTING\ndef mean(values): return sum(values)/len(values) if values else 0\n",
+       'codec.py':'def decode(value): return value.lower()\n',
+       'cache.py':'def get(values): return values[0] if values else None\n'}
+app=build_application(surface='cli');runtime=app.runtime
+try:
+ runtime._set_workspace_root(workspace)
+ receipts=[]
+ def execute(action,arguments):
+  if hasattr(runtime,'execute_call'):
+   from openkyrozen.providers.models import ToolCall
+   receipt=runtime.execute_call(runtime.current_session,ToolCall('recovery-'+str(len(receipts)),action,arguments))
+  else:
+   value=(arguments['command'] if action=='run_cmd' else arguments['path'] if action=='read_file'
+          else arguments['path']+'|'+arguments['content'])
+   receipt=runtime._run_tool(action,value,return_receipt=True)
+  receipts.append(_normalize_tool_receipt(receipt.as_dict(),workspace))
+ execute('run_cmd',{'command':' '.join(spec['failure_command'])})
+ assert Path(workspace,target).read_text()==case['files'][target]
+ execute('read_file',{'path':target})
+ execute('write_file',{'path':target,'content':fixes[target]})
+ execute('run_cmd',{'command':' '.join(case['verifier']['command'])})
+ print('RECOVERY_RESULT:'+json.dumps(receipts),flush=True)
+finally:app.close()
+'''
+
+
 @unittest.skipUnless(hasattr(os, 'geteuid') and os.geteuid() == 0 and os.name == 'posix',
                      'disposable privileged Unix actor acceptance required')
 class NativeActorAcceptanceTests(unittest.TestCase):
+    def test_actual_v2_and_v3_recovery_producers_emit_correlated_real_failure_and_success(self):
+        from benchmarks.v3_actor_supervisor import ActorSupervisor
+        from benchmarks.v3_fixtures import FIXTURES
+        from benchmarks.v3_matched_live import BASELINE, _extract_baseline, _recovery_observed, prepare_fixture, verify_fixture
+        from benchmarks.v3_process_owner import process_snapshot
+        from benchmarks.v3_shell_launcher import ShellPolicy
+        repository = Path(__file__).resolve().parents[1]
+        apparatus = repository / 'benchmarks'
+        with tempfile.TemporaryDirectory(dir='/var/tmp', prefix='kyrozen-recovery-actors-') as directory:
+            base = Path(directory).resolve()
+            base.chmod(0o711)
+            baseline = base / 'baseline'
+            _extract_baseline(baseline, repository, BASELINE)
+            for arm, selected in (('v2', baseline), ('v3', repository)):
+                for index in (1, 2, 3):
+                    case = next(item for item in FIXTURES if item['fixture_id'] == f'error_recovery-{index}')
+                    with self.subTest(arm=arm, index=index):
+                        workspace = base / f'{arm}-{index}'
+                        prepared = prepare_fixture(workspace, case)
+                        guards = [workspace / name for name in case['files'] if name.startswith('test_')]
+                        command = [sys.executable, '-I', '-B', '-c', _ROOT_RECOVERY,
+                                   str(selected), str(apparatus), str(workspace), case['fixture_id']]
+                        with ActorSupervisor(command, cwd=workspace, source=selected,
+                                env={'PATH': os.environ['PATH'], 'KYROZEN_DISABLE_VECTOR_INDEX': '1',
+                                     'KYROZEN_CLI_CAPABILITIES': 'read,write,shell', 'KYROZEN_APPROVAL_MODE': 'never',
+                                     'PYTHONDONTWRITEBYTECODE': '1'}, protected_files=guards,
+                                policy=ShellPolicy(workspace, {'read', 'write', 'shell'})) as supervisor:
+                            process = supervisor.popen(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            output, error = process.communicate(timeout=60)
+                            self.assertEqual(process.returncode, 0, error[-6000:] + output[-6000:])
+                            uids = [actor['owner'].uid for actor in supervisor.actors.values()]
+                        payload = next(line.split(b':', 1)[1] for line in output.splitlines()
+                                       if line.startswith(b'RECOVERY_RESULT:'))
+                        receipts = json.loads(payload)
+                        worker = {'tool_receipts': receipts, 'provider_error': False, 'processes_alive': 0}
+                        self.assertTrue(_recovery_observed(case, worker), receipts)
+                        self.assertTrue(verify_fixture(case, workspace, 'Repaired and verified.', worker, prepared)['physical_success'])
+                        self.assertFalse(any(uid in uids and not state.startswith(('Z', 'X'))
+                                             for uid, state in process_snapshot().values()))
+                        for guard in guards:
+                            self.assertEqual(guard.read_text(), case['files'][guard.name])
+
     def test_actual_v2_v3_author_review_tool_continuations_and_usage(self):
         self._actual_v2_v3_author_review(google=False)
 
