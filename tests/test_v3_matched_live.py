@@ -439,7 +439,8 @@ class V3MatchedLiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             prepared = prepare_fixture(root, case)
-            worker = {"answer": "timeout = 15 and retries = 2", "provider_error": False, "processes_alive": 0}
+            worker = {"answer": '{"timeout":15,"retries":2}', "provider_error": False, "processes_alive": 0,
+                      "tool_receipts": [{"action": "read_file", "target_path": "settings.py", "authorized": True, "success": True}]}
             verified = verify_fixture(case, root, worker["answer"], worker, prepared)
             self.assertEqual(verified["result"], "passed")
             row = {"fixture_id": case["fixture_id"], "repeat": 0, "arm": "v3", "attempts": 1,

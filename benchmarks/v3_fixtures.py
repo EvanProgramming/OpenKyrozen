@@ -39,15 +39,15 @@ def _long_context_turns(initial, expected, changed):
 
 
 FIXTURES = (
-    _fixture("investigation", 1, "Inspect catalog.py and report which function sorts products and its exact tie-break rule. Do not edit files.",
-             {"kind": "answer_contains", "all": ["sorted_products", "casefold", "original spelling"]},
+    _fixture("investigation", 1, "Inspect catalog.py and report which function sorts products and its exact tie-break rule. Return only a JSON object with exactly function (the function name) and key (copy its complete Python key lambda expression, including the tie-break). Do not edit files.",
+             {"kind": "source_facts", "path": "catalog.py", "expected": {"function": "sorted_products", "key": "lambda n: (n.casefold(), n)"}, "expressions": ["key"]},
              files={"catalog.py": "def sorted_products(names):\n    return sorted(names, key=lambda n: (n.casefold(), n))\n"}),
-    _fixture("investigation", 2, "Inspect settings.py and report the default timeout and retry count. Do not edit files.",
-             {"kind": "answer_contains", "all": ["timeout = 15", "retries = 2"]},
+    _fixture("investigation", 2, "Inspect settings.py and report the default timeout and retry count. Return only a JSON object with exactly timeout and retries, using their numeric values. Do not edit files.",
+             {"kind": "source_facts", "path": "settings.py", "expected": {"timeout": 15, "retries": 2}, "expressions": []},
              files={"settings.py": "timeout = 15\nretries = 2\n"}),
-    _fixture("investigation", 3, "Inspect routes.py and name the handler used by POST /items plus its validation rule. Do not edit files.",
-             {"kind": "answer_contains", "all": ["create_item", "non-empty name"]},
-             files={"routes.py": "def create_item(body):\n    if not body.get('name', '').strip():\n        raise ValueError('non-empty name required')\n"}),
+    _fixture("investigation", 3, "Inspect routes.py and name the handler used by POST /items plus its validation rule. Return only a JSON object with exactly handler (the function name), reject_if (copy the Python condition that rejects the input), and error (the raised exception class name). Do not edit files.",
+             {"kind": "source_facts", "path": "routes.py", "expected": {"handler": "create_item", "reject_if": "not body.get('name', '').strip()", "error": "ValueError"}, "expressions": ["reject_if"]},
+             files={"routes.py": "def create_item(body):\n    if not body.get('name', '').strip():\n        raise ValueError('non-empty name required')\n\nROUTES = {('POST', '/items'): create_item}\n"}),
     _fixture("bug_fix", 1, "Use a working plan to reproduce the empty-input failure in stats.py, fix it so mean([]) returns 0, and run test_stats.py. The reproduction reveals an unplanned edge case; add a verification task for it with update_plan.",
              {"kind": "tests_and_file", "command": ["python", "-m", "unittest", "test_stats.py"], "path": "stats.py", "must_contain": "return 0"},
              files={"stats.py": "def mean(values):\n    return sum(values) / len(values)\n", "test_stats.py": "import unittest\nfrom stats import mean\nclass T(unittest.TestCase):\n def test_empty(self): self.assertEqual(mean([]), 0)\n def test_values(self): self.assertEqual(mean([2,4]), 3)\n"}, plan_scenario="add_discovered_edge_case"),
@@ -186,7 +186,7 @@ def cohort_digest(fixtures=FIXTURES):
         separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
 
 
-FROZEN_COHORT_SHA256 = "401006750309625cd44545b46ddb7190cf850799a4a617850220cbe843927b73"
+FROZEN_COHORT_SHA256 = "4f224dba1f27362b00bc371df9eba0231fa604969dd20bc223a0a1f5ea7df4db"
 
 
 validate_fixtures(FIXTURES)

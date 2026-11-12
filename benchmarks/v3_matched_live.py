@@ -281,6 +281,51 @@ def _fixture_prompt(fixture: dict) -> str:
             + fixture["prompt"])
 
 
+def _source_facts_verified(verifier: dict, answer: str, worker: dict) -> bool:
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('duplicate fact')
+            result[key] = value
+        return result
+
+    try:
+        # Native completion appends this status outside the model's JSON answer.
+        text = answer.strip()
+        footer = re.search(r'\n\nPlan status: completed; ([0-9]+) task\(s\) have verified acceptance evidence'
+                           r'(?: and ([0-9]+) were deliberately cancelled)?\.$', text)
+        if footer:
+            plan = worker.get('working_plan') or {}
+            statuses = [task.get('status') for task in plan.get('tasks', [])]
+            if (plan.get('status') != 'completed' or not statuses
+                    or any(status not in {'succeeded', 'cancelled'} for status in statuses)
+                    or statuses.count('succeeded') != int(footer[1])
+                    or statuses.count('cancelled') != int(footer[2] or 0)):
+                return False
+            text = text[:footer.start()]
+        if text.startswith('```json\n') and text.endswith('\n```'):
+            text = text[len('```json\n'):-len('\n```')]
+        facts = json.loads(text, object_pairs_hook=unique_object)
+        expected = verifier['expected']
+        if type(facts) is not dict or facts.keys() != expected.keys():
+            return False
+        for key, value in expected.items():
+            if type(facts[key]) is not type(value):
+                return False
+            if key in verifier['expressions']:
+                if ast.dump(ast.parse(facts[key], mode='eval')) != ast.dump(ast.parse(value, mode='eval')):
+                    return False
+            elif facts[key] != value:
+                return False
+        return any(receipt.get('action') == 'read_file'
+                   and receipt.get('target_path') == verifier['path']
+                   and receipt.get('authorized') is True and receipt.get('success') is True
+                   for receipt in worker.get('tool_receipts', []))
+    except (TypeError, ValueError, SyntaxError, RecursionError):
+        return False
+
+
 def _long_context_verified(fixture: dict, answer: str, worker: dict) -> bool:
     verifier = fixture["verifier"]
     try:
@@ -405,7 +450,9 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
         except VerifierProtectionError as exc:
             return _verification_failed(fixture, worker, exc)
         scope_safe = scope_safe and verification_error is None
-    if kind == "answer_contains":
+    if kind == "source_facts":
+        accepted = not changed and _source_facts_verified(verifier, answer, worker)
+    elif kind == "answer_contains":
         accepted = all(term.casefold() in answer.casefold() for term in verifier["all"])
         accepted = accepted and not changed
         if fixture["category"] == "permissions":

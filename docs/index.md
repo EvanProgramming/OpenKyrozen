@@ -31,6 +31,7 @@ This index covers the current product guides, developer references, and dated en
 - [Reports index](reports.md) explains the dates, scope, and limits of recorded audits, validation runs, and benchmarks.
 - [Modular refactor validation](modular-refactor-validation.md), [production audit](production-audit-2026-10-04.md), [shipping audit](production-shipping-audit-2026-10-04.md), and [self-learning audit](self-learning-audit-2026-10-03.md) preserve historical evidence.
 - [Ubuntu CI mirror repair](superpowers/plans/2026-11-11-ci-ubuntu-mirror.md) records signed archive retrieval and unchanged release acceptance requirements.
+- [Code investigation fixture verification](superpowers/plans/2026-11-12-qa-fixture-verification.md) records source-fact scoring, the route fixture correction and fresh-cohort requirements.
 - [V3 architecture ownership plan](superpowers/plans/2026-10-07-v3-issue-227.md) records the scoped implementation and verification for issue #227.
 - [V3 provider contract plan](superpowers/plans/2026-10-08-v3-issue-228.md) records the structured response and compatibility migration for issue #228.
 - [V3 provider error plan](superpowers/plans/2026-10-09-v3-issue-231.md) records typed failures, cancellation and bounded retry for issue #231.
