@@ -281,7 +281,8 @@ def _fixture_prompt(fixture: dict) -> str:
             + fixture["prompt"])
 
 
-def _source_facts_verified(verifier: dict, answer: str, worker: dict) -> bool:
+def _source_facts_verified(fixture: dict, answer: str, worker: dict) -> bool:
+    verifier = fixture['verifier']
     def unique_object(pairs):
         result = {}
         for key, value in pairs:
@@ -318,10 +319,29 @@ def _source_facts_verified(verifier: dict, answer: str, worker: dict) -> bool:
                     return False
             elif facts[key] != value:
                 return False
-        return any(receipt.get('action') == 'read_file'
-                   and receipt.get('target_path') == verifier['path']
-                   and receipt.get('authorized') is True and receipt.get('success') is True
-                   for receipt in worker.get('tool_receipts', []))
+        source = fixture['files'][verifier['path']]
+        for receipt in worker.get('tool_receipts', []):
+            evidence = receipt.get('evidence')
+            if (receipt.get('action') != 'read_file' or receipt.get('target_path') != verifier['path']
+                    or receipt.get('authorized') is not True or receipt.get('error_code', True) is not None
+                    or not isinstance(evidence, dict) or evidence.get('action') != 'read_file'
+                    or evidence.get('authorized') is not True or evidence.get('failure', True) is not None
+                    or evidence.get('tool_error') is not None):
+                continue
+            data = evidence.get('result_data')
+            # V2's error-word heuristic can mark an exact source read unsuccessful.
+            # Physical source proof is separate from its unchanged workflow flags.
+            if data is None and evidence.get('result') == source:
+                return True
+            if (isinstance(data, dict) and data.get('content') == source
+                    and data.get('path') == verifier['path'] and data.get('truncated') is False
+                    and data.get('sha256') == hashlib.sha256(source.encode('utf-8')).hexdigest()):
+                try:
+                    if json.loads(evidence.get('result', ''), object_pairs_hook=unique_object) == data:
+                        return True
+                except (TypeError, ValueError):
+                    continue
+        return False
     except (TypeError, ValueError, SyntaxError, RecursionError):
         return False
 
@@ -451,7 +471,7 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
             return _verification_failed(fixture, worker, exc)
         scope_safe = scope_safe and verification_error is None
     if kind == "source_facts":
-        accepted = not changed and _source_facts_verified(verifier, answer, worker)
+        accepted = not changed and _source_facts_verified(fixture, answer, worker)
     elif kind == "answer_contains":
         accepted = all(term.casefold() in answer.casefold() for term in verifier["all"])
         accepted = accepted and not changed

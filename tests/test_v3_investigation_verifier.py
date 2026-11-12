@@ -1,4 +1,6 @@
 """Source-fact grading must not depend on English or assignment formatting."""
+import copy
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -9,12 +11,16 @@ from benchmarks.v3_matched_live import prepare_fixture, verify_fixture
 
 
 class InvestigationVerifierTests(unittest.TestCase):
-    def verify(self, index, answer, *, read=True, edit=False, plan=None):
-        case = next(item for item in FIXTURES if item['fixture_id'] == f'investigation-{index}')
+    def verify(self, index, answer, *, read=True, edit=False, plan=None, receipt=None, files=None):
+        case = copy.deepcopy(next(item for item in FIXTURES if item['fixture_id'] == f'investigation-{index}'))
+        if files is not None:
+            case['files'] = files
         path = next(iter(case['files']))
         worker = {'provider_error': False, 'processes_alive': 0, 'working_plan': plan,
-                  'tool_receipts': [{'action': 'read_file', 'target_path': path,
-                                     'authorized': True, 'success': True}] if read else []}
+                  'tool_receipts': [receipt or {'action': 'read_file', 'target_path': path,
+                                     'authorized': True, 'success': True, 'error_code': None,
+                                     'evidence': {'action': 'read_file', 'authorized': True, 'failure': None,
+                                                  'result': case['files'][path]}}] if read else []}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             prepared = prepare_fixture(root, case)
@@ -65,6 +71,54 @@ class InvestigationVerifierTests(unittest.TestCase):
         answer = '{"timeout":15,"retries":2}'
         self.assertFalse(self.verify(2, answer, read=False))
         self.assertFalse(self.verify(2, answer, edit=True))
+
+    def test_captured_v2_valueerror_source_read_is_physical_evidence_despite_legacy_flag(self):
+        source = "def create_item(body):\n    if not body.get('name', '').strip():\n        raise ValueError('non-empty name required')\n"
+        # Retained original V2 receipt: its string heuristic mistakes source text for an error.
+        receipt = {'action': 'read_file', 'target_path': 'routes.py', 'authorized': True,
+                   'success': False, 'error_code': None,
+                   'evidence': {'action': 'read_file', 'args': 'routes.py', 'authorized': True,
+                                'failure': None, 'result': source, 'success': False}}
+        answer = json.dumps({'handler': 'create_item', 'reject_if': "not body.get('name', '').strip()", 'error': 'ValueError'})
+        self.assertTrue(self.verify(3, answer, receipt=receipt, files={'routes.py': source}))
+        self.assertFalse(self.verify(3, answer, receipt=receipt))
+        self.assertFalse(receipt['success'])
+        self.assertFalse(receipt['evidence']['success'])
+
+    def test_read_success_flag_without_matching_full_source_content_is_insufficient(self):
+        answer = '{"timeout":15,"retries":2}'
+        for evidence in ({}, {'result': 'timeout = 15\n'}, {'result': 'permission denied'},
+                         {'result': 'timeout = 15\nretries = 2\n', 'failure': 'read failed'}):
+            receipt = {'action': 'read_file', 'target_path': 'settings.py', 'authorized': True,
+                       'success': True, 'error_code': None, 'evidence': evidence}
+            with self.subTest(evidence=evidence):
+                self.assertFalse(self.verify(2, answer, receipt=receipt))
+
+    def test_native_source_receipt_requires_coherent_content_hash_path_and_no_truncation(self):
+        source = 'timeout = 15\nretries = 2\n'
+        data = {'content': source, 'path': 'settings.py', 'sha256': hashlib.sha256(source.encode()).hexdigest(),
+                'truncated': False, 'start_line': 1, 'end_line': 2, 'total_lines': 2}
+        def receipt(value):
+            return {'action': 'read_file', 'target_path': 'settings.py', 'authorized': True,
+                    'success': True, 'error_code': None,
+                    'evidence': {'action': 'read_file', 'authorized': True, 'failure': None,
+                                 'result': json.dumps(value), 'result_data': value}}
+        answer = '{"timeout":15,"retries":2}'
+        self.assertTrue(self.verify(2, answer, receipt=receipt(data)))
+        for field, wrong in (('content', source[:-1]), ('path', 'other.py'), ('sha256', '0'*64), ('truncated', True)):
+            value = dict(data, **{field: wrong})
+            with self.subTest(field=field):
+                self.assertFalse(self.verify(2, answer, receipt=receipt(value)))
+        mismatch = receipt(data)
+        mismatch['evidence']['result'] = '{}'
+        self.assertFalse(self.verify(2, answer, receipt=mismatch))
+        for layer, field, wrong in (('outer', 'authorized', False), ('inner', 'authorized', False),
+                                    ('outer', 'target_path', 'other.py'), ('outer', 'error_code', 'permission_denied'),
+                                    ('inner', 'failure', 'read failed'), ('inner', 'tool_error', {'code': 'read_failed'})):
+            denied = receipt(data)
+            (denied if layer == 'outer' else denied['evidence'])[field] = wrong
+            with self.subTest(layer=layer, field=field):
+                self.assertFalse(self.verify(2, answer, receipt=denied))
 
     def test_route_binding_is_present_and_rejects_whitespace_names(self):
         case = next(item for item in FIXTURES if item['fixture_id'] == 'investigation-3')

@@ -440,7 +440,9 @@ class V3MatchedLiveTests(unittest.TestCase):
             root = Path(directory)
             prepared = prepare_fixture(root, case)
             worker = {"answer": '{"timeout":15,"retries":2}', "provider_error": False, "processes_alive": 0,
-                      "tool_receipts": [{"action": "read_file", "target_path": "settings.py", "authorized": True, "success": True}]}
+                      "tool_receipts": [{"action": "read_file", "target_path": "settings.py", "authorized": True, "success": True,
+                                         "error_code": None, "evidence": {"action": "read_file", "authorized": True, "failure": None,
+                                                                          "result": "timeout = 15\nretries = 2\n"}}]}
             verified = verify_fixture(case, root, worker["answer"], worker, prepared)
             self.assertEqual(verified["result"], "passed")
             row = {"fixture_id": case["fixture_id"], "repeat": 0, "arm": "v3", "attempts": 1,
