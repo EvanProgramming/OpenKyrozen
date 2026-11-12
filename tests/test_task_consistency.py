@@ -1235,20 +1235,45 @@ class TaskConsistencyTests(unittest.TestCase):
         self.assertIn("Repository access is unavailable", blocked_answer)
 
     def test_streaming_provider_timeout_covers_stalls_after_first_chunk(self):
+        from types import SimpleNamespace
+        from openkyrozen.providers import retry
+
+        stalled, release, finished, expired = (threading.Event() for _ in range(4))
+        started = time.monotonic()
+
+        def monotonic():
+            elapsed = time.monotonic() - started
+            # Advance the deadline after delivery; retain a real-time harness guard.
+            return elapsed + 1 if expired.is_set() else max(0, elapsed - 2)
+
         class SlowStreamingProvider:
             def chat_stream(self, _messages, _model):
-                yield "first"
-                time.sleep(0.2)
-                yield "late"
+                try:
+                    yield "first"
+                    stalled.set()
+                    release.wait(2)
+                    yield "late"
+                finally:
+                    finished.set()
+
+        chunks = []
+
+        def on_chunk(chunk):
+            chunks.append(chunk)
+            self.assertTrue(stalled.wait(2))
+            self.assertFalse(finished.is_set())
+            expired.set()
 
         original_provider = main.llm_provider
         main.llm_provider = SlowStreamingProvider()
-        chunks = []
         try:
-            with patch.object(main, "_provider_timeout_seconds", return_value=0.03):
-                response = main._get_llm_response([], stream=True, on_chunk=chunks.append)
+            with patch.object(main, "_provider_timeout_seconds", return_value=0.03), \
+                    patch.object(retry, "time", SimpleNamespace(monotonic=monotonic)):
+                response = main._get_llm_response([], stream=True, on_chunk=on_chunk)
         finally:
+            release.set()
             main.llm_provider = original_provider
+            self.assertTrue(finished.wait(2))
         self.assertIn("Provider timed out", response)
         self.assertEqual(chunks, ["first"])
         self.assertEqual(main._last_prompt_tokens, 0)

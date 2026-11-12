@@ -134,7 +134,7 @@ class PrivilegedVerifierTests(unittest.TestCase):
             'implementation-2': {'slug.py': "import re\ndef slugify(value): return re.sub(r'[^a-z0-9]+','-',value.lower()).strip('-')\n"},
             'implementation-3': {'flags.py': "def parse_flags(value,unique=False):\n items=[x.strip() for x in value.split(',') if x.strip()]\n return list(dict.fromkeys(items)) if unique else items\n",
                                  'consumer.py': "from flags import parse_flags\ndef settings(value): return {'enabled':parse_flags(value,unique=True)}\n"},
-            'error_recovery-1': {'stats.py': 'def mean(values): return sum(values)/len(values) if values else 0\n'},
+            'error_recovery-1': {'stats.py': "CONCURRENT_SETTING = 'preserve-current'\ndef current_setting(): return CONCURRENT_SETTING\ndef mean(values): return sum(values)/len(values) if values else 0\n"},
             'error_recovery-2': {'codec.py': 'def decode(value): return value.lower()\n'},
             'error_recovery-3': {'cache.py': 'def get(values): return values[0] if values else None\n'},
             'subagents-1': {'parser.py': 'def count_items(values): return len(values) if values is not None else 0\n'},
