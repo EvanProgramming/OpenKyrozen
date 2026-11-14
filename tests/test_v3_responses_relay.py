@@ -7,6 +7,7 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import requests
@@ -555,6 +556,50 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.check_disconnected_stream_settlement(1, "unknown")
         self.assertEqual(self.relay.rows[0]["transport_error"], "downstream_disconnect_drain_limit")
         self.assertEqual(self.relay.rows[0]["usage_failure"], "missing_terminal_event")
+
+    def test_continuously_active_stream_cannot_outlive_elapsed_limit(self):
+        self.check_active_stream_limit("elapsed", False, "upstream_stream_elapsed_limit")
+
+    def test_terminal_usage_is_settled_on_elapsed_limit_chunk(self):
+        self.check_active_stream_limit("elapsed", True, None)
+
+    def test_active_stream_byte_limit_rejects_excess_body(self):
+        self.check_active_stream_limit("bytes", False, "upstream_stream_byte_limit")
+
+    def check_active_stream_limit(self, limit, crossing_terminal, expected_error):
+        upstream_url = self.relay.endpoint + "/responses"
+        original_post = requests.post
+        now = [0.0]
+        closed = threading.Event()
+
+        class ActiveStream:
+            status_code = 200
+
+            def close(self):
+                closed.set()
+
+            def iter_content(self, chunk_size):
+                yield b": heartbeat\n\n"
+                now[0] = 181.0 if limit == "elapsed" else 0.0
+                if not crossing_terminal:
+                    yield b": excessive nonterminal activity\n\n"
+                yield b'data: {"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":4}}}\n\n'
+
+        def post(url, *args, **kwargs):
+            return ActiveStream() if url == upstream_url else original_post(url, *args, **kwargs)
+
+        with patch("benchmarks.v3_responses_relay.time", SimpleNamespace(monotonic=lambda: now[0])), \
+             patch("benchmarks.v3_responses_relay.MAX_UPSTREAM_STREAM_BYTES", 20 if limit == "bytes" else 4096), \
+             patch("benchmarks.v3_responses_relay.requests.post", side_effect=post):
+            response = requests.post(self.relay.url + "/responses", json={
+                "input": "fixture", "stream": True,
+            }, headers={"Authorization": "Bearer " + self.relay.client_key}, timeout=3)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.relay.rows[0].get("transport_error"), expected_error)
+        self.assertEqual(self.budget.campaign_calls()[0]["status"], "unknown" if expected_error else "settled")
+        self.assertEqual(b"response.completed" in response.content, not expected_error)
+        self.assertTrue(closed.is_set())
 
     def test_missing_usage_terminal_event_is_held_once_without_reading_past_terminal(self):
         upstream_url = self.relay.endpoint + "/responses"

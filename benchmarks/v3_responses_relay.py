@@ -19,6 +19,8 @@ MODEL = "gemini-3.1-flash-lite"
 MAX_OUTPUT_TOKENS = 4096
 MAX_REQUEST_BYTES = 20_000_000
 MAX_ERROR_BODY_BYTES = 65_536
+UPSTREAM_STREAM_SECONDS = 180
+MAX_UPSTREAM_STREAM_BYTES = 16_000_000
 DISCONNECTED_STREAM_DRAIN_SECONDS = 30
 DISCONNECTED_STREAM_DRAIN_BYTES = 4_000_000
 
@@ -377,13 +379,19 @@ class ResponsesRelay:
                     except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                         drain_until = time.monotonic() + DISCONNECTED_STREAM_DRAIN_SECONDS
                     frame = bytearray()
+                    stream_bytes = 0
                     terminal = False
                     for chunk in upstream.iter_content(chunk_size=4096):
+                        now = time.monotonic()
                         if not chunk:
                             continue
+                        stream_bytes += len(chunk)
+                        if stream_bytes > MAX_UPSTREAM_STREAM_BYTES:
+                            row["transport_error"] = "upstream_stream_byte_limit"
+                            break
                         if drain_until is not None:
                             drain_bytes += len(chunk)
-                            if time.monotonic() >= drain_until or drain_bytes > DISCONNECTED_STREAM_DRAIN_BYTES:
+                            if now >= drain_until or drain_bytes > DISCONNECTED_STREAM_DRAIN_BYTES:
                                 row["transport_error"] = "downstream_disconnect_drain_limit"
                                 break
                         frame.extend(chunk)
@@ -413,6 +421,11 @@ class ResponsesRelay:
                                     upstream.close()
                                     terminal = True
                                     break
+                        # Continuous chunks bypass the socket inactivity timeout. Preserve
+                        # terminal usage already received in the current chunk.
+                        if not terminal and now - started >= UPSTREAM_STREAM_SECONDS:
+                            row["transport_error"] = "upstream_stream_elapsed_limit"
+                            break
                         if drain_until is None:
                             try:
                                 self.wfile.write(chunk)
