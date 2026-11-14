@@ -19,6 +19,8 @@ MODEL = "gemini-3.1-flash-lite"
 MAX_OUTPUT_TOKENS = 4096
 MAX_REQUEST_BYTES = 20_000_000
 MAX_ERROR_BODY_BYTES = 65_536
+DISCONNECTED_STREAM_DRAIN_SECONDS = 30
+DISCONNECTED_STREAM_DRAIN_BYTES = 4_000_000
 
 
 @dataclass(frozen=True)
@@ -125,7 +127,11 @@ class ResponsesRelay:
 
     def _settle_response(self, row, response):
         policy = self.responses_policy
+        response = response if isinstance(response, dict) else {}
         usage = policy.response_usage(row['model'], response) if policy else self._usage(response)
+        if usage is None:
+            row["usage_failure"] = ("missing_usage" if not isinstance(response.get("usage"), dict)
+                                    else "rejected_usage_or_identity")
         amount = None
         try:
             if usage is not None:
@@ -138,6 +144,7 @@ class ResponsesRelay:
             if policy is None:
                 raise
             usage, amount = None, None
+            row["usage_failure"] = "rejected_price_or_accounting"
             self.budget.settle(row['attempt_id'], None)
         row.update(usage=usage, status='settled' if usage is not None else 'unknown', actual_rmb=amount)
         if policy:
@@ -359,16 +366,26 @@ class ResponsesRelay:
                         relay._settle_response(row, response_body)
                         self._json(200, response_body)
                         return
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/event-stream")
-                    self.send_header("Cache-Control", "no-cache")
-                    self.end_headers()
                     stream_started = True
+                    drain_until = None
+                    drain_bytes = 0
+                    try:
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/event-stream")
+                        self.send_header("Cache-Control", "no-cache")
+                        self.end_headers()
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                        drain_until = time.monotonic() + DISCONNECTED_STREAM_DRAIN_SECONDS
                     frame = bytearray()
                     terminal = False
                     for chunk in upstream.iter_content(chunk_size=4096):
                         if not chunk:
                             continue
+                        if drain_until is not None:
+                            drain_bytes += len(chunk)
+                            if time.monotonic() >= drain_until or drain_bytes > DISCONNECTED_STREAM_DRAIN_BYTES:
+                                row["transport_error"] = "downstream_disconnect_drain_limit"
+                                break
                         frame.extend(chunk)
                         while True:
                             normalized = bytes(frame).replace(b"\r\n", b"\n")
@@ -396,10 +413,17 @@ class ResponsesRelay:
                                     upstream.close()
                                     terminal = True
                                     break
-                        self.wfile.write(chunk)
-                        self.wfile.flush()
+                        if drain_until is None:
+                            try:
+                                self.wfile.write(chunk)
+                                self.wfile.flush()
+                            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                                # The admitted upstream request may still end with billable usage.
+                                drain_until = time.monotonic() + DISCONNECTED_STREAM_DRAIN_SECONDS
                         if terminal:
                             break
+                    if not terminal:
+                        row["usage_failure"] = "missing_terminal_event"
                 except (requests.RequestException, OSError) as exc:
                     if isinstance(exc, requests.RequestException):
                         with relay._upstream_lock:

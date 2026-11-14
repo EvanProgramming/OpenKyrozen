@@ -506,6 +506,56 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.assertEqual(self.relay.rows[0]["status"], "settled")
         self.assertEqual(self.relay.rows[0]["usage"]["input_tokens"], 12)
 
+    def check_disconnected_stream_settlement(self, drain_bytes, expected_status):
+        served = threading.Event()
+        release = threading.Event()
+        upstream_url = self.relay.endpoint + "/responses"
+
+        class Stream:
+            status_code = 200
+
+            def close(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                yield b'data: {"type":"response.output_text.delta","delta":"first"}\n\n'
+                served.set()
+                if not release.wait(3):
+                    raise requests.ReadTimeout("test did not release upstream")
+                yield b'data: {"type":"response.output_text.delta","delta":"second"}\n\n'
+                yield b'data: {"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":4}}}\n\n'
+
+        original_post = requests.post
+        with patch("benchmarks.v3_responses_relay.DISCONNECTED_STREAM_DRAIN_BYTES", drain_bytes), \
+             patch("benchmarks.v3_responses_relay.requests.post",
+                   side_effect=lambda url, *args, **kwargs: (
+                       Stream() if url == upstream_url else original_post(url, *args, **kwargs))):
+            body = b'{"input":"fixture","stream":true}'
+            try:
+                with socket.create_connection(("127.0.0.1", self.relay._server.server_port), timeout=3) as client:
+                    client.sendall((f"POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                                    f"Authorization: Bearer {self.relay.client_key}\r\n"
+                                    f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode() + body)
+                    self.assertTrue(served.wait(3))
+                    client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            finally:
+                release.set()
+            deadline = time.monotonic() + 5
+            while "latency_ms" not in self.relay.rows[0] and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+        self.assertIn("latency_ms", self.relay.rows[0])
+        self.assertEqual(self.budget.campaign_calls()[0]["status"], expected_status)
+        self.assertIsNone(self.relay.provider_error)
+
+    def test_stream_drains_usage_after_local_client_disconnect(self):
+        self.check_disconnected_stream_settlement(4096, "settled")
+
+    def test_stream_keeps_reservation_when_disconnect_drain_hits_limit(self):
+        self.check_disconnected_stream_settlement(1, "unknown")
+        self.assertEqual(self.relay.rows[0]["transport_error"], "downstream_disconnect_drain_limit")
+        self.assertEqual(self.relay.rows[0]["usage_failure"], "missing_terminal_event")
+
     def test_missing_usage_terminal_event_is_held_once_without_reading_past_terminal(self):
         upstream_url = self.relay.endpoint + "/responses"
         original_post = requests.post
@@ -532,6 +582,7 @@ class V3ResponsesRelayTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.relay.rows[0]["status"], "unknown")
+        self.assertEqual(self.relay.rows[0]["usage_failure"], "missing_usage")
         self.assertIsNone(self.relay.provider_error)
         self.assertEqual(self.budget.campaign_calls()[0]["status"], "unknown")
 
