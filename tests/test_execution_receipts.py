@@ -687,6 +687,42 @@ class RuntimeReceiptBindingTests(unittest.TestCase):
         self.assertEqual(task["status"], "pending")
         self.assertFalse(any(item.get("acceptance") for item in task["evidence"]))
 
+    def test_started_working_task_accepts_only_its_declared_successful_command(self):
+        from openkyrozen.providers.models import ToolCall
+
+        runtime = self.app.runtime
+        command = {"command": "python -B -m unittest test_check.py"}
+        test_file = self.root / "test_check.py"
+        passing = "import unittest\nclass Check(unittest.TestCase):\n def test_value(self): self.assertTrue(True)\n"
+        test_file.write_text(passing)
+        plan = runtime.execute_call(runtime.current_session, ToolCall("create", "update_plan", {
+            "complexity": "complex", "expected_revision": 0, "operations": [
+            {"op": "add", "ref": "verify", "task": {"description": "Verify the edge case",
+             "acceptance": [{"criterion": "Edge-case tests pass", "verification": {
+                 "action": "run_cmd", "arguments": command}}]}},
+        ]}))
+        self.assertTrue(plan.success, plan.as_dict())
+        task_id = runtime.tasks.tasks[0]["id"]
+        early = runtime.execute_call(runtime.current_session, ToolCall("early", "run_cmd", command), task_id=task_id)
+        self.assertTrue(early.success)
+        self.assertIsNone(early.task_id)
+        self.assertEqual(runtime.tasks.tasks[0]["status"], "pending")
+        snapshot = runtime.tasks.working_plan_snapshot()
+        runtime.tasks.edit_plan(plan_id=snapshot["plan_id"], expected_revision=snapshot["revision"],
+                                operations=[{"op": "start", "task": task_id}])
+        test_file.write_text(passing.replace("True(True)", "True(False)"))
+        for call_id, args, success in (
+            ("different", {"command": "python -B -m unittest --help"}, True),
+            ("failing", command, False),
+            ("passing", command, True),
+        ):
+            if call_id == "passing":
+                test_file.write_text(passing)
+            receipt = runtime.execute_call(runtime.current_session, ToolCall(call_id, "run_cmd", args),
+                                           task_id=task_id)
+            self.assertEqual(receipt.success, success)
+            self.assertEqual(runtime.tasks.tasks[0]["status"], "succeeded" if call_id == "passing" else "running")
+
     def test_partial_command_match_does_not_satisfy_multi_part_acceptance(self):
         from openkyrozen.providers.models import ToolCall
 

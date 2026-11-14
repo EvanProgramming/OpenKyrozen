@@ -232,6 +232,43 @@ class NativeContextTests(unittest.TestCase):
                 self.assertTrue(any(record["action"] == "read_file" and record["success"]
                                     and record.get("task_id") for record in turn.tool_records))
 
+    def test_native_revises_seeded_plan_with_a_verifiable_command(self):
+        test_file = self.root / "test_edge.py"
+        test_file.write_text("import unittest\nclass Check(unittest.TestCase):\n def test_edge(self): self.assertEqual(0, 0)\n")
+        self.runtime.tasks.edit_plan(complexity="complex", expected_revision=0, operations=[
+            {"op": "add", "ref": "seed", "task": {"description": "Inspect edge cases",
+                "acceptance": ["Complete the independent fixture objective."]}},
+        ])
+        command = {"command": "python -B -m unittest test_edge.py"}
+
+        def respond(provider, messages, _model):
+            snapshot = self.runtime.tasks.working_plan_snapshot()
+            if len(provider.requests) == 1:
+                call = ToolCall("revise", "update_plan", {"plan_id": snapshot["plan_id"],
+                    "expected_revision": snapshot["revision"], "operations": [
+                        {"op": "cancel", "task": snapshot["tasks"][0]["id"]},
+                        {"op": "add", "ref": "check", "task": {"description": "Verify discovered edge",
+                            "acceptance": [{"criterion": "Edge test passes", "verification": {
+                                "action": "run_cmd", "arguments": command}}]}},
+                        {"op": "start", "task": "check"},
+                    ]})
+            elif len(provider.requests) == 2:
+                self.assertEqual(snapshot["tasks"][-1]["status"], "running")
+                call = ToolCall("check-edge", "run_cmd", command)
+            else:
+                self.assertEqual(snapshot["status"], "completed")
+                return ModelResponse(text="The edge test passed.", finish_reason=FinishReason.FINAL)
+            return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                continuation=provider_continuation(provider, _model, "fixture", {"call": call.id}))
+
+        with patch.object(self.runtime, "_effective_execution_capabilities",
+                          return_value={"read", "write", "shell"}):
+            answer, turn, _ = self.run_native(self.provider(respond),
+                [{"role": "user", "content": "Verify the discovered edge case."}],
+                complexity="complex", permitted={"update_plan", "run_cmd", "read_tool_artifact"})
+        self.assertEqual(turn.runtime_status, "completed", answer)
+        self.assertEqual([task["status"] for task in self.runtime.tasks.tasks], ["cancelled", "succeeded"])
+
     def continuation_plan(self, *, typed=True):
         (self.root / "notes.txt").write_text("ready\n")
         return self.runtime.tasks.edit_plan(complexity="complex", expected_revision=0, operations=[{

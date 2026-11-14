@@ -149,9 +149,17 @@ _READ_CRITERION = {'type':'object','properties':{
         **_CONTROL_VERIFICATION['properties'],'action':{'type':'string','enum':['read_file']}},
         'required':['action','arguments','expect']},
 },'required':['criterion','verification'],'additionalProperties':False}
+_COMMAND_CRITERION = {**_READ_CRITERION, 'properties':{
+    **_READ_CRITERION['properties'], 'verification':{
+        **_CONTROL_VERIFICATION, 'properties':{
+            'action':{'type':'string','enum':['run_cmd']},
+            'arguments':_CONTROL_VERIFICATION['properties']['arguments'],
+        },
+    },
+}}
 _WORKING_ACCEPTANCE = {'anyOf':[
     {'type':'array','items':{'type':'string','minLength':1}},
-    {'type':'array','minItems':1,'items':_READ_CRITERION},
+    {'type':'array','minItems':1,'items':{'anyOf':[_READ_CRITERION, _COMMAND_CRITERION]}},
 ]}
 
 _PLAN_EXECUTION_SCHEMA = {'type':'object','properties':{

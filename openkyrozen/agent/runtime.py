@@ -943,6 +943,15 @@ class AgentRuntime:
                 if task_id is not None and not self._valid_receipt_task_binding(session, task_id):
                     bound_task_id = None
                     return reject(tool_failure("invalid_arguments", "Error: task_id must identify a pending task in the active Working Plan."))
+                if bound_task_id is not None and name == "run_cmd":
+                    parent = getattr(session, "_delegation_parent", None)
+                    manager = (parent or session).tasks
+                    task = manager.active_working_task(bound_task_id)
+                    if task and manager.execution_task_id != bound_task_id and any(
+                        isinstance(criterion, dict) and criterion.get("id", "").startswith("command-ac-")
+                        for criterion in task.get("acceptance", [])
+                    ):
+                        bound_task_id = None
                 try:
                     spec = self.tool_registry.get_spec(name)
                 except KeyError:

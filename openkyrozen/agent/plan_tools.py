@@ -67,6 +67,13 @@ def _update_plan(self, arguments: dict):
     read_file, exact arguments and expect={equals:content} or {contains:text}.
     All predicates must match actual complete content after explicit start;
     prose acceptance never becomes verified merely because a read succeeded.
+    For a test task, add a criterion/verification object with action run_cmd and
+    the exact arguments you will run, including any options. Start the task
+    before running that command. A verified zero exit status satisfies this
+    criterion. A failed reproduction remains evidence of the bug; use a
+    separate task with a successful check for the fix.
+    Refine a pending prose-only task with an update before starting it. If
+    its verification changes after start, cancel it and add a new task.
     Use start with a stable returned task ID before
     executing native task work, then suggest_complete to check existing verified
     evidence; a completion suggestion never supplies evidence. A pure exact-revision
@@ -114,7 +121,8 @@ def _update_plan(self, arguments: dict):
                     if confirmation else "Working Plan updated.")
             if pending:
                 text += (" Completion remains unverified; inspect the returned task acceptance and execution contract. "
-                         "A successful tool call does not verify a different task contract; executed task changes require cancellation/replacement.")
+                         "Set the execution contract to name the exact verification tool and arguments before starting work. "
+                         "To revise a running task's contract, cancel it and add a new task.")
             return tool_success(text, data=result,
                                 metadata={"working_plan_confirmation": True} if confirmation else None)
         plan = self.tasks.update_plan(complexity=arguments["complexity"], tasks=arguments["tasks"])

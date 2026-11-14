@@ -239,19 +239,26 @@ class TaskManager:
             for value in acceptance:
                 if (not isinstance(value, dict) or set(value) != {"criterion", "verification"}
                         or not isinstance(value.get("criterion"), str) or not value["criterion"].strip()):
-                    raise ValueError("read criteria require criterion/verification objects; do not mix with prose")
+                    raise ValueError("verified criteria require criterion/verification objects; do not mix with prose")
                 verification = validate_acceptance_verification(value["verification"])
-                if verification["action"] != "read_file":
-                    raise ValueError("ordinary verified criteria currently support only read_file")
+                action = verification["action"]
+                if action not in {"read_file", "run_cmd"}:
+                    raise ValueError("ordinary verified criteria support read_file and run_cmd")
+                if action == "run_cmd":
+                    command = verification["arguments"].get("command")
+                    if not isinstance(command, str) or not command.strip():
+                        raise ValueError("run_cmd verification requires a nonempty command")
                 criterion = value["criterion"].strip()
                 identity = json.dumps({"criterion": criterion, "verification": verification},
                                       sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-                criteria.append({"id": "read-ac-" + hashlib.sha256(identity.encode()).hexdigest()[:12],
-                    "criterion": criterion, "action": "read_file", "expect": verification["expect"],
+                criteria.append({"id": ("read-ac-" if action == "read_file" else "command-ac-")
+                                       + hashlib.sha256(identity.encode()).hexdigest()[:12],
+                    "criterion": criterion, "action": action,
+                    **({"expect": verification["expect"]} if action == "read_file" else {}),
                     "args": json.dumps(verification["arguments"], ensure_ascii=False, allow_nan=False,
                                        sort_keys=True, separators=(",", ":"))})
             if len({value["id"] for value in criteria}) != len(criteria):
-                raise ValueError("read acceptance criteria must be unique")
+                raise ValueError("verified acceptance criteria must be unique")
             acceptance = criteria
         elif any(not isinstance(value, str) or not value.strip() for value in acceptance):
             raise ValueError("task acceptance must be an array of nonempty strings")
@@ -1071,6 +1078,13 @@ class TaskManager:
                 for criterion in candidate.get("acceptance", []):
                     if (not isinstance(criterion, dict) or not criterion.get("id")
                             or criterion.get("action") != canonical or criterion.get("args") != normalized_args):
+                        continue
+                    if canonical == "run_cmd" and criterion["id"].startswith("command-ac-") and (
+                        verification_status != "verified"
+                        or inferred
+                        or candidate["status"] != "running"
+                        or not (candidate.get("checkpoint") or {}).get("native_execution_selected")
+                    ):
                         continue
                     expect = criterion.get("expect")
                     if canonical == "read_file":
