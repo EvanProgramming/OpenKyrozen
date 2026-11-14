@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import asyncio
 import json
 import tempfile
@@ -140,8 +141,8 @@ class StreamingEndpointTests(unittest.TestCase):
                 frames.append(frame.decode() if isinstance(frame, bytes) else frame)
             return frames
 
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-native-events-") as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="native-events")
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-native-events-") as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="native-events")))
             original_sessions = server._sessions
             server._sessions = {}
             def emit_native_text(*_args, **_kwargs):
@@ -204,8 +205,8 @@ class StreamingEndpointTests(unittest.TestCase):
                 pass
             return leading, first, first_elapsed, provider_complete_before_release, remaining
 
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-stream-") as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="stream-test")
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-stream-") as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="stream-test")))
             original_sessions = server._sessions
             server._sessions = {}
             try:
@@ -253,8 +254,8 @@ class StreamingEndpointTests(unittest.TestCase):
             except StopAsyncIteration:
                 return frames
 
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-dsml-") as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="dsml-test")
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-dsml-") as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="dsml-test")))
             original_sessions = server._sessions
             server._sessions = {}
             try:
@@ -316,8 +317,8 @@ class StreamingEndpointTests(unittest.TestCase):
             except StopAsyncIteration:
                 return frames
 
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-inline-control-") as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="inline-control-test")
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-inline-control-") as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="inline-control-test")))
             original_sessions = server._sessions
             server._sessions = {}
             try:
@@ -370,8 +371,8 @@ class StreamingEndpointTests(unittest.TestCase):
             except StopAsyncIteration:
                 return frames
 
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-prose-alias-") as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="prose-alias-test")
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-prose-alias-") as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="prose-alias-test")))
             original_sessions = server._sessions
             server._sessions = {}
             try:
@@ -423,8 +424,8 @@ class StreamingEndpointTests(unittest.TestCase):
             except StopAsyncIteration:
                 return frames
 
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-tool-name-prose-") as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="tool-name-prose-test")
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-tool-name-prose-") as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="tool-name-prose-test")))
             original_sessions = server._sessions
             server._sessions = {}
             try:
@@ -483,8 +484,8 @@ class StreamingEndpointTests(unittest.TestCase):
             except StopAsyncIteration:
                 return frames
 
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-generic-invoke-") as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="generic-invoke-test")
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-generic-invoke-") as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="generic-invoke-test")))
             original_sessions = server._sessions
             server._sessions = {}
             try:

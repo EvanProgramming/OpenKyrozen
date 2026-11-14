@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import json
 import tempfile
 import unittest
@@ -14,9 +15,9 @@ from openkyrozen.skills.registry import SkillRegistry
 
 class SkillRegistryTests(unittest.TestCase):
     def test_packaged_builtins_seed_with_pinned_versions_and_match_runtime(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            registry = SkillRegistry(EventStore(root / "state.sqlite3"), root=root / "installed")
+            registry = SkillRegistry(sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3"))), root=root / "installed")
             seeded = registry.seed_builtins()
             self.assertEqual({item["manifest"]["name"] for item in seeded}, {
                 "bug-fix", "git-workflow", "graphify", "github-cli", "ponytail",
@@ -45,7 +46,7 @@ class SkillRegistryTests(unittest.TestCase):
             self.assertIn("Graphify project intelligence", installed.read_text(encoding="utf-8"))
 
     def test_builtin_upgrade_retains_previous_version_for_rollback(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             source = root / "old"
             source.mkdir()
@@ -58,7 +59,7 @@ class SkillRegistryTests(unittest.TestCase):
                 "profiles": ["coder", "researcher"], "triggers": ["project"],
                 "checksum": "sha256:" + hashlib.sha256(body.encode()).hexdigest(),
             }), encoding="utf-8")
-            registry = SkillRegistry(EventStore(root / "state.sqlite3"), root=root / "installed")
+            registry = SkillRegistry(sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3"))), root=root / "installed")
             old = registry.install(source, activate=True, source_name="builtin")
             registry.seed_builtins()
             previous = next(item for item in registry.list() if item["id"] == old["id"])
@@ -66,7 +67,7 @@ class SkillRegistryTests(unittest.TestCase):
             self.assertTrue(Path(previous["path"]).is_dir())
 
     def test_skill_install_validates_permissions_and_requires_explicit_activation(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             source = root / "source"
             source.mkdir()
@@ -75,7 +76,7 @@ class SkillRegistryTests(unittest.TestCase):
                 "name": "test-skill", "version": "1.0.0", "description": "test",
                 "permissions": ["workspace.read"], "profiles": ["coder"], "triggers": ["pytest"],
             }), encoding="utf-8")
-            registry = SkillRegistry(EventStore(root / "state.sqlite3"), root=root / "installed")
+            registry = SkillRegistry(sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3"))), root=root / "installed")
             installed = registry.install(source)
             self.assertEqual(installed["status"], "candidate")
             self.assertTrue(registry.activate(installed["id"]))
@@ -83,18 +84,18 @@ class SkillRegistryTests(unittest.TestCase):
             self.assertTrue(registry.rollback(installed["id"]))
 
     def test_skill_rejects_undeclared_permission(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             source = root / "source"
             source.mkdir()
             (source / "SKILL.md").write_text("# Test\n", encoding="utf-8")
             (source / "skill.json").write_text(json.dumps({"name": "bad-skill", "permissions": ["secrets.read"]}), encoding="utf-8")
-            registry = SkillRegistry(EventStore(root / "state.sqlite3"), root=root / "installed")
+            registry = SkillRegistry(sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3"))), root=root / "installed")
             with self.assertRaises(ValueError):
                 registry.install(source)
 
     def test_runtime_local_skill_requires_profiles_and_triggers(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             source = root / "source"
             source.mkdir()
@@ -102,7 +103,7 @@ class SkillRegistryTests(unittest.TestCase):
             (source / "skill.json").write_text(json.dumps({
                 "name": "missing-runtime-fields", "version": "1.0.0", "permissions": [],
             }), encoding="utf-8")
-            registry = SkillRegistry(EventStore(root / "state.sqlite3"), root=root / "installed")
+            registry = SkillRegistry(sqlite_owners.enter_context(closing(EventStore(root / "state.sqlite3"))), root=root / "installed")
             with self.assertRaisesRegex(ValueError, "profiles"):
                 registry.install(source)
 
@@ -111,7 +112,7 @@ class SkillRegistryTests(unittest.TestCase):
         original_registry = main.skill_registry
         original_engine = main.learning_engine
         original_root = main._get_workspace_root()
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             source = root / "source"
             source.mkdir()
@@ -132,8 +133,8 @@ Confirm the test result before reporting success.
                 "description": "A local runtime guide", "permissions": [],
                 "profiles": ["coder"], "triggers": ["pytest"],
             }), encoding="utf-8")
-            memory = MemoryBank(root / "state.sqlite3", user_id="skill-user",
-                                workspace_id="skill-workspace", session_id="skill-session")
+            memory = sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3", user_id="skill-user",
+                                workspace_id="skill-workspace", session_id="skill-session")))
             registry = SkillRegistry(memory.store, workspace_id="skill-workspace", root=root / "installed")
             engine = LearningEngine(memory, registry=registry)
             installed = registry.install(source, activate=True)

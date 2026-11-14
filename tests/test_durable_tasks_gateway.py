@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import json
 import os
 import socket
@@ -23,7 +24,8 @@ class DurableTaskGatewayTests(unittest.TestCase):
             return int(sock.getsockname()[1])
 
     @staticmethod
-    def _request(base_url: str, path: str, *, method: str = "GET", body: dict | None = None) -> dict:
+    def _request(base_url: str, path: str, *, method: str = "GET", body: dict | None = None,
+                 timeout: float = 5) -> dict:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         request = urllib.request.Request(
             base_url + path,
@@ -31,7 +33,8 @@ class DurableTaskGatewayTests(unittest.TestCase):
             method=method,
             headers={"Content-Type": "application/json", "Authorization": "Bearer durable-test-token"},
         )
-        with urllib.request.urlopen(request, timeout=5) as response:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def _start_server(self, workspace: Path, db_path: Path, skills_path: Path, *, log_path: Path | None = None, startup_timeout: float = 20) -> tuple[subprocess.Popen, str]:
@@ -87,15 +90,15 @@ class DurableTaskGatewayTests(unittest.TestCase):
         if process.stdout:
             process.stdout.close()
 
-    def test_gateway_recovers_scoped_running_task_and_executes_api_task(self):
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-task-gateway-") as directory:
+    def test_gateway_blocks_interrupted_mutations_and_executes_new_api_task(self):
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-task-gateway-") as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             workspace = root / "workspace"
             workspace.mkdir()
             (workspace / "home").mkdir()
             db_path = root / "state.sqlite3"
             skills_path = root / "skills"
-            store = EventStore(db_path)
+            store = sqlite_owners.enter_context(closing(EventStore(db_path)))
             workspace_id = source_scope_id(workspace)
             recovery_manager = TaskManager(
                 store, user_id="local", workspace_id=workspace_id, session_id="restart-session"
@@ -125,30 +128,16 @@ class DurableTaskGatewayTests(unittest.TestCase):
 
             process, base_url = self._start_server(workspace, db_path, skills_path)
             try:
-                deadline = time.monotonic() + 10
                 recovered = self._request(base_url, "/api/v2/tasks?session_id=restart-session")
-                while time.monotonic() < deadline:
-                    recovered = self._request(base_url, "/api/v2/tasks?session_id=restart-session")
-                    if recovered["tasks"][0]["status"] == "succeeded":
-                        break
-                    time.sleep(0.1)
-                self.assertEqual(recovered["tasks"][0]["status"], "succeeded")
-                self.assertEqual((workspace / "recovered.txt").read_text(encoding="utf-8"), "after restart")
-
-                deadline = time.monotonic() + 10
-                recovered_command = self._request(
-                    base_url, "/api/v2/tasks?session_id=restart-command-session"
-                )
-                while time.monotonic() < deadline:
-                    recovered_command = self._request(
-                        base_url, "/api/v2/tasks?session_id=restart-command-session"
-                    )
-                    if recovered_command["tasks"][0]["status"] == "failed":
-                        break
-                    time.sleep(0.1)
-                self.assertEqual(recovered_command["tasks"][0]["status"], "failed")
-                self.assertTrue(recovered_command["tasks"][0]["evidence"])
-                self.assertFalse(recovered_command["tasks"][0]["evidence"][-1]["success"])
+                self.assertEqual(recovered["tasks"][0]["status"], "blocked")
+                self.assertFalse((workspace / "recovered.txt").exists())
+                recovered_command = self._request(base_url, "/api/v2/tasks?session_id=restart-command-session")
+                self.assertEqual(recovered_command["tasks"][0]["status"], "blocked")
+                self.assertEqual(recovered_command["tasks"][0]["evidence"], [])
+                with self.assertRaises(urllib.error.HTTPError) as denied:
+                    self._request(base_url, f"/api/v2/tasks/{recovered['tasks'][0]['id']}/resume",
+                                  method="POST", body={})
+                self.assertEqual(denied.exception.code, 409)
 
                 created = self._request(
                     base_url,
@@ -210,7 +199,7 @@ class DurableTaskGatewayTests(unittest.TestCase):
                 events = self._request(base_url, "/api/v2/events?session_id=restart-session")["events"]
                 event_types = {event["event_type"] for event in events}
                 self.assertIn("task.recovered", event_types)
-                self.assertIn("task.execution_completed", event_types)
+                self.assertNotIn("task.execution_completed", event_types)
             finally:
                 self._stop_server(process)
 

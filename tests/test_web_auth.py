@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import json
 import os
 import socket
@@ -76,13 +77,13 @@ class WebAuthBrowserTests(unittest.TestCase):
         "browser integration requires `make install` (Playwright and Chromium)",
     )
     def test_token_enabled_ui_authenticates_loads_sessions_streams_and_reports_invalid_token(self):
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-web-auth-") as directory:
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-web-auth-") as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             workspace = root / "workspace"
             workspace.mkdir()
             (workspace / "home").mkdir()
             database = root / "state.sqlite3"
-            store = EventStore(database)
+            store = sqlite_owners.enter_context(closing(EventStore(database)))
             store.append_event(
                 "session.message", {"role": "assistant", "content": "AUTH_UI_HISTORY"},
                 user_id="local", workspace_id="default", session_id="auth-ui-session",

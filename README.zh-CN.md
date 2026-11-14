@@ -14,6 +14,8 @@
 
 ## 安装
 
+V3 尚未发布。下方命令安装已发布的稳定版 **v2.0.8**。
+
 OpenKyrozen 支持 Python **3.12 和 3.13**。Python 3.14 暂不支持。
 
 ### macOS 或 Linux

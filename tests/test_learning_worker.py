@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import os
 import sys
 import tempfile
@@ -19,13 +20,13 @@ class LearningWorkerTests(unittest.TestCase):
             self.assertEqual(heartbeat.parent, Path(directory).resolve())
 
     def test_feature_flags_persist_across_store_restarts(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "state.sqlite3"
-            first = EventStore(path)
+            first = sqlite_owners.enter_context(closing(EventStore(path)))
             first.set_learning_feature_flag("idle_reflection", False, workspace_id="project")
             first.set_learning_feature_flag("memory_importance_scoring", True, workspace_id="project")
 
-            reopened = EventStore(path)
+            reopened = sqlite_owners.enter_context(closing(EventStore(path)))
             self.assertEqual(
                 reopened.list_learning_feature_flags(workspace_id="project"),
                 {"idle_reflection": False, "memory_importance_scoring": True},

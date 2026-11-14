@@ -1,4 +1,5 @@
 """Offline regression checks for provider-independent response boundaries."""
+from contextlib import ExitStack, closing
 import unittest
 import copy
 from types import SimpleNamespace as NS
@@ -53,8 +54,8 @@ class ProviderResponseRegressionTests(unittest.TestCase):
         response = ModelResponse(tool_calls=(ToolCall("id", "read_file", {"path": "a"}),),
                                  usage={"prompt_tokens": 2, "completion_tokens": 3},
                                  finish_reason=FinishReason.TOOL_REQUEST)
-        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
-            application = build_application(memory=build_memory(Path(directory) / "state.sqlite3"))
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}), ExitStack() as sqlite_owners:
+            application = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))))
             runtime = application.runtime
             runtime.llm_provider = NS(chat_response=Mock(return_value=response))
             try:
@@ -156,6 +157,19 @@ class ContractTests(unittest.TestCase):
 
 
 class AdapterContractTests(unittest.TestCase):
+    def test_gemini_and_vertex_charge_thinking_tokens_as_output(self):
+        for cls, wire in self.wires(calls=False):
+            if cls not in {GoogleProvider, VertexProvider}:
+                continue
+            with self.subTest(provider=cls.__name__):
+                wire.usage_metadata = NS(prompt_token_count=20, candidates_token_count=3,
+                                         thoughts_token_count=11)
+                with patch("openkyrozen.providers.usage._track_cost") as charge:
+                    response = self.adapter(cls, wire).chat_response([])
+                self.assertEqual(response.usage["completion_tokens"], 14)
+                self.assertEqual(response.usage["reasoning_tokens"], 11)
+                self.assertEqual(charge.call_args.args[1], response.usage)
+
     def adapter(self, cls, wire):
         provider = cls.__new__(cls)
         provider.config = ProviderConfig(provider="custom", model_simple="quick", model_complex="slow")

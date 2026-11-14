@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import os
 import stat
 import tempfile
@@ -18,13 +19,16 @@ class HistoryManagerTests(unittest.TestCase):
         self.state = Path(self.directory.name) / "state"
         self.root.mkdir()
         self.state.mkdir()
-        self.store = EventStore(self.state / "history.sqlite3")
+        self._sqlite_owners = ExitStack()
+        self.addCleanup(self._sqlite_owners.close)
+        self.store = self._sqlite_owners.enter_context(closing(EventStore(self.state / "history.sqlite3")))
         self.manager = HistoryManager(
             self.store, self.root, self.state, source_scope_id=source_scope_id(self.root),
             user_id="alice", workspace_id="project", session_id="conversation",
         )
 
     def tearDown(self):
+        self._sqlite_owners.close()
         self.directory.cleanup()
 
     def test_branching_restore_preserves_files_descendants_memory_tasks_and_git(self):
@@ -111,11 +115,86 @@ class HistoryManagerTests(unittest.TestCase):
         )
 
         reopened = HistoryManager(
-            EventStore(self.state / "history.sqlite3"), self.root, self.state,
+            self._sqlite_owners.enter_context(closing(EventStore(self.state / "history.sqlite3"))), self.root, self.state,
             source_scope_id=source_scope_id(self.root), user_id="alice", workspace_id="project",
             session_id="conversation",
         )
         self.assertEqual(reopened.current()["id"], n1["id"])
+
+    def test_snapshot_excludes_active_database_and_sidecars_inside_workspace(self):
+        db_dir = self.root / "database"
+        db_dir.mkdir()
+        store = self._sqlite_owners.enter_context(closing(EventStore(db_dir / "state.sqlite3")))
+        manager = HistoryManager(store, self.root, self.state,
+            source_scope_id=source_scope_id(self.root), session_id="inside")
+        (db_dir / "state.sqlite3-unrelated").write_text("user file")
+        with store.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            _, manifest, _ = manager._snapshot("hist_" + "a" * 32)
+            connection.rollback()
+        self.assertNotIn("database/state.sqlite3", manifest)
+        self.assertNotIn("database/state.sqlite3-wal", manifest)
+        self.assertNotIn("database/state.sqlite3-shm", manifest)
+        self.assertIn("database/state.sqlite3-unrelated", manifest)
+
+    def test_restore_ignores_database_in_legacy_snapshot_and_preserves_new_db_directory(self):
+        before_db = self.manager.ensure_root()
+        db_dir = self.root / "database"
+        db_dir.mkdir()
+        store = self._sqlite_owners.enter_context(closing(EventStore(db_dir / "state.sqlite3")))
+        manager = HistoryManager(store, self.root, self.state,
+            source_scope_id=source_scope_id(self.root), session_id="inside")
+        # Construct a legacy snapshot that includes the live database.
+        with patch.object(manager, "_excluded", side_effect=lambda path: False):
+            legacy = manager.ensure_root()
+        store.append_event("memory.test", {"content": "keep"})
+        manager._restore(legacy)
+        self.assertEqual(len(store.list_events("memory.test")), 1)
+        # A snapshot from before the database directory existed must not remove it.
+        manager._restore(before_db)
+        self.assertEqual(len(store.list_events("memory.test")), 1)
+
+    @unittest.skipIf(os.name == "nt", "Windows symlinks may require extra privileges")
+    def test_snapshot_and_restore_preserve_database_directory_symlink(self):
+        actual = Path(self.directory.name) / "external-database"
+        actual.mkdir()
+        link = self.root / "database-link"
+        link.symlink_to(actual, target_is_directory=True)
+        store = self._sqlite_owners.enter_context(closing(EventStore(link / "state.sqlite3")))
+        manager = HistoryManager(store, self.root, self.state,
+            source_scope_id=source_scope_id(self.root), session_id="inside")
+        baseline = manager.ensure_root()
+        self.assertNotIn("database-link", manager._manifest(baseline))
+        manager._restore(baseline)
+        self.assertTrue(link.is_symlink())
+        store.append_event("memory.test", {"content": "keep"})
+        self.assertEqual(len(store.list_events("memory.test")), 1)
+
+    @unittest.skipIf(os.name == "nt", "POSIX directory modes are not supported on Windows")
+    def test_restore_preserves_database_directory_permissions(self):
+        db_dir = self.root / "database"
+        db_dir.mkdir(mode=0o700)
+        baseline = self.manager.ensure_root()
+        store = self._sqlite_owners.enter_context(closing(EventStore(db_dir / "state.sqlite3")))
+        os.chmod(db_dir, 0o750)
+        manager = HistoryManager(store, self.root, self.state,
+            source_scope_id=source_scope_id(self.root), session_id="inside")
+        manager._restore(baseline)
+        self.assertEqual(stat.S_IMODE(db_dir.stat().st_mode), 0o750)
+
+    def test_restore_rejects_file_that_would_replace_database_directory(self):
+        (self.root / "database").write_text("old file")
+        baseline = self.manager.ensure_root()
+        (self.root / "database").unlink()
+        (self.root / "database").mkdir()
+        store = self._sqlite_owners.enter_context(closing(EventStore(self.root / "database" / "state.sqlite3")))
+        manager = HistoryManager(store, self.root, self.state,
+            source_scope_id=source_scope_id(self.root), session_id="inside")
+        (self.root / "later.txt").write_text("keep if preflight fails")
+        with self.assertRaisesRegex(HistoryError, "active database directory"):
+            manager._restore(baseline)
+        self.assertTrue(store.path.exists())
+        self.assertTrue((self.root / "later.txt").exists())
 
     def test_scope_and_stale_head_are_rejected(self):
         root = self.manager.ensure_root()

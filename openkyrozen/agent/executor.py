@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from pathlib import Path
+from types import MethodType
 from typing import Any
 from openkyrozen.persistence.models import stable_hash, utc_now
 from openkyrozen.app.config import AgentConfigError, effective_capabilities, load_agent_config
@@ -131,6 +132,25 @@ def _awaiting_revision_mutation(state, action, args, spec, runtime) -> bool:
     ))
 
 
+def _builtin_interaction_control(runtime, action, spec) -> bool:
+    from openkyrozen.agent.plan_tools import _propose_plan, _request_question
+    from openkyrozen.tools.catalog import builtin_metadata
+
+    handlers = {"propose_plan": _propose_plan, "request_question": _request_question}
+    if action not in handlers or spec is None or spec.source != "builtin" or spec.name != action:
+        return False
+    handler = getattr(handlers[action], "__tool_result_executor__", handlers[action])
+    if (getattr(spec.executor, "__self__", None) is not runtime
+            or getattr(spec.executor, "__func__", None) is not handler):
+        return False
+    metadata = builtin_metadata(action)
+    return (spec.input_schema == metadata["input_schema"] and spec.version == "1.0.0"
+            and all(getattr(spec, field) == metadata[field] for field in (
+                "capability", "side_effects", "risk", "parallel_safe", "aliases",
+                "legacy_fields", "legacy_argument_aliases", "confirmation_surfaces",
+            )))
+
+
 def _notify_tool_execute(self, action: str, args: Any, result: ToolResult) -> None:
     """Emit the typed outcome to observers; display text cannot change status."""
     result = result if isinstance(result, ToolResult) else tool_failure(
@@ -203,13 +223,16 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                             tool_error: ToolError | None = None, result_data: Any = None,
                             tool_result: ToolResult | None = None, call_id: str | None = None,
                             call_id_source: str = "legacy", task_id: str | None = None,
+                            task_plan_id: str | None = None,
                             receipt_arguments: dict[str, Any] | None = None,
+                            _duplicate_successful_operation: bool = False,
+                            _precommit_plan_validation: bool = False,
                             expected_spec=None) -> ExecutionReceipt:
     canonical = self._operation_action(action)
     from openkyrozen.agent.delegation import TOOLS
     current_session = getattr(self, "current_session", None)
     delegated_parent = getattr(current_session, "_delegation_parent", None)
-    task_owner = delegated_parent or self
+    task_owner = self if task_plan_id is not None or canonical == "update_plan" else delegated_parent or self
     task_manager = getattr(task_owner, "tasks", None)
     result_limit = (max(2000, len(str(result))) if canonical in TOOLS else
                     8000 if canonical == "read_tool_artifact" else
@@ -227,6 +250,8 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                                     sort_keys=True, separators=(",", ":"))
         if len(candidate_json) > _TOOL_ARTIFACT_THRESHOLD:
             tool_result = candidate
+    confirmation_result = (tool_result if tool_result is not None
+                           and tool_result.metadata.get("working_plan_confirmation") is True else None)
     # Keep large outputs out of provider messages and the conversation journal.
     if tool_result is not None and canonical != "read_tool_artifact":
         from openkyrozen.agent.conversation import tool_result_to_dict
@@ -235,9 +260,10 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         if len(full_output) > _TOOL_ARTIFACT_THRESHOLD:
             memory = getattr(self, "memory_bank", None)
             store = getattr(memory, "store", None)
-            user_id = getattr(task_manager, "user_id", None) or getattr(memory, "user_id", None)
-            workspace_id = getattr(task_manager, "workspace_id", None) or getattr(memory, "workspace_id", None)
-            session_id = getattr(task_manager, "session_id", None) or getattr(memory, "session_id", None)
+            artifact_owner = getattr(current_session, "tasks", None) or task_manager
+            user_id = getattr(artifact_owner, "user_id", None) or getattr(memory, "user_id", None)
+            workspace_id = getattr(artifact_owner, "workspace_id", None) or getattr(memory, "workspace_id", None)
+            session_id = getattr(artifact_owner, "session_id", None) or getattr(memory, "session_id", None)
             artifacts = getattr(store, "artifacts", None)
             if artifacts is None or not all((user_id, workspace_id, session_id)):
                 raise RuntimeError("Cannot retain oversized tool output without a session-scoped artifact store")
@@ -279,6 +305,26 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         }
     elif getattr(expected_spec, "side_effects", None) == "read_only":
         verification = {"status": "not_applicable", "method": "read_only_tool", "observed": None}
+    if canonical == "update_plan" and call_id_source == "native" and expected_spec is not None:
+        from openkyrozen.agent.plan_tools import _update_plan
+        executor = expected_spec.executor
+        trusted = (getattr(executor, "__self__", None) is self
+                   and getattr(executor, "__func__", None) is _update_plan.__tool_result_executor__)
+        turn_id = self._conversation_turn_id.get()
+        if trusted and success and confirmation_result is not None:
+            confirmed = confirmation_result.data
+            verification = {"status": "verified", "method": "working_plan_confirmation", "observed": {
+                "plan_id": confirmed["plan_id"], "revision": confirmed["revision"], "turn_id": turn_id}}
+        elif trusted and success and task_manager.working_plan is not None:
+            plan = task_manager.working_plan
+            verification = {"status": "verified", "method": "working_plan_commit", "observed": {
+                "plan_id": plan.id, "revision": plan.revision, "turn_id": turn_id}}
+        elif (trusted and tool_error is not None and tool_error.code == "invalid_arguments"
+              and (_precommit_plan_validation or tool_error.metadata.get("plan_validation_no_effect") is True)):
+            verification = {"status": "not_applicable", "method": "plan_input_validation",
+                            "observed": {"committed": False, "turn_id": turn_id}}
+    if _duplicate_successful_operation:
+        verification = {"status": "not_applicable", "method": "duplicate_success_refusal", "observed": None}
 
     def safe_metadata(value, budget=4000):
         def clean(item, remaining, depth=0):
@@ -342,7 +388,8 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         session_id=(getattr(current_session, "session_id", None) if delegated_parent else None)
         or getattr(task_manager, "session_id", None)
         or getattr(getattr(self, "memory_bank", None), "session_id", None),
-        plan_id=getattr(getattr(task_manager, "working_plan", None), "id", None),
+        plan_id=(verification["observed"]["plan_id"] if verification.get("method") == "working_plan_confirmation"
+                 else task_plan_id or getattr(getattr(task_manager, "working_plan", None), "id", None)),
         task_id=task_id,
         tool_version=getattr(expected_spec, "version", None),
         tool_source=getattr(expected_spec, "source", None),
@@ -371,6 +418,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
               _typed_arguments: dict | None = None, _expected_spec=None,
               _call_id: str | None = None, _call_id_source: str = "legacy",
               _task_id: str | None = None, _pre_execution_check=None,
+              _task_plan_id: str | None = None,
               _on_dispatch=None) -> str | tuple[str, bool] | ExecutionReceipt:
     started_at = utc_now()
     action = self.TOOL_ALIASES.get(action, action)
@@ -427,7 +475,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                 failure=outcome.error.code if outcome.error else None, raw_result=raw_result,
                 tool_error=outcome.error, result_data=outcome.data, tool_result=outcome,
                 expected_spec=approved_spec, call_id=_call_id, call_id_source=_call_id_source,
-                task_id=_task_id,
+                task_id=_task_id, task_plan_id=_task_plan_id,
             )
         return (text, outcome.success) if return_success else text
     if action not in self.AVAILABLE_TOOLS:
@@ -440,7 +488,8 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         outcome = tool_failure("permission_denied", "Error: strategic plan revision is awaiting approval; mutation is paused.")
         self._notify_tool_execute(action, args, outcome)
         return finish(outcome)
-    if executing_plan and action != "cancel_subagent":
+    if (executing_plan and action != "cancel_subagent"
+            and not _builtin_interaction_control(self, action, approved_spec)):
         denial = _strategic_plan_denial(
             executing_plan, action, args, self.tool_registry.specs.get(action), self._get_workspace_root(),
         )
@@ -498,7 +547,8 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
             and request.session_id == self.current_session.session_id
             and self._execution_capability_token.allows(current_spec.capability)
         )
-    if authorized and executing_plan and action != "cancel_subagent":
+    if (authorized and executing_plan and action != "cancel_subagent"
+            and not _builtin_interaction_control(self, action, self.tool_registry.specs.get(action))):
         current_state = self._interaction_controller.state()
         current_plan = current_state.get("executing_plan")
         if (not current_plan or current_plan.get("plan_id") != executing_plan.get("plan_id")
@@ -591,20 +641,41 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
 
 def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                          successful_operations: set[str], call_id: str | None = None,
-                         call_id_source: str = "synthetic", task_id: str | None = None) -> ExecutionReceipt:
+                         call_id_source: str = "synthetic", task_id: str | None = None,
+                         task_plan_id: str | None = None) -> ExecutionReceipt:
     """Execute one model action, refusing a duplicate successful mutation."""
-    task_id = task_id or getattr(getattr(self, "current_session", None), "_delegation_task_id", None)
+    task_id = (task_id or getattr(getattr(self, "current_session", None), "_delegation_task_id", None)
+               if action != "update_plan" else None)
     canonical = self._operation_action(action)
     started_at = utc_now()
     call_id = call_id or f"synthetic_{uuid.uuid4().hex}"
     expected_spec = self.tool_registry.specs.get(canonical)
+    if call_id_source == "native" and canonical == "discover_tools" and expected_spec is not None:
+        from openkyrozen.agent.prompts import _discover_tools
+        executor = expected_spec.executor
+        if (expected_spec.source == "builtin" and type(executor) is MethodType
+                and executor.__self__ is self and executor.__func__ is _discover_tools.__tool_result_executor__):
+            task_id = task_plan_id = None
     def emit_rejected_call():
         self._publish_runtime_event(
             "tool.call", {"tool_name": canonical,
                           "argument_keys": sorted(args)[:64] if isinstance(args, dict) else []},
-            call_id=call_id,
+            call_id=call_id, task_id=task_id,
         )
 
+    def local_binding_valid():
+        return (getattr(getattr(self.tasks, "working_plan", None), "id", None) == task_plan_id
+                and self.tasks.execution_task_id == task_id)
+
+    if task_plan_id is not None and not local_binding_valid():
+        emit_rejected_call()
+        outcome = tool_failure("invalid_arguments", "Error: explicit task selection is no longer active in this Working Plan.")
+        return self._make_execution_receipt(
+            action=canonical, args=args, authorized=False, started_at=started_at, success=False,
+            result=outcome.text, operation_scope=operation_scope, tool_result=outcome,
+            call_id=call_id, call_id_source=call_id_source, task_id=task_id,
+            task_plan_id=task_plan_id, expected_spec=expected_spec,
+        )
     native_arguments = isinstance(args, dict) and call_id_source == "native"
     if isinstance(args, dict) and not native_arguments:
         emit_rejected_call()
@@ -620,7 +691,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             action=canonical, args=args, authorized=False, started_at=started_at, success=False,
             result=result, operation_scope=operation_scope, failure=outcome.error.code, tool_error=outcome.error,
             tool_result=outcome, call_id=call_id, call_id_source=call_id_source,
-            expected_spec=expected_spec,
+            task_id=task_id, task_plan_id=task_plan_id, expected_spec=expected_spec,
         )
     structured = args if native_arguments else None
     if not native_arguments and isinstance(args, str) and args.lstrip().startswith("{"):
@@ -646,7 +717,8 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                 action=canonical, args=args, authorized=False, started_at=started_at, success=False,
                 result=result, operation_scope=operation_scope, failure=outcome.error.code,
                 tool_error=outcome.error, tool_result=outcome, call_id=call_id,
-                call_id_source=call_id_source, expected_spec=expected_spec,
+                call_id_source=call_id_source, task_id=task_id, task_plan_id=task_plan_id, expected_spec=expected_spec,
+                _precommit_plan_validation=canonical == "update_plan",
             )
         typed_arguments = args
     elif spec is not None and spec.source not in {"builtin", "legacy"}:
@@ -661,7 +733,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                 action=canonical, args=args, authorized=False, started_at=started_at, success=False,
                 result=result, operation_scope=operation_scope, failure=outcome.error.code,
                 tool_error=outcome.error, tool_result=outcome, call_id=call_id,
-                call_id_source=call_id_source, expected_spec=expected_spec,
+                call_id_source=call_id_source, task_id=task_id, task_plan_id=task_plan_id, expected_spec=expected_spec,
             )
         typed_arguments = structured
     if (not native_arguments and interaction_state.get("executing_plan") and spec
@@ -693,7 +765,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             action=canonical, args=args, authorized=False, started_at=started_at, success=False,
             result=result, operation_scope=operation_scope, failure=outcome.error.code,
             tool_error=outcome.error, tool_result=outcome, call_id=call_id,
-            call_id_source=call_id_source, expected_spec=expected_spec,
+            call_id_source=call_id_source, task_id=task_id, task_plan_id=task_plan_id, expected_spec=expected_spec,
         )
     active_plan = interaction_state.get("executing_plan")
     if is_mutation and active_plan and canonical not in {"cancel_subagent", "update_plan"}:
@@ -740,12 +812,15 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             authorized=True, started_at=started_at, success=False,
             result=result, operation_scope=operation_scope, failure=outcome.error.code, tool_error=outcome.error,
             tool_result=outcome, call_id=call_id, call_id_source=call_id_source,
-            expected_spec=expected_spec,
+            task_id=task_id, task_plan_id=task_plan_id, expected_spec=expected_spec,
+            _duplicate_successful_operation=True,
         )
     receipt = self._run_tool(canonical, args, return_receipt=True, operation_scope=operation_scope,
                              _typed_arguments=typed_arguments,
                              _expected_spec=spec if typed_arguments is not None else None,
-                             _call_id=call_id, _call_id_source=call_id_source, _task_id=task_id)
+                             _call_id=call_id, _call_id_source=call_id_source, _task_id=task_id,
+                             _task_plan_id=task_plan_id,
+                             _pre_execution_check=local_binding_valid if task_plan_id is not None else None)
     assert isinstance(receipt, ExecutionReceipt)
     if (receipt.success and receipt.action != "run_cmd"
             and self._is_state_changing_action(receipt.action, args)):
@@ -769,6 +844,7 @@ def _execute_tool_batch(self, calls: list[dict[str, Any]], *, operation_scope: s
             call.get("action", ""), call.get("args", ""), operation_scope=operation_scope,
             successful_operations=successful_operations, call_id=call.get("call_id"),
             call_id_source=call.get("call_id_source", call_id_source), task_id=call.get("task_id"),
+            task_plan_id=call.get("task_plan_id"),
         )
 
     index = 0
@@ -798,16 +874,27 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
     from openkyrozen.agent.delegation import TOOLS
     current_session = getattr(self, "current_session", None)
     delegated_parent = getattr(current_session, "_delegation_parent", None)
-    task_manager = delegated_parent.tasks if delegated_parent else self.tasks
+    local_plan = getattr(self.tasks, "working_plan", None)
+    local_scope = bool(local_plan and receipt.plan_id == local_plan.id
+                       and receipt.user_id == self.tasks.user_id
+                       and receipt.workspace_id == self.tasks.workspace_id
+                       and receipt.session_id == self.tasks.session_id)
+    task_manager = self.tasks if local_scope or not delegated_parent else delegated_parent.tasks
+    reconcile_locally = not delegated_parent or local_scope
     active_task = task_manager.active_working_task(receipt.task_id) if receipt.task_id else None
-    explicit_task_id = receipt.task_id if active_task is not None and (
-        not delegated_parent or self._valid_receipt_task_binding(current_session, receipt.task_id)
+    binding_scope = (getattr(getattr(task_manager, "working_plan", None), "id", None) == receipt.plan_id
+                     and receipt.user_id == task_manager.user_id
+                     and receipt.workspace_id == task_manager.workspace_id)
+    explicit_task_id = receipt.task_id if active_task is not None and binding_scope and (
+        reconcile_locally or self._valid_receipt_task_binding(current_session, receipt.task_id)
     ) else None
     receipt_projection = receipt.as_dict()
     task_acceptance = receipt.acceptance
+    if receipt.verification.get("status") == "failed":
+        task_acceptance = None
     if explicit_task_id and receipt.action == "run_cmd" and task_acceptance:
         command = (receipt.arguments or {}).get("command", "")
-        criteria = next((item.get("acceptance", []) for item in self.tasks.tasks
+        criteria = next((item.get("acceptance", []) for item in task_manager.tasks
                          if item.get("id") == explicit_task_id), [])
         declared = [" ".join(item.split()).casefold() for item in criteria if isinstance(item, str)]
         if not command or len(declared) != 1 or " ".join(command.split()).casefold() != declared[0]:
@@ -820,44 +907,51 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
     )
     legacy_contract = any(
         task.get("status") in {"pending", "running"}
-        and self.tasks._dependencies_succeeded(task, self.tasks.tasks)
+        and task_manager._dependencies_succeeded(task, task_manager.tasks)
         and (task.get("checkpoint") or {}).get("action") == receipt.action
         and isinstance((task.get("checkpoint") or {}).get("args"), str)
         and not task["checkpoint"]["args"].lstrip().startswith("{")
-        for task in self.tasks.tasks
+        for task in task_manager.tasks
     )
     matching_args = (receipt.args if legacy_contract else
                      json.dumps(receipt.arguments, ensure_ascii=False, allow_nan=False,
                                 sort_keys=True, separators=(",", ":"))
                      if receipt.arguments is not None else receipt.args)
-    evidence = {} if delegated_parent or receipt.action in TOOLS or not should_reconcile else self.tasks.record_evidence(
+    criterion_status = receipt.verification.get("status")
+    read_content = None
+    if receipt.action == "read_file":
+        data = receipt.tool_result.data if receipt.tool_result is not None else None
+        if (isinstance(data, dict) and isinstance(data.get("content"), str)
+                and data.get("truncated") is False):
+            read_content = data["content"]
+        else:
+            criterion_status = "unavailable"
+    evidence = {} if not reconcile_locally or receipt.action in TOOLS or not should_reconcile else task_manager.record_evidence(
         task_id=explicit_task_id, action=receipt.action, args=matching_args,
         args_projection=receipt_projection["args"],
         args_fingerprint=None if legacy_contract else receipt.args_sha256,
         result=receipt_projection["result"], success=receipt.success,
         acceptance=task_acceptance, receipt_id=receipt.receipt_id,
-        verification_status=receipt.verification.get("status"),
-        verification_result=(receipt.tool_result.text if receipt.action == "read_file"
-                             and receipt.tool_result is not None else None),
+        verification_status=criterion_status, verification_result=read_content,
     )
-    task_id = explicit_task_id if delegated_parent else evidence.get("task_id")
+    task_id = evidence.get("task_id") if reconcile_locally else explicit_task_id
     effective_acceptance = evidence.get("acceptance") or (
         receipt_projection["acceptance"] if receipt.task_id is None else None
     )
-    if task_id:
-        task = next((item for item in self.tasks.tasks if item["id"] == task_id), None)
+    if task_id and reconcile_locally:
+        task = next((item for item in task_manager.tasks if item["id"] == task_id), None)
         checkpoint = (task or {}).get("checkpoint") or {}
         if task and not checkpoint.get("action") and not checkpoint.get("strategic_plan"):
-            self.tasks.update_checkpoint(task_id, {"action": receipt.action, "args": receipt_projection["args"]})
-    if task_id and receipt.success and effective_acceptance:
-        task = next((item for item in self.tasks.tasks if item["id"] == task_id), None)
+            task_manager.update_checkpoint(task_id, {"action": receipt.action, "args": receipt_projection["args"]})
+    if task_id and reconcile_locally and receipt.success and effective_acceptance:
+        task = next((item for item in task_manager.tasks if item["id"] == task_id), None)
         strategic = (task or {}).get("checkpoint", {}).get("strategic_plan", {})
         required = set(strategic.get("acceptance_ids", []))
         covered = {criterion_id for item in (task or {}).get("evidence", [])
                    for criterion_id in item.get("acceptance_ids", [])}
         if not required or required <= covered:
-            index = next(index for index, item in enumerate(self.tasks.tasks) if item["id"] == task_id)
-            self.tasks.set_status(index, "succeeded")
+            index = next(index for index, item in enumerate(task_manager.tasks) if item["id"] == task_id)
+            task_manager.set_status(index, "succeeded")
     receipt_payload = receipt_projection
     if receipt.task_id is not None and receipt.task_id != task_id:
         receipt_payload["requested_task_id"] = receipt.task_id
@@ -872,11 +966,13 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
     result = {
         "receipt_id": receipt.receipt_id, "operation_id": receipt.operation_id,
         "call_id": receipt.call_id, "call_id_source": receipt.call_id_source,
+        "user_id": receipt.user_id, "workspace_id": receipt.workspace_id, "session_id": receipt.session_id,
         "action": receipt.action, "args": receipt_projection["args"], "result": receipt_projection["result"],
         "success": receipt.success, "authorized": receipt.authorized,
         "acceptance": effective_acceptance, "failure": receipt_projection["failure"],
         "tool_error": receipt_projection["tool_error"],
         "task_id": task_id, "requested_task_id": receipt.task_id,
+        "plan_id": receipt.plan_id, "side_effects": receipt.side_effects,
         "result_data": receipt_projection["result_data"], "verification": receipt_projection["verification"],
     }
     if evidence.get("unmatched_reason"):

@@ -62,6 +62,12 @@ PYTHON_PREFIXES = (
     "builtin_skills/",
     "benchmarks/",
 )
+RELEASE_EVIDENCE_PATHS = {
+    ".github/workflows/ci.yml",
+    "benchmarks/v3_fixtures.py",
+    "benchmarks/v3_release_platforms.py",
+    "scripts/production_soak.py",
+}
 
 
 def classify_paths(paths: set[str] | list[str] | tuple[str, ...]) -> set[str]:
@@ -139,6 +145,11 @@ def classify_paths(paths: set[str] | list[str] | tuple[str, ...]) -> set[str]:
     return selected
 
 
+def requires_release_evidence(paths: set[str] | None, release_candidate_sha: str = "") -> bool:
+    """Run the long production matrix only for its inputs or an explicit candidate."""
+    return bool(release_candidate_sha) or (paths is not None and bool(paths & RELEASE_EVIDENCE_PATHS))
+
+
 def changed_paths(root: Path, event: str, base: str, head: str) -> set[str] | None:
     """Read all changed paths, including both sides of renames; None means full CI."""
     if not base or not head or set(base) == {"0"}:
@@ -172,6 +183,7 @@ def main() -> int:
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="")
     parser.add_argument("--full", action="store_true")
+    parser.add_argument("--release-candidate-sha", default="")
     args = parser.parse_args()
 
     paths = None if args.full else changed_paths(Path.cwd(), args.event, args.base, args.head)
@@ -180,6 +192,7 @@ def main() -> int:
     outputs["all"] = str("all" in checks).lower()
     outputs["core"] = str(bool(checks & {"python", "docs"})).lower()
     outputs["full"] = str(args.full or "all" in checks).lower()
+    outputs["release"] = str(requires_release_evidence(paths, args.release_candidate_sha)).lower()
 
     output_path = os.environ.get("GITHUB_OUTPUT")
     rendered = "".join(f"{name}={value}\n" for name, value in outputs.items())

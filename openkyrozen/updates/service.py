@@ -50,6 +50,31 @@ def _resolve_update_revision(self, ref: str = "refs/heads/main", timeout: int = 
     return None
 
 
+def _update_version_key(value: str) -> tuple[int, ...] | None:
+    """Order supported PEP 440 release, prerelease, and development versions."""
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:(a|b|rc)(\d+))?(?:\.dev(\d+))?", value)
+    if not match:
+        return None
+    major, minor, patch, prerelease, prerelease_number, development = match.groups()
+    stage = {"a": 0, "b": 1, "rc": 2, None: 3}[prerelease]
+    if prerelease is None and development is not None:
+        stage = -1
+    return (int(major), int(minor), int(patch), stage, int(prerelease_number or 0),
+            0 if development is not None else 1, int(development or 0))
+
+
+def _read_update_version(revision: str) -> str:
+    request = urllib.request.Request(
+        f"https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/{revision}/pyproject.toml",
+        headers={"User-Agent": "OpenKyrozen updater"},
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        version = tomllib.loads(response.read(128 * 1024).decode("utf-8"))["project"]["version"]
+    if not isinstance(version, str):
+        raise ValueError("update version is not a string")
+    return version
+
+
 def _available_update(self) -> str | None:
     """Check the same immutable main source used by /update, without installing."""
     try:
@@ -63,9 +88,9 @@ def _available_update(self) -> str | None:
         with urllib.request.urlopen(request, timeout=5) as response:
             latest = tomllib.loads(response.read(128 * 1024).decode("utf-8"))["project"]["version"]
         current = self.__version__
-        if not all(re.fullmatch(r"\d+\.\d+\.\d+", value) for value in (latest, current)):
+        latest_parts, current_parts = _update_version_key(latest), _update_version_key(current)
+        if latest_parts is None or current_parts is None:
             return None
-        latest_parts, current_parts = (tuple(map(int, value.split("."))) for value in (latest, current))
         if latest_parts > current_parts:
             return latest
         if latest_parts < current_parts:
@@ -331,6 +356,18 @@ def _self_update(self) -> UpdateResult:
     requested_python = (f"{sys.version_info.major}.{sys.version_info.minor}"
                         if sys.version_info[:2] in {(3, 12), (3, 13)} else "3.12")
     revision = self._resolve_update_revision()
+    if ".dev" in self.RELEASE_VERSION:
+        if not revision:
+            return outcome("failed", "Cannot verify the update source version; the existing installation was kept.")
+        try:
+            current_version = _update_version_key(self.RELEASE_VERSION)
+            target_version = _update_version_key(_read_update_version(revision))
+            if current_version is None or target_version is None:
+                raise ValueError("unsupported update version")
+        except (OSError, ValueError, KeyError, TypeError, UnicodeError, tomllib.TOMLDecodeError):
+            return outcome("failed", "Cannot verify the update source version; the existing installation was kept.")
+        if target_version < current_version:
+            return outcome("failed", "The update source version would downgrade this preview; the existing installation was kept.")
     if not revision and not self._release_tui_asset_available():
         return outcome("failed", "No verified update source was available; the existing installation was kept.")
     package_spec = f"git+{self.UPDATE_REPOSITORY_URL}@{revision}" if revision else self.RELEASE_WHEEL_URL

@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+      - "!v3.*"
   workflow_dispatch:
     inputs:
       release_tag:
@@ -16,6 +17,7 @@ permissions:
 
 jobs:
   build-release:
+    if: ${{ !startsWith(inputs.release_tag || github.ref_name, 'v3.') }}
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}

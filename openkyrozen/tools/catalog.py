@@ -5,6 +5,8 @@ import copy
 # name, capability, side effects, owner, risk, parallel safety, aliases, conversion fields, argument aliases, confirmation surfaces
 _ROWS = (
     ('update_plan', 'write', 'internal_write', 'runtime', 'normal', False, (), (), (), ()),
+    ('propose_plan', 'read', 'internal_write', 'runtime', 'normal', False, (), (), (), ()),
+    ('request_question', 'read', 'internal_write', 'runtime', 'normal', False, (), (), (), ()),
     ('spawn_agents', 'read', 'orchestration', 'orchestration', 'normal', False, (), (), (), ()),
     ('send_subagent', 'read', 'orchestration', 'orchestration', 'normal', False, (), (), (), ()),
     ('list_subagents', 'read', 'orchestration', 'orchestration', 'normal', False, (), (), (), ()),
@@ -135,27 +137,53 @@ _SCHEMAS = {'read_file': {'properties': {'path': {'type': 'string'}},
                    'type': 'object',
                    'additionalProperties': False}}
 
+_CONTROL_VERIFICATION = {'type':'object','properties':{
+    'action':{'type':'string','minLength':1},
+    'arguments':{'type':'object','properties':{},'additionalProperties':True},
+    'expect':{'type':'object','properties':{'equals':{'type':'string'},'contains':{'type':'string','minLength':1}},
+              'minProperties':1,'maxProperties':1,'additionalProperties':False},
+},'required':['action','arguments'],'additionalProperties':False}
+_READ_CRITERION = {'type':'object','properties':{
+    'criterion':{'type':'string','minLength':1},
+    'verification':{**_CONTROL_VERIFICATION,'properties':{
+        **_CONTROL_VERIFICATION['properties'],'action':{'type':'string','enum':['read_file']}},
+        'required':['action','arguments','expect']},
+},'required':['criterion','verification'],'additionalProperties':False}
+_COMMAND_CRITERION = {**_READ_CRITERION, 'properties':{
+    **_READ_CRITERION['properties'], 'verification':{
+        **_CONTROL_VERIFICATION, 'properties':{
+            'action':{'type':'string','enum':['run_cmd']},
+            'arguments':_CONTROL_VERIFICATION['properties']['arguments'],
+        },
+    },
+}}
+_WORKING_ACCEPTANCE = {'anyOf':[
+    {'type':'array','items':{'type':'string','minLength':1}},
+    {'type':'array','minItems':1,'items':{'anyOf':[_READ_CRITERION, _COMMAND_CRITERION]}},
+]}
+
 _PLAN_EXECUTION_SCHEMA = {'type':'object','properties':{
     'action': {'type':'string','minLength':1},
     'arguments': {'type':'object','properties':{},'additionalProperties':True},
 },'required':['action','arguments'],'additionalProperties':False}
 _PLAN_TASK_SCHEMA = {'type':'object','properties':{
     'description': {'type':'string','minLength':1},
-    'acceptance': {'type':'array','items':{'type':'string','minLength':1}},
+    'acceptance': _WORKING_ACCEPTANCE,
     'dependencies': {'type':'array','items':{'type':'string','minLength':1}},
     'priority': {'type':'integer'},
     'execution': _PLAN_EXECUTION_SCHEMA,
 },'required':['description','acceptance'],'additionalProperties':False}
 _PLAN_UPDATE_FIELDS_SCHEMA = {'type':'object','properties':{
     'description': {'type':'string','minLength':1},
-    'acceptance': {'type':'array','items':{'type':'string','minLength':1}},
+    'acceptance': _WORKING_ACCEPTANCE,
     'dependencies': {'type':'array','items':{'type':'string','minLength':1}},
     'priority': {'type':'integer'},
     'execution': _PLAN_EXECUTION_SCHEMA,
 },'minProperties':1,'additionalProperties':False}
 _PLAN_OPERATION_SCHEMAS = [
     {'type':'object','properties':{'op':{'type':'string','enum':['add']},
-        'ref':{'type':'string','minLength':1},'task':_PLAN_TASK_SCHEMA},
+        'ref':{'type':'string','minLength':1},'task':_PLAN_TASK_SCHEMA,
+        'anchor':{'type':'string','minLength':1,'description':'Existing approved objective task ID for in-scope strategy work.'}},
         'required':['op','ref','task'],'additionalProperties':False},
     {'type':'object','properties':{'op':{'type':'string','enum':['update']},
         'task':{'type':'string','minLength':1},'fields':_PLAN_UPDATE_FIELDS_SCHEMA},
@@ -189,18 +217,22 @@ _PLAN_OPERATION_SCHEMAS = [
     *[{'type':'object','properties':{'op':{'type':'string','enum':[op]},
         'task':{'type':'string','minLength':1},'reason':{'type':'string','minLength':1}},
         'required':['op','task','reason'],'additionalProperties':False} for op in ('block','unblock')],
+    *[{'type':'object','properties':{'op':{'type':'string','enum':[op]},
+        'task':{'type':'string','minLength':1}},
+        'required':['op','task'],'additionalProperties':False} for op in ('start','suggest_complete')],
 ]
 
 _OBJECT_FIELDS = {
     'update_plan': {'complexity': {'type':'string','enum':['simple','medium','complex']},
-                    'plan_id': {'type':'string','minLength':1},
+                    'plan_id': {'type':'string','minLength':1,'description':'Runtime-returned existing plan ID. Omit when creating a new plan.'},
                     'expected_revision': {'type':'integer','minimum':0},
-                    'reason': {'type':'string','minLength':1},
+                    'reason': {'type':'string','minLength':1,
+                               'description':'Rationale for plan edits; omit for completed-plan confirmation.'},
                     'operations': {'type':'array','items':{'anyOf':_PLAN_OPERATION_SCHEMAS}},
                     'tasks': {'type':'array','minItems':1,'items':{'type':'object','properties':{
-                        'id': {'type':'string','minLength':1},
+                        'id': {'type':'string','minLength':1,'description':'Existing runtime task ID only. Omit for new tasks; use operations.add.ref for local references.'},
                         'description': {'type':'string','minLength':1},
-                        'acceptance': {'type':'array','items':{'type':'string','minLength':1}},
+                        'acceptance': _WORKING_ACCEPTANCE,
                         'execution': {'type':'object','properties':{
                             'action': {'type':'string','minLength':1},
                             'arguments': {'type':'object','properties':{},'additionalProperties':True},
@@ -276,6 +308,37 @@ _SCHEMAS['update_plan']['anyOf'] = [
      'required': ['complexity', 'tasks'], 'additionalProperties': False},
 ]
 
+_SCHEMAS['propose_plan'] = {'type':'object','properties':{
+    'title':{'type':'string','minLength':1,'maxLength':120},
+    'summary':{'type':'string','minLength':1,'maxLength':1000},
+    'assumptions':{'type':'array','maxItems':10,'items':{'type':'string'}},
+    'bounds':{'type':'object','properties':{
+        'workspace_paths':{'type':'array','minItems':1,'items':{'type':'string','minLength':1}},
+        'capabilities':{'type':'array','minItems':1,'items':{'type':'string'}},
+        'effects':{'type':'array','minItems':1,'items':{'type':'string'}},
+        'risk_ceiling':{'type':'string','enum':['normal','high']},
+    },'required':['workspace_paths','capabilities','effects','risk_ceiling'],'additionalProperties':False},
+    'steps':{'type':'array','minItems':1,'maxItems':10,'items':{'type':'object','properties':{
+        'id':{'type':'string','minLength':1,'maxLength':64},
+        'title':{'type':'string','minLength':1},'description':{'type':'string','minLength':1},
+        'acceptance':{'type':'array','minItems':1,'maxItems':5,'items':{'anyOf':[
+            {'type':'string','minLength':1},
+            {'type':'object','properties':{'criterion':{'type':'string','minLength':1},
+                'verification':_CONTROL_VERIFICATION},'required':['criterion','verification'],'additionalProperties':False},
+        ]}},'execution':_PLAN_EXECUTION_SCHEMA,
+    },'required':['id','title','description','acceptance'],'additionalProperties':False}},
+},'required':['title','summary','bounds','steps'],'additionalProperties':False}
+_SCHEMAS['request_question'] = {'type':'object','properties':{
+    'questions':{'type':'array','minItems':1,'maxItems':3,'items':{'type':'object','properties':{
+        'id':{'type':'string','minLength':1},'header':{'type':'string','minLength':1},
+        'prompt':{'type':'string','minLength':1},
+        'choices':{'type':'array','minItems':2,'maxItems':3,'items':{'type':'object','properties':{
+            'id':{'type':'string','minLength':1},'label':{'type':'string','minLength':1},
+            'description':{'type':'string'},
+        },'required':['id','label'],'additionalProperties':False}},
+    },'required':['id','header','prompt','choices'],'additionalProperties':False}},
+},'required':['questions'],'additionalProperties':False}
+
 
 
 def builtin_names(owner=None):
@@ -298,7 +361,7 @@ def builtin_metadata(name):
                       'analyze_remote_repo', 'browser_open', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_close',
                       'github_status', 'github_read'}:
             effects = 'remote'
-        elif name in {'update_plan', 'graph_refresh', 'spawn_agents', 'send_subagent', 'list_subagents',
+        elif name in {'update_plan', 'propose_plan', 'request_question', 'graph_refresh', 'spawn_agents', 'send_subagent', 'list_subagents',
                       'wait_subagents', 'cancel_subagent'}:
             effects = 'internal'
         else:

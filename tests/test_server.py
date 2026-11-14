@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import os
 import asyncio
 import json
@@ -74,16 +75,16 @@ class ServerBoundaryTests(unittest.TestCase):
 
     def test_history_api_lists_tree_rejects_stale_or_unconfirmed_rollbacks_and_restores(self):
         client = TestClient(server.app)
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory) / "workspace"
             state = Path(directory) / "state"
             root.mkdir()
             state.mkdir()
             workspace_id = server._agent.interaction_workspace_id()
-            memory = MemoryBank(
+            memory = sqlite_owners.enter_context(closing(MemoryBank(
                 state / "history.sqlite3", user_id=server._SERVER_ACTOR_ID,
                 workspace_id=workspace_id,
-            )
+            )))
             session_id = "history-api-session"
             manager = HistoryManager(
                 memory.store, root, state, source_scope_id=source_scope_id(root),
@@ -134,9 +135,9 @@ class ServerBoundaryTests(unittest.TestCase):
         original_sessions = server._sessions
         server._sessions = {}
         try:
-            with tempfile.TemporaryDirectory() as directory:
-                memory = MemoryBank(Path(directory) / "state.sqlite3", user_id=server._SERVER_ACTOR_ID,
-                                    workspace_id=server._agent.interaction_workspace_id())
+            with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+                memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", user_id=server._SERVER_ACTOR_ID,
+                                    workspace_id=server._agent.interaction_workspace_id())))
                 with patch.object(server._agent.current_session, "memory", memory):
                     session = server._get_or_create_session(session_id, server._SERVER_ACTOR_ID)
                     bound = server._agent.open_session(session_id, user_id=server._SERVER_ACTOR_ID)
@@ -167,9 +168,9 @@ class ServerBoundaryTests(unittest.TestCase):
         original_sessions = server._sessions
         server._sessions = {}
         try:
-            with tempfile.TemporaryDirectory() as directory:
-                memory = MemoryBank(Path(directory) / "state.sqlite3", user_id=server._SERVER_ACTOR_ID,
-                                    workspace_id=server._agent.interaction_workspace_id())
+            with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+                memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", user_id=server._SERVER_ACTOR_ID,
+                                    workspace_id=server._agent.interaction_workspace_id())))
                 with patch.object(server._agent.current_session, "memory", memory):
                     bound = server._agent.open_session(session_id, user_id=server._SERVER_ACTOR_ID)
                     with server._agent.use_session(bound):
@@ -200,9 +201,9 @@ class ServerBoundaryTests(unittest.TestCase):
         original_sessions = server._sessions
         server._sessions = {}
         try:
-            with tempfile.TemporaryDirectory() as directory:
-                memory = MemoryBank(Path(directory) / "state.sqlite3", user_id=server._SERVER_ACTOR_ID,
-                                    workspace_id=server._agent.interaction_workspace_id())
+            with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+                memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", user_id=server._SERVER_ACTOR_ID,
+                                    workspace_id=server._agent.interaction_workspace_id())))
                 with patch.object(server._agent.current_session, "memory", memory):
                     bound = server._agent.open_session(session_id, user_id=server._SERVER_ACTOR_ID)
                     with server._agent.use_session(bound):
@@ -225,8 +226,8 @@ class ServerBoundaryTests(unittest.TestCase):
 
     def test_chat_interaction_controls_persist_and_restore_without_new_endpoint(self):
         client = TestClient(server.app)
-        with tempfile.TemporaryDirectory() as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="interaction-web")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="interaction-web")))
             original_sessions = server._sessions
             server._sessions = {}
             try:
@@ -389,6 +390,9 @@ class ServerBoundaryTests(unittest.TestCase):
             original_root = runtime._get_workspace_root()
             runtime._set_workspace_root(root)
             class FixtureProvider:
+                name = "server-native-fixture"
+                _continuation_id = "server-delegation-fixture"
+
                 def get_capabilities(self, model):
                     from openkyrozen.providers.models import ProviderCapabilities
                     return ProviderCapabilities(native_tools=True)
@@ -396,16 +400,30 @@ class ServerBoundaryTests(unittest.TestCase):
             from openkyrozen.providers.models import FinishReason, ModelResponse, ToolCall
             responses = iter([
                 ModelResponse(tool_calls=(ToolCall("write", "write_file", {"path": "allowed.txt", "content": "created"}),), finish_reason=FinishReason.TOOL_REQUEST),
-                ModelResponse(text=json.dumps(result("Created allowed.txt"))),
+                ModelResponse(text=json.dumps(result("Created allowed.txt")), finish_reason=FinishReason.FINAL),
                 ModelResponse(tool_calls=(ToolCall("review-read", "read_file", {"path": "allowed.txt"}),), finish_reason=FinishReason.TOOL_REQUEST),
-                ModelResponse(text=json.dumps(reviewed())),
+                ModelResponse(text=json.dumps(reviewed()), finish_reason=FinishReason.FINAL),
                 ModelResponse(tool_calls=(ToolCall("deny-write", "write_file", {"path": "denied.txt", "content": "must not write"}),), finish_reason=FinishReason.TOOL_REQUEST),
-                ModelResponse(text=json.dumps(result("Write denied", status="blocked"))),
+                ModelResponse(text=json.dumps(result("Write denied", status="blocked")), finish_reason=FinishReason.FINAL),
             ])
             provider = FixtureProvider()
+
+            def native_response(messages, model=None, **kwargs):
+                from dataclasses import replace
+                from openkyrozen.providers.models import provider_continuation
+
+                response = next(responses)
+                request_model = model or runtime.DEEPSEEK_MODEL
+                return replace(response, continuation=provider_continuation(
+                    provider, request_model, "fixture", {
+                        "role": "assistant", "content": response.text,
+                        "tool_calls": [{"id": call.id, "name": call.name, "arguments": call.arguments}
+                                       for call in response.tool_calls],
+                    }), metadata={"provider": provider.name, "model": request_model})
+
             try:
                 with (patch.object(runtime, "get_provider", return_value=provider),
-                      patch.object(runtime, "_get_model_response", side_effect=lambda *args, **kwargs: next(responses)),
+                      patch.object(runtime, "_get_model_response", side_effect=native_response),
                       patch.object(runtime, "_provider_config", ProviderConfig(provider="deepseek", api_key="fixture-key"))):
                     allowed = client.post("/api/v2/agents/run", json={
                         "profile": "coder", "task": "Create allowed.txt", "session_id": "delegation-api-test",
@@ -771,9 +789,9 @@ class ServerBoundaryTests(unittest.TestCase):
         self.assertIs(server._agent.tasks.tasks, original_tasks)
 
     def test_single_user_web_chat_feeds_learning_without_attributed_chat(self):
-        with tempfile.TemporaryDirectory() as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", user_id=server._SERVER_ACTOR_ID,
-                workspace_id=server._agent.memory_bank.workspace_id)
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", user_id=server._SERVER_ACTOR_ID,
+                workspace_id=server._agent.memory_bank.workspace_id)))
             with patch.object(server._agent.current_session, "memory", memory), \
                     patch.object(server._agent, "_chat_turn", return_value="noted"):
                 server._run_session_chat({"session_id": "solo-audit", "messages": [], "updated": 0},

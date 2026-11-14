@@ -35,8 +35,19 @@ class EventStore:
     _json = staticmethod(SQLiteDatabase._json)
     _loads = staticmethod(SQLiteDatabase._loads)
 
+    def close(self):
+        self.database.close()
+
     def append_event(self, event_type: str, payload: Any, *, user_id: str='local', workspace_id: str='default', session_id: str | None=None, task_id: str | None=None):
         return self.events.append_event(event_type, payload, user_id=user_id, workspace_id=workspace_id, session_id=session_id, task_id=task_id)
+
+    def _cancellation_deadline(self):
+        return self.database._cancellation_deadline()
+
+    def _append_control_audit(self, event_type: str, payload: Any, *, user_id: str,
+                              workspace_id: str, session_id: str):
+        return self.events._append_control_audit(event_type, payload, user_id=user_id,
+                                                workspace_id=workspace_id, session_id=session_id)
 
     def conversation_head(self, *, user_id: str, workspace_id: str, session_id: str):
         return self.events.conversation_head(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
@@ -216,9 +227,11 @@ class EventStore:
             plan_id, status, user_id=user_id, workspace_id=workspace_id, session_id=session_id, **expected,
         )
 
-    def list_working_plan_tasks(self, plan_id, *, user_id, workspace_id, session_id):
+    def list_working_plan_tasks(self, plan_id, *, user_id, workspace_id, session_id,
+                                current_completed_revision=None):
         return self.tasks.list_working_plan_tasks(
             plan_id, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+            current_completed_revision=current_completed_revision,
         )
 
     def write_working_plan(self, plan, tasks, *, user_id, workspace_id, session_id):

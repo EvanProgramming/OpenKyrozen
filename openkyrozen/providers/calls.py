@@ -4,6 +4,8 @@ import os
 import math
 import sys
 import uuid
+import hashlib
+import json
 from typing import Any
 from openkyrozen.providers.usage import usage_scope
 from openkyrozen.providers.base import get_model_response, get_model_events
@@ -93,7 +95,8 @@ def _bounded_provider_stream(self, provider: Any, messages: list[dict[str, str]]
 
 
 def _get_model_response(self, messages: list[dict], model: str | None = None, *, tool_names=None,
-                        history_tool_names=(), stream: bool = False, on_event=None) -> ModelResponse:
+                        history_tool_names=(), stream: bool = False, on_event=None,
+                        _native_tool_phase: str | None = None) -> ModelResponse:
     """Receive the full response under existing deadline, usage and context scopes."""
     provider = self.execution_context.provider or self.llm_provider
     tools = None
@@ -108,17 +111,55 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
         if any(not isinstance(name, str) or not name for name in history_names):
             raise TypeError("history_tool_names must contain nonempty tool names")
         names = set(history_names)
+        requested_names = set()
         for requested in tool_names:
             canonical = registry.resolve_legacy_name(requested)
             if canonical in registry.specs:
                 names.add(canonical)
+                requested_names.add(canonical)
         tools = [item for item in registry.provider_schemas(names=names)
                  if registry.get_spec(item["name"]).capability in allowed or item["name"] in history_names]
+        current_names = {item["name"] for item in tools if item["name"] in requested_names
+                         and registry.get_spec(item["name"]).capability in allowed}
+        history_only = {item["name"] for item in tools} - current_names
+        marker = "## Current native tool availability\n"
+        previous = list(messages)
+        messages[:] = [item for item in messages if not (
+            isinstance(item, dict) and item.get("role") == "system"
+            and str(item.get("content", "")).startswith(marker)
+        )]
+        phase_guidance = {
+            "plan_required": "Planning-required exposure is temporary; create and start a Working Plan before other work. ",
+            "plan_active": "An active Working Plan may expand the next request's tool list. ",
+            "plan_completed": "Completed-plan exposure is confirmation-only; use the current plan's returned IDs and revision. ",
+        }.get(_native_tool_phase, "")
+        messages.insert(1 if messages else 0, {"role": "system", "content": marker + json.dumps({
+            "current_call_tools": sorted(current_names), "history_only_declarations": sorted(history_only),
+        }, sort_keys=True) + "\nThis current list supersedes earlier request lists. " + phase_guidance
+            + "Current schemas define argument contracts. History-only declarations do not grant execution permission; "
+              "they retain earlier tool-call correlation. Runtime workspace, capability, approval and plan checks still apply."})
+        from openkyrozen.agent.context import _update_context_history_projection
+        _update_context_history_projection(self, messages, previous)
     self._last_prompt_tokens = self._last_completion_tokens = 0
     self._last_response_is_native.set(False)
     self._last_model_response.set(None)
     self._turn_failed.set(False)
     selected_model = model or self.DEEPSEEK_MODEL
+    state = self._active_context_state.get()
+    if state is not None and not self._in_context_compaction.get():
+        from openkyrozen.providers.models import provider_identity
+        state.request_provider_id = provider_identity(provider)
+        state.request_model = selected_model
+        if tool_names is None:
+            state.native_input_overhead_tokens = 0
+            state.native_schema_fingerprint = ""
+    if tool_names is not None and not self._in_context_compaction.get():
+        if state is not None:
+            from openkyrozen.agent.compaction import _text_tokens
+            schema_json = json.dumps(tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            state.native_input_overhead_tokens = _text_tokens(schema_json) + 32 * len(tools or ()) + 64
+            state.native_schema_fingerprint = hashlib.sha256(schema_json.encode("utf-8")).hexdigest()
+        self._prepare_context_for_call(messages, selected_model)
     if self._active_context_state.get() is not None and not self._in_context_compaction.get():
         self._record_context_history_metrics(messages)
     request_id = f"model_{uuid.uuid4().hex}"

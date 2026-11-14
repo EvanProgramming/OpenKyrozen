@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import json
 import os
 import socket
@@ -76,13 +77,13 @@ class WebSessionBrowserTests(unittest.TestCase):
         "browser integration requires `make install` (Playwright and Chromium)",
     )
     def test_browser_restores_switches_and_retains_durable_sessions_after_restart(self):
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-web-sessions-") as directory:
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-web-sessions-") as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             workspace = root / "workspace"
             workspace.mkdir()
             (workspace / "home").mkdir()
             db_path = root / "state.sqlite3"
-            store = EventStore(db_path)
+            store = sqlite_owners.enter_context(closing(EventStore(db_path)))
             interaction_workspace_id = source_scope_id(workspace)
             for session_id, messages in {
                 "session-one": [("user", "first user"), ("assistant", "UI_你好_✅")],

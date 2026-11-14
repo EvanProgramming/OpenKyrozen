@@ -85,43 +85,59 @@ class GoogleProvider(LLMProvider):
         meta = getattr(response, "usage_metadata", None)
         if meta is None:
             return None
-        return {
-            "prompt_tokens": getattr(meta, "prompt_token_count", 0) or 0,
-            "completion_tokens": getattr(meta, "candidates_token_count", 0) or 0,
+        prompt = getattr(meta, "prompt_token_count", None)
+        candidate = getattr(meta, "candidates_token_count", None)
+        thoughts = getattr(meta, "thoughts_token_count", None)
+        cached = getattr(meta, "cached_content_token_count", None)
+        if (any(type(count) is not int or count < 0 for count in (prompt, candidate))
+                or any(count is not None and (type(count) is not int or count < 0)
+                       for count in (thoughts, cached))
+                or cached is not None and cached > prompt):
+            return None
+        usage = {
+            "prompt_tokens": prompt,
+            "completion_tokens": candidate + (thoughts or 0),
         }
+        if thoughts is not None:
+            usage["reasoning_tokens"] = thoughts
+        if cached is not None:
+            usage["prompt_cache_hit_tokens"] = cached
+            usage["prompt_cache_miss_tokens"] = max(0, usage["prompt_tokens"] - cached)
+        return usage
 
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         return self.chat_response(messages, model).as_legacy_tuple()
+
+    @staticmethod
+    def _tool_declarations(tools):
+        if not tools:
+            return []
+        from google.genai import types
+        from openkyrozen.schema import validate_schema
+        if "parameters_json_schema" not in types.FunctionDeclaration.model_fields:
+            raise ProviderContractError("Native Gemini/Vertex tools require google-genai>=1.26.0")
+        declarations = []
+        for item in tools:
+            schema = item["parameters"]
+            field = "parameters_json_schema"
+            try:
+                try:
+                    validate_schema(schema)
+                except ValueError:
+                    # Preserve existing OpenAPI format/nullable descriptors on the typed SDK route.
+                    validate_schema(schema, openapi=True)
+                    types.Schema.model_validate(schema)
+                    field = "parameters"
+            except (ValueError, TypeError) as exc:
+                raise ProviderContractError("Gemini/Vertex rejected the provider tool schema") from exc
+            declarations.append({"name": item["name"], "description": item["description"], field: schema})
+        return declarations
 
     @provider_call
     def chat_response(self, messages: list[dict[str, str]] | list, model: str | None = None, *, tools=None) -> ModelResponse:
         model = model or self.config.model_simple
         tools = validate_tool_definitions(tools)
-        if tools:
-            from google.genai import types
-            supported = {"type", "properties", "required", "items", "enum", "description", "title", "default",
-                         "examples", "minLength", "maxLength", "minItems", "maxItems", "minProperties",
-                         "maxProperties", "minimum", "maximum", "pattern", "additionalProperties", "anyOf",
-                         "format", "nullable"}
-
-            def check_schema(schema):
-                if set(schema) - supported:
-                    raise ProviderContractError("Gemini/Vertex cannot represent every field in this tool schema")
-                for nested in schema.get("properties", {}).values():
-                    check_schema(nested)
-                if "items" in schema:
-                    check_schema(schema["items"])
-                for nested in schema.get("anyOf", ()):
-                    check_schema(nested)
-
-            for tool in tools:
-                try:
-                    check_schema(tool["parameters"])
-                    types.Schema.model_validate(tool["parameters"])
-                except ProviderContractError:
-                    raise
-                except Exception as exc:
-                    raise ProviderContractError("Gemini/Vertex rejected the provider tool schema") from exc
+        declarations = self._tool_declarations(tools)
         validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=tools is not None)
         validate_replied_tool_definitions(messages, tools)
         started = time.monotonic()
@@ -131,9 +147,7 @@ class GoogleProvider(LLMProvider):
         if system_instruction:
             request_config["system_instruction"] = system_instruction
         if tools:
-            request_config["tools"] = [{"function_declarations": [
-                {"name": item["name"], "description": item["description"], "parameters": item["parameters"]}
-                for item in tools]}]
+            request_config["tools"] = [{"function_declarations": declarations}]
 
         def _call():
             return self._client.models.generate_content(
@@ -143,7 +157,8 @@ class GoogleProvider(LLMProvider):
         response = _retry_with_backoff(_call)
         with received_response():
             usage_dict = self._usage(response)
-            usage_ledger._track_cost(self.config.provider, usage_dict, model=model,
+            usage_ledger._track_cost(self.config.provider, usage_dict,
+                        model=getattr(response, "model_version", None) or model, requested_model=model,
                         latency_ms=round((time.monotonic() - started) * 1000))
             candidates = getattr(response, "candidates", None) or ()
             candidate = candidates[0] if candidates else None
@@ -172,35 +187,13 @@ class GoogleProvider(LLMProvider):
         tools = validate_tool_definitions(tools)
         validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=tools is not None)
         validate_replied_tool_definitions(messages, tools)
-        if tools:
-            from google.genai import types
-            supported = {"type", "properties", "required", "items", "enum", "description", "title", "default",
-                "examples", "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties",
-                "minimum", "maximum", "pattern", "additionalProperties", "anyOf", "format", "nullable"}
-            def check_schema(schema):
-                if set(schema) - supported:
-                    raise ProviderContractError("Gemini/Vertex cannot represent every field in this tool schema")
-                for nested in schema.get("properties", {}).values():
-                    check_schema(nested)
-                if "items" in schema:
-                    check_schema(schema["items"])
-                for nested in schema.get("anyOf", ()):
-                    check_schema(nested)
-            for tool in tools:
-                try:
-                    check_schema(tool["parameters"])
-                    types.Schema.model_validate(tool["parameters"])
-                except ProviderContractError:
-                    raise
-                except Exception as exc:
-                    raise ProviderContractError("Gemini/Vertex rejected the provider tool schema") from exc
+        declarations = self._tool_declarations(tools)
         contents, system_instruction = self._contents(messages, model, self)
         config: dict[str, Any] = {"http_options": self._http_options()}
         if system_instruction:
             config["system_instruction"] = system_instruction
         if tools:
-            config["tools"] = [{"function_declarations": [{"name": item["name"],
-                "description": item["description"], "parameters": item["parameters"]} for item in tools]}]
+            config["tools"] = [{"function_declarations": declarations}]
         started = time.monotonic()
         stream = self._client.models.generate_content_stream(model=model, contents=contents, config=config)
         text_parts = []
@@ -217,7 +210,8 @@ class GoogleProvider(LLMProvider):
                 response_id = getattr(chunk, "response_id", None) or response_id
                 actual_model = getattr(chunk, "model_version", None) or actual_model
                 prompt_block_reason = getattr(getattr(chunk, "prompt_feedback", None), "block_reason", None) or prompt_block_reason
-                usage = self._usage(chunk) or usage
+                if getattr(chunk, "usage_metadata", None) is not None:
+                    usage = self._usage(chunk)
                 if usage is not None:
                     yield UsageUpdate(usage)
                 candidates = getattr(chunk, "candidates", None) or ()
@@ -255,6 +249,7 @@ class GoogleProvider(LLMProvider):
                          "completion_tokens": len(text) // 4, "_estimated": 1}
                 yield UsageUpdate(usage)
             usage_ledger._track_cost(self.config.provider, usage, model=actual_model or model,
+                requested_model=model,
                 latency_ms=round((time.monotonic() - started) * 1000))
             response = model_response(provider=self.name, model=model, actual_model=actual_model,
                 text=text, usage=usage,

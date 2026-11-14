@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import asyncio
 import os
 import subprocess
@@ -65,11 +66,11 @@ class LearningDispatcherTests(unittest.TestCase):
         main.llm_provider = self.original_provider
         main._provider_config = self.original_provider_config
 
-    def _isolated_runtime(self, root: Path) -> None:
-        memory = MemoryBank(
+    def _isolated_runtime(self, root: Path, sqlite_owners: ExitStack) -> None:
+        memory = sqlite_owners.enter_context(closing(MemoryBank(
             root / "state.sqlite3", user_id="learning-user", workspace_id="learning-project",
             session_id="learning-session",
-        )
+        )))
         main.memory_bank = memory
         main.learning_engine = main.LearningEngine(memory, registry=SkillRegistry(
             memory.store, workspace_id="learning-project", root=root / "skills"))
@@ -89,8 +90,8 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertIn(name, main._SELF_LEARNING_FLAGS)
 
     def test_conversation_learning_retries_failed_model_and_uses_promoted_fact(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             chat = "User: Remember that Orion uses orion.toml for configuration.\nAssistant: Understood."
             main.memory_bank.add_log(chat)
             with patch.object(main, "_learning_model_response", side_effect=[None, "- Orion uses orion.toml for configuration.", "- Orion uses orion.toml for configuration."]):
@@ -123,8 +124,8 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertEqual(web_feature["product_status"], "used")
 
     def test_importance_scores_change_the_selected_memory(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             main.memory_bank.add_log("FACT: lantern configuration alpha")
             main.memory_bank.add_log("note: lantern configuration beta")
             before = main._build_memory_context("lantern configuration", n=1)
@@ -136,8 +137,8 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertNotIn("beta", after)
 
     def test_verified_correction_preflight_is_reused_on_matching_task(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             run = main.learning_engine.begin_run("coder", "fix parser")
             main.learning_engine.record_outcome(run, [], verified=True, success=False, correction=True)
             result = main.dispatch_learning_cycle(surface="test", trigger="turn", max_features=1,
@@ -151,8 +152,8 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertEqual(state["product_status"], "used")
 
     def test_invented_skill_and_composition_need_distinct_observations(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             for number in range(5):
                 main.memory_bank.add_log(f"User: Verify Orion parser case {number}.\nAssistant: Check its tests.")
             answer = "Skill Name: Orion verification\nDescription: Verify the parser\nSteps:\n1. Run parser tests\n2. Check output"
@@ -185,8 +186,8 @@ class LearningDispatcherTests(unittest.TestCase):
 
     def test_matching_learning_products_survive_vector_rank_and_missing_index_entries(self):
         for omit_products in (False, True):
-            with self.subTest(omit_products=omit_products), tempfile.TemporaryDirectory() as directory:
-                self._isolated_runtime(Path(directory))
+            with self.subTest(omit_products=omit_products), tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+                self._isolated_runtime(Path(directory), sqlite_owners)
                 observations = [main.memory_bank.add_log(f"User: Verify Orion parser observation {number}")
                                 for number in range(20)]
                 skill = main.memory_bank.add_log("SKILL: Orion verification - Verify Orion parser tests",
@@ -213,8 +214,8 @@ class LearningDispatcherTests(unittest.TestCase):
                                  {skill, strategy})
 
     def test_learning_product_fallback_respects_relevance_and_visibility(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             observation = main.memory_bank.add_log("User: Verify Orion parser observation")
             for text, metadata in (
                 ("SKILL: private Verify Orion parser", {"visibility": "private", "speaker": "alice"}),
@@ -250,24 +251,24 @@ class LearningDispatcherTests(unittest.TestCase):
 
     def test_context_digest_survives_restart_only_in_its_session(self):
         from openkyrozen.agent.compaction import DIGEST_PREFIX
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            self._isolated_runtime(root)
+            self._isolated_runtime(root, sqlite_owners)
             digest = {"role": "user", "content": DIGEST_PREFIX + " Orion parser decision"}
             main._save_learning_context_digest(digest)
             main.short_term_memory = []
-            self._isolated_runtime(root)
+            self._isolated_runtime(root, sqlite_owners)
             messages = main._build_messages("Continue the parser work")
             self.assertIn(digest, messages)
-            other_session = MemoryBank(root / "state.sqlite3", user_id="learning-user",
-                workspace_id="learning-project", session_id="other-session")
+            other_session = sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3", user_id="learning-user",
+                workspace_id="learning-project", session_id="other-session")))
             main.memory_bank = other_session
             main.short_term_memory = []
             self.assertNotIn(digest, main._build_messages("Continue the parser work"))
 
     def test_cli_self_learning_toggle_persists_and_blocks_dispatch(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             main._SELF_LEARNING_FLAGS = {name: True for name in main._LEARNING_FEATURE_ORDER}
             with patch.object(main.console, "input", side_effect=["1", "done"]), \
                     patch.object(main.console, "print"):
@@ -290,9 +291,9 @@ class LearningDispatcherTests(unittest.TestCase):
             ("targeted_inquiry", "PURPOSE: parse_orion converts parser input", "parse_orion", "CODE_DOC:"),
         )
         for feature, answer, query, marker in scenarios:
-            with self.subTest(feature=feature), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(feature=feature), tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
                 root = Path(directory)
-                self._isolated_runtime(root)
+                self._isolated_runtime(root, sqlite_owners)
                 for number in range(5):
                     main.memory_bank.add_log(f"User: Orion parser observation {number}.\nAssistant: Noted.")
                 for number in range(3):
@@ -316,9 +317,9 @@ class LearningDispatcherTests(unittest.TestCase):
                 self.assertEqual(state["product_status"], "used")
 
     def test_autonomous_inspection_and_technology_research_reach_recall(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            self._isolated_runtime(root)
+            self._isolated_runtime(root, sqlite_owners)
             (root / "audit.py").write_text("# TODO: validate Orion parser\n", encoding="utf-8")
             with patch.object(main, "_last_inspection_time", 0), \
                     patch.object(main, "_last_user_interaction", 0), \
@@ -339,8 +340,8 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertEqual(states["auto_patch_technology"]["product_status"], "used")
 
     def test_stale_code_cleanup_changes_the_file_index(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             main.memory_bank.add_file("deleted.py", "VALUE = 1")
             with patch.object(main, "_last_code_scan_time", 0):
                 result = main.dispatch_learning_cycle(surface="test", trigger="idle", max_features=1,
@@ -351,12 +352,12 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertEqual(remaining, 0)
 
     def test_tool_observations_survive_worker_restart_without_arguments(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            self._isolated_runtime(root)
+            self._isolated_runtime(root, sqlite_owners)
             for _ in range(3):
                 main._track_tool_performance("parse_tool", False, 0.1)
-            self._isolated_runtime(root)
+            self._isolated_runtime(root, sqlite_owners)
             with patch.object(main, "_tool_stats", {}):
                 stats = main._learning_tool_stats()
             self.assertEqual(stats["parse_tool"]["calls"], 3)
@@ -366,10 +367,10 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertTrue(all(set(item["payload"]) == {"tool", "success", "elapsed"} for item in events))
 
     def test_project_scan_and_memory_scoring_have_real_scoped_effects(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             (root / "effect.py").write_text("VALUE = 7\n", encoding="utf-8")
-            self._isolated_runtime(root)
+            self._isolated_runtime(root, sqlite_owners)
             main._project_graph = Mock()
             main._project_graph.snapshot.return_value = {
                 "status": "missing", "nodes": 0, "edges": 0, "communities": 0,
@@ -442,8 +443,8 @@ class LearningDispatcherTests(unittest.TestCase):
         main._SELF_LEARNING_FLAGS = {name: name in names for name in main._LEARNING_FEATURE_ORDER}
         main._learning_dispatch_cursor = 0
 
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             for _ in range(3):
                 result = main.dispatch_learning_cycle(surface="test", trigger="round-robin", max_features=1)
                 self.assertEqual(len(result), 1)
@@ -459,10 +460,10 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertEqual([item["feature"] for item in result], [names[0], names[2]])
 
     def test_verified_preferences_hydrate_in_fresh_runtime_and_prompt(self):
-        with tempfile.TemporaryDirectory(prefix="openkyrozen-preferences-") as directory:
+        with tempfile.TemporaryDirectory(prefix="openkyrozen-preferences-") as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             db_path = root / "state.sqlite3"
-            memory = MemoryBank(db_path, user_id="local", workspace_id="default")
+            memory = sqlite_owners.enter_context(closing(MemoryBank(db_path, user_id="local", workspace_id="default")))
             engine = main.LearningEngine(memory)
             self.assertEqual(
                 engine.submit("preference", "PREF: naming_style=snake_case", evidence_id="signal-one")["status"],
@@ -541,8 +542,8 @@ class LearningDispatcherTests(unittest.TestCase):
         main._LEARNING_FEATURE_REGISTRY = registry
         main._SELF_LEARNING_FLAGS = {name: name in names for name in main._LEARNING_FEATURE_ORDER}
 
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             result = main.dispatch_learning_cycle(
                 surface="test", trigger="failure-isolation", max_features=2,
                 feature_names=tuple(names),
@@ -562,8 +563,8 @@ class LearningDispatcherTests(unittest.TestCase):
         dispatch.assert_called_once_with(surface="web", trigger="scheduled", max_features=4)
 
     def test_setup_required_blocks_remote_learning_and_reports_reason(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             remote = Mock()
             main.llm_provider = remote
             self.assertIsNone(main._learning_model_response([{"role": "system", "content": "test"}], feature="test"))
@@ -583,8 +584,8 @@ class LearningDispatcherTests(unittest.TestCase):
 
     def test_local_learning_never_uses_fallback_and_rejects_remote_endpoint(self):
         with tempfile.TemporaryDirectory() as directory, \
-             patch.dict(os.environ, {"KYROZEN_LEARNING_OLLAMA_BASE_URL": "http://localhost:11434/v1"}, clear=False):
-            self._isolated_runtime(Path(directory))
+             patch.dict(os.environ, {"KYROZEN_LEARNING_OLLAMA_BASE_URL": "http://localhost:11434/v1"}, clear=False), ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             main._set_learning_runtime("local", "ready", model="qwen2.5:7b")
             local = Mock()
             local.chat.return_value = ("local result", {"prompt_tokens": 1, "completion_tokens": 1})
@@ -602,8 +603,8 @@ class LearningDispatcherTests(unittest.TestCase):
             provider.assert_not_called()
 
     def test_remote_learning_reuses_chat_provider_and_marks_learning_surface(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             main._set_learning_runtime("remote", "ready")
             remote = Mock()
             remote.chat.return_value = ("remote result", {})
@@ -613,8 +614,8 @@ class LearningDispatcherTests(unittest.TestCase):
             remote.chat.assert_called_once_with(ANY, "configured-model")
 
     def test_local_bootstrap_marks_resource_failure_durably(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             main._set_learning_runtime("local", "installing", model="qwen2.5:7b")
             with patch.object(main, "_local_learning_resources_ok", return_value=(False, "need RAM")):
                 main._bootstrap_local_learning()
@@ -623,8 +624,8 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertEqual(runtime["detail"], "need RAM")
 
     def test_local_bootstrap_marks_pull_failure_durably(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             main._set_learning_runtime("local", "installing", model="qwen2.5:7b")
             failed_pull = SimpleNamespace(returncode=1, stdout="", stderr="download failed")
             with patch.object(main, "_local_learning_resources_ok", return_value=(True, "")), \
@@ -636,8 +637,8 @@ class LearningDispatcherTests(unittest.TestCase):
             self.assertIn("download failed", main.learning_runtime()["detail"])
 
     def test_local_bootstrap_reuses_ollama_and_smokes_qwen(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self._isolated_runtime(Path(directory))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            self._isolated_runtime(Path(directory), sqlite_owners)
             main._set_learning_runtime("local", "installing", model="qwen2.5:7b")
             completed = SimpleNamespace(returncode=0, stdout="NAME ID SIZE\nqwen2.5:7b x 4.7 GB", stderr="")
             local = Mock()
