@@ -28,6 +28,32 @@ class PanstarAutoTests(unittest.TestCase):
     def metadata(self, model='gpt-6.1-sol'):
         return self.policy.metadata(model)
 
+    def test_terra_auto_role_is_flat_priced_and_retains_ledger_provenance(self):
+        from benchmarks.v3_deepseek import read_prior_exposure
+        from benchmarks.v3_matched import BudgetLedger
+        from openkyrozen.providers.config import ProviderConfig
+
+        terra = 'gpt-5.6-terra'
+        config = ProviderConfig(provider='openai', model_main='auto',
+                                model_simple='gpt-6-sol', model_complex=terra)
+        policy = self.native.PanstarPolicy(config=config, price_date='2026-11-15')
+        metadata = policy.metadata(terra)
+        normal = policy.pricing.for_metadata(metadata, input_tokens=272000)
+        long = policy.pricing.for_metadata(metadata, input_tokens=272001)
+        self.assertEqual(normal, long)
+        self.assertNotEqual(policy.pricing.sha256, self.policy.pricing.sha256)
+        self.assertTrue(policy.served_identity(terra, terra))
+        self.assertFalse(policy.served_identity(terra, 'gpt-6.1-sol'))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'terra.sqlite3'
+            ledger = BudgetLedger(path, limit_rmb=None, pricing=policy.pricing)
+            self.assertTrue(ledger.reserve('terra-1', input_token_bound=1048576,
+                                           output_token_bound=4096, metadata=metadata))
+            usage = policy.response_usage(terra, {'model': terra, 'status': 'completed',
+                'usage': {'input_tokens': 100, 'output_tokens': 20, 'total_tokens': 120}})
+            ledger.settle('terra-1', usage)
+            self.assertEqual(read_prior_exposure([path]).total_cny, Decimal('0.00023232'))
+
     def test_normal_and_long_context_price_the_whole_request_at_the_observed_boundary(self):
         pricing = self.policy.pricing
         row = self.metadata()

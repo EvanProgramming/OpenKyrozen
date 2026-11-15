@@ -15,8 +15,11 @@ from benchmarks.v3_responses_relay import ResponsesRelay, RelayConfig
 
 OFFICIAL_ENDPOINT = 'https://ai.panstar.ai/v1'
 MODELS = ('gpt-6-sol', 'gpt-6.1-sol')
+TERRA_MODEL = 'gpt-5.6-terra'
 PRICING_SOURCE_SHA256 = '475171fad81ad6a7805bf44ab5826ea792e0f7bfd91514daca0375367dfe80e4'
 MODEL_METADATA_SHA256 = '985c02e068f78537e7834abd5fa5dd3af374b228d58c50b48bfc2556172a0368'
+TERRA_PRICING_SHA256 = 'c8fe75fa4083e635c67f12e04ef880219aed7ca2de0fcf905e0f2abb0323c128'
+TERRA_CATALOG_SHA256 = 'c7c670f17ce66bdd24c51e6a8de239c9b95c6f72cd9a1d77d1e9c71f967a554b'
 
 
 @dataclass(frozen=True)
@@ -33,13 +36,14 @@ class PanstarPrice(Pricing):
 class PanstarPricing:
     billing_tier: str = 'paid'
     max_limit_cny: None = None
+    terra: bool = False
 
     def __post_init__(self):
         if self.billing_tier != 'paid' or self.max_limit_cny is not None:
             raise ValueError('Panstar native Auto requires the explicit owner-authorized paid upper policy')
 
     def as_dict(self):
-        return {'currency': 'CNY', 'provider': 'PanstarCloud Responses', 'source_currency': 'USD',
+        quote = {'currency': 'CNY', 'provider': 'PanstarCloud Responses', 'source_currency': 'USD',
                 'billing_tier': 'paid', 'max_limit_cny': None, 'conservative_cny_per_usd': '8',
                 'cost_basis': 'dated account quote at conservative FX; not an invoice',
                 'pricing_source_sha256': PRICING_SOURCE_SHA256, 'model_metadata_sha256': MODEL_METADATA_SHA256,
@@ -50,24 +54,33 @@ class PanstarPricing:
                     'long': ['0.264', '0.99', long_cache, '0.33']}
                     for model, cache, long_cache in (('gpt-6-sol', '0.0132', '0.0264'),
                                                     ('gpt-6.1-sol', '0.0066', '0.0132'))}}
+        if self.terra:
+            quote['model_metadata_sha256'] = TERRA_CATALOG_SHA256
+            quote['terra_pricing_source_sha256'] = TERRA_PRICING_SHA256
+            del quote['models'][MODELS[1]]
+            quote['models'][TERRA_MODEL] = {'regular': ['0.132', '0.792', '0.0132', None]}
+        return quote
 
     @property
     def sha256(self):
         return hashlib.sha256(json.dumps(self.as_dict(), sort_keys=True).encode()).hexdigest()
 
     def for_metadata(self, metadata, *, input_tokens):
+        models = self.as_dict()['models']
         if (not isinstance(metadata, dict) or type(input_tokens) is not int or input_tokens < 0
-                or metadata.get('model') not in MODELS or metadata.get('billing_tier') != 'paid'):
+                or metadata.get('model') not in models or metadata.get('billing_tier') != 'paid'):
             raise ValueError('unpriced Panstar model/tier/input')
         try:
             day = date.fromisoformat(metadata['price_date'])
         except (KeyError, TypeError, ValueError):
             raise ValueError('invalid Panstar price date') from None
-        if day < date(2026, 11, 11):
+        model = metadata['model']
+        if day < (date(2026, 11, 15) if model == TERRA_MODEL else date(2026, 11, 11)):
             raise ValueError('Panstar catalog does not establish earlier prices')
-        rates = list(self.as_dict()['models'][metadata['model']]['long' if input_tokens > 272000 else 'regular'])
+        tier = 'long' if input_tokens > 272000 and 'long' in models[model] else 'regular'
+        rates = list(models[model][tier])
         # Financial maximum is outside the 1M operational range; cover all priced cache writes before admission.
-        if input_tokens == INPUT_BOUND:
+        if input_tokens == INPUT_BOUND and tier == 'long':
             rates[0] = '0.33'
         values = [Decimal(value or '0') * 8 for value in rates]
         names = ('input_per_million', 'output_per_million', 'cache_read_per_million', 'cache_write_per_million')
@@ -133,19 +146,21 @@ class PanstarPolicy(GeminiPolicy):
         from openkyrozen.providers.config import ProviderConfig
         self.config = config or ProviderConfig(provider='openai', model_main='auto',
             model_simple=MODELS[0], model_complex=MODELS[1])
-        self.pricing = pricing or PanstarPricing()
         self.price_date = price_date or datetime.now(timezone.utc).date().isoformat()
         self.role_models = {'simple': self.config.model_simple, 'complex': self.config.model_complex}
+        terra = self.config.model_complex == TERRA_MODEL
+        self.pricing = pricing or PanstarPricing(terra=terra)
         if (self.config.provider != self.provider or self.config.model_main != 'auto'
-                or len(set(self.role_models.values())) != 2 or set(self.role_models.values()) != set(MODELS)
-                or type(self.pricing) is not PanstarPricing):
+                or set(self.role_models.values()) != {MODELS[0], TERRA_MODEL if terra else MODELS[1]}
+                or type(self.pricing) is not PanstarPricing or self.pricing.terra != terra):
             raise ValueError('Panstar automatic selection requires the two predeclared inexpensive GPT roles')
         self.billing_record = self.billing_proof_sha256 = None
 
     def identity(self):
         return {'provider': self.provider, 'service': 'PanstarCloud', 'protocol': 'openai-responses',
                 'model_main': 'auto', 'role_models': dict(self.role_models), 'price_date': self.price_date,
-                'pricing_sha256': self.pricing.sha256, 'model_metadata_sha256': MODEL_METADATA_SHA256,
+                'pricing_sha256': self.pricing.sha256,
+                'model_metadata_sha256': self.pricing.as_dict()['model_metadata_sha256'],
                 'reservation_input_tokens': INPUT_BOUND, 'operational_input_token_limit': OPERATIONAL_INPUT_BOUND,
                 'max_output_tokens_including_thoughts': OUTPUT_BOUND}
 
