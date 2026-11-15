@@ -796,6 +796,7 @@ def main():
     source = Path(arguments.source).resolve(strict=True)
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     sys.path.insert(0, str(source))
+    client = None
     with redirect_stdout(sys.stderr):
         if arguments.file_mutation or arguments.file_read:
             encoded = sys.stdin.buffer.read(_MAX_PAYLOAD + 1)
@@ -810,7 +811,9 @@ def main():
             result = run_actor(bootstrap['payload'], client, source=source,
                                provider_config=benchmark_provider_config(bootstrap['provider_config']),
                                routing_variant=bootstrap.get('routing_variant'))
-    print(json.dumps(result, ensure_ascii=False, allow_nan=False))
+    print(json.dumps(result, ensure_ascii=False, allow_nan=False), flush=True)
+    if client is not None:
+        client.retain_connection_until_exit()
 
 
 if __name__ == '__main__':

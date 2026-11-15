@@ -375,6 +375,11 @@ class BrokerClient:
         self.lock = threading.Lock()
         self.identity = identity
 
+    def retain_connection_until_exit(self):
+        # Keep the broker live through Python's finalizers. The kernel closes
+        # this non-inheritable descriptor when the actor actually exits.
+        os.dup(self.connection.fileno())
+
     def rpc(self, op, **values):
         with self.lock:
             data = _encoded(dict(op=op, **values)) + b'\n'

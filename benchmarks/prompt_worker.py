@@ -531,6 +531,8 @@ def main():
         application.close()
         if routing is not None:
             routing.close()
+    if actor_client is not None:
+        actor_client.retain_connection_until_exit()
 
 
 if __name__ == "__main__":

@@ -861,6 +861,7 @@ with contextlib.redirect_stdout(sys.stderr):
   app.close()
   if controller is not None:controller.close()
 print(json.dumps(result))
+client.retain_connection_until_exit()
 '''
 
 

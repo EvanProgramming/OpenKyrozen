@@ -682,6 +682,37 @@ print(json.dumps(out))
 
 
 class ActorChannelTests(unittest.TestCase):
+    def test_completed_actor_keeps_channel_until_kernel_closes_it(self):
+        from benchmarks.v3_shell_launcher import BrokerClient
+
+        worker, parent = socket.socketpair()
+        with parent:
+            client = BrokerClient(worker.detach(), {})
+            duplicates = []
+            duplicate = os.dup
+
+            def track(descriptor):
+                retained = duplicate(descriptor)
+                duplicates.append(retained)
+                return retained
+
+            try:
+                with patch('benchmarks.v3_shell_launcher.os.dup', side_effect=track):
+                    client.retain_connection_until_exit()
+                self.assertEqual(len(duplicates), 1)
+                self.assertFalse(os.get_inheritable(duplicates[0]))
+                client.stream.close()
+                client.connection.close()
+                parent.setblocking(False)
+                with self.assertRaises(BlockingIOError):
+                    parent.recv(1)
+            finally:
+                client.stream.close()
+                client.connection.close()
+                for descriptor in duplicates:
+                    os.close(descriptor)
+            self.assertEqual(parent.recv(1), b'')
+
     def supervisor(self):
         from benchmarks.v3_actor_supervisor import ActorSupervisor
         supervisor = ActorSupervisor.__new__(ActorSupervisor)

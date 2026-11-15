@@ -134,6 +134,7 @@ try:
      'records':runtime._benchmark_child_context_records,'usage':run['usage'],
      'messages':detail['messages'],'review_messages':detail['review_messages'],'journals':journals}))
 finally: app.close()
+client.retain_connection_until_exit()
 '''
 
 
@@ -176,6 +177,7 @@ try:
  execute('run_cmd',{'command':' '.join(case['verifier']['command'])})
  print('RECOVERY_RESULT:'+json.dumps(receipts),flush=True)
 finally:app.close()
+client.retain_connection_until_exit()
 '''
 
 
