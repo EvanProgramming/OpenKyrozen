@@ -562,6 +562,45 @@ class NativeContextTests(unittest.TestCase):
         processes._audit_event("started", "unknown-owned-process", owned_process_state="unknown")
         self.assertIsNone(engine._working_plan_continuation(turn))
 
+    def test_native_completed_plan_requests_final_text_once_without_granting_tools(self):
+        for fallback in ("answer", "empty", "tool"):
+            with self.subTest(fallback=fallback):
+                self.runtime.tasks.clear()
+                plan = self.continuation_plan()
+
+                def respond(provider, messages, model):
+                    step = len(provider.requests)
+                    if step == 1:
+                        call = ToolCall("start", "update_plan", {"plan_id": plan["plan_id"], "expected_revision": 1,
+                            "operations": [{"op": "start", "task": plan["task_ids"][0]}]})
+                    elif step == 2:
+                        call = ToolCall("verify", "read_file", {"path": "notes.txt"})
+                    elif step == 3:
+                        self.assertEqual(self.runtime.tasks.working_plan.status, "completed")
+                        return ModelResponse(text="", finish_reason=FinishReason.FINAL,
+                            continuation=provider_continuation(provider, model, "fixture", {"final": True}))
+                    else:
+                        self.assertEqual(step, 4)
+                        self.assertIsInstance(messages[-2], ModelResponse)
+                        self.assertIsNotNone(messages[-2].continuation)
+                        self.assertFalse(self.availability(messages)[1]["current_call_tools"])
+                        if fallback == "tool":
+                            call = ToolCall("unexpected", "read_file", {"path": "notes.txt"})
+                        else:
+                            return ModelResponse(text="The ready marker is verified." if fallback == "answer" else "",
+                                                 finish_reason=FinishReason.FINAL)
+                    return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST)
+
+                provider = self.provider(respond)
+                answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Verify notes.txt"}],
+                    complexity="complex", permitted={"update_plan", "read_file", "read_tool_artifact"})
+                self.assertEqual(len(provider.requests), 4, answer)
+                self.assertEqual(turn.runtime_status, "completed" if fallback == "answer" else "incomplete")
+                self.assertEqual([record["action"] for record in turn.tool_records], ["update_plan", "read_file"])
+                self.assertEqual(self.runtime.tasks.working_plan.status, "completed")
+                if fallback == "tool":
+                    self.assertIn("final-answer request", turn.protocol_error_message)
+
     def run_discovery_plan(self, *, typed, streaming):
         (self.root / "catalog.py").write_text("def sorted_products(names):\n    return sorted(names, key=lambda n: (n.casefold(), n))\n")
         acceptance = ([{"criterion": "sorting implementation exists", "verification": {

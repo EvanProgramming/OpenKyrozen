@@ -225,6 +225,7 @@ class AgentEngine:
         control_failures = 0
         pending_plan_validation = None
         plan_continuation_used = False
+        final_answer_requested = False
 
         max_steps = getattr(runtime.execution_context, "max_steps", None)
         if max_steps is None:
@@ -252,7 +253,10 @@ class AgentEngine:
             needs_plan = turn.planning_required and not cancelled_plan and (plan is None or plan.status != "active")
             native_tool_phase = ("plan_completed" if completed_plan else "plan_required" if needs_plan
                                  else "plan_active" if turn.planning_required and not cancelled_plan else None)
-            if cancelled_plan:
+            if final_answer_requested:
+                tool_names = set()
+                native_tool_phase = None
+            elif cancelled_plan:
                 tool_names = set()
             elif needs_plan:
                 if completed_plan:
@@ -332,9 +336,12 @@ class AgentEngine:
 
             unknown_tools = [call.name for call in response.tool_calls if call.name not in tool_names]
             if unknown_tools:
-                turn.protocol_error_message = ("A Working Plan is required before other tools can run."
-                                               if needs_plan else
-                                               "The provider returned an unknown tool call; no tool was run.")
+                if final_answer_requested:
+                    turn.protocol_error_message = "The provider called a tool during the final-answer request; no tool was run."
+                else:
+                    turn.protocol_error_message = ("A Working Plan is required before other tools can run."
+                                                   if needs_plan else
+                                                   "The provider returned an unknown tool call; no tool was run.")
                 if runtime._conversation_turn_id.get() is not None:
                     runtime._record_conversation_entry("model.failure", {
                         "error_type": "invalid_native_tool_call",
@@ -392,6 +399,16 @@ class AgentEngine:
                     final_text = ""
                     turn.protocol_error_message = "A Working Plan was not established; no further tools were run."
                     break
+                if (completed_plan and not final_text and response.finish_reason == FinishReason.FINAL
+                        and not final_answer_requested and step < max_steps):
+                    final_answer_requested = True
+                    if response.continuation:
+                        messages.append(response)
+                    messages.append({"role": "user", "content": (
+                        "The Working Plan is complete. Use the existing results to answer the original request "
+                        "in its requested format. Return only the final answer without calling tools."
+                    )})
+                    continue
                 if (not final_text or response.finish_reason == FinishReason.LENGTH) and step < 2 and not turn.planning_required:
                     messages.extend((response if response.continuation else {
                         "role": "assistant", "content": response.text,
