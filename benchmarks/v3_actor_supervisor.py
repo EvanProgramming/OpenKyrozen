@@ -23,6 +23,7 @@ from benchmarks.v3_shell_launcher import ShellBroker, ShellPolicy, _encoded, _MA
 
 _MUTATIONS = frozenset({'write_file', 'edit_file', 'apply_patch'})
 _READS = frozenset({'read_file', 'search_files', 'list_dir', 'list_tree', 'find_files'})
+_ACTOR_EXIT_GRACE = 2
 _PROFILES = {'researcher': frozenset({'read', 'network'}),
              'reviewer': frozenset({'read', 'network'}),
              'coder': frozenset({'read', 'write', 'shell', 'network', 'git', 'browser'})}
@@ -522,7 +523,12 @@ class _ActorBroker(ShellBroker):
             self.supervisor.failures.extend(errors)
         # Never hold the broker lock while the actor stop path re-enters close.
         try:
-            self.supervisor._stop_actor(self.actor, exit_grace=.5 if graceful else 0)
+            # Keep orphaned delegates on the shorter disconnect path.
+            has_live_children = self.actor['root'] and any(
+                not child['stopped'] for child in self.supervisor.handles.values()
+            )
+            grace = .5 if has_live_children else _ACTOR_EXIT_GRACE
+            self.supervisor._stop_actor(self.actor, exit_grace=grace if graceful else 0)
         except Exception as exc:
             errors.append(exc)
             self.supervisor.failures.append(exc)
@@ -1016,16 +1022,17 @@ class ActorSupervisor:
                 except Exception as exc:
                     errors.append(exc)
             process = actor.get('process')
-            if exit_grace and process is not None:
-                try:
-                    process.wait(timeout=exit_grace)
-                except subprocess.TimeoutExpired:
-                    pass
             if self.revoke_actor and not actor.get('relay_revoked'):
                 def revoke():
                     self.revoke_actor(actor['policy'].actor_id)
                     actor['relay_revoked'] = True
                 cleanup(revoke)
+            # The broker can reach EOF while the interpreter is still exiting.
+            if exit_grace and not errors and process is not None:
+                try:
+                    process.wait(timeout=exit_grace)
+                except subprocess.TimeoutExpired:
+                    pass
             if not actor['root']:
                 with actor['condition']:
                     actor['cancelled'] = True

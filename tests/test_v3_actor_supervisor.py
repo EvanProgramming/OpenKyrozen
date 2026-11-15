@@ -995,6 +995,50 @@ class ActorBrokerCleanupTests(unittest.TestCase):
         self.assertEqual(drained, ['command'])
         self.assertTrue(actor['owner'].closed)
 
+    def test_disconnect_revokes_relay_before_waiting_for_process_exit(self):
+        for root in (True, False):
+            with self.subTest(root=root):
+                self.check_disconnect_exit(root)
+
+    def check_disconnect_exit(self, root):
+        broker, actor, supervisor = self.broker([])
+        events = []
+        actor.update(root=root, condition=threading.Condition())
+
+        def wait(timeout):
+            events.append('wait')
+            if timeout < 1:
+                raise subprocess.TimeoutExpired('root teardown', timeout)
+            events.append('exited')
+            return 0
+
+        actor['process'] = SimpleNamespace(wait=wait)
+        actor['owner'].close = lambda: events.append('cleanup')
+        supervisor.revoke_actor = lambda identifier: events.append('revoke')
+
+        broker.close()
+
+        self.assertEqual(events, ['revoke', 'wait', 'exited', 'cleanup'])
+
+    def test_explicit_root_stop_does_not_wait_for_exit_grace(self):
+        broker, actor, supervisor = self.broker([])
+        events = []
+        actor['process'] = SimpleNamespace(wait=lambda timeout: events.append('wait'))
+        actor['owner'].close = lambda: events.append('cleanup')
+        supervisor.revoke_actor = lambda identifier: events.append('revoke')
+
+        broker.close(graceful=False)
+
+        self.assertEqual(events, ['revoke', 'cleanup'])
+
+    def test_root_disconnect_keeps_shorter_grace_for_active_delegates(self):
+        broker, actor, supervisor = self.broker([])
+        supervisor.handles = {'child': {'stopped': False}}
+        actor['process'] = SimpleNamespace(wait=lambda timeout: None)
+        with patch.object(supervisor, '_stop_actor') as stop:
+            broker.close()
+        stop.assert_called_once_with(actor, exit_grace=.5)
+
     def test_actor_cancel_owns_a_command_during_popen_and_rejects_late_publication(self):
         from contextlib import nullcontext
         from benchmarks.v3_actor_supervisor import _OwnedInvocation
