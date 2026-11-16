@@ -521,6 +521,15 @@ def _verification_failed(fixture: dict, worker: dict, error: Exception) -> dict:
             'verification_error': f'{type(error).__name__}: {str(error)[:300]}'}
 
 
+def _offset_signature(source: str) -> str | None:
+    try:
+        definitions = [node for node in ast.parse(source).body
+                       if isinstance(node, ast.FunctionDef) and node.name == "offset"]
+    except SyntaxError:
+        return None
+    return ast.dump(definitions[0].args) if len(definitions) == 1 else None
+
+
 def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepared: dict) -> dict:
     verifier = fixture["verifier"]
     before = prepared["initial_files"]
@@ -649,7 +658,14 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
                   if event.get("event") == "subagent" and isinstance(event.get("agent"), dict)]
         scenario_ok = any(agent.get("status") == "succeeded" for agent in agents)
     elif scenario == "material_revision":
+        try:
+            signature = _offset_signature((root / "paging.py").read_text(encoding="utf-8"))
+        except (OSError, UnicodeError):
+            signature = None
+        api_preserved = signature is not None and signature == _offset_signature(fixture["files"]["paging.py"])
+        accepted = accepted and api_preserved
         scenario_ok = (worker.get("pending_material_revision") is True
+                       and api_preserved
                        and worker.get("accepted_scope_preserved") is True
                        and int(worker.get("material_plan_proposals", 0)) > 0)
     elif scenario == "unnecessary_churn":
@@ -1231,17 +1247,26 @@ def _workflow_state_correct(fixture: dict, worker: dict) -> bool:
     )
 
 
-def _initial_plan(fixture: dict) -> list[str] | dict:
+def _initial_plan(fixture: dict, *, arm: str = "v3") -> list[str] | dict:
     if fixture.get("plan_scenario") == "scope_preserving":
+        path = "labels.py"
+        marker = "def _format_label("
+        criterion = "Read labels.py and verify that the shared _format_label helper is defined."
         step = {"id": "objective", "title": "Refactor labels",
-                "description": "Extract shared formatting without changing outputs.",
-                "acceptance": ["Both formatters preserve their outputs."]}
+                "description": "Extract shared formatting in labels.py without changing outputs."}
     elif fixture.get("plan_scenario") == "material_revision":
+        path = "paging.py"
+        marker = "page - 1"
+        criterion = "Read paging.py and verify that the offset uses a page - 1 index."
         step = {"id": "objective", "title": "Fix page offset",
-                "description": "Make page 1 start at offset zero while preserving later pages.",
-                "acceptance": ["Page 1 starts at zero.", "Page 2 starts at one page size."]}
+                "description": "Fix paging.py so page 1 starts at offset zero and each next page advances by one page size."}
     else:
         return [f"{title}: {description}" for title, description in fixture.get("plan_tasks", [])]
+    step["acceptance"] = [criterion] if arm == "v2" else [
+        {"criterion": criterion, "verification": {
+            "action": "read_file", "arguments": {"path": path}, "expect": {"contains": marker},
+        }},
+    ]
     return {"title": step["title"], "summary": step["description"], "assumptions": [],
             "steps": [step],
             "bounds": {"workspace_paths": ["."], "capabilities": ["read", "write"],
@@ -1261,7 +1286,7 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
     prepared = prepare_fixture(workspace, fixture)
     prompt_file, plan_file, result_file = base / "prompt.txt", base / "plan.json", base / "result.json"
     prompt_file.write_text(_fixture_prompt(fixture), encoding="utf-8")
-    initial_plan = _initial_plan(fixture)
+    initial_plan = _initial_plan(fixture, arm=arm)
     plan_file.write_text(json.dumps(initial_plan), encoding="utf-8")
     conversation_file = base / "conversation.json"
     turns = fixture.get("turns") or (fixture["prompt"],)

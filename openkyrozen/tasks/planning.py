@@ -365,7 +365,8 @@ class PlanningService:
         return self._plan_state(self._history())
 
 
-    def propose_plan(self, value: Any, *, original_input: str = "") -> dict[str, Any]:
+    def propose_plan(self, value: Any, *, original_input: str = "",
+                     material_only: bool = False) -> dict[str, Any]:
         state = self.state()
         previous = state.get("pending_plan") or state.get("executing_plan")
         if previous and state.get("pending_plan") is None:
@@ -376,8 +377,12 @@ class PlanningService:
                 previous = {**previous, "version": max(latest)}
         plan = validate_plan_proposal(value, previous=previous, original_input=original_input)
         executing = state.get("executing_plan")
+        if material_only and not executing:
+            raise InteractionError("Completed Working Plan proposals must be material revisions requiring approval")
         if executing:
             plan["revision_materiality"] = _revision_materiality(executing, plan)
+            if material_only and plan["revision_materiality"] != "material":
+                raise InteractionError("Completed Working Plan proposals must be material revisions requiring approval")
             working = self.store.get_working_plan(
                 user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
             ) if callable(getattr(self.store, "get_working_plan", None)) else None
@@ -390,6 +395,9 @@ class PlanningService:
             if plan["revision_materiality"] == "within_bounds":
                 self._append_auto_accepted(plan, executing)
                 return plan
+        elif previous and previous.get("revision_materiality") == "material":
+            plan.update({key: previous[key] for key in ("revision_materiality", "working_plan_id",
+                         "working_plan_revision", "working_task_ids") if key in previous})
         else:
             plan["revision_materiality"] = "initial"
         self._append("interaction.plan_proposed", plan)

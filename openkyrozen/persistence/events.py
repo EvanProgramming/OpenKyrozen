@@ -265,7 +265,7 @@ class EventsRepository:
                     (user_id, workspace_id, session_id, *relevant_types),
                 ).fetchall()
                 current = None
-                pending = False
+                pending = None
                 for row in rows:
                     event_type = row["event_type"]
                     event_payload = self.database._loads(row["payload"], {})
@@ -273,21 +273,31 @@ class EventsRepository:
                         interaction = event_payload.get("interaction", {})
                         if isinstance(interaction, dict):
                             current = interaction.get("executing_plan")
-                            pending = isinstance(interaction.get("pending_plan"), dict)
+                            restored = interaction.get("pending_plan")
+                            pending = restored if isinstance(restored, dict) else None
                         continue
                     if event_type in accepted_types:
-                        current, pending = event_payload, False
+                        current, pending = event_payload, None
                     elif event_type == "interaction.plan_proposed":
                         if event_payload.get("revision_materiality") != "within_bounds":
-                            pending = True
+                            pending = event_payload
                     elif event_type == "interaction.plan_cancelled":
-                        pending = False
+                        pending = None
                     elif (event_type == "interaction.plan_completed"
                           and event_payload.get("status") in {"completed", "cancelled"}
                           and current and all(event_payload.get(key) == current.get(key)
                                                for key in ("plan_id", "version", "fingerprint"))):
                         current = None
-                if (pending or not current
+                completed_with_revision = (
+                    pending is not None and payload.get("status") == "completed"
+                    and pending.get("revision_materiality") == "material"
+                    and pending.get("plan_id") == payload.get("plan_id")
+                    and pending.get("working_plan_id") == payload.get("working_plan_id")
+                    and type(pending.get("version")) is int
+                    and type(payload.get("version")) is int
+                    and pending["version"] > payload["version"]
+                )
+                if ((pending is not None and not completed_with_revision) or not current
                         or any(current.get(key) != payload.get(key)
                                for key in ("plan_id", "version", "fingerprint"))):
                     raise ValueError("Strategic Plan changed; reload before recording completion")

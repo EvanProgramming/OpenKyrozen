@@ -1,9 +1,12 @@
 """Native engine context checks using real runtime/compaction and offline providers."""
 import copy
 from contextlib import ExitStack
+import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -240,6 +243,104 @@ class NativeContextTests(unittest.TestCase):
                 self.assertEqual(self.runtime.tasks.working_plan.status, "completed")
                 self.assertTrue(any(record["action"] == "read_file" and record["success"]
                                     and record.get("task_id") for record in turn.tool_records))
+
+    def test_native_finishes_approved_paging_fix_before_staging_material_revision(self):
+        from benchmarks.v3_fixtures import FIXTURES
+        from benchmarks.v3_matched_live import _initial_plan, _workflow_state_correct, prepare_fixture, verify_fixture
+        from benchmarks.prompt_worker import _accepted_scope_preserved, _task_record
+
+        fixture = next(case for case in FIXTURES if case["fixture_id"] == "bug_fix-3")
+        workspace = self.root / "fixture"
+        prepared = prepare_fixture(workspace, fixture)
+        self.runtime._set_workspace_root(workspace)
+        source = workspace / "paging.py"
+        tests = (workspace / "test_paging.py").read_bytes()
+        controller = self.runtime._interaction_controller
+        original = controller.propose_plan(_initial_plan(fixture))
+        accepted, _ = controller.accept_plan(self.runtime.tasks, plan_id=original["plan_id"], version=1)
+        expanded = _initial_plan(fixture)
+        expanded["summary"] = "Add a zero-based pagination option to the public API."
+        expanded["steps"] = [{"id": "zero-based", "title": "Add zero-based pagination",
+            "description": "Add a zero_based keyword to paging.py.",
+            "acceptance": ["Existing callers keep one-based behavior."]}]
+        inspect = {"path": "paging.py"}
+
+        def respond(provider, messages, model):
+            step = len(provider.requests)
+            if step == 1:
+                call = ToolCall("inspect-paging", "read_file", inspect)
+            elif step == 2:
+                plan = self.runtime.tasks.working_plan
+                call = ToolCall("start-offset", "update_plan", {
+                    "plan_id": plan.id, "expected_revision": plan.revision,
+                    "operations": [{"op": "start", "task": plan.task_ids[0]}]})
+            elif step == 3:
+                call = ToolCall("edit-offset", "edit_file", {**inspect,
+                    "expected_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "old_text": "return page * size", "new_text": "return (page - 1) * size"})
+            elif step == 4:
+                call = ToolCall("verify-offset", "read_file", inspect)
+            else:
+                self.assertEqual(self.runtime.tasks.working_plan.status, "completed")
+                block, availability = self.availability(messages)
+                self.assertEqual(set(availability["current_call_tools"]),
+                                 {"update_plan", "read_tool_artifact", "propose_plan"})
+                self.assertIn("material", block)
+                if step == 5:
+                    self.assertEqual(messages[-1], {"role": "system", "content": block})
+                    call = ToolCall("no-revision", "propose_plan", _initial_plan(fixture))
+                else:
+                    rejected = next(item for item in messages if isinstance(item, ToolReply)
+                                    and item.call_id == "no-revision")
+                    self.assertTrue(rejected.is_error, rejected.output)
+                    self.assertEqual(controller.state()["executing_plan"]["fingerprint"], accepted["fingerprint"])
+                    call = ToolCall("stage-expansion", "propose_plan", expanded)
+            return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                                 continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+        provider = self.provider(respond)
+        answer, turn, _ = self.run_native(provider, [{"role": "user", "content": fixture["prompt"]}],
+            complexity="complex", permitted=self.runtime._permitted_tool_names())
+        self.assertEqual([item["success"] for item in turn.tool_records],
+                         [True, True, True, True, False, True], answer)
+        state = controller.state()
+        pending = state["pending_plan"]
+        self.assertEqual(pending["plan_id"], accepted["plan_id"])
+        self.assertEqual(pending["version"], 2)
+        self.assertEqual(pending["revision_materiality"], "material")
+        controller.reconcile_plan_completion(self.runtime.tasks)
+        self.assertEqual(controller.state()["pending_plan"], pending)
+        self.assertIsNone(controller.state()["executing_plan"])
+        unapproved = self.runtime._execute_turn_action(
+            "write_file", {**inspect, "content": "unapproved"}, operation_scope="pending-revision",
+            successful_operations=set(), call_id="unapproved", call_id_source="native")
+        self.assertFalse(unapproved.success)
+        self.assertIn("awaiting approval", unapproved.result)
+        records = [_task_record(task) for task in self.runtime.tasks.tasks]
+        worker = {"provider_error": False, "processes_alive": 0, "pending_material_revision": True,
+                  "accepted_scope_preserved": _accepted_scope_preserved(
+                      controller._history(), [accepted["fingerprint"]], accepted, records),
+                  "material_plan_proposals": 1, "tasks": [task["status"] for task in records]}
+        def run_original_tests(root, command, *, original_files):
+            self.assertEqual((root / "test_paging.py").read_text(), original_files["test_paging.py"])
+            return subprocess.run([sys.executable, "-B", *command[1:]], cwd=root,
+                                  capture_output=True).returncode == 0
+
+        with patch("benchmarks.v3_matched_live._run_fixture_tests", side_effect=run_original_tests):
+            verdict = verify_fixture(fixture, workspace, answer, worker, prepared)
+        self.assertEqual(verdict["changed_paths"], ["paging.py"])
+        self.assertTrue(verdict["plan_scenario_passed"] and verdict["verified_success"], verdict)
+        self.assertTrue(_workflow_state_correct(fixture, worker))
+        self.assertEqual((workspace / "test_paging.py").read_bytes(), tests)
+        self.assertNotIn("zero_based", source.read_text())
+        pending = controller.propose_plan(expanded, original_input="Expand on the compatibility plan")
+        self.assertEqual(pending["revision_materiality"], "material")
+        self.assertEqual(pending["version"], 3)
+        revised, created = controller.accept_plan(self.runtime.tasks, plan_id=pending["plan_id"],
+                                                  version=pending["version"], fingerprint=pending["fingerprint"])
+        self.assertTrue(created)
+        self.assertNotEqual(revised["working_plan_id"], accepted["working_plan_id"])
+        self.assertEqual(controller.state()["executing_plan"]["fingerprint"], pending["fingerprint"])
 
     def test_native_revises_seeded_plan_with_a_verifiable_command(self):
         test_file = self.root / "test_edge.py"

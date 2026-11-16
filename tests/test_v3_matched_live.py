@@ -665,16 +665,25 @@ class V3MatchedLiveTests(unittest.TestCase):
                       "material_plan_proposals": 1}
             with patch("benchmarks.v3_matched_live._run_fixture_tests", return_value=True):
                 result = verify_fixture(fixture, root, "please approve the public API change", worker, prepared)
+                (root / "paging.py").write_text(
+                    "def offset(page, size, *, zero_based=False):\n    return (page - 1) * size\n")
+                prematurely_expanded = verify_fixture(fixture, root, "please approve the public API change", worker, prepared)
         self.assertTrue(result["plan_scenario_passed"])
         self.assertTrue(result["verified_success"])
+        self.assertFalse(prematurely_expanded["plan_scenario_passed"])
+        self.assertFalse(prematurely_expanded["verified_success"])
 
     def test_strategic_plan_fixtures_do_not_claim_unavailable_process_authority(self):
         for scenario in ("scope_preserving", "material_revision"):
             with self.subTest(scenario=scenario):
                 fixture = next(item for item in FIXTURES if item["plan_scenario"] == scenario)
                 plan = _initial_plan(fixture)
+                baseline_plan = _initial_plan(fixture, arm="v2")
                 self.assertNotIn("shell", plan["bounds"]["capabilities"])
                 self.assertNotIn("process", plan["bounds"]["effects"])
+                self.assertEqual(baseline_plan["bounds"], plan["bounds"])
+                self.assertEqual(baseline_plan["steps"][0]["acceptance"],
+                                 [item["criterion"] for item in plan["steps"][0]["acceptance"]])
 
     def test_scope_scenario_rejects_missing_active_strategic_binding(self):
         fixture = next(item for item in FIXTURES if item["plan_scenario"] == "scope_preserving")
@@ -800,6 +809,15 @@ class V3MatchedLiveTests(unittest.TestCase):
             if baseline.returncode:
                 self.skipTest("immutable V2 baseline is absent from this shallow checkout")
             _extract_baseline(source, Path.cwd(), BASELINE)
+            strategic_seeds = [_initial_plan(case, arm="v2") for case in FIXTURES
+                               if case["plan_scenario"] in {"scope_preserving", "material_revision"}]
+            validation = subprocess.run(
+                [sys.executable, "-c", "import json, sys; sys.path.insert(0, sys.argv[1]); "
+                 "from openkyrozen.agent.modes import validate_plan_proposal; "
+                 "[validate_plan_proposal(seed) for seed in json.load(sys.stdin)]", str(source)],
+                cwd=workspace, input=json.dumps(strategic_seeds), text=True,
+                capture_output=True, timeout=30)
+            self.assertEqual(validation.returncode, 0, validation.stderr)
             prepare_fixture(workspace, fixture)
             prompt_file, plan_file, result_file = base / "prompt.txt", base / "plan.json", base / "result.json"
             prompt_file.write_text(fixture["prompt"], encoding="utf-8")

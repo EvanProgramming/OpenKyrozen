@@ -259,13 +259,18 @@ class AgentEngine:
             elif cancelled_plan:
                 tool_names = set()
             elif needs_plan:
+                completed_tools = {"update_plan", "read_tool_artifact"}
                 if completed_plan:
-                    tool_names = runtime._permitted_tool_names() & {"update_plan", "read_tool_artifact"}
+                    accepted = (runtime._interaction_controller.state().get("executing_plan")
+                                if "propose_plan" in tool_names else None)
+                    if accepted and accepted.get("working_plan_id") == plan.id:
+                        completed_tools.add("propose_plan")
+                    tool_names = runtime._permitted_tool_names() & completed_tools
                 elif "update_plan" not in runtime._permitted_tool_names():
                     turn.protocol_error_message = "A Working Plan is required, but planning is not permitted."
                     break
                 else:
-                    tool_names = runtime._permitted_tool_names() & {"update_plan", "read_tool_artifact"}
+                    tool_names = runtime._permitted_tool_names() & completed_tools
             elif turn.planning_required:
                 tool_names |= runtime._permitted_tool_names() & {"update_plan"}
                 if "request_question" in runtime._permitted_tool_names():

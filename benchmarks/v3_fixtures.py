@@ -70,7 +70,7 @@ FIXTURES = (
     _fixture("bug_fix", 2, "Use a working plan to reproduce the None-input failure in parser.py, make parse_count(None) return 0, and run test_parser.py. The initial assumption that input is always non-null is obsolete; cancel that task and replace it with the tested fallback using update_plan.",
              {"kind": "tests", "command": ["python", "-m", "unittest", "test_parser.py"]},
              files={"parser.py": "def parse_count(value):\n    return int(value)\n", "test_parser.py": "import unittest\nfrom parser import parse_count\nclass T(unittest.TestCase):\n def test_none(self): self.assertEqual(parse_count(None), 0)\n def test_number(self): self.assertEqual(parse_count('4'), 4)\n"}, plan_scenario="cancel_obsolete_task_after_reproduction"),
-    _fixture("bug_fix", 3, "Fix the off-by-one boundary in paging.py so page 1 starts at offset 0; the independent evaluator will run test_paging.py. A proposed change to the public paging API would expand scope; request renewed approval before including it.",
+    _fixture("bug_fix", 3, "Fix the off-by-one boundary in paging.py so page 1 starts at offset 0 and each next page advances by one page size. Read back the fix before proposing a separate zero-based paging option for renewed approval. Keep the existing public API until approval. The independent evaluator will run test_paging.py.",
              {"kind": "tests", "command": ["python", "-m", "unittest", "test_paging.py"]},
              files={"paging.py": "def offset(page, size):\n    return page * size\n", "test_paging.py": "import unittest\nfrom paging import offset\nclass T(unittest.TestCase):\n def test_first_page(self): self.assertEqual(offset(1, 10), 0)\n def test_second_page(self): self.assertEqual(offset(2, 10), 10)\n"}, plan_scenario="material_revision"),
     _fixture("implementation", 1, 'Implement POST /items in the existing in-process WSGI API across api.py and service.py. Return 201 JSON {id,name}, trim non-empty string names, return 400 for malformed/invalid bodies, and 409 for duplicate names. Preserve GET /items and shared service state. Modify both production modules and run test_api.py. Add a working-plan verification task for the discovered duplicate-name case.',
@@ -212,7 +212,7 @@ def cohort_digest(fixtures=FIXTURES):
         separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
 
 
-FROZEN_COHORT_SHA256 = "a2b3d6c2ffd64d976e09af80ec477021b51c03d859fdf8c744ab35f6cbc82fc8"
+FROZEN_COHORT_SHA256 = "67f524096e4a02bc63593462bcb599ca0615c50aeae24bd487703fd839a37d66"
 
 
 validate_fixtures(FIXTURES)

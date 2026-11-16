@@ -134,9 +134,13 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                            "for the selected task's next action. ",
             "plan_completed": "Completed-plan exposure is confirmation-only; use the current plan's returned IDs and revision. ",
         }.get(_native_tool_phase, "")
+        can_propose_revision = _native_tool_phase == "plan_completed" and "propose_plan" in current_names
+        if can_propose_revision:
+            phase_guidance = ("The Working Plan is complete. Use update_plan only to confirm completed work, "
+                              "or propose_plan to stage a material revision for renewed approval. ")
         after_replies = (
-            _native_tool_phase == "plan_active"
-            and self.tasks.execution_task_id is not None
+            ((_native_tool_phase == "plan_active" and self.tasks.execution_task_id is not None)
+             or can_propose_revision)
             and messages
             and isinstance(messages[-1], ToolReply)
         )

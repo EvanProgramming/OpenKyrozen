@@ -23,9 +23,13 @@ def _propose_plan(self, arguments: dict):
     if not getattr(self.execution_context, "native_plan_inspected", False):
         return tool_failure("invalid_arguments", "Inspect the relevant workspace or source with a read-only tool first.")
     from openkyrozen.agent.modes import render_plan
+    working = self.tasks.working_plan
+    completed_objective = (working is not None and working.status == "completed"
+                           and (state.get("executing_plan") or {}).get("working_plan_id") == working.id)
     try:
         plan = self._interaction_controller.propose_plan(
             arguments, original_input=self.execution_context.native_control_input,
+            material_only=completed_objective,
         )
     except (ValueError, TypeError, KeyError) as exc:
         return tool_failure("invalid_arguments", f"Invalid Strategic Plan: {exc}")
