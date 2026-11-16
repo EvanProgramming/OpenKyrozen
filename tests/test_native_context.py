@@ -189,6 +189,11 @@ class NativeContextTests(unittest.TestCase):
                                    "Completed-plan exposure is confirmation-only"), block)
                     validate_tool_history(messages, provider_id=provider_identity(provider), model=model, native=True)
                     if step == 1:
+                        pinned = next(item["content"] for item in messages if isinstance(item, dict)
+                                      and item.get("content", "").startswith("## Pinned Working Plan state\n"))
+                        self.assertIn("Define tool-backed acceptance before starting work.", pinned)
+                        self.assertIn('"action":"read_file"', pinned)
+                        self.assertIn('"expect":{"contains":', pinned)
                         call = ToolCall("create-plan", "update_plan", {"expected_revision": 0, "operations": [
                             {"op": "add", "ref": "inspect", "task": {"description": "Inspect notes.txt",
                                 "acceptance": [{"criterion": "ready marker exists", "verification": {

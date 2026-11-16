@@ -611,6 +611,21 @@ class V3MatchedLiveTests(unittest.TestCase):
         self.assertEqual(json.dumps(fixture, sort_keys=True), before)
         self.assertIn("[]", render({**fixture, "capabilities": ["read"]}))
 
+    def test_investigation_prompt_declares_the_required_source_read(self):
+        from benchmarks.v3_fixtures import FIXTURES
+        from benchmarks.v3_matched_live import _fixture_prompt
+
+        for fixture in FIXTURES:
+            prompt = _fixture_prompt(fixture)
+            verifier = fixture["verifier"]
+            if verifier["kind"] == "source_facts":
+                with self.subTest(fixture=fixture["fixture_id"]):
+                    self.assertIn(f'Use the read_file tool to read "{verifier["path"]}" in full', prompt)
+                    self.assertIn("Shell output does not supply the required read receipt.", prompt)
+                    self.assertTrue(prompt.endswith(fixture["prompt"]))
+            else:
+                self.assertNotIn("required read receipt", prompt)
+
     def test_long_context_first_turn_hash_binds_rendered_scope_header(self):
         import hashlib
         import benchmarks.v3_matched_live as live

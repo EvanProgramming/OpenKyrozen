@@ -89,6 +89,10 @@ class InvestigationVerifierTests(unittest.TestCase):
         answer = '{"timeout":15,"retries":2}'
         self.assertFalse(self.verify(2, answer, read=False))
         self.assertFalse(self.verify(2, answer, edit=True))
+        shell_receipt = {'action': 'run_cmd', 'authorized': True, 'success': True, 'error_code': None,
+                         'evidence': {'action': 'run_cmd', 'authorized': True, 'failure': None,
+                                      'result': 'timeout = 15\nretries = 2\n'}}
+        self.assertFalse(self.verify(2, answer, receipt=shell_receipt))
 
     def test_captured_v2_valueerror_source_read_is_physical_evidence_despite_legacy_flag(self):
         source = "def create_item(body):\n    if not body.get('name', '').strip():\n        raise ValueError('non-empty name required')\n"

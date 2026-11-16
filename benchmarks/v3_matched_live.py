@@ -328,12 +328,18 @@ def _git_tools_verified(worker: dict, root: Path, expected_commit: str) -> bool:
 def _fixture_prompt(fixture: dict) -> str:
     writable = sorted(name for name in fixture["files"]
                       if "write" in fixture["capabilities"] and not Path(name).name.startswith("test_"))
+    verifier = fixture.get("verifier", {})
+    read_requirement = ""
+    if verifier.get("kind") == "source_facts":
+        path = json.dumps(verifier["path"], ensure_ascii=False)
+        read_requirement = (f"Use the read_file tool to read {path} in full before answering. "
+                            "Shell output does not supply the required read receipt.\n\n")
     return ("Fixture workspace boundary: writable files are only these existing non-test fixture paths: "
             + json.dumps(writable, ensure_ascii=False) + ".\n"
             "Original test files are immutable. Do not create additional workspace files, including "
             "plan/log/scratch files, or rename/delete files outside those writable paths. "
             "Any stricter task instruction, including 'do not edit files', still applies.\n\n"
-            + fixture["prompt"])
+            + read_requirement + fixture["prompt"])
 
 
 def _unique_facts(pairs):

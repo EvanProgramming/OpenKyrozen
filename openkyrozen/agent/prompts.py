@@ -321,7 +321,11 @@ def _refresh_working_plan_context(self, messages: list) -> None:
                 "No Working Plan exists. Create one with update_plan: omit plan_id, use expected_revision=0 "
                 "and operations with add/ref/task; or use complexity/tasks and omit every new task.id. "
                 "Runtime returns durable IDs. Start a returned task explicitly before its work. "
-                "Prose acceptance and successful reads alone do not certify completion.\n"
+                "Define tool-backed acceptance before starting work. For example, for a known marker in a file: "
+                '{"criterion":"Read the expected marker","verification":{"action":"read_file",'
+                '"arguments":{"path":"notes.txt"},"expect":{"contains":"ready"}}}. '
+                "Run the declared verification with matching arguments on the selected task. "
+                "Prose acceptance and unrelated tool results do not certify completion.\n"
             ) + json.dumps({"plan_id": None, "revision": 0, "tasks": []}, sort_keys=True)})
         update_projection = getattr(self, "_update_context_history_projection", None)
         if callable(update_projection):

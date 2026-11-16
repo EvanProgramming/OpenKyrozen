@@ -8,6 +8,8 @@ Linux prepares private user namespaces without changing the host's AppArmor or n
 
 The `--repo` checkout must contain the pinned V2 commit so the runner can extract its source with `git archive`. The CI full-suite jobs fetch complete history and verify that exact commit before running tests; for a shallow local checkout, fetch the V2 baseline first.
 
+Both arms receive the same rendered investigation prompt. It names the `read_file` action and full-source read required by the independent source-fact verifier. The answer and matching read receipt are both required. This prompt clarification changes the benchmark apparatus identity and requires a fresh cohort.
+
 The current formal finalization policy uses PanstarCloud GPT through OpenKyrozen's built-in automatic model selector, as requested on 2026-11-11. It replaces the stopped Gemini campaign, including for the 180 matched rows. The owner removed the cumulative CNY 15 ceiling and still prohibits publication. All settled costs and unknown reservations from earlier providers remain counted. Historical finite DeepSeek/Panstar commands below retain their original caps; they do not implement this new native Auto policy.
 
 ## PanstarCloud automatic-selection campaign
