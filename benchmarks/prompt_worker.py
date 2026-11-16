@@ -264,8 +264,8 @@ def _run_conversation(runtime, session, turns, observations=None):
 
 
 def _accepted_scope_preserved(history, accepted_fingerprints, accepted_plan, task_records):
-    if (not isinstance(accepted_plan, dict)
-            or accepted_plan.get("fingerprint") not in accepted_fingerprints):
+    fingerprint = accepted_plan.get("fingerprint") if isinstance(accepted_plan, dict) else None
+    if not isinstance(fingerprint, str) or not fingerprint or fingerprint not in accepted_fingerprints:
         return False
     identity = ("plan_id", "version", "fingerprint")
     completed = any(
@@ -277,7 +277,7 @@ def _accepted_scope_preserved(history, accepted_fingerprints, accepted_plan, tas
     )
     return completed or any(
         task.get("status") != "cancelled"
-        and (task.get("strategic_binding") or {}).get("fingerprint") == accepted_plan.get("fingerprint")
+        and (task.get("strategic_binding") or {}).get("fingerprint") == fingerprint
         for task in task_records if isinstance(task, dict)
     )
 
@@ -485,8 +485,9 @@ def main():
         accepted_versions = {(event.get("payload", {}).get("plan_id"),
                               event.get("payload", {}).get("version")) for event in history
                              if event.get("event_type") == "interaction.plan_accepted"}
-        accepted_fingerprints = [proposal.get("fingerprint") for proposal in proposals
-                                 if (proposal.get("plan_id"), proposal.get("version")) in accepted_versions]
+        accepted_fingerprints = [fingerprint for proposal in proposals
+                                 if (proposal.get("plan_id"), proposal.get("version")) in accepted_versions
+                                 and isinstance(fingerprint := proposal.get("fingerprint"), str) and fingerprint]
         pending_material = (interaction_state.get("pending_plan") or {}).get("revision_materiality") == "material"
         result = {"answer": answer, "native_answer": observations.native_answer,
                   "tool_calls": sum(e.get("event") == "tool_receipt" for e in events),

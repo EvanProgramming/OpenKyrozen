@@ -4,6 +4,13 @@ from benchmarks.prompt_worker import _accepted_scope_preserved
 
 
 class PromptWorkerPlanEvidenceTests(unittest.TestCase):
+    def test_missing_fingerprints_cannot_match_legacy_plan_events_or_tasks(self):
+        plan = {"plan_id": "plan-1", "version": 1, "fingerprint": None}
+        history = [{"event_type": "interaction.plan_completed", "payload": {
+            "plan_id": "plan-1", "version": 1, "status": "completed",
+        }}]
+        self.assertFalse(_accepted_scope_preserved(history, [None], plan, [{"status": "pending"}]))
+
     def test_completed_accepted_plan_preserves_scope_after_active_state_is_cleared(self):
         history = [{"event_type": "interaction.plan_completed", "payload": {
             "plan_id": "plan-1", "version": 2, "fingerprint": "accepted-plan", "status": "completed",

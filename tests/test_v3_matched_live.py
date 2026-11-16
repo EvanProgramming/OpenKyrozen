@@ -798,7 +798,7 @@ class V3MatchedLiveTests(unittest.TestCase):
         import subprocess
         import sys
 
-        fixture = FIXTURES[0]
+        fixture = next(case for case in FIXTURES if case["plan_scenario"] == "material_revision")
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             source, workspace, home = base / "baseline", base / "workspace", base / "home"
@@ -821,7 +821,7 @@ class V3MatchedLiveTests(unittest.TestCase):
             prepare_fixture(workspace, fixture)
             prompt_file, plan_file, result_file = base / "prompt.txt", base / "plan.json", base / "result.json"
             prompt_file.write_text(fixture["prompt"], encoding="utf-8")
-            plan_file.write_text(json.dumps(_initial_plan(fixture)), encoding="utf-8")
+            plan_file.write_text(json.dumps(_initial_plan(fixture, arm="v2")), encoding="utf-8")
             env = _worker_env(base, fixture, type("Relay", (), {"client_key": "local"})())
             completed = subprocess.run(
                 [sys.executable, str(Path.cwd() / "benchmarks/prompt_worker.py"),
@@ -834,6 +834,9 @@ class V3MatchedLiveTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr[-1000:])
         self.assertIsNotNone(result_data)
         self.assertTrue(result_data["provider_error"])
+        self.assertIsNone(result_data["initial_plan_fingerprint"])
+        self.assertEqual(result_data["accepted_plan_fingerprints"], [])
+        self.assertFalse(result_data["accepted_scope_preserved"])
         from benchmarks.v3_matched_live import _worker_schema_errors
         self.assertEqual(_worker_schema_errors(result_data), [])
 
