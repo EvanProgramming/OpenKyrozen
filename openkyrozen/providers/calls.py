@@ -134,7 +134,12 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                            "for the selected task's next action. ",
             "plan_completed": "Completed-plan exposure is confirmation-only; use the current plan's returned IDs and revision. ",
         }.get(_native_tool_phase, "")
-        after_replies = _native_tool_phase == "plan_active" and messages and isinstance(messages[-1], ToolReply)
+        after_replies = (
+            _native_tool_phase == "plan_active"
+            and self.tasks.execution_task_id is not None
+            and messages
+            and isinstance(messages[-1], ToolReply)
+        )
         position = len(messages) if after_replies else min(1, len(messages))
         messages.insert(position, {"role": "system", "content": marker + json.dumps({
             "current_call_tools": sorted(current_names), "history_only_declarations": sorted(history_only),
