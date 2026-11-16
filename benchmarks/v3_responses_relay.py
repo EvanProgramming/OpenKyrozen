@@ -53,9 +53,16 @@ class ResponsesRelay:
     def __init__(self, *, endpoint: str, api_key: str, budget: BudgetLedger,
                  config: RelayConfig = DEFAULT_RELAY_CONFIG, responses_policy=None):
         if config.model == "deepseek-flash" or budget.pricing.as_dict().get("provider") == "DeepSeek official":
-            from benchmarks.v3_deepseek import DEEPSEEK_PRICING, DEEPSEEK_RELAY_CONFIG
-            if budget.pricing != DEEPSEEK_PRICING or config != DEEPSEEK_RELAY_CONFIG:
-                raise ValueError("DeepSeek relay requires its pinned CNY prices, model, and fixed reservation")
+            from benchmarks.v3_deepseek import (DEEPSEEK_PRICING, DEEPSEEK_RELAY_CONFIG,
+                                                 DEEPSEEK_UNLIMITED_PRICING, DeepSeekRoutingPolicy)
+            if responses_policy is None:
+                admitted = (budget.pricing in (DEEPSEEK_PRICING, DEEPSEEK_UNLIMITED_PRICING)
+                            and config == DEEPSEEK_RELAY_CONFIG)
+            else:
+                admitted = (type(responses_policy) is DeepSeekRoutingPolicy
+                            and budget.pricing == DEEPSEEK_UNLIMITED_PRICING)
+            if not admitted:
+                raise ValueError("DeepSeek relay requires its pinned CNY prices and phase bounds")
         self.config = config
         self.responses_policy = responses_policy
         if responses_policy is not None and (config != RelayConfig('auto', 4096, 1048576, True)

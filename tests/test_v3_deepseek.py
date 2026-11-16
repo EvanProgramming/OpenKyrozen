@@ -243,7 +243,9 @@ class DeepSeekBudgetTests(unittest.TestCase):
 
 class DeepSeekRelayTests(unittest.TestCase):
     def test_deepseek_budget_rejects_default_provider_or_undersized_reservation(self):
-        from benchmarks.v3_deepseek import DEEPSEEK_PRICING
+        from benchmarks.v3_deepseek import (DEEPSEEK_PRICING, DEEPSEEK_RELAY_CONFIG,
+                                            DEEPSEEK_UNLIMITED_PRICING, DeepSeekRoutingPolicy)
+        from benchmarks.v3_panstar import PanstarRelay
         from benchmarks.v3_responses_relay import RelayConfig, ResponsesRelay
         with tempfile.TemporaryDirectory() as directory:
             ledger = v3_matched.BudgetLedger(Path(directory) / 'budget.db', limit_rmb='15',
@@ -252,6 +254,16 @@ class DeepSeekRelayTests(unittest.TestCase):
                            RelayConfig(model='deepseek-flash', fixed_input_token_bound=999_999, serial_requests=True)):
                 with self.subTest(config=config), self.assertRaises(ValueError):
                     ResponsesRelay(endpoint='http://127.0.0.1:1', api_key='fake', budget=ledger, config=config)
+            unlimited = v3_matched.BudgetLedger(Path(directory) / 'unlimited.db', limit_rmb=None,
+                                               pricing=DEEPSEEK_UNLIMITED_PRICING)
+            fixed = ResponsesRelay(endpoint='https://api.deepseek.com', api_key='fake',
+                                   budget=unlimited, config=DEEPSEEK_RELAY_CONFIG)
+            self.addCleanup(fixed._server.server_close)
+            self.assertEqual(fixed.issue_actor_config('root')['model_complex'], 'deepseek-flash')
+            roles = PanstarRelay(endpoint='http://127.0.0.1:1', api_key='fake', budget=unlimited,
+                                 policy=DeepSeekRoutingPolicy())
+            self.addCleanup(roles._server.server_close)
+            self.assertEqual(roles.issue_actor_config('root')['model_complex'], 'deepseek-v4-pro')
 
     def test_fixed_context_reservation_model_and_serial_stream_lifecycle(self):
         from benchmarks.v3_deepseek import DEEPSEEK_PRICING, DEEPSEEK_RELAY_CONFIG
@@ -1030,8 +1042,10 @@ class PlanningPreflightTests(unittest.TestCase):
 
 class DeepSeekSmokeTests(unittest.TestCase):
     def test_default_thinking_smoke_uses_auto_nonbeta_tools_and_correlated_continuation(self):
-        from benchmarks.v3_deepseek import DEEPSEEK_PRICING, DEEPSEEK_RELAY_CONFIG, run_smoke
+        from benchmarks.v3_deepseek import (DEEPSEEK_ENDPOINT, DEEPSEEK_RELAY_CONFIG,
+                                            DEEPSEEK_UNLIMITED_PRICING, run_smoke)
         from benchmarks.v3_responses_relay import ResponsesRelay
+        from unittest.mock import patch
         received, rejected, continuations = [], [], {}
 
         class Upstream(BaseHTTPRequestHandler):
@@ -1062,13 +1076,15 @@ class DeepSeekSmokeTests(unittest.TestCase):
                                 {'type': 'message', 'role': 'assistant', 'content': [
                                     {'type': 'output_text', 'text': probe}]}]}
                     else:
-                        output = [{'type': 'reasoning', 'id': 'reasoning-' + probe, 'summary': []},
+                        output = [{'type': 'reasoning', 'id': 'reasoning-' + probe, 'summary': [],
+                                   'content': [{'type': 'reasoning_text', 'text': 'tool preflight'}]},
                                   {'type': 'function_call', 'name': 'echo_probe', 'call_id': 'call-' + probe,
                                    'arguments': json.dumps({'value': probe})}]
                         continuations[probe] = body['input'] + output
                         status, result = 200, {'id': 'first-' + probe, 'output': output}
                     if status == 200:
-                        result['usage'] = {'input_tokens': 100, 'output_tokens': 10}
+                        result.update(model='deepseek-flash', status='completed', usage={
+                            'input_tokens': 100, 'output_tokens': 10, 'total_tokens': 110})
                 payload = json.dumps(result).encode()
                 self.send_response(status)
                 self.send_header('Content-Length', str(len(payload)))
@@ -1087,10 +1103,17 @@ class DeepSeekSmokeTests(unittest.TestCase):
                 response = requests.post(endpoint + '/responses', json={
                     'tool_choice': choice, 'tools': [{'strict': strict}]}, timeout=3)
                 self.assertEqual(response.status_code, 400)
-            with tempfile.TemporaryDirectory() as directory:
-                ledger = v3_matched.BudgetLedger(Path(directory) / 'budget.db', limit_rmb='15',
-                                                pricing=DEEPSEEK_PRICING)
-                relay = ResponsesRelay(endpoint=endpoint, api_key='fake', budget=ledger,
+            post = requests.post
+            def loopback(url, **kwargs):
+                if url == DEEPSEEK_ENDPOINT + '/responses':
+                    self.assertEqual(kwargs['headers']['Authorization'], 'Bearer fake')
+                    url = endpoint + '/responses'
+                self.assertTrue(url.startswith('http://127.0.0.1:'))
+                return post(url, **kwargs)
+            with tempfile.TemporaryDirectory() as directory, patch.object(requests, 'post', side_effect=loopback):
+                ledger = v3_matched.BudgetLedger(Path(directory) / 'budget.db', limit_rmb=None,
+                                                pricing=DEEPSEEK_UNLIMITED_PRICING)
+                relay = ResponsesRelay(endpoint=DEEPSEEK_ENDPOINT, api_key='fake', budget=ledger,
                                        config=DEEPSEEK_RELAY_CONFIG)
                 relay.start()
                 try:
@@ -1100,8 +1123,8 @@ class DeepSeekSmokeTests(unittest.TestCase):
                         self.assertEqual(len(relay.smoke_verified_attempt_ids), 2)
                     self.assertIsNone(relay.provider_error)
                     self.assertEqual([row['status'] for row in relay.rows], ['settled'] * 4)
-                    self.assertTrue(all(row['usage'] == {'input_tokens': 100, 'output_tokens': 10,
-                        'cache_read_tokens': 0, 'cache_write_tokens': 0} for row in relay.rows))
+                    self.assertTrue(all(row['usage']['served_model'] == 'deepseek-flash'
+                        and row['usage']['raw_usage']['total_tokens'] == 110 for row in relay.rows))
                     self.assertEqual(ledger.spent_rmb, Decimal('0.00112'))
                 finally:
                     relay.close()
