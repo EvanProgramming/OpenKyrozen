@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass
 from decimal import Decimal, InvalidOperation
 import json
 import hashlib
@@ -17,6 +17,7 @@ import secrets
 
 from benchmarks.v3_matched import BudgetLedger, Pricing, _picormb
 from benchmarks.v3_responses_relay import RelayConfig
+from benchmarks.v3_panstar import PanstarPolicy
 
 DEEPSEEK_ENDPOINT = "https://api.deepseek.com"
 DEEPSEEK_PRICING = Pricing(
@@ -36,7 +37,106 @@ DEEPSEEK_RELAY_CONFIG = RelayConfig(
     model="deepseek-flash", max_output_tokens=4096,
     fixed_input_token_bound=1_000_000, serial_requests=True,
 )
-DEEPSEEK_UNLIMITED_PRICING = replace(DEEPSEEK_PRICING, max_limit_cny=None)
+PRO_MODEL = "deepseek-v4-pro"
+MODEL_ROUTING_ARMS = frozenset({"routing-model-auto", "routing-model-simple"})
+_PRO_RATES = {"input_per_million": "9", "output_per_million": "27",
+              "cache_read_per_million": "0.30", "cache_write_per_million": "9"}
+_PRO_PRICE = Pricing(*map(Decimal, _PRO_RATES.values()), max_limit_cny=None,
+                     metadata_json=json.dumps({"currency": "CNY", **_PRO_RATES}))
+
+
+def served_model_matches(model, served):
+    versions = {"deepseek-flash": "DeepSeek-V4.1-Flash-1017", PRO_MODEL: "DeepSeek-V4-Pro-0813"}
+    return model in versions and served in (model, versions[model])
+
+
+class DeepSeekCampaignPricing(Pricing):
+    billing_tier = "paid"
+
+    def as_dict(self):
+        return {**super().as_dict(), "model_routing_only": {PRO_MODEL: dict(_PRO_RATES)},
+                "model_routing_financial_input_bound": 1048576}
+
+    def for_metadata(self, metadata, *, input_tokens):
+        if not metadata or metadata.get("model") == "deepseek-flash":
+            return self
+        if (metadata.get("model") != PRO_MODEL
+                or metadata.get("arm") != "routing-model-auto"
+                or metadata.get("max_output_tokens", 4096) != 4096):
+            raise ValueError("the Pro quote is restricted to the model routing experiment")
+        return _PRO_PRICE
+
+    def row_cost(self, row):
+        calls = row.get("cost_calls")
+        if calls is None:
+            return super().row_cost(row)
+        from benchmarks.v3_panstar import native_usage
+        totals = dict.fromkeys(("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"), 0)
+        if not isinstance(calls, list) or not calls:
+            raise ValueError("model routing cost requires physical receipts")
+        amount = Decimal(0)
+        for call in calls:
+            usage = call.get("usage") or {}
+            raw = native_usage({"usage": usage.get("raw_usage"), "service_tier": usage.get("service_tier")})
+            if (call.get("status") != "settled" or raw is None
+                    or any(usage.get(key) != value for key, value in raw.items())
+                    or not served_model_matches(call.get("model"), usage.get("served_model"))):
+                raise ValueError("invalid official DeepSeek usage or served model")
+            price = self.for_metadata(call, input_tokens=usage["input_tokens"])
+            cost = price.cost(*(usage[key] for key in totals))
+            if Decimal(call["actual_rmb"]) != cost:
+                raise ValueError("model routing physical cost differs from the quote")
+            amount += cost
+            for key in totals:
+                totals[key] += usage[key]
+        if any(row[key] != total for key, total in totals.items()):
+            raise ValueError("model routing totals differ from recorded calls")
+        return amount
+
+
+DEEPSEEK_UNLIMITED_PRICING = DeepSeekCampaignPricing(**{
+    **asdict(DEEPSEEK_PRICING), "max_limit_cny": None,
+})
+
+
+class DeepSeekRoutingPolicy(PanstarPolicy):
+    """Only the separate model-routing supplement may expose the Pro slot."""
+    endpoint = DEEPSEEK_ENDPOINT
+    paid_fx = None
+
+    def __init__(self, *, price_date=None):
+        from datetime import datetime, timezone
+        self.price_date = price_date or datetime.now(timezone.utc).date().isoformat()
+        self.role_models = {"simple": DEEPSEEK_RELAY_CONFIG.model, "complex": PRO_MODEL}
+        self.pricing = DEEPSEEK_UNLIMITED_PRICING
+        self.billing_record = self.billing_proof_sha256 = None
+
+    def identity(self):
+        return {"provider": self.provider, "service": "DeepSeek official", "protocol": "openai-responses",
+                "model_main": "auto", "role_models": dict(self.role_models), "price_date": self.price_date,
+                "pricing_sha256": self.pricing.sha256, "phase": "model_routing"}
+
+    def served_identity(self, model, served_model):
+        return served_model_matches(model, served_model)
+
+    def validate_body(self, body):
+        return self._validate_text_body(body, self.role_models.values(), reasoning_text=True)
+
+    def request_metadata(self, model, arm):
+        if arm not in MODEL_ROUTING_ARMS or (arm == "routing-model-simple" and model == PRO_MODEL):
+            raise ValueError("model routing request is outside its assigned model variant")
+        return {**self.metadata(model), "arm": arm}
+
+    def accepts_call(self, call):
+        try:
+            self.request_metadata(call.get("model"), call.get("arm"))
+        except ValueError:
+            return False
+        return super().accepts_call(call)
+
+    def check_budget(self, budget):
+        if budget.pricing != self.pricing or budget.limit_picormb is not None or not budget.budget_ok:
+            raise ValueError("DeepSeek model routing requires its intact inherited CNY ledger")
 # The previous campaign used the same CNY prices under this retired model alias.
 _LEGACY_PRICING_SHA256 = "70cf92ad796b1061598eb1d5ac16aa19d473299758bcfdde86f789b2d40aabc4"
 
@@ -65,7 +165,7 @@ def read_prior_exposure(paths: list[Path] | tuple[Path, ...]) -> PriorExposure:
     from benchmarks.v3_panstar import PanstarPricing
     native_prices = {price.sha256: price for price in (GeminiPricing(), GeminiPricing(billing_tier="free"),
         GeminiPricing(max_limit_cny=None), GeminiPricing(billing_tier="free", max_limit_cny=None),
-        PanstarPricing(), PanstarPricing(terra=True))}
+        PanstarPricing(), PanstarPricing(terra=True), DEEPSEEK_UNLIMITED_PRICING)}
 
     def add(record: dict) -> tuple[int, int]:
         attempt_id = record.get("id")
@@ -150,7 +250,13 @@ def read_prior_exposure(paths: list[Path] | tuple[Path, ...]) -> PriorExposure:
                     continue
                 item = {"id": attempt_id, "reserved": reserved, "actual": actual,
                         "status": status, "usage": json.loads(usage_json) if usage_json else None}
-                if config[1] in native_prices and attempt_id != "prior-campaign-reservations":
+                if config[1] == DEEPSEEK_UNLIMITED_PRICING.sha256 and "pricing_sha256" not in metadata:
+                    if (attempt_id != "prior-campaign-reservations" and
+                            (metadata.get("model") != "deepseek-flash"
+                             or metadata.get("arm") in MODEL_ROUTING_ARMS
+                             or reserved != _picormb(DEEPSEEK_PRICING.cost(1000000, 4096)))):
+                        raise ValueError("invalid fixed Flash attempt provenance")
+                elif config[1] in native_prices and attempt_id != "prior-campaign-reservations":
                     item.update(pricing_sha256=config[1], metadata=metadata)
                 add(item)
                 source_ids.add(attempt_id)

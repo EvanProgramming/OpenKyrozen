@@ -447,30 +447,47 @@ def _attempt_calls(attempts):
     return calls
 
 
-def _validate_54_origin(report,attempts,output,candidate,identity,provider_policy):
+def _fixed_flash_call(call):
+    from benchmarks.v3_deepseek import served_model_matches
+    from benchmarks.v3_panstar import native_usage
+    if (call.get('model')!='deepseek-flash' or call.get('max_output_tokens')!=4096
+            or 'pricing_sha256' in call or call.get('status')!='settled'):
+        return False
+    usage=call.get('usage') or {}
+    raw=native_usage({'usage':usage.get('raw_usage'),'service_tier':usage.get('service_tier')})
+    return (raw is not None and all(usage.get(key)==value for key,value in raw.items())
+            and served_model_matches(call['model'],usage.get('served_model')))
+
+
+def _validate_54_origin(report,attempts,output,candidate,identity,provider_policy,*,pricing=None):
     from benchmarks import v3_matched_live as live
+    pricing=provider_policy.pricing if provider_policy is not None else pricing
+    accepts_call=provider_policy.accepts_call if provider_policy is not None else _fixed_flash_call
     if (report.get('protocol')!=PROTOCOL or report.get('candidate_sha')!=candidate or report.get('status')!='complete'
             or any(report.get(key)!=value for key,value in identity.items())
             or not analyze(report.get('rows',[]),provider_policy)['complete']
-            or report.get('schedule')!=schedule() or report.get('pricing')!=provider_policy.pricing.as_dict()
+            or report.get('schedule')!=schedule() or report.get('pricing')!=pricing.as_dict()
             or not live._validate_rows_evidence(output,report['rows'],candidate,identity)):
         raise ValueError('model contrast requires complete same-candidate original54 evidence')
     calls=_attempt_calls(attempts)
     ancestors=set(report.get('origin',{}).get('original_attempt_ids',[]))
     expected={(cell['fixture_id'],cell['repeat'],'routing-'+cell['variant']) for cell in schedule()}
     if any(call['attempt_id'] not in ancestors and ((call.get('fixture_id'),call.get('repeat'),call.get('arm')) not in expected
-            or not provider_policy.accepts_call(call)) for call in calls):
+            or not accepts_call(call)) for call in calls):
         raise ValueError('original54 contains a foreign physical attempt')
     for row in report['rows']:
         worker=live._validate_worker_evidence(output,row,candidate,identity,return_worker=True)
         journal=[call for call in calls if (call.get('fixture_id'),call.get('repeat'),call.get('arm'))==
                  (row['fixture_id'],row['repeat'],row['arm'])]
         if (not isinstance(worker,dict) or not validate_observations(worker.get('routing_observations'),row['variant'],provider_policy)
-                or sorted(row.get('cost_calls',[]),key=lambda call:call['attempt_id'])!=sorted(journal,key=lambda call:call['attempt_id'])
+                or (provider_policy is not None and sorted(row.get('cost_calls',[]),key=lambda call:call['attempt_id'])
+                    !=sorted(journal,key=lambda call:call['attempt_id']))
+                or not journal or any(call.get('status')!='settled' for call in journal)
                 or row.get('requests')!=len(journal)
                 or row.get('attempts')!=len(journal)):
             raise ValueError('original54 worker or physical journal lineage is invalid')
-        if provider_policy.pricing.row_cost(row)!=Decimal(row['cost_cny']):
+        observed_cost=sum(Decimal(call['actual_rmb']) for call in journal)
+        if pricing.row_cost(row)!=observed_cost or observed_cost!=Decimal(row['cost_cny']):
             raise ValueError('original54 model costs differ from its immutable ledger')
 
 
@@ -481,11 +498,15 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
     from benchmarks.v3_fixtures import FIXTURES
     from benchmarks.v3_matched import BudgetLedger,summarize
     from benchmarks.v3_deepseek import (DEEPSEEK_PRICING,DEEPSEEK_RELAY_CONFIG,DEEPSEEK_ENDPOINT,
-                                        DEEPSEEK_UNLIMITED_PRICING)
+                                        DEEPSEEK_UNLIMITED_PRICING,DeepSeekRoutingPolicy)
     from benchmarks.v3_deepseek import validate_planning_preflight
     from benchmarks.v3_responses_relay import ResponsesRelay
     if type(model_routing) is not bool or model_routing and provider_policy is None:
         raise ValueError('model-routing phase requires its native two-role policy')
+    deepseek_model_stage=type(provider_policy) is DeepSeekRoutingPolicy
+    if deepseek_model_stage and not model_routing:
+        raise ValueError('DeepSeek Auto roles are limited to model routing')
+    origin_policy=None if deepseek_model_stage else provider_policy
     protocol=MODEL_PROTOCOL if model_routing else PROTOCOL
     cells=model_schedule() if model_routing else schedule()
     analyze_phase=(lambda rows:model_analyze(rows,provider_policy)) if model_routing else (lambda rows:analyze(rows,provider_policy))
@@ -501,10 +522,12 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
         raise ValueError('distinct external core and supplement report/ledger paths are required')
     candidate=live._source_snapshot(source)
     base_identity=live.apparatus_identity()
-    if provider_policy is not None:
-        base_identity['provider_policy']=provider_policy.identity()
+    if origin_policy is not None:
+        base_identity['provider_policy']=origin_policy.identity()
     fixtures={item['fixture_id']:item for item in FIXTURES if item['fixture_id'] in FIXTURE_IDS}
     identity=_experiment_identity(base_identity,fixtures,model_routing)
+    if deepseek_model_stage:
+        identity['provider_policy']=provider_policy.identity()
     worker_script=live._require_dispatched_apparatus(source,base_identity)
     live._require_secure_evidence_io()
     with live._campaign_lock(core_output) as lease,live._campaign_lock(output) as output_lease:
@@ -512,18 +535,21 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
         if os.read(output_lease,1):
             raise ValueError('supplement budget has a bound continuation; resume that child instead')
         core,config,original_attempts,core_hash=_core_checkpoint(core_output,core_budget)
-        if provider_policy is None and config[1] is None:
+        if origin_policy is None and config[1] is None:
             core_budget_record=core.get('budget',{})
             if (core_budget_record.get('currency')!='CNY' or 'limit_cny' not in core_budget_record
                     or core_budget_record['limit_cny'] is not None):
                 raise ValueError('unlimited fixed-model supplement requires an unlimited core')
             pricing=DEEPSEEK_UNLIMITED_PRICING
-        if provider_policy is not None and any(not provider_policy.accepts_call(call) for call in _attempt_calls(original_attempts)):
+        if deepseek_model_stage and (config[1] is not None or
+                any(not _fixed_flash_call(call) for call in _attempt_calls(original_attempts))):
+            raise ValueError('earlier DeepSeek phases must use only fixed Flash')
+        if origin_policy is not None and any(not origin_policy.accepts_call(call) for call in _attempt_calls(original_attempts)):
             raise ValueError('native physical origin call violates its operational policy')
         ancestor,ancestor_output,ancestor_attempts=core,core_output,original_attempts
         if model_routing:
             _validate_54_origin(core,original_attempts,core_output,candidate,
-                                _experiment_identity(base_identity,fixtures),provider_policy)
+                                _experiment_identity(base_identity,fixtures),origin_policy,pricing=pricing)
             prior_origin=core.get('origin',{})
             if (not isinstance(prior_origin,dict) or any(not isinstance(prior_origin.get(key),str)
                     or not Path(prior_origin[key]).is_absolute() for key in ('core_output','core_budget'))):
@@ -549,20 +575,20 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
                 or (config[1] is None and pricing.max_limit_cny is not None)
                 or (config[1] is not None and (pricing.max_limit_cny is None or not 0<config[1]<=15*10**12))
                 or ancestor.get('smoke_passed') is not True
-                or ancestor.get('relay_config')!=asdict(relay_config)):
+                or ancestor.get('relay_config')!=asdict(DEEPSEEK_RELAY_CONFIG if deepseek_model_stage else relay_config)):
             raise ValueError('a complete same-candidate secure core campaign is required first')
         preflight_calls=[]
         for identifier,reserved,actual,status,usage,metadata,*_rest in ancestor_attempts:
             call=json.loads(metadata or '{}')
             if call.get('arm')=='planning_preflight':
-                quote=(provider_policy.pricing.for_metadata(call,input_tokens=INPUT_BOUND).cost(INPUT_BOUND,4096)
-                       if provider_policy is not None else Decimal('2.032768'))
+                quote=(origin_policy.pricing.for_metadata(call,input_tokens=INPUT_BOUND).cost(INPUT_BOUND,4096)
+                       if origin_policy is not None else Decimal('2.032768'))
                 if reserved!=int(quote*10**12):
                     raise ValueError('core planning preflight reservation changed')
                 preflight_calls.append(dict(call,attempt_id=identifier,status=status,
                     usage=json.loads(usage) if usage else None,
                     actual_rmb=str(Decimal(actual)/Decimal(10**12)) if actual is not None else None))
-        validate_planning_preflight(ancestor_output,ancestor.get('planning_preflight'),preflight_calls,candidate,base_identity,provider_policy)
+        validate_planning_preflight(ancestor_output,ancestor.get('planning_preflight'),preflight_calls,candidate,base_identity,origin_policy)
         from benchmarks.v3_protected_worker import verify_worker_protection
         verify_worker_protection()
         binding={'protocol':protocol,'candidate_sha':candidate,'core_report_sha256':core_hash,
@@ -584,7 +610,9 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
         limit=str(Decimal(config[1])/Decimal(10**12)) if config[1] is not None else None
         budget=BudgetLedger(budget_path,limit_rmb=limit,pricing=pricing)
         native_calls=budget.campaign_calls() if provider_policy is not None else None
-        if native_calls is not None and any(not provider_policy.accepts_call(call) for call in native_calls):
+        if native_calls is not None and any(
+                not provider_policy.accepts_call(call) for call in native_calls
+                if not deepseek_model_stage or call['attempt_id'] not in original_ids):
             raise ValueError('native physical call violates its operational policy; retain the stopped checkpoint')
         if prior and json.loads(prior[0]).get('protocol')==protocol:
             report=live._load_checkpoint(output,budget_path)
@@ -638,7 +666,7 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
                 if row.get('model_exposure')!=exposure:
                     raise ValueError('model-routing exposure differs from its immutable worker and physical ledger')
         smoke={call['attempt_id']:call for call in calls if call['attempt_id'] in ancestor.get('smoke_attempt_ids',[])}
-        if len(smoke)!=(provider_policy.smoke_calls if provider_policy is not None else 2) or any(call.get('status')!='settled' or not isinstance(call.get('usage'),dict) for call in smoke.values()):
+        if len(smoke)!=(origin_policy.smoke_calls if origin_policy is not None else 2) or any(call.get('status')!='settled' or not isinstance(call.get('usage'),dict) for call in smoke.values()):
             raise ValueError('core native Responses smoke is not fully accounted')
         def checkpoint(status):
             report.update(status=status,rows=rows,
@@ -657,7 +685,9 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
         if report['summary']['complete']:
             checkpoint('unidentifiable' if model_routing and not report['summary']['identifiable'] else 'complete')
             return report
-        reservation=(max(pricing.for_metadata(provider_policy.metadata(model),input_tokens=INPUT_BOUND).cost(INPUT_BOUND,4096)
+        reservation=(max(pricing.for_metadata(
+            provider_policy.request_metadata(model,'routing-model-auto') if deepseek_model_stage
+            else provider_policy.metadata(model),input_tokens=INPUT_BOUND).cost(INPUT_BOUND,4096)
                          for model in provider_policy.role_models.values()) if provider_policy is not None else budget.cost(1_000_000,4096))
         if not budget.budget_ok or (budget.remaining_rmb is not None and budget.remaining_rmb<reservation):
             checkpoint('blocked_budget_reservation')
@@ -666,9 +696,14 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
         if provider_policy is not None:
             provider_policy.check_budget(budget)
             billing=provider_policy.verify_billing(billing_proof,candidate)
-            if billing!=ancestor.get('billing_proof'):
+            if deepseek_model_stage:
+                if report.get('billing_proof',billing)!=billing:
+                    raise ValueError('model routing account proof changed')
+                report['billing_proof']=billing
+            elif billing!=ancestor.get('billing_proof'):
                 raise ValueError('supplement account proof differs from its core')
-            if any(not provider_policy.accepts_call(call) for call in calls):
+            if any(not provider_policy.accepts_call(call) for call in calls
+                   if not deepseek_model_stage or call['attempt_id'] not in original_ids):
                 raise ValueError('supplement physical calls differ from their signed account proof')
             _,api_key=provider_policy.credential()
             relay=live._native_relay_class(provider_policy)(endpoint=endpoint,api_key=api_key,

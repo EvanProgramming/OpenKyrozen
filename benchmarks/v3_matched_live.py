@@ -31,11 +31,12 @@ REPEATS = 3
 
 
 def _native_relay_class(policy):
+    from benchmarks.v3_deepseek import DeepSeekRoutingPolicy
     from benchmarks.v3_gemini import GeminiPolicy, GeminiRelay
     from benchmarks.v3_panstar import PanstarPolicy, PanstarRelay
     if type(policy) is GeminiPolicy:
         return GeminiRelay
-    if type(policy) is PanstarPolicy:
+    if type(policy) in (PanstarPolicy, DeepSeekRoutingPolicy):
         return PanstarRelay
     raise ValueError('unsupported native benchmark policy')
 
@@ -1429,7 +1430,10 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         raise ValueError("release evaluation requires the exact frozen fixture content")
     identity = apparatus_identity()
     if provider_policy is not None:
+        from benchmarks.v3_deepseek import DeepSeekRoutingPolicy
         from benchmarks.v3_gemini import INPUT_BOUND
+        if type(provider_policy) is DeepSeekRoutingPolicy:
+            raise ValueError("DeepSeek Auto roles are allowed only in the model routing supplement")
         _native_relay_class(provider_policy)
         if (pricing != provider_policy.pricing
                 or relay_config != RelayConfig(model='auto', max_output_tokens=4096,

@@ -18,7 +18,7 @@ V3 is **unpublished**. This document describes implemented safeguards, retained 
 
 The current matched provider is official DeepSeek Responses with `deepseek-flash` on both V2 and V3. Two native tool-continuation calls and the actual planning preflight must pass before the 180 matched and 54 planning rows. Earlier costs and unknown holds remain included. This policy requires a signed candidate and fresh offline evidence at that commit. Publication remains pending. See [evaluation policy](v3-evaluation.md).
 
-Model-routing acceptance also requires the separate 36-row Auto-versus-configured-simple contrast after the original 54-row supplement. Its ordered physical-call exposure and measured quality/latency evidence remain unproven until executed on the final candidate; distinct configured slot names alone cannot establish a routing benefit. The three phases share one linear ledger history and inherit the same finite or explicitly unlimited accounting policy.
+Model-routing acceptance also requires the separate 36-row Auto-versus-configured-simple contrast after the original 54-row supplement. The owner authorized DeepSeek V4 Pro only in this stage. Its ordered physical-call exposure and measured quality/latency evidence remain pending until executed on the final candidate. The three phases share one linear ledger history.
 
 ## Owner acceptance amendment, 2026-11-11 (Asia/Shanghai)
 

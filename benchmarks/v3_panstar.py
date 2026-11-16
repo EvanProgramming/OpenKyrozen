@@ -142,6 +142,9 @@ class PanstarPolicy(GeminiPolicy):
     provider = 'openai'
     endpoint = OFFICIAL_ENDPOINT
 
+    def request_metadata(self, model, arm):
+        return self.metadata(model)
+
     def __init__(self, *, config=None, pricing=None, price_date=None):
         from openkyrozen.providers.config import ProviderConfig
         self.config = config or ProviderConfig(provider='openai', model_main='auto',
@@ -186,7 +189,11 @@ class PanstarPolicy(GeminiPolicy):
                 and self.served_identity(call.get('model'), usage.get('served_model')))
 
     def validate_body(self, body):
-        if (not isinstance(body, dict) or body.get('model') not in self.role_models.values()
+        return self._validate_text_body(body, self.role_models.values())
+
+    @staticmethod
+    def _validate_text_body(body, models, *, reasoning_text=False):
+        if (not isinstance(body, dict) or body.get('model') not in models
                 or set(body) - {'model', 'input', 'instructions', 'tools', 'tool_choice', 'parallel_tool_calls',
                                 'temperature', 'top_p', 'max_output_tokens', 'stream', 'reasoning', 'store', 'include'}):
             raise ValueError('request exceeds the priced Panstar text/function policy')
@@ -199,8 +206,11 @@ class PanstarPolicy(GeminiPolicy):
                 if not isinstance(item, dict) or item.get('type') not in {None, 'message', 'function_call', 'function_call_output', 'reasoning'}:
                     raise ValueError('unpriced native input')
                 content = item.get('content', item.get('output'))
+                kinds = {'input_text', 'output_text', 'refusal'}
+                if reasoning_text and item.get('type') == 'reasoning':
+                    kinds.add('reasoning_text')
                 if isinstance(content, list) and any(not isinstance(part, dict) or part.get('type') not in
-                        {'input_text', 'output_text', 'refusal'} for part in content):
+                        kinds for part in content):
                     raise ValueError('only native text/function content is admitted')
         elif not isinstance(items, str):
             raise ValueError('native input must be text or correlated native items')
@@ -213,7 +223,7 @@ class PanstarRelay(ResponsesRelay):
 
     def __init__(self, *, endpoint, api_key, budget, policy):
         parsed = urlsplit(endpoint)
-        self.official = endpoint == OFFICIAL_ENDPOINT
+        self.official = endpoint == policy.endpoint
         if not self.official and (parsed.scheme != 'http' or parsed.hostname != '127.0.0.1' or not parsed.port
                 or parsed.path not in {'', '/v1'} or parsed.query or parsed.fragment or parsed.username):
             raise ValueError('Panstar transport must be its pinned endpoint or a synthetic loopback')

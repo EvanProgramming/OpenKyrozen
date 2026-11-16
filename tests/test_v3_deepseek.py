@@ -15,6 +15,43 @@ from benchmarks import v3_matched
 
 
 class DeepSeekBudgetTests(unittest.TestCase):
+    def test_only_model_routing_prices_pro(self):
+        from benchmarks.v3_deepseek import DEEPSEEK_UNLIMITED_PRICING, DeepSeekRoutingPolicy, read_prior_exposure
+        from benchmarks.v3_responses_relay import RelayConfig
+        pricing = DEEPSEEK_UNLIMITED_PRICING
+        flash = RelayConfig("deepseek-flash", 4096, 1000000, True)
+        self.assertEqual(pricing.cost(flash.fixed_input_token_bound, flash.max_output_tokens), Decimal("2.032768"))
+        with self.assertRaises(ValueError):
+            pricing.for_metadata({"model": "deepseek-v4-pro", "arm": "v3"}, input_tokens=1048576)
+        pro = pricing.for_metadata({"model": "deepseek-v4-pro", "arm": "routing-model-auto"},
+                                  input_tokens=1048576)
+        self.assertEqual(pro.cost(1048576, 4096), Decimal("9.547776"))
+        policy = DeepSeekRoutingPolicy(price_date="2026-11-16")
+        for arm in ("v2", "v3", "routing-default", "routing-model-simple"):
+            with self.assertRaises(ValueError):
+                policy.request_metadata("deepseek-v4-pro", arm)
+        routing = policy.request_metadata("deepseek-v4-pro", "routing-model-auto")
+        reasoning = {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "tool context"}]}
+        body = {"model": "deepseek-v4-pro", "input": [reasoning]}
+        self.assertEqual(policy.validate_body(body)["input"], [reasoning])
+        with self.assertRaises(ValueError):
+            policy.validate_body({**body, "tools": [{"type": "web_search"}]})
+        response = {"status": "completed", "model": "DeepSeek-V4-Pro-0813",
+                    "usage": {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110}}
+        self.assertIsNone(policy.response_usage("deepseek-flash", response))
+        usage = policy.response_usage("deepseek-v4-pro", response)
+        self.assertEqual(usage["served_model"], "DeepSeek-V4-Pro-0813")
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = v3_matched.BudgetLedger(Path(directory) / "combined.db", limit_rmb=None, pricing=pricing)
+            self.assertTrue(ledger.reserve("flash", input_token_bound=1000000, output_token_bound=4096,
+                metadata={"arm": "v3", "model": "deepseek-flash"}))
+            ledger.settle("flash", None)
+            self.assertTrue(ledger.reserve("pro", input_token_bound=1048576, output_token_bound=4096, metadata=routing))
+            ledger.settle("pro", usage)
+            account = read_prior_exposure([ledger.path])
+            self.assertEqual((account.held_cny, account.settled_cny, account.attempt_count),
+                             (Decimal("2.032768"), Decimal("0.00117"), 2))
+
     def test_immutable_pricing_is_available(self):
         self.assertIsNotNone(getattr(v3_matched, 'Pricing', None),
                              'budget pricing must be an immutable per-ledger configuration')
@@ -397,7 +434,7 @@ class DeepSeekRunnerTests(unittest.TestCase):
                 self.assertEqual(options['prior_hold_cny'], '127')
                 self.assertEqual(options['limit_cny'], 'unlimited')
                 self.assertIsNone(options['pricing'].max_limit_cny)
-                self.assertEqual(options['pricing'].sha256, deepseek.DEEPSEEK_PRICING.sha256)
+                self.assertNotEqual(options['pricing'].sha256, deepseek.DEEPSEEK_PRICING.sha256)
             with patch('sys.argv', argv + ['--limit-cny', '15.01']), \
                     patch('benchmarks.v3_matched_live._source_snapshot', return_value='configured-sha'), \
                     patch('scripts.publish_v3_preview._verify_candidate_signature'), \

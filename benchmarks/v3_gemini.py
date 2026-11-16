@@ -146,6 +146,7 @@ class GeminiPricing:
 
 
 class GeminiPolicy:
+    paid_fx = "8"
     protocol = "google"
     provider = "google"
     endpoint = OFFICIAL_ENDPOINT
@@ -238,7 +239,7 @@ class GeminiPolicy:
                 or (self.pricing.billing_tier == "free" and record.get("account_unbilled_models") != sorted(self.role_models.values()))
                 or (self.pricing.billing_tier == 'free' and (record.get('account_billing_status')!='free_verified'
                     or record.get('rate_policy')!='account_free'))
-                or (self.pricing.billing_tier == "paid" and (record.get("conservative_cny_per_usd") != "8"
+                or (self.pricing.billing_tier == "paid" and (record.get("conservative_cny_per_usd") != self.paid_fx
                     or record.get('account_billing_status') not in {'unverified','paid_verified'}
                     or record.get('rate_policy')!='standard_paid_rate_upper'))):
             raise ValueError("Google signed billing proof does not bind this candidate/account/policy")

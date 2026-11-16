@@ -501,6 +501,7 @@ class SupplementRunnerTests(unittest.TestCase):
 
     def test_model_phase_uses_one_linear54_child_and_shared36_loop_without_mutating_parents(self):
         self._model_phase_run()
+        self._model_phase_run(uncapped=True,deepseek_flash_origin=True)
 
     def test_model_phase_preserves_durable_final_operational_stop_before_checkpoint_or_key(self):
         for model_routing in (False,True):
@@ -517,11 +518,13 @@ class SupplementRunnerTests(unittest.TestCase):
             with self.subTest(model_routing=model_routing):
                 self._model_phase_run(model_routing=model_routing, provider_stop=True)
 
-    def _model_phase_run(self, *, durable_overrun=False,model_routing=True,uncapped=False,provider_stop=False):
+    def _model_phase_run(self, *, durable_overrun=False,model_routing=True,uncapped=False,provider_stop=False,
+                         deepseek_flash_origin=False):
         """Synthetic workers/gates test SQLite scheduling/lineage, not formal quality."""
         from benchmarks import v3_matched_live as live
         from benchmarks.v3_matched import BudgetLedger
         from benchmarks.v3_gemini import GeminiPolicy,GeminiPricing,INPUT_BOUND
+        from benchmarks.v3_deepseek import DeepSeekRoutingPolicy,DEEPSEEK_RELAY_CONFIG
         from benchmarks.v3_responses_relay import RelayConfig
         from benchmarks.v3_fixtures import FIXTURES
         from openkyrozen.providers import ProviderConfig
@@ -529,7 +532,11 @@ class SupplementRunnerTests(unittest.TestCase):
         policy=GeminiPolicy(config=ProviderConfig(provider='google',model_main='auto',
             model_simple='gemini-3.5-flash-lite',model_complex='gemini-3.8-flash'),pricing=GeminiPricing(
                 billing_tier='free',max_limit_cny=None if uncapped else Decimal(15)))
-        module=supplement();identity=live.apparatus_identity();identity['provider_policy']=policy.identity()
+        module=supplement();identity=live.apparatus_identity()
+        if deepseek_flash_origin:
+            policy=DeepSeekRoutingPolicy()
+        else:
+            identity['provider_policy']=policy.identity()
         cells=module.model_schedule() if model_routing else module.schedule()
         protocol=module.MODEL_PROTOCOL if model_routing else module.PROTOCOL
         fixtures={item['fixture_id']:item for item in FIXTURES if item['fixture_id'] in module.FIXTURE_IDS}
@@ -541,20 +548,33 @@ class SupplementRunnerTests(unittest.TestCase):
                 prior_hold_rmb='18' if uncapped else '12.151991600007',pricing=policy.pricing)
             def record(budget,arm,fixture,repeat,model):
                 number=len(budget.campaign_calls());identifier=f'call-{number:04}'
-                metadata=dict(policy.metadata(model),attempt_id=identifier,arm=arm,fixture_id=fixture,repeat=repeat,
-                    max_output_tokens=4096,reserved_rmb='0',admission_sequence=number,
+                phase_metadata=policy.metadata(model)
+                bound=INPUT_BOUND
+                if deepseek_flash_origin:
+                    if arm=='smoke':
+                        phase_metadata={};bound=1000000
+                    else:
+                        phase_metadata=dict(policy.request_metadata(model,arm),protocol='openai-responses')
+                quote=policy.pricing.for_metadata(dict(phase_metadata,model=model,arm=arm),input_tokens=bound).cost(bound,4096)
+                metadata=dict(phase_metadata,attempt_id=identifier,arm=arm,fixture_id=fixture,repeat=repeat,model=model,
+                    max_output_tokens=4096,reserved_rmb=str(quote),admission_sequence=number,
                     actor_id='root',actor_role='root',root_actor_id='root')
-                budget.reserve(identifier,input_token_bound=INPUT_BOUND,output_token_bound=4096,metadata=metadata)
+                budget.reserve(identifier,input_token_bound=bound,output_token_bound=4096,metadata=metadata)
                 count=(1_000_001 if durable_overrun and arm=='routing-'+cells[-1]['variant']
                        and fixture=='implementation-3' and repeat==2 else 100)
+                raw=({'input_tokens':count,'output_tokens':20,'total_tokens':count+20,
+                      'output_tokens_details':{'reasoning_tokens':3}} if deepseek_flash_origin else
+                     {'promptTokenCount':count,'candidatesTokenCount':17,'thoughtsTokenCount':3,'totalTokenCount':count+20})
                 budget.settle(identifier,{'input_tokens':count,'output_tokens':20,'cache_read_tokens':0,'cache_write_tokens':0,
-                    'reasoning_tokens':3,'served_model':model,'raw_usage':{'promptTokenCount':count,'candidatesTokenCount':17,
-                        'thoughtsTokenCount':3,'totalTokenCount':count+20}})
+                    'reasoning_tokens':3,'served_model':model,'raw_usage':raw})
                 return next(call for call in budget.campaign_calls() if call['attempt_id']==identifier)
-            smoke=[record(ledger,'smoke','a'*40,-1,policy.role_models['simple'])['attempt_id'] for _ in range(4)]
+            smoke=[record(ledger,'smoke','a'*40,-1,policy.role_models['simple'])['attempt_id']
+                   for _ in range(2 if deepseek_flash_origin else 4)]
             core={**identity,'protocol':'openkyrozen-v3-matched-live-v1','candidate_sha':'a'*40,
                   'status':'complete','rows':[],'smoke_passed':True,'smoke_attempt_ids':smoke,
                   'relay_config':asdict(RelayConfig('auto',4096,INPUT_BOUND,True)),'billing_proof':proof}
+            if deepseek_flash_origin:
+                core.update(relay_config=asdict(DEEPSEEK_RELAY_CONFIG),budget={'currency':'CNY','limit_cny':None})
             live._write_checkpoint(core_output,core_budget,core)
             core_hash=__import__('hashlib').sha256(core_output.read_bytes()).hexdigest()
             with live._campaign_lock(core_output) as lease:
@@ -566,6 +586,8 @@ class SupplementRunnerTests(unittest.TestCase):
             parent={'protocol':module.PROTOCOL,'candidate_sha':'a'*40,'status':'complete','rows':[],
                     'origin':{'core_output':str(core_output),'core_budget':str(core_budget),
                               'core_report_sha256':core_hash,'original_attempt_ids':original_ids}}
+            if deepseek_flash_origin:
+                parent['budget']={'currency':'CNY','limit_cny':None}
             if model_routing:live._write_checkpoint(parent_output,parent_budget,parent)
             else:output,budget_path=parent_output,parent_budget
             parents=(core_output,core_budget,parent_output,parent_budget) if model_routing else (core_output,core_budget)
@@ -587,7 +609,7 @@ class SupplementRunnerTests(unittest.TestCase):
                                                      else 'upstream_response_failed:backend')
                 from openkyrozen.routing.router import RoutingDecision
                 from dataclasses import replace
-                before=RoutingDecision('google',policy.role_models['complex'],'extended',None,'coder',True)
+                before=RoutingDecision(policy.provider,policy.role_models['complex'],'extended',None,'coder',True)
                 after=(replace(before,model=model,reasoning='standard') if variant=='model-simple' else before
                        if model_routing else module.intervene(before,variant,profile_override='auto',interaction_mode='agent'))
                 request={'kind':'generation','model':model,'message_projection_sha256':'a'*64,
@@ -624,7 +646,8 @@ class SupplementRunnerTests(unittest.TestCase):
                 stack.enter_context(patch.object(module,'_validate_54_origin'))
                 stack.enter_context(patch('benchmarks.v3_deepseek.validate_planning_preflight'))
                 stack.enter_context(patch('benchmarks.v3_protected_worker.verify_worker_protection'))
-                stack.enter_context(patch('benchmarks.v3_gemini.GeminiRelay',Relay))
+                relay_target='benchmarks.v3_panstar.PanstarRelay' if deepseek_flash_origin else 'benchmarks.v3_gemini.GeminiRelay'
+                stack.enter_context(patch(relay_target,Relay))
                 stack.enter_context(patch.object(policy,'verify_billing',return_value=proof))
                 credential=stack.enter_context(patch.object(policy,'credential',return_value=('http://127.0.0.1:1','synthetic-key')))
                 args=dict(source=Path(__file__).resolve().parents[1],repo=Path(__file__).resolve().parents[1],
