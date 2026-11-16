@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import datetime, timedelta
 import io
 import hashlib
 from importlib import metadata
@@ -64,33 +65,83 @@ class _WindowsProcessTable(dict):
         super().__init__(rows)
 
 
+def _windows_creation_date(ticks: int) -> str:
+    seconds, fraction = divmod(ticks, 10_000_000)
+    date = datetime(1601, 1, 1) + timedelta(seconds=seconds)
+    return f'{date.isoformat(timespec="seconds")}.{fraction:07d}Z'
+
+
+def _windows_process_table() -> _WindowsProcessTable:
+    import ctypes
+    from ctypes import wintypes as win
+
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [('dwSize', win.DWORD), ('cntUsage', win.DWORD), ('th32ProcessID', win.DWORD),
+                    ('th32DefaultHeapID', ctypes.c_size_t), ('th32ModuleID', win.DWORD),
+                    ('cntThreads', win.DWORD), ('th32ParentProcessID', win.DWORD), ('pcPriClassBase', win.LONG),
+                    ('dwFlags', win.DWORD), ('szExeFile', win.WCHAR * 260)]
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    filetime = ctypes.POINTER(win.FILETIME)
+    entry_pointer = ctypes.POINTER(ProcessEntry)
+    kernel.GetSystemTimePreciseAsFileTime.argtypes = [filetime]
+    kernel.GetSystemTimePreciseAsFileTime.restype = None
+    kernel.CreateToolhelp32Snapshot.argtypes = [win.DWORD, win.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype = win.HANDLE
+    kernel.Process32FirstW.argtypes = kernel.Process32NextW.argtypes = [win.HANDLE, entry_pointer]
+    kernel.Process32FirstW.restype = kernel.Process32NextW.restype = win.BOOL
+    kernel.OpenProcess.argtypes = [win.DWORD, win.BOOL, win.DWORD]
+    kernel.OpenProcess.restype = win.HANDLE
+    kernel.GetProcessTimes.argtypes = [win.HANDLE, filetime, filetime, filetime, filetime]
+    kernel.GetProcessTimes.restype = win.BOOL
+    kernel.CloseHandle.argtypes = [win.HANDLE]
+    kernel.CloseHandle.restype = win.BOOL
+
+    def ticks(value):
+        return (value.dwHighDateTime << 32) | value.dwLowDateTime
+
+    start = win.FILETIME()
+    kernel.GetSystemTimePreciseAsFileTime(ctypes.byref(start))
+    snapshot = kernel.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+    if snapshot == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    rows = {}
+    entry = ProcessEntry(dwSize=ctypes.sizeof(ProcessEntry))
+    try:
+        if not kernel.Process32FirstW(snapshot, ctypes.byref(entry)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        while True:
+            pid = entry.th32ProcessID
+            if pid in rows:
+                raise AssertionError(f'ambiguous Windows process identity for PID {pid}')
+            created = None
+            process = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if process:
+                try:
+                    times = [win.FILETIME() for _ in range(4)]
+                    if kernel.GetProcessTimes(process, *(ctypes.byref(value) for value in times)):
+                        identity = ticks(times[0])
+                        # A later PID reuse cannot supply the earlier snapshot row's identity.
+                        if 0 < identity <= ticks(start):
+                            created = _windows_creation_date(identity)
+                finally:
+                    kernel.CloseHandle(process)
+            rows[pid] = {'pid': pid, 'ppid': entry.th32ParentProcessID,
+                         'CreationDate': created, 'Name': entry.szExeFile}
+            if not kernel.Process32NextW(snapshot, ctypes.byref(entry)):
+                if ctypes.get_last_error() != 18:  # ERROR_NO_MORE_FILES
+                    raise ctypes.WinError(ctypes.get_last_error())
+                break
+    finally:
+        kernel.CloseHandle(snapshot)
+    return _WindowsProcessTable(rows, None)
+
+
 def _process_table() -> dict:
     if platform.system() == 'Windows':
-        shell = shutil.which('powershell') or shutil.which('pwsh')
-        if not shell:
-            raise RuntimeError('PowerShell is required for Windows process evidence')
-        output, probe_pid = _process_output([shell, '-NoProfile', '-NonInteractive', '-Command',
-            "Get-CimInstance Win32_Process | Select-Object "
-            "@{Name='pid';Expression={$_.ProcessId}},@{Name='ppid';Expression={$_.ParentProcessId}},"
-            "@{Name='CreationDate';Expression={if ($null -ne $_.CreationDate) {"
-            "$_.CreationDate.ToUniversalTime().ToString('o',[Globalization.CultureInfo]::InvariantCulture)}}},Name "
-            "| ConvertTo-Json -Compress"])
-        rows = json.loads(output) if output.strip() else []
-        if isinstance(rows, dict):
-            rows = [rows]
-        parents = {}
-        for row in rows:
-            pid = int(row['pid'])
-            if pid in parents:
-                raise AssertionError(f'ambiguous Windows process identity for PID {pid}')
-            stamp = row.get('CreationDate')
-            parents[pid] = {'pid': pid, 'ppid': int(row['ppid']),
-                           'CreationDate': stamp[:64] if isinstance(stamp, str) else None,
-                           'Name': str(row.get('Name') or '')[:256]}
-        return _WindowsProcessTable(parents, probe_pid)
-    else:
-        output, probe_pid = _process_output(['ps', '-axo', 'pid=,ppid='])
-        parents = _parse_process_table(output)
+        return _windows_process_table()
+    output, probe_pid = _process_output(['ps', '-axo', 'pid=,ppid='])
+    parents = _parse_process_table(output)
     parents.pop(probe_pid, None)
     return parents
 
@@ -291,8 +342,8 @@ def run(seconds: float, log_dir: Path) -> dict:
         db = root / 'state.sqlite3'
         os.environ['KYROZEN_DB_PATH'] = str(root / 'test-driver.sqlite3')
         os.environ['KYROZEN_BROWSER_PROFILES'] = str(root / 'browser-profiles')
-        baseline_children = _capture_process_tree(os.getpid(), log_dir / 'process-audit-baseline.json')
         try:
+            baseline_children = _capture_process_tree(os.getpid(), log_dir / 'process-audit-baseline.json')
             process, url = start_gateway(workspace, db, root / 'skills',
                                                  log_path=log_dir / f'gateway-{restarts:03d}.log')
             initial = _process_snapshot(process.pid)

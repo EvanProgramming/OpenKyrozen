@@ -10,10 +10,7 @@ from scripts import production_soak
 
 class ProductionSoakProcessTests(unittest.TestCase):
     def windows_table(self, rows, probe=99):
-        with patch('scripts.production_soak.platform.system',return_value='Windows'), \
-             patch('scripts.production_soak.shutil.which',return_value='powershell'), \
-             patch('scripts.production_soak._process_output',return_value=(json.dumps(rows),probe)):
-            return production_soak._process_table()
+        return production_soak._WindowsProcessTable({row['pid']: row for row in rows}, probe)
 
     @staticmethod
     def row(pid, ppid, second, **extra):
@@ -216,19 +213,23 @@ finally:
         self.assertEqual(production_soak._descendants(10, parents), {11, 12})
         self.assertEqual(production_soak._descendants(20, parents), set())
 
-    def test_windows_process_table_excludes_its_own_probe(self):
+    def test_windows_process_table_does_not_depend_on_a_shell_or_cim_probe(self):
         rows=[self.row(10,1,10),self.row(11,10,11),self.row(99,10,12)]
-        output=json.dumps(rows)
+        table=production_soak._WindowsProcessTable({row['pid']: row for row in rows}, None)
         with patch("scripts.production_soak.platform.system", return_value="Windows"), \
-             patch("scripts.production_soak.shutil.which", return_value="powershell"), \
-             patch("scripts.production_soak._process_output", return_value=(output, 99)) as probe:
-            table=production_soak._process_table()
-            self.assertEqual(table,{10:rows[0],11:rows[1]})
-            self.assertEqual(table.probe_pid,99)
-            self.assertEqual(table.probe,rows[2])
-            query=probe.call_args.args[0][-1]
-            self.assertIn('CreationDate.ToUniversalTime()',query)
-            self.assertNotIn('CommandLine',query);self.assertNotIn('ExecutablePath',query)
+             patch.object(production_soak, "_windows_process_table", return_value=table, create=True) as native, \
+             patch.object(production_soak, "_process_output", side_effect=AssertionError("shell probe called")):
+            self.assertIs(production_soak._process_table(), table)
+            native.assert_called_once_with()
+            self.assertIn(99, table)
+            self.assertIsNone(table.probe_pid)
+
+    def test_windows_creation_timestamp_preserves_exact_filetime_ticks(self):
+        epoch_seconds = 11644473600
+        self.assertEqual(production_soak._windows_creation_date(epoch_seconds * 10_000_000 + 1),
+                         "1970-01-01T00:00:00.0000001Z")
+        self.assertEqual(production_soak._windows_creation_date(epoch_seconds * 10_000_000 + 19_123_456),
+                         "1970-01-01T00:00:01.9123456Z")
 
     def test_windows_process_snapshot_maps_native_resource_counters(self):
         with patch("scripts.production_soak.platform.system", return_value="Windows"), \
