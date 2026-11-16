@@ -580,7 +580,7 @@ class PlanningPreflightTests(unittest.TestCase):
                         AgentEngine(runtime)._archive_replies(messages, [index])
                         archived = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == 'plan-1')
                         page = memory.store.artifacts.read_page(archived.output['data']['artifact_id'],
-                            0, 1000, user_id=runtime.tasks.user_id, workspace_id=runtime.tasks.workspace_id,
+                            0, len(original), user_id=runtime.tasks.user_id, workspace_id=runtime.tasks.workspace_id,
                             session_id=runtime.tasks.session_id)
                         case.assertEqual(page['content'], original)
                         case.assertEqual(page['total_chars'], len(original))
