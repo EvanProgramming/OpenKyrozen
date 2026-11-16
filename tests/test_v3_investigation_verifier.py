@@ -72,6 +72,8 @@ class InvestigationVerifierTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertFalse(self.verify(1, json.dumps({'function': 'sorted_products', 'key': key})))
         self.assertFalse(self.verify(3, json.dumps({'handler': 'create_item', 'reject_if': 'not body.get("name")', 'error': 'ValueError'})))
+        self.assertFalse(self.verify(3, json.dumps({'handler': 'create_item',
+            'reject_if': "if not body.get('name', '').strip():", 'error': 'ValueError'})))
 
     def test_ambiguous_incorrect_or_untyped_answers_fail(self):
         for answer in ('{"timeout":15,"retries":true}', '{"timeout":"15","retries":2}',

@@ -61,7 +61,7 @@ FIXTURES = (
     _fixture("investigation", 2, "Inspect settings.py and report the default timeout and retry count. Return only a JSON object with exactly timeout and retries, using their integer values. Do not edit files.",
              {"kind": "source_facts", "path": "settings.py", "expected": {"timeout": 15, "retries": 2}, "expressions": []},
              files={"settings.py": "timeout = 15\nretries = 2\n"}),
-    _fixture("investigation", 3, "Inspect routes.py and name the handler used by POST /items plus its validation rule. Return only a JSON object with exactly handler (the function name), reject_if (copy the Python condition that rejects the input), and error (the raised exception class name). Do not edit files.",
+    _fixture("investigation", 3, "Inspect routes.py and name the handler used by POST /items plus its validation rule. Return only a JSON object with exactly handler (the function name), reject_if (copy just the condition expression between the if keyword and the final colon, without either), and error (the raised exception class name). Do not edit files.",
              {"kind": "source_facts", "path": "routes.py", "expected": {"handler": "create_item", "reject_if": "not body.get('name', '').strip()", "error": "ValueError"}, "expressions": ["reject_if"]},
              files={"routes.py": "def create_item(body):\n    if not body.get('name', '').strip():\n        raise ValueError('non-empty name required')\n\nROUTES = {('POST', '/items'): create_item}\n"}),
     _fixture("bug_fix", 1, "Use a working plan to reproduce the empty-input failure in stats.py, fix it so mean([]) returns 0, and run test_stats.py. The reproduction reveals an unplanned edge case; add a verification task for it with update_plan.",
@@ -212,7 +212,7 @@ def cohort_digest(fixtures=FIXTURES):
         separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
 
 
-FROZEN_COHORT_SHA256 = "67f524096e4a02bc63593462bcb599ca0615c50aeae24bd487703fd839a37d66"
+FROZEN_COHORT_SHA256 = "f87d4a8950267f38eff9eb7f41fc6145c74f2128fbb1689116697f9e8e6a2a61"
 
 
 validate_fixtures(FIXTURES)

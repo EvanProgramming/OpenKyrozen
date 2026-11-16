@@ -8,7 +8,7 @@ Linux prepares private user namespaces without changing the host's AppArmor or n
 
 The `--repo` checkout must contain the pinned V2 commit so the runner can extract its source with `git archive`. The CI full-suite jobs fetch complete history and verify that exact commit before running tests; for a shallow local checkout, fetch the V2 baseline first.
 
-Both arms receive the same rendered investigation prompt. It names the `read_file` action and full-source read required by the independent source-fact verifier. The answer and matching read receipt are both required. This prompt clarification changes the benchmark apparatus identity and requires a fresh cohort.
+Both arms receive the same rendered investigation prompts. They name the `read_file` action and full-source read required by the independent source-fact verifier. The route-handler question asks for the condition expression between the `if` keyword and colon. The answer and matching read receipt are both required. These prompt clarifications change the benchmark apparatus identity and require a fresh cohort.
 
 When the native runtime requires a Working Plan, a workspace file is available through `read_file` after the agent starts the task. If the model mistakes a source path for an artifact ID before establishing the plan, the runtime can offer one normal planning continuation. Completion still requires a successful authorized read of that exact source path, bound to the completed plan.
 
