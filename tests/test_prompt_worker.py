@@ -1,9 +1,30 @@
 import unittest
+from unittest.mock import Mock
 
-from benchmarks.prompt_worker import _accepted_scope_preserved
+from benchmarks.prompt_worker import _accepted_scope_preserved, _working_plan_edits
 
 
 class PromptWorkerPlanEvidenceTests(unittest.TestCase):
+    def test_required_task_lifecycle_is_not_a_working_plan_revision(self):
+        manager = Mock(user_id="u", workspace_id="w", session_id="s")
+
+        def update(revision, operations):
+            return {"event_type": "working_plan.updated", "task_id": None, "payload": {
+                "plan_id": "plan-1", "revision": revision, "operations": [{"op": op} for op in operations],
+            }}
+
+        history = [update(1, ["add"]), update(2, ["start"]), update(3, ["suggest_complete"])]
+        history.append({"event_type": "working_plan.cancelled", "task_id": "task-1",
+                        "payload": {"plan_id": "plan-1"}})
+        manager.store.list_events.side_effect = lambda **_scope: list(reversed(history))
+        edits, revisions = _working_plan_edits(manager)
+        self.assertEqual(len(edits), 3)
+        self.assertEqual(revisions, 0)
+        history.append(update(4, ["update", "start"]))
+        edits, revisions = _working_plan_edits(manager)
+        self.assertEqual(edits[-1]["operations"], ["update", "start"])
+        self.assertEqual(revisions, 1)
+
     def test_missing_fingerprints_cannot_match_legacy_plan_events_or_tasks(self):
         plan = {"plan_id": "plan-1", "version": 1, "fingerprint": None}
         history = [{"event_type": "interaction.plan_completed", "payload": {

@@ -685,6 +685,14 @@ class V3MatchedLiveTests(unittest.TestCase):
                 self.assertEqual(baseline_plan["steps"][0]["acceptance"],
                                  [item["criterion"] for item in plan["steps"][0]["acceptance"]])
 
+    def test_adequate_plan_seed_provides_real_verification_before_start(self):
+        fixture = next(item for item in FIXTURES if item["plan_scenario"] == "unnecessary_churn")
+        native, = _initial_plan(fixture)
+        self.assertEqual(_initial_plan(fixture, arm="v2"), [native["description"]])
+        self.assertEqual(native["acceptance"][0]["verification"], {
+            "action": "run_cmd", "arguments": {"command": "python3 -m unittest test_slug.py"},
+        })
+
     def test_scope_scenario_rejects_missing_active_strategic_binding(self):
         fixture = next(item for item in FIXTURES if item["plan_scenario"] == "scope_preserving")
         with tempfile.TemporaryDirectory() as directory:

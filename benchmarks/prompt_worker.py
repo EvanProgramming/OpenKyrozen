@@ -282,6 +282,24 @@ def _accepted_scope_preserved(history, accepted_fingerprints, accepted_plan, tas
     )
 
 
+def _working_plan_edits(manager):
+    """Count durable strategy changes after the initial plan, excluding task lifecycle."""
+    scope = {"user_id": manager.user_id, "workspace_id": manager.workspace_id,
+             "session_id": manager.session_id, "limit": None}
+    edits = []
+    for event in reversed(manager.store.list_events(**scope)):
+        # Transactional edits have no task ID. Task terminal events also report cancellation.
+        if event["event_type"] not in {"working_plan.updated", "working_plan.cancelled"} or event["task_id"] is not None:
+            continue
+        record = event["payload"]
+        edits.append({"plan_id": record["plan_id"], "revision": record["revision"],
+                      "operations": [operation["op"] for operation in record["operations"]]})
+    revisions = sum(left["plan_id"] != right["plan_id"] or not right["operations"]
+                    or any(op not in {"start", "suggest_complete"} for op in right["operations"])
+                    for left, right in zip(edits, edits[1:]))
+    return edits, revisions
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True)
@@ -413,15 +431,17 @@ def main():
             accepted_fingerprint = accepted.get("fingerprint")
             accepted_plan_identity = {key: accepted.get(key) for key in ("plan_id", "version", "fingerprint")}
             initial_tasks = [f"{step['title']}: {step['description']}" for step in accepted["steps"]]
-        elif isinstance(initial_plan, list) and all(isinstance(item, str) for item in initial_plan):
-            initial_tasks = initial_plan
+        elif isinstance(initial_plan, list) and all(isinstance(item, (str, dict)) for item in initial_plan):
+            seeds = [item if isinstance(item, dict) else {
+                "description": item, "acceptance": ["Complete the independent fixture objective."],
+            } for item in initial_plan]
+            initial_tasks = [seed["description"] for seed in seeds]
             if initial_tasks:
                 if callable(getattr(runtime.tasks, "edit_plan", None)):
                     runtime.tasks.edit_plan(
                         complexity="complex", expected_revision=0,
-                        operations=[{"op": "add", "ref": f"fixture-{index}", "task": {
-                            "description": task, "acceptance": ["Complete the independent fixture objective."],
-                        }} for index, task in enumerate(initial_tasks, 1)],
+                        operations=[{"op": "add", "ref": f"fixture-{index}", "task": seed}
+                                    for index, seed in enumerate(seeds, 1)],
                         reason="Initialize the frozen matched evaluation plan.",
                     )
                 else:
@@ -431,7 +451,7 @@ def main():
                 ) + "\nUse update_plan when new evidence requires adding, cancelling, replacing, or reordering work.\n\n"
                           + prompt)
         else:
-            raise ValueError("benchmark initial plan must be a plan object or an array of task descriptions")
+            raise ValueError("benchmark initial plan must be a Strategic Plan or a list of Working Plan tasks")
         snapshot_working_plan = getattr(runtime.tasks, "working_plan_snapshot", None)
         initial_working_plan = snapshot_working_plan() if callable(snapshot_working_plan) else None
         if initial_working_plan:
@@ -458,8 +478,9 @@ def main():
                 (item.get("plan_id"), item.get("revision")) !=
                 (working_plan.get("plan_id"), working_plan.get("revision")) for item in plan_snapshots):
             plan_snapshots.append(working_plan)
-        revisions = [int(item.get("revision", 0)) for item in plan_snapshots]
-        working_revisions = max(0, max(revisions) - min(revisions)) if revisions else 0
+        working_plan_edits, working_revisions = (
+            _working_plan_edits(runtime.tasks) if callable(snapshot_working_plan) else ([], 0)
+        )
         task_orders = []
         for event in events:
             items = event.get("tasks")
@@ -505,6 +526,7 @@ def main():
                   "pending_material_revision": pending_material,
                   "executing_plan_fingerprint": (interaction_state.get("executing_plan") or {}).get("fingerprint"),
                   "plan_revisions": plan_revisions,
+                  "working_plan_edits": working_plan_edits,
                   "cancelled_tasks": sum(t["status"] == "cancelled" for t in runtime.tasks.tasks),
                   "material_revisions": material_revisions,
                   "unnecessary_churn": unnecessary_churn,

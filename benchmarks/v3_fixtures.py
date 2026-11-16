@@ -76,7 +76,7 @@ FIXTURES = (
     _fixture("implementation", 1, 'Implement POST /items in the existing in-process WSGI API across api.py and service.py. Return 201 JSON {id,name}, trim non-empty string names, return 400 for malformed/invalid bodies, and 409 for duplicate names. Preserve GET /items and shared service state. Modify both production modules and run test_api.py. Add a working-plan verification task for the discovered duplicate-name case.',
              {'kind': 'tests', 'command': ['python', '-m', 'unittest', 'test_api.py'], 'required_changed_paths': ['api.py', 'service.py']},
              files={'api.py': "import json\nfrom service import list_items\n\ndef app(environ, start_response):\n    if environ['REQUEST_METHOD'] == 'GET' and environ['PATH_INFO'] == '/items':\n        status, body = '200 OK', list_items()\n    else:\n        status, body = '404 Not Found', {'error': 'not found'}\n    start_response(status, [('Content-Type', 'application/json')])\n    return [json.dumps(body).encode('utf-8')]\n", 'service.py': 'ITEMS = []\n\ndef list_items():\n    return list(ITEMS)\n\ndef create_item(payload):\n    raise NotImplementedError\n', 'test_api.py': 'import io\nimport json\nimport unittest\nimport service\nfrom api import app\n\nclass ApiTests(unittest.TestCase):\n    def setUp(self): service.ITEMS.clear()\n    def request(self, method, payload=b\'\'):\n        captured = []\n        body = b\'\'.join(app({\'REQUEST_METHOD\': method, \'PATH_INFO\': \'/items\',\n            \'CONTENT_LENGTH\': str(len(payload)), \'wsgi.input\': io.BytesIO(payload)},\n            lambda status, headers: captured.append((status, dict(headers)))))\n        return captured[0][0], captured[0][1], json.loads(body)\n    def test_existing_get(self):\n        self.assertEqual(self.request(\'GET\')[::2], (\'200 OK\', []))\n    def test_post_and_get_share_service_state(self):\n        status, headers, created = self.request(\'POST\', b\'{"name":" Cedar "}\')\n        self.assertEqual(status, \'201 Created\')\n        self.assertEqual(headers[\'Content-Type\'], \'application/json\')\n        self.assertEqual(created, {\'id\': 1, \'name\': \'Cedar\'})\n        self.assertEqual(self.request(\'GET\')[2], [created])\n    def test_service_contract(self):\n        self.assertEqual(service.create_item({\'name\': \' Birch \'}), {\'id\': 1, \'name\': \'Birch\'})\n        with self.assertRaises(ValueError): service.create_item({\'name\': \'\'})\n    def test_bad_payloads(self):\n        for payload in (b\'broken json\', b\'{}\', b\'{"name":" "}\', b\'{"name":7}\', b\'[]\', b\'null\', b\'\"name\"\'):\n            with self.subTest(payload=payload): self.assertEqual(self.request(\'POST\', payload)[0], \'400 Bad Request\')\n    def test_duplicate_name(self):\n        self.request(\'POST\', b\'{"name":"Cedar"}\')\n        self.assertEqual(self.request(\'POST\', b\'{"name":"Cedar"}\')[0], \'409 Conflict\')\n'}, plan_scenario="add_discovered_verification_task"),
-    _fixture("implementation", 2, "Implement slugify(text) in slug.py: lowercase, replace spaces with hyphens, remove punctuation. Run test_slug.py. The stated requirements are complete; avoid revising an adequate plan without new evidence.",
+    _fixture("implementation", 2, "Implement slugify(text) in slug.py: lowercase, replace spaces with hyphens, remove punctuation. After implementing it, verify with python3 -m unittest test_slug.py. The stated requirements are complete; keep the seeded plan unless new evidence calls for a change.",
              {"kind": "tests", "command": ["python", "-m", "unittest", "test_slug.py"]},
              files={"slug.py": "def slugify(text):\n    raise NotImplementedError\n", "test_slug.py": "import unittest\nfrom slug import slugify\nclass T(unittest.TestCase):\n def test_slug(self): self.assertEqual(slugify('Hello, World!'), 'hello-world')\n"}, plan_scenario="unnecessary_churn"),
     _fixture("implementation", 3, 'Implement the public parse_flags(text, *, unique=False) API in flags.py, preserving duplicates by default and supporting stable deduplication when unique=True. Update consumer.py settings() to opt in to unique names. Ignore empty trimmed comma fields. Both production modules must change. Run test_flags.py. Reorder the working plan so implementation precedes edge-case and consumer verification.',
@@ -168,8 +168,7 @@ _PLAN_SEEDS = {
     "bug_fix-3": [("offset", "Fix and verify the current offset contract.")],
     "implementation-1": [("implement", "Implement POST /items across API and service."),
                          ("verify", "Verify duplicate-name handling and existing GET behavior.")],
-    "implementation-2": [("implement", "Implement the specified slug behavior."),
-                         ("verify", "Run the independent slug tests.")],
+    "implementation-2": [("implement and verify", "Implement the specified slug behavior in slug.py and run the original test_slug.py suite.")],
     "implementation-3": [("verify", "Check empty and whitespace-only fields."),
                          ("implement", "Implement the flag API and update its consumer.")],
     "refactoring-1": [("inspect", "Identify common formatting behavior."),
@@ -212,7 +211,7 @@ def cohort_digest(fixtures=FIXTURES):
         separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
 
 
-FROZEN_COHORT_SHA256 = "f87d4a8950267f38eff9eb7f41fc6145c74f2128fbb1689116697f9e8e6a2a61"
+FROZEN_COHORT_SHA256 = "d17a4ddf14bcb3a922aed3899bb052c436e5e883fc484020e66da1261a6ff3f6"
 
 
 validate_fixtures(FIXTURES)

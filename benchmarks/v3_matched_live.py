@@ -1247,7 +1247,7 @@ def _workflow_state_correct(fixture: dict, worker: dict) -> bool:
     )
 
 
-def _initial_plan(fixture: dict, *, arm: str = "v3") -> list[str] | dict:
+def _initial_plan(fixture: dict, *, arm: str = "v3") -> list[str | dict] | dict:
     if fixture.get("plan_scenario") == "scope_preserving":
         path = "labels.py"
         marker = "def _format_label("
@@ -1261,7 +1261,15 @@ def _initial_plan(fixture: dict, *, arm: str = "v3") -> list[str] | dict:
         step = {"id": "objective", "title": "Fix page offset",
                 "description": "Fix paging.py so page 1 starts at offset zero and each next page advances by one page size."}
     else:
-        return [f"{title}: {description}" for title, description in fixture.get("plan_tasks", [])]
+        tasks = [f"{title}: {description}" for title, description in fixture.get("plan_tasks", [])]
+        if fixture.get("plan_scenario") == "unnecessary_churn" and arm != "v2":
+            return [{"description": description, "acceptance": [{
+                "criterion": "The original slug tests pass.",
+                "verification": {"action": "run_cmd", "arguments": {
+                    "command": " ".join(["python3", *fixture["verifier"]["command"][1:]]),
+                }},
+            }]} for description in tasks]
+        return tasks
     step["acceptance"] = [criterion] if arm == "v2" else [
         {"criterion": criterion, "verification": {
             "action": "read_file", "arguments": {"path": path}, "expect": {"contains": marker},

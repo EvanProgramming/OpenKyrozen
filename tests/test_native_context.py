@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -378,6 +379,51 @@ class NativeContextTests(unittest.TestCase):
                 complexity="complex", permitted={"update_plan", "run_cmd", "read_tool_artifact"})
         self.assertEqual(turn.runtime_status, "completed", answer)
         self.assertEqual([task["status"] for task in self.runtime.tasks.tasks], ["cancelled", "succeeded"])
+
+    @unittest.skipUnless(shutil.which("python3"), "benchmark actor requires python3")
+    def test_native_completes_adequate_seed_without_revising_it(self):
+        from benchmarks.prompt_worker import _working_plan_edits
+        from benchmarks.v3_matched_live import FIXTURES, _initial_plan
+
+        fixture = next(item for item in FIXTURES if item["fixture_id"] == "implementation-2")
+        for path, contents in fixture["files"].items():
+            (self.root / path).write_text(contents, encoding="utf-8")
+        task, = _initial_plan(fixture)
+        self.runtime.tasks.edit_plan(complexity="complex", expected_revision=0, operations=[
+            {"op": "add", "ref": "fixture-1", "task": task},
+        ])
+        snapshot = self.runtime.tasks.working_plan_snapshot()
+        implementation = (
+            "def slugify(text):\n"
+            "    return ''.join(c for c in text.lower().replace(' ', '-') if c.isalnum() or c == '-')\n"
+        )
+        actions = iter([
+            ToolCall("start", "update_plan", {"plan_id": snapshot["plan_id"],
+                "expected_revision": snapshot["revision"], "operations": [
+                    {"op": "start", "task": snapshot["tasks"][0]["id"]},
+                ]}),
+            ToolCall("implement", "write_file", {"path": "slug.py", "content": implementation}),
+            ToolCall("verify", "run_cmd", task["acceptance"][0]["verification"]["arguments"]),
+        ])
+
+        def respond(provider, _messages, model):
+            call = next(actions, None)
+            if call is None:
+                return ModelResponse(text="Implemented and verified slugify.", finish_reason=FinishReason.FINAL)
+            return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+        with patch.object(self.runtime, "_effective_execution_capabilities",
+                          return_value={"read", "write", "shell"}):
+            answer, turn, _ = self.run_native(self.provider(respond),
+                [{"role": "user", "content": fixture["prompt"]}], complexity="complex",
+                permitted={"update_plan", "write_file", "run_cmd", "read_tool_artifact"})
+        self.assertEqual(turn.runtime_status, "completed", answer)
+        self.assertEqual(self.runtime.tasks.working_plan_snapshot()["status"], "completed")
+        edits, revisions = _working_plan_edits(self.runtime.tasks)
+        self.assertEqual([edit["operations"] for edit in edits], [["add"], ["start"]])
+        self.assertEqual(revisions, 0)
+        self.assertEqual((self.root / "test_slug.py").read_text(encoding="utf-8"), fixture["files"]["test_slug.py"])
 
     def continuation_plan(self, *, typed=True):
         (self.root / "notes.txt").write_text("ready\n")
