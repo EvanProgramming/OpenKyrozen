@@ -200,13 +200,17 @@ def _denied_target(worker: dict, action: str, path: str) -> bool:
                for item in receipts) and not any(item.get("success") is True for item in receipts)
 
 
-def _recovery_command(receipt: dict, expected: list[str]) -> bool:
+def _recovery_command(receipt: dict, expected: list[str], *, allow_merged_stderr: bool = False) -> bool:
     value = receipt.get('evidence', {}).get('args')
     try:
         if isinstance(value, str) and value.lstrip().startswith('{'):
             value = json.loads(value, object_pairs_hook=_unique_facts)
         if isinstance(value, dict):
             value = value.get('command')
+        if not isinstance(value, str):
+            return False
+        if allow_merged_stderr:
+            value = value.rstrip().removesuffix(" 2>&1")
         arguments = shlex.split(value)
         return (len(arguments) == len(expected)
                 and Path(arguments[0]).name in {'python', 'python3', 'python3.12', 'python3.13'}
@@ -277,7 +281,8 @@ def _obsolete_assumption_replaced(fixture: dict, worker: dict) -> bool:
             if state is None or (state == "cancelled" and not reproduced):
                 return False
             cancelled = state == "cancelled"
-        if isinstance(evidence, dict) and action == "run_cmd" and _recovery_command(receipt, command):
+        if (isinstance(evidence, dict) and action == "run_cmd"
+                and _recovery_command(receipt, command, allow_merged_stderr=success is False)):
             if success is False and _recovery_exit_code(receipt) == 1:
                 output = str(evidence.get("result", ""))
                 reproduced = reproduced or all(marker in output for marker in ("test_none", "TypeError", "NoneType"))

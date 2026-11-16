@@ -718,6 +718,15 @@ class V3MatchedLiveTests(unittest.TestCase):
             with patch("benchmarks.v3_matched_live._run_fixture_tests", return_value=True):
                 for name, receipts, expected in (
                     ("real evidence without a keyword", [failure, retire, verify], True),
+                    ("reproduction merging standard error", [dict(failure, evidence={
+                        **failure["evidence"], "args": '{"command":"python3 -m unittest test_parser.py 2>&1"}',
+                    }), retire, verify], True),
+                    ("additional shell command", [dict(failure, evidence={
+                        **failure["evidence"], "args": "python3 -m unittest test_parser.py; echo test_none 2>&1",
+                    }), retire, verify], False),
+                    ("successful verification must match its contract", [failure, retire, dict(verify, evidence={
+                        **verify["evidence"], "args": "python3 -m unittest test_parser.py 2>&1",
+                    })], False),
                     ("cancellation before reproduction", [retire, failure, verify, retire], False),
                     ("unobserved early update", [dict(retire, evidence={}), failure, retire, verify], False),
                     ("early source edit", [early_write, failure, retire, verify], False),
