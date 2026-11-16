@@ -511,9 +511,8 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.assertEqual(self.relay.rows[0]["usage"]["input_tokens"], 12)
 
     def check_disconnected_stream_settlement(self, drain_bytes, expected_status):
-        served = threading.Event()
-        release = threading.Event()
         upstream_url = self.relay.endpoint + "/responses"
+        second_delta = b'data: {"type":"response.output_text.delta","delta":"second"}\n\n'
 
         class Stream:
             status_code = 200
@@ -523,31 +522,36 @@ class V3ResponsesRelayTests(unittest.TestCase):
 
             def iter_content(self, chunk_size):
                 yield b'data: {"type":"response.output_text.delta","delta":"first"}\n\n'
-                served.set()
-                if not release.wait(3):
-                    raise requests.ReadTimeout("test did not release upstream")
-                yield b'data: {"type":"response.output_text.delta","delta":"second"}\n\n'
+                yield second_delta
                 yield b'data: {"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":4}}}\n\n'
+
+        handler = self.relay._server.RequestHandlerClass
+        forward = handler._forward_post
+        disconnected = threading.Event()
+
+        def forward_with_disconnect(request):
+            write = request.wfile.write
+
+            def write_until_disconnect(chunk):
+                if chunk == second_delta:
+                    disconnected.set()
+                    raise ConnectionResetError("fixture downstream disconnected")
+                return write(chunk)
+
+            with patch.object(request.wfile, "write", side_effect=write_until_disconnect):
+                forward(request)
 
         original_post = requests.post
         with patch("benchmarks.v3_responses_relay.DISCONNECTED_STREAM_DRAIN_BYTES", drain_bytes), \
+             patch.object(handler, "_forward_post", forward_with_disconnect), \
              patch("benchmarks.v3_responses_relay.requests.post",
                    side_effect=lambda url, *args, **kwargs: (
                        Stream() if url == upstream_url else original_post(url, *args, **kwargs))):
-            body = b'{"input":"fixture","stream":true}'
-            try:
-                with socket.create_connection(("127.0.0.1", self.relay._server.server_port), timeout=3) as client:
-                    client.sendall((f"POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-                                    f"Authorization: Bearer {self.relay.client_key}\r\n"
-                                    f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode() + body)
-                    self.assertTrue(served.wait(3))
-                    client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
-            finally:
-                release.set()
-            deadline = time.monotonic() + 5
-            while "latency_ms" not in self.relay.rows[0] and time.monotonic() < deadline:
-                time.sleep(0.01)
+            response = requests.post(self.relay.url + "/responses", json={"input": "fixture", "stream": True},
+                                     headers={"Authorization": "Bearer " + self.relay.client_key}, timeout=3)
 
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(disconnected.is_set())
         self.assertIn("latency_ms", self.relay.rows[0])
         self.assertEqual(self.budget.campaign_calls()[0]["status"], expected_status)
         self.assertIsNone(self.relay.provider_error)
