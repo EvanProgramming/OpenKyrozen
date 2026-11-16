@@ -480,7 +480,8 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
     from benchmarks import v3_matched_live as live
     from benchmarks.v3_fixtures import FIXTURES
     from benchmarks.v3_matched import BudgetLedger,summarize
-    from benchmarks.v3_deepseek import DEEPSEEK_PRICING,DEEPSEEK_RELAY_CONFIG,DEEPSEEK_ENDPOINT
+    from benchmarks.v3_deepseek import (DEEPSEEK_PRICING,DEEPSEEK_RELAY_CONFIG,DEEPSEEK_ENDPOINT,
+                                        DEEPSEEK_UNLIMITED_PRICING)
     from benchmarks.v3_deepseek import validate_planning_preflight
     from benchmarks.v3_responses_relay import ResponsesRelay
     if type(model_routing) is not bool or model_routing and provider_policy is None:
@@ -511,6 +512,12 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
         if os.read(output_lease,1):
             raise ValueError('supplement budget has a bound continuation; resume that child instead')
         core,config,original_attempts,core_hash=_core_checkpoint(core_output,core_budget)
+        if provider_policy is None and config[1] is None:
+            core_budget_record=core.get('budget',{})
+            if (core_budget_record.get('currency')!='CNY' or 'limit_cny' not in core_budget_record
+                    or core_budget_record['limit_cny'] is not None):
+                raise ValueError('unlimited fixed-model supplement requires an unlimited core')
+            pricing=DEEPSEEK_UNLIMITED_PRICING
         if provider_policy is not None and any(not provider_policy.accepts_call(call) for call in _attempt_calls(original_attempts)):
             raise ValueError('native physical origin call violates its operational policy')
         ancestor,ancestor_output,ancestor_attempts=core,core_output,original_attempts
@@ -539,7 +546,7 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
                 or any(ancestor.get(key)!=value for key,value in base_identity.items())
                 or not live._validate_rows_evidence(ancestor_output,ancestor['rows'],candidate,base_identity)
                 or config[0]!='CNY' or config[2]!=pricing.sha256
-                or (config[1] is None and (provider_policy is None or pricing.max_limit_cny is not None))
+                or (config[1] is None and pricing.max_limit_cny is not None)
                 or (config[1] is not None and (pricing.max_limit_cny is None or not 0<config[1]<=15*10**12))
                 or ancestor.get('smoke_passed') is not True
                 or ancestor.get('relay_config')!=asdict(relay_config)):

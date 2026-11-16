@@ -1449,8 +1449,14 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                 raise ValueError("CNY campaigns require a CNY prior hold without a USD workaround")
             limit = None if limit_cny == 'unlimited' else Decimal(limit_cny)
             prior_hold = Decimal(prior_hold_cny)
+            if limit is None and provider_policy is None:
+                from benchmarks.v3_deepseek import (DEEPSEEK_ENDPOINT, DEEPSEEK_RELAY_CONFIG,
+                                                     DEEPSEEK_UNLIMITED_PRICING)
+                if ((endpoint, relay_config, pricing) !=
+                        (DEEPSEEK_ENDPOINT, DEEPSEEK_RELAY_CONFIG, DEEPSEEK_UNLIMITED_PRICING)
+                        or not prior_hold_records):
+                    raise ValueError("unlimited fixed-model execution requires official DeepSeek and original accounting")
             if (not prior_hold.is_finite() or prior_hold < 0
-                    or (limit is None and provider_policy is None)
                     or (limit is None) != (pricing.max_limit_cny is None)
                     or (limit is not None and (not limit.is_finite()
                         or not 0 < limit <= pricing.max_limit_cny or prior_hold > limit))):

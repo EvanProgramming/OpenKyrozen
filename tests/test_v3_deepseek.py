@@ -384,6 +384,20 @@ class DeepSeekRunnerTests(unittest.TestCase):
                     self.assertEqual(result.exception.code, code)
                     self.assertTrue(runner.call_args.kwargs['planning_preflight_only'])
                     self.assertFalse(summary['complete'])
+            with patch('sys.argv', argv + ['--limit-cny', 'unlimited']), \
+                    patch('benchmarks.v3_matched_live._source_snapshot', return_value='configured-sha'), \
+                    patch('scripts.publish_v3_preview._verify_candidate_signature'), \
+                    patch.object(deepseek, 'read_prior_exposure', return_value=deepseek.PriorExposure(
+                        Decimal('6'), Decimal('121'), 1)), \
+                    patch('benchmarks.v3_matched_live.run', return_value={'summary': summary}) as runner, \
+                    patch('builtins.print'):
+                with self.assertRaises(SystemExit):
+                    deepseek.main()
+                options = runner.call_args.kwargs
+                self.assertEqual(options['prior_hold_cny'], '127')
+                self.assertEqual(options['limit_cny'], 'unlimited')
+                self.assertIsNone(options['pricing'].max_limit_cny)
+                self.assertEqual(options['pricing'].sha256, deepseek.DEEPSEEK_PRICING.sha256)
             with patch('sys.argv', argv + ['--limit-cny', '15.01']), \
                     patch('benchmarks.v3_matched_live._source_snapshot', return_value='configured-sha'), \
                     patch('scripts.publish_v3_preview._verify_candidate_signature'), \

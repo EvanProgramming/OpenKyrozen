@@ -1,4 +1,4 @@
-"""DeepSeek matched evaluation with a genuine cumulative 15 CNY cap.
+"""DeepSeek matched evaluation with CNY accounting and a default 15 CNY cap.
 
 No credential files are consulted. Paid execution is explicit through this CLI;
 importing this module and reconstructing old ledgers are offline operations.
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 import json
 import hashlib
@@ -36,6 +36,7 @@ DEEPSEEK_RELAY_CONFIG = RelayConfig(
     model="deepseek-flash", max_output_tokens=4096,
     fixed_input_token_bound=1_000_000, serial_requests=True,
 )
+DEEPSEEK_UNLIMITED_PRICING = replace(DEEPSEEK_PRICING, max_limit_cny=None)
 # The previous campaign used the same CNY prices under this retired model alias.
 _LEGACY_PRICING_SHA256 = "70cf92ad796b1061598eb1d5ac16aa19d473299758bcfdde86f789b2d40aabc4"
 
@@ -535,7 +536,8 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--budget-db", type=Path, required=True)
     parser.add_argument("--prior-ledger", type=Path, action="append", required=True)
-    parser.add_argument("--limit-cny", default="15")
+    parser.add_argument("--limit-cny", default="15",
+                        help="Cumulative cap in CNY up to 15, or explicit 'unlimited' with the full ledger.")
     parser.add_argument("--planning-preflight-only", action="store_true",
                         help="Run the protected planning check, retain costs, and stop before the formal cohort.")
     args = parser.parse_args()
@@ -545,14 +547,20 @@ def main() -> None:
         raise ValueError("source does not match the configured frozen candidate")
     _verify_candidate_signature(args.source.resolve(), args.candidate_sha)
     exposure = read_prior_exposure(args.prior_ledger)
-    # Validate the absolute cap before starting the runner; it probes protection before reading the key.
-    limit = Decimal(args.limit_cny)
-    if not limit.is_finite() or not 0 < limit <= 15 or exposure.total_cny > limit:
-        raise ValueError("the cumulative DeepSeek cap must not exceed 15 CNY")
+    pricing = DEEPSEEK_PRICING
+    if args.limit_cny == "unlimited":
+        pricing = DEEPSEEK_UNLIMITED_PRICING
+    else:
+        try:
+            limit = Decimal(args.limit_cny)
+        except InvalidOperation:
+            raise ValueError("invalid cumulative DeepSeek cap") from None
+        if not limit.is_finite() or not 0 < limit <= 15 or exposure.total_cny > limit:
+            raise ValueError("the cumulative capped DeepSeek campaign must fit within 15 CNY")
     report = run(source=args.source, repo=args.repo, output=args.output, budget_path=args.budget_db,
-                 limit_cny=str(limit), prior_hold_cny=str(exposure.total_cny),
+                 limit_cny=args.limit_cny, prior_hold_cny=str(exposure.total_cny),
                  prior_hold_records=exposure.records,
-                 pricing=DEEPSEEK_PRICING, relay_config=DEEPSEEK_RELAY_CONFIG,
+                 pricing=pricing, relay_config=DEEPSEEK_RELAY_CONFIG,
                  endpoint=DEEPSEEK_ENDPOINT, planning_preflight_only=args.planning_preflight_only)
     if args.planning_preflight_only:
         print(json.dumps({"status": report["status"], "planning_preflight": report.get("planning_preflight"),

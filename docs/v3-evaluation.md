@@ -10,9 +10,9 @@ The `--repo` checkout must contain the pinned V2 commit so the runner can extrac
 
 Both arms receive the same rendered investigation prompt. It names the `read_file` action and full-source read required by the independent source-fact verifier. The answer and matching read receipt are both required. This prompt clarification changes the benchmark apparatus identity and requires a fresh cohort.
 
-The current formal finalization policy uses PanstarCloud GPT through OpenKyrozen's built-in automatic model selector, as requested on 2026-11-11. It replaces the stopped Gemini campaign, including for the 180 matched rows. The owner removed the cumulative CNY 15 ceiling and still prohibits publication. All settled costs and unknown reservations from earlier providers remain counted. Historical finite DeepSeek/Panstar commands below retain their original caps; they do not implement this new native Auto policy.
+The current matched evaluation uses the official DeepSeek Responses API and `deepseek-flash` for both arms. The supported Flash model is DeepSeek-V4.1-Flash-1017. Use `--limit-cny unlimited` explicitly when the owner has removed the cumulative cap. All settled costs and unknown reservations from earlier providers remain counted. The runner still reserves CNY 2.032768 per request at peak rates. Unlimited accounting starts a fresh ledger, and its 54-row planning continuation inherits the original accounting mode. The separate 36-row model routing experiment requires two distinct served models. Publication remains pending.
 
-## PanstarCloud automatic-selection campaign
+## Historical PanstarCloud automatic-selection campaign
 
 Predeclare simple `gpt-6-sol` and complex `gpt-5.6-terra`, with `model_main=auto`, identically for both arms. The owner switched the complex slot on 2026-11-15 after two stopped `gpt-6.1-sol` campaigns. Both current slots are listed by the authenticated model API and priced in the owner's Dia account. The original production selector owns every choice. Record selected and exactly served model IDs for every physical call, including coordinator, delegated author/reviewer, smoke and retry calls. An unknown or changed served identity cannot pass. No expensive Astra slot, hosted tools, media, priority tier or unquoted service is admitted.
 

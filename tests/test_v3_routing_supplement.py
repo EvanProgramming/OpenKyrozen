@@ -693,14 +693,16 @@ class SupplementRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'bound continuation'):
             self.call(root,identity,forbidden,forbidden,forbidden)
 
-    def prepare(self,hold='0'):
+    def prepare(self,hold='0',unlimited=False):
         from dataclasses import asdict
         from benchmarks.v3_matched import BudgetLedger
-        from benchmarks.v3_deepseek import DEEPSEEK_PRICING,DEEPSEEK_RELAY_CONFIG
+        from benchmarks.v3_deepseek import DEEPSEEK_PRICING,DEEPSEEK_RELAY_CONFIG,DEEPSEEK_UNLIMITED_PRICING
         from benchmarks.v3_matched_live import _write_checkpoint
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
         root=Path(temporary.name)
-        ledger=BudgetLedger(root/'core.db',limit_rmb='15',pricing=DEEPSEEK_PRICING)
+        limit=None if unlimited else '15'
+        pricing=DEEPSEEK_UNLIMITED_PRICING if unlimited else DEEPSEEK_PRICING
+        ledger=BudgetLedger(root/'core.db',limit_rmb=limit,pricing=pricing)
         for identifier in ('smoke1','smoke2'):
             metadata={'reserved_rmb':'2.032768','arm':'smoke','fixture_id':'a'*40,'repeat':-1,
                       'model':'deepseek-flash','max_output_tokens':4096}
@@ -709,7 +711,7 @@ class SupplementRunnerTests(unittest.TestCase):
         identity={'cohort_sha256':'core-cohort','apparatus_sha256':'apparatus','apparatus_files':{},'context_settings':{}}
         core={**identity,'protocol':'openkyrozen-v3-matched-live-v1','candidate_sha':'a'*40,
               'status':'complete','rows':[],'smoke_passed':True,'smoke_attempt_ids':['smoke1','smoke2'],
-              'relay_config':asdict(DEEPSEEK_RELAY_CONFIG)}
+              'relay_config':asdict(DEEPSEEK_RELAY_CONFIG),'budget':{'currency':'CNY','limit_cny':limit}}
         from benchmarks import v3_matched_live as live
         from benchmarks.v3_deepseek import _planning_preflight_identity, planning_preflight_fixture
         from tests.test_v3_deepseek import PlanningPreflightTests
@@ -789,7 +791,7 @@ class SupplementRunnerTests(unittest.TestCase):
                     self.call(root,identity,forbidden,forbidden,forbidden)
 
     def test_safety_failure_checkpoints_once_and_drops_raw_relay_body(self):
-        root,identity=self.prepare()
+        root,identity=self.prepare(hold='16',unlimited=True)
         executed=[];relays=[]
         class Relay:
             def __init__(self,**values):
@@ -807,6 +809,8 @@ class SupplementRunnerTests(unittest.TestCase):
         report=self.call(root,identity,execute,lambda:('unused','offline'),Relay)
         self.assertEqual(len(executed),1)
         self.assertEqual(report['status'],'blocked_safety_failure')
+        self.assertIsNone(report['budget']['limit_cny'])
+        self.assertGreater(Decimal(report['budget']['spent_cny']),Decimal('15'))
         self.assertTrue(relays[0].closed)
         self.assertNotIn('must-not-retain',(root/'supp.json').read_text())
         (root/'supp.json').unlink();(root/'supp.db').unlink()
