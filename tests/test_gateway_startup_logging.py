@@ -5,25 +5,46 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import test_durable_tasks_gateway as gateway_tests
 
 
 class GatewayStartupLoggingTests(unittest.TestCase):
     def test_configured_startup_budget_allows_slow_imports(self):
-        from unittest.mock import Mock
         process = Mock()
         process.poll.return_value = None
         helper = gateway_tests.DurableTaskGatewayTests()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with patch('test_durable_tasks_gateway.subprocess.Popen', return_value=process), \
+            with patch('test_durable_tasks_gateway.subprocess.Popen', return_value=process) as launch, \
                  patch('test_durable_tasks_gateway.time.monotonic', side_effect=[0, 21]), \
                  patch.object(helper, '_request', return_value={'status':'ok'}):
                 actual, _ = helper._start_server(root, root/'state.db', root/'skills', startup_timeout=60)
             self.assertIs(actual, process)
+            self.assertEqual(launch.call_args.args[0][1:3], ["-X", "faulthandler"])
             process.terminate.assert_not_called()
+
+    def test_soak_failure_preserves_gateway_exit_before_cleanup(self):
+        from scripts import production_soak
+
+        process = Mock(pid=123)
+        process.poll.return_value = 42
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(production_soak.os.environ),
+            patch.object(production_soak, "_capture_process_tree", return_value={}),
+            patch.object(production_soak, "_process_snapshot", return_value={"rss_bytes": 1, "open_handles": 1}),
+            patch.object(gateway_tests.DurableTaskGatewayTests, "_start_server",
+                         return_value=(process, "http://127.0.0.1:1")),
+            patch.object(gateway_tests.DurableTaskGatewayTests, "_request", side_effect=ConnectionRefusedError),
+            patch.object(gateway_tests.DurableTaskGatewayTests, "_stop_server",
+                         side_effect=lambda _: setattr(process.poll, "return_value", -15)),
+        ):
+            with self.assertRaises(ConnectionRefusedError) as failure:
+                production_soak.run(20, Path(directory) / "logs")
+            self.assertEqual(failure.exception.soak_report["gateway_at_failure"],
+                             {"pid": 123, "returncode": 42})
 
     def test_large_startup_output_does_not_block_readiness(self):
         original_popen = subprocess.Popen

@@ -57,7 +57,7 @@ class DurableTaskGatewayTests(unittest.TestCase):
         # A file cannot fill like an undrained PIPE and survives failed startup.
         with log_path.open("w", encoding="utf-8") as output:
             process = subprocess.Popen(
-                [sys.executable, "-c", "import faulthandler,runpy,sys,os; faulthandler.dump_traceback_later(15); sys.argv=sys.argv[1:]; sys.path.insert(0,os.path.dirname(sys.argv[0])); runpy.run_path(sys.argv[0],run_name='__main__')", str(repository / "server.py"), "--project", str(workspace),
+                [sys.executable, "-X", "faulthandler", str(repository / "server.py"), "--project", str(workspace),
                  "--host", "127.0.0.1", "--port", str(port)],
                 cwd=workspace,
                 env=env,

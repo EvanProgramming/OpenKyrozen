@@ -357,7 +357,9 @@ def run(seconds: float, log_dir: Path) -> dict:
         except Exception as exc:
             # Retain disposable state and progress so a timeout is diagnosable.
             evidence = log_dir / 'failed-state'
+            gateway_at_failure = None
             if process is not None:
+                gateway_at_failure = {'pid': process.pid, 'returncode': process.poll()}
                 try:
                     gateway._stop_server(process)
                 except Exception as cleanup_error:
@@ -373,7 +375,7 @@ def run(seconds: float, log_dir: Path) -> dict:
             exc.soak_report = {'elapsed_seconds': round(time.monotonic()-started, 2),
                                'cycles': cycles, 'tasks': cycles * 2, 'restarts': restarts,
                                'samples': measurements, 'startup_seconds': startup_seconds,
-                               'startup_timeout_seconds': 60}
+                               'startup_timeout_seconds': 60, 'gateway_at_failure': gateway_at_failure}
             if failed_state:
                 exc.soak_report['failed_state'] = failed_state
             raise

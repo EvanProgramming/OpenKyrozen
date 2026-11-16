@@ -1,6 +1,7 @@
 from contextlib import ExitStack, closing
 import asyncio
 import json
+import os
 import tempfile
 import threading
 import time
@@ -128,6 +129,9 @@ class _SplitGenericInvokeProvider:
 
 
 class StreamingEndpointTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.dict(os.environ, {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}))
+
     def test_native_control_words_pass_through_sse_without_legacy_parsing(self):
         session_id = f"native-event-{time.time_ns()}"
         native_text = "Action: and TaskList: are ordinary prose here."
