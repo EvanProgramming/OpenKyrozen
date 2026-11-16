@@ -17,7 +17,7 @@ import secrets
 
 from benchmarks.v3_matched import BudgetLedger, Pricing, _picormb
 from benchmarks.v3_responses_relay import RelayConfig
-from benchmarks.v3_panstar import PanstarPolicy
+from benchmarks.v3_panstar import PanstarPolicy, native_usage
 
 DEEPSEEK_ENDPOINT = "https://api.deepseek.com"
 DEEPSEEK_PRICING = Pricing(
@@ -50,6 +50,13 @@ def served_model_matches(model, served):
     return model in versions and served in (model, versions[model])
 
 
+def deepseek_usage(response):
+    raw = response.get("usage")
+    if not isinstance(raw, dict) or "server_tool_use" in raw:
+        return None
+    return native_usage(response)
+
+
 class DeepSeekCampaignPricing(Pricing):
     billing_tier = "paid"
 
@@ -70,14 +77,13 @@ class DeepSeekCampaignPricing(Pricing):
         calls = row.get("cost_calls")
         if calls is None:
             return super().row_cost(row)
-        from benchmarks.v3_panstar import native_usage
         totals = dict.fromkeys(("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"), 0)
         if not isinstance(calls, list) or not calls:
             raise ValueError("model routing cost requires physical receipts")
         amount = Decimal(0)
         for call in calls:
             usage = call.get("usage") or {}
-            raw = native_usage({"usage": usage.get("raw_usage"), "service_tier": usage.get("service_tier")})
+            raw = deepseek_usage({"usage": usage.get("raw_usage"), "service_tier": usage.get("service_tier")})
             if (call.get("status") != "settled" or raw is None
                     or any(usage.get(key) != value for key, value in raw.items())
                     or not served_model_matches(call.get("model"), usage.get("served_model"))):
@@ -122,6 +128,11 @@ class DeepSeekRoutingPolicy(PanstarPolicy):
     def validate_body(self, body):
         return self._validate_text_body(body, self.role_models.values(), reasoning_text=True)
 
+    def response_usage(self, model, response):
+        if deepseek_usage(response) is None:
+            return None
+        return super().response_usage(model, response)
+
     def request_metadata(self, model, arm):
         if arm not in MODEL_ROUTING_ARMS or (arm == "routing-model-simple" and model == PRO_MODEL):
             raise ValueError("model routing request is outside its assigned model variant")
@@ -131,6 +142,10 @@ class DeepSeekRoutingPolicy(PanstarPolicy):
         try:
             self.request_metadata(call.get("model"), call.get("arm"))
         except ValueError:
+            return False
+        usage = call.get("usage")
+        if isinstance(usage, dict) and deepseek_usage(
+                {"usage": usage.get("raw_usage"), "service_tier": usage.get("service_tier")}) is None:
             return False
         return super().accepts_call(call)
 

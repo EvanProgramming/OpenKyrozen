@@ -133,9 +133,8 @@ class ResponsesRelay:
         usage = policy.response_usage(row['model'], response) if policy else self._usage(response)
         fixed_deepseek = policy is None and self.endpoint == "https://api.deepseek.com"
         if fixed_deepseek:
-            from benchmarks.v3_deepseek import served_model_matches
-            from benchmarks.v3_panstar import native_usage
-            usage = native_usage(response)
+            from benchmarks.v3_deepseek import deepseek_usage, served_model_matches
+            usage = deepseek_usage(response)
             if (usage is not None and response.get('status') in ('completed','incomplete','failed')
                     and served_model_matches(row['model'], response.get('model'))):
                 usage.update(served_model=response['model'], raw_usage=response['usage'],

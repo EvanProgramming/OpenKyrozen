@@ -41,6 +41,8 @@ class DeepSeekBudgetTests(unittest.TestCase):
         self.assertIsNone(policy.response_usage("deepseek-flash", response))
         usage = policy.response_usage("deepseek-v4-pro", response)
         self.assertEqual(usage["served_model"], "DeepSeek-V4-Pro-0813")
+        hosted = {**response, "usage": {**response["usage"], "server_tool_use": {"tool_search": 1, "tool_fetch": 0}}}
+        self.assertIsNone(policy.response_usage("deepseek-v4-pro", hosted))
         with tempfile.TemporaryDirectory() as directory:
             ledger = v3_matched.BudgetLedger(Path(directory) / "combined.db", limit_rmb=None, pricing=pricing)
             self.assertTrue(ledger.reserve("flash", input_token_bound=1000000, output_token_bound=4096,

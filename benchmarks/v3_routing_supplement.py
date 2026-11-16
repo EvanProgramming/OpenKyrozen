@@ -448,13 +448,12 @@ def _attempt_calls(attempts):
 
 
 def _fixed_flash_call(call):
-    from benchmarks.v3_deepseek import served_model_matches
-    from benchmarks.v3_panstar import native_usage
+    from benchmarks.v3_deepseek import deepseek_usage, served_model_matches
     if (call.get('model')!='deepseek-flash' or call.get('max_output_tokens')!=4096
             or 'pricing_sha256' in call or call.get('status')!='settled'):
         return False
     usage=call.get('usage') or {}
-    raw=native_usage({'usage':usage.get('raw_usage'),'service_tier':usage.get('service_tier')})
+    raw=deepseek_usage({'usage':usage.get('raw_usage'),'service_tier':usage.get('service_tier')})
     return (raw is not None and all(usage.get(key)==value for key,value in raw.items())
             and served_model_matches(call['model'],usage.get('served_model')))
 
