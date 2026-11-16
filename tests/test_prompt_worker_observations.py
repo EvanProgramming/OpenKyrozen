@@ -15,6 +15,33 @@ from openkyrozen.tools import ToolAdapters
 
 
 class PromptWorkerObservationTests(unittest.TestCase):
+    def test_provider_contract_failure_retains_safe_location_without_payload(self):
+        from openkyrozen.providers.models import ProviderContractError, ResponseError
+
+        def fail(*args, **kwargs):
+            try:
+                raise ValueError("private provider payload")
+            except ValueError as exc:
+                raise ProviderContractError("private arguments or response") from exc
+
+        def stream(*args, **kwargs):
+            try:
+                fail()
+            except ProviderContractError as exc:
+                yield ResponseError(exc)
+
+        provider = SimpleNamespace(config=None, chat_response=fail, chat_response_stream=stream)
+        observed = _ProviderObservations(SimpleNamespace(), provider)
+        with self.assertRaises(ProviderContractError):
+            provider.chat_response([], "fixture")
+        self.assertEqual(len(list(provider.chat_response_stream([], "fixture"))), 1)
+        for record in observed.records:
+            self.assertEqual(record["outcome"], "failed")
+            diagnostic = record["provider_contract_failure"]
+            self.assertEqual(diagnostic["cause_type"], "ValueError")
+            self.assertTrue(any(frame["function"] == "fail" for frame in diagnostic["frames"]))
+            self.assertNotIn("private", json.dumps(diagnostic))
+
     def test_legacy_shims_summaries_and_empty_native_bodies_are_not_final_answers(self):
         from contextvars import ContextVar
         from openkyrozen.providers.models import ModelResponse

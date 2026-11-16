@@ -724,8 +724,27 @@ class V3MatchedLiveTests(unittest.TestCase):
                     ("additional shell command", [dict(failure, evidence={
                         **failure["evidence"], "args": "python3 -m unittest test_parser.py; echo test_none 2>&1",
                     }), retire, verify], False),
-                    ("successful verification must match its contract", [failure, retire, dict(verify, evidence={
-                        **verify["evidence"], "args": "python3 -m unittest test_parser.py 2>&1",
+                    ("verbose reproduction and quiet verified test", [dict(failure, evidence={
+                        **failure["evidence"], "args": json.dumps({"command": "python3 -m unittest test_parser.py -v 2>&1",
+                                                                    "cwd": str(workspace)}),
+                    }), retire, dict(verify, evidence={
+                        **verify["evidence"], "args": "python3 -B -m unittest -q test_parser",
+                    })], True),
+                    ("wrong working directory", [dict(failure, evidence={
+                        **failure["evidence"], "args": '{"command":"python3 -m unittest test_parser.py","cwd":"elsewhere"}',
+                    }), retire, verify], False),
+                    ("environment overlay", [dict(failure, evidence={
+                        **failure["evidence"], "args": json.dumps({"command": "python3 -m unittest test_parser.py",
+                                                                    "env": {"PYTHONWARNINGS": "ignore"}}),
+                    }), retire, verify], False),
+                    ("multiple shell lines", [dict(failure, evidence={
+                        **failure["evidence"], "args": "python3 -m unittest\ntest_parser.py",
+                    }), retire, verify], False),
+                    ("subset of tests", [dict(failure, evidence={
+                        **failure["evidence"], "args": "python3 -m unittest -k test_none test_parser.py",
+                    }), retire, verify], False),
+                    ("different test suite", [failure, retire, dict(verify, evidence={
+                        **verify["evidence"], "args": "python3 -m unittest -q different_test.py",
                     })], False),
                     ("cancellation before reproduction", [retire, failure, verify, retire], False),
                     ("unobserved early update", [dict(retire, evidence={}), failure, retire, verify], False),

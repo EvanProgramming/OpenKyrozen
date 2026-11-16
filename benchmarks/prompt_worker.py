@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from contextvars import ContextVar
 from functools import wraps
+from traceback import extract_tb
 
 
 def _task_record(task):
@@ -175,6 +176,16 @@ class _ProviderObservations:
         if record["provider_input_tokens"] is not None:
             record["provider_usage_source"] = "provider_reported_total"
 
+    @staticmethod
+    def _record_contract_failure(record, error):
+        if type(error).__name__ != "ProviderContractError":
+            return
+        record["provider_contract_failure"] = {
+            "cause_type": type(error.__cause__).__name__ if error.__cause__ is not None else None,
+            "frames": [{"file": Path(frame.filename).name, "line": frame.lineno, "function": frame.name}
+                       for frame in extract_tb(error.__traceback__)[-4:]],
+        }
+
     def _wrap(self, original, streaming, *, native=False):
         def begin(args, kwargs):
             messages = args[0] if args else kwargs["messages"]
@@ -197,6 +208,7 @@ class _ProviderObservations:
                         self._usage(record, getattr(response, "usage", None) or usage)
                         if type(event).__name__ == "ResponseError":
                             record["outcome"] = "failed"
+                            self._record_contract_failure(record, getattr(event, "error", None))
                             if record['kind'] == 'generation' and not record['child']:
                                 self.native_answer = None
                         elif type(event).__name__ == "ResponseComplete":
@@ -208,6 +220,7 @@ class _ProviderObservations:
                     if record["outcome"] == "pending":
                         record["outcome"] = "returned"
                 except BaseException as exc:
+                    self._record_contract_failure(record, exc)
                     if (record['kind'] == 'generation' and not record['child']
                             and not (isinstance(exc, GeneratorExit) and record['outcome'] == 'returned')):
                         self.native_answer = None
@@ -218,8 +231,9 @@ class _ProviderObservations:
                     try:
                         if callable(getattr(iterator, "close", None)):
                             iterator.close()
-                    except BaseException:
+                    except BaseException as exc:
                         record['outcome'] = 'failed'
+                        self._record_contract_failure(record, exc)
                         if record['kind'] == 'generation' and not record['child']:
                             self.native_answer = None
                         raise
@@ -240,8 +254,9 @@ class _ProviderObservations:
                 if native:
                     self._capture_native_answer(record, response)
                 return response
-            except BaseException:
+            except BaseException as exc:
                 record["outcome"] = "failed"
+                self._record_contract_failure(record, exc)
                 raise
             finally:
                 self.depth.reset(token)

@@ -200,23 +200,41 @@ def _denied_target(worker: dict, action: str, path: str) -> bool:
                for item in receipts) and not any(item.get("success") is True for item in receipts)
 
 
-def _recovery_command(receipt: dict, expected: list[str], *, allow_merged_stderr: bool = False) -> bool:
+def _recovery_command(receipt: dict, expected: list[str], *, unittest_workspace: Path | None = None) -> bool:
     value = receipt.get('evidence', {}).get('args')
     try:
         if isinstance(value, str) and value.lstrip().startswith('{'):
             value = json.loads(value, object_pairs_hook=_unique_facts)
         if isinstance(value, dict):
+            cwd = value.get("cwd")
+            if unittest_workspace is not None:
+                if value.get("env"):
+                    return False
+                if (cwd not in (None, ".") and (not isinstance(cwd, str) or not Path(cwd).is_absolute()
+                        or Path(cwd).resolve() != unittest_workspace.resolve())):
+                    return False
             value = value.get('command')
         if not isinstance(value, str):
             return False
-        if allow_merged_stderr:
+        if unittest_workspace is not None:
+            if "\n" in value or "\r" in value:
+                return False
             value = value.rstrip().removesuffix(" 2>&1")
         arguments = shlex.split(value)
+        if unittest_workspace is not None:
+            if not arguments or arguments[0] not in {"python", "python3", "python3.12", "python3.13"}:
+                return False
+            start = 2 if arguments[1:2] == ["-B"] else 1
+            if arguments[start:start + 2] != ["-m", "unittest"]:
+                return False
+            target = expected[-1]
+            tests = [part for part in arguments[start + 2:] if part not in {"-v", "--verbose", "-q", "--quiet"}]
+            return len(tests) == 1 and tests[0] in {target, "./" + target, Path(target).stem}
         return (len(arguments) == len(expected)
                 and Path(arguments[0]).name in {'python', 'python3', 'python3.12', 'python3.13'}
                 and all(actual == wanted or wanted.endswith('.py') and actual == './' + wanted
                         for actual, wanted in zip(arguments[1:], expected[1:])))
-    except (TypeError, ValueError):
+    except (OSError, RuntimeError, TypeError, ValueError):
         return False
 
 
@@ -253,7 +271,7 @@ def _recovery_observed(fixture: dict, worker: dict) -> bool:
     return False
 
 
-def _obsolete_assumption_replaced(fixture: dict, worker: dict) -> bool:
+def _obsolete_assumption_replaced(fixture: dict, worker: dict, root: Path) -> bool:
     seed = next((event["working_plan"] for event in worker.get("events", [])
                  if isinstance(event.get("working_plan"), dict)), {})
     title, description = fixture["plan_tasks"][0]
@@ -282,7 +300,7 @@ def _obsolete_assumption_replaced(fixture: dict, worker: dict) -> bool:
                 return False
             cancelled = state == "cancelled"
         if (isinstance(evidence, dict) and action == "run_cmd"
-                and _recovery_command(receipt, command, allow_merged_stderr=success is False)):
+                and _recovery_command(receipt, command, unittest_workspace=root)):
             if success is False and _recovery_exit_code(receipt) == 1:
                 output = str(evidence.get("result", ""))
                 reproduced = reproduced or all(marker in output for marker in ("test_none", "TypeError", "NoneType"))
@@ -671,7 +689,7 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
             all(term in task.get("description", "").casefold() for term in required_terms)
             and task.get("status") == "succeeded" for task in added))
     elif scenario == "cancel_obsolete_task_after_reproduction":
-        scenario_ok = _obsolete_assumption_replaced(fixture, worker)
+        scenario_ok = _obsolete_assumption_replaced(fixture, worker, root)
     elif scenario == "reorder_after_dependency_discovery":
         lowered = [item.casefold() for item in final_tasks]
         implement = next((index for index, value in enumerate(lowered) if "implement" in value), None)
