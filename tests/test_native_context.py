@@ -204,7 +204,8 @@ class NativeContextTests(unittest.TestCase):
                         reply = next(item for item in messages if isinstance(item, ToolReply)
                                      and item.call_id == "create-plan")
                         self.assertFalse(reply.is_error, reply.output)
-                        self.assertIs(messages[-1], reply)
+                        self.assertIs(messages[-2], reply)
+                        self.assertEqual(messages[-1], {"role": "system", "content": block})
                         self.assertIn("Use current_call_tools from the new request", reply.output["next_request"])
                         call = ToolCall("inspect-file", "read_file", {"path": "notes.txt"})
                     elif step == 3:
@@ -422,8 +423,9 @@ class NativeContextTests(unittest.TestCase):
                             "operations": [{"op": "start", "task": plan["task_ids"][0]}]})
                     else:
                         self.assertEqual(step, 3)
-                        self.assertIsInstance(messages[-1], ToolReply)
-                        self.assertIn("Use current_call_tools from the new request", messages[-1].output["next_request"])
+                        self.assertIsInstance(messages[-2], ToolReply)
+                        self.assertIn("Use current_call_tools from the new request", messages[-2].output["next_request"])
+                        self.assertIn('"read_file"', messages[-1]["content"])
                         call = ToolCall("verify", "read_file", {"path": "notes.txt"})
                     return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST, usage=usage,
                         continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))

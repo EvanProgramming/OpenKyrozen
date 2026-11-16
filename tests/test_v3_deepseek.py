@@ -1068,7 +1068,8 @@ class DeepSeekSmokeTests(unittest.TestCase):
                     probe = body['tools'][0]['parameters']['properties']['value']['enum'][0]
                     if choice == 'none':
                         expected = continuations[probe] + [{'type': 'function_call_output',
-                            'call_id': 'call-' + probe, 'output': json.dumps({'value': probe})}]
+                            'call_id': 'call-' + probe, 'output': json.dumps({'value': probe})},
+                            {'role': 'system', 'content': 'Current request tool results are complete.'}]
                         if body['input'] != expected:
                             status, result = 400, {'error': {'type': 'invalid_request_error'}}
                         else:
@@ -1110,7 +1111,12 @@ class DeepSeekSmokeTests(unittest.TestCase):
                     url = endpoint + '/responses'
                 self.assertTrue(url.startswith('http://127.0.0.1:'))
                 return post(url, **kwargs)
-            with tempfile.TemporaryDirectory() as directory, patch.object(requests, 'post', side_effect=loopback):
+            def request_with_fresh_system(url, **kwargs):
+                if kwargs.get('json', {}).get('tool_choice') == 'none':
+                    kwargs['json']['input'].append(
+                        {'role': 'system', 'content': 'Current request tool results are complete.'})
+                return loopback(url, **kwargs)
+            with tempfile.TemporaryDirectory() as directory, patch.object(requests, 'post', side_effect=request_with_fresh_system):
                 ledger = v3_matched.BudgetLedger(Path(directory) / 'budget.db', limit_rmb=None,
                                                 pricing=DEEPSEEK_UNLIMITED_PRICING)
                 relay = ResponsesRelay(endpoint=DEEPSEEK_ENDPOINT, api_key='fake', budget=ledger,

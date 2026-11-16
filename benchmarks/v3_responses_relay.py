@@ -241,9 +241,9 @@ class ResponsesRelay:
                     self._json(400, {"error": {"message": "invalid benchmark request"}})
                     return
 
-                # Panstar rejects system-role input items; normalize here so V2 and V3 share one wire shape.
+                # Official DeepSeek accepts ordered system items alongside replayed reasoning and tool replies.
                 input_items = body.get("input")
-                if isinstance(input_items, list):
+                if relay.endpoint != "https://api.deepseek.com" and isinstance(input_items, list):
                     system_messages = []
                     forwarded_items = []
                     for item in input_items:
