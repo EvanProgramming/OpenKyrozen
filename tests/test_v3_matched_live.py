@@ -693,6 +693,43 @@ class V3MatchedLiveTests(unittest.TestCase):
             "action": "run_cmd", "arguments": {"command": "python3 -m unittest test_slug.py"},
         })
 
+    def test_obsolete_assumption_requires_reproduction_then_cancel_then_bound_verification(self):
+        fixture = next(item for item in FIXTURES if item["fixture_id"] == "bug_fix-2")
+        assumption = {"id": "prior", "description": _initial_plan(fixture)[0], "status": "pending"}
+        cancelled = {**assumption, "status": "cancelled"}
+        fix = {"id": "verified", "description": "Handle None and keep normal integer conversion", "status": "succeeded"}
+        command = {"args": "python3 -m unittest test_parser.py"}
+        failure = {"action": "run_cmd", "authorized": True, "success": False,
+                   "evidence": {**command, "exit_code": 1, "result": "ERROR: test_none\nTypeError: got NoneType"}}
+        retire = {"action": "update_plan", "authorized": True, "success": True,
+                  "evidence": {"result_data": {"plan_id": "plan", "tasks": [cancelled]}}}
+        verify = {"action": "run_cmd", "authorized": True, "success": True,
+                  "evidence": {**command, "exit_code": 0, "plan_id": "plan", "task_id": "verified",
+                               "acceptance": "verified criterion",
+                               "verification": {"method": "command_exit_status", "status": "verified",
+                                                "observed": {"exit_code": 0}}}}
+        early_write = {"action": "edit_file", "authorized": True, "success": True, "target_path": "parser.py"}
+        worker = valid_worker_result(events=[{"working_plan": {"plan_id": "plan", "tasks": [assumption]}}],
+                                     task_records=[cancelled, fix])
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            before = prepare_fixture(workspace, fixture)
+            (workspace / "parser.py").write_text("def parse_count(value): return 0 if value is None else int(value)\n")
+            with patch("benchmarks.v3_matched_live._run_fixture_tests", return_value=True):
+                for name, receipts, expected in (
+                    ("real evidence without a keyword", [failure, retire, verify], True),
+                    ("cancellation before reproduction", [retire, failure, verify, retire], False),
+                    ("unobserved early update", [dict(retire, evidence={}), failure, retire, verify], False),
+                    ("early source edit", [early_write, failure, retire, verify], False),
+                    ("wrong reproduced failure", [dict(failure, evidence={**command, "exit_code": 1}), retire, verify], False),
+                    ("unbound verification", [failure, retire, dict(verify, evidence={**verify["evidence"], "task_id": "other"})], False),
+                    ("unconfirmed verification", [failure, retire, dict(verify, evidence={**verify["evidence"], "verification": None})], False),
+                ):
+                    with self.subTest(name=name):
+                        verdict = verify_fixture(fixture, workspace, "", dict(worker, tool_receipts=receipts), before)
+                        self.assertTrue(verdict["verified_success"])
+                        self.assertIs(verdict["plan_scenario_passed"], expected)
+
     def test_scope_scenario_rejects_missing_active_strategic_binding(self):
         fixture = next(item for item in FIXTURES if item["plan_scenario"] == "scope_preserving")
         with tempfile.TemporaryDirectory() as directory:

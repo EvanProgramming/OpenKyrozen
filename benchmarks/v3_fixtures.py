@@ -67,7 +67,7 @@ FIXTURES = (
     _fixture("bug_fix", 1, "Use a working plan to reproduce the empty-input failure in stats.py, fix it so mean([]) returns 0, and run test_stats.py. The reproduction reveals an unplanned edge case; add a verification task for it with update_plan.",
              {"kind": "tests", "command": ["python", "-m", "unittest", "test_stats.py"]},
              files={"stats.py": "def mean(values):\n    return sum(values) / len(values)\n", "test_stats.py": "import unittest\nfrom stats import mean\nclass T(unittest.TestCase):\n def test_empty(self): self.assertEqual(mean([]), 0)\n def test_values(self): self.assertEqual(mean([2,4]), 3)\n"}, plan_scenario="add_discovered_edge_case"),
-    _fixture("bug_fix", 2, "Use a working plan to reproduce the None-input failure in parser.py, make parse_count(None) return 0, and run test_parser.py. The initial assumption that input is always non-null is obsolete; cancel that task and replace it with the tested fallback using update_plan.",
+    _fixture("bug_fix", 2, "First reproduce the None-input failure with python3 -m unittest test_parser.py before editing parser.py or cancelling the seeded assumption task. The failing test_none is evidence of reproduction. Then use update_plan to cancel the obsolete non-null assumption, select a task for the fallback, and use the same test command as its acceptance check. Make parse_count(None) return 0 and preserve normal integer conversion.",
              {"kind": "tests", "command": ["python", "-m", "unittest", "test_parser.py"]},
              files={"parser.py": "def parse_count(value):\n    return int(value)\n", "test_parser.py": "import unittest\nfrom parser import parse_count\nclass T(unittest.TestCase):\n def test_none(self): self.assertEqual(parse_count(None), 0)\n def test_number(self): self.assertEqual(parse_count('4'), 4)\n"}, plan_scenario="cancel_obsolete_task_after_reproduction"),
     _fixture("bug_fix", 3, "Fix the off-by-one boundary in paging.py so page 1 starts at offset 0 and each next page advances by one page size. Read back the fix before proposing a separate zero-based paging option for renewed approval. Keep the existing public API until approval. The independent evaluator will run test_paging.py.",
@@ -211,7 +211,7 @@ def cohort_digest(fixtures=FIXTURES):
         separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
 
 
-FROZEN_COHORT_SHA256 = "d17a4ddf14bcb3a922aed3899bb052c436e5e883fc484020e66da1261a6ff3f6"
+FROZEN_COHORT_SHA256 = "33ea3223e0fce0c8bc3e3b404e4433ad66458b16419906aa4a93dfbf832e7316"
 
 
 validate_fixtures(FIXTURES)

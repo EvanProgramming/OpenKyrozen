@@ -249,6 +249,48 @@ def _recovery_observed(fixture: dict, worker: dict) -> bool:
     return False
 
 
+def _obsolete_assumption_replaced(fixture: dict, worker: dict) -> bool:
+    seed = next((event["working_plan"] for event in worker.get("events", [])
+                 if isinstance(event.get("working_plan"), dict)), {})
+    title, description = fixture["plan_tasks"][0]
+    assumption = next((task.get("id") for task in seed.get("tasks", [])
+                       if task.get("description") == f"{title}: {description}"), None)
+    plan_id = seed.get("plan_id")
+    statuses = {task.get("id"): task.get("status") for task in worker.get("task_records", [])}
+    if not assumption or not plan_id or statuses.get(assumption) != "cancelled":
+        return False
+    command = fixture["verifier"]["command"]
+    reproduced = cancelled = False
+    for receipt in worker.get("tool_receipts", []):
+        if receipt.get("authorized") is not True:
+            continue
+        action, success = receipt.get("action"), receipt.get("success")
+        if not cancelled and success is True and action in {"write_file", "edit_file", "apply_patch"}:
+            return False
+        evidence = receipt.get("evidence")
+        if not cancelled and action == "update_plan" and success is True:
+            result = evidence.get("result_data") if isinstance(evidence, dict) else None
+            if not isinstance(result, dict) or result.get("plan_id") != plan_id or not isinstance(result.get("tasks"), list):
+                return False
+            state = next((task.get("status") for task in result["tasks"]
+                          if isinstance(task, dict) and task.get("id") == assumption), None)
+            if state is None or (state == "cancelled" and not reproduced):
+                return False
+            cancelled = state == "cancelled"
+        if isinstance(evidence, dict) and action == "run_cmd" and _recovery_command(receipt, command):
+            if success is False and _recovery_exit_code(receipt) == 1:
+                output = str(evidence.get("result", ""))
+                reproduced = reproduced or all(marker in output for marker in ("test_none", "TypeError", "NoneType"))
+            elif (cancelled and success is True and _recovery_exit_code(receipt) == 0
+                  and evidence.get("plan_id") == plan_id and evidence.get("acceptance")
+                  and evidence.get("verification") == {
+                      "method": "command_exit_status", "status": "verified", "observed": {"exit_code": 0},
+                  }
+                  and statuses.get(evidence.get("task_id")) == "succeeded"):
+                return True
+    return False
+
+
 def _run_fixture_tests(root: Path, command: list[str], *, original_files: dict[str, str]) -> bool:
     if (len(command) < 4 or command[:3] != ["python", "-m", "unittest"]
             or any(not item.endswith(".py") or "/" in item or "\\" in item
@@ -623,12 +665,8 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
         scenario_ok = (int(worker.get("plan_revisions", 0)) > 0 and any(
             all(term in task.get("description", "").casefold() for term in required_terms)
             and task.get("status") == "succeeded" for task in added))
-    elif scenario in {"cancel_obsolete_task_after_reproduction"}:
-        records = worker.get("task_records", [])
-        scenario_ok = any("assumption" in item.get("description", "").casefold()
-                          and item.get("status") == "cancelled" for item in records) and any(
-            "fallback" in item.get("description", "").casefold() and item.get("status") == "succeeded"
-            for item in records)
+    elif scenario == "cancel_obsolete_task_after_reproduction":
+        scenario_ok = _obsolete_assumption_replaced(fixture, worker)
     elif scenario == "reorder_after_dependency_discovery":
         lowered = [item.casefold() for item in final_tasks]
         implement = next((index for index, value in enumerate(lowered) if "implement" in value), None)
