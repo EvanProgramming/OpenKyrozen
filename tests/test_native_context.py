@@ -449,6 +449,61 @@ class NativeContextTests(unittest.TestCase):
                 self.assertEqual(turn.runtime_status, "completed" if verify else "incomplete")
                 self.assertEqual(self.runtime.tasks.tasks[0]["status"], "succeeded" if verify else "running")
 
+    def test_native_missing_plan_recovers_from_using_source_path_as_artifact_id(self):
+        (self.root / "catalog.py").write_text("def sorted_products(names): return sorted(names)\n")
+
+        def respond(provider, messages, model):
+            step = len(provider.requests)
+            if step == 1:
+                call = ToolCall("wrong-artifact", "read_tool_artifact",
+                                {"artifact_id": "catalog.py", "limit": 1000, "offset": 0})
+            elif step == 2:
+                return ModelResponse(text="The source cannot be opened with these tools.", finish_reason=FinishReason.FINAL)
+            elif step == 3:
+                state = json.loads(messages[-1]["content"])["working_plan_continuation"]
+                self.assertEqual(state["status"], "required")
+                call = ToolCall("make-plan", "update_plan", {"expected_revision": 0, "operations": [
+                    {"op": "add", "ref": "inspect", "task": {"description": "Read catalog.py",
+                        "acceptance": [{"criterion": "Function inspected", "verification": {
+                            "action": "read_file", "arguments": {"path": "catalog.py"},
+                            "expect": {"contains": "def sorted_products"}}}]}},
+                    {"op": "start", "task": "inspect"}]})
+            elif step == 4:
+                call = ToolCall("read-source", "read_file", {"path": "catalog.py"})
+            else:
+                return ModelResponse(text='{"function":"sorted_products"}', finish_reason=FinishReason.FINAL)
+            return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+        provider = self.provider(respond)
+        answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Read catalog.py and name the sorter."}],
+            complexity="complex", permitted=self.runtime._permitted_tool_names())
+        self.assertEqual(len(provider.requests), 5, answer)
+        self.assertEqual(turn.runtime_status, "completed", answer)
+        self.assertEqual(json.loads(answer.splitlines()[0]), {"function": "sorted_products"})
+        self.assertNotIn("failed operations", answer)
+        self.assertEqual([record["action"] for record in turn.tool_records],
+                         ["read_tool_artifact", "update_plan", "read_file"])
+        self.assertEqual(turn.tool_records[0]["failure"], "not_found")
+        self.assertTrue(turn.tool_records[2]["success"])
+
+    def test_native_missing_plan_does_not_retry_an_actual_missing_artifact_id(self):
+        artifact_id = "artifact_" + "a" * 32
+
+        def respond(provider, messages, model):
+            if len(provider.requests) == 1:
+                return ModelResponse(tool_calls=(ToolCall("missing", "read_tool_artifact",
+                    {"artifact_id": artifact_id, "offset": 0, "limit": 1000}),),
+                    finish_reason=FinishReason.TOOL_REQUEST)
+            return ModelResponse(text="The saved artifact no longer exists.", finish_reason=FinishReason.FINAL)
+
+        provider = self.provider(respond)
+        answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Read " + artifact_id}],
+            complexity="complex", permitted=self.runtime._permitted_tool_names())
+        self.assertEqual(len(provider.requests), 2, answer)
+        self.assertEqual(turn.tool_records[0]["failure"], "not_found")
+        self.assertEqual(turn.runtime_status, "incomplete")
+
     def test_native_plan_feedback_preserves_bounded_pinned_context_and_full_acceptance(self):
         criterion = "unverified " + "x" * 400000
         plan = self.runtime.tasks.edit_plan(complexity="complex", expected_revision=0, operations=[{

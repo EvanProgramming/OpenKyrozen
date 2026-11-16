@@ -102,6 +102,7 @@ class AgentEngine:
 
     def _working_plan_continuation(self, turn, *, needs_plan=False):
         """Offer state once, without scheduling work or granting tool authority."""
+        from openkyrozen.agent.completion import _missing_artifact_source_path
         from openkyrozen.agent.delegation import TERMINAL
         from openkyrozen.agent.executor import _strategic_plan_denial
         from openkyrozen.tasks.engine import _unknown_recovery_effect
@@ -138,7 +139,8 @@ class AgentEngine:
                     and (verification.get("observed") or {}).get("committed") is False)
                 if ((record.get("success") is not True and not no_effect_plan_input)
                         or verification.get("status") == "failed"):
-                    return None
+                    if not needs_plan or not _missing_artifact_source_path(record):
+                        return None
             manager = runtime.tasks
             plan = manager.working_plan
             scope = {"user_id": manager.user_id, "workspace_id": manager.workspace_id,

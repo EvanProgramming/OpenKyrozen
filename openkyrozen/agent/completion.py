@@ -5,6 +5,38 @@ import json
 from openkyrozen.tasks.engine import is_complete
 
 
+def _missing_artifact_source_path(record):
+    verification = record.get("verification") or {}
+    if (record.get("action") != "read_tool_artifact" or record.get("authorized") is not True
+            or record.get("failure") != "not_found" or record.get("plan_id") is not None
+            or verification.get("method") != "read_only_tool"
+            or verification.get("status") != "not_applicable"):
+        return None
+    try:
+        arguments = json.loads(record.get("args"))
+    except (TypeError, ValueError):
+        return None
+    path = arguments.get("artifact_id") if isinstance(arguments, dict) else None
+    return path if isinstance(path, str) and path and not path.startswith("artifact_") else None
+
+
+def _replaced_artifact_lookup(plan, record, later_records):
+    path = _missing_artifact_source_path(record)
+    if not path or plan is None or plan.status != "completed":
+        return False
+    for later in later_records:
+        if (later.get("action") == "read_file" and later.get("success") is True
+                and later.get("authorized") is True and later.get("plan_id") == plan.id
+                and later.get("task_id") in plan.task_ids):
+            try:
+                arguments = json.loads(later.get("args"))
+            except (TypeError, ValueError):
+                continue
+            if isinstance(arguments, dict) and arguments.get("path") == path:
+                return True
+    return False
+
+
 def _corrected_plan_validation(manager, record, later_records, turn_id):
     """A committed, verified plan can supersede only its own no-effect input error."""
     validation = record.get("verification") or {}
@@ -144,8 +176,10 @@ def _complete_turn(self, turn):
     unresolved_effect_blocked = False
     for index, record in enumerate(turn.tool_records):
         verification = record.get("verification") or {}
-        if _corrected_plan_validation(self.tasks, record, turn.tool_records[index + 1:],
-                                      self._conversation_turn_id.get()):
+        later_records = turn.tool_records[index + 1:]
+        if _replaced_artifact_lookup(getattr(self.tasks, "working_plan", None), record, later_records):
+            continue
+        if _corrected_plan_validation(self.tasks, record, later_records, self._conversation_turn_id.get()):
             continue
         failed_verification = verification.get("status") == "failed"
         effect_action = (record.get("action") in {"write_file", "edit_file", "apply_patch"}
