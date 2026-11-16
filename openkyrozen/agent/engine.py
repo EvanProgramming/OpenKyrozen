@@ -471,6 +471,13 @@ class AgentEngine:
                 from openkyrozen.agent.conversation import tool_result_to_dict
                 outcome = receipt.tool_result or ToolResult(data=receipt.result_data, text=receipt.result)
                 reply_data = tool_result_to_dict(outcome)
+                if outcome.success and call["action"] == "update_plan":
+                    active_task_id = runtime.tasks.execution_task_id
+                    if active_task_id and active_task_id != selected_task_id:
+                        reply_data["next_request"] = (
+                            "The selected Working Plan task has started. Use current_call_tools from the new request "
+                            "for the next permitted action. Recheck tool availability after the plan update."
+                        )
                 messages.append(ToolReply(call["call_id"], call["action"], reply_data, not outcome.success))
                 if record.get("success"):
                     if call["action"] in _NATIVE_CONTROLS:

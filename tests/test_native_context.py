@@ -185,7 +185,7 @@ class NativeContextTests(unittest.TestCase):
                     self.assertEqual(projection["current_call_tools"], sorted(current))
                     self.assertEqual(projection["history_only_declarations"], ["read_file"] if step > 2 else [])
                     self.assertIn(("Planning-required exposure is temporary" if step == 1 else
-                                   "An active Working Plan may expand" if step == 2 else
+                                   "The Working Plan is active now. Use current_call_tools in this request" if step == 2 else
                                    "Completed-plan exposure is confirmation-only"), block)
                     validate_tool_history(messages, provider_id=provider_identity(provider), model=model, native=True)
                     if step == 1:
@@ -204,11 +204,14 @@ class NativeContextTests(unittest.TestCase):
                         reply = next(item for item in messages if isinstance(item, ToolReply)
                                      and item.call_id == "create-plan")
                         self.assertFalse(reply.is_error, reply.output)
+                        self.assertIs(messages[-1], reply)
+                        self.assertIn("Use current_call_tools from the new request", reply.output["next_request"])
                         call = ToolCall("inspect-file", "read_file", {"path": "notes.txt"})
                     elif step == 3:
                         reply = next(item for item in messages if isinstance(item, ToolReply)
                                      and item.call_id == "inspect-file")
                         self.assertFalse(reply.is_error, reply.output)
+                        self.assertNotIn("next_request", reply.output)
                         self.assertEqual(reply.output["data"]["content"], "ready\n")
                         pinned = next(item["content"] for item in messages if isinstance(item, dict)
                                       and item.get("content", "").startswith("## Pinned Working Plan state\n"))
@@ -419,6 +422,8 @@ class NativeContextTests(unittest.TestCase):
                             "operations": [{"op": "start", "task": plan["task_ids"][0]}]})
                     else:
                         self.assertEqual(step, 3)
+                        self.assertIsInstance(messages[-1], ToolReply)
+                        self.assertIn("Use current_call_tools from the new request", messages[-1].output["next_request"])
                         call = ToolCall("verify", "read_file", {"path": "notes.txt"})
                     return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST, usage=usage,
                         continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))

@@ -130,7 +130,8 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
         )]
         phase_guidance = {
             "plan_required": "Planning-required exposure is temporary; create and start a Working Plan before other work. ",
-            "plan_active": "An active Working Plan may expand the next request's tool list. ",
+            "plan_active": "The Working Plan is active now. Use current_call_tools in this request "
+                           "for the selected task's next action. ",
             "plan_completed": "Completed-plan exposure is confirmation-only; use the current plan's returned IDs and revision. ",
         }.get(_native_tool_phase, "")
         messages.insert(1 if messages else 0, {"role": "system", "content": marker + json.dumps({

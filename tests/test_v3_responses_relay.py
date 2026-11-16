@@ -451,11 +451,14 @@ class V3ResponsesRelayTests(unittest.TestCase):
 
     def test_system_messages_are_normalized_for_every_benchmark_arm(self):
         user_message = {"role": "user", "content": "fixture"}
+        handoff = {"type": "function_call_output", "call_id": "plan-start",
+                   "output": json.dumps({"result": {"next_request": "Use current_call_tools from the new request"}})}
         response = requests.post(self.relay.url + "/responses", json={
             "instructions": "base instructions",
             "input": [
                 {"role": "system", "content": "system guidance"},
                 user_message,
+                handoff,
                 {"role": "system", "content": "workspace guidance"},
             ],
         }, headers={"Authorization": "Bearer " + self.relay.client_key}, timeout=3)
@@ -463,7 +466,7 @@ class V3ResponsesRelayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.received[0]["instructions"],
                          "base instructions\n\nsystem guidance\n\nworkspace guidance")
-        self.assertEqual(self.received[0]["input"], [user_message])
+        self.assertEqual(self.received[0]["input"], [user_message, handoff])
 
     def test_system_only_requests_become_an_instruction_and_continue_input(self):
         response = requests.post(self.relay.url + "/responses", json={
