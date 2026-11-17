@@ -16,7 +16,7 @@ from benchmarks import v3_matched
 
 class DeepSeekStrictChatTests(unittest.TestCase):
     def test_strict_schema_preserves_optional_native_values(self):
-        from benchmarks.v3_deepseek import strict_chat_body
+        from benchmarks.v3_deepseek import strict_chat_body, strict_chat_tools
         schema = {"type": "object", "properties": {
             "path": {"type": "string", "minLength": 1},
             "start_line": {"type": "integer", "minimum": 1},
@@ -24,7 +24,7 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         function = {"name": "read_file", "parameters": schema}
         result = strict_chat_body({"model": "deepseek-flash", "stream": True,
             "messages": [{"role": "user", "content": "Read the file."}],
-            "tools": [{"type": "function", "function": function}]})
+            "tools": strict_chat_tools([{"description": "Read", **function}])})
         self.assertEqual(result["thinking"], {"type": "enabled"})
         self.assertEqual(result["stream_options"], {"include_usage": True})
         wire = result["tools"][0]["function"]
@@ -37,12 +37,13 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         self.assertIn("minLength", schema["properties"]["path"])
 
     def test_complete_catalogue_fits_wire_and_typed_plan_maps_round_trip(self):
-        from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_body, strict_chat_schema
+        from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_body, strict_chat_schema, strict_chat_tools
         from openkyrozen.tools.catalog import _SCHEMAS
         from openkyrozen.tools.manifest import ToolRegistry
         wire = strict_chat_body({"model": "deepseek-flash", "messages": [{"role": "user", "content": "plan"}],
-            "tools": [{"type": "function", "function": {"name": name, "parameters": schema}}
-                      for name, schema in json.loads(json.dumps(_SCHEMAS)).items()]})
+            "tools": strict_chat_tools([
+                {"name": name, "description": "", "parameters": schema}
+                for name, schema in json.loads(json.dumps(_SCHEMAS)).items()])})
         self.assertLess(len(json.dumps(wire).encode()), 100_000)
 
         def assert_provider_contract(node):
@@ -186,6 +187,36 @@ class DeepSeekStrictChatTests(unittest.TestCase):
             finally:
                 relay.close()
 
+    def test_strict_nonstream_does_not_expose_unsettled_tool_calls(self):
+        from benchmarks.v3_deepseek import (DEEPSEEK_ENDPOINT, DEEPSEEK_PRICING,
+                                            DEEPSEEK_STRICT_RELAY_CONFIG)
+        from benchmarks.v3_responses_relay import ResponsesRelay
+        from unittest.mock import Mock, patch
+
+        result = {"id": "response", "model": "unexpected", "object": "chat.completion",
+                  "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                      "role": "assistant", "tool_calls": [{"id": "call", "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path":"example.txt"}'}}]}}],
+                  "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4,
+                            "prompt_cache_hit_tokens": 0, "prompt_cache_miss_tokens": 3}}
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = v3_matched.BudgetLedger(Path(directory) / "ledger.sqlite", limit_rmb="15",
+                                            pricing=DEEPSEEK_PRICING)
+            relay = ResponsesRelay(endpoint=DEEPSEEK_ENDPOINT, api_key="offline", budget=ledger,
+                                   config=DEEPSEEK_STRICT_RELAY_CONFIG)
+            relay.start()
+            try:
+                upstream = Mock(status_code=200, **{"json.return_value": result})
+                with patch("benchmarks.v3_responses_relay.requests", post=Mock(return_value=upstream)):
+                    response = requests.post(relay.url + "/chat/completions", timeout=5,
+                        json={"messages": [{"role": "user", "content": "Read"}]},
+                        headers={"Authorization": "Bearer " + relay.client_key})
+                self.assertEqual(response.status_code, 502)
+                self.assertNotIn("tool_calls", response.json())
+                self.assertEqual(ledger.campaign_calls()[0]["status"], "unknown")
+            finally:
+                relay.close()
+
     def test_stream_is_metered_only_with_finish_usage_and_done(self):
         from benchmarks.v3_deepseek import (DEEPSEEK_ENDPOINT, DEEPSEEK_PRICING,
                                             DEEPSEEK_STRICT_RELAY_CONFIG)
@@ -220,13 +251,17 @@ class DeepSeekStrictChatTests(unittest.TestCase):
                             json={"stream": True, "messages": [{"role": "user", "content": "Hello"}]},
                             headers={"Authorization": "Bearer " + relay.client_key})
                     self.assertEqual(response.status_code, 200)
-                    self.assertEqual(response.content, b"".join(frames))
+                    self.assertEqual(response.content, b"".join(frames) if expected == "settled" else
+                                     (frames[0] if messages[0] == content else b""))
                     transport.post.assert_called_once()
                     self.assertEqual(transport.post.call_args.args[0], DEEPSEEK_ENDPOINT + "/beta/chat/completions")
                     sent = json.loads(transport.post.call_args.kwargs["data"])
                     self.assertEqual(sent["max_tokens"], 4096)
                     self.assertEqual(sent["model"], "deepseek-flash")
                     self.assertEqual(relay.rows[0]["status"], expected)
+                    if messages == (content, usage):
+                        self.assertEqual(ledger.campaign_calls()[0]["upstream_wire"],
+                                         {"response_id": "answer", "finish_reason": "stop", "calls": []})
                 finally:
                     relay.close()
 

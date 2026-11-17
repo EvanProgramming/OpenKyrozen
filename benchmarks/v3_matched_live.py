@@ -860,7 +860,7 @@ def _load_checkpoint(output: Path, budget_path: Path) -> dict | None:
 def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 900,
                 protected_files: list[Path] | None = None, policy=None, source=None,
                 provider_config=None, revoke_actor=None, routing_variant=None,
-                selected_actor_model=None) -> tuple[int, str]:
+                selected_actor_model=None, allow_delegation=True) -> tuple[int, str]:
     from benchmarks.v3_actor_supervisor import ActorSupervisor
     from benchmarks.v3_shell_launcher import ShellPolicy
     # Standalone callers have no shell authority; fixture callers supply the
@@ -869,6 +869,7 @@ def _run_worker(command: list[str], *, cwd: Path, env: dict[str, str], timeout: 
     with ActorSupervisor(command, cwd=cwd, env=env, protected_files=protected_files or [],
                          policy=policy, source=source or Path(__file__).resolve().parents[1],
                          provider_config=provider_config, revoke_actor=revoke_actor,
+                         **({"allow_delegation": False} if not allow_delegation else {}),
                          **({'selected_actor_model': selected_actor_model} if selected_actor_model is not None else {}),
                          **({'routing_variant':routing_variant} if routing_variant is not None else {})) as launch:
         try:
@@ -1393,7 +1394,7 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
     if routing_variant is not None:
         worker_env['KYROZEN_DECISION_ASSIST_BACKEND']='off'
     def actor_provider_config(actor_id):
-        if getattr(relay,'protocol',None)=='google' or getattr(relay,'responses_policy',None) is not None:
+        if getattr(relay, "protocol", None) in ("google", "strict-chat") or getattr(relay, "responses_policy", None) is not None:
             relay.root_actor_id_by_label.setdefault((arm,fixture_id,repeat),actor_id)
         return dict(relay.issue_actor_config(actor_id),
                     context_window_tokens=fixture['context_window_tokens'])
@@ -1406,13 +1407,15 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
              "--prompt-file", str(prompt_file), "--plan-file", str(plan_file),
              "--conversation-file", str(conversation_file), "--result", str(result_file),
              "--scenario", str(fixture.get("plan_scenario") or ""),
-             "--process-marker", str(fixture["verifier"].get("command_marker") or "")],
+             "--process-marker", str(fixture["verifier"].get("command_marker") or ""),
+             *(["--direct-only"] if arm == "delegation-control" else [])],
             cwd=workspace, env=worker_env,
             protected_files=[workspace / name for name in fixture["files"]
                              if Path(name).name.startswith("test_")],
             policy=shell_policy,
             source=arm_source, provider_config=actor_provider_config,
             revoke_actor=relay.revoke_actor,
+            **({"allow_delegation": False} if arm == "delegation-control" else {}),
             **({'selected_actor_model': relay.selected_actor_model} if getattr(relay, 'protocol', None) == 'google'
                or getattr(relay, 'responses_policy', None) is not None else {}),
             **({'routing_variant':routing_variant} if routing_variant is not None else {}),
@@ -1481,6 +1484,10 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
                     "worker_error": worker_error,
                     "worker_exit_code": code,
                     "worker_result_complete": worker_complete})
+        if getattr(relay, "protocol", None) == "strict-chat" and fixture["category"] == "subagents":
+            row["delegation_exercised"] = any(call.get("actor_role") == "descendant" for call in calls)
+            row["cost_cny"] = (str(sum(Decimal(call["actual_rmb"]) for call in calls))
+                               if calls and all(call.get("status") == "settled" for call in calls) else None)
         if getattr(relay, 'protocol', None) == 'google' or getattr(relay, 'responses_policy', None) is not None:
             row['cost_calls'] = [call for call in budget.campaign_calls()
                 if (call['arm'], call['fixture_id'], call['repeat']) == (arm, fixture_id, repeat)]
@@ -1518,6 +1525,54 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
         raise
     _write_worker_evidence(output, row, candidate, identity, observed_worker, evidence_metadata)
     return row
+
+
+def _verify_settled_cell(row, calls):
+    if not calls or any(call.get("status") != "settled" or not isinstance(call.get("usage"), dict)
+                        or call.get("actual_rmb") is None for call in calls):
+        return False
+    counts = {"requests": len(calls), "attempts": len(calls)}
+    for field in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+        counts[field] = sum(call["usage"].get(field, 0) for call in calls)
+    total = sum(Decimal(call["actual_rmb"]) for call in calls)
+    if "delegation_exercised" in row:
+        root = calls[0].get("root_actor_id")
+        if (not root or any(call.get("root_actor_id") != root or not call.get("actor_id")
+                or call.get("actor_role") != ("root" if call["actor_id"] == root else "descendant")
+                for call in calls)):
+            return False
+    return (all(type(row.get(key)) is int and row[key] == value for key, value in counts.items())
+            and ("cost_cny" not in row or row["cost_cny"] is not None and total == Decimal(row["cost_cny"]))
+            and ("delegation_exercised" not in row or row["delegation_exercised"] is
+                 any(call.get("actor_role") == "descendant" for call in calls)))
+
+
+def compare_delegation(rows, controls, *, fixtures=FIXTURES):
+    """Pair the unchanged formal V3 cells with each direct control."""
+    ids = {fixture["fixture_id"] for fixture in fixtures if fixture["category"] == "subagents"}
+    expected = {(name, repeat) for name in ids for repeat in range(REPEATS)}
+    treatment = {(row["fixture_id"], row["repeat"]): row for row in rows
+                 if row["arm"] == "v3" and row["fixture_id"] in ids}
+    direct = {(row["fixture_id"], row["repeat"]): row for row in controls}
+    complete = (len(expected) == len(controls) and all(row["arm"] == "delegation-control" for row in controls)
+                and set(treatment) == set(direct) == expected and
+                all(treatment[key].get("delegation_exercised") is True and
+                    treatment[key].get("plan_scenario_passed") is True and
+                    direct[key].get("delegation_exercised") is False for key in expected) and
+                all(row.get("usage_complete") is True and row.get("safety_passed") is True
+                    and row.get("worker_evidence_verified") is True and row.get("cost_cny") is not None
+                    for row in (*treatment.values(), *direct.values())))
+    pairs = [
+        {"fixture_id": name, "repeat": repeat,
+         **{label: {key: row[key] for key in ("verified_success", "requests", "input_tokens",
+                                             "output_tokens", "cost_cny")}
+            for label, row in (("delegation", treatment[(name, repeat)]), ("direct", direct[(name, repeat)]))}}
+        for name, repeat in sorted(expected)] if complete else []
+    return {"complete": complete, "pairs": pairs, "totals": {
+        arm: {**{metric: sum(pair[arm][metric] for pair in pairs)
+                  for metric in ("verified_success", "requests", "input_tokens", "output_tokens")},
+              "cost_cny": str(sum(Decimal(pair[arm]["cost_cny"]) for pair in pairs))}
+        for arm in ("delegation", "direct")} if complete else {}}
 
 
 @_serialized_campaign
@@ -1618,6 +1673,19 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                 and (provider_policy.accepts_call(call) if provider_policy is not None else
                      call.get("model") == model and call.get("max_output_tokens") == max_output_tokens))
 
+    def is_bug_fix_preflight_call(call: dict) -> bool:
+        return (relay_config.strict_chat and
+                (call.get("arm"), call.get("fixture_id"), call.get("repeat")) ==
+                ("bug_fix_preflight", "bug_fix-1", -1) and
+                call.get("model") == model and call.get("max_output_tokens") == max_output_tokens)
+
+    delegation_fixtures = {fixture["fixture_id"]: fixture for fixture in fixtures
+                           if fixture["category"] == "subagents"}
+    def is_delegation_call(call):
+        return (relay_config.strict_chat and call.get("arm") == "delegation-control" and
+                call.get("fixture_id") in delegation_fixtures and call.get("repeat") in range(REPEATS)
+                and call.get("model") == model and call.get("max_output_tokens") == max_output_tokens)
+
     def require_smoke_only_ledger() -> None:
         with closing(sqlite3.connect(budget_path)) as db:
             has_attempts = db.execute(
@@ -1680,14 +1748,15 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                 or not isinstance(prior.get("rows"), list) or not isinstance(prior.get("calls"), list)):
             raise ValueError("budget-ledger checkpoint does not match this candidate and cohort")
         rows = prior["rows"]
-        if prior.get("status") == "blocked_safety_failure" or any(
+        if prior.get("status") in {"blocked_safety_failure", "blocked_v3_acceptance"} or any(
                 row.get("worker_result_complete") is True
                 and _safety_failure_status(row) == "blocked_safety_failure" for row in rows):
             raise ValueError("recorded safety failure requires investigation and a fresh campaign")
         held_reservations = prior.get("held_reservations", [])
         expected_call_keys = {(fixture["fixture_id"], repeat, arm)
                               for fixture in fixtures for repeat in range(repeats) for arm in ("v2", "v3")}
-        if any(not is_smoke_call(call) and not is_preflight_call(call) and (
+        if any(not is_smoke_call(call) and not is_preflight_call(call) and not is_bug_fix_preflight_call(call)
+               and not is_delegation_call(call) and (
                 (call.get("fixture_id"), call.get("repeat"), call.get("arm")) not in expected_call_keys
                 or (not provider_policy.accepts_call(call) if provider_policy is not None else
                     call.get("model") != model)) for call in journal_calls):
@@ -1700,7 +1769,8 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             raise ValueError("existing benchmark report contains duplicate attempts")
         calls_by_key: dict[tuple, list[dict]] = {}
         for call in journal_calls:
-            if is_smoke_call(call) or is_preflight_call(call):
+            if (is_smoke_call(call) or is_preflight_call(call) or is_bug_fix_preflight_call(call)
+                    or is_delegation_call(call)):
                 continue
             calls_by_key.setdefault((call.get("fixture_id"), call.get("repeat"), call.get("arm")), []).append(call)
         rows_by_key = dict(zip(keys, rows))
@@ -1762,6 +1832,30 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             raise ValueError("planning preflight evidence is required before formal evaluation")
     if planning_preflight_only and rows:
         raise ValueError("planning-only execution cannot rewrite an existing formal cohort")
+    controls = prior.get("delegation_controls", [])
+    control_keys = {(row["fixture_id"], row["repeat"]) for row in controls}
+    control_attempts = [call for call in journal_calls if is_delegation_call(call)]
+    if (len(control_keys) != len(controls) or
+            any(not is_delegation_call({**row, "model": model, "max_output_tokens": max_output_tokens})
+                or not _row_can_resume_as_complete(row, output, candidate, identity)
+                or not _verify_settled_cell(row, [call for call in control_attempts
+                    if (call["fixture_id"], call["repeat"]) == (row["fixture_id"], row["repeat"])])
+                for row in controls)
+            or any((call["fixture_id"], call["repeat"]) not in control_keys for call in control_attempts)):
+        raise ValueError("R216 controls lack complete original worker and accounting evidence")
+    bug_fix_preflight = prior.get("bug_fix_preflight")
+    bug_calls = [call for call in journal_calls if is_bug_fix_preflight_call(call)]
+    def bug_fix_passed(row, calls):
+        return (isinstance(row, dict) and
+                (row.get("arm"), row.get("fixture_id"), row.get("repeat")) ==
+                ("bug_fix_preflight", "bug_fix-1", -1) and
+                0 < len(calls) <= 16 and _verify_settled_cell(row, calls) and
+                _row_can_resume_as_complete(row, output, candidate, identity) and
+                row.get("verified_success") is True and row.get("workflow_state_correct") is True and
+                row.get("plan_scenario_passed") is True and row.get("protocol_recovery") == 0)
+    if relay_config.strict_chat and (bug_fix_preflight is not None or bug_calls or rows):
+        if not bug_fix_passed(bug_fix_preflight, bug_calls):
+            raise ValueError("complete matching bug_fix-1 preflight evidence is required before formal evaluation")
     if provider_policy is not None:
         provider_policy.check_budget(budget)
         billing = provider_policy.verify_billing(billing_proof, candidate)
@@ -1778,6 +1872,8 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         relay = ResponsesRelay(endpoint=endpoint or credential_endpoint, api_key=api_key,
                                budget=budget, config=relay_config)
     relay.rows.extend(journal_calls)
+    if relay_config.strict_chat:
+        relay.bug_fix_preflight_closed = bug_fix_preflight is not None
     if cny_accounting:
         relay.planning_preflight_label = ("planning_preflight", candidate, -1)
         relay.planning_preflight_closed = planning_preflight is not None
@@ -1809,7 +1905,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                     "status": ("running" if smoke_ok else "blocked_budget_reservation"
                                if relay.budget_blocked else "blocked_provider_error"),
                     "provider_error": relay.provider_error, "smoke_passed": smoke_ok,
-                    "planning_preflight": planning_preflight,
+                    "planning_preflight": planning_preflight, "bug_fix_preflight": bug_fix_preflight, "delegation_controls": controls,
                     "smoke_attempt_ids": list(getattr(relay, "smoke_verified_attempt_ids", ())),
                     "rows": rows, "calls": relay.rows, "budget": budget_metadata(),
                     "held_reservations": _held_reservations(relay.rows)})
@@ -1830,6 +1926,22 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         calls=relay.rows, budget=budget_metadata(), held_reservations=_held_reservations(relay.rows))
                     _write_checkpoint(output, budget_path, pending)
             preflight_ok = not cny_accounting or planning_preflight is not None and planning_preflight.get("status") == "passed"
+            if relay_config.strict_chat and smoke_ok and preflight_ok and bug_fix_preflight is None:
+                bug_fixture = next(item for item in fixtures if item["fixture_id"] == "bug_fix-1")
+                try:
+                    bug_fix_preflight = _execute_cell(
+                        temporary_root=temporary_root, repeat=-1, fixture=bug_fixture, arm="bug_fix_preflight",
+                        arm_source=source, candidate=candidate, identity=identity, worker_script=worker_script,
+                        relay=relay, model=model, output=output, api_key=api_key, budget=budget)
+                finally:
+                    relay.bug_fix_preflight_closed = True
+                preflight_ok = bug_fix_passed(
+                    bug_fix_preflight, [call for call in relay.rows if is_bug_fix_preflight_call(call)])
+                pending = _load_checkpoint(output, budget_path)
+                pending.update(bug_fix_preflight=bug_fix_preflight, calls=relay.rows, budget=budget_metadata(),
+                               held_reservations=_held_reservations(relay.rows),
+                               status="planning_preflight_passed" if preflight_ok else "blocked_bug_fix_preflight")
+                _write_checkpoint(output, budget_path, pending)
             for repeat in range(repeats if smoke_ok and preflight_ok and not planning_preflight_only else 0):
                 for fixture_index, fixture in enumerate(fixtures):
                     ordered_arms = (("v2", baseline_source), ("v3", source))
@@ -1849,13 +1961,19 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                             worker_script=worker_script, relay=relay, model=model, output=output,
                             api_key=api_key, budget=budget)
                         safety_stop = _safety_failure_status(row)
+                        if relay_config.strict_chat and arm == "v3" and not safety_stop and (
+                                row["verified_success"] is not True or row["plan_scenario_passed"] is not True
+                                or row["protocol_recovery"] != 0
+                                or fixture["category"] == "long_context" and row["context_compaction_observed"] is not True
+                                or row["recovery_required"] and not row["recovery_verified"]):
+                            safety_stop = "blocked_v3_acceptance"
                         rows.append(row)
                         held_reservations = _held_reservations(relay.rows)
                         document = {**identity, "protocol": "openkyrozen-v3-matched-live-v1", "candidate_sha": candidate,
                                     "baseline_sha": BASELINE, "model": model, "max_output_tokens": max_output_tokens,
                                     "repeats": repeats, "pricing": pricing_info, "relay_config": asdict(relay_config),
                                     "smoke_passed": smoke_ok if cny_accounting else None,
-                                    "planning_preflight": planning_preflight,
+                                    "planning_preflight": planning_preflight, "bug_fix_preflight": bug_fix_preflight, "delegation_controls": controls,
                                     "smoke_attempt_ids": list(getattr(relay, "smoke_verified_attempt_ids", ())),
                                     "status": safety_stop or "running", "rows": rows,
                                     "held_reservations": held_reservations,
@@ -1886,11 +2004,46 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         break
                 if safety_stop or relay.budget_blocked or relay.provider_error:
                     break
+            if (relay_config.strict_chat and preflight_ok and not planning_preflight_only
+                    and not safety_stop and not relay.provider_error and not relay.budget_blocked
+                    and summarize(rows, pricing=pricing)["comparison_thresholds_met"]):
+                for fixture_id, repeat in sorted((name, repeat) for name in delegation_fixtures
+                                                  for repeat in range(REPEATS)):
+                    if (fixture_id, repeat) in control_keys:
+                        continue
+                    row = _execute_cell(temporary_root=temporary_root, repeat=repeat,
+                        fixture=delegation_fixtures[fixture_id], arm="delegation-control",
+                        arm_source=source, candidate=candidate, identity=identity, worker_script=worker_script,
+                        relay=relay, model=model, output=output, api_key=api_key, budget=budget)
+                    controls.append(row)
+                    safety_stop = _safety_failure_status(row)
+                    pending = _load_checkpoint(output, budget_path)
+                    pending.update(delegation_controls=controls, calls=relay.rows, budget=budget_metadata(),
+                                   held_reservations=_held_reservations(relay.rows),
+                                   status=safety_stop or "running")
+                    _write_checkpoint(output, budget_path, pending)
+                    if safety_stop or relay.provider_error or relay.budget_blocked:
+                        break
         finally:
             relay.close()
     evidence_complete = _validate_rows_evidence(output, rows, candidate, identity)
     summary = summarize(rows, pricing=pricing)
+    if relay_config.strict_chat:
+        for row in (*controls, *(entry for entry in rows if entry["arm"] == "v3"
+                                 and entry["fixture_id"] in delegation_fixtures)):
+            if not row.get("usage_complete") or not row.get("safety_passed"):
+                continue
+            receipts = [call for call in relay.rows if (call["arm"], call["fixture_id"], call["repeat"]) ==
+                        (row["arm"], row["fixture_id"], row["repeat"])]
+            if not _verify_settled_cell(row, receipts):
+                raise ValueError("R216 row differs from its original physical calls")
+        _validate_rows_evidence(output, controls, candidate, identity)
+        delegation = compare_delegation(rows, controls)
+    else:
+        delegation = None
     summary["worker_evidence_complete"] = evidence_complete
+    matched_complete = summary["complete"] and summary["accounting_complete"] and evidence_complete
+    core_status = "complete" if matched_complete else "incomplete"
     if not evidence_complete:
         summary["accounting_complete"] = False
         summary["comparison_thresholds_met"] = False
@@ -1899,12 +2052,17 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
               "baseline_sha": BASELINE, "model": model, "pricing": pricing_info, "relay_config": asdict(relay_config), "repeats": repeats,
               "status": safety_stop or ("blocked_provider_error" if relay.provider_error else
                         "blocked_budget_reservation" if relay.budget_blocked else
-                        "blocked_planning_preflight" if not preflight_ok else
+                        ("blocked_bug_fix_preflight" if bug_fix_preflight is not None else
+                         "blocked_planning_preflight") if not preflight_ok else
                         "planning_preflight_passed" if planning_preflight_only else
-                        "complete" if summary["complete"] and summary["accounting_complete"] else "incomplete"),
+                        "blocked_delegation_evidence" if matched_complete and summary["comparison_thresholds_met"]
+                        and delegation is not None and not delegation["complete"] else
+                        "complete" if matched_complete else "incomplete"),
+              "matched_status": core_status,
               "provider_error": relay.provider_error,
               "smoke_passed": smoke_ok if cny_accounting else None,
-              "planning_preflight": planning_preflight,
+              "planning_preflight": planning_preflight, "bug_fix_preflight": bug_fix_preflight,
+              "delegation_controls": controls, "delegation_comparison": delegation,
               "smoke_attempt_ids": list(getattr(relay, "smoke_verified_attempt_ids", ())),
               "summary": summary,
               "rows": rows, "held_reservations": held_reservations,

@@ -108,7 +108,9 @@ class _ProviderObservations:
         summary = bool(compacting.get()) if compacting is not None else False
         state_var = getattr(runtime, "_active_context_state", None)
         state = state_var.get() if state_var is not None else None
-        schema_json = json.dumps(tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        project = getattr(self.provider, "_tool_wire_projector", None)
+        wire_tools = project(tools) if project is not None and tools is not None else tools
+        schema_json = json.dumps(wire_tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         overhead = _text_tokens(schema_json) + 32 * len(tools or ()) + 64 if tools is not None else 0
         estimated, components = estimate_messages(messages)
         components = dict(components)
@@ -190,6 +192,10 @@ class _ProviderObservations:
             "frames": locations(error.__traceback__),
             "cause_frames": locations(cause.__traceback__) if cause is not None else [],
         }
+
+        wire = getattr(error, "wire_evidence", None)
+        if isinstance(wire, dict):
+            record["provider_contract_failure"]["wire"] = wire
 
     def _wrap(self, original, streaming, *, native=False):
         def begin(args, kwargs):
@@ -328,6 +334,7 @@ def main():
     parser.add_argument("--model", default="deepseek-v4-flash")
     parser.add_argument("--protocol", choices=("chat", "strict-chat", "responses", "google"), default="chat")
     parser.add_argument("--scenario", default="")
+    parser.add_argument("--direct-only", action="store_true")
     parser.add_argument("--process-marker", default="")
     parser.add_argument("--prompt-file", required=True)
     parser.add_argument("--plan-file")
@@ -372,6 +379,11 @@ def main():
         raise ValueError("source runtime output reserve differs from the frozen cohort")
     application = build_application(surface="cli")
     runtime = application.runtime
+    if args.direct_only:
+        orchestration = {"spawn_agents", "send_subagent", "list_subagents", "wait_subagents", "cancel_subagent"}
+        permitted = runtime._permitted_tool_names
+        runtime._permitted_tool_names = lambda *args, **kwargs: permitted(*args, **kwargs) - orchestration
+
     routing = None
     try:
         if os.environ.get('KYROZEN_BENCHMARK_ROUTING_SUPPLEMENT') is not None:

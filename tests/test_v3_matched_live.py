@@ -13,6 +13,46 @@ from benchmarks.v3_matched_live import (BASELINE, MODEL, _fixture_prompt, _load_
                                          verify_fixture)
 from benchmarks.v3_matched import BudgetLedger, USD_CNY, _cost
 
+class DelegationComparisonTests(unittest.TestCase):
+    def test_same_candidate_pairs_exclude_incomplete_and_unexercised_controls(self):
+        from benchmarks.v3_matched_live import compare_delegation
+
+        treatment, control = [], []
+        for fixture in FIXTURES:
+            if fixture["category"] != "subagents":
+                continue
+            for repeat in range(3):
+                base = dict(fixture_id=fixture["fixture_id"], repeat=repeat, safety_passed=True,
+                            usage_complete=True, worker_evidence_verified=True, verified_success=True,
+                            requests=5, input_tokens=100, output_tokens=10, cost_cny="0.002")
+                treatment.append(dict(base, arm="v3", delegation_exercised=True, plan_scenario_passed=True))
+                control.append(dict(base, arm="delegation-control", delegation_exercised=False, requests=6))
+        result = compare_delegation(treatment, control)
+        self.assertTrue(result["complete"])
+        self.assertEqual(len(result["pairs"]), 9)
+        self.assertEqual(result["totals"]["direct"]["requests"], 54)
+        self.assertEqual(result["totals"]["delegation"]["cost_cny"], "0.018")
+        self.assertFalse(compare_delegation(treatment, control[:-1])["complete"])
+        control[0]["delegation_exercised"] = True
+        self.assertFalse(compare_delegation(treatment, control)["complete"])
+
+    def test_preflight_and_controls_require_exact_settled_usage_and_price(self):
+        from benchmarks.v3_matched_live import _verify_settled_cell
+
+        usage = dict(input_tokens=100, output_tokens=12, cache_read_tokens=20, cache_write_tokens=0)
+        calls = [dict(status="settled", usage=usage, actual_rmb="0.004")]
+        row = dict(usage, attempts=1, requests=1, cost_cny="0.004")
+        self.assertTrue(_verify_settled_cell(row, calls))
+        self.assertFalse(_verify_settled_cell(dict(row, cost_cny="0.001"), calls))
+        direct = dict(row, cost_cny="0.0040", delegation_exercised=False)
+        self.assertFalse(_verify_settled_cell(direct, calls))
+        calls[0].update(actor_id="root", root_actor_id="root", actor_role="root")
+        self.assertTrue(_verify_settled_cell(direct, calls))
+        self.assertFalse(_verify_settled_cell(dict(row, delegation_exercised=True), calls))
+        self.assertFalse(_verify_settled_cell(dict(row, output_tokens=11), calls))
+        self.assertFalse(_verify_settled_cell(row, [dict(calls[0], status="unknown")]))
+
+
 def prepare_candidate_apparatus(source):
     from benchmarks import v3_matched_live as live
     target = source / "benchmarks"

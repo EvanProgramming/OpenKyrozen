@@ -73,6 +73,15 @@ def _strict_choice(response, *, stream):
     return choice
 
 
+def _strict_wire_evidence(response_id, finish, arguments):
+    from openkyrozen.providers.openai import argument_wire_evidence
+
+    return {"response_id": response_id if isinstance(response_id, str) and re.fullmatch(
+                r"[A-Za-z0-9_-]{1,128}", response_id) else None,
+            "finish_reason": finish,
+            "calls": [argument_wire_evidence(index, value) for index, value in sorted(arguments.items())]}
+
+
 class ResponsesRelay:
     def __init__(self, *, endpoint: str, api_key: str, budget: BudgetLedger,
                  config: RelayConfig = DEFAULT_RELAY_CONFIG, responses_policy=None):
@@ -105,10 +114,12 @@ class ResponsesRelay:
         self.budget = budget
         self.label = ("", "", -1)
         self.rows: list[dict] = []
+        self.root_actor_id_by_label = {}
         self.budget_blocked = False
         self.provider_error: str | None = None
         self.planning_preflight_label: tuple[str, str, int] | None = None
         self.planning_preflight_closed = False
+        self.bug_fix_preflight_closed = False
         self._request_lock = threading.Lock()
         self._lock = threading.Lock()
         self._actor_credentials = {}
@@ -193,7 +204,8 @@ class ResponsesRelay:
                          else self.budget.pricing)
                 amount = str(price.cost(*(usage[key] for key in
                     ('input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens'))))
-            self.budget.settle(row['attempt_id'], usage)
+            wire = row.get("upstream_wire")
+            self.budget.settle(row["attempt_id"], usage, **({"wire_evidence": wire} if wire is not None else {}))
         except (ValueError, TypeError, KeyError):
             if policy is None:
                 raise
@@ -342,9 +354,9 @@ class ResponsesRelay:
                     row['actor_id'] = actor_id
                 if policy is not None:
                     row.update(protocol='openai-responses', admission_sequence=len(relay.rows))
-                    root = relay.root_actor_id_by_label.get(label)
-                    if actor_id is not None and root is not None:
-                        row.update(root_actor_id=root, actor_role='root' if actor_id == root else 'descendant')
+                root = relay.root_actor_id_by_label.get(label)
+                if actor_id is not None and root is not None:
+                    row.update(root_actor_id=root, actor_role='root' if actor_id == root else 'descendant')
                 started = time.monotonic()
                 stream_started = False
                 reserved = False
@@ -367,6 +379,12 @@ class ResponsesRelay:
                                     (item.get('arm'), item.get('fixture_id'), item.get('repeat'))
                                     == relay.planning_preflight_label for item in relay.rows) >= 6:
                             relay.provider_error = 'planning_preflight_request_limit'
+                            self._json(429, {"error": {"message": relay.provider_error}})
+                            return
+                        if arm == "bug_fix_preflight" and (
+                                relay.bug_fix_preflight_closed or fixture_id != "bug_fix-1" or repeat != -1
+                                or sum(item["arm"] == arm for item in relay.rows) >= 16):
+                            relay.provider_error = "bug_fix_preflight_admission_closed"
                             self._json(429, {"error": {"message": relay.provider_error}})
                             return
                         if not relay.budget.reserve(attempt_id, input_token_bound=input_bound,
@@ -430,8 +448,20 @@ class ResponsesRelay:
                                 self._json(502, {"error": {"message": "benchmark upstream returned invalid JSON"}})
                                 return
                     if not wants_stream:
+                        if relay.config.strict_chat:
+                            choice = _strict_choice(response_body, stream=False)
+                            if choice is not None:
+                                tool_calls = choice["message"].get("tool_calls") or ()
+                                arguments = {i: (call.get("function") or {}).get("arguments")
+                                             for i, call in enumerate(tool_calls) if isinstance(call, dict)
+                                             and isinstance(call.get("function"), dict)}
+                                row["upstream_wire"] = _strict_wire_evidence(
+                                    response_body["id"], choice["finish_reason"], arguments)
                         relay._settle_response(row, response_body)
-                        self._json(200, response_body)
+                        if relay.config.strict_chat and (row["status"] != "settled" or relay.provider_error):
+                            self._json(502, {"error": {"message": "strict Chat result could not be verified"}})
+                        else:
+                            self._json(200, response_body)
                         return
                     stream_started = True
                     drain_until = None
@@ -449,6 +479,8 @@ class ResponsesRelay:
                     chat_usage = None
                     chat_identity = None
                     chat_invalid = False
+                    chat_arguments = {}
+                    chat_terminal_frame = None
                     for chunk in upstream.iter_content(chunk_size=4096):
                         now = time.monotonic()
                         if not chunk:
@@ -463,6 +495,7 @@ class ResponsesRelay:
                                 row["transport_error"] = "downstream_disconnect_drain_limit"
                                 break
                         frame.extend(chunk)
+                        outgoing = bytearray() if relay.config.strict_chat else chunk
                         while True:
                             normalized = bytes(frame).replace(b"\r\n", b"\n")
                             if b"\n\n" not in normalized:
@@ -472,7 +505,13 @@ class ResponsesRelay:
                             data = b"\n".join(line[5:].lstrip() for line in event.splitlines()
                                               if line.startswith(b"data:"))
                             if relay.config.strict_chat and data == b"[DONE]":
+                                if chat_usage is not None:
+                                    row["upstream_wire"] = _strict_wire_evidence(
+                                        chat_usage["id"], chat_usage["choices"][0]["finish_reason"],
+                                        {index: "".join(parts) for index, parts in chat_arguments.items()})
                                 relay._settle_response(row, chat_usage if not chat_invalid else None, stream=True)
+                                if row["status"] == "settled" and not relay.provider_error and chat_terminal_frame:
+                                    outgoing.extend(chat_terminal_frame + b"\n\n" + event + b"\n\n")
                                 terminal = True
                                 break
                             if data and data != b"[DONE]":
@@ -494,8 +533,18 @@ class ResponsesRelay:
                                         chat_invalid = True
                                     else:
                                         chat_identity = identity
+                                        for call in choice["delta"].get("tool_calls") or ():
+                                            if isinstance(call, dict) and type(call.get("index")) is int:
+                                                function = call.get("function")
+                                                fragment = function.get("arguments") if isinstance(function, dict) else None
+                                                parts = chat_arguments.setdefault(call["index"], [])
+                                                if isinstance(fragment, str):
+                                                    parts.append(fragment)
                                         if final_usage is not None:
                                             chat_usage = message
+                                            chat_terminal_frame = event
+                                        else:
+                                            outgoing.extend(event + b"\n\n")
                                     continue
                                 if message.get("type") in {
                                         "response.completed", "response.incomplete", "response.failed"}:
@@ -515,9 +564,9 @@ class ResponsesRelay:
                         if not terminal and now - started >= UPSTREAM_STREAM_SECONDS:
                             row["transport_error"] = "upstream_stream_elapsed_limit"
                             break
-                        if drain_until is None:
+                        if drain_until is None and outgoing:
                             try:
-                                self.wfile.write(chunk)
+                                self.wfile.write(outgoing)
                                 self.wfile.flush()
                             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                                 # The admitted upstream request may still end with billable usage.
@@ -526,6 +575,10 @@ class ResponsesRelay:
                             break
                     if not terminal:
                         row["usage_failure"] = "missing_terminal_event"
+                        if relay.config.strict_chat and chat_identity is not None:
+                            row["upstream_wire"] = _strict_wire_evidence(
+                                chat_identity[0], chat_usage["choices"][0]["finish_reason"] if chat_usage else None,
+                                {index: "".join(parts) for index, parts in chat_arguments.items()})
                 except (requests.RequestException, OSError) as exc:
                     if isinstance(exc, requests.RequestException):
                         with relay._upstream_lock:
@@ -540,7 +593,8 @@ class ResponsesRelay:
                             pass
                 finally:
                     if reserved and row["status"] == "unknown":
-                        relay.budget.settle(attempt_id, None)
+                        wire = row.get("upstream_wire")
+                        relay.budget.settle(attempt_id, None, **({"wire_evidence": wire} if wire else {}))
                         if (relay.responses_policy or relay.config.strict_chat) and relay.provider_error is None:
                             relay.provider_error = 'unknown_native_usage_or_price'
                     if "upstream" in locals():

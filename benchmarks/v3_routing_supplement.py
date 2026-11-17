@@ -586,6 +586,26 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
                 or ancestor.get('smoke_passed') is not True
                 or ancestor.get('relay_config')!=asdict(fixed_relay_config if deepseek_model_stage else relay_config)):
             raise ValueError('a complete same-candidate secure core campaign is required first')
+        if fixed_relay_config.strict_chat and origin_policy is None:
+            if (ancestor.get('matched_status') != 'complete' or not summary['comparison_thresholds_met']
+                    or not live._validate_rows_evidence(
+                        ancestor_output, ancestor.get('delegation_controls', []), candidate, base_identity)
+                    or not live.compare_delegation(
+                        ancestor['rows'], ancestor['delegation_controls'])['complete']):
+                raise ValueError('complete R216 accounting is required before binding the downstream ledger')
+            original_calls = _attempt_calls(ancestor_attempts)
+            ancillary = ancestor.get('bug_fix_preflight')
+            if (not ancillary or not live._row_can_resume_as_complete(ancillary, ancestor_output, candidate, base_identity)
+                    or ancillary.get('verified_success') is not True or ancillary.get('plan_scenario_passed') is not True
+                    or ancillary.get('protocol_recovery') != 0):
+                raise ValueError('the original bug_fix-1 preflight is missing or invalid')
+            treatment = [row for row in ancestor['rows']
+                         if row['arm'] == 'v3' and row.get('cost_cny') is not None]
+            for row in [ancillary, *ancestor['delegation_controls'], *treatment]:
+                journal = [call for call in original_calls if (call['arm'], call['fixture_id'], call['repeat'])
+                           == (row['arm'], row['fixture_id'], row['repeat'])]
+                if not live._verify_settled_cell(row, journal):
+                    raise ValueError('ancillary evidence differs from its original physical calls')
         preflight_calls=[]
         for identifier,reserved,actual,status,usage,metadata,*_rest in ancestor_attempts:
             call=json.loads(metadata or '{}')

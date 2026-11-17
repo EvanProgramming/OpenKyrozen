@@ -411,6 +411,78 @@ class StreamEventContractTests(unittest.TestCase):
         self.assertIsInstance(events[-1], ResponseError)
         self.assertEqual(events[-1].error.kind, ProviderErrorKind.RATE_LIMIT)
 
+    def test_strict_chat_rejects_changed_response_identity_and_hashes_invalid_arguments(self):
+        import hashlib
+        from openkyrozen.providers.openai import OpenAICompatProvider
+
+        malformed = '{"path":"partial'
+        chunks = [
+            SimpleNamespace(id="original", model="m", choices=[SimpleNamespace(index=0, finish_reason=None,
+                delta=SimpleNamespace(tool_calls=[SimpleNamespace(index=0, id="call-1", type="function",
+                    function=SimpleNamespace(name="read_file", arguments=malformed))]))], usage=None),
+            SimpleNamespace(id="different", model="m", choices=[SimpleNamespace(index=0,
+                finish_reason="tool_calls", delta=SimpleNamespace())],
+                usage=SimpleNamespace(prompt_tokens=4, completion_tokens=2)),
+        ]
+        provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+        provider.config = SimpleNamespace(provider="deepseek", model_simple="m")
+        provider._tool_wire_decoder = lambda raw, _schema: raw
+        send = Mock()
+        provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=send)))
+        tools = [{"name": "read_file", "description": "read", "parameters": {"type": "object"}}]
+
+        send.return_value = iter(chunks)
+        with patch("openkyrozen.providers.usage._track_cost"):
+            terminal = list(get_model_events(provider, [], "m", tools=tools))[-1]
+        self.assertIsInstance(terminal, ResponseError)
+        self.assertEqual(terminal.error.wire_evidence["issue"], "response_identity_changed")
+
+        chunks[1].id = "original"
+        send.return_value = iter(chunks)
+        with patch("openkyrozen.providers.usage._track_cost"):
+            terminal = list(get_model_events(provider, [], "m", tools=tools))[-1]
+        self.assertIsInstance(terminal, ResponseError)
+        evidence = terminal.error.wire_evidence
+        self.assertEqual(evidence["response_id"], "original")
+        self.assertEqual(evidence["finish_reason"], "tool_calls")
+        self.assertEqual(evidence["calls"][0]["arguments_bytes"], len(malformed.encode()))
+        self.assertEqual(evidence["calls"][0]["arguments_sha256"], hashlib.sha256(malformed.encode()).hexdigest())
+        self.assertNotIn("partial", repr(evidence))
+
+    def test_strict_chat_assembles_interleaved_calls_before_decoding(self):
+        from openkyrozen.providers.openai import OpenAICompatProvider
+
+        def frame(calls=(), finish=None, usage=None):
+            return SimpleNamespace(id="r", model="m", choices=[SimpleNamespace(
+                index=0, finish_reason=finish, delta=SimpleNamespace(tool_calls=calls))], usage=usage)
+
+        def part(index, arguments, call_id=None):
+            return SimpleNamespace(index=index, id=call_id, type="function" if call_id else None,
+                function=SimpleNamespace(name="read_file" if call_id else None, arguments=arguments))
+
+        usage = SimpleNamespace(prompt_tokens=4, completion_tokens=2)
+        chunks = [frame([part(0, '{"path":', "a")]), frame([part(1, '{"path":"b', "b")]),
+                  frame([part(0, '"a"}'), part(1, '"}')]), frame(finish="tool_calls", usage=usage)]
+        provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+        provider.config = SimpleNamespace(provider="deepseek", model_simple="m")
+        provider._tool_wire_decoder = Mock(side_effect=lambda raw, _schema: raw)
+        create = Mock(return_value=iter(chunks))
+        provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        tools = [{"name": "read_file", "description": "read", "parameters": {"type": "object"}}]
+        with patch("openkyrozen.providers.usage._track_cost"):
+            terminal = list(get_model_events(provider, [], "m", tools=tools))[-1]
+        self.assertIsInstance(terminal, ResponseComplete)
+        self.assertEqual([(call.id, call.arguments) for call in terminal.response.tool_calls],
+                         [("a", {"path": "a"}), ("b", {"path": "b"})])
+        self.assertEqual([args[0] for args, _ in provider._tool_wire_decoder.call_args_list],
+                         ['{"path":"a"}', '{"path":"b"}'])
+
+        create.return_value = iter([*chunks[:-1], frame(finish="length", usage=usage)])
+        provider._tool_wire_decoder.reset_mock()
+        with patch("openkyrozen.providers.usage._track_cost"):
+            self.assertIsInstance(list(get_model_events(provider, [], "m", tools=tools))[-1], ResponseError)
+        provider._tool_wire_decoder.assert_not_called()
+
     def test_openai_usage_is_charged_when_final_call_arguments_are_invalid(self):
         from openkyrozen.providers.openai import OpenAICompatProvider
 

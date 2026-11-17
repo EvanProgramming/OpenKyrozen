@@ -351,8 +351,8 @@ class _ActorBroker(ShellBroker):
                 raise PermissionError('routing policy is parent-held')
             return {'variant':self.supervisor.routing_variant}
         if operation == 'delegated_launch':
-            if not self.actor['root']:
-                raise PermissionError('only the root actor can launch delegated actors')
+            if not self.actor['root'] or not self.supervisor.allow_delegation:
+                raise PermissionError('delegated actor launch is outside the parent policy')
             return self.supervisor._launch_child(self.actor, request['payload'])
         if operation in {'delegated_poll', 'delegated_stop'}:
             if not self.actor['root']:
@@ -543,7 +543,7 @@ class _ActorBroker(ShellBroker):
 class ActorSupervisor:
     """One privileged parent and listener for a root worker and its isolated actors."""
     def __init__(self, command, *, cwd, env, protected_files, policy, source, provider_config=None,
-                 revoke_actor=None, routing_variant=None, selected_actor_model=None):
+                 revoke_actor=None, routing_variant=None, selected_actor_model=None, allow_delegation=True):
         if os.geteuid() != 0:
             raise PermissionError('actor supervisor requires a privileged parent')
         self.command, self.env = list(command), dict(env)
@@ -551,6 +551,7 @@ class ActorSupervisor:
             from benchmarks.v3_routing_supplement import VARIANTS, MODEL_VARIANTS
             if routing_variant not in VARIANTS+MODEL_VARIANTS:
                 raise ValueError('invalid parent routing supplement variant')
+        self.allow_delegation = allow_delegation
         self.routing_variant = routing_variant
         self.env.pop('KYROZEN_BENCHMARK_ROUTING_SUPPLEMENT',None)
         if routing_variant is not None:

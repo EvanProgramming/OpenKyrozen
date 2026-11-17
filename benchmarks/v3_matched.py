@@ -266,7 +266,7 @@ class BudgetLedger:
             calls.append(call)
         return calls
 
-    def settle(self, attempt_id: str, usage: dict | None) -> None:
+    def settle(self, attempt_id: str, usage: dict | None, *, wire_evidence: dict | None = None) -> None:
         with closing(sqlite3.connect(self.path, timeout=30, isolation_level=None)) as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT reserved_picormb,status,metadata_json FROM attempts WHERE id=?",
@@ -280,6 +280,11 @@ class BudgetLedger:
                     return
                 db.rollback()
                 raise ValueError("attempt is missing or already settled")
+            if wire_evidence is not None:
+                metadata = json.loads(row[2]) if row[2] else {}
+                metadata["upstream_wire"] = wire_evidence
+                db.execute("UPDATE attempts SET metadata_json=? WHERE id=?",
+                           (json.dumps(metadata, sort_keys=True), attempt_id))
             if usage is None:
                 db.execute("UPDATE attempts SET status='unknown' WHERE id=?", (attempt_id,))
             else:

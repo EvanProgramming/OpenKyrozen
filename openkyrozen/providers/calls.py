@@ -173,7 +173,9 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
     if tool_names is not None and not self._in_context_compaction.get():
         if state is not None:
             from openkyrozen.agent.compaction import _text_tokens
-            schema_json = json.dumps(tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            project = getattr(provider, "_tool_wire_projector", None)
+            wire_tools = project(tools) if project is not None else tools
+            schema_json = json.dumps(wire_tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             state.native_input_overhead_tokens = _text_tokens(schema_json) + 32 * len(tools or ()) + 64
             state.native_schema_fingerprint = hashlib.sha256(schema_json.encode("utf-8")).hexdigest()
         self._prepare_context_for_call(messages, selected_model)

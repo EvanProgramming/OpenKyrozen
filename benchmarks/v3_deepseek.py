@@ -242,6 +242,16 @@ def _projected_bytes(value, sizes):
     return sizes[identity]
 
 
+def strict_chat_tools(tools):
+    remaining = [16_000]
+    result = [{"type": "function", "function": {**tool, "strict": True,
+               "parameters": strict_chat_schema(tool["parameters"], remaining=remaining)}}
+              for tool in tools or ()]
+    if _projected_bytes(result, {}) > 999_488:
+        raise ValueError("strict Chat tool schemas exceed the request bound")
+    return result
+
+
 def strict_chat_body(body):
     if (set(body) - {"model", "messages", "tools", "tool_choice", "max_tokens", "stream", "stream_options"}
             or body.get("model") != "deepseek-flash"
@@ -255,19 +265,15 @@ def strict_chat_body(body):
         if any(not isinstance(call, dict) or call.get("type") != "function"
                for call in message.get("tool_calls", [])):
             raise ValueError("only native function calls have an admitted price")
-    tools = []
-    remaining = [16_000]
     for tool in body.get("tools", []):
-        if not isinstance(tool, dict) or tool.get("type") != "function" or not isinstance(tool.get("function"), dict):
+        if (not isinstance(tool, dict) or set(tool) != {"type", "function"}
+                or tool["type"] != "function" or not isinstance(tool["function"], dict)):
             raise ValueError("only native functions have an admitted price")
         function = tool["function"]
-        tools.append({"type": "function", "function": {**function, "strict": True,
-                      "parameters": strict_chat_schema(function["parameters"], remaining=remaining)}})
+        if (set(function) != {"name", "description", "strict", "parameters"}
+                or function["strict"] is not True or not isinstance(function["parameters"], dict)):
+            raise ValueError("native functions must declare their strict wire schema")
     result = {**body, "thinking": {"type": "enabled"}, "reasoning_effort": "high"}
-    if "tools" in body:
-        if _projected_bytes(tools, {}) > 999_488:
-            raise ValueError("strict Chat tool schemas exceed the request bound")
-        result["tools"] = tools
     if result.get("stream") is True:
         result["stream_options"] = {"include_usage": True}
     return result
@@ -904,6 +910,8 @@ def _run_strict_chat_smoke(relay, candidate):
     model = relay.config.model
     provider = OpenAICompatProvider(ProviderConfig(provider="deepseek", base_url=relay.url,
         api_key=relay.client_key, model_simple=model, model_complex=model))
+    provider._tool_wire_decoder = decode_strict_chat_arguments
+    provider._tool_wire_projector = strict_chat_tools
     messages = [{"role": "user", "content":
                  "Call echo_probe with the permitted value, then repeat the returned value exactly."}]
     relay.label = ("smoke", candidate, -1)
@@ -946,7 +954,7 @@ def main() -> None:
     parser.add_argument("--limit-cny", default="15",
                         help="Cumulative cap in CNY up to 15, or explicit 'unlimited' with the full ledger.")
     parser.add_argument("--planning-preflight-only", action="store_true",
-                        help="Run the protected planning check, retain costs, and stop before the formal cohort.")
+                        help="Run both protected preflights, including bug_fix-1 (up to 16 requests), and stop before the formal cohort.")
     args = parser.parse_args()
     from benchmarks.v3_matched_live import _source_snapshot, run
     from scripts.publish_v3_preview import _verify_candidate_signature
@@ -971,12 +979,16 @@ def main() -> None:
                  endpoint=DEEPSEEK_ENDPOINT, planning_preflight_only=args.planning_preflight_only)
     if args.planning_preflight_only:
         print(json.dumps({"status": report["status"], "planning_preflight": report.get("planning_preflight"),
+                          "bug_fix_preflight": report.get("bug_fix_preflight"),
                           "budget": report["budget"]}, indent=2, sort_keys=True))
         raise SystemExit(0 if report["status"] == "planning_preflight_passed" else 1)
-    print(json.dumps(report["summary"], indent=2, sort_keys=True))
     summary = report["summary"]
-    raise SystemExit(0 if summary["complete"] and summary["accounting_complete"]
-                     and summary["comparison_thresholds_met"] else 1)
+    delegation = report.get("delegation_comparison") or {}
+    print(json.dumps({**summary, "status": report.get("status"),
+                      "delegation_comparison": delegation}, indent=2, sort_keys=True))
+    raise SystemExit(0 if report.get("status") == "complete" and summary["complete"]
+                     and summary["accounting_complete"] and summary["comparison_thresholds_met"]
+                     and delegation.get("complete") is True else 1)
 
 
 if __name__ == "__main__":

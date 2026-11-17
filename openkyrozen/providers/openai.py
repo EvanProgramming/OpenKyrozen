@@ -1,7 +1,9 @@
 from __future__ import annotations
 import openkyrozen.providers.usage as usage_ledger
 
+import hashlib
 import json
+import re
 import sys
 import time
 from typing import Any, Iterator
@@ -14,6 +16,11 @@ from openkyrozen.providers.config import ProviderConfig, _provider_env_key
 from openkyrozen.providers.usage import _openai_usage_dict
 from openkyrozen.providers.retry import (_retry_with_backoff, provider_call, provider_stream,
     provider_event_stream, remaining_timeout, close_stream, mark_response_received)
+
+def argument_wire_evidence(index, arguments):
+    raw = arguments.encode("utf-8", errors="surrogatepass") if isinstance(arguments, str) else b""
+    return {"index": index, "arguments_bytes": len(raw), "arguments_sha256": hashlib.sha256(raw).hexdigest()}
+
 
 class OpenAICompatProvider(LLMProvider):
     """Handles any OpenAI-compatible /v1/chat/completions endpoint."""
@@ -45,15 +52,43 @@ class OpenAICompatProvider(LLMProvider):
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         return self.chat_response(messages, model).as_legacy_tuple()
 
-    def _decode_wire_arguments(self, calls, tools):
+    def _chat_tools(self, tools):
+        project = getattr(self, "_tool_wire_projector", None)
+        if project is not None:
+            return project(tools)
+        return [{"type": "function", "function": tool} for tool in tools or ()]
+
+    def _complete_chat(self, *, model, text, usage, calls, tools, response_id, finish, actual_model,
+                       blocked=False, wire_issue=None, call_indexes=None):
         decoder = getattr(self, "_tool_wire_decoder", None)
-        if decoder is None:
-            return calls
-        by_name = {tool["name"]: tool["parameters"] for tool in tools or ()}
         try:
-            return [(call_id, name, decoder(arguments, by_name[name])) for call_id, name, arguments in calls]
+            if decoder is not None:
+                if wire_issue:
+                    raise ProviderContractError("Invalid strict Chat response framing")
+                if (bool(calls) != (finish == "tool_calls")
+                        or calls and (blocked or any(not call_id for call_id, _, _ in calls))):
+                    raise ProviderContractError("Strict Chat tool calls require a complete native tool finish")
+                schemas = {tool["name"]: tool["parameters"] for tool in tools or ()}
+                canonical = [(call_id, name, decoder(arguments, schemas[name]))
+                             for call_id, name, arguments in calls]
+            else:
+                canonical = calls
+            return model_response(provider=self.name, model=model, actual_model=actual_model, text=text, usage=usage,
+                                  calls=canonical, response_id=response_id, raw_finish_reason=finish, blocked=blocked)
         except (KeyError, TypeError, ValueError, RecursionError) as exc:
-            raise ProviderContractError("Invalid native tool arguments on the configured wire protocol") from exc
+            if decoder is None:
+                raise
+            error = ProviderContractError("Invalid native tool response on the configured wire protocol")
+            error.wire_evidence = {
+                "issue": wire_issue or "invalid_terminal_tool_response",
+                "response_id": response_id if isinstance(response_id, str) and re.fullmatch(
+                    r"[A-Za-z0-9_-]{1,128}", response_id) else None,
+                "finish_reason": finish if finish in ("stop", "tool_calls", "length", "content_filter") else None,
+                "calls": [argument_wire_evidence(index, arguments)
+                          for index, (_, _, arguments) in zip(
+                              range(len(calls)) if call_indexes is None else call_indexes, calls, strict=True)],
+            }
+            raise error from exc
 
     @provider_call
     def chat_response(self, messages: list[dict[str, str]] | list, model: str | None = None, *, tools=None) -> ModelResponse:
@@ -85,11 +120,8 @@ class OpenAICompatProvider(LLMProvider):
         def _call():
             kwargs = {"model": model, "messages": request_messages, "timeout": remaining_timeout()}
             if tools:
-                kwargs["tools"] = [{"type": "function", "function": {"name": tool["name"],
-                    "description": tool["description"], "parameters": tool["parameters"]}}
-                    for tool in tools]
-                if tools:
-                    kwargs["tool_choice"] = "auto"
+                kwargs["tools"] = self._chat_tools(tools)
+                kwargs["tool_choice"] = "auto"
             response = self._client.chat.completions.create(**kwargs)
             return response
 
@@ -113,10 +145,10 @@ class OpenAICompatProvider(LLMProvider):
             legacy_call = getattr(message, "function_call", None)
             if legacy_call is not None and not calls:
                 calls.append((None, getattr(legacy_call, "name", None), getattr(legacy_call, "arguments", None)))
-            result = model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None), text=text, usage=usage_dict,
-                                  calls=self._decode_wire_arguments(calls, tools), response_id=getattr(response, "id", None),
-                                  raw_finish_reason=getattr(response.choices[0], "finish_reason", None),
-                                  blocked=bool(getattr(message, "refusal", None)))
+            result = self._complete_chat(model=model, actual_model=getattr(response, "model", None),
+                text=text, usage=usage_dict, calls=calls, tools=tools,
+                response_id=getattr(response, "id", None), finish=response.choices[0].finish_reason,
+                blocked=bool(getattr(message, "refusal", None)))
             assistant = _snapshot_from_sdk(message)
             assistant = {key: value for key, value in assistant.items()
                          if key in {"role", "content", "name", "tool_calls", "function_call"}}
@@ -152,9 +184,7 @@ class OpenAICompatProvider(LLMProvider):
         kwargs: dict[str, Any] = {"model": model, "messages": request_messages, "stream": True,
                                   "timeout": remaining_timeout()}
         if tools:
-            kwargs["tools"] = [{"type": "function", "function": {"name": tool["name"],
-                "description": tool["description"], "parameters": tool["parameters"]}} for tool in tools]
-        if tools:
+            kwargs["tools"] = self._chat_tools(tools)
             kwargs["tool_choice"] = "auto"
         if self.config.provider in {"deepseek", "openai", "ollama", "glm", "kimi"}:
             kwargs["stream_options"] = {"include_usage": True}
@@ -168,16 +198,30 @@ class OpenAICompatProvider(LLMProvider):
         response_id = None
         actual_model = model
         blocked = False
+        strict = getattr(self, "_tool_wire_decoder", None) is not None
+        wire_issue = None
+        identity = None
         try:
             for chunk in stream:
                 mark_response_received()
-                response_id = getattr(chunk, "id", None) or response_id
-                actual_model = getattr(chunk, "model", None) or actual_model
+                chunk_id, chunk_model = getattr(chunk, "id", None), getattr(chunk, "model", None)
+                if strict:
+                    if (not chunk_id or not chunk_model
+                            or (identity is not None and identity != (chunk_id, chunk_model))):
+                        wire_issue = wire_issue or "response_identity_changed"
+                    if identity is None:
+                        identity = (chunk_id, chunk_model)
+                response_id = (response_id or chunk_id) if strict else (chunk_id or response_id)
+                actual_model = chunk_model or actual_model
                 update = _openai_usage_dict(getattr(chunk, "usage", None))
                 if update is not None:
                     usage = update
                     yield UsageUpdate(usage)
-                for choice in getattr(chunk, "choices", None) or ():
+                choices = getattr(chunk, "choices", None) or ()
+                if strict and (len(choices) != 1 or finish is not None or
+                               type(getattr(choices[0], "index", None)) is not int or choices[0].index != 0):
+                    wire_issue = wire_issue or "invalid_choice_sequence"
+                for choice in choices:
                     delta = getattr(choice, "delta", None)
                     if delta is not None and getattr(delta, "content", None):
                         text = str(delta.content)
@@ -197,21 +241,34 @@ class OpenAICompatProvider(LLMProvider):
                     for call in getattr(delta, "tool_calls", None) or ():
                         index = getattr(call, "index", None)
                         if type(index) is not int or index < 0:
+                            if strict:
+                                wire_issue = wire_issue or "invalid_tool_index"
+                                continue
                             raise ProviderContractError("Streamed tool call has invalid index")
+                        first = index not in call_parts
                         part = call_parts.setdefault(index, {"id": "", "name": "", "arguments": ""})
                         call_id = str(getattr(call, "id", None) or "")
                         function = getattr(call, "function", None)
                         name = str(getattr(function, "name", None) or "")
                         arguments = str(getattr(function, "arguments", None) or "")
+                        if strict and (getattr(choice, "finish_reason", None) is not None or
+                                getattr(call, "type", None) not in (None, "function") or
+                                (first and (not call_id or not name)) or
+                                (not first and (call_id or name))):
+                            wire_issue = wire_issue or "invalid_tool_identity"
                         part["id"] += call_id
                         part["name"] += name
                         part["arguments"] += arguments
                         yield ToolCallDelta(index, call_id, name, arguments)
                     finish = getattr(choice, "finish_reason", None) or finish
             if finish is None:
-                raise ProviderContractError("OpenAI-compatible stream ended without a finish reason")
+                if not strict:
+                    raise ProviderContractError("OpenAI-compatible stream ended without a finish reason")
+                wire_issue = wire_issue or "missing_finish"
             if sorted(call_parts) != list(range(len(call_parts))):
-                raise ProviderContractError("Streamed tool call indexes are not contiguous")
+                if not strict:
+                    raise ProviderContractError("Streamed tool call indexes are not contiguous")
+                wire_issue = wire_issue or "noncontiguous_tool_indexes"
             calls = [(part["id"] or None, part["name"], part["arguments"])
                      for _, part in sorted(call_parts.items())]
             text = "".join(text_parts)
@@ -221,8 +278,9 @@ class OpenAICompatProvider(LLMProvider):
                 yield UsageUpdate(usage)
             usage_ledger._track_cost(self.config.provider, usage, model=actual_model,
                 latency_ms=round((time.monotonic() - started) * 1000))
-            response = model_response(provider=self.name, model=model, actual_model=actual_model, text=text,
-                usage=usage, calls=self._decode_wire_arguments(calls, tools), response_id=response_id, raw_finish_reason=finish, blocked=blocked)
+            response = self._complete_chat(model=model, actual_model=actual_model, text=text, usage=usage,
+                calls=calls, tools=tools, response_id=response_id, finish=finish, blocked=blocked,
+                wire_issue=wire_issue, call_indexes=sorted(call_parts))
             assistant = {"role": "assistant", "content": text or None}
             assistant.update(assistant_fields)
             if response.tool_calls:

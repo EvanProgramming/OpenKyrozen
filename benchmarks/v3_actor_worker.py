@@ -61,9 +61,10 @@ def benchmark_google_provider(config, factory):
 
 def configure_strict_chat_provider(provider):
     # V2 uses the same endpoint for text calls and has no native codec.
-    if callable(getattr(provider, "_decode_wire_arguments", None)):
-        from benchmarks.v3_deepseek import decode_strict_chat_arguments
+    if callable(getattr(provider, "_complete_chat", None)):
+        from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_tools
         provider._tool_wire_decoder = decode_strict_chat_arguments
+        provider._tool_wire_projector = strict_chat_tools
     return provider
 
 
