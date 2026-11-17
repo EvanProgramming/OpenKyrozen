@@ -52,7 +52,12 @@ def served_model_matches(model, served):
     return model in versions and served in (model, versions[model])
 
 
+_EMPTY_OBJECT = "is_empty"
+
+
 def _closed_object(properties):
+    if not properties:
+        properties = {_EMPTY_OBJECT: {"type": "boolean", "enum": [True]}}
     return {"type": "object", "properties": properties, "required": list(properties),
             "additionalProperties": False}
 
@@ -62,13 +67,14 @@ _MAP_ENTRIES = "key_value_entries"
 _NULL_VALUE = "is_null"
 _MAP_REF = {"$ref": "#/$def/map"}
 _VALUE_REF = {"$ref": "#/$def/value"}
+_STRICT_MAP = _closed_object({_MAP_ENTRIES: {"type": "array", "items": _closed_object({
+    "key": {"type": "string"}, "value": _VALUE_REF})}})
 _STRICT_MAP_DEFINITIONS = {
-    "map": _closed_object({_MAP_ENTRIES: {"type": "array", "items": _closed_object({
-        "key": {"type": "string"}, "value": _VALUE_REF})}}),
+    "map": _STRICT_MAP,
     "value": {"anyOf": [
         *({"type": kind} for kind in ("string", "number", "boolean")),
         _closed_object({_NULL_VALUE: {"type": "boolean", "enum": [True]}}),
-        {"type": "array", "items": _VALUE_REF}, _MAP_REF,
+        {"type": "array", "items": _VALUE_REF}, _STRICT_MAP,
     ]},
 }
 
@@ -81,9 +87,11 @@ def strict_chat_schema(schema, *, remaining=None):
     projected = {}
 
     def reference(item, depth):
+        if depth > 32:
+            raise ValueError("strict Chat tool schema exceeds its structural bound")
         if not isinstance(item, dict) or item.get("type") != "object" and "anyOf" not in item:
             return project(item, depth)
-        identity = id(item)
+        identity = json.dumps(item, sort_keys=True, separators=(",", ":"))
         if identity not in projected:
             name = f"schema_{len(projected)}"
             projected[identity] = name
@@ -100,10 +108,33 @@ def strict_chat_schema(schema, *, remaining=None):
         consume(1)
         if depth > 32 or not isinstance(item, dict):
             raise ValueError("strict Chat tool schema exceeds its structural bound")
+        if set(item) & {"$ref", "$def", "$defs", "allOf", "oneOf"}:
+            raise ValueError("strict Chat requires an inline canonical tool schema")
         item = {key: value for key, value in item.items() if key not in {
             "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties"}}
         if "anyOf" in item:
-            return {**item, "anyOf": [reference(branch, depth + 1) for branch in item["anyOf"]]}
+            branches = item["anyOf"]
+            # The provider requires typed alternatives and rejects intersecting object declarations.
+            if set(item) - {"anyOf", "description"}:
+                props = item.get("properties")
+                if (set(item) - {"anyOf", "description", "type", "properties", "required", "additionalProperties"}
+                        or item.get("type") != "object" or item.get("additionalProperties") is not False
+                        or not isinstance(props, dict)
+                        or any(branch.get("type") != "object" or branch.get("additionalProperties") is not False
+                               or not set(item.get("required", ())) <= set(branch.get("required", ()))
+                               or any(props.get(key) != schema for key, schema in branch.get("properties", {}).items())
+                               for branch in branches)):
+                    raise ValueError("strict Chat union has unsupported intersecting constraints")
+            alternatives = []
+            for branch in branches:
+                converted = project(branch, depth + 1)
+                if converted.get("$ref") == _MAP_REF["$ref"]:
+                    converted = _STRICT_MAP
+                candidates = converted.get("anyOf", [converted])
+                if any("type" not in candidate for candidate in candidates):
+                    raise ValueError("strict Chat union has an untyped alternative")
+                alternatives.extend(candidates)
+            return {"anyOf": alternatives}
         if item.get("type") == "array":
             return {**item, "items": reference(item["items"], depth + 1)}
         if item.get("type") != "object":
@@ -172,6 +203,9 @@ def decode_strict_chat_arguments(raw, schema):
         if isinstance(value, list) and "items" in contract:
             return [decode(item, contract["items"]) for item in value]
         if isinstance(value, dict) and "properties" in contract:
+            if (not contract.get("required") and _EMPTY_OBJECT not in contract["properties"]
+                    and set(value) == {_EMPTY_OBJECT} and value[_EMPTY_OBJECT] is True):
+                return {}
             return {name: decode(item, contract["properties"].get(name, {})) for name, item in value.items()}
         return value
 

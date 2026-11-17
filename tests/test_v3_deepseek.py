@@ -37,13 +37,35 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         self.assertIn("minLength", schema["properties"]["path"])
 
     def test_complete_catalogue_fits_wire_and_typed_plan_maps_round_trip(self):
-        from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_body
+        from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_body, strict_chat_schema
         from openkyrozen.tools.catalog import _SCHEMAS
         from openkyrozen.tools.manifest import ToolRegistry
         wire = strict_chat_body({"model": "deepseek-flash", "messages": [{"role": "user", "content": "plan"}],
             "tools": [{"type": "function", "function": {"name": name, "parameters": schema}}
-                      for name, schema in _SCHEMAS.items()]})
+                      for name, schema in json.loads(json.dumps(_SCHEMAS)).items()]})
         self.assertLess(len(json.dumps(wire).encode()), 100_000)
+
+        def assert_provider_contract(node):
+            if isinstance(node, list):
+                for value in node:
+                    assert_provider_contract(value)
+            elif isinstance(node, dict):
+                if node.get("type") == "object":
+                    self.assertTrue(node.get("properties"))
+                    self.assertIs(node.get("additionalProperties"), False)
+                    self.assertEqual(set(node["required"]), set(node["properties"]))
+                if "anyOf" in node:
+                    self.assertNotIn("properties", node)
+                    self.assertTrue(all("type" in branch for branch in node["anyOf"]))
+                for value in node.values():
+                    assert_provider_contract(value)
+
+        for tool in wire["tools"]:
+            assert_provider_contract(tool["function"]["parameters"])
+        self.assertEqual(json.loads(decode_strict_chat_arguments(
+            '{"arguments":{"is_empty":true}}', _SCHEMAS["git_diff"])), {})
+        with self.assertRaises(ValueError):
+            strict_chat_schema({"anyOf": [{"$ref": "#/$def/unknown"}]})
         result = {"complexity": "simple", "tasks": [{"description": "Read value",
             "acceptance": [{"criterion": "Check value", "verification": {"action": "read_file",
                 "arguments": {"key_value_entries": [{"key": "path", "value": "proof.txt"}]},
