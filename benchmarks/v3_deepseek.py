@@ -63,6 +63,9 @@ def _closed_object(properties):
 
 
 _WIRE_ARGUMENTS = "arguments"
+_OMIT_FIELD = {"omit": True}
+_OMIT_SCHEMA = _closed_object({"omit": {"type": "boolean", "enum": [True]}})
+_OMIT_SCHEMA["description"] = 'Use {"omit":true} when this field does not apply.'
 _MAP_ENTRIES = "key_value_entries"
 _NULL_VALUE = "is_null"
 _MAP_REF = {"$ref": "#/$def/map"}
@@ -77,6 +80,22 @@ _STRICT_MAP_DEFINITIONS = {
         {"type": "array", "items": _VALUE_REF}, _STRICT_MAP,
     ]},
 }
+
+def _flat_optional_fields(schema):
+    properties = schema.get("properties", {})
+    if schema.get("type") != "object" or schema.get("additionalProperties") is not False:
+        return ()
+    required = set(schema.get("required", ()))
+    optional = tuple(name for name in properties if name not in required)
+    if len(optional) < 3 and "anyOf" not in schema:
+        return ()
+    for name in optional:
+        field = properties[name]
+        if (field.get("type") not in {"string", "number", "integer", "boolean", "array"}
+                and not (field.get("type") == "object" and field.get("additionalProperties") is False
+                         and "omit" not in field.get("properties", {}))):
+            return ()
+    return optional
 
 
 def strict_chat_schema(schema, *, remaining=None):
@@ -127,6 +146,9 @@ def strict_chat_schema(schema, *, remaining=None):
                                or any(props.get(key) != schema for key, schema in branch.get("properties", {}).items())
                                for branch in branches)):
                     raise ValueError("strict Chat union has unsupported intersecting constraints")
+                optional = _flat_optional_fields(item)
+                if optional:
+                    return flat_object(item, optional, depth)
             alternatives = []
             for branch in branches:
                 converted = project(branch, depth + 1)
@@ -146,6 +168,9 @@ def strict_chat_schema(schema, *, remaining=None):
             return {**_MAP_REF, "description": "Represent object fields as named key/value entries."}
         if item.get("additionalProperties") is not False:
             raise ValueError("strict Chat Completions requires a declared object schema")
+        optional = _flat_optional_fields(item)
+        if optional:
+            return flat_object(item, optional, depth)
         properties = {key: reference(value, depth + 1) for key, value in item.get("properties", {}).items()}
         required = item.get("required", [])
         optional = [name for name in properties if name not in required]
@@ -159,6 +184,23 @@ def strict_chat_schema(schema, *, remaining=None):
         if not variants:
             raise ValueError("strict Chat object has no admissible field set")
         return variants[0] if len(variants) == 1 else {"anyOf": variants}
+
+    def flat_object(item, optional, depth):
+        properties = {}
+        for name, value in item["properties"].items():
+            field = reference(value, depth + 1)
+            if name in optional:
+                # A typed omission value cannot collide with the original field.
+                if "$ref" in field:
+                    field = definitions[field["$ref"].rsplit("/", 1)[-1]]
+                field = {"anyOf": [*field.get("anyOf", [field]), _OMIT_SCHEMA]}
+            properties[name] = field
+        description = ("Supply the tool fields at the top level. Use the omission object for inapplicable fields."
+                       if depth == 0 else item.get("description"))
+        result = _closed_object(properties)
+        if description:
+            result["description"] = description
+        return result
 
     result = project(schema, 0)
     if "anyOf" in result:
@@ -200,6 +242,11 @@ def decode_strict_chat_arguments(raw, schema):
             if set(value) == {_MAP_ENTRIES} and isinstance(value[_MAP_ENTRIES], list):
                 return decode_map(value)
             return value
+        if isinstance(value, dict):
+            optional = _flat_optional_fields(contract)
+            if optional:
+                value = {name: field for name, field in value.items()
+                         if name not in optional or field != _OMIT_FIELD or field.get("omit") is not True}
         for branch in contract.get("anyOf", ()):
             try:
                 result = decode(value, branch)

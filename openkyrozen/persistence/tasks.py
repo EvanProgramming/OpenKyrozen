@@ -142,17 +142,27 @@ class TasksRepository:
 
     def list_working_plan_tasks(self, plan_id: str, *, user_id: str, workspace_id: str,
                                 session_id: str,
-                                current_completed_revision: int | None = None) -> list[dict[str, Any]]:
+                                current_completed_revision: int | None = None,
+                                current_active_revision: int | None = None) -> list[dict[str, Any]]:
         current_check = ""
         parameters = (plan_id, user_id, workspace_id, session_id or None)
-        if current_completed_revision is not None:
-            # One read snapshot must include currentness, terminal revision and task evidence.
+        if current_completed_revision is not None or current_active_revision is not None:
+            if current_active_revision is not None and current_completed_revision is not None:
+                raise ValueError("select only one current Working Plan phase")
+            status, revision = ("active", current_active_revision) if current_active_revision is not None else (
+                "completed", current_completed_revision)
+            # Read the current revision and its task evidence in one snapshot.
             current_check = (
                 "AND EXISTS (SELECT 1 FROM working_plans p WHERE p.id=working_plan_tasks.plan_id "
-                "AND p.status='completed' AND p.revision=? AND p.rowid=(SELECT MAX(rowid) "
-                "FROM working_plans WHERE user_id=? AND workspace_id=? AND session_id=?)) "
+                "AND p.status=? AND p.revision=? AND p.user_id=? AND p.workspace_id=? AND p.session_id=? "
             )
-            parameters += (current_completed_revision, user_id, workspace_id, session_id or "")
+            parameters += (status, revision, user_id, workspace_id, session_id or "")
+            if status == "completed":
+                current_check += (
+                    "AND p.rowid=(SELECT MAX(rowid) FROM working_plans WHERE user_id=p.user_id "
+                    "AND workspace_id=p.workspace_id AND session_id=p.session_id) "
+                )
+            current_check += ") "
         with self.database.connection() as db:
             rows = db.execute(
                 "SELECT tasks.*, working_plan_tasks.plan_id AS plan_id, working_plan_tasks.position AS plan_position "

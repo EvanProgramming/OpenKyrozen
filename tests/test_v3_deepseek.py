@@ -15,6 +15,26 @@ from benchmarks import v3_matched
 
 
 class DeepSeekStrictChatTests(unittest.TestCase):
+    def test_closed_plan_union_uses_flat_fields_and_explicit_omission(self):
+        from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_schema
+        from openkyrozen.tools.catalog import _SCHEMAS
+        from openkyrozen.tools.manifest import ToolRegistry
+
+        schema = _SCHEMAS["update_plan"]
+        wire = strict_chat_schema(schema)
+        self.assertEqual(set(wire["properties"]), set(schema["properties"]))
+        self.assertEqual(set(wire["required"]), set(schema["properties"]))
+        self.assertLess(len(json.dumps(wire, separators=(",", ":"))), 16_000)
+        original = {"expected_revision": 3, "plan_id": "plan-3",
+                    "operations": [{"op": "start", "task": "task-1"}]}
+        value = {name: original.get(name, {"omit": True}) for name in wire["properties"]}
+        decoded = json.loads(decode_strict_chat_arguments(json.dumps(value), schema))
+        self.assertEqual(decoded, original)
+        self.assertIsNone(ToolRegistry._argument_error(schema, decoded))
+        mixed = {**value, "tasks": [{"description": "Unexpected", "acceptance": []}]}
+        decoded = json.loads(decode_strict_chat_arguments(json.dumps(mixed), schema))
+        self.assertIsNotNone(ToolRegistry._argument_error(schema, decoded))
+
     def test_strict_schema_preserves_optional_native_values(self):
         from benchmarks.v3_deepseek import strict_chat_body, strict_chat_tools
         schema = {"type": "object", "properties": {

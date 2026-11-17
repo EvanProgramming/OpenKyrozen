@@ -121,8 +121,11 @@ def _update_plan(self, arguments: dict):
                        and any(task["id"] == operation["task"] and task["status"] not in {"succeeded", "cancelled"}
                                for task in result["tasks"])]
             confirmation = result.get("confirmation") is True
-            text = ("Working Plan already completed; verified tasks confirmed without changes."
-                    if confirmation else "Working Plan updated.")
+            text = "Working Plan updated."
+            if confirmation:
+                text = ("Working Plan already completed; verified tasks confirmed without changes."
+                        if result["status"] == "completed"
+                        else "Task already verified. Select the next eligible task from the current Working Plan.")
             if pending:
                 text += (" Completion remains unverified; inspect the returned task acceptance and execution contract. "
                          "Set the execution contract to name the exact verification tool and arguments before starting work. "

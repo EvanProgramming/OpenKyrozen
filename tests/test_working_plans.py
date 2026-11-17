@@ -896,9 +896,31 @@ class WorkingPlanModelTests(unittest.TestCase):
                                     success=True, acceptance="Inspected", verification_status="verified")
             self.assertEqual(manager.tasks[0]["status"], "succeeded")
             self.assertIsNone(manager.execution_task_id)
-            manager.edit_plan(plan_id=created["plan_id"], expected_revision=3,
-                              operations=[{"op": "start", "task": second}])
-            self.assertEqual(manager.execution_task_id, second)
+            confirmed = manager.edit_plan(plan_id=created["plan_id"], expected_revision=3,
+                                         operations=[{"op": "suggest_complete", "task": first}])
+            self.assertTrue(confirmed["confirmation"])
+            self.assertEqual(confirmed["revision"], 3)
+            self.assertEqual(confirmed["status"], "active")
+            self.assertEqual(confirmed["tasks"][1]["status"], "pending")
+
+            from unittest.mock import patch
+            concurrent = TaskManager(manager.store, session_id="native-selection")
+            list_tasks = manager.store.list_working_plan_tasks
+            first_read = True
+
+            def edit_before_task_read(*args, **kwargs):
+                nonlocal first_read
+                if first_read:
+                    first_read = False
+                    concurrent.edit_plan(plan_id=created["plan_id"], expected_revision=3,
+                                         operations=[{"op": "start", "task": second}])
+                return list_tasks(*args, **kwargs)
+
+            with patch.object(manager.store, "list_working_plan_tasks", side_effect=edit_before_task_read):
+                with self.assertRaises(ValueError):
+                    manager.edit_plan(plan_id=created["plan_id"], expected_revision=3,
+                                      operations=[{"op": "suggest_complete", "task": first}])
+            self.assertEqual(concurrent.execution_task_id, second)
 
     def test_completion_suggestion_storage_failure_rolls_back_plan_revision(self):
         import sqlite3

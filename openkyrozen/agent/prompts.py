@@ -365,7 +365,10 @@ def _refresh_working_plan_context(self, messages: list) -> None:
     ) + (
         "If completed-plan confirmation is requested, use ONLY plan_id, expected_revision, operations (suggest_complete). "
         "Omit reason, complexity, tasks and other metadata. Snapshot reason is saved state, not a confirmation argument. "
-        if completed_tasks is not None else ""
+        if completed_tasks is not None else
+        "Only one task can run at a time. Successful matching verification can complete it automatically. "
+        "Check the current status before editing. Start the next eligible task after the running task "
+        "succeeds or is cancelled. Define its verification before starting it. "
     ) + "\n" + full})
     update_projection = getattr(self, "_update_context_history_projection", None)
     if callable(update_projection):

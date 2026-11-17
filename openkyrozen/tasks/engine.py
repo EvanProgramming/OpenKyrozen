@@ -371,6 +371,22 @@ class TaskManager:
                 plan_id, user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id or "",
             )
             created_at = saved["created_at"]
+            if (complexity == saved["complexity"] and reason is None and strategic_bindings is None
+                    and transaction_event is None
+                    and all(isinstance(op, dict) and set(op) == {"op", "task"}
+                            and op["op"] == "suggest_complete" and isinstance(op["task"], str)
+                            for op in operations)):
+                confirmed_tasks = self.store.list_working_plan_tasks(
+                    plan_id, user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id or "",
+                    current_active_revision=expected_revision,
+                )
+                confirmed_ids = {task["id"] for task in confirmed_tasks
+                                 if task["status"] == "succeeded" and not _unknown_recovery_effect(task)
+                                 and self._task_has_evidence(task)}
+                if all(op["task"] in confirmed_ids for op in operations):
+                    return {"plan_id": plan_id, "revision": expected_revision, "status": saved["status"],
+                            "complexity": complexity, "task_ids": [task["id"] for task in confirmed_tasks],
+                            "tasks": confirmed_tasks, "references": {}, "confirmation": True}
 
         original_ids = {task["id"] for task in previous_tasks}
         tasks = deepcopy(previous_tasks)
