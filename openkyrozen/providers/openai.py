@@ -65,9 +65,10 @@ class OpenAICompatProvider(LLMProvider):
             if decoder is not None:
                 if wire_issue:
                     raise ProviderContractError("Invalid strict Chat response framing")
-                if (bool(calls) != (finish == "tool_calls")
+                if (finish not in ("stop", "tool_calls", "length", "content_filter")
+                        or bool(calls) != (finish == "tool_calls")
                         or calls and (blocked or any(not call_id for call_id, _, _ in calls))):
-                    raise ProviderContractError("Strict Chat tool calls require a complete native tool finish")
+                    raise ProviderContractError("Strict Chat requires a finish reason consistent with its tool calls")
                 schemas = {tool["name"]: tool["parameters"] for tool in tools or ()}
                 canonical = [(call_id, name, decoder(arguments, schemas[name]))
                              for call_id, name, arguments in calls]
@@ -147,7 +148,7 @@ class OpenAICompatProvider(LLMProvider):
                 calls.append((None, getattr(legacy_call, "name", None), getattr(legacy_call, "arguments", None)))
             result = self._complete_chat(model=model, actual_model=getattr(response, "model", None),
                 text=text, usage=usage_dict, calls=calls, tools=tools,
-                response_id=getattr(response, "id", None), finish=response.choices[0].finish_reason,
+                response_id=getattr(response, "id", None), finish=getattr(response.choices[0], "finish_reason", None),
                 blocked=bool(getattr(message, "refusal", None)))
             assistant = _snapshot_from_sdk(message)
             assistant = {key: value for key, value in assistant.items()
