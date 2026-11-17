@@ -321,7 +321,7 @@ def main():
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--url", required=True)
     parser.add_argument("--model", default="deepseek-v4-flash")
-    parser.add_argument("--protocol", choices=("chat", "responses", "google"), default="chat")
+    parser.add_argument("--protocol", choices=("chat", "strict-chat", "responses", "google"), default="chat")
     parser.add_argument("--scenario", default="")
     parser.add_argument("--process-marker", default="")
     parser.add_argument("--prompt-file", required=True)
@@ -392,6 +392,9 @@ def main():
             runtime.llm_provider = benchmark_google_provider(config, get_provider)
         else:
             runtime.llm_provider = provider_type(config)
+            if args.protocol == "strict-chat":
+                from v3_actor_worker import configure_strict_chat_provider
+                configure_strict_chat_provider(runtime.llm_provider)
         observations = _ProviderObservations(runtime, runtime.llm_provider)
         runtime._default_turn.provider = runtime.llm_provider
         runtime.DEEPSEEK_MODEL_SIMPLE, runtime.DEEPSEEK_MODEL_COMPLEX = config.model_simple, config.model_complex

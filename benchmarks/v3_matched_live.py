@@ -1566,9 +1566,9 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             prior_hold = Decimal(prior_hold_cny)
             if limit is None and provider_policy is None:
                 from benchmarks.v3_deepseek import (DEEPSEEK_ENDPOINT, DEEPSEEK_RELAY_CONFIG,
-                                                     DEEPSEEK_UNLIMITED_PRICING)
-                if ((endpoint, relay_config, pricing) !=
-                        (DEEPSEEK_ENDPOINT, DEEPSEEK_RELAY_CONFIG, DEEPSEEK_UNLIMITED_PRICING)
+                                                     DEEPSEEK_STRICT_RELAY_CONFIG, DEEPSEEK_UNLIMITED_PRICING)
+                if (endpoint != DEEPSEEK_ENDPOINT or pricing != DEEPSEEK_UNLIMITED_PRICING
+                        or relay_config not in (DEEPSEEK_RELAY_CONFIG, DEEPSEEK_STRICT_RELAY_CONFIG)
                         or not prior_hold_records):
                     raise ValueError("unlimited fixed-model execution requires official DeepSeek and original accounting")
             if (not prior_hold.is_finite() or prior_hold < 0
@@ -1661,6 +1661,10 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
     rows: list[dict] = []
     safety_stop = None
     journal_calls = budget.campaign_calls()
+    if cny_accounting and provider_policy is None:
+        expected_protocol = "deepseek-chat-strict" if relay_config.strict_chat else None
+        if any(call.get("protocol") != expected_protocol for call in journal_calls):
+            raise ValueError("budget-ledger call was made through a different fixed-model protocol")
     if checkpoint is not None:
         if not ledger_existed:
             raise ValueError("cannot resume without the original budget-ledger checkpoint")

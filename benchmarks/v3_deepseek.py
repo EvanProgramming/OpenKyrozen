@@ -11,12 +11,13 @@ from dataclasses import asdict, dataclass
 from decimal import Decimal, InvalidOperation
 import json
 import hashlib
+from itertools import combinations
 from pathlib import Path
 import sqlite3
 import secrets
 
 from benchmarks.v3_matched import BudgetLedger, Pricing, _picormb
-from benchmarks.v3_responses_relay import RelayConfig
+from benchmarks.v3_responses_relay import RelayConfig, StrictChatRelayConfig
 from benchmarks.v3_panstar import PanstarPolicy, native_usage
 
 DEEPSEEK_ENDPOINT = "https://api.deepseek.com"
@@ -37,6 +38,7 @@ DEEPSEEK_RELAY_CONFIG = RelayConfig(
     model="deepseek-flash", max_output_tokens=4096,
     fixed_input_token_bound=1_000_000, serial_requests=True,
 )
+DEEPSEEK_STRICT_RELAY_CONFIG = StrictChatRelayConfig(**asdict(DEEPSEEK_RELAY_CONFIG))
 PRO_MODEL = "deepseek-v4-pro"
 MODEL_ROUTING_ARMS = frozenset({"routing-model-auto", "routing-model-simple"})
 _PRO_RATES = {"input_per_million": "9", "output_per_million": "27",
@@ -50,10 +52,201 @@ def served_model_matches(model, served):
     return model in versions and served in (model, versions[model])
 
 
-def deepseek_usage(response):
+def _closed_object(properties):
+    return {"type": "object", "properties": properties, "required": list(properties),
+            "additionalProperties": False}
+
+
+_WIRE_ARGUMENTS = "arguments"
+_MAP_ENTRIES = "key_value_entries"
+_NULL_VALUE = "is_null"
+_MAP_REF = {"$ref": "#/$def/map"}
+_VALUE_REF = {"$ref": "#/$def/value"}
+_STRICT_MAP_DEFINITIONS = {
+    "map": _closed_object({_MAP_ENTRIES: {"type": "array", "items": _closed_object({
+        "key": {"type": "string"}, "value": _VALUE_REF})}}),
+    "value": {"anyOf": [
+        *({"type": kind} for kind in ("string", "number", "boolean")),
+        _closed_object({_NULL_VALUE: {"type": "boolean", "enum": [True]}}),
+        {"type": "array", "items": _VALUE_REF}, _MAP_REF,
+    ]},
+}
+
+
+def strict_chat_schema(schema, *, remaining=None):
+    """Project schemas to Strict Beta while leaving validation with the registry."""
+    uses_maps = False
+    remaining = [16_000] if remaining is None else remaining
+    definitions = {}
+    projected = {}
+
+    def reference(item, depth):
+        if not isinstance(item, dict) or item.get("type") != "object" and "anyOf" not in item:
+            return project(item, depth)
+        identity = id(item)
+        if identity not in projected:
+            name = f"schema_{len(projected)}"
+            projected[identity] = name
+            definitions[name] = project(item, depth)
+        return {"$ref": f"#/$def/{projected[identity]}"}
+
+    def consume(nodes):
+        remaining[0] -= nodes
+        if remaining[0] < 0:
+            raise ValueError("strict Chat tool schemas exceed the projection bound")
+
+    def project(item, depth):
+        nonlocal uses_maps
+        consume(1)
+        if depth > 32 or not isinstance(item, dict):
+            raise ValueError("strict Chat tool schema exceeds its structural bound")
+        item = {key: value for key, value in item.items() if key not in {
+            "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties"}}
+        if "anyOf" in item:
+            return {**item, "anyOf": [reference(branch, depth + 1) for branch in item["anyOf"]]}
+        if item.get("type") == "array":
+            return {**item, "items": reference(item["items"], depth + 1)}
+        if item.get("type") != "object":
+            return item
+        if item.get("additionalProperties") is True and not item.get("properties"):
+            uses_maps = True
+            return {**_MAP_REF, "description": "Represent object fields as named key/value entries."}
+        if item.get("additionalProperties") is not False:
+            raise ValueError("strict Chat Completions requires a declared object schema")
+        properties = {key: reference(value, depth + 1) for key, value in item.get("properties", {}).items()}
+        required = item.get("required", [])
+        optional = [name for name in properties if name not in required]
+        if len(optional) > 8:
+            raise ValueError("strict Chat object has too many optional fields")
+        consume((1 + len(properties)) * (1 << len(optional)))
+        variants = [_closed_object({name: properties[name] for name in (*required, *extra)})
+                    for count in range(len(optional) + 1) for extra in combinations(optional, count)]
+        return variants[0] if len(variants) == 1 else {"anyOf": variants}
+
+    result = project(schema, 0)
+    if "anyOf" in result:
+        result = _closed_object({_WIRE_ARGUMENTS: result})
+    if uses_maps:
+        definitions.update(_STRICT_MAP_DEFINITIONS)
+    if definitions:
+        result["$def"] = definitions
+    return result
+
+
+def decode_strict_chat_arguments(raw, schema):
+    """Decode only declared map positions and carry the unmodified wire reply on replay."""
+    from openkyrozen.providers.models import _unique_object
+    from openkyrozen.tools.manifest import ToolRegistry
+
+    def decode_map(value):
+        if isinstance(value, list):
+            return [decode_map(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        if set(value) == {_NULL_VALUE} and value[_NULL_VALUE] is True:
+            return None
+        if set(value) != {_MAP_ENTRIES} or not isinstance(value[_MAP_ENTRIES], list):
+            raise ValueError("invalid strict Chat map")
+        result = {}
+        for entry in value[_MAP_ENTRIES]:
+            if (not isinstance(entry, dict) or set(entry) != {"key", "value"}
+                    or not isinstance(entry["key"], str) or entry["key"] in result):
+                raise ValueError("invalid or duplicate strict Chat map key")
+            result[entry["key"]] = decode_map(entry["value"])
+        return result
+
+    def decode(value, contract):
+        if contract.get("additionalProperties") is True and not contract.get("properties"):
+            if not isinstance(value, dict) or set(value) != {_MAP_ENTRIES}:
+                raise ValueError("invalid strict Chat map object")
+            return decode_map(value)
+        for branch in contract.get("anyOf", ()):
+            try:
+                result = decode(value, branch)
+            except ValueError:
+                continue
+            if ToolRegistry._schema_error(branch, result, "$") is None:
+                return result
+        if contract.get("anyOf"):
+            raise ValueError("strict Chat value does not match any canonical argument type")
+        if isinstance(value, list) and "items" in contract:
+            return [decode(item, contract["items"]) for item in value]
+        if isinstance(value, dict) and "properties" in contract:
+            return {name: decode(item, contract["properties"].get(name, {})) for name, item in value.items()}
+        return value
+
+    value = json.loads(raw, object_pairs_hook=_unique_object)
+    if "anyOf" in schema or set(schema.get("properties", {})) - set(schema.get("required", ())):
+        if not isinstance(value, dict) or set(value) != {_WIRE_ARGUMENTS}:
+            raise ValueError("invalid strict Chat argument envelope")
+        value = value[_WIRE_ARGUMENTS]
+    return json.dumps(decode(value, schema), ensure_ascii=False, allow_nan=False)
+
+
+def _projected_bytes(value, sizes):
+    if not isinstance(value, (dict, list)):
+        return len(json.dumps(value, ensure_ascii=False).encode())
+    identity = id(value)
+    if identity not in sizes:
+        if isinstance(value, dict):
+            sizes[identity] = 2 + sum(_projected_bytes(key, sizes) + 2 + _projected_bytes(item, sizes)
+                                      for key, item in value.items())
+        else:
+            sizes[identity] = 2 + sum(1 + _projected_bytes(item, sizes) for item in value)
+    return sizes[identity]
+
+
+def strict_chat_body(body):
+    if (set(body) - {"model", "messages", "tools", "tool_choice", "max_tokens", "stream", "stream_options"}
+            or body.get("model") != "deepseek-flash"
+            or not isinstance(body.get("messages"), list) or not body["messages"]):
+        raise ValueError("request is outside the pinned DeepSeek chat contract")
+    for message in body["messages"]:
+        if (not isinstance(message, dict) or message.get("role") not in {"system", "user", "assistant", "tool"}
+                or (message.get("content") is not None and not isinstance(message["content"], str))
+                or set(message) - {"role", "content", "name", "tool_calls", "tool_call_id", "reasoning_content"}):
+            raise ValueError("only text and native function history have an admitted price")
+        if any(not isinstance(call, dict) or call.get("type") != "function"
+               for call in message.get("tool_calls", [])):
+            raise ValueError("only native function calls have an admitted price")
+    tools = []
+    remaining = [16_000]
+    for tool in body.get("tools", []):
+        if not isinstance(tool, dict) or tool.get("type") != "function" or not isinstance(tool.get("function"), dict):
+            raise ValueError("only native functions have an admitted price")
+        function = tool["function"]
+        tools.append({"type": "function", "function": {**function, "strict": True,
+                      "parameters": strict_chat_schema(function["parameters"], remaining=remaining)}})
+    result = {**body, "thinking": {"type": "enabled"}, "reasoning_effort": "high"}
+    if "tools" in body:
+        if _projected_bytes(tools, {}) > 999_488:
+            raise ValueError("strict Chat tool schemas exceed the request bound")
+        result["tools"] = tools
+    if result.get("stream") is True:
+        result["stream_options"] = {"include_usage": True}
+    return result
+
+
+def deepseek_usage(response, *, strict_chat=False):
     raw = response.get("usage")
     if not isinstance(raw, dict) or "server_tool_use" in raw:
         return None
+    if strict_chat:
+        input_details = raw.get("prompt_tokens_details") or {}
+        output_details = raw.get("completion_tokens_details") or {}
+        if not isinstance(input_details, dict) or not isinstance(output_details, dict):
+            return None
+        cached = raw.get("prompt_cache_hit_tokens")
+        if ("cached_tokens" in input_details and cached != input_details["cached_tokens"]
+                or type(raw.get("prompt_cache_miss_tokens")) is not int or type(cached) is not int
+                or type(raw.get("prompt_tokens")) is not int
+                or raw["prompt_cache_miss_tokens"] != raw["prompt_tokens"] - cached):
+            return None
+        response = {**response, "usage": {
+            "input_tokens": raw.get("prompt_tokens"), "output_tokens": raw.get("completion_tokens"),
+            "total_tokens": raw.get("total_tokens"), "input_tokens_details": {"cached_tokens": cached},
+            "output_tokens_details": output_details,
+        }}
     return native_usage(response)
 
 
@@ -578,6 +771,8 @@ def run_smoke(relay, candidate: str) -> bool:
     """Verify typed tool continuation through the same metered campaign relay."""
     if getattr(relay, "smoke_verified_candidate", None) == candidate:
         return True
+    if getattr(getattr(relay, "config", None), "strict_chat", False) is True:
+        return _run_strict_chat_smoke(relay, candidate)
     import requests
     probe = secrets.token_hex(16)
     tools = [{"type": "function", "name": "echo_probe", "description": "Echo a benchmark probe value.",
@@ -649,6 +844,51 @@ def run_smoke(relay, candidate: str) -> bool:
     return True
 
 
+def _run_strict_chat_smoke(relay, candidate):
+    from openkyrozen.providers.config import ProviderConfig
+    from openkyrozen.providers.errors import ProviderError
+    from openkyrozen.providers.models import ToolReply
+    from openkyrozen.providers.openai import OpenAICompatProvider
+
+    probe = secrets.token_hex(16)
+    tool = {"name": "echo_probe", "description": "Echo the permitted value.",
+            "parameters": {"type": "object", "properties": {
+                "value": {"type": "string", "enum": [probe]}},
+                "required": ["value"], "additionalProperties": False}}
+    model = relay.config.model
+    provider = OpenAICompatProvider(ProviderConfig(provider="deepseek", base_url=relay.url,
+        api_key=relay.client_key, model_simple=model, model_complex=model))
+    messages = [{"role": "user", "content":
+                 "Call echo_probe with the permitted value, then repeat the returned value exactly."}]
+    relay.label = ("smoke", candidate, -1)
+    before = len(relay.rows)
+    try:
+        first = provider.chat_response(messages, tools=[tool])
+        if (len(first.tool_calls) != 1 or first.tool_calls[0].name != "echo_probe"
+                or first.tool_calls[0].arguments != {"value": probe}):
+            relay.provider_error = "smoke_invalid_tool_arguments"
+            return False
+        history = [*messages, first, ToolReply(first.tool_calls[0].id, "echo_probe", {"value": probe}),
+                   {"role": "system", "content": "Return only the tool's value now."}]
+        final = provider.chat_response(history, tools=[tool])
+        if final.text.strip() != probe or final.tool_calls:
+            relay.provider_error = "smoke_invalid_continuation"
+            return False
+    except (ProviderError, ValueError):
+        relay.provider_error = relay.provider_error or "smoke_invalid_response"
+        return False
+    finally:
+        provider._client.close()
+    calls = relay.rows[before:]
+    if (not relay.budget.budget_ok or len(calls) != 2
+            or any(call["status"] != "settled" for call in calls)):
+        relay.provider_error = relay.provider_error or "smoke_incomplete_usage"
+        return False
+    relay.smoke_verified_candidate = candidate
+    relay.smoke_verified_attempt_ids = tuple(call["attempt_id"] for call in calls)
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
@@ -681,7 +921,7 @@ def main() -> None:
     report = run(source=args.source, repo=args.repo, output=args.output, budget_path=args.budget_db,
                  limit_cny=args.limit_cny, prior_hold_cny=str(exposure.total_cny),
                  prior_hold_records=exposure.records,
-                 pricing=pricing, relay_config=DEEPSEEK_RELAY_CONFIG,
+                 pricing=pricing, relay_config=DEEPSEEK_STRICT_RELAY_CONFIG,
                  endpoint=DEEPSEEK_ENDPOINT, planning_preflight_only=args.planning_preflight_only)
     if args.planning_preflight_only:
         print(json.dumps({"status": report["status"], "planning_preflight": report.get("planning_preflight"),

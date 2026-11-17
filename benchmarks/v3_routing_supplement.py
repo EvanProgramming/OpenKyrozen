@@ -453,7 +453,8 @@ def _fixed_flash_call(call):
             or 'pricing_sha256' in call or call.get('status')!='settled'):
         return False
     usage=call.get('usage') or {}
-    raw=deepseek_usage({'usage':usage.get('raw_usage'),'service_tier':usage.get('service_tier')})
+    raw=deepseek_usage({'usage':usage.get('raw_usage'),'service_tier':usage.get('service_tier')},
+                       strict_chat=call.get('protocol')=='deepseek-chat-strict')
     return (raw is not None and all(usage.get(key)==value for key,value in raw.items())
             and served_model_matches(call['model'],usage.get('served_model')))
 
@@ -497,7 +498,7 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
     from benchmarks.v3_fixtures import FIXTURES
     from benchmarks.v3_matched import BudgetLedger,summarize
     from benchmarks.v3_deepseek import (DEEPSEEK_PRICING,DEEPSEEK_RELAY_CONFIG,DEEPSEEK_ENDPOINT,
-                                        DEEPSEEK_UNLIMITED_PRICING,DeepSeekRoutingPolicy)
+                                        DEEPSEEK_STRICT_RELAY_CONFIG,DEEPSEEK_UNLIMITED_PRICING,DeepSeekRoutingPolicy)
     from benchmarks.v3_deepseek import validate_planning_preflight
     from benchmarks.v3_responses_relay import ResponsesRelay
     if type(model_routing) is not bool or model_routing and provider_policy is None:
@@ -534,6 +535,15 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
         if os.read(output_lease,1):
             raise ValueError('supplement budget has a bound continuation; resume that child instead')
         core,config,original_attempts,core_hash=_core_checkpoint(core_output,core_budget)
+        fixed_relay_config = (DEEPSEEK_STRICT_RELAY_CONFIG
+                              if core.get('relay_config') == asdict(DEEPSEEK_STRICT_RELAY_CONFIG)
+                              else DEEPSEEK_RELAY_CONFIG)
+        if provider_policy is None:
+            relay_config = fixed_relay_config
+        fixed_protocol = 'deepseek-chat-strict' if fixed_relay_config.strict_chat else None
+        if origin_policy is None and any(call.get('protocol') != fixed_protocol
+                                         for call in _attempt_calls(original_attempts)):
+            raise ValueError('fixed-model origin includes a different provider protocol')
         if origin_policy is None and config[1] is None:
             core_budget_record=core.get('budget',{})
             if (core_budget_record.get('currency')!='CNY' or 'limit_cny' not in core_budget_record
@@ -574,7 +584,7 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
                 or (config[1] is None and pricing.max_limit_cny is not None)
                 or (config[1] is not None and (pricing.max_limit_cny is None or not 0<config[1]<=15*10**12))
                 or ancestor.get('smoke_passed') is not True
-                or ancestor.get('relay_config')!=asdict(DEEPSEEK_RELAY_CONFIG if deepseek_model_stage else relay_config)):
+                or ancestor.get('relay_config')!=asdict(fixed_relay_config if deepseek_model_stage else relay_config)):
             raise ValueError('a complete same-candidate secure core campaign is required first')
         preflight_calls=[]
         for identifier,reserved,actual,status,usage,metadata,*_rest in ancestor_attempts:
@@ -616,6 +626,7 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
         if prior and json.loads(prior[0]).get('protocol')==protocol:
             report=live._load_checkpoint(output,budget_path)
             if (report.get('candidate_sha')!=candidate or report.get('origin')!=origin
+                    or report.get('relay_config')!=asdict(relay_config)
                     or any(report.get(key)!=value for key,value in identity.items())):
                 raise ValueError('supplement checkpoint identity changed')
             if report.get('status')=='blocked_safety_failure':
@@ -637,6 +648,8 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
         if len(set(keys))!=len(keys) or any((f,r,'routing-'+v) not in expected for f,r,v in keys):
             raise ValueError('duplicate or foreign supplemental cells')
         calls=native_calls if native_calls is not None else budget.campaign_calls()
+        if provider_policy is None and any(call.get('protocol') != fixed_protocol for call in calls):
+            raise ValueError('fixed-model supplement includes a different provider protocol')
         if any(call['attempt_id'] not in original_ids and ((call.get('fixture_id'),call.get('repeat'),call.get('arm')) not in expected
                 or (not provider_policy.accepts_call(call) if provider_policy is not None else
                     call.get('model')!='deepseek-flash' or call.get('max_output_tokens')!=4096)) for call in calls):

@@ -59,6 +59,14 @@ def benchmark_google_provider(config, factory):
     return provider
 
 
+def configure_strict_chat_provider(provider):
+    # V2 uses the same endpoint for text calls and has no native codec.
+    if callable(getattr(provider, "_decode_wire_arguments", None)):
+        from benchmarks.v3_deepseek import decode_strict_chat_arguments
+        provider._tool_wire_decoder = decode_strict_chat_arguments
+    return provider
+
+
 def _json_copy(value):
     encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
     if len(encoded.encode('utf-8')) > _MAX_PAYLOAD:
@@ -674,6 +682,8 @@ def run_actor(payload, client, *, source, provider_config, routing_variant=None)
     def get_provider(config):
         provider = (benchmark_google_provider(config, original_provider) if config.provider == 'google'
                     else original_provider(config))
+        if config.provider == 'deepseek' and provider_config.provider == 'deepseek':
+            configure_strict_chat_provider(provider)
         observation = _ProviderObservations(runtime, provider)
         observations.append(observation)
         return provider

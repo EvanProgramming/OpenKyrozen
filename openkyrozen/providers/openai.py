@@ -45,6 +45,16 @@ class OpenAICompatProvider(LLMProvider):
     def chat(self, messages: list[dict[str, str]], model: str | None = None) -> tuple[str, dict | None]:
         return self.chat_response(messages, model).as_legacy_tuple()
 
+    def _decode_wire_arguments(self, calls, tools):
+        decoder = getattr(self, "_tool_wire_decoder", None)
+        if decoder is None:
+            return calls
+        by_name = {tool["name"]: tool["parameters"] for tool in tools or ()}
+        try:
+            return [(call_id, name, decoder(arguments, by_name[name])) for call_id, name, arguments in calls]
+        except (KeyError, TypeError, ValueError, RecursionError) as exc:
+            raise ProviderContractError("Invalid native tool arguments on the configured wire protocol") from exc
+
     @provider_call
     def chat_response(self, messages: list[dict[str, str]] | list, model: str | None = None, *, tools=None) -> ModelResponse:
         model = model or self.config.model_simple
@@ -104,12 +114,14 @@ class OpenAICompatProvider(LLMProvider):
             if legacy_call is not None and not calls:
                 calls.append((None, getattr(legacy_call, "name", None), getattr(legacy_call, "arguments", None)))
             result = model_response(provider=self.name, model=model, actual_model=getattr(response, "model", None), text=text, usage=usage_dict,
-                                  calls=calls, response_id=getattr(response, "id", None),
+                                  calls=self._decode_wire_arguments(calls, tools), response_id=getattr(response, "id", None),
                                   raw_finish_reason=getattr(response.choices[0], "finish_reason", None),
                                   blocked=bool(getattr(message, "refusal", None)))
             assistant = _snapshot_from_sdk(message)
             assistant = {key: value for key, value in assistant.items()
                          if key in {"role", "content", "name", "tool_calls", "function_call"}}
+            if self.config.provider == "deepseek" and isinstance(getattr(message, "reasoning_content", None), str):
+                assistant["reasoning_content"] = message.reasoning_content
             audio = _snapshot_from_sdk(getattr(message, "audio", None))
             if isinstance(audio, dict) and isinstance(audio.get("id"), str):
                 assistant["audio"] = {"id": audio["id"]}
@@ -210,13 +222,15 @@ class OpenAICompatProvider(LLMProvider):
             usage_ledger._track_cost(self.config.provider, usage, model=actual_model,
                 latency_ms=round((time.monotonic() - started) * 1000))
             response = model_response(provider=self.name, model=model, actual_model=actual_model, text=text,
-                usage=usage, calls=calls, response_id=response_id, raw_finish_reason=finish, blocked=blocked)
+                usage=usage, calls=self._decode_wire_arguments(calls, tools), response_id=response_id, raw_finish_reason=finish, blocked=blocked)
             assistant = {"role": "assistant", "content": text or None}
             assistant.update(assistant_fields)
             if response.tool_calls:
+                wire_arguments = (part[2] for part in calls) if getattr(self, "_tool_wire_decoder", None) else (
+                    json.dumps(call.arguments, ensure_ascii=False) for call in response.tool_calls)
                 assistant["tool_calls"] = [{"id": call.id, "type": "function", "function": {
-                    "name": call.name, "arguments": json.dumps(call.arguments, ensure_ascii=False)}}
-                    for call in response.tool_calls]
+                    "name": call.name, "arguments": arguments}}
+                    for call, arguments in zip(response.tool_calls, wire_arguments, strict=True)]
             response = with_provider_continuation(response, self, model, "openai-chat", {"assistant": assistant})
             yield ResponseComplete(response)
         finally:

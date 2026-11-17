@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from typing import ClassVar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
@@ -31,12 +32,18 @@ class RelayConfig:
     max_output_tokens: int = MAX_OUTPUT_TOKENS
     fixed_input_token_bound: int | None = None
     serial_requests: bool = False
+    strict_chat: ClassVar[bool] = False
 
     def __post_init__(self) -> None:
         if (not self.model or type(self.max_output_tokens) is not int or self.max_output_tokens <= 0
                 or (self.fixed_input_token_bound is not None and
                     (type(self.fixed_input_token_bound) is not int or self.fixed_input_token_bound <= 0))):
             raise ValueError("relay model and token bounds must be valid")
+
+
+@dataclass(frozen=True)
+class StrictChatRelayConfig(RelayConfig):
+    strict_chat: bool = True
 
 
 DEFAULT_RELAY_CONFIG = RelayConfig()
@@ -49,15 +56,34 @@ def _safe_error_code(error: object) -> str | None:
     return code if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", code) else None
 
 
+def _strict_choice(response, *, stream):
+    if (not isinstance(response, dict) or not isinstance(response.get("id"), str) or not response["id"]
+            or response.get("object") != ("chat.completion.chunk" if stream else "chat.completion")
+            or not isinstance(response.get("choices"), list) or len(response["choices"]) != 1):
+        return None
+    choice = response["choices"][0]
+    if (not isinstance(choice, dict) or type(choice.get("index")) is not int or choice["index"] != 0
+            or "finish_reason" not in choice or choice["finish_reason"] not in (None, "stop", "tool_calls", "length", "content_filter")):
+        return None
+    detail = choice.get("delta" if stream else "message")
+    if (not isinstance(detail, dict) or not stream and detail.get("role") != "assistant"
+            or stream and choice["finish_reason"] is not None and
+            any(detail.get(key) for key in ("content", "reasoning_content", "tool_calls"))):
+        return None
+    return choice
+
+
 class ResponsesRelay:
     def __init__(self, *, endpoint: str, api_key: str, budget: BudgetLedger,
                  config: RelayConfig = DEFAULT_RELAY_CONFIG, responses_policy=None):
-        if config.model == "deepseek-flash" or budget.pricing.as_dict().get("provider") == "DeepSeek official":
+        if (config.strict_chat or config.model == "deepseek-flash"
+                or budget.pricing.as_dict().get("provider") == "DeepSeek official"):
             from benchmarks.v3_deepseek import (DEEPSEEK_PRICING, DEEPSEEK_RELAY_CONFIG,
+                                                 DEEPSEEK_STRICT_RELAY_CONFIG,
                                                  DEEPSEEK_UNLIMITED_PRICING, DeepSeekRoutingPolicy)
             if responses_policy is None:
                 admitted = (budget.pricing in (DEEPSEEK_PRICING, DEEPSEEK_UNLIMITED_PRICING)
-                            and config == DEEPSEEK_RELAY_CONFIG)
+                            and config in (DEEPSEEK_RELAY_CONFIG, DEEPSEEK_STRICT_RELAY_CONFIG))
             else:
                 admitted = (type(responses_policy) is DeepSeekRoutingPolicy
                             and budget.pricing == DEEPSEEK_UNLIMITED_PRICING)
@@ -69,6 +95,11 @@ class ResponsesRelay:
                                               or budget.pricing != responses_policy.pricing):
             raise ValueError('native Responses policy requires its exact Auto bounds and pricing')
         self.endpoint = endpoint.rstrip("/")
+        if config.strict_chat and (self.endpoint != "https://api.deepseek.com" or responses_policy is not None):
+            raise ValueError("strict Chat Completions requires the pinned DeepSeek endpoint")
+        self.upstream_route = "/beta/chat/completions" if config.strict_chat else "/responses"
+        if config.strict_chat:
+            self.protocol = "strict-chat"
         self.api_key = api_key
         self.client_key = secrets.token_urlsafe(24)
         self.budget = budget
@@ -108,7 +139,7 @@ class ResponsesRelay:
             key = secrets.token_urlsafe(32)
             self._actor_credentials[key] = {'actor_id': actor_id, 'label': tuple(self.label)}
             self._issued_actor_keys.add(key)
-        return {'provider': 'openai', 'api_key': key, 'base_url': self.url,
+        return {'provider': 'deepseek' if self.config.strict_chat else 'openai', 'api_key': key, 'base_url': self.url,
                 'model_simple': self.config.model, 'model_complex': self.config.model,
                 'context_window_tokens': self.config.fixed_input_token_bound or 1_000_000}
 
@@ -134,15 +165,19 @@ class ResponsesRelay:
         self._server.server_close()
         self._thread.join()
 
-    def _settle_response(self, row, response):
+    def _settle_response(self, row, response, *, stream=False):
         policy = self.responses_policy
         response = response if isinstance(response, dict) else {}
         usage = policy.response_usage(row['model'], response) if policy else self._usage(response)
         fixed_deepseek = policy is None and self.endpoint == "https://api.deepseek.com"
         if fixed_deepseek:
+            if self.config.strict_chat:
+                choices = _strict_choice(response, stream=stream)
+                if choices is None or not choices["finish_reason"]:
+                    response = {}
             from benchmarks.v3_deepseek import deepseek_usage, served_model_matches
-            usage = deepseek_usage(response)
-            if (usage is not None and response.get('status') in ('completed','incomplete','failed')
+            usage = deepseek_usage(response, strict_chat=self.config.strict_chat)
+            if (usage is not None and (self.config.strict_chat or response.get('status') in ('completed','incomplete','failed'))
                     and served_model_matches(row['model'], response.get('model'))):
                 usage.update(served_model=response['model'], raw_usage=response['usage'],
                              service_tier=response.get('service_tier'))
@@ -222,7 +257,8 @@ class ResponsesRelay:
                     self._forward_post()
 
             def _forward_post(self):
-                if self.path.split("?", 1)[0] not in {"/v1/responses", "/responses"}:
+                route = "/chat/completions" if relay.config.strict_chat else "/responses"
+                if self.path.split("?", 1)[0] not in {"/v1" + route, route}:
                     self._json(404, {"error": {"message": "unsupported benchmark route"}})
                     return
                 authorized, actor_id, label = relay._authorize_client(self.headers.get('Authorization'))
@@ -231,13 +267,13 @@ class ResponsesRelay:
                     return
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < length <= MAX_REQUEST_BYTES:
+                    if not 0 < length <= (1_000_000 if relay.config.strict_chat else MAX_REQUEST_BYTES):
                         self._json(413, {"error": {"message": "benchmark request exceeds its bound"}})
                         return
                     body = json.loads(self.rfile.read(length))
                     if not isinstance(body, dict):
                         raise ValueError("request must be an object")
-                except (ValueError, json.JSONDecodeError):
+                except (ValueError, RecursionError):
                     self._json(400, {"error": {"message": "invalid benchmark request"}})
                     return
 
@@ -274,17 +310,20 @@ class ResponsesRelay:
                     body["model"] = relay.config.model
                     metadata = {}
                     if relay.endpoint == "https://api.deepseek.com":
+                        from benchmarks.v3_deepseek import strict_chat_body
                         from benchmarks.v3_panstar import PanstarPolicy
                         try:
-                            body = PanstarPolicy._validate_text_body(body, ("deepseek-flash",), reasoning_text=True)
-                        except (ValueError, TypeError):
+                            body = (strict_chat_body(body) if relay.config.strict_chat else
+                                    PanstarPolicy._validate_text_body(body, ("deepseek-flash",), reasoning_text=True))
+                        except (ValueError, TypeError, KeyError, RecursionError):
                             self._json(400, {"error": {"message": "request exceeds the priced DeepSeek text policy"}})
                             return
-                body["max_output_tokens"] = relay.config.max_output_tokens
+                token_field = "max_tokens" if relay.config.strict_chat else "max_output_tokens"
+                body[token_field] = relay.config.max_output_tokens
                 wants_stream = body.get("stream") is True
                 body["stream"] = wants_stream
                 encoded = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
-                if policy is not None and len(encoded) + 512 > 1000000:
+                if (policy is not None or relay.config.strict_chat) and len(encoded) + 512 > 1000000:
                     self._json(413, {"error": {"message": "native input exceeds its operational bound"}})
                     return
                 attempt_id = uuid.uuid4().hex
@@ -297,6 +336,8 @@ class ResponsesRelay:
                        "model": body['model'], "max_output_tokens": relay.config.max_output_tokens,
                        "reserved_rmb": str(quote),
                        "status": "unknown", "usage": None}
+                if relay.config.strict_chat:
+                    row["protocol"] = "deepseek-chat-strict"
                 if actor_id is not None:
                     row['actor_id'] = actor_id
                 if policy is not None:
@@ -340,7 +381,7 @@ class ResponsesRelay:
                                 relay._selected_models[(actor_id, label)] = body['model']
                         try:
                             upstream = requests.post(
-                                relay.endpoint + "/responses", data=encoded,
+                                relay.endpoint + relay.upstream_route, data=encoded,
                                 headers={"Authorization": "Bearer " + relay.api_key,
                                          "Content-Type": "application/json"},
                                 timeout=180, allow_redirects=False, stream=wants_stream,
@@ -405,6 +446,9 @@ class ResponsesRelay:
                     frame = bytearray()
                     stream_bytes = 0
                     terminal = False
+                    chat_usage = None
+                    chat_identity = None
+                    chat_invalid = False
                     for chunk in upstream.iter_content(chunk_size=4096):
                         now = time.monotonic()
                         if not chunk:
@@ -427,10 +471,31 @@ class ResponsesRelay:
                             frame = bytearray(remainder)
                             data = b"\n".join(line[5:].lstrip() for line in event.splitlines()
                                               if line.startswith(b"data:"))
+                            if relay.config.strict_chat and data == b"[DONE]":
+                                relay._settle_response(row, chat_usage if not chat_invalid else None, stream=True)
+                                terminal = True
+                                break
                             if data and data != b"[DONE]":
                                 try:
                                     message = json.loads(data)
-                                except (ValueError, json.JSONDecodeError):
+                                except (ValueError, RecursionError):
+                                    chat_invalid = True
+                                    continue
+                                if not isinstance(message, dict):
+                                    chat_invalid = True
+                                    continue
+                                if relay.config.strict_chat:
+                                    identity = (message.get("id"), message.get("model"))
+                                    choice = _strict_choice(message, stream=True)
+                                    final_usage = message.get("usage")
+                                    if (choice is None or chat_usage is not None
+                                            or chat_identity is not None and identity != chat_identity
+                                            or (choice["finish_reason"] is not None) != isinstance(final_usage, dict)):
+                                        chat_invalid = True
+                                    else:
+                                        chat_identity = identity
+                                        if final_usage is not None:
+                                            chat_usage = message
                                     continue
                                 if message.get("type") in {
                                         "response.completed", "response.incomplete", "response.failed"}:
@@ -476,7 +541,7 @@ class ResponsesRelay:
                 finally:
                     if reserved and row["status"] == "unknown":
                         relay.budget.settle(attempt_id, None)
-                        if relay.responses_policy and relay.provider_error is None:
+                        if (relay.responses_policy or relay.config.strict_chat) and relay.provider_error is None:
                             relay.provider_error = 'unknown_native_usage_or_price'
                     if "upstream" in locals():
                         upstream.close()
