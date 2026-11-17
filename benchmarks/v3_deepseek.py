@@ -110,6 +110,8 @@ def strict_chat_schema(schema, *, remaining=None):
             raise ValueError("strict Chat tool schema exceeds its structural bound")
         if set(item) & {"$ref", "$def", "$defs", "allOf", "oneOf"}:
             raise ValueError("strict Chat requires an inline canonical tool schema")
+        minimum = item.get("minProperties", 0)
+        maximum = item.get("maxProperties", float("inf"))
         item = {key: value for key, value in item.items() if key not in {
             "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties"}}
         if "anyOf" in item:
@@ -150,8 +152,12 @@ def strict_chat_schema(schema, *, remaining=None):
         if len(optional) > 8:
             raise ValueError("strict Chat object has too many optional fields")
         consume((1 + len(properties)) * (1 << len(optional)))
+        first = max(0, minimum - len(required))
+        last = min(len(optional), maximum - len(required))
         variants = [_closed_object({name: properties[name] for name in (*required, *extra)})
-                    for count in range(len(optional) + 1) for extra in combinations(optional, count)]
+                    for count in range(first, last + 1) for extra in combinations(optional, count)]
+        if not variants:
+            raise ValueError("strict Chat object has no admissible field set")
         return variants[0] if len(variants) == 1 else {"anyOf": variants}
 
     result = project(schema, 0)
@@ -202,7 +208,10 @@ def decode_strict_chat_arguments(raw, schema):
             if ToolRegistry._schema_error(branch, result, "$") is None:
                 return result
         if contract.get("anyOf"):
-            raise ValueError("strict Chat value does not match any canonical argument type")
+            if ToolRegistry._schema_error(contract, value) is None:
+                raise ValueError("invalid encoded fields inside canonical arguments")
+            # Valid JSON still goes through the normal typed argument rejection.
+            return value
         if isinstance(value, list) and "items" in contract:
             return [decode(item, contract["items"]) for item in value]
         if isinstance(value, dict) and "properties" in contract:
@@ -214,9 +223,8 @@ def decode_strict_chat_arguments(raw, schema):
 
     value = json.loads(raw, object_pairs_hook=_unique_object)
     uses_envelope = "anyOf" in schema or set(schema.get("properties", {})) - set(schema.get("required", ()))
-    if uses_envelope and ToolRegistry._schema_error(schema, value) is not None:
-        if not isinstance(value, dict) or set(value) != {_WIRE_ARGUMENTS} or not isinstance(value[_WIRE_ARGUMENTS], dict):
-            raise ValueError("invalid strict Chat argument envelope")
+    if (uses_envelope and isinstance(value, dict) and set(value) == {_WIRE_ARGUMENTS}
+            and isinstance(value[_WIRE_ARGUMENTS], dict) and ToolRegistry._schema_error(schema, value) is not None):
         value = value[_WIRE_ARGUMENTS]
     return json.dumps(decode(value, schema), ensure_ascii=False, allow_nan=False)
 

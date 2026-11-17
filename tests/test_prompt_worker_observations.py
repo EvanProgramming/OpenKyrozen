@@ -40,6 +40,7 @@ class PromptWorkerObservationTests(unittest.TestCase):
             diagnostic = record["provider_contract_failure"]
             self.assertEqual(diagnostic["cause_type"], "ValueError")
             self.assertTrue(any(frame["function"] == "fail" for frame in diagnostic["frames"]))
+            self.assertEqual(diagnostic["cause_frames"][-1]["function"], "fail")
             self.assertNotIn("private", json.dumps(diagnostic))
 
     def test_legacy_shims_summaries_and_empty_native_bodies_are_not_final_answers(self):

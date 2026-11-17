@@ -87,8 +87,8 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         read_schema = _SCHEMAS["read_file"]
         self.assertEqual(json.loads(decode_strict_chat_arguments('{"path":"proof.txt"}', read_schema)),
                          {"path": "proof.txt"})
-        with self.assertRaises(ValueError):
-            decode_strict_chat_arguments('{"path":false}', read_schema)
+        invalid_read = json.loads(decode_strict_chat_arguments('{"path":false}', read_schema))
+        self.assertIsNotNone(ToolRegistry._argument_error(read_schema, invalid_read))
         env = {"command": "pwd", "env": {"key_value_entries": "example"}}
         self.assertEqual(json.loads(decode_strict_chat_arguments(json.dumps(env), _SCHEMAS["run_cmd"])), env)
         arguments = {"arguments": ["--help"]}
@@ -100,6 +100,25 @@ class DeepSeekStrictChatTests(unittest.TestCase):
             decode_strict_chat_arguments(json.dumps({"arguments": result}), schema)
         with self.assertRaises(ValueError):
             decode_strict_chat_arguments('{"complexity":"simple","complexity":"complex"}', schema)
+
+    def test_valid_json_reaches_canonical_validation_and_respects_object_cardinality(self):
+        from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_schema
+        from openkyrozen.tools.catalog import _SCHEMAS
+        from openkyrozen.tools.manifest import ToolRegistry
+        expect = {"equals": {"type": "string"}, "contains": {"type": "string"}}
+        predicate = {"type": "object", "properties": expect, "required": [],
+                     "minProperties": 1, "maxProperties": 1, "additionalProperties": False}
+        variants = strict_chat_schema(predicate)["properties"]["arguments"]["anyOf"]
+        self.assertEqual([item["required"] for item in variants], [["equals"], ["contains"]])
+
+        invalid = {"complexity": "simple", "tasks": [{"description": "Read source",
+            "acceptance": [{"criterion": "read it", "verification": {"action": "read_file",
+                "arguments": {"path": "source.py"}, "expect": {"equals": "a", "contains": "b"}}}]}]}
+        plan_schema = _SCHEMAS["update_plan"]
+        for raw in (invalid, {"arguments": invalid}):
+            decoded = json.loads(decode_strict_chat_arguments(json.dumps(raw), plan_schema))
+            self.assertEqual(decoded, invalid)
+            self.assertIsNotNone(ToolRegistry._argument_error(plan_schema, decoded))
 
     def test_strict_usage_requires_the_chat_contract_and_consistent_cache_counts(self):
         from benchmarks.v3_deepseek import deepseek_usage

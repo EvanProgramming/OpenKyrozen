@@ -180,10 +180,15 @@ class _ProviderObservations:
     def _record_contract_failure(record, error):
         if type(error).__name__ != "ProviderContractError":
             return
+        def locations(traceback):
+            return [{"file": Path(frame.filename).name, "line": frame.lineno, "function": frame.name}
+                    for frame in extract_tb(traceback)[-4:]]
+
+        cause = error.__cause__
         record["provider_contract_failure"] = {
-            "cause_type": type(error.__cause__).__name__ if error.__cause__ is not None else None,
-            "frames": [{"file": Path(frame.filename).name, "line": frame.lineno, "function": frame.name}
-                       for frame in extract_tb(error.__traceback__)[-4:]],
+            "cause_type": type(cause).__name__ if cause is not None else None,
+            "frames": locations(error.__traceback__),
+            "cause_frames": locations(cause.__traceback__) if cause is not None else [],
         }
 
     def _wrap(self, original, streaming, *, native=False):
