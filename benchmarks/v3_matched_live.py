@@ -395,13 +395,13 @@ def _fixture_prompt(fixture: dict) -> str:
     writable = sorted(name for name in fixture["files"]
                       if "write" in fixture["capabilities"] and not Path(name).name.startswith("test_"))
     verifier = fixture.get("verifier", {})
-    read_requirement = ""
+    case_requirements = ""
     if verifier.get("kind") == "source_facts":
         path = json.dumps(verifier["path"], ensure_ascii=False)
-        read_requirement = (f"Use the read_file tool to read {path} in full before answering. "
+        case_requirements = (f"Use the read_file tool to read {path} in full before answering. "
                             "Shell output does not supply the required read receipt.\n\n")
     elif verifier.get("kind") == "git_subject":
-        read_requirement = ("Use git_log to inspect the history, then git_show on the matching commit. "
+        case_requirements = ("Use git_log to inspect the history, then git_show on the matching commit. "
                             "If the runtime requires a structured Working Plan, create and start an inspection "
                             "task to unlock tools. "
                             "Use discover_tools for git_log and git_show if their schemas are missing. "
@@ -409,12 +409,18 @@ def _fixture_prompt(fixture: dict) -> str:
                             "provisional inspection task and start "
                             "a verification task with git_show and that exact reference in its typed acceptance. "
                             "Finally, call git_show on the commit before answering.\n\n")
+    elif verifier.get("recovery") or fixture.get("plan_scenario") == "cancel_obsolete_task_after_reproduction":
+        case_requirements = ("Run the standalone reproduction command directly in the fixture workspace. "
+                             "Its own nonzero exit status is required evidence. Read its output from the tool result. "
+                             "For a structured run_cmd call, put the command in the command field by itself. "
+                             "For a structured verification task, start the task and use the exact declared argument "
+                             "object for the successful test invocation.\n\n")
     return ("Fixture workspace boundary: writable files are only these existing non-test fixture paths: "
             + json.dumps(writable, ensure_ascii=False) + ".\n"
             "Original test files are immutable. Do not create additional workspace files, including "
             "plan/log/scratch files, or rename/delete files outside those writable paths. "
             "Any stricter task instruction, including 'do not edit files', still applies.\n\n"
-            + read_requirement + fixture["prompt"])
+            + case_requirements + fixture["prompt"])
 
 
 def _unique_facts(pairs):
@@ -1331,14 +1337,16 @@ def _initial_plan(fixture: dict, *, arm: str = "v3") -> list[str | dict] | dict:
         step = {"id": "objective", "title": "Fix page offset",
                 "description": "Fix paging.py so page 1 starts at offset zero and each next page advances by one page size."}
     else:
-        tasks = [f"{title}: {description}" for title, description in fixture.get("plan_tasks", [])]
-        if fixture.get("plan_scenario") == "unnecessary_churn" and arm != "v2":
-            return [{"description": description, "acceptance": [{
-                "criterion": "The original slug tests pass.",
+        tasks: list[str | dict] = [f"{title}: {description}" for title, description in fixture.get("plan_tasks", [])]
+        scenario = fixture.get("plan_scenario")
+        if arm != "v2" and scenario in {"unnecessary_churn", "cancel_obsolete_task_after_reproduction"}:
+            index = 0 if scenario == "unnecessary_churn" else 1
+            tasks[index] = {"description": tasks[index], "acceptance": [{
+                "criterion": "The original fixture tests pass.",
                 "verification": {"action": "run_cmd", "arguments": {
                     "command": " ".join(["python3", *fixture["verifier"]["command"][1:]]),
                 }},
-            }]} for description in tasks]
+            }]}
         return tasks
     step["acceptance"] = [criterion] if arm == "v2" else [
         {"criterion": criterion, "verification": {

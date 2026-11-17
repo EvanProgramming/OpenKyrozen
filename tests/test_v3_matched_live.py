@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from benchmarks.v3_fixtures import FIXTURES
-from benchmarks.v3_matched_live import (BASELINE, MODEL, _load_checkpoint, _row_can_resume_as_complete, _run_fixture_tests, _worker_env,
+from benchmarks.v3_matched_live import (BASELINE, MODEL, _fixture_prompt, _load_checkpoint, _row_can_resume_as_complete, _run_fixture_tests, _worker_env,
                                          _extract_baseline, _initial_plan, _run_worker, _workflow_state_correct,
                                          _write_checkpoint, prepare_fixture, run, snapshot_workspace,
                                          verify_fixture)
@@ -693,6 +693,22 @@ class V3MatchedLiveTests(unittest.TestCase):
             "action": "run_cmd", "arguments": {"command": "python3 -m unittest test_slug.py"},
         })
 
+    def test_reproduction_prompts_preserve_command_status_and_seed_fallback_verification(self):
+        fixtures = [item for item in FIXTURES if item["category"] == "error_recovery" or item["fixture_id"] == "bug_fix-2"]
+        self.assertEqual(len(fixtures), 4)
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture["fixture_id"]):
+                prompt = _fixture_prompt(fixture)
+                self.assertIn("standalone reproduction command", prompt)
+                self.assertIn("own nonzero exit status", prompt)
+                self.assertIn("exact declared argument object", prompt)
+        parser_case = next(item for item in fixtures if item["fixture_id"] == "bug_fix-2")
+        assumption, fallback = _initial_plan(parser_case)
+        self.assertEqual(_initial_plan(parser_case, arm="v2"), [assumption, fallback["description"]])
+        self.assertEqual(fallback["acceptance"][0]["verification"], {
+            "action": "run_cmd", "arguments": {"command": "python3 -m unittest test_parser.py"},
+        })
+
     def test_obsolete_assumption_requires_reproduction_then_cancel_then_bound_verification(self):
         fixture = next(item for item in FIXTURES if item["fixture_id"] == "bug_fix-2")
         assumption = {"id": "prior", "description": _initial_plan(fixture)[0], "status": "pending"}
@@ -750,6 +766,10 @@ class V3MatchedLiveTests(unittest.TestCase):
                     ("unobserved early update", [dict(retire, evidence={}), failure, retire, verify], False),
                     ("early source edit", [early_write, failure, retire, verify], False),
                     ("wrong reproduced failure", [dict(failure, evidence={**command, "exit_code": 1}), retire, verify], False),
+                    ("pipeline masks the failed test status", [dict(failure, success=True, evidence={
+                        **failure["evidence"], "exit_code": 0,
+                        "args": "python3 -m unittest test_parser.py 2>&1 | tail -20",
+                    }), retire, verify], False),
                     ("unbound verification", [failure, retire, dict(verify, evidence={**verify["evidence"], "task_id": "other"})], False),
                     ("unconfirmed verification", [failure, retire, dict(verify, evidence={**verify["evidence"], "verification": None})], False),
                 ):
