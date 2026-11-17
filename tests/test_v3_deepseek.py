@@ -75,6 +75,25 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         self.assertIsNone(ToolRegistry._schema_error(schema, decoded))
         verification = decoded["tasks"][0]["acceptance"][0]["verification"]
         self.assertEqual(verification["arguments"], {"path": "proof.txt"})
+        # Reproduce the accepted beta response that used canonical arguments in the referenced map.
+        captured = {"arguments": {"complexity": "simple", "expected_revision": 0,
+            "reason": "Verify the planning preflight", "operations": [
+                {"op": "add", "ref": "proof", "task": {"description": "Read and verify proof.txt",
+                    "acceptance": [{"criterion": "The complete proof file has the expected marker",
+                        "verification": {"action": "read_file", "arguments": {"path": "proof.txt"},
+                                         "expect": {"equals": "planning-preflight-ok\n"}}}]}},
+                {"op": "start", "task": "proof"}]}}
+        self.assertEqual(json.loads(decode_strict_chat_arguments(json.dumps(captured), schema)), captured["arguments"])
+        read_schema = _SCHEMAS["read_file"]
+        self.assertEqual(json.loads(decode_strict_chat_arguments('{"path":"proof.txt"}', read_schema)),
+                         {"path": "proof.txt"})
+        with self.assertRaises(ValueError):
+            decode_strict_chat_arguments('{"path":false}', read_schema)
+        env = {"command": "pwd", "env": {"key_value_entries": "example"}}
+        self.assertEqual(json.loads(decode_strict_chat_arguments(json.dumps(env), _SCHEMAS["run_cmd"])), env)
+        arguments = {"arguments": ["--help"]}
+        self.assertEqual(json.loads(decode_strict_chat_arguments(json.dumps(arguments), _SCHEMAS["github_read"])),
+                         arguments)
         entries = result["tasks"][0]["acceptance"][0]["verification"]["arguments"]["key_value_entries"]
         entries.append({"key": "path", "value": "duplicate.txt"})
         with self.assertRaises(ValueError):

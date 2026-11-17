@@ -188,9 +188,12 @@ def decode_strict_chat_arguments(raw, schema):
 
     def decode(value, contract):
         if contract.get("additionalProperties") is True and not contract.get("properties"):
-            if not isinstance(value, dict) or set(value) != {_MAP_ENTRIES}:
+            if not isinstance(value, dict):
                 raise ValueError("invalid strict Chat map object")
-            return decode_map(value)
+            # Strict Beta can return canonical objects in referenced schemas.
+            if set(value) == {_MAP_ENTRIES} and isinstance(value[_MAP_ENTRIES], list):
+                return decode_map(value)
+            return value
         for branch in contract.get("anyOf", ()):
             try:
                 result = decode(value, branch)
@@ -210,8 +213,9 @@ def decode_strict_chat_arguments(raw, schema):
         return value
 
     value = json.loads(raw, object_pairs_hook=_unique_object)
-    if "anyOf" in schema or set(schema.get("properties", {})) - set(schema.get("required", ())):
-        if not isinstance(value, dict) or set(value) != {_WIRE_ARGUMENTS}:
+    uses_envelope = "anyOf" in schema or set(schema.get("properties", {})) - set(schema.get("required", ()))
+    if uses_envelope and ToolRegistry._schema_error(schema, value) is not None:
+        if not isinstance(value, dict) or set(value) != {_WIRE_ARGUMENTS} or not isinstance(value[_WIRE_ARGUMENTS], dict):
             raise ValueError("invalid strict Chat argument envelope")
         value = value[_WIRE_ARGUMENTS]
     return json.dumps(decode(value, schema), ensure_ascii=False, allow_nan=False)
