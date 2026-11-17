@@ -16,6 +16,33 @@ from openkyrozen.persistence.store import EventStore
 from openkyrozen.workspace.context import resolve_launch_context, source_scope_id
 
 
+class WorkflowEventReaderTests(unittest.TestCase):
+    def test_poll_ignores_a_partial_record_without_hiding_complete_corruption(self):
+        from scripts.tui_workflow_acceptance import read_events
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.jsonl"
+            first = {"event": "response"}
+            second = {"event": "subagent", "text": "已验证"}
+            self.assertEqual(read_events(path), [])
+            encoded = json.dumps(second, ensure_ascii=False).encode()
+            complete = json.dumps(first).encode() + b"\n"
+            path.write_bytes(complete + encoded[:5])
+            self.assertEqual(read_events(path), [first])
+            split = encoded.index("已".encode()) + 1
+            path.write_bytes(complete + encoded[:split])
+            self.assertEqual(read_events(path), [first])
+            with path.open("ab") as stream:
+                stream.write(encoded[split:])
+            self.assertEqual(read_events(path), [first])
+            with path.open("ab") as stream:
+                stream.write(b"\n")
+            self.assertEqual(read_events(path), [first, second])
+            with path.open("ab") as stream:
+                stream.write(b'{"broken":\n')
+            with self.assertRaises(json.JSONDecodeError):
+                read_events(path)
+
+
 class TUIProtocolTests(unittest.TestCase):
     def setUp(self):
         self.backend = tui_backend.Backend()

@@ -22,6 +22,15 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def read_events(path):
+    try:
+        contents = path.read_bytes()
+    except FileNotFoundError:
+        return []
+    # The last bytes can be written concurrently. A newline commits the record.
+    return [json.loads(line) for line in contents.split(b"\n")[:-1] if line.strip()]
+
+
 def backend_fixture():
     sys.path.insert(0, str(ROOT))
     from openkyrozen.app.bootstrap import build_application
@@ -169,9 +178,7 @@ def acceptance(binary: Path):
                     os.write(master, b'\x1b]11;rgb:0000/0000/0000\x1b\\')
 
         def events():
-            if not events_file.exists():
-                return []
-            return [json.loads(line) for line in events_file.read_text().splitlines() if line]
+            return read_events(events_file)
 
         def wait(predicate, label, timeout=30):
             deadline = time.monotonic() + timeout
