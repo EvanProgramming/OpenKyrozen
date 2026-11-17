@@ -15,12 +15,14 @@ class UbuntuCIMirrorTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         (self.root / "sources.list.d").mkdir()
+        self.mirrorlist = self.root / "openkyrozen-ubuntu-mirrors.list"
+        self.source = f"mirror+file:{self.mirrorlist}"
 
     def test_deb822_preserves_suites_components_and_ubuntu_signature_key(self):
         path = self.root / "sources.list.d/ubuntu.sources"
         path.write_text("Types: deb\nURIs: https://archive.ubuntu.com/ubuntu/ http://security.ubuntu.com/ubuntu\nSuites: resolute resolute-updates resolute-security\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n")
         self.module.configure_ubuntu_mirror(self.root)
-        self.assertEqual(path.read_text(), "Types: deb\nURIs: https://mirrors.kernel.org/ubuntu/ https://mirrors.kernel.org/ubuntu/\nSuites: resolute resolute-updates resolute-security\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n")
+        self.assertEqual(path.read_text(), f"Types: deb\nURIs: {self.source}\nSuites: resolute resolute-updates resolute-security\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n")
 
     def test_legacy_sources_and_mirror_file_use_the_same_signed_archive(self):
         path = self.root / "sources.list"
@@ -30,9 +32,16 @@ class UbuntuCIMirrorTests(unittest.TestCase):
         indirection = self.root / "sources.list.d/ubuntu.sources"
         indirection.write_text("Types: deb\nURIs: mirror+file:/etc/apt/apt-mirrors.txt\nSuites: resolute\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n")
         self.module.configure_ubuntu_mirror(self.root)
-        self.assertEqual(path.read_text(), "deb https://mirrors.kernel.org/ubuntu/ resolute main\n")
-        self.assertEqual(indirection.read_text(), "Types: deb\nURIs: mirror+file:/etc/apt/apt-mirrors.txt\nSuites: resolute\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n")
-        self.assertEqual(mirrors.read_text(), "https://mirrors.kernel.org/ubuntu/\nhttps://mirrors.kernel.org/ubuntu/\n")
+        self.assertEqual(path.read_text(), f"deb {self.source} resolute main\n")
+        self.assertEqual(indirection.read_text(), f"Types: deb\nURIs: {self.source}\nSuites: resolute\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n")
+        self.assertEqual(mirrors.read_text(), "https://azure.archive.ubuntu.com/ubuntu/\nhttps://security.ubuntu.com/ubuntu/\n")
+        entries = [line.split() for line in self.mirrorlist.read_text().splitlines()]
+        self.assertEqual([fields[0] for fields in entries], [
+            "https://archive.ubuntu.com/ubuntu/",
+            "https://mirrors.kernel.org/ubuntu/",
+            "https://azure.archive.ubuntu.com/ubuntu/",
+        ])
+        self.assertEqual([fields[1] for fields in entries], ["priority:1", "priority:2", "priority:3"])
 
     def test_unrelated_repositories_and_lookalike_urls_are_unchanged(self):
         path = self.root / "sources.list"
@@ -40,22 +49,25 @@ class UbuntuCIMirrorTests(unittest.TestCase):
         extra = self.root / "sources.list.d/vendor.list"
         extra.write_text("deb https://vendor.example/repo stable main\n")
         self.module.configure_ubuntu_mirror(self.root)
-        self.assertEqual(path.read_text(), "deb https://mirrors.kernel.org/ubuntu/ resolute main\n# https://archive.ubuntu.com/ubuntu-extra\n# https://archive.ubuntu.com.evil/ubuntu/\n# https://example.org/ubuntu/\n")
+        self.assertEqual(path.read_text(), f"deb {self.source} resolute main\n# https://archive.ubuntu.com/ubuntu-extra\n# https://archive.ubuntu.com.evil/ubuntu/\n# https://example.org/ubuntu/\n")
         self.assertEqual(extra.read_text(), "deb https://vendor.example/repo stable main\n")
 
     def test_second_preparation_does_not_rewrite_configured_sources(self):
-        path = self.root / "apt-mirrors.txt"
-        path.write_text("https://mirrors.kernel.org/ubuntu/\n")
-        before = path.stat().st_mtime_ns
+        path = self.root / "sources.list"
+        path.write_text("deb https://mirrors.kernel.org/ubuntu/ resolute main\n")
         self.module.configure_ubuntu_mirror(self.root)
-        self.assertEqual(path.stat().st_mtime_ns, before)
+        before = [file.stat().st_mtime_ns for file in (path, self.mirrorlist)]
+        self.module.configure_ubuntu_mirror(self.root)
+        self.assertEqual([file.stat().st_mtime_ns for file in (path, self.mirrorlist)], before)
 
     def test_unknown_layout_fails_without_modifying_other_files(self):
         path = self.root / "sources.list"
-        path.write_text("deb https://vendor.example/repo stable main\n")
+        source = "# https://archive.ubuntu.com/ubuntu/\ndeb https://vendor.example/repo stable main\n"
+        path.write_text(source)
         with self.assertRaisesRegex(ValueError, "Ubuntu"):
             self.module.configure_ubuntu_mirror(self.root)
-        self.assertEqual(path.read_text(), "deb https://vendor.example/repo stable main\n")
+        self.assertEqual(path.read_text(), source)
+        self.assertFalse(self.mirrorlist.exists())
 
 
 if __name__ == "__main__":
