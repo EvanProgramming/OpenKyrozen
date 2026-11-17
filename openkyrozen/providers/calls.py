@@ -130,12 +130,15 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
         )]
         phase_guidance = {
             "plan_required": "Planning-required exposure is temporary. Call update_plan to create and start a task "
-                             "before using workspace tools such as read_file. Use read_tool_artifact only with a "
+                             "before using workspace tools such as read_file or Git history. Check current_call_tools "
+                             "again once active. Use read_tool_artifact only with a "
                              "runtime-provided artifact_id. It does not open workspace files. ",
             "plan_active": "The Working Plan is active now. Use current_call_tools in this request "
                            "for the selected task's next action. ",
             "plan_completed": "Completed-plan exposure is confirmation-only; use the current plan's returned IDs and revision. ",
         }.get(_native_tool_phase, "")
+        if _native_tool_phase == "plan_active" and "discover_tools" in current_names:
+            phase_guidance += "Use discover_tools if a permitted tool is missing from the compact list. "
         can_propose_revision = _native_tool_phase == "plan_completed" and "propose_plan" in current_names
         if can_propose_revision:
             phase_guidance = ("The Working Plan is complete. Use update_plan only to confirm completed work, "

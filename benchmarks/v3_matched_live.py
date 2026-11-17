@@ -400,6 +400,15 @@ def _fixture_prompt(fixture: dict) -> str:
         path = json.dumps(verifier["path"], ensure_ascii=False)
         read_requirement = (f"Use the read_file tool to read {path} in full before answering. "
                             "Shell output does not supply the required read receipt.\n\n")
+    elif verifier.get("kind") == "git_subject":
+        read_requirement = ("Use git_log to inspect the history, then git_show on the matching commit. "
+                            "If the runtime requires a structured Working Plan, create and start an inspection "
+                            "task to unlock tools. "
+                            "Use discover_tools for git_log and git_show if their schemas are missing. "
+                            "If following the structured plan, use git_log to find the commit, then cancel the "
+                            "provisional inspection task and start "
+                            "a verification task with git_show and that exact reference in its typed acceptance. "
+                            "Finally, call git_show on the commit before answering.\n\n")
     return ("Fixture workspace boundary: writable files are only these existing non-test fixture paths: "
             + json.dumps(writable, ensure_ascii=False) + ".\n"
             "Original test files are immutable. Do not create additional workspace files, including "

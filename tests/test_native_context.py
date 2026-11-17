@@ -425,6 +425,93 @@ class NativeContextTests(unittest.TestCase):
         self.assertEqual(revisions, 0)
         self.assertEqual((self.root / "test_slug.py").read_text(encoding="utf-8"), fixture["files"]["test_slug.py"])
 
+    @unittest.skipUnless(shutil.which("git"), "Git is required for history verification")
+    def test_native_working_plan_verifies_read_only_git_history_without_shell(self):
+        from benchmarks.v3_matched_live import FIXTURES, prepare_fixture
+
+        fixture = next(item for item in FIXTURES if item["fixture_id"] == "git_history-1")
+        prepared = prepare_fixture(self.root, fixture)
+        target = prepared["expected_commit"]
+        verification = {"action": "git_show", "arguments": {"reference": target}}
+        actions = [
+            ToolCall("plan", "update_plan", {"expected_revision": 0, "operations": [
+                {"op": "add", "ref": "history", "task": {
+                    "description": "Locate the commit that changed the catalog limit",
+                    "acceptance": ["Find the candidate in Git history."],
+                }},
+                {"op": "start", "task": "history"},
+            ]}),
+            ToolCall("discover", "discover_tools", {"names": ["git_log", "git_show"]}),
+            ToolCall("history", "git_log", {"options": ["--oneline", "--", "catalog.py"]}),
+            None,
+            ToolCall("wrong-commit", "git_show", {"reference": "HEAD~1"}),
+            ToolCall("commit", "git_show", verification["arguments"]),
+        ]
+
+        def respond(provider, messages, model):
+            step = len(provider.requests) - 1
+            if step >= len(actions):
+                return ModelResponse(text=f"{target} raise catalog limit", finish_reason=FinishReason.FINAL)
+            call = actions[step]
+            if step == 3:
+                self.assertIn(target, json.dumps(messages[-2].output))
+                plan = self.runtime.tasks.working_plan_snapshot()
+                call = ToolCall("verify-plan", "update_plan", {"plan_id": plan["plan_id"],
+                    "expected_revision": plan["revision"], "operations": [
+                        {"op": "cancel", "task": plan["tasks"][0]["id"]},
+                        {"op": "add", "ref": "verify", "task": {
+                            "description": "Inspect the selected Git commit",
+                            "acceptance": [{"criterion": "Inspect the commit", "verification": verification}],
+                        }},
+                        {"op": "start", "task": "verify"},
+                    ]})
+            elif step == 5:
+                self.assertEqual(self.runtime.tasks.working_plan_snapshot()["status"], "active")
+            return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+        provider = self.provider(respond)
+        with patch.object(self.runtime, "_effective_execution_capabilities", return_value={"read", "write"}):
+            answer, turn, _ = self.run_native(provider,
+                [{"role": "user", "content": fixture["prompt"]}], complexity="complex",
+                permitted={"update_plan", "discover_tools", "read_tool_artifact", "git_log", "git_show"})
+        schemas = [{tool["name"] for tool in (request or [])} for request in provider.tool_requests]
+        self.assertEqual(turn.runtime_status, "completed", (answer, schemas, turn.tool_records))
+        self.assertTrue(all("run_cmd" not in names for names in schemas))
+        self.assertEqual(schemas[0], {"update_plan", "read_tool_artifact"})
+        self.assertNotIn("git_log", schemas[1])
+        self.assertTrue({"git_log", "git_show"} <= schemas[2])
+        self.assertIn(target, answer)
+        snapshot = self.runtime.tasks.working_plan_snapshot()
+        self.assertEqual(snapshot["status"], "completed")
+        self.assertEqual([task["status"] for task in snapshot["tasks"]], ["cancelled", "succeeded"])
+        accepted, = [record for record in turn.tool_records if record["acceptance"]]
+        self.assertEqual(accepted["action"], "git_show")
+        self.assertEqual(accepted["verification"], {"status": "verified", "method": "git_commit_identity",
+            "observed": {"commit": prepared["expected_commit_full"]}})
+
+    @unittest.skipUnless(shutil.which("git"), "Git is required for history verification")
+    def test_git_show_tree_cannot_complete_commit_acceptance(self):
+        from benchmarks.v3_matched_live import FIXTURES, prepare_fixture
+
+        fixture = next(item for item in FIXTURES if item["fixture_id"] == "git_history-1")
+        prepare_fixture(self.root, fixture)
+        tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=self.root, text=True).strip()
+        arguments = {"reference": tree}
+        plan = self.runtime.tasks.edit_plan(complexity="complex", expected_revision=0, operations=[
+            {"op": "add", "ref": "verify", "task": {"description": "Inspect a commit", "acceptance": [
+                {"criterion": "Read commit", "verification": {"action": "git_show", "arguments": arguments}},
+            ]}},
+            {"op": "start", "task": "verify"},
+        ])
+        with patch.object(self.runtime, "_effective_execution_capabilities", return_value={"read", "write"}):
+            result = self.runtime._execute_turn_action("git_show", arguments, operation_scope="git-tree",
+                successful_operations=set(), call_id="git-tree", call_id_source="native",
+                task_id=plan["task_ids"][0])
+        self.assertTrue(result.success)
+        self.assertEqual(result.verification["status"], "not_applicable")
+        self.assertEqual(self.runtime.tasks.working_plan_snapshot()["status"], "active")
+
     def continuation_plan(self, *, typed=True):
         (self.root / "notes.txt").write_text("ready\n")
         return self.runtime.tasks.edit_plan(complexity="complex", expected_revision=0, operations=[{

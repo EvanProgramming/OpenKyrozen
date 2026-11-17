@@ -254,6 +254,7 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
             tool_result = candidate
     confirmation_result = (tool_result if tool_result is not None
                            and tool_result.metadata.get("working_plan_confirmation") is True else None)
+    git_commit = tool_result.metadata.get("git_commit") if canonical == "git_show" and tool_result is not None else None
     # Keep large outputs out of provider messages and the conversation journal.
     if tool_result is not None and canonical != "read_tool_artifact":
         from openkyrozen.agent.conversation import tool_result_to_dict
@@ -305,6 +306,8 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
             "status": "verified" if effect_verified else "failed",
             "method": "file_content_match", "observed": effect,
         }
+    elif git_commit and success:
+        verification = {"status": "verified", "method": "git_commit_identity", "observed": {"commit": git_commit}}
     elif getattr(expected_spec, "side_effects", None) == "read_only":
         verification = {"status": "not_applicable", "method": "read_only_tool", "observed": None}
     if canonical == "update_plan" and call_id_source == "native" and expected_spec is not None:

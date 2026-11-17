@@ -21,6 +21,8 @@ Native builtin `discover_tools` calls retain their global receipts but do not es
 
 ### Create, start, and verify a Working Plan
 
+For Git history, start an inspection task and use `discover_tools` if Git tools are absent from the current list. Once `git_log` identifies the commit, an ordinary verification task can use `git_show` with that commit hash in its typed acceptance. The selected task completes when the exact read succeeds.
+
 New tasks omit `id`; the runtime allocates their durable IDs. In the compatibility `complexity`/`tasks` form, a supplied `task.id` must already belong to the active plan. Do not mix that form with `operations`, `plan_id`, `expected_revision`, or `reason`. To create a canonical plan, omit `plan_id` and set `expected_revision` to zero. Later edits use the latest returned `plan_id`, revision, and task IDs. An `add.ref` is only a local reference for later operations in the same batch.
 
 For example, these `update_plan` arguments create and explicitly start a read task:

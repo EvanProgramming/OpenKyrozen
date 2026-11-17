@@ -242,16 +242,22 @@ class TaskManager:
                     raise ValueError("verified criteria require criterion/verification objects; do not mix with prose")
                 verification = validate_acceptance_verification(value["verification"])
                 action = verification["action"]
-                if action not in {"read_file", "run_cmd"}:
-                    raise ValueError("ordinary verified criteria support read_file and run_cmd")
+                prefixes = {"read_file": "read-ac-", "run_cmd": "command-ac-", "git_show": "git-ac-"}
+                if action not in prefixes:
+                    raise ValueError("ordinary verified criteria support read_file, run_cmd, and git_show")
                 if action == "run_cmd":
                     command = verification["arguments"].get("command")
                     if not isinstance(command, str) or not command.strip():
                         raise ValueError("run_cmd verification requires a nonempty command")
+                if action == "git_show":
+                    reference = verification["arguments"].get("reference")
+                    if (set(verification["arguments"]) != {"reference"} or not isinstance(reference, str)
+                            or not re.fullmatch(r"[0-9a-fA-F]{7,64}", reference)):
+                        raise ValueError("git_show verification requires a commit hash of 7 to 64 hexadecimal characters")
                 criterion = value["criterion"].strip()
                 identity = json.dumps({"criterion": criterion, "verification": verification},
                                       sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-                criteria.append({"id": ("read-ac-" if action == "read_file" else "command-ac-")
+                criteria.append({"id": prefixes[action]
                                        + hashlib.sha256(identity.encode()).hexdigest()[:12],
                     "criterion": criterion, "action": action,
                     **({"expect": verification["expect"]} if action == "read_file" else {}),
@@ -1083,6 +1089,11 @@ class TaskManager:
                         verification_status != "verified"
                         or inferred
                         or candidate["status"] != "running"
+                        or not (candidate.get("checkpoint") or {}).get("native_execution_selected")
+                    ):
+                        continue
+                    if canonical == "git_show" and criterion["id"].startswith("git-ac-") and (
+                        verification_status != "verified" or inferred or candidate["status"] != "running"
                         or not (candidate.get("checkpoint") or {}).get("native_execution_selected")
                     ):
                         continue
