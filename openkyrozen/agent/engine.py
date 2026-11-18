@@ -491,7 +491,7 @@ class AgentEngine:
                 from openkyrozen.agent.conversation import tool_result_to_dict
                 outcome = receipt.tool_result or ToolResult(data=receipt.result_data, text=receipt.result)
                 reply_data = tool_result_to_dict(outcome)
-                if runtime.execution_context.child_run_id and receipt.success:
+                if getattr(runtime.execution_context, "child_run_id", None) and receipt.success:
                     reply_data["metadata"]["receipt_id"] = receipt.receipt_id
                 if outcome.success and call["action"] == "update_plan":
                     active_task_id = runtime.tasks.execution_task_id
