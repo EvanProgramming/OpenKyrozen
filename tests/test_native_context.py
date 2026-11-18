@@ -393,14 +393,19 @@ class NativeContextTests(unittest.TestCase):
                     "expected_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                     "old_text": "return page * size", "new_text": "return (page - 1) * size"})
             elif step == 4:
-                call = ToolCall("verify-offset", "read_file", inspect)
+                call = ToolCall("partial-offset", "read_file", {**inspect, "start_line": 2})
+            elif step == 5:
+                self.assertEqual(self.runtime.tasks.working_plan.status, "active")
+                call = ToolCall("verify-offset", "read_file", {
+                    **inspect, "start_line": 1, "max_lines": 200, "max_chars": 4000,
+                })
             else:
                 self.assertEqual(self.runtime.tasks.working_plan.status, "completed")
                 block, availability = self.availability(messages)
                 self.assertEqual(set(availability["current_call_tools"]),
                                  {"update_plan", "read_tool_artifact", "propose_plan"})
                 self.assertIn("material", block)
-                if step == 5:
+                if step == 6:
                     self.assertEqual(messages[-1], {"role": "system", "content": block})
                     call = ToolCall("no-revision", "propose_plan", _initial_plan(fixture))
                 else:
@@ -416,7 +421,7 @@ class NativeContextTests(unittest.TestCase):
         answer, turn, _ = self.run_native(provider, [{"role": "user", "content": fixture["prompt"]}],
             complexity="complex", permitted=self.runtime._permitted_tool_names())
         self.assertEqual([item["success"] for item in turn.tool_records],
-                         [True, True, True, True, False, True], answer)
+                         [True, True, True, True, True, False, True], answer)
         state = controller.state()
         pending = state["pending_plan"]
         self.assertEqual(pending["plan_id"], accepted["plan_id"])

@@ -1077,12 +1077,18 @@ class TaskManager:
             checkpoint = (candidate or {}).get("checkpoint") or {}
             if (candidate is not None and whole_read_args and success and canonical == "read_file"
                     and verification_status == "not_applicable" and candidate["status"] == "running"
-                    and checkpoint.get("native_execution_selected") and not checkpoint.get("strategic_plan")):
-                equivalent_read_ids = {
-                    criterion["id"] for criterion in candidate.get("acceptance", [])
-                    if isinstance(criterion, dict) and criterion.get("id", "").startswith("read-ac-")
-                    and criterion.get("action") == canonical and criterion.get("args") == whole_read_args
-                }
+                    and checkpoint.get("native_execution_selected")):
+                strategic = checkpoint.get("strategic_plan")
+                approved_ids = (strategic or {}).get("acceptance_ids", ())
+                for criterion in candidate.get("acceptance", []):
+                    if (not isinstance(criterion, dict) or criterion.get("action") != canonical
+                            or criterion.get("args") != whole_read_args):
+                        continue
+                    criterion_id = criterion.get("id", "")
+                    declared_read = (criterion_id in approved_ids if strategic
+                                     else criterion_id.startswith("read-ac-"))
+                    if declared_read:
+                        equivalent_read_ids.add(criterion_id)
             # An explicit identity is authoritative, but a stored action
             # contract still has to agree before successful evidence can be
             # attached to that task.

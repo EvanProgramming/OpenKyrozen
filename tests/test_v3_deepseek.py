@@ -15,6 +15,39 @@ from benchmarks import v3_matched
 
 
 class DeepSeekStrictChatTests(unittest.TestCase):
+    def test_strict_plan_update_projects_optional_union_fields_without_expansion(self):
+        from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_schema
+        from openkyrozen.tools.catalog import _SCHEMAS
+        from openkyrozen.tools.manifest import ToolRegistry
+
+        schema = _SCHEMAS["update_plan"]
+        wire = strict_chat_schema(schema)
+        definitions = wire["$def"]
+        operations = wire["properties"]["operations"]["anyOf"][0]
+        variants = definitions[operations["items"]["$ref"].rsplit("/", 1)[-1]]["anyOf"]
+        update = next(item for item in variants if item["properties"]["op"]["enum"] == ["update"])
+        fields = definitions[update["properties"]["fields"]["$ref"].rsplit("/", 1)[-1]]
+        self.assertEqual(set(fields["required"]), {"description", "acceptance", "dependencies", "priority", "execution"})
+        self.assertNotIn("anyOf", fields)
+        self.assertLess(len(json.dumps(wire, separators=(",", ":"))), 12_000)
+
+        omitted = {"omit": True}
+        nested = dict.fromkeys(fields["required"], omitted)
+        structured = [{"criterion": "Read source", "verification": {
+            "action": "read_file", "arguments": {"path": "source.py"}, "expect": {"contains": "definition"},
+        }}]
+        for acceptance in (["Verified"], structured, omitted):
+            with self.subTest(acceptance=acceptance):
+                row = {**nested, "acceptance": acceptance}
+                arguments = {"plan_id": "plan-1", "expected_revision": 1, "reason": "Refine verification",
+                             "operations": [{"op": "update", "task": "task-1", "fields": row}]}
+                raw = {name: arguments.get(name, omitted) for name in wire["properties"]}
+                decoded = json.loads(decode_strict_chat_arguments(json.dumps(raw), schema))
+                expected_valid = acceptance != omitted
+                if expected_valid:
+                    self.assertEqual(decoded["operations"][0]["fields"], {"acceptance": acceptance})
+                self.assertEqual(ToolRegistry._argument_error(schema, decoded) is None, expected_valid)
+
     def test_closed_plan_union_uses_flat_fields_and_explicit_omission(self):
         from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_schema
         from openkyrozen.tools.catalog import _SCHEMAS

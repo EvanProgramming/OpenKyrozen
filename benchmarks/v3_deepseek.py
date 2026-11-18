@@ -81,6 +81,7 @@ _STRICT_MAP_DEFINITIONS = {
     ]},
 }
 
+
 def _flat_optional_fields(schema):
     properties = schema.get("properties", {})
     if schema.get("type") != "object" or schema.get("additionalProperties") is not False:
@@ -91,9 +92,14 @@ def _flat_optional_fields(schema):
         return ()
     for name in optional:
         field = properties[name]
-        if (field.get("type") not in {"string", "number", "integer", "boolean", "array"}
-                and not (field.get("type") == "object" and field.get("additionalProperties") is False
-                         and "omit" not in field.get("properties", {}))):
+        alternatives = field.get("anyOf", (field,)) if "type" not in field else (field,)
+        # The omission marker must be disjoint from every allowed value of the field.
+        if not alternatives or any(
+            choice.get("type") not in {"string", "number", "integer", "boolean", "array"}
+            and not (choice.get("type") == "object" and choice.get("additionalProperties") is False
+                     and "omit" not in choice.get("properties", {}))
+            for choice in alternatives
+        ):
             return ()
     return optional
 
