@@ -2,6 +2,7 @@
 from contextlib import ExitStack, closing
 from copy import deepcopy
 from dataclasses import replace
+from functools import wraps
 import json
 import os
 from pathlib import Path
@@ -20,7 +21,7 @@ from openkyrozen.providers.models import provider_identity, validate_tool_histor
 from openkyrozen.providers.models import provider_continuation
 from openkyrozen.security.capabilities import issue_capability_token
 from openkyrozen.tools import ToolAdapters
-from openkyrozen.tools.models import tool_failure, tool_success
+from openkyrozen.tools.models import invoke_tool_result, legacy_text_api, tool_failure, tool_success
 
 
 class PlanValidationFeedbackTests(unittest.TestCase):
@@ -192,9 +193,23 @@ class PlanValidationFeedbackTests(unittest.TestCase):
             session, ToolCall("wrong", "read_file", {**args, "path": "other.py"}), task_id=task_id)
         self.assertTrue(wrong.success)
         self.assertEqual(self.runtime.tasks.tasks[0]["status"], "running")
-        receipt = self.runtime.execute_call(session, ToolCall("full", "read_file", args), task_id=task_id)
+        original_read = ToolAdapters.read_file
+
+        @legacy_text_api
+        @wraps(original_read)
+        def proxied_read(adapter, arguments):
+            return invoke_tool_result(original_read.__get__(adapter), arguments)
+
+        adapter = self.registry.get_spec("read_file").executor.__self__
+        with patch.object(ToolAdapters, "read_file", proxied_read):
+            self.registry.register("read_file", adapter.read_file)
+            receipt = self.runtime._execute_turn_action(
+                "read_file", args, operation_scope="read-review", successful_operations=set(),
+                call_id="full", call_id_source="native", task_id=task_id, task_plan_id=created.data["plan_id"])
+        recorded = self.runtime._record_turn_receipt(receipt)
         self.assertTrue(receipt.success)
         self.assertEqual(receipt.arguments, args)
+        self.assertEqual(recorded["task_id"], task_id)
         completed = self.runtime.tasks.tasks[0]
         self.assertEqual(completed["status"], "succeeded")
         self.assertEqual(completed["evidence"][-1]["args_sha256"], receipt.args_sha256)

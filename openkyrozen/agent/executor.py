@@ -310,6 +310,17 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         verification = {"status": "verified", "method": "git_commit_identity", "observed": {"commit": git_commit}}
     elif getattr(expected_spec, "side_effects", None) == "read_only":
         verification = {"status": "not_applicable", "method": "read_only_tool", "observed": None}
+        if canonical == "read_file" and call_id_source == "native" and authorized and success:
+            from openkyrozen.tools import ToolAdapters
+            data = tool_result.data if tool_result is not None else None
+            executor = getattr(expected_spec.executor, "__func__", None)
+            read_executor = getattr(ToolAdapters.read_file, "__tool_result_executor__", None)
+            if (expected_spec.source == "builtin" and executor is not None and executor is read_executor
+                    and isinstance(data, dict) and isinstance(data.get("content"), str)
+                    and data.get("truncated") is False and data.get("start_line") == 1
+                    and data.get("end_line") == data.get("total_lines")
+                    and hashlib.sha256(data["content"].encode("utf-8")).hexdigest() == data.get("sha256")):
+                verification["observed"] = {"complete_file": True}
     if canonical == "update_plan" and call_id_source == "native" and expected_spec is not None:
         from openkyrozen.agent.plan_tools import _update_plan
         executor = expected_spec.executor
@@ -924,7 +935,8 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
                      json.dumps(receipt.arguments, ensure_ascii=False, allow_nan=False,
                                 sort_keys=True, separators=(",", ":"))
                      if receipt.arguments is not None else receipt.args)
-    criterion_status = receipt.verification.get("status")
+    verification = receipt.verification
+    criterion_status = verification.get("status")
     read_content = None
     whole_read_args = None
     if receipt.action == "read_file":
@@ -934,16 +946,13 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
             read_content = data["content"]
             arguments = receipt.arguments or {}
             path = arguments.get("path")
-            if (local_scope and explicit_task_id and receipt.authorized and receipt.success
-                    and receipt.call_id_source == "native" and receipt.tool_source == "builtin"
+            observed = verification.get("observed")
+            if (local_scope and explicit_task_id and receipt.authorized and receipt.call_id_source == "native"
+                    and receipt.tool_source == "builtin" and verification.get("method") == "read_only_tool"
+                    and isinstance(observed, dict) and observed.get("complete_file") is True
                     and isinstance(path, str) and len(arguments) > 1
-                    and arguments.keys() <= {"path", "start_line", "max_lines", "max_chars"}
-                    and data.get("start_line") == 1 and data.get("end_line") == data.get("total_lines")
-                    and hashlib.sha256(read_content.encode("utf-8")).hexdigest() == data.get("sha256")):
-                from openkyrozen.tools.filesystem import read_file
-                spec = self._approval_tool_spec.get()
-                if getattr(getattr(spec, "executor", None), "__func__", None) is read_file.__tool_result_executor__:
-                    whole_read_args = json.dumps({"path": path}, ensure_ascii=False, separators=(",", ":"))
+                    and arguments.keys() <= {"path", "start_line", "max_lines", "max_chars"}):
+                whole_read_args = json.dumps({"path": path}, ensure_ascii=False, separators=(",", ":"))
         else:
             criterion_status = "unavailable"
     evidence = {} if not reconcile_locally or receipt.action in TOOLS or not should_reconcile else task_manager.record_evidence(
