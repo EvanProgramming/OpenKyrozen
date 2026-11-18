@@ -386,6 +386,9 @@ class NativeContextTests(unittest.TestCase):
                 self.assertIn("read_file", available["current_call_tools"])
                 self.assertIn("edit_file", available["current_call_tools"])
                 self.assertNotIn("run_cmd", available["current_call_tools"])
+                plan_schema = next(tool["parameters"] for tool in provider.tool_requests[-1]
+                                   if tool["name"] == "update_plan")
+                self.assertIn('"anchor"', json.dumps(plan_schema))
                 call = ToolCall("inspect-paging", "read_file", inspect)
             elif step == 2:
                 plan = self.runtime.tasks.working_plan

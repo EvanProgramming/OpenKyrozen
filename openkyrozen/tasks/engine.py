@@ -507,6 +507,8 @@ class TaskManager:
         }
         if saved is None and not any(isinstance(item, dict) and item.get("op") == "add" for item in operations):
             raise ValueError("a new Working Plan requires at least one add operation")
+        has_edits = any(isinstance(operation, dict) and operation.get("op") != "suggest_complete"
+                        for operation in operations)
         for operation in operations:
             if not isinstance(operation, dict) or operation.get("op") not in allowed_by_op:
                 raise ValueError("each plan operation requires a supported op")
@@ -516,6 +518,8 @@ class TaskManager:
                 raise ValueError(f"{kind} operation has missing or unsupported fields")
             if kind == "add":
                 if "anchor" in operation:
+                    if not has_strategic_tasks:
+                        raise ValueError("For ordinary work, omit anchor and use task.dependencies to order tasks")
                     add_strategy(resolve(operation["anchor"]), operation["ref"], operation["task"])
                     continue
                 ref = operation["ref"]
@@ -687,6 +691,10 @@ class TaskManager:
                 current = by_id[task_id]
                 if _unknown_recovery_effect(current):
                     raise ValueError("interrupted effects require trusted reconciliation before execution")
+                if kind == "suggest_complete" and has_edits and current["status"] == "succeeded":
+                    if not self._task_has_evidence(current):
+                        raise ValueError("completion confirmation requires a verified succeeded task")
+                    continue
                 if (current["status"] not in {"pending", "running"}
                         or not self._dependencies_succeeded(current, tasks)):
                     raise ValueError("task must be active with all dependencies satisfied")

@@ -493,6 +493,16 @@ class AgentEngine:
                 reply_data = tool_result_to_dict(outcome)
                 if getattr(runtime.execution_context, "child_run_id", None) and receipt.success:
                     reply_data["metadata"]["receipt_id"] = receipt.receipt_id
+                if selected_task_id and record.get("success") and record.get("task_id") == selected_task_id:
+                    current_plan = runtime.tasks.working_plan
+                    if (current_plan and current_plan.id == record.get("plan_id")
+                            and selected_task_id in current_plan.task_ids
+                            and any(task["id"] == selected_task_id and task["status"] == "succeeded"
+                                    for task in runtime.tasks.tasks)):
+                        reply_data["working_plan_progress"] = {
+                            "plan_id": current_plan.id, "revision": current_plan.revision,
+                            "task_id": selected_task_id, "task_status": "succeeded",
+                        }
                 if outcome.success and call["action"] == "update_plan":
                     active_task_id = runtime.tasks.execution_task_id
                     if active_task_id and active_task_id != selected_task_id:

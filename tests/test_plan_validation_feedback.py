@@ -136,6 +136,45 @@ class PlanValidationFeedbackTests(unittest.TestCase):
             self.runtime._active_interaction_mode.reset(token)
         self.assertEqual(messages, [])
 
+    def test_active_replan_confirms_verified_work_and_adds_a_dependent_task_atomically(self):
+        existing = self.invoke({"expected_revision": 0, "operations": [
+            {"op": "add", "ref": "inspect", "task": self.task()},
+            {"op": "add", "ref": "repair", "task": {"description": "Repair the issue", "acceptance": []}},
+            {"op": "start", "task": "inspect"},
+        ]})
+        self.assertTrue(existing.success, existing.text)
+        self.assertTrue(self.read().success)
+        manager = self.runtime.tasks
+        snapshot = manager.working_plan_snapshot()
+        verified, repair = (task["id"] for task in snapshot["tasks"])
+        self.assertEqual(snapshot["tasks"][0]["status"], "succeeded")
+        scope = {"user_id": manager.user_id, "workspace_id": manager.workspace_id,
+                 "session_id": manager.session_id}
+        original = manager.store.list_working_plan_tasks(snapshot["plan_id"], **scope)[0]
+        edit = {"op": "add", "ref": "verify", "task": {**self.task(), "dependencies": [repair]}}
+        arguments = {"plan_id": snapshot["plan_id"], "expected_revision": snapshot["revision"],
+                     "reason": "Add follow-up verification", "operations": [
+                         {"op": "suggest_complete", "task": verified}, edit,
+                     ]}
+        for anchor in (repair, verified):
+            with self.subTest(anchor=anchor):
+                arguments["operations"][1] = {**edit, "anchor": anchor}
+                rejected = self.invoke(arguments)
+                self.assertFalse(rejected.success)
+                self.assertIn("omit anchor and use task.dependencies", rejected.text)
+                self.assertNotIn("Omit task.id", rejected.text)
+                self.assertEqual(manager.working_plan_snapshot(), snapshot)
+
+        arguments["operations"][1] = edit
+        added = self.invoke(arguments)
+        self.assertTrue(added.success, added.text)
+        self.assertEqual(added.data["revision"], snapshot["revision"] + 1)
+        durable = manager.store.list_working_plan_tasks(snapshot["plan_id"], **scope)
+        self.assertEqual(durable[0], original)
+        self.assertEqual(added.data["tasks"][-1]["dependencies"], [repair])
+        self.assertEqual(added.data["tasks"][-1]["status"], "pending")
+        self.assertFalse(self.invoke(arguments).success)
+
     def test_explicit_read_predicate_needs_start_and_exact_content_and_survives_reopen(self):
         plan = self.create_read_task()
         receipt = self.read()
@@ -555,6 +594,8 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                 elif self.calls == 2:
                     state = self.plan_state(messages)
                     case.assertEqual(state["status"], "active")
+                    plan_schema = next(tool["parameters"] for tool in tools if tool["name"] == "update_plan")
+                    case.assertNotIn('"anchor"', json.dumps(plan_schema))
                     created = next(item for item in messages if isinstance(item, ToolReply)
                                    and item.call_id == "create-start")
                     case.assertEqual(created.output["data"]["plan_id"], state["plan_id"])
@@ -566,6 +607,11 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                     case.assertEqual(state["plan_id"], before["visible_plan"]["plan_id"])
                     case.assertEqual(state["revision"], before["visible_plan"]["revision"])
                     case.assertEqual(state["tasks"][0]["status"], "succeeded")
+                    read = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "read")
+                    case.assertEqual(read.output["working_plan_progress"], {
+                        "plan_id": state["plan_id"], "revision": state["revision"],
+                        "task_id": state["tasks"][0]["id"], "task_status": "succeeded",
+                    })
                     # Bounded results stay available until the current turn ends.
                     created = next(item for item in messages if isinstance(item, ToolReply)
                                    and item.call_id == "create-start")

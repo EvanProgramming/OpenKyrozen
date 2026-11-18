@@ -121,6 +121,16 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                  if registry.get_spec(item["name"]).capability in allowed or item["name"] in history_names]
         current_names = {item["name"] for item in tools if item["name"] in requested_names
                          and registry.get_spec(item["name"]).capability in allowed}
+        if "update_plan" in current_names and registry.get_spec("update_plan").source == "builtin":
+            plan = getattr(getattr(self, "tasks", None), "working_plan", None)
+            accepted = (self._interaction_controller.state().get("executing_plan")
+                        if plan and plan.status == "active" else None)
+            if not accepted or accepted.get("working_plan_id") != plan.id:
+                schema = next(item["parameters"] for item in tools if item["name"] == "update_plan")
+                for shape in (schema, *schema.get("anyOf", ())):
+                    operations = shape.get("properties", {}).get("operations", {})
+                    for operation in operations.get("items", {}).get("anyOf", ()):
+                        operation["properties"].pop("anchor", None)
         history_only = {item["name"] for item in tools} - current_names
         marker = "## Current native tool availability\n"
         previous = list(messages)

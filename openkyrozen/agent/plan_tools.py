@@ -82,14 +82,16 @@ def _update_plan(self, arguments: dict):
     its verification changes after start, cancel it and add a new task.
     Use start with a stable returned task ID before
     executing native task work, then suggest_complete to check existing verified
-    evidence; a completion suggestion never supplies evidence. A pure exact-revision
+    evidence; a completion suggestion never supplies evidence. A succeeded task
+    is already verified. Use add with task.dependencies for ordinary follow-up work.
+    A pure exact-revision
     suggestion for verified tasks in the current completed plan is a read-only
     confirmation: use ONLY plan_id, expected_revision and operations containing
     suggest_complete; omit reason, complexity, tasks and all other metadata.
     The snapshot reason is saved state, not a confirmation argument.
     Historical plans and other terminal edits remain rejected. Split of an
     approved objective retains its immutable acceptance anchor and adds strategy
-    children. Add anchor=<approved task ID> for in-scope investigation/verification.
+    children. Set add.anchor only for an approved Strategic Plan objective.
     """
     def validate_strategy(binding, execution):
         from openkyrozen.agent.executor import _strategic_plan_denial
@@ -138,10 +140,15 @@ def _update_plan(self, arguments: dict):
     except (KeyError, TypeError, ValueError) as exc:
         ordinary = not self._interaction_controller.state().get("executing_plan") and not any(
             (task.get("checkpoint") or {}).get("strategic_plan") for task in self.tasks.tasks)
-        return tool_failure("invalid_arguments", (
-            f"Error: invalid Working Plan: {str(exc)[:300]}. Omit task.id for new tasks; use add.ref for local references. "
-            "Use the runtime plan_id/revision below for edits; if no plan exists, omit plan_id and use expected_revision=0."
-        ), retriable=True, data={"working_plan": self.tasks.working_plan_snapshot()},
+        snapshot = self.tasks.working_plan_snapshot()
+        if "operations" not in arguments:
+            hint = " Omit task.id for new tasks; use add.ref for local references."
+        elif snapshot is None:
+            hint = " To create a plan, omit plan_id and use expected_revision=0."
+        else:
+            hint = " Use the current plan_id and revision below."
+        return tool_failure("invalid_arguments", f"Error: invalid Working Plan: {str(exc)[:300]}.{hint}",
+            retriable=True, data={"working_plan": snapshot},
             metadata={"plan_validation_no_effect": self.tasks._plan_commit_attempts == commit_attempts and ordinary})
     return tool_success(
         "Working Plan updated.",
