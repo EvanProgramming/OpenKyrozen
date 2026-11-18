@@ -345,6 +345,8 @@ class AgentEngine:
             if unknown_tools:
                 if final_answer_requested:
                     turn.protocol_error_message = "The provider called a tool during the final-answer request; no tool was run."
+                elif completed_plan:
+                    turn.protocol_error_message = "The Working Plan is complete. A tool outside the completed plan's available tools was requested and was not run."
                 else:
                     turn.protocol_error_message = ("A Working Plan is required before other tools can run."
                                                    if needs_plan else

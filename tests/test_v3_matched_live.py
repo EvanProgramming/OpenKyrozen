@@ -599,7 +599,10 @@ class V3MatchedLiveTests(unittest.TestCase):
                          "reorder_after_dependency_discovery", "cancel_replace"} <= scenarios)
 
     def test_discovered_task_scenario_requires_an_actual_plan_revision(self):
+        from benchmarks.v3_matched_live import _fixture_prompt
+
         fixture = next(item for item in FIXTURES if item["fixture_id"] == "bug_fix-1")
+        self.assertIn("Add a separate verification task for the empty-input failure", _fixture_prompt(fixture))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             prepared = prepare_fixture(root, fixture)
@@ -609,9 +612,12 @@ class V3MatchedLiveTests(unittest.TestCase):
                                        for text in ["reproduce", "fix"]]}
             rejected = verify_fixture(fixture, root, "fixed", worker, prepared)
             worker["plan_revisions"] = 1
+            worker["task_records"].append({"description": "verify non-sized iterators", "status": "succeeded"})
+            wrong_edge_case = verify_fixture(fixture, root, "fixed", worker, prepared)
             worker["task_records"].append({"description": "verify empty iterable", "status": "succeeded"})
             accepted = verify_fixture(fixture, root, "fixed", worker, prepared)
         self.assertFalse(rejected["plan_scenario_passed"])
+        self.assertFalse(wrong_edge_case["plan_scenario_passed"])
         self.assertTrue(accepted["plan_scenario_passed"])
 
     def test_physical_outcome_is_separate_from_incomplete_plan_workflow(self):

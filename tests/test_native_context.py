@@ -191,6 +191,9 @@ class NativeContextTests(unittest.TestCase):
                     self.assertIn(("Planning-required exposure is temporary" if step == 1 else
                                    "The Working Plan is active now. Use current_call_tools in this request" if step == 2 else
                                    "Completed-plan exposure is confirmation-only"), block)
+                    if step > 2:
+                        self.assertEqual(messages[-1]["content"], block)
+                        self.assertIn("Answer the original request using the verified results", block)
                     validate_tool_history(messages, provider_id=provider_identity(provider), model=model, native=True)
                     if step == 1:
                         pinned = next(item["content"] for item in messages if isinstance(item, dict)
@@ -864,7 +867,7 @@ class NativeContextTests(unittest.TestCase):
         self.assertIsNone(engine._working_plan_continuation(turn))
 
     def test_native_completed_plan_requests_final_text_once_without_granting_tools(self):
-        for fallback in ("answer", "empty", "tool"):
+        for fallback in ("answer", "empty", "tool", "completed-tool"):
             with self.subTest(fallback=fallback):
                 self.runtime.tasks.clear()
                 plan = self.continuation_plan()
@@ -878,8 +881,11 @@ class NativeContextTests(unittest.TestCase):
                         call = ToolCall("verify", "read_file", {"path": "notes.txt"})
                     elif step == 3:
                         self.assertEqual(self.runtime.tasks.working_plan.status, "completed")
-                        return ModelResponse(text="", finish_reason=FinishReason.FINAL,
-                            continuation=provider_continuation(provider, model, "fixture", {"final": True}))
+                        if fallback == "completed-tool":
+                            call = ToolCall("unexpected", "read_file", {"path": "notes.txt"})
+                        else:
+                            return ModelResponse(text="", finish_reason=FinishReason.FINAL,
+                                continuation=provider_continuation(provider, model, "fixture", {"final": True}))
                     else:
                         self.assertEqual(step, 4)
                         self.assertIsInstance(messages[-2], ModelResponse)
@@ -895,12 +901,14 @@ class NativeContextTests(unittest.TestCase):
                 provider = self.provider(respond)
                 answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Verify notes.txt"}],
                     complexity="complex", permitted={"update_plan", "read_file", "read_tool_artifact"})
-                self.assertEqual(len(provider.requests), 4, answer)
+                self.assertEqual(len(provider.requests), 3 if fallback == "completed-tool" else 4, answer)
                 self.assertEqual(turn.runtime_status, "completed" if fallback == "answer" else "incomplete")
                 self.assertEqual([record["action"] for record in turn.tool_records], ["update_plan", "read_file"])
                 self.assertEqual(self.runtime.tasks.working_plan.status, "completed")
                 if fallback == "tool":
                     self.assertIn("final-answer request", turn.protocol_error_message)
+                elif fallback == "completed-tool":
+                    self.assertIn("Working Plan is complete", turn.protocol_error_message)
 
     def run_discovery_plan(self, *, typed, streaming):
         (self.root / "catalog.py").write_text("def sorted_products(names):\n    return sorted(names, key=lambda n: (n.casefold(), n))\n")

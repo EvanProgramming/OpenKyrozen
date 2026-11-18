@@ -135,17 +135,20 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                              "runtime-provided artifact_id. It does not open workspace files. ",
             "plan_active": "The Working Plan is active now. Use current_call_tools in this request "
                            "for the selected task's next action. ",
-            "plan_completed": "Completed-plan exposure is confirmation-only; use the current plan's returned IDs and revision. ",
+            "plan_completed": "Completed-plan exposure is confirmation-only. The final tool reply may already have "
+                              "verified the last task. Answer the original request using the verified results. "
+                              "If explicitly asked to confirm the plan, use update_plan with the current IDs and revision. ",
         }.get(_native_tool_phase, "")
         if _native_tool_phase == "plan_active" and "discover_tools" in current_names:
             phase_guidance += "Use discover_tools if a permitted tool is missing from the compact list. "
         can_propose_revision = _native_tool_phase == "plan_completed" and "propose_plan" in current_names
         if can_propose_revision:
             phase_guidance = ("The Working Plan is complete. Use update_plan only to confirm completed work, "
-                              "or propose_plan to stage a material revision for renewed approval. ")
+                              "or propose_plan to stage a material revision for renewed approval. "
+                              "Otherwise, answer the original request using the verified results. ")
         after_replies = (
             ((_native_tool_phase == "plan_active" and self.tasks.execution_task_id is not None)
-             or can_propose_revision)
+             or _native_tool_phase == "plan_completed")
             and messages
             and isinstance(messages[-1], ToolReply)
         )

@@ -28,6 +28,10 @@ from benchmarks.v3_responses_relay import (MODEL, MAX_OUTPUT_TOKENS, DEFAULT_REL
 
 BASELINE = "1bfc82c793df49e76097061ec5adfef0e4e2e883"
 REPEATS = 3
+_DISCOVERED_VERIFICATION = {
+    "add_discovered_edge_case": ("empty", "the empty-input failure"),
+    "add_discovered_verification_task": ("duplicate", "the duplicate-name behavior"),
+}
 
 
 def _native_relay_class(policy):
@@ -415,6 +419,10 @@ def _fixture_prompt(fixture: dict) -> str:
                              "For a structured run_cmd call, put the command in the command field by itself. "
                              "For a structured verification task, start the task and use the exact declared argument "
                              "object for the successful test invocation.\n\n")
+    elif fixture.get("plan_scenario") in _DISCOVERED_VERIFICATION:
+        _, focus = _DISCOVERED_VERIFICATION[fixture["plan_scenario"]]
+        case_requirements = (f"Add a separate verification task for {focus} discovered during the work. "
+                             "Name the behavior in the new task and complete it with verification.\n\n")
     return ("Fixture workspace boundary: writable files are only these existing non-test fixture paths: "
             + json.dumps(writable, ensure_ascii=False) + ".\n"
             "Original test files are immutable. Do not create additional workspace files, including "
@@ -696,12 +704,12 @@ def verify_fixture(fixture: dict, root: Path, answer: str, worker: dict, prepare
     final_tasks = [task.get("description", "") for task in worker.get("task_records", [])
                    if isinstance(task, dict)]
     cancelled = int(worker.get("cancelled_tasks", 0))
-    if scenario in {"add_discovered_edge_case", "add_discovered_verification_task"}:
-        required_terms = ("empty",) if fixture["fixture_id"] == "bug_fix-1" else ("duplicate",)
+    if scenario in _DISCOVERED_VERIFICATION:
+        required_term, _ = _DISCOVERED_VERIFICATION[scenario]
         added = [task for task in worker.get("task_records", [])
                  if isinstance(task, dict) and task.get("description") not in initial_tasks]
         scenario_ok = (int(worker.get("plan_revisions", 0)) > 0 and any(
-            all(term in task.get("description", "").casefold() for term in required_terms)
+            required_term in task.get("description", "").casefold()
             and task.get("status") == "succeeded" for task in added))
     elif scenario == "cancel_obsolete_task_after_reproduction":
         scenario_ok = _obsolete_assumption_replaced(fixture, worker, root)
