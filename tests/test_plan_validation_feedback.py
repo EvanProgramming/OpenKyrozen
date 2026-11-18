@@ -573,6 +573,76 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         self.assertIsNone(self.runtime.tasks.working_plan)
         self.assertEqual(self.runtime.tasks.tasks, [])
 
+    @unittest.skipIf(os.name == "nt", "requires POSIX multiline shell commands")
+    def test_native_command_mismatch_preserves_exact_arguments_and_guides_replanning(self):
+        case, runtime = self, self.runtime
+        actual = {"command": "printf first\nprintf second"}
+        declared = {"command": actual["command"].replace("\n", r"\n")}
+        corrected = {"command": "printf verified"}
+
+        def task(arguments):
+            return {"description": "Verify command output", "acceptance": [
+                {"criterion": "The declared command exits successfully",
+                 "verification": {"action": "run_cmd", "arguments": arguments}},
+            ]}
+
+        original = runtime.tasks.edit_plan(expected_revision=0, operations=[
+            {"op": "add", "ref": "verify", "task": task(declared)},
+            {"op": "start", "task": "verify"},
+        ])
+        task_id = original["task_ids"][0]
+        confirmation = self.invoke({"plan_id": original["plan_id"], "expected_revision": original["revision"],
+            "operations": [{"op": "suggest_complete", "task": task_id}]})
+        self.assertTrue(confirmation.success)
+        self.assertIn("Typed acceptance supplies the verification contract", confirmation.text)
+
+        class Provider(LLMProvider):
+            calls = 0
+
+            def get_capabilities(self, model=None):
+                from openkyrozen.providers.models import ProviderCapabilities
+                return ProviderCapabilities(native_tools=True)
+
+            def chat(self, *_args, **_kwargs):
+                raise AssertionError("legacy API used")
+
+            def chat_response(self, messages, model=None, *, tools=None):
+                self.calls += 1
+                if self.calls == 1:
+                    call = ToolCall("mismatch", "run_cmd", actual)
+                elif self.calls == 2:
+                    reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "mismatch")
+                    case.assertFalse(reply.is_error)
+                    case.assertEqual(reply.output["working_plan_progress"]["verification"], "unmatched")
+                    case.assertEqual(reply.output["working_plan_progress"]["task_id"], task_id)
+                    case.assertIn("Compare the exact arguments", reply.output["next_request"])
+                    pin = next(item["content"] for item in messages if isinstance(item, dict)
+                               and item.get("content", "").startswith("## Pinned Working Plan state\n"))
+                    state = json.loads(pin.split("\n", 2)[2])
+                    case.assertEqual(state["tasks"][0]["acceptance"][0]["arguments"], declared)
+                    case.assertEqual(state["tasks"][0]["status"], "running")
+                    call = ToolCall("correct-plan", "update_plan", {"plan_id": state["plan_id"],
+                        "expected_revision": state["revision"], "operations": [
+                            {"op": "cancel", "task": task_id},
+                            {"op": "add", "ref": "corrected", "task": task(corrected)},
+                            {"op": "start", "task": "corrected"},
+                        ]})
+                elif self.calls == 3:
+                    call = ToolCall("verify", "run_cmd", corrected)
+                else:
+                    return ModelResponse(text="Verified.", finish_reason=FinishReason.FINAL)
+                return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                    continuation=provider_continuation(self, model, "fixture", {"step": self.calls}))
+
+        provider = Provider(ProviderConfig(provider="custom", model_simple="fixture"))
+        shell = self.registry.get_spec("run_cmd").capability
+        with patch.object(runtime, "_effective_execution_capabilities", return_value={"read", "write", shell}):
+            answer, _ = self._chat(provider)
+        self.assertEqual(provider.calls, 4)
+        self.assertIn("Plan status: completed", answer)
+        self.assertEqual([item["status"] for item in runtime.tasks.tasks], ["cancelled", "succeeded"])
+        self.assertEqual(runtime.tasks.tasks[0]["evidence"], [])
+
     def test_native_verified_read_then_completion_confirmation_is_read_only(self):
         case, runtime = self, self.runtime
         before = {}

@@ -131,9 +131,11 @@ def _update_plan(self, arguments: dict):
                         if result["status"] == "completed"
                         else "Task already verified. Select the next eligible task from the current Working Plan.")
             if pending:
-                text += (" Completion remains unverified; inspect the returned task acceptance and execution contract. "
-                         "Set the execution contract to name the exact verification tool and arguments before starting work. "
-                         "To revise a running task's contract, cancel it and add a new task.")
+                text += (" Completion remains unverified. Typed acceptance supplies the verification contract. "
+                         "Use its exact tool and arguments from the current Working Plan. For prose-only tasks, "
+                         "declare typed acceptance or an execution contract before starting work. "
+                         "Cancel and replace an ordinary running task to correct its criterion. "
+                         "Changes to approved criteria require renewed approval.")
             return tool_success(text, data=result,
                                 metadata={"working_plan_confirmation": True} if confirmation else None)
         plan = self.tasks.update_plan(complexity=arguments["complexity"], tasks=arguments["tasks"])

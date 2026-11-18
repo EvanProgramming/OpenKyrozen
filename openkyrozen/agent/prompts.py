@@ -305,6 +305,18 @@ def _refresh_working_plan_context(self, messages: list) -> None:
     """Keep a bounded current plan projection outside evictable conversation history."""
     import json
 
+    def criterion_for_prompt(criterion):
+        if not isinstance(criterion, dict) or "args" not in criterion:
+            return criterion
+        try:
+            arguments = json.loads(criterion["args"])
+        except (TypeError, ValueError, RecursionError):
+            return criterion
+        if not isinstance(arguments, dict):
+            return criterion
+        return {**{key: value for key, value in criterion.items() if key != "args"},
+                "arguments": arguments}
+
     marker = "## Pinned Working Plan state\n"
     previous = list(messages)
     messages[:] = [item for item in messages if not (
@@ -348,7 +360,8 @@ def _refresh_working_plan_context(self, messages: list) -> None:
                            "status": task["status"]} for task in completed_tasks]
     state["tasks"] = [{
         **item, "dependencies": tasks_by_id.get(item["id"], {}).get("dependencies", []),
-        "acceptance": tasks_by_id.get(item["id"], {}).get("acceptance", []),
+        "acceptance": [criterion_for_prompt(criterion)
+                       for criterion in tasks_by_id.get(item["id"], {}).get("acceptance", [])],
         "execution": {key: (tasks_by_id.get(item["id"], {}).get("checkpoint") or {}).get(key)
                       for key in ("action", "args")},
     } for item in state["tasks"]]

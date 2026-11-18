@@ -493,16 +493,32 @@ class AgentEngine:
                 reply_data = tool_result_to_dict(outcome)
                 if getattr(runtime.execution_context, "child_run_id", None) and receipt.success:
                     reply_data["metadata"]["receipt_id"] = receipt.receipt_id
-                if selected_task_id and record.get("success") and record.get("task_id") == selected_task_id:
+                if selected_task_id and record.get("success"):
                     current_plan = runtime.tasks.working_plan
                     if (current_plan and current_plan.id == record.get("plan_id")
-                            and selected_task_id in current_plan.task_ids
-                            and any(task["id"] == selected_task_id and task["status"] == "succeeded"
-                                    for task in runtime.tasks.tasks)):
-                        reply_data["working_plan_progress"] = {
+                            and selected_task_id in current_plan.task_ids):
+                        selected = next((task for task in runtime.tasks.tasks if task["id"] == selected_task_id), None)
+                        progress = {
                             "plan_id": current_plan.id, "revision": current_plan.revision,
-                            "task_id": selected_task_id, "task_status": "succeeded",
+                            "task_id": selected_task_id,
                         }
+                        if selected and selected["status"] == "succeeded" and record.get("task_id") == selected_task_id:
+                            reply_data["working_plan_progress"] = {**progress, "task_status": "succeeded"}
+                        elif (call["action"] == "run_cmd" and (record.get("verification") or {}).get("status") == "verified"
+                              and selected and selected["status"] == "running"
+                              and not (selected.get("checkpoint") or {}).get("strategic_plan")
+                              and record.get("task_id") is None and record.get("unmatched_reason")
+                              and record.get("requested_task_id") == selected_task_id
+                              and any(isinstance(criterion, dict) and criterion.get("action") == "run_cmd"
+                                      for criterion in selected.get("acceptance", ()))):
+                            reply_data["working_plan_progress"] = {
+                                **progress, "task_status": "running", "verification": "unmatched",
+                            }
+                            reply_data["next_request"] = (
+                                "The tool succeeded but did not verify the selected task. Compare the exact "
+                                "arguments with the structured acceptance in the pinned Working Plan before "
+                                "taking further action. If the criterion is wrong, cancel and replace the task."
+                            )
                 if outcome.success and call["action"] == "update_plan":
                     active_task_id = runtime.tasks.execution_task_id
                     if active_task_id and active_task_id != selected_task_id:
