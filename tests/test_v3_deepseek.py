@@ -237,6 +237,99 @@ class DeepSeekStrictChatTests(unittest.TestCase):
             finally:
                 relay.close()
 
+    def test_strict_thinking_rejects_forced_tool_choice_before_reservation(self):
+        from benchmarks.v3_deepseek import (DEEPSEEK_ENDPOINT, DEEPSEEK_PRICING,
+                                            DEEPSEEK_STRICT_RELAY_CONFIG, strict_chat_body, strict_chat_tools)
+        from benchmarks.v3_responses_relay import ResponsesRelay
+        from unittest.mock import Mock, patch
+
+        tool = {"name": "probe", "description": "Run a probe.", "parameters": {
+            "type": "object", "properties": {"value": {"type": "string"}},
+            "required": ["value"], "additionalProperties": False,
+        }}
+        body = {"model": "deepseek-flash", "messages": [{"role": "user", "content": "Probe"}],
+                "tools": strict_chat_tools([tool])}
+        for choice in (None, "auto", "none"):
+            self.assertEqual(strict_chat_body({**body, "tool_choice": choice})["tool_choice"], choice)
+
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = v3_matched.BudgetLedger(Path(directory) / "ledger.sqlite", limit_rmb="15",
+                                            pricing=DEEPSEEK_PRICING)
+            relay = ResponsesRelay(endpoint=DEEPSEEK_ENDPOINT, api_key="offline", budget=ledger,
+                                   config=DEEPSEEK_STRICT_RELAY_CONFIG)
+            relay.start()
+            try:
+                upstream = Mock(status_code=400, iter_content=Mock(return_value=iter(())))
+                with patch("benchmarks.v3_responses_relay.requests", post=Mock(return_value=upstream)) as transport:
+                    for choice in ("required", {"type": "function", "function": {"name": "probe"}}):
+                        with self.subTest(choice=choice):
+                            response = requests.post(relay.url + "/chat/completions", timeout=5,
+                                json={**body, "tool_choice": choice},
+                                headers={"Authorization": "Bearer " + relay.client_key})
+                            self.assertEqual(response.status_code, 400)
+                    transport.post.assert_not_called()
+                self.assertEqual(ledger.campaign_calls(), [])
+                self.assertIsNone(relay.provider_error)
+            finally:
+                relay.close()
+
+    def test_strict_interrupted_chat_keeps_usage_and_finish_but_withholds_completion(self):
+        from benchmarks.v3_deepseek import (DEEPSEEK_ENDPOINT, DEEPSEEK_PRICING,
+                                            DEEPSEEK_STRICT_RELAY_CONFIG)
+        from benchmarks.v3_responses_relay import ResponsesRelay
+        from unittest.mock import Mock, patch
+
+        usage = {"prompt_tokens": 9, "completion_tokens": 7, "total_tokens": 16,
+                 "prompt_cache_hit_tokens": 2, "prompt_cache_miss_tokens": 7,
+                 "completion_tokens_details": {"reasoning_tokens": 1}}
+        argument = '{"value":"synthetic"}'
+        tool = {"id": "call-1", "type": "function", "function": {"name": "probe", "arguments": argument}}
+
+        def frame(item):
+            return b"data: " + json.dumps(item).encode() + b"\n\n"
+
+        for finish in ("aborted", "insufficient_system_resource"):
+            for stream in (False, True):
+                with self.subTest(finish=finish, stream=stream), tempfile.TemporaryDirectory() as directory:
+                    ledger = v3_matched.BudgetLedger(Path(directory) / "ledger.sqlite", limit_rmb="15",
+                                                    pricing=DEEPSEEK_PRICING)
+                    relay = ResponsesRelay(endpoint=DEEPSEEK_ENDPOINT, api_key="offline", budget=ledger,
+                                           config=DEEPSEEK_STRICT_RELAY_CONFIG)
+                    header = {"id": "answer", "model": "DeepSeek-V4.1-Flash-1017"}
+                    if stream:
+                        header["object"] = "chat.completion.chunk"
+                        delta = frame({**header, "choices": [{"index": 0, "finish_reason": None,
+                                      "delta": {"tool_calls": [{**tool, "index": 0}]}}]})
+                        terminal = frame({**header, "choices": [{"index": 0, "finish_reason": finish,
+                                         "delta": {}}], "usage": usage})
+                        upstream = Mock(status_code=200, iter_content=Mock(
+                            return_value=iter((delta, terminal, b"data: [DONE]\n\n"))))
+                    else:
+                        header["object"] = "chat.completion"
+                        upstream = Mock(status_code=200, json=Mock(return_value={
+                            **header, "choices": [{"index": 0, "finish_reason": finish, "message": {
+                                "role": "assistant", "content": None, "tool_calls": [tool]}}], "usage": usage}))
+                    relay.start()
+                    try:
+                        with patch("benchmarks.v3_responses_relay.requests", post=Mock(return_value=upstream)):
+                            response = requests.post(relay.url + "/chat/completions", timeout=5,
+                                json={"stream": stream, "messages": [{"role": "user", "content": "Probe"}]},
+                                headers={"Authorization": "Bearer " + relay.client_key})
+                        if stream:
+                            self.assertEqual(response.status_code, 200)
+                            self.assertEqual(response.content, delta)
+                        else:
+                            self.assertEqual(response.status_code, 502)
+                            self.assertNotIn("choices", response.json())
+                        self.assertEqual(relay.provider_error, f"upstream_chat_{finish}")
+                        call, = ledger.campaign_calls()
+                        self.assertEqual(call["status"], "settled")
+                        self.assertEqual(call["usage"]["raw_usage"], usage)
+                        self.assertEqual(call["upstream_wire"]["finish_reason"], finish)
+                        self.assertEqual(call["upstream_wire"]["calls"][0]["arguments_bytes"], len(argument))
+                    finally:
+                        relay.close()
+
     def test_stream_is_metered_only_with_finish_usage_and_done(self):
         from benchmarks.v3_deepseek import (DEEPSEEK_ENDPOINT, DEEPSEEK_PRICING,
                                             DEEPSEEK_STRICT_RELAY_CONFIG)

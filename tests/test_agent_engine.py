@@ -120,6 +120,23 @@ class AgentEngineTests(unittest.TestCase):
         runtime._get_model_response.assert_not_called()
         runtime._execute_tool_batch.assert_not_called()
 
+    def test_complex_native_turn_can_answer_without_tools_when_none_are_permitted(self):
+        from benchmarks.v3_fixtures import FIXTURES
+        from benchmarks.v3_matched_live import _fixture_prompt
+
+        runtime = self.complex_native_runtime()
+        runtime._permitted_tool_names = lambda: set()
+        denial = '{"file":"secret.txt","access":"denied","read":false}'
+        runtime._get_model_response.return_value = ModelResponse(
+            text=denial, finish_reason=FinishReason.FINAL)
+        fixture = next(item for item in FIXTURES if item["fixture_id"] == "permissions-2")
+        result = AgentEngine(runtime).run(TurnContext(_fixture_prompt(fixture)))
+
+        self.assertEqual(result, denial)
+        runtime._get_model_response.assert_called_once()
+        self.assertEqual(runtime._get_model_response.call_args.kwargs["tool_names"], set())
+        runtime._execute_tool_batch.assert_not_called()
+
     def test_complex_native_turn_rejects_plan_and_other_tool_in_same_batch(self):
         runtime = self.complex_native_runtime()
         runtime._get_model_response.return_value = ModelResponse(tool_calls=(

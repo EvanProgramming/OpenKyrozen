@@ -42,6 +42,83 @@ class NativeContextTests(unittest.TestCase):
         self.runtime._set_workspace_root(self.root)
         self.runtime.set_interaction_mode("agent")
 
+    def test_same_native_session_reuses_digest_for_already_compacted_history(self):
+        from benchmarks.v3_fixtures import FIXTURES
+        from benchmarks.v3_matched_live import _fixture_prompt
+
+        case = next(item for item in FIXTURES if item["fixture_id"] == "long_context-1")
+        marker = "Retain these approved project facts"
+        fact = "team-cedar"
+        summaries, generations = [], []
+
+        class Provider(LLMProvider):
+            def get_capabilities(self, model=None):
+                return ProviderCapabilities(native_tools=True)
+
+            def chat(self, messages, model=None):
+                return self.chat_response(messages, model).as_legacy_tuple()
+
+            def chat_response(self, messages, model=None, *, tools=None):
+                contents = [item.get("content", "") for item in messages if isinstance(item, dict)]
+                transcripts = [value for value in contents if "UNTRUSTED TRANSCRIPT:" in value]
+                if transcripts:
+                    summaries.extend(transcripts)
+                    text = f"Approved owner remains {fact}." if any(fact in value for value in transcripts) else (
+                        "Archival diagnostic events did not change approved facts."
+                    )
+                else:
+                    generations.append(contents)
+                    text = f"The current owner is {fact}." if any(fact in value for value in contents) else (
+                        "No approved owner is visible."
+                    )
+                return ModelResponse(text=text, finish_reason=FinishReason.FINAL,
+                    continuation=provider_continuation(self, model, "fixture", {"text": text}))
+
+        runtime = self.runtime
+        runtime.set_interaction_mode("ask")
+        config = ProviderConfig(provider="custom", model_simple="fixture", model_complex="fixture",
+                                context_window_tokens=16384)
+        runtime._provider_config = config
+        runtime.llm_provider = runtime._default_turn.provider = Provider(config)
+        session = runtime.current_session
+        prompts = iter((_fixture_prompt(case), *case["turns"][1:-1]))
+        with patch.object(runtime, "_schedule_post_turn_learning"):
+            runtime.chat(session, "Start a new discussion.")
+            branch_head = runtime.conversation_history.head
+            for prompt in prompts:
+                runtime.chat(session, prompt)
+                if any(marker in summary for summary in summaries):
+                    break
+            self.assertEqual(sum(marker in summary for summary in summaries), 1)
+            head_before = runtime.conversation_history.head
+            answer = runtime.chat(session, "What is the current approved owner?")
+            self.assertEqual(sum(marker in summary for summary in summaries), 1,
+                             "The next turn resent the already-compacted canonical prefix")
+            self.assertTrue(any(text.startswith(DIGEST_PREFIX) and fact in text
+                                for text in generations[-1]))
+            self.assertIn(fact, answer)
+
+            before_second_pressure = len(summaries)
+            for prompt in prompts:
+                answer = runtime.chat(session, prompt)
+                if len(summaries) > before_second_pressure:
+                    break
+            second_summaries = summaries[before_second_pressure:]
+            self.assertTrue(any(DIGEST_PREFIX in summary and fact in summary for summary in second_summaries))
+            self.assertFalse(any(marker in summary for summary in second_summaries))
+            self.assertIn(fact, answer)
+
+            history = runtime.conversation_history
+            entries = history.active_entries()
+            self.assertIn(head_before, [entry.id for entry in entries])
+            self.assertTrue(any(marker in entry.payload.get("text", "") for entry in entries))
+            head = history.head
+            history.append(history.entry("branch.selection", {"target_journal_head": branch_head}, parent_id=head),
+                           expected_head=head)
+            answer = runtime.chat(session, "What is the current approved owner?")
+        self.assertNotIn(fact, answer)
+        self.assertFalse(any(text.startswith(DIGEST_PREFIX) for text in generations[-1]))
+
     def test_tracked_native_history_compacts_atomic_groups_and_keeps_current_supersession(self):
         from openkyrozen.agent.compaction import compact_for_pressure
         old_user = {"role": "user", "content": "Original region eu-west-2; owner team-cedar; " + "x" * 2000}
@@ -76,6 +153,39 @@ class NativeContextTests(unittest.TestCase):
         for item in [old_call, old_reply]:
             self.assertFalse(any(candidate is item for candidate in result.messages))
         self.assertIn("rollback release-17", result.history_digest["content"])
+
+    def test_native_history_digest_remembers_prefix_when_tool_replies_also_shrink(self):
+        from openkyrozen.providers.models import ProviderContinuation
+
+        runtime = self.runtime
+        history = [{"role": "user", "content": "Approved owner is Cedar. " + "a " * 1700},
+                   {"role": "assistant", "content": "Confirmed owner Cedar."}]
+        for index in range(3):
+            call = ToolCall(f"call-{index}", "read_file", {"path": "notes.txt"})
+            continuation = ProviderContinuation("offline-provider", "fixture", "test", {})
+            history.extend((ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                                          continuation=continuation),
+                            ToolReply(call.id, call.name, {"content": "x " * 4400 if index < 2 else "ok"})))
+        history.append({"role": "assistant", "content": "Inspection complete."})
+        messages = [*history, {"role": "user", "content": "What is the owner?"}]
+        entry_ids = {index: f"entry-{index}" for index in range(len(history))}
+        runtime._context_history_projection_ids.set((id(messages), entry_ids, (0, len(history))))
+        state = ContextState("fixture", configured_window=2500, reserve_tokens=1000,
+                             request_provider_id="offline-provider")
+        runtime._active_context_state.set(state)
+        with patch.object(runtime, "_summarize_context_with_chat_model", return_value="The approved owner is Cedar."):
+            runtime._prepare_context_for_call(messages)
+
+        self.assertEqual(state.status["compaction"]["kind"], "tool_results")
+        self.assertLessEqual(state.status["input_tokens"] + state.reserve_tokens, state.window_tokens)
+        validate_tool_history(messages, provider_id="offline-provider", model="fixture", native=True)
+        replies = [item for item in messages if isinstance(item, ToolReply)]
+        self.assertEqual([item.call_id for item in replies], [f"call-{index}" for index in range(3)])
+        self.assertLess(len(replies[0].output["content"]), len(history[3].output["content"]))
+        digest = getattr(runtime.current_session, "_native_history_digest", None)
+        self.assertIsNotNone(digest)
+        self.assertEqual(digest.covered_entries, ("entry-0", "entry-1"))
+        self.assertIs(digest.message, messages[0])
 
     def history(self):
         return ([{"role": "system", "content": "Keep the current task and trusted tool correlation."}]

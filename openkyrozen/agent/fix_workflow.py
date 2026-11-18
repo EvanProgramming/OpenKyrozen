@@ -137,6 +137,8 @@ def _fix_is_mutation(self, record: dict[str, Any]) -> bool:
         return False
     if action in self._FIX_MUTATION_ACTIONS:
         return True
+    if action in {"edit_file", "apply_patch"}:
+        return record.get("authorized") is True
     if action in {"run_cmd", "execute_terminal_command"}:
         command = str(record.get("args", "")).lower()
         return not bool(re.search(r"pytest|unittest|make\s+(?:test|check|lint)|cargo\s+test|go\s+test", command)) and bool(

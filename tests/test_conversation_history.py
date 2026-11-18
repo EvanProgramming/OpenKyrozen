@@ -253,6 +253,22 @@ class ConversationHistoryTests(unittest.TestCase):
         assistants = [item for item in projected if isinstance(item, dict) and item.get("role") == "assistant"]
         self.assertEqual(assistants, [{"role": "assistant", "content": response.text}])
 
+    def test_native_projection_keeps_one_response_when_completion_trims_whitespace(self):
+        response = ModelResponse(
+            "Completed.\n", finish_reason=FinishReason.FINAL,
+            continuation=ProviderContinuation("fixture", "m1", "test", {"reasoning_content": "checked"}),
+        )
+        self.history.append(self.history.entry("user.input", {"text": "finish"}, turn_id="turn-1"))
+        self.history.append(self.history.entry("model.response", {
+            "response": model_response_to_dict(response),
+        }, turn_id="turn-1"))
+        self.history.append(self.history.entry("turn.outcome", {
+            "status": "completed", "text": response.text.strip(),
+        }, turn_id="turn-1"))
+
+        projected = self.history.provider_messages(provider_id="fixture", model="m1")
+        self.assertEqual(projected, [{"role": "user", "content": "finish"}, response])
+
     def test_legacy_import_is_atomic_and_can_retry_after_storage_failure(self):
         messages = [
             {"role": "user", "content": "first"},

@@ -61,6 +61,7 @@ class OpenAICompatProvider(LLMProvider):
     def _complete_chat(self, *, model, text, usage, calls, tools, response_id, finish, actual_model,
                        blocked=False, wire_issue=None, call_indexes=None):
         decoder = getattr(self, "_tool_wire_decoder", None)
+        decoding = None
         try:
             if decoder is not None:
                 if wire_issue:
@@ -70,8 +71,11 @@ class OpenAICompatProvider(LLMProvider):
                         or calls and (blocked or any(not call_id for call_id, _, _ in calls))):
                     raise ProviderContractError("Strict Chat requires a finish reason consistent with its tool calls")
                 schemas = {tool["name"]: tool["parameters"] for tool in tools or ()}
-                canonical = [(call_id, name, decoder(arguments, schemas[name]))
-                             for call_id, name, arguments in calls]
+                canonical = []
+                for index, (call_id, name, arguments) in enumerate(calls):
+                    decoding = (index, name)
+                    canonical.append((call_id, name, decoder(arguments, schemas[name])))
+                decoding = None
             else:
                 canonical = calls
             return model_response(provider=self.name, model=model, actual_model=actual_model, text=text, usage=usage,
@@ -89,6 +93,13 @@ class OpenAICompatProvider(LLMProvider):
                           for index, (_, _, arguments) in zip(
                               range(len(calls)) if call_indexes is None else call_indexes, calls, strict=True)],
             }
+            if decoding is not None and isinstance(exc, json.JSONDecodeError):
+                index, name = decoding
+                error.wire_evidence["malformed_argument"] = {
+                    "index": index if call_indexes is None else call_indexes[index],
+                    "tool_name": name,
+                    "byte_offset": len(exc.doc[:exc.pos].encode("utf-8", errors="surrogatepass")),
+                }
             raise error from exc
 
     @provider_call

@@ -491,6 +491,15 @@ def _build_messages(self, user_input: str, learned_context: str = "",
             exclude_turn_id=self._conversation_turn_id.get(),
         )
         history_entry_ids = history.entry_ids
+        compacted = getattr(self.current_session, "_native_history_digest", None)
+        if compacted and (compacted.provider_id, compacted.model) == (provider_id, model):
+            count = len(compacted.covered_entries)
+            if tuple(history_entry_ids[:count]) == compacted.covered_entries:
+                messages.append(compacted.message)
+                state = self._active_context_state.get()
+                if state is not None:
+                    state.history_message_ids.add(id(compacted.message))
+                history, history_entry_ids = history[count:], history_entry_ids[count:]
     elif not any(is_context_digest(msg) for msg in history):
         digest = self._restore_learning_context_digest()
         if digest:

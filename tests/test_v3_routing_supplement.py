@@ -18,6 +18,27 @@ def supplement():
 
 
 class RoutingProtocolTests(unittest.TestCase):
+    def test_fixed_routing_evidence_uses_the_provider_of_the_strict_chat_worker(self):
+        from benchmarks.v3_actor_worker import benchmark_root_provider_config
+        from openkyrozen.routing.router import decide_request
+
+        config = benchmark_root_provider_config(
+            'strict-chat', 'deepseek-flash', 'http://127.0.0.1:1', 'offline', 1_000_000)
+        decision, _ = decide_request(config, {}, 'Inspect source', lambda _: config.model_simple,
+                                     lambda _: 'simple', 'coder', 'auto', 'agent')
+        record = {'variant': 'default', 'before': asdict(decision), 'after': asdict(decision),
+                  'profile_override': 'auto', 'interaction_mode': 'agent',
+                  'system_one_backend': 'off', 'decision_assist_backend': 'off',
+                  'requests': [{'model': config.model_simple, 'reserve_tokens': 4096,
+                                'message_projection_sha256': 'a' * 64}]}
+        module = supplement()
+        self.assertTrue(module.validate_observations([record], 'default', strict_chat=True))
+        self.assertFalse(module.validate_observations([record], 'default'))
+        for side in ('before', 'after'):
+            record[side]['provider'] = 'openai'
+        self.assertTrue(module.validate_observations([record], 'default'))
+        self.assertFalse(module.validate_observations([record], 'default', strict_chat=True))
+
     def test_model_exposure_joins_real_root_order_usage_and_rejects_ambiguous_calls(self):
         from benchmarks.v3_gemini import GeminiPolicy
         policy=GeminiPolicy();model=policy.role_models['simple']
@@ -466,10 +487,14 @@ class SupplementRunnerTests(unittest.TestCase):
                 arm='routing-'+cell['variant'];model=policy.role_models['complex'];identifier=f'physical-{index:03}'
                 before=RoutingDecision('google',model,'extended',None,'coder',True)
                 after=module.intervene(before,cell['variant'],profile_override='auto',interaction_mode='agent')
-                workers[identifier]={'routing_observations':[{'before':asdict(before),'after':asdict(after),
+                observations = [{'before':asdict(before),'after':asdict(after),
                     'variant':cell['variant'],'interaction_mode':'agent','profile_override':'auto',
-                    'system_one_backend':'off','decision_assist_backend':'off','requests':[{'model':model,
-                        'reserve_tokens':4096,'message_projection_sha256':'a'*64}]}]}
+                    'system_one_backend':'off','decision_assist_backend':'off',
+                    'profile_guidance_hashes':['original', 'profile-control'
+                        if cell['variant']=='profile-fixed-researcher' else 'original'],
+                    'requests':[{'kind':'generation','model':model,'schema_sha256':'b'*64,
+                        'reserve_tokens':4096,'message_projection_sha256':'a'*64}]}]
+                workers[identifier]={'routing_observations':observations}
                 metadata=dict(policy.metadata(model),arm=arm,fixture_id=cell['fixture_id'],repeat=cell['repeat'],
                               max_output_tokens=4096,reserved_rmb='0')
                 ledger.reserve(identifier,input_token_bound=INPUT_BOUND,output_token_bound=4096,metadata=metadata)
@@ -479,7 +504,8 @@ class SupplementRunnerTests(unittest.TestCase):
                 call=next(row for row in ledger.campaign_calls() if row['attempt_id']==identifier)
                 rows.append(dict(cell,arm=arm,physical_success=True,verified_success=True,workflow_state_correct=True,
                     safety_passed=True,usage_complete=True,worker_result_complete=True,evidence_valid=True,
-                    routing_evidence_valid=True,routing_treatment_active=False,cost_cny='0',cost_calls=[call],
+                    routing_evidence_valid=True,routing_treatment_active=module.active_treatment(
+                        observations,cell['variant']),cost_cny='0',cost_calls=[call],
                     requests=1,attempts=1,input_tokens=100,output_tokens=20,cache_read_tokens=0,cache_write_tokens=0,
                     latency_ms=10,worker_id=identifier))
             report={**identity,'protocol':module.PROTOCOL,'candidate_sha':'a'*40,'status':'complete','rows':rows,
@@ -488,6 +514,10 @@ class SupplementRunnerTests(unittest.TestCase):
                 with closing(__import__('sqlite3').connect(ledger.path)) as db:return db.execute('SELECT * FROM attempts ORDER BY id').fetchall()
             with patch.object(live,'_validate_rows_evidence',return_value=True), \
                  patch.object(live,'_validate_worker_evidence',side_effect=lambda _,row,*a,**k:workers[row['worker_id']]):
+                with self.assertRaisesRegex(ValueError,'original54.*benefit'):
+                    module._validate_54_origin(report,attempts(),Path(directory)/'54.json','a'*40,identity,policy)
+                for row in rows:
+                    row['verified_success'] = row['physical_success'] = row['variant'] == 'default'
                 module._validate_54_origin(report,attempts(),Path(directory)/'54.json','a'*40,identity,policy)
                 workers['physical-000']['routing_observations'][0]['after']['profile']='unexpected'
                 with self.assertRaisesRegex(ValueError,'worker or physical journal'):

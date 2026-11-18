@@ -1387,7 +1387,8 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
     turns = fixture.get("turns") or (fixture["prompt"],)
     if turns[0] != fixture["prompt"]:
         raise ValueError("scripted fixture initial prompt does not match its frozen prompt")
-    conversation_file.write_text(json.dumps({"followups": turns[1:],
+    interaction_mode = "ask" if len(turns) > 1 or set(fixture["capabilities"]) <= {"read"} else "agent"
+    conversation_file.write_text(json.dumps({"followups": turns[1:], "interaction_mode": interaction_mode,
         "context_window_tokens": fixture["context_window_tokens"],
         "output_reserve_tokens": fixture["output_reserve_tokens"]}), encoding="utf-8")
     from benchmarks.v3_shell_launcher import ShellPolicy
@@ -1515,7 +1516,9 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
             from benchmarks.v3_routing_supplement import validate_observations,active_treatment,MODEL_VARIANTS,model_exposure
             observations=worker.get('routing_observations')
             row.update(variant=routing_variant,physical_success=bool(verified.get('physical_success')),
-                routing_evidence_valid=validate_observations(observations,routing_variant,getattr(relay,'policy',None)),
+                routing_evidence_valid=validate_observations(
+                    observations,routing_variant,getattr(relay,'policy',None),
+                    strict_chat=getattr(relay,'protocol',None) == 'strict-chat'),
                 routing_treatment_active=active_treatment(observations,routing_variant))
             if routing_variant in MODEL_VARIANTS:
                 row['model_exposure']=model_exposure(observations,worker.get('request_context_records'),

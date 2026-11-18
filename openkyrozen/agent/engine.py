@@ -237,6 +237,7 @@ class AgentEngine:
             if cancelled is not None and cancelled.is_set():
                 raise ProviderError(ProviderErrorKind.CANCELLED, terminal=True)
             tool_names = self._native_tool_names()
+            planning_required = turn.planning_required and bool(tool_names)
             if turn.interaction_mode == "plan":
                 tool_names = {name for name in tool_names
                               if name in _NATIVE_CONTROLS or (
@@ -245,16 +246,16 @@ class AgentEngine:
                                   and runtime.tool_registry.specs.get(name).risk == "normal")}
             if not runtime.execution_context.native_plan_inspected:
                 tool_names.discard("propose_plan")
-            plan = getattr(runtime.tasks, "working_plan", None) if turn.planning_required else None
+            plan = getattr(runtime.tasks, "working_plan", None) if planning_required else None
             if plan is not None and plan.status == "active":
                 observed_plan_id = plan.id
             completed_plan = (observed_plan_id is not None and plan is not None
                               and plan.id == observed_plan_id and plan.status == "completed")
             cancelled_plan = (observed_plan_id is not None and plan is not None
                               and plan.id == observed_plan_id and plan.status == "cancelled")
-            needs_plan = turn.planning_required and not cancelled_plan and (plan is None or plan.status != "active")
+            needs_plan = planning_required and not cancelled_plan and (plan is None or plan.status != "active")
             native_tool_phase = ("plan_completed" if completed_plan else "plan_required" if needs_plan
-                                 else "plan_active" if turn.planning_required and not cancelled_plan else None)
+                                 else "plan_active" if planning_required and not cancelled_plan else None)
             if final_answer_requested:
                 tool_names = set()
                 native_tool_phase = None
@@ -273,7 +274,7 @@ class AgentEngine:
                     break
                 else:
                     tool_names = runtime._permitted_tool_names() & completed_tools
-            elif turn.planning_required:
+            elif planning_required:
                 tool_names |= runtime._permitted_tool_names() & {"update_plan"}
                 if "request_question" in runtime._permitted_tool_names():
                     tool_names.add("request_question")

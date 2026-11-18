@@ -194,6 +194,8 @@ class CompactionResult:
     compacted: bool = False
     history_digest: dict[str, Any] | None = None
     impossible: bool = False
+    # Positions in the input summarized by the successful native digest.
+    native_history_positions: tuple[int, ...] = ()
 
 
 Summarizer = Callable[[str, int], str | None]
@@ -305,6 +307,7 @@ def compact_for_pressure(messages: list[Any], state: ContextState, summarize: Su
                 index += 1
         candidates = [position for unit in units[:-KEEP_RECENT_MESSAGES] for position in unit]
         native_history_digest = None
+        native_history_positions = ()
         history_compacted = bool(candidates)
         if candidates:
             raw = _format_entries([_accounting_message(working[position]) for position in candidates])
@@ -313,6 +316,8 @@ def compact_for_pressure(messages: list[Any], state: ContextState, summarize: Su
             input_chars = max(1_000, min(12_000, max(1_000, window_budget) * 3))
             summary = _bounded_summary(raw, summarize, max_chars=input_chars, output_chars=output_chars)
             native_history_digest = _digest(summary, len(candidates), kind="native history messages")
+            if summary:
+                native_history_positions = tuple(candidates)
             removed = set(candidates)
             first = candidates[0]
             working = [message for position, message in enumerate(working) if position not in removed]
@@ -322,7 +327,8 @@ def compact_for_pressure(messages: list[Any], state: ContextState, summarize: Su
                 "kind": "native_history", "omitted_entries": len(candidates),
             })
             if not under_pressure(status):
-                return CompactionResult(working, compacted=True, history_digest=native_history_digest)
+                return CompactionResult(working, compacted=True, history_digest=native_history_digest,
+                                        native_history_positions=native_history_positions)
 
         # Compact old outputs in complete native call/result groups. Replacing only
         # the payload preserves provider continuation structure and call correlation.
@@ -376,7 +382,8 @@ def compact_for_pressure(messages: list[Any], state: ContextState, summarize: Su
             return CompactionResult(working, compacted=compacted or prefix.compacted,
                                     history_digest=native_history_digest or prefix.history_digest, impossible=True)
         return CompactionResult(working, compacted=compacted or prefix.compacted,
-                                history_digest=native_history_digest or prefix.history_digest)
+                                history_digest=native_history_digest or prefix.history_digest,
+                                native_history_positions=native_history_positions)
 
     non_system = [item for item in working if item.get("role") != "system" and not is_context_digest(item)]
     tracked_history = [item for item in non_system if id(item) in state.history_message_ids]

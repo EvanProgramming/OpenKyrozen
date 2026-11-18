@@ -346,6 +346,9 @@ def main():
     if (not isinstance(followups, list) or any(not isinstance(turn, str) or not turn for turn in followups)
             or len(followups) > 20):
         raise ValueError("benchmark followups must be a bounded array of nonempty strings")
+    interaction_mode = conversation.get("interaction_mode", "ask" if followups else "agent")
+    if interaction_mode not in ("ask", "agent"):
+        raise ValueError("invalid benchmark interaction mode")
     window = conversation.get("context_window_tokens")
     if window is not None and (type(window) is not int or not 1 <= window <= 10000000):
         raise ValueError("benchmark context window must be a positive declared integer")
@@ -397,7 +400,7 @@ def main():
             from v3_actor_worker import install_delegated_adapter
             install_delegated_adapter(runtime, actor_client, source=args.source)
         runtime._set_workspace_root(args.workspace)
-        runtime.set_interaction_mode("ask" if followups else "agent")
+        runtime.set_interaction_mode(interaction_mode)
         from v3_actor_worker import benchmark_root_provider_config
         config = benchmark_root_provider_config(args.protocol, args.model, args.url,
             os.environ.get('KYROZEN_BENCHMARK_API_KEY', 'benchmark-local'), window)

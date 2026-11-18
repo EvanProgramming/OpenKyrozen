@@ -304,6 +304,8 @@ def strict_chat_body(body):
             or body.get("model") != "deepseek-flash"
             or not isinstance(body.get("messages"), list) or not body["messages"]):
         raise ValueError("request is outside the pinned DeepSeek chat contract")
+    if body.get("tool_choice") not in (None, "auto", "none"):
+        raise ValueError("DeepSeek thinking mode does not support forced tool choices")
     for message in body["messages"]:
         if (not isinstance(message, dict) or message.get("role") not in {"system", "user", "assistant", "tool"}
                 or (message.get("content") is not None and not isinstance(message["content"], str))

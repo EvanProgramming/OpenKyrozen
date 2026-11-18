@@ -47,6 +47,9 @@ class StrictChatRelayConfig(RelayConfig):
 
 
 DEFAULT_RELAY_CONFIG = RelayConfig()
+_STRICT_CHAT_INTERRUPTION_REASONS = ("insufficient_system_resource", "aborted")
+_STRICT_CHAT_FINISH_REASONS = (None, "stop", "tool_calls", "length", "content_filter",
+                               *_STRICT_CHAT_INTERRUPTION_REASONS)
 
 
 def _safe_error_code(error: object) -> str | None:
@@ -63,7 +66,7 @@ def _strict_choice(response, *, stream):
         return None
     choice = response["choices"][0]
     if (not isinstance(choice, dict) or type(choice.get("index")) is not int or choice["index"] != 0
-            or "finish_reason" not in choice or choice["finish_reason"] not in (None, "stop", "tool_calls", "length", "content_filter")):
+            or "finish_reason" not in choice or choice["finish_reason"] not in _STRICT_CHAT_FINISH_REASONS):
         return None
     detail = choice.get("delta" if stream else "message")
     if (not isinstance(detail, dict) or not stream and detail.get("role") != "assistant"
@@ -181,10 +184,13 @@ class ResponsesRelay:
         response = response if isinstance(response, dict) else {}
         usage = policy.response_usage(row['model'], response) if policy else self._usage(response)
         fixed_deepseek = policy is None and self.endpoint == "https://api.deepseek.com"
+        strict_finish = None
         if fixed_deepseek:
             if self.config.strict_chat:
-                choices = _strict_choice(response, stream=stream)
-                if choices is None or not choices["finish_reason"]:
+                choice = _strict_choice(response, stream=stream)
+                if choice is not None:
+                    strict_finish = choice["finish_reason"]
+                if strict_finish is None:
                     response = {}
             from benchmarks.v3_deepseek import deepseek_usage, served_model_matches
             usage = deepseek_usage(response, strict_chat=self.config.strict_chat)
@@ -220,6 +226,10 @@ class ResponsesRelay:
                 row['served_model'] = usage['served_model']
                 if response.get('status') == 'failed':
                     self.provider_error = 'upstream_response_failed'
+                if strict_finish in _STRICT_CHAT_INTERRUPTION_REASONS:
+                    # The request was billed, but generation did not complete.
+                    # Existing downstream gates withhold its terminal message.
+                    self.provider_error = f'upstream_chat_{strict_finish}'
                 if not self.budget.budget_ok:
                     row['status'] = 'overrun'
                 if (not self.budget.budget_ok or usage['input_tokens'] > 1000000

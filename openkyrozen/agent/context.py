@@ -1,9 +1,42 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 import json
 from openkyrozen.agent.compaction import ContextState, compact_for_pressure, is_context_digest, message_fingerprint, retain_context_digests, resolve_context_window
 from openkyrozen.agent.types import ContextTooLargeError
+
+
+@dataclass(frozen=True)
+class _NativeHistoryDigest:
+    provider_id: str
+    model: str
+    covered_entries: tuple[str, ...]
+    message: dict[str, str]
+
+
+def _remember_native_history_digest(self, state, messages, result) -> None:
+    if not result.history_digest or result.impossible:
+        return
+    projection = self._context_history_projection_ids.get()
+    covered_positions = set(result.native_history_positions)
+    if (not covered_positions or not state.request_provider_id
+            or not projection or projection[0] != id(messages)
+            or not any(item is result.history_digest for item in result.messages)):
+        return
+    entries = sorted(projection[1].items())
+    removed = tuple(entry_id for index, entry_id in entries if index in covered_positions)
+    if not removed or removed != tuple(entry_id for _, entry_id in entries[:len(removed)]):
+        return
+    previous = getattr(self.current_session, "_native_history_digest", None)
+    prior = previous if previous and any(message is previous.message for message in messages) else None
+    if (prior and not any(messages[index] is prior.message for index in covered_positions)
+            or len(covered_positions) != len(removed) + int(prior is not None)):
+        return
+    self.current_session._native_history_digest = _NativeHistoryDigest(
+        state.request_provider_id, state.request_model or state.model,
+        (prior.covered_entries if prior else ()) + removed, result.history_digest,
+    )
 
 
 def _context_scope(self) -> tuple[str, str | None]:
@@ -221,6 +254,7 @@ def _prepare_context_for_call(self, messages: list[dict], model: str | None = No
         messages, state,
         lambda text, output_chars: self._summarize_context_with_chat_model(text, output_chars, model or state.model),
     )
+    _remember_native_history_digest(self, state, messages, result)
     previous_messages = list(messages)
     messages[:] = result.messages
     _update_context_history_projection(self, messages, previous_messages)
@@ -251,6 +285,7 @@ def _recover_context_after_overflow(self, messages: list[dict], model: str | Non
         lambda text, output_chars: self._summarize_context_with_chat_model(text, output_chars, model or state.model),
         force=True,
     )
+    _remember_native_history_digest(self, state, messages, result)
     previous_messages = list(messages)
     messages[:] = result.messages
     _update_context_history_projection(self, messages, previous_messages)

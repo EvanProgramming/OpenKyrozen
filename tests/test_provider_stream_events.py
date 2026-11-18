@@ -413,6 +413,7 @@ class StreamEventContractTests(unittest.TestCase):
 
     def test_strict_chat_rejects_changed_response_identity_and_hashes_invalid_arguments(self):
         import hashlib
+        import json
         from openkyrozen.providers.openai import OpenAICompatProvider
 
         malformed = '{"path":"partial'
@@ -426,7 +427,7 @@ class StreamEventContractTests(unittest.TestCase):
         ]
         provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
         provider.config = SimpleNamespace(provider="deepseek", model_simple="m")
-        provider._tool_wire_decoder = lambda raw, _schema: raw
+        provider._tool_wire_decoder = lambda raw, _schema: json.dumps(json.loads(raw))
         send = Mock()
         provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=send)))
         tools = [{"name": "read_file", "description": "read", "parameters": {"type": "object"}}]
@@ -447,6 +448,9 @@ class StreamEventContractTests(unittest.TestCase):
         self.assertEqual(evidence["finish_reason"], "tool_calls")
         self.assertEqual(evidence["calls"][0]["arguments_bytes"], len(malformed.encode()))
         self.assertEqual(evidence["calls"][0]["arguments_sha256"], hashlib.sha256(malformed.encode()).hexdigest())
+        self.assertEqual(evidence["malformed_argument"], {
+            "index": 0, "tool_name": "read_file", "byte_offset": 8,
+        })
         self.assertNotIn("partial", repr(evidence))
 
     def test_strict_chat_assembles_interleaved_calls_before_decoding(self):

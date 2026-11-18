@@ -288,6 +288,7 @@ class V3MatchedLiveTests(unittest.TestCase):
             commands = []
             prompt_texts = []
             actor_windows = []
+            interaction_modes = []
             state = {}
 
             class Relay(ActorRelayStub):
@@ -320,6 +321,7 @@ class V3MatchedLiveTests(unittest.TestCase):
                 relay.rows = relay.budget.campaign_calls()
                 prompt_texts.append(Path(command[command.index('--prompt-file') + 1]).read_text())
                 declared = json.loads(Path(command[command.index('--conversation-file') + 1]).read_text())
+                interaction_modes.append(declared.get("interaction_mode"))
                 actor_windows.append((declared['context_window_tokens'],
                     kwargs['provider_config']('offline-child')['context_window_tokens']))
                 Path(command[command.index("--result") + 1]).write_text(json.dumps(valid_worker_result(
@@ -354,8 +356,10 @@ class V3MatchedLiveTests(unittest.TestCase):
             report = json.loads((root / "report.json").read_text())
             self.assertEqual(len(prompt_texts), len(report["rows"]))
             fixtures_by_id = {item["fixture_id"]: item for item in FIXTURES}
-            for row, prompt in zip(report["rows"], prompt_texts):
+            for row, prompt, mode in zip(report["rows"], prompt_texts, interaction_modes, strict=True):
                 self.assertEqual(prompt, live._fixture_prompt(fixtures_by_id[row["fixture_id"]]))
+                self.assertEqual(mode, "ask" if fixtures_by_id[row["fixture_id"]]["category"]
+                                 in {"permissions", "long_context"} else "agent")
             self.assertTrue(all(expected == actual for expected, actual in actor_windows))
             self.assertIn((16384, 16384), actor_windows)
             self.assertTrue(report["summary"]["worker_evidence_complete"])

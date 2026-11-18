@@ -153,18 +153,20 @@ def backup_ledger(core, target):
             source.backup(destination)
 
 
-def validate_observations(records, variant, provider_policy=None):
+def validate_observations(records, variant, provider_policy=None, *, strict_chat=False):
     """Worker observations describe mechanism, never authorize a treatment."""
     from openkyrozen.routing.router import RoutingDecision
     if variant not in VARIANTS+MODEL_VARIANTS or not isinstance(records,list) or not records:
         return False
+    fixed_provider = 'deepseek' if strict_chat else 'openai'
     requests=0
     try:
         for row in records:
             before=RoutingDecision(**row['before'])
             policy_valid = (before.provider == provider_policy.provider and before.model in provider_policy.role_models.values()
                             and before.reasoning in {'standard', 'extended'} if provider_policy is not None else
-                            before.provider == 'openai' and before.model == 'deepseek-flash' and before.reasoning == 'standard')
+                            before.provider == fixed_provider and before.model == 'deepseek-flash'
+                            and before.reasoning == 'standard')
             if (type(before.planning_required) is not bool or not policy_valid
                     or before.budget_tokens is not None or before.profile not in {'coder','researcher'}
                     or row['interaction_mode'] not in {'agent','ask','plan'}):
@@ -459,7 +461,7 @@ def _fixed_flash_call(call):
             and served_model_matches(call['model'],usage.get('served_model')))
 
 
-def _validate_54_origin(report,attempts,output,candidate,identity,provider_policy,*,pricing=None):
+def _validate_54_origin(report,attempts,output,candidate,identity,provider_policy,*,pricing=None,strict_chat=False):
     from benchmarks import v3_matched_live as live
     pricing=provider_policy.pricing if provider_policy is not None else pricing
     accepts_call=provider_policy.accepts_call if provider_policy is not None else _fixed_flash_call
@@ -479,7 +481,9 @@ def _validate_54_origin(report,attempts,output,candidate,identity,provider_polic
         worker=live._validate_worker_evidence(output,row,candidate,identity,return_worker=True)
         journal=[call for call in calls if (call.get('fixture_id'),call.get('repeat'),call.get('arm'))==
                  (row['fixture_id'],row['repeat'],row['arm'])]
-        if (not isinstance(worker,dict) or not validate_observations(worker.get('routing_observations'),row['variant'],provider_policy)
+        if (not isinstance(worker,dict) or not validate_observations(
+                    worker.get('routing_observations'),row['variant'],provider_policy,strict_chat=strict_chat)
+                or active_treatment(worker['routing_observations'],row['variant']) is not row.get('routing_treatment_active')
                 or (provider_policy is not None and sorted(row.get('cost_calls',[]),key=lambda call:call['attempt_id'])
                     !=sorted(journal,key=lambda call:call['attempt_id']))
                 or not journal or any(call.get('status')!='settled' for call in journal)
@@ -489,6 +493,8 @@ def _validate_54_origin(report,attempts,output,candidate,identity,provider_polic
         observed_cost=sum(Decimal(call['actual_rmb']) for call in journal)
         if pricing.row_cost(row)!=observed_cost or observed_cost!=Decimal(row['cost_cny']):
             raise ValueError('original54 model costs differ from its immutable ledger')
+    if not analyze(report['rows'],provider_policy)['benefit_passed']:
+        raise ValueError('original54 did not establish both planning and profile benefits')
 
 
 def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy=None,billing_proof=None,
@@ -558,7 +564,8 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
         ancestor,ancestor_output,ancestor_attempts=core,core_output,original_attempts
         if model_routing:
             _validate_54_origin(core,original_attempts,core_output,candidate,
-                                _experiment_identity(base_identity,fixtures),origin_policy,pricing=pricing)
+                                _experiment_identity(base_identity,fixtures),origin_policy,pricing=pricing,
+                                strict_chat=fixed_relay_config.strict_chat)
             prior_origin=core.get('origin',{})
             if (not isinstance(prior_origin,dict) or any(not isinstance(prior_origin.get(key),str)
                     or not Path(prior_origin[key]).is_absolute() for key in ('core_output','core_budget'))):
@@ -679,7 +686,8 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
             if row.get('worker_result_complete') is True:
                 worker=live._validate_worker_evidence(output,row,candidate,identity,return_worker=True)
                 row['evidence_valid']=isinstance(worker,dict)
-                row['routing_evidence_valid']=validate_observations(worker.get('routing_observations'),row['variant'],provider_policy) if isinstance(worker,dict) else False
+                row['routing_evidence_valid']=isinstance(worker,dict) and validate_observations(
+                    worker.get('routing_observations'),row['variant'],provider_policy,strict_chat=relay_config.strict_chat)
                 row['routing_treatment_active']=active_treatment(worker.get('routing_observations'),row['variant']) if isinstance(worker,dict) else False
             journal=[call for call in calls if (call.get('fixture_id'),call.get('repeat'),call.get('arm'))==
                      (row['fixture_id'],row['repeat'],row['arm'])]

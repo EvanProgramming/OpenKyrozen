@@ -101,6 +101,17 @@ class BugFixWorkflowTests(unittest.TestCase):
             self._run_fake_bug_turn(["The bug is fixed now."] * 4)
         schedule.assert_not_called()
 
+    def test_structured_source_edits_separate_reproduction_from_verification(self):
+        failed = {"action": "run_cmd", "args": "python -m unittest", "result": "FAILED", "success": False}
+        passed = {**failed, "result": "OK", "success": True}
+        for tool in ("edit_file", "apply_patch"):
+            with self.subTest(tool=tool):
+                rejected = {"action": tool, "authorized": False, "success": False}
+                accepted = {"action": tool, "authorized": True, "success": True}
+                self.assertEqual(main._fix_verification_records([failed, rejected, passed]), [])
+                self.assertEqual(main._fix_reproduction_records([failed, accepted, passed]), [failed])
+                self.assertEqual(main._fix_verification_records([failed, accepted, passed]), [passed])
+
     def test_fake_provider_requires_real_reproduce_fix_and_verify_evidence(self):
         responses = [
             (
