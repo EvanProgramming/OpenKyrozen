@@ -232,11 +232,12 @@ finally:
                          "1970-01-01T00:00:01.9123456Z")
 
     def test_windows_process_snapshot_maps_native_resource_counters(self):
+        expected = {"rss_bytes": 4096, "threads": 3, "open_handles": 8}
         with patch("scripts.production_soak.platform.system", return_value="Windows"), \
-             patch("scripts.production_soak._powershell", return_value=
-                   '{"rssBytes":4096,"threads":3,"openHandles":8}'):
-            self.assertEqual(production_soak._process_snapshot(10),
-                             {"rss_bytes": 4096, "threads": 3, "open_handles": 8})
+             patch.object(production_soak, "_windows_process_snapshot", return_value=expected, create=True) as native, \
+             patch.object(production_soak.subprocess, "run", side_effect=AssertionError("shell probe called")):
+            self.assertEqual(production_soak._process_snapshot(10), expected)
+            native.assert_called_once_with(10)
 
     def test_handle_bound_uses_windows_growth_and_preserves_posix_cap(self):
         with patch("scripts.production_soak.platform.system", return_value="Windows"):
@@ -268,6 +269,13 @@ finally:
         self.assertGreater(snapshot["rss_bytes"], 0)
         self.assertGreaterEqual(snapshot["threads"], 1)
         self.assertGreater(snapshot["open_handles"], 0)
+
+    @unittest.skipUnless(os.name == "nt", "requires Win32 process counters")
+    def test_windows_process_samples_do_not_start_shells_or_leak_handles(self):
+        with patch.object(production_soak.subprocess, "run", side_effect=AssertionError("shell probe called")):
+            samples = [production_soak._process_snapshot(os.getpid()) for _ in range(16)]
+        self.assertTrue(all(sample["rss_bytes"] > 0 and sample["threads"] > 0 for sample in samples))
+        self.assertLessEqual(max(sample["open_handles"] for sample in samples), samples[0]["open_handles"] + 1)
 
 
 if __name__ == "__main__":

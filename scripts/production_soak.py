@@ -37,14 +37,6 @@ def _parse_process_table(output: str) -> dict[int, int]:
     return parents
 
 
-def _powershell(script: str) -> str:
-    shell = shutil.which('powershell') or shutil.which('pwsh')
-    if not shell:
-        raise RuntimeError('PowerShell is required for Windows process evidence')
-    return subprocess.run([shell, '-NoProfile', '-NonInteractive', '-Command', script],
-                          capture_output=True, text=True, timeout=15, check=True).stdout
-
-
 def _process_output(command: list[str]) -> tuple[str, int]:
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
@@ -71,7 +63,19 @@ def _windows_creation_date(ticks: int) -> str:
     return f'{date.isoformat(timespec="seconds")}.{fraction:07d}Z'
 
 
-def _windows_process_table() -> _WindowsProcessTable:
+def _windows_kernel():
+    import ctypes
+    from ctypes import wintypes as win
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [win.DWORD, win.BOOL, win.DWORD]
+    kernel.OpenProcess.restype = win.HANDLE
+    kernel.CloseHandle.argtypes = [win.HANDLE]
+    kernel.CloseHandle.restype = win.BOOL
+    return kernel
+
+
+def _windows_process_entries(kernel):
     import ctypes
     from ctypes import wintypes as win
 
@@ -81,36 +85,47 @@ def _windows_process_table() -> _WindowsProcessTable:
                     ('cntThreads', win.DWORD), ('th32ParentProcessID', win.DWORD), ('pcPriClassBase', win.LONG),
                     ('dwFlags', win.DWORD), ('szExeFile', win.WCHAR * 260)]
 
-    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-    filetime = ctypes.POINTER(win.FILETIME)
     entry_pointer = ctypes.POINTER(ProcessEntry)
-    kernel.GetSystemTimePreciseAsFileTime.argtypes = [filetime]
-    kernel.GetSystemTimePreciseAsFileTime.restype = None
     kernel.CreateToolhelp32Snapshot.argtypes = [win.DWORD, win.DWORD]
     kernel.CreateToolhelp32Snapshot.restype = win.HANDLE
     kernel.Process32FirstW.argtypes = kernel.Process32NextW.argtypes = [win.HANDLE, entry_pointer]
     kernel.Process32FirstW.restype = kernel.Process32NextW.restype = win.BOOL
-    kernel.OpenProcess.argtypes = [win.DWORD, win.BOOL, win.DWORD]
-    kernel.OpenProcess.restype = win.HANDLE
+    snapshot = kernel.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+    if snapshot == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    entry = ProcessEntry(dwSize=ctypes.sizeof(ProcessEntry))
+    try:
+        if not kernel.Process32FirstW(snapshot, ctypes.byref(entry)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        while True:
+            yield entry
+            if not kernel.Process32NextW(snapshot, ctypes.byref(entry)):
+                if ctypes.get_last_error() != 18:  # ERROR_NO_MORE_FILES
+                    raise ctypes.WinError(ctypes.get_last_error())
+                break
+    finally:
+        kernel.CloseHandle(snapshot)
+
+
+def _windows_process_table() -> _WindowsProcessTable:
+    import ctypes
+    from ctypes import wintypes as win
+
+    kernel = _windows_kernel()
+    filetime = ctypes.POINTER(win.FILETIME)
+    kernel.GetSystemTimePreciseAsFileTime.argtypes = [filetime]
+    kernel.GetSystemTimePreciseAsFileTime.restype = None
     kernel.GetProcessTimes.argtypes = [win.HANDLE, filetime, filetime, filetime, filetime]
     kernel.GetProcessTimes.restype = win.BOOL
-    kernel.CloseHandle.argtypes = [win.HANDLE]
-    kernel.CloseHandle.restype = win.BOOL
 
     def ticks(value):
         return (value.dwHighDateTime << 32) | value.dwLowDateTime
 
     start = win.FILETIME()
     kernel.GetSystemTimePreciseAsFileTime(ctypes.byref(start))
-    snapshot = kernel.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
-    if snapshot == ctypes.c_void_p(-1).value:
-        raise ctypes.WinError(ctypes.get_last_error())
     rows = {}
-    entry = ProcessEntry(dwSize=ctypes.sizeof(ProcessEntry))
-    try:
-        if not kernel.Process32FirstW(snapshot, ctypes.byref(entry)):
-            raise ctypes.WinError(ctypes.get_last_error())
-        while True:
+    with closing(_windows_process_entries(kernel)) as entries:
+        for entry in entries:
             pid = entry.th32ProcessID
             if pid in rows:
                 raise AssertionError(f'ambiguous Windows process identity for PID {pid}')
@@ -128,12 +143,6 @@ def _windows_process_table() -> _WindowsProcessTable:
                     kernel.CloseHandle(process)
             rows[pid] = {'pid': pid, 'ppid': entry.th32ParentProcessID,
                          'CreationDate': created, 'Name': entry.szExeFile}
-            if not kernel.Process32NextW(snapshot, ctypes.byref(entry)):
-                if ctypes.get_last_error() != 18:  # ERROR_NO_MORE_FILES
-                    raise ctypes.WinError(ctypes.get_last_error())
-                break
-    finally:
-        kernel.CloseHandle(snapshot)
     return _WindowsProcessTable(rows, None)
 
 
@@ -264,14 +273,46 @@ def _assert_no_new_audit_children(pid, baseline, checkpoint):
     assert not extra, 'orphan audit child'
 
 
+def _windows_process_snapshot(pid: int) -> dict[str, int]:
+    import ctypes
+    from ctypes import wintypes as win
+
+    class MemoryCounters(ctypes.Structure):
+        _fields_ = [('cb', win.DWORD), ('PageFaultCount', win.DWORD),
+                    ('PeakWorkingSetSize', ctypes.c_size_t), ('WorkingSetSize', ctypes.c_size_t),
+                    ('QuotaPeakPagedPoolUsage', ctypes.c_size_t), ('QuotaPagedPoolUsage', ctypes.c_size_t),
+                    ('QuotaPeakNonPagedPoolUsage', ctypes.c_size_t), ('QuotaNonPagedPoolUsage', ctypes.c_size_t),
+                    ('PagefileUsage', ctypes.c_size_t), ('PeakPagefileUsage', ctypes.c_size_t)]
+
+    kernel = _windows_kernel()
+    kernel.K32GetProcessMemoryInfo.argtypes = [win.HANDLE, ctypes.POINTER(MemoryCounters), win.DWORD]
+    kernel.K32GetProcessMemoryInfo.restype = win.BOOL
+    kernel.GetProcessHandleCount.argtypes = [win.HANDLE, ctypes.POINTER(win.DWORD)]
+    kernel.GetProcessHandleCount.restype = win.BOOL
+    process = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not process:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        with closing(_windows_process_entries(kernel)) as entries:
+            threads = next((entry.cntThreads for entry in entries if entry.th32ProcessID == pid), 0)
+        if not threads:
+            raise ProcessLookupError(f'no live threads for Windows process {pid}')
+        memory = MemoryCounters(cb=ctypes.sizeof(MemoryCounters))
+        handles = win.DWORD()
+        if not kernel.K32GetProcessMemoryInfo(process, ctypes.byref(memory), memory.cb):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not kernel.GetProcessHandleCount(process, ctypes.byref(handles)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not memory.WorkingSetSize or not handles.value:
+            raise ProcessLookupError(f'no active resource counters for Windows process {pid}')
+        return {'rss_bytes': memory.WorkingSetSize, 'threads': threads, 'open_handles': handles.value}
+    finally:
+        kernel.CloseHandle(process)
+
+
 def _process_snapshot(pid: int) -> dict[str, int]:
     if platform.system() == 'Windows':
-        script = (f"$p=Get-Process -Id {int(pid)} -ErrorAction Stop; "
-                  "[pscustomobject]@{rssBytes=[long]$p.WorkingSet64;threads=[int]$p.Threads.Count;"
-                  "openHandles=[int]$p.HandleCount}|ConvertTo-Json -Compress")
-        result = json.loads(_powershell(script))
-        return {'rss_bytes': int(result['rssBytes']), 'threads': int(result['threads']),
-                'open_handles': int(result['openHandles'])}
+        return _windows_process_snapshot(pid)
     proc = Path('/proc') / str(pid)
     if platform.system() == 'Linux' and proc.is_dir():
         status = dict(line.split(':', 1) for line in (proc / 'status').read_text().splitlines()
