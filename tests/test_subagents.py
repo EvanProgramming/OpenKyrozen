@@ -134,7 +134,21 @@ class SubAgentTests(unittest.TestCase):
         policy = object.__new__(Delegation)
         policy.root = Path.cwd()
         self.assertTrue(policy._verify_read_only_result(run, report, result))
-        result["tool_records"][0]["success"] = False
+        receipt = result["tool_records"][0]
+        receipt["args"] = '{"path":"source.py"}'
+        self.assertTrue(policy._verify_read_only_result(run, report, result))
+        report["evidence"] = [{"receipt_id": ["read-1"]}]
+        self.assertFalse(policy._verify_read_only_result(run, report, result))
+        report["evidence"] = [{"receipt_id": "read-1"}]
+        receipt["args"] = '{"path":"other.py"}'
+        self.assertFalse(policy._verify_read_only_result(run, report, result))
+        receipt["args"] = '{"path":"source.py"}'
+        receipt["receipt_id"] = None
+        report["evidence"] = [{"receipt_id": None}]
+        self.assertFalse(policy._verify_read_only_result(run, report, result))
+        report["evidence"] = [{"receipt_id": "read-1"}]
+        receipt["receipt_id"] = "read-1"
+        receipt["success"] = False
         self.assertFalse(policy._verify_read_only_result(run, report, result))
 
     def test_rejected_subagent_record_uses_persisted_receipt_id(self):

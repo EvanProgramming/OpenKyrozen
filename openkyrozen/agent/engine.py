@@ -92,12 +92,15 @@ class AgentEngine:
                 continue
             artifact_id = self._store_tool_output(content)
             summary = {"artifact_id": artifact_id, "total_chars": len(content)}
+            archived_metadata = {"artifact_id": artifact_id}
+            if isinstance(metadata, dict) and isinstance(metadata.get("receipt_id"), str):
+                archived_metadata["receipt_id"] = metadata["receipt_id"]
             messages[index] = ToolReply(reply.call_id, reply.name, {
                 "data": summary, "text": "Earlier tool result archived; use read_tool_artifact to retrieve it.",
                 "error": ({"code": "archived_result", "message": "Tool call failed; see artifact.",
                            "retriable": False, "metadata": {"artifact_id": artifact_id}}
                           if reply.is_error else None),
-                "metadata": {"artifact_id": artifact_id},
+                "metadata": archived_metadata,
             }, reply.is_error)
 
     def _working_plan_continuation(self, turn, *, needs_plan=False):
@@ -488,6 +491,8 @@ class AgentEngine:
                 from openkyrozen.agent.conversation import tool_result_to_dict
                 outcome = receipt.tool_result or ToolResult(data=receipt.result_data, text=receipt.result)
                 reply_data = tool_result_to_dict(outcome)
+                if runtime.execution_context.child_run_id and receipt.success:
+                    reply_data["metadata"]["receipt_id"] = receipt.receipt_id
                 if outcome.success and call["action"] == "update_plan":
                     active_task_id = runtime.tasks.execution_task_id
                     if active_task_id and active_task_id != selected_task_id:

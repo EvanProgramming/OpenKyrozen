@@ -480,6 +480,37 @@ class DelegationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.runtime.delegation().detail(run["run_id"])
 
+    def test_native_read_only_report_uses_the_persisted_tool_receipt(self):
+        from openkyrozen.providers.base import LLMProvider
+        from openkyrozen.providers.models import FinishReason, ModelResponse, ProviderCapabilities, ToolCall, ToolReply
+
+        class Provider(LLMProvider):
+            def chat(self, messages, model=None):
+                raise AssertionError("native delegation must not use the legacy provider")
+
+            def get_capabilities(self, model=None):
+                return ProviderCapabilities(native_tools=True)
+
+            def chat_response(self, messages, model=None, *, tools=None):
+                reply = next((item for item in messages if isinstance(item, ToolReply)), None)
+                if reply is None:
+                    return ModelResponse(tool_calls=(ToolCall("native-read", "read_file", {"path": "marker.txt"}),),
+                                         finish_reason=FinishReason.TOOL_REQUEST)
+                receipt_id = reply.output["metadata"].get("receipt_id")
+                evidence = [{"receipt_id": receipt_id}] if receipt_id else []
+                return ModelResponse(text=json.dumps(result(evidence=evidence)), finish_reason=FinishReason.FINAL)
+
+        self.runtime.get_provider = Provider
+        coordinator = self.runtime.delegation()
+        self.addCleanup(coordinator.close)
+        agent = coordinator.spawn([brief(risk="normal")])[0]
+        run = coordinator.wait([agent["run_id"]], timeout=10)[0]
+        self.assertEqual(run["status"], "succeeded", run.get("error"))
+        self.assertEqual(run["reviews"][0]["verification"], "receipt-bound-read-only")
+        receipt, = run["result"]["tool_records"]
+        self.assertEqual(json.loads(receipt["args"]), {"path": "marker.txt"})
+        self.assertEqual(run["report"]["evidence"], [{"receipt_id": receipt["receipt_id"]}])
+
     def test_original_native_detail_uses_the_journal_scope_for_author_and_reviewer(self):
         from openkyrozen.agent.conversation import ConversationHistory
         from openkyrozen.providers.base import LLMProvider
