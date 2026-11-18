@@ -77,6 +77,7 @@ class ProcessLifecycleTests(unittest.TestCase):
             workspace.mkdir()
             app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(root) / 'state.sqlite3'))), tools=ToolAdapters(workspace))
             try:
+                app.runtime._set_workspace_root(workspace)
                 started = app.runtime.run_command({
                     'command': shlex.join([sys.executable, '-c', 'import time; print("ready",flush=True); time.sleep(30)']),
                     'background': True,
@@ -99,27 +100,24 @@ class ProcessLifecycleTests(unittest.TestCase):
     def test_handles_are_scoped_and_output_is_read_as_separate_streams(self):
         from openkyrozen.tools.processes import SessionProcessManager
 
-        with tempfile.TemporaryDirectory() as root:
-            owner = SessionProcessManager('user', root, 'session-a')
-            other = SessionProcessManager('user', root, 'session-b')
+        with tempfile.TemporaryDirectory() as root, ExitStack() as managers:
+            owner = managers.enter_context(closing(SessionProcessManager('user', root, 'session-a')))
+            other = managers.enter_context(closing(SessionProcessManager('user', root, 'session-b')))
             handle = owner.start(
                 shlex.join([sys.executable, '-c', 'import sys,time; print("out",flush=True); print("err",file=sys.stderr,flush=True); time.sleep(30)']),
                 cwd=root, env=None, timeout_seconds=30,
             )
             self.assertIsNone(other.read(handle.process_id))
-            page = owner.read(handle.process_id)
             deadline = time.monotonic() + 3
-            while not page['output'] and time.monotonic() < deadline:
-                time.sleep(.02)
-                page = owner.read(handle.process_id)
-            self.assertIn('out', page['output'])
-            self.assertTrue(page['running'])
-            err = owner.read(handle.process_id, stream='stderr')
-            self.assertIn('err', err['output'])
+            for stream, expected in (('stdout', 'out'), ('stderr', 'err')):
+                page = owner.read(handle.process_id, stream=stream)
+                while expected not in page['output'] and time.monotonic() < deadline:
+                    time.sleep(.02)
+                    page = owner.read(handle.process_id, stream=stream)
+                self.assertIn(expected, page['output'])
+                self.assertTrue(page['running'])
             owner.stop(handle.process_id)
             self.assertFalse(owner.read(handle.process_id)['running'])
-            owner.close()
-            other.close()
 
     def test_stop_terminates_owned_process_and_unknown_handle_is_rejected(self):
         from openkyrozen.tools.processes import SessionProcessManager
