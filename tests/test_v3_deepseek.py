@@ -82,10 +82,12 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         self.assertEqual(result["stream_options"], {"include_usage": True})
         wire = result["tools"][0]["function"]
         self.assertTrue(wire["strict"])
-        variants = wire["parameters"]["properties"]["arguments"]["anyOf"]
-        self.assertEqual([schema["required"] for schema in variants], [["path"], ["path", "start_line"]])
-        self.assertEqual(variants[1]["properties"], {"path": {"type": "string"},
-                                                    "start_line": {"type": "integer", "minimum": 1}})
+        projected = wire["parameters"]
+        self.assertEqual(projected["required"], ["path", "start_line"])
+        self.assertEqual(projected["properties"]["path"], {"type": "string"})
+        position, omission = projected["properties"]["start_line"]["anyOf"]
+        self.assertEqual(position, {"type": "integer", "minimum": 1})
+        self.assertEqual(omission["required"], ["omit"])
         self.assertNotIn("strict", function)
         self.assertIn("minLength", schema["properties"]["path"])
 

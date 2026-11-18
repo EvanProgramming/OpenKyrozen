@@ -702,19 +702,29 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                     case.assertEqual(set(plan_schema["required"]), {"plan_id", "expected_revision", "operations"})
                     case.assertEqual(plan_schema["properties"]["operations"]["minItems"], 1)
                     case.assertNotIn("complexity/tasks", plan_tool["description"])
+                    case.assertIn("before start in the same call", plan_tool["description"])
                     operations = plan_schema["properties"]["operations"]["items"]["anyOf"]
                     case.assertIn(["reorder"], [op["properties"]["op"]["enum"] for op in operations])
                     wire = strict_chat_schema(plan_schema)
-                    variants = wire["properties"]["arguments"]["anyOf"]
-                    case.assertEqual([set(shape["properties"]) for shape in variants], [
-                        {"plan_id", "expected_revision", "operations"},
-                        {"plan_id", "expected_revision", "operations", "reason"},
-                    ])
+                    case.assertEqual(set(wire["required"]), set(plan_schema["properties"]))
+                    case.assertEqual(set(wire["properties"]), set(plan_schema["properties"]))
+                    rationale, omission = wire["properties"]["reason"]["anyOf"]
+                    case.assertEqual(rationale["type"], "string")
+                    case.assertEqual(omission["required"], ["omit"])
                     edit = {"plan_id": state["plan_id"], "expected_revision": state["revision"],
                             "operations": [{"op": "suggest_complete", "task": state["tasks"][0]["id"]}],
                             "reason": "Check current work"}
                     case.assertEqual(json.loads(decode_strict_chat_arguments(
-                        json.dumps({"arguments": edit}), plan_schema)), edit)
+                        json.dumps(edit), plan_schema)), edit)
+                    omitted = {**edit, "reason": {"omit": True}}
+                    del edit["reason"]
+                    case.assertEqual(json.loads(decode_strict_chat_arguments(
+                        json.dumps(omitted), plan_schema)), edit)
+                    hybrid = {"plan_id": edit["plan_id"],
+                              "arguments": {key: value for key, value in edit.items() if key != "plan_id"}}
+                    from openkyrozen.tools.manifest import ToolRegistry
+                    decoded = json.loads(decode_strict_chat_arguments(json.dumps(hybrid), plan_schema))
+                    case.assertIsNotNone(ToolRegistry._argument_error(plan_schema, decoded))
                     guidance = next(item["content"] for item in messages if isinstance(item, dict)
                                     and item.get("content", "").startswith("## Current native tool availability\n"))
                     case.assertIn("before the final verification", guidance)

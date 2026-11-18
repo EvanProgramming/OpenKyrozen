@@ -82,13 +82,16 @@ _STRICT_MAP_DEFINITIONS = {
 }
 
 
-def _flat_optional_fields(schema):
+def _flat_optional_fields(schema, *, root=False):
     properties = schema.get("properties", {})
     if schema.get("type") != "object" or schema.get("additionalProperties") is not False:
         return ()
     required = set(schema.get("required", ()))
     optional = tuple(name for name in properties if name not in required)
-    if len(optional) < 3 and "anyOf" not in schema:
+    # Prefer the canonical layout at the root when all optional subsets are allowed.
+    compact_root = (root and required and schema.get("minProperties", 0) <= len(required)
+                    and schema.get("maxProperties", float("inf")) >= len(properties))
+    if len(optional) < 3 and "anyOf" not in schema and not compact_root:
         return ()
     for name in optional:
         field = properties[name]
@@ -135,6 +138,7 @@ def strict_chat_schema(schema, *, remaining=None):
             raise ValueError("strict Chat tool schema exceeds its structural bound")
         if set(item) & {"$ref", "$def", "$defs", "allOf", "oneOf"}:
             raise ValueError("strict Chat requires an inline canonical tool schema")
+        original = item
         minimum = item.get("minProperties", 0)
         maximum = item.get("maxProperties", float("inf"))
         item = {key: value for key, value in item.items() if key not in {
@@ -174,7 +178,7 @@ def strict_chat_schema(schema, *, remaining=None):
             return {**_MAP_REF, "description": "Represent object fields as named key/value entries."}
         if item.get("additionalProperties") is not False:
             raise ValueError("strict Chat Completions requires a declared object schema")
-        optional = _flat_optional_fields(item)
+        optional = _flat_optional_fields(original, root=depth == 0)
         if optional:
             return flat_object(item, optional, depth)
         properties = {key: reference(value, depth + 1) for key, value in item.get("properties", {}).items()}
@@ -240,14 +244,14 @@ def decode_strict_chat_arguments(raw, schema):
             result[entry["key"]] = decode_map(entry["value"])
         return result
 
-    def decode(value, contract):
+    def decode(value, contract, *, root=False):
         if contract.get("additionalProperties") is True and not contract.get("properties"):
             # Strict Beta can return canonical objects in referenced schemas.
             if isinstance(value, dict) and set(value) == {_MAP_ENTRIES} and isinstance(value[_MAP_ENTRIES], list):
                 return decode_map(value)
             return value
         if isinstance(value, dict):
-            optional = _flat_optional_fields(contract)
+            optional = _flat_optional_fields(contract, root=root)
             if optional:
                 value = {name: field for name, field in value.items()
                          if name not in optional or field != _OMIT_FIELD or field.get("omit") is not True}
@@ -277,7 +281,7 @@ def decode_strict_chat_arguments(raw, schema):
     if (uses_envelope and isinstance(value, dict) and set(value) == {_WIRE_ARGUMENTS}
             and isinstance(value[_WIRE_ARGUMENTS], dict) and ToolRegistry._schema_error(schema, value) is not None):
         value = value[_WIRE_ARGUMENTS]
-    return json.dumps(decode(value, schema), ensure_ascii=False, allow_nan=False)
+    return json.dumps(decode(value, schema, root=True), ensure_ascii=False, allow_nan=False)
 
 
 def _projected_bytes(value, sizes):

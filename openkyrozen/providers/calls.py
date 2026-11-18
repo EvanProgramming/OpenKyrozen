@@ -162,10 +162,15 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                 if _native_tool_phase == "plan_active":
                     properties["reason"] = {"type": "string", "minLength": 1,
                                             "description": "Optional rationale for the plan edit."}
+                    criterion_guidance = (
+                        "For a pending task with only prose acceptance and no execution contract, use update "
+                        "to set typed acceptance before start in the same call. "
+                        if ordinary_plan_edit else "Preserve approved criteria and request renewed approval for material changes. "
+                    )
                     plan_tool["description"] = (
                         "Revise the current Working Plan using its pinned ID and revision. "
-                        "Combine compatible operations in execution order and use exact tool arguments "
-                        "for typed verification."
+                        f"{criterion_guidance}Use exact tool arguments for typed verification. "
+                        "Combine compatible operations in execution order."
                     )
                 else:
                     operations = properties["operations"]

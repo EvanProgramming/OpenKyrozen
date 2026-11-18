@@ -421,8 +421,11 @@ def _fixture_prompt(fixture: dict) -> str:
                              "object for the successful test invocation.\n\n")
     elif fixture.get("plan_scenario") in _DISCOVERED_VERIFICATION:
         _, focus = _DISCOVERED_VERIFICATION[fixture["plan_scenario"]]
-        case_requirements = (f"Add a separate verification task for {focus} discovered during the work. "
-                             "Name the behavior in the new task and complete it with verification.\n\n")
+        original_tests = shlex.join(["python3", *verifier["command"][1:]])
+        case_requirements = (f"After the repair or implementation, run `{original_tests}` to verify the existing work. "
+                             "Add a separate verification task "
+                             f"for {focus} discovered during the work. Name the behavior in the new task and "
+                             "complete it with its own verification.\n\n")
     return ("Fixture workspace boundary: writable files are only these existing non-test fixture paths: "
             + json.dumps(writable, ensure_ascii=False) + ".\n"
             "Original test files are immutable. Do not create additional workspace files, including "
@@ -1348,12 +1351,12 @@ def _initial_plan(fixture: dict, *, arm: str = "v3") -> list[str | dict] | dict:
     else:
         tasks: list[str | dict] = [f"{title}: {description}" for title, description in fixture.get("plan_tasks", [])]
         scenario = fixture.get("plan_scenario")
-        if arm != "v2" and scenario in {"unnecessary_churn", "cancel_obsolete_task_after_reproduction"}:
-            index = 0 if scenario == "unnecessary_churn" else 1
-            tasks[index] = {"description": tasks[index], "acceptance": [{
+        if arm != "v2" and (scenario in _DISCOVERED_VERIFICATION
+                           or scenario in {"unnecessary_churn", "cancel_obsolete_task_after_reproduction"}):
+            tasks[-1] = {"description": tasks[-1], "acceptance": [{
                 "criterion": "The original fixture tests pass.",
                 "verification": {"action": "run_cmd", "arguments": {
-                    "command": " ".join(["python3", *fixture["verifier"]["command"][1:]]),
+                    "command": shlex.join(["python3", *fixture["verifier"]["command"][1:]]),
                 }},
             }]}
         return tasks

@@ -743,6 +743,21 @@ class V3MatchedLiveTests(unittest.TestCase):
             "action": "run_cmd", "arguments": {"command": "python3 -m unittest test_slug.py"},
         })
 
+    def test_discovery_seeds_bind_existing_tests_but_leave_new_work_to_the_agent(self):
+        fixtures = [fixture for fixture in FIXTURES if fixture["plan_scenario"] in {
+            "add_discovered_edge_case", "add_discovered_verification_task",
+        }]
+        self.assertEqual(len(fixtures), 2)
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture["fixture_id"]):
+                baseline = _initial_plan(fixture, arm="v2")
+                *earlier, final = _initial_plan(fixture)
+                self.assertEqual([*earlier, final["description"]], baseline)
+                self.assertEqual(final["acceptance"][0]["verification"], {
+                    "action": "run_cmd",
+                    "arguments": {"command": "python3 " + " ".join(fixture["verifier"]["command"][1:])},
+                })
+
     def test_reproduction_prompts_preserve_command_status_and_seed_fallback_verification(self):
         fixtures = [item for item in FIXTURES if item["category"] == "error_recovery" or item["fixture_id"] == "bug_fix-2"]
         self.assertEqual(len(fixtures), 4)
