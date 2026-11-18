@@ -50,17 +50,25 @@ def _prompt_profile(self) -> str:
 
 
 def _permitted_tool_names(self, agent_config: dict[str, Any] | None = None) -> set[str]:
+    from openkyrozen.agent.executor import _builtin_interaction_control, _strategic_tool_denial
+
     configured = effective_capabilities(agent_config or load_agent_config(self._get_workspace_root()))
     active = getattr(self, "_execution_capability_token", None)
     capabilities = configured & active.capabilities if active else configured
     capabilities = mode_capabilities(capabilities, self._active_interaction_mode.get())
     permitted = {name for name in self.AVAILABLE_TOOLS if self.tool_registry.get_spec(name).visibility == 'public' and tool_capability(name,self.AVAILABLE_TOOLS) in capabilities}
+    executing_plan = self._interaction_controller.state().get("executing_plan")
+    if executing_plan:
+        for name in tuple(permitted):
+            spec = self.tool_registry.get_spec(name)
+            if (name != "cancel_subagent" and not _builtin_interaction_control(self, name, spec)
+                    and _strategic_tool_denial(executing_plan, spec)):
+                permitted.discard(name)
     if self._active_interaction_mode.get() != "agent":
         permitted.discard("update_plan")
     if (not self._interaction_controls_enabled.get() or self.execution_context.child_run_id):
         permitted -= {"propose_plan", "request_question"}
-    elif (self._active_interaction_mode.get() != "plan"
-          and not self._interaction_controller.state().get("executing_plan")):
+    elif self._active_interaction_mode.get() != "plan" and not executing_plan:
         permitted.discard("propose_plan")
     delegated = self.execution_context.delegation_tools
     if self.execution_context.child_run_id and delegated is not None:

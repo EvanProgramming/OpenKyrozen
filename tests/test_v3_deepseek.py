@@ -145,6 +145,10 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         self.assertIsNotNone(ToolRegistry._argument_error(read_schema, invalid_read))
         env = {"command": "pwd", "env": {"key_value_entries": "example"}}
         self.assertEqual(json.loads(decode_strict_chat_arguments(json.dumps(env), _SCHEMAS["run_cmd"])), env)
+        invalid_env = {"command": "pwd", "env": "example"}
+        decoded = json.loads(decode_strict_chat_arguments(json.dumps(invalid_env), _SCHEMAS["run_cmd"]))
+        self.assertEqual(decoded, invalid_env)
+        self.assertIsNotNone(ToolRegistry._argument_error(_SCHEMAS["run_cmd"], decoded))
         arguments = {"arguments": ["--help"]}
         self.assertEqual(json.loads(decode_strict_chat_arguments(json.dumps(arguments), _SCHEMAS["github_read"])),
                          arguments)

@@ -13,6 +13,8 @@ def _control_error(self):
 def _propose_plan(self, arguments: dict):
     """Propose a versioned Strategic Plan after read-only inspection. This never
     accepts or executes the proposal; material changes require user approval.
+    Working Plan task selection requires the write capability and internal effect
+    to be included in the bounds shown for approval.
     """
     denied = _control_error(self)
     if denied is not None:

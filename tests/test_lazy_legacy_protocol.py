@@ -267,6 +267,7 @@ class LazyLegacyProtocolTests(unittest.TestCase):
                     feedback = provider.continuation_states[0]
                     assert (feedback["plan_id"], feedback["revision"], feedback["status"]) == (working.id, working.revision, "active"), feedback
                     assert feedback["eligible_tasks"] == [{"id": task_id, "status": "pending"} for task_id in working.task_ids], feedback
+                    assert any("task selection as unavailable" in decision for decision in feedback["decisions"]), feedback
                     assert all(task["status"] == "pending" and not task.get("evidence") for task in runtime.tasks.tasks), runtime.tasks.tasks
                     accepted = runtime._interaction_controller.state()
                     assert accepted["pending_plan"] is None, accepted

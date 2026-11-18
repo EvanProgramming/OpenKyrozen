@@ -382,6 +382,10 @@ class NativeContextTests(unittest.TestCase):
         def respond(provider, messages, model):
             step = len(provider.requests)
             if step == 1:
+                _block, available = self.availability(messages)
+                self.assertIn("read_file", available["current_call_tools"])
+                self.assertIn("edit_file", available["current_call_tools"])
+                self.assertNotIn("run_cmd", available["current_call_tools"])
                 call = ToolCall("inspect-paging", "read_file", inspect)
             elif step == 2:
                 plan = self.runtime.tasks.working_plan

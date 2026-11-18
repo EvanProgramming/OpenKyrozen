@@ -242,10 +242,8 @@ def decode_strict_chat_arguments(raw, schema):
 
     def decode(value, contract):
         if contract.get("additionalProperties") is True and not contract.get("properties"):
-            if not isinstance(value, dict):
-                raise ValueError("invalid strict Chat map object")
             # Strict Beta can return canonical objects in referenced schemas.
-            if set(value) == {_MAP_ENTRIES} and isinstance(value[_MAP_ENTRIES], list):
+            if isinstance(value, dict) and set(value) == {_MAP_ENTRIES} and isinstance(value[_MAP_ENTRIES], list):
                 return decode_map(value)
             return value
         if isinstance(value, dict):

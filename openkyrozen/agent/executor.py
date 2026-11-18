@@ -24,6 +24,11 @@ _TOOL_ARTIFACT_PREVIEW = 1_200
 _RETRYABLE_NETWORK_LOOKUPS = frozenset({
     "search_web", "read_webpage", "analyze_remote_repo", "github_status", "github_read",
 })
+_STRATEGIC_EFFECTS = {
+    "none": "read_only", "read": "read_only", "read_only": "read_only",
+    "mutation": "filesystem", "internal_write": "internal", "orchestration": "internal",
+    "stateful": "internal", "external": "remote", "unknown": "unknown",
+}
 
 
 def _legacy_object_arguments(args, spec):
@@ -68,8 +73,8 @@ def _file_mutation_matches_objective(task, arguments):
     return False
 
 
-def _strategic_plan_denial(plan, action, args, spec, workspace_root):
-    """Return a denial when a tool exceeds the bounds the user accepted."""
+def _strategic_tool_denial(plan, spec):
+    """Check the argument-independent bounds of an accepted plan."""
     bounds = plan.get("bounds") if isinstance(plan, dict) else None
     if not isinstance(bounds, dict):
         return "accepted plan has no enforceable bounds"
@@ -77,18 +82,23 @@ def _strategic_plan_denial(plan, action, args, spec, workspace_root):
     effects = set(bounds.get("effects", ()))
     if not spec or spec.capability not in capabilities:
         return "tool capability is outside the accepted plan"
-    effect = {
-        "none": "read_only", "read": "read_only", "read_only": "read_only",
-        "mutation": "filesystem", "internal_write": "internal", "orchestration": "internal",
-        "stateful": "internal", "external": "remote", "unknown": "unknown",
-    }.get(spec.side_effects, spec.side_effects)
+    effect = _STRATEGIC_EFFECTS.get(spec.side_effects, spec.side_effects)
     if effect not in effects:
         return "tool effect is outside the accepted plan"
     if effect == "process":
         return "process effects cannot be confined to approved workspace paths"
     if spec.risk == "high" and bounds.get("risk_ceiling") != "high":
         return "tool risk exceeds the accepted plan"
+    return None
 
+
+def _strategic_plan_denial(plan, action, args, spec, workspace_root):
+    """Return a denial when a tool exceeds the bounds the user accepted."""
+    denial = _strategic_tool_denial(plan, spec)
+    if denial:
+        return denial
+    bounds = plan["bounds"]
+    effect = _STRATEGIC_EFFECTS.get(spec.side_effects, spec.side_effects)
     structured = args if isinstance(args, dict) else None
     if structured is None and isinstance(args, str) and args.lstrip().startswith("{"):
         try:

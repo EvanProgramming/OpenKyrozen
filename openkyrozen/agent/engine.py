@@ -146,10 +146,9 @@ class AgentEngine:
             scope = {"user_id": manager.user_id, "workspace_id": manager.workspace_id,
                      "session_id": manager.session_id or ""}
             permitted = runtime._permitted_tool_names()
-            if "update_plan" not in permitted:
-                return None
+            can_update_plan = "update_plan" in permitted
             if needs_plan:
-                if manager.store.get_working_plan(**scope) is not None:
+                if not can_update_plan or manager.store.get_working_plan(**scope) is not None:
                     return None
                 return {"plan_id": None, "revision": 0, "status": "required",
                         "eligible_tasks": [], "completion_evidence": "a plan and verified receipts are required",
@@ -175,6 +174,8 @@ class AgentEngine:
                 contracts = ([(checkpoint["action"], checkpoint.get("args"))] if checkpoint.get("action")
                              else [(c["action"], c.get("args")) for c in task.get("acceptance", [])
                                    if isinstance(c, dict) and c.get("action")])
+                if not can_update_plan and (not interaction.get("executing_plan") or not contracts):
+                    return None
                 for action, arguments in contracts:
                     spec = runtime.tool_registry.specs.get(action)
                     if action not in permitted or (interaction.get("executing_plan") and _strategic_plan_denial(
@@ -182,13 +183,19 @@ class AgentEngine:
                         return None
                 eligible.append({"id": task["id"], "status": task["status"]})
             if eligible:
+                decisions = ([
+                    "continue permitted work with explicit task selection",
+                    "request clarification or record a genuine blocker",
+                    "use existing plan rules to cancel/replace; require new receipts, never rewrite executed criteria",
+                ] if can_update_plan else [
+                    "use only the approved contract of a currently selected task",
+                    "report task selection as unavailable under the current bounds if no task is selected",
+                ])
                 return {"plan_id": plan.id, "revision": plan.revision, "status": "active",
                         "eligible_tasks": eligible[:12], "eligible_task_count": len(eligible),
                         "plan_state": "Use the current pinned Working Plan state; read its artifact_id if present.",
                         "completion_evidence": "required; prose and suggestions are not evidence",
-                        "decisions": ["continue permitted work with explicit task selection",
-                                      "request clarification or record a genuine blocker",
-                                      "use existing plan rules to cancel/replace; require new receipts, never rewrite executed criteria"]}
+                        "decisions": decisions}
         except Exception:
             # Unavailable authority or lifecycle state is a handoff, not permission to retry.
             return None
