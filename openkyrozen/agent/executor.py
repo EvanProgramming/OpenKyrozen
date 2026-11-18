@@ -911,13 +911,14 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
         bool(explicit_task_id) or receipt.call_id_source == "legacy"
         or (allow_legacy_task_matching and receipt.call_id_source == "synthetic")
     )
+    matching_tasks = (active_task,) if local_scope and explicit_task_id and receipt.action == "read_file" else task_manager.tasks
     legacy_contract = any(
         task.get("status") in {"pending", "running"}
         and task_manager._dependencies_succeeded(task, task_manager.tasks)
         and (task.get("checkpoint") or {}).get("action") == receipt.action
         and isinstance((task.get("checkpoint") or {}).get("args"), str)
         and not task["checkpoint"]["args"].lstrip().startswith("{")
-        for task in task_manager.tasks
+        for task in matching_tasks
     )
     matching_args = (receipt.args if legacy_contract else
                      json.dumps(receipt.arguments, ensure_ascii=False, allow_nan=False,
@@ -925,11 +926,24 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
                      if receipt.arguments is not None else receipt.args)
     criterion_status = receipt.verification.get("status")
     read_content = None
+    whole_read_args = None
     if receipt.action == "read_file":
         data = receipt.tool_result.data if receipt.tool_result is not None else None
         if (isinstance(data, dict) and isinstance(data.get("content"), str)
                 and data.get("truncated") is False):
             read_content = data["content"]
+            arguments = receipt.arguments or {}
+            path = arguments.get("path")
+            if (local_scope and explicit_task_id and receipt.authorized and receipt.success
+                    and receipt.call_id_source == "native" and receipt.tool_source == "builtin"
+                    and isinstance(path, str) and len(arguments) > 1
+                    and arguments.keys() <= {"path", "start_line", "max_lines", "max_chars"}
+                    and data.get("start_line") == 1 and data.get("end_line") == data.get("total_lines")
+                    and hashlib.sha256(read_content.encode("utf-8")).hexdigest() == data.get("sha256")):
+                from openkyrozen.tools.filesystem import read_file
+                spec = self._approval_tool_spec.get()
+                if getattr(getattr(spec, "executor", None), "__func__", None) is read_file.__tool_result_executor__:
+                    whole_read_args = json.dumps({"path": path}, ensure_ascii=False, separators=(",", ":"))
         else:
             criterion_status = "unavailable"
     evidence = {} if not reconcile_locally or receipt.action in TOOLS or not should_reconcile else task_manager.record_evidence(
@@ -939,6 +953,7 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
         result=receipt_projection["result"], success=receipt.success,
         acceptance=task_acceptance, receipt_id=receipt.receipt_id,
         verification_status=criterion_status, verification_result=read_content,
+        whole_read_args=whole_read_args,
     )
     task_id = evidence.get("task_id") if reconcile_locally else explicit_task_id
     effective_acceptance = evidence.get("acceptance") or (

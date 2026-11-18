@@ -167,6 +167,39 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         self.read("denied", "../outside.py")
         self.assertEqual(self.runtime.tasks.tasks[0]["status"], "running")
 
+    def test_full_read_with_explicit_limits_satisfies_selected_path_only_criterion(self):
+        task = self.task()
+        task["acceptance"][0]["verification"]["expect"] = {"contains": self.content.splitlines()[-1]}
+        created = self.invoke({"complexity": "simple", "tasks": [
+            task, {"description": "Legacy source check", "acceptance": ["Source checked"]},
+        ]})
+        self.assertTrue(created.success, created.text)
+        self.runtime.tasks.update_checkpoint(created.data["task_ids"][1], {"action": "read_file", "args": "catalog.py"})
+        self.start(created.data)
+        session = self.runtime.current_session
+        task_id = self.runtime.tasks.execution_task_id
+        self.assertEqual(task_id, created.data["task_ids"][0])
+        args = {"path": "catalog.py", "start_line": 1, "max_lines": 200, "max_chars": 4000}
+        self.assertTrue(self.runtime.execute_call(session, ToolCall("unbound", "read_file", args)).success)
+        self.assertEqual(self.runtime.tasks.tasks[0]["status"], "running")
+        for call_id, limits in (("suffix", {"start_line": 2}), ("short", {"max_chars": 1})):
+            receipt = self.runtime.execute_call(
+                session, ToolCall(call_id, "read_file", {"path": "catalog.py", **limits}), task_id=task_id)
+            self.assertTrue(receipt.success)
+            self.assertEqual(self.runtime.tasks.tasks[0]["status"], "running")
+        (self.root / "other.py").write_text(self.content)
+        wrong = self.runtime.execute_call(
+            session, ToolCall("wrong", "read_file", {**args, "path": "other.py"}), task_id=task_id)
+        self.assertTrue(wrong.success)
+        self.assertEqual(self.runtime.tasks.tasks[0]["status"], "running")
+        receipt = self.runtime.execute_call(session, ToolCall("full", "read_file", args), task_id=task_id)
+        self.assertTrue(receipt.success)
+        self.assertEqual(receipt.arguments, args)
+        completed = self.runtime.tasks.tasks[0]
+        self.assertEqual(completed["status"], "succeeded")
+        self.assertEqual(completed["evidence"][-1]["args_sha256"], receipt.args_sha256)
+        self.assertEqual(self.runtime.tasks.tasks[1]["status"], "pending")
+
     def test_prose_read_and_invalid_predicates_are_not_certified(self):
         for verification in ({"action": "read_file", "arguments": {"path": "catalog.py"}},
                              {"action": "read_file", "arguments": {"path": "catalog.py"}, "expect": {"contains": ""}},

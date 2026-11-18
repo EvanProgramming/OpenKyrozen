@@ -1053,7 +1053,8 @@ class TaskManager:
                         args_projection: str | None = None,
                         args_fingerprint: str | None = None, receipt_id: str | None = None,
                         verification_status: str | None = None,
-                        verification_result: str | None = None) -> dict[str, Any]:
+                        verification_result: str | None = None,
+                        whole_read_args: str | None = None) -> dict[str, Any]:
         canonical = _receipt_action(action)
         normalized_args = _receipt_args(args)
         persisted_args = _receipt_args(args_projection) if args_projection is not None else normalized_args
@@ -1070,17 +1071,27 @@ class TaskManager:
         inferred = False
         ordered_inferred = False
         targets = []
+        equivalent_read_ids = set()
         if task_id:
             candidate = next((task for task in self.tasks if task["id"] == str(task_id)), None)
+            checkpoint = (candidate or {}).get("checkpoint") or {}
+            if (candidate is not None and whole_read_args and success and canonical == "read_file"
+                    and verification_status == "not_applicable" and candidate["status"] == "running"
+                    and checkpoint.get("native_execution_selected") and not checkpoint.get("strategic_plan")):
+                equivalent_read_ids = {
+                    criterion["id"] for criterion in candidate.get("acceptance", [])
+                    if isinstance(criterion, dict) and criterion.get("id", "").startswith("read-ac-")
+                    and criterion.get("action") == canonical and criterion.get("args") == whole_read_args
+                }
             # An explicit identity is authoritative, but a stored action
             # contract still has to agree before successful evidence can be
             # attached to that task.
-            has_contract = bool(((candidate or {}).get("checkpoint") or {}).get("action")) or any(
+            has_contract = bool(checkpoint.get("action")) or any(
                 isinstance(item, dict) and item.get("action")
                 for item in (candidate or {}).get("acceptance", [])
             )
-            if candidate is not None and (not has_contract or self._receipt_match_score(
-                    candidate, canonical, normalized_args, args_fingerprint) >= 0):
+            if candidate is not None and (not has_contract or equivalent_read_ids or
+                    self._receipt_match_score(candidate, canonical, normalized_args, args_fingerprint) >= 0):
                 targets = [candidate]
                 item["task_id"] = requested_task_id
         if not task_id:
@@ -1099,7 +1110,9 @@ class TaskManager:
                 verified_ids = []
                 for criterion in candidate.get("acceptance", []):
                     if (not isinstance(criterion, dict) or not criterion.get("id")
-                            or criterion.get("action") != canonical or criterion.get("args") != normalized_args):
+                            or criterion.get("action") != canonical):
+                        continue
+                    if criterion.get("args") != normalized_args and criterion["id"] not in equivalent_read_ids:
                         continue
                     if canonical == "run_cmd" and criterion["id"].startswith("command-ac-") and (
                         verification_status != "verified"
