@@ -152,24 +152,33 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     "with the first task's ref as its task value. Include typed verification when the "
                     "exact tool arguments and expected result are known."
                 )
-            elif _native_tool_phase == "plan_completed":
-                properties = schema["properties"]
-                operations = properties["operations"]
-                confirm = next(item for item in operations["items"]["anyOf"]
-                               if item["properties"]["op"]["enum"] == ["suggest_complete"])
-                plan_tool["parameters"] = {
-                    "type": "object", "additionalProperties": False,
-                    "required": ["plan_id", "expected_revision", "operations"],
-                    "properties": {
-                        "plan_id": {**properties["plan_id"], "description": "ID of the current completed Working Plan."},
-                        "expected_revision": properties["expected_revision"],
-                        "operations": {**operations, "minItems": 1, "items": confirm},
-                    },
+            elif _native_tool_phase in {"plan_active", "plan_completed"}:
+                required = ["plan_id", "expected_revision", "operations"]
+                properties = {name: schema["properties"][name] for name in required}
+                properties["plan_id"] = {
+                    **properties["plan_id"], "description": "ID from the current pinned Working Plan.",
                 }
-                plan_tool["description"] = (
-                    "Confirm previously verified tasks in the completed Working Plan. "
-                    "Use the current pinned plan ID and revision and suggest_complete with the verified task IDs."
-                )
+                properties["operations"] = {**properties["operations"], "minItems": 1}
+                if _native_tool_phase == "plan_active":
+                    properties["reason"] = {"type": "string", "minLength": 1,
+                                            "description": "Optional rationale for the plan edit."}
+                    plan_tool["description"] = (
+                        "Revise the current Working Plan using its pinned ID and revision. "
+                        "Combine compatible operations in execution order and use exact tool arguments "
+                        "for typed verification."
+                    )
+                else:
+                    operations = properties["operations"]
+                    confirm = next(item for item in operations["items"]["anyOf"]
+                                   if item["properties"]["op"]["enum"] == ["suggest_complete"])
+                    properties["operations"] = {**operations, "items": confirm}
+                    plan_tool["description"] = (
+                        "Confirm previously verified tasks in the completed Working Plan. "
+                        "Use the current pinned plan ID and revision and suggest_complete with the verified task IDs."
+                    )
+                plan_tool["parameters"] = {
+                    "type": "object", "additionalProperties": False, "required": required, "properties": properties,
+                }
         history_only = {item["name"] for item in tools} - current_names
         marker = "## Current native tool availability\n"
         previous = list(messages)

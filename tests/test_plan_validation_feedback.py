@@ -692,11 +692,29 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                 elif self.calls == 2:
                     state = self.plan_state(messages)
                     case.assertEqual(state["status"], "active")
-                    plan_schema = next(tool["parameters"] for tool in tools if tool["name"] == "update_plan")
+                    from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_schema
+                    plan_tool = next(tool for tool in tools if tool["name"] == "update_plan")
+                    plan_schema = plan_tool["parameters"]
                     case.assertNotIn('"anchor"', json.dumps(plan_schema))
-                    case.assertIn("plan_id", plan_schema["properties"])
+                    case.assertEqual(set(plan_schema["properties"]), {
+                        "plan_id", "expected_revision", "operations", "reason",
+                    })
+                    case.assertEqual(set(plan_schema["required"]), {"plan_id", "expected_revision", "operations"})
+                    case.assertEqual(plan_schema["properties"]["operations"]["minItems"], 1)
+                    case.assertNotIn("complexity/tasks", plan_tool["description"])
                     operations = plan_schema["properties"]["operations"]["items"]["anyOf"]
                     case.assertIn(["reorder"], [op["properties"]["op"]["enum"] for op in operations])
+                    wire = strict_chat_schema(plan_schema)
+                    variants = wire["properties"]["arguments"]["anyOf"]
+                    case.assertEqual([set(shape["properties"]) for shape in variants], [
+                        {"plan_id", "expected_revision", "operations"},
+                        {"plan_id", "expected_revision", "operations", "reason"},
+                    ])
+                    edit = {"plan_id": state["plan_id"], "expected_revision": state["revision"],
+                            "operations": [{"op": "suggest_complete", "task": state["tasks"][0]["id"]}],
+                            "reason": "Check current work"}
+                    case.assertEqual(json.loads(decode_strict_chat_arguments(
+                        json.dumps({"arguments": edit}), plan_schema)), edit)
                     guidance = next(item["content"] for item in messages if isinstance(item, dict)
                                     and item.get("content", "").startswith("## Current native tool availability\n"))
                     case.assertIn("before the final verification", guidance)
