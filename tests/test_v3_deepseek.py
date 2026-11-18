@@ -1068,10 +1068,12 @@ class PlanningPreflightTests(unittest.TestCase):
                             pin = next(item['content'] for item in messages if isinstance(item, dict)
                                        and item.get('content', '').startswith('## Pinned Working Plan state\n'))
                             tool = next(item for item in tools if item['name'] == 'update_plan')
-                            reason = tool['parameters']['properties']['reason'].get('description', '')
                             fields = re.search(r'ONLY (plan_id, expected_revision, operations)', pin)
-                            if fields and 'omit reason' in tool['description'].lower() and 'omit' in reason.lower():
-                                args = {key: args[key] for key in fields[1].split(', ')}
+                            case.assertIsNotNone(fields)
+                            case.assertIn('omit reason', pin.lower())
+                            declared = set(tool['parameters']['properties'])
+                            case.assertEqual(declared, set(fields[1].split(', ')))
+                            args = {key: value for key, value in args.items() if key in declared}
                     elif self.calls == 2:
                         if self.plan_state(messages)['tasks'][0]['status'] != 'running':
                             raise AssertionError('unverified task completed before reading')

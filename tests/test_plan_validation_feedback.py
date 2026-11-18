@@ -697,6 +697,9 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                     case.assertIn("plan_id", plan_schema["properties"])
                     operations = plan_schema["properties"]["operations"]["items"]["anyOf"]
                     case.assertIn(["reorder"], [op["properties"]["op"]["enum"] for op in operations])
+                    guidance = next(item["content"] for item in messages if isinstance(item, dict)
+                                    and item.get("content", "").startswith("## Current native tool availability\n"))
+                    case.assertIn("before the final verification", guidance)
                     created = next(item for item in messages if isinstance(item, ToolReply)
                                    and item.call_id == "create-start")
                     case.assertEqual(created.output["data"]["plan_id"], state["plan_id"])
@@ -708,6 +711,11 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                     case.assertEqual(state["plan_id"], before["visible_plan"]["plan_id"])
                     case.assertEqual(state["revision"], before["visible_plan"]["revision"])
                     case.assertEqual(state["tasks"][0]["status"], "succeeded")
+                    plan_schema = next(tool["parameters"] for tool in tools if tool["name"] == "update_plan")
+                    case.assertEqual(set(plan_schema["properties"]), {"plan_id", "expected_revision", "operations"})
+                    case.assertEqual(set(plan_schema["required"]), set(plan_schema["properties"]))
+                    operation = plan_schema["properties"]["operations"]["items"]
+                    case.assertEqual(operation["properties"]["op"]["enum"], ["suggest_complete"])
                     read = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "read")
                     case.assertEqual(read.output["working_plan_progress"], {
                         "plan_id": state["plan_id"], "revision": state["revision"],

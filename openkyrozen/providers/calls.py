@@ -121,13 +121,15 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                  if registry.get_spec(item["name"]).capability in allowed or item["name"] in history_names]
         current_names = {item["name"] for item in tools if item["name"] in requested_names
                          and registry.get_spec(item["name"]).capability in allowed}
+        ordinary_plan_edit = False
         if "update_plan" in current_names and registry.get_spec("update_plan").source == "builtin":
             plan_tool = next(item for item in tools if item["name"] == "update_plan")
             schema = plan_tool["parameters"]
             plan = getattr(getattr(self, "tasks", None), "working_plan", None)
             accepted = (self._interaction_controller.state().get("executing_plan")
                         if plan and plan.status == "active" else None)
-            if not accepted or accepted.get("working_plan_id") != plan.id:
+            ordinary_plan_edit = not accepted or accepted.get("working_plan_id") != plan.id
+            if ordinary_plan_edit:
                 for shape in (schema, *schema.get("anyOf", ())):
                     operations = shape.get("properties", {}).get("operations", {})
                     for operation in operations.get("items", {}).get("anyOf", ()):
@@ -150,6 +152,24 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     "with the first task's ref as its task value. Include typed verification when the "
                     "exact tool arguments and expected result are known."
                 )
+            elif _native_tool_phase == "plan_completed":
+                properties = schema["properties"]
+                operations = properties["operations"]
+                confirm = next(item for item in operations["items"]["anyOf"]
+                               if item["properties"]["op"]["enum"] == ["suggest_complete"])
+                plan_tool["parameters"] = {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["plan_id", "expected_revision", "operations"],
+                    "properties": {
+                        "plan_id": {**properties["plan_id"], "description": "ID of the current completed Working Plan."},
+                        "expected_revision": properties["expected_revision"],
+                        "operations": {**operations, "minItems": 1, "items": confirm},
+                    },
+                }
+                plan_tool["description"] = (
+                    "Confirm previously verified tasks in the completed Working Plan. "
+                    "Use the current pinned plan ID and revision and suggest_complete with the verified task IDs."
+                )
         history_only = {item["name"] for item in tools} - current_names
         marker = "## Current native tool availability\n"
         previous = list(messages)
@@ -163,11 +183,13 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                              "again once active. Use read_tool_artifact only with a "
                              "runtime-provided artifact_id. It does not open workspace files. ",
             "plan_active": "The Working Plan is active now. Use current_call_tools in this request "
-                           "for the selected task's next action. ",
+                           "for the selected task's next action. The plan becomes read-only when the last task finishes. ",
             "plan_completed": "Completed-plan exposure is confirmation-only. The final tool reply may already have "
                               "verified the last task. Answer the original request using the verified results. "
                               "If explicitly asked to confirm the plan, use update_plan with the current IDs and revision. ",
         }.get(_native_tool_phase, "")
+        if _native_tool_phase == "plan_active" and ordinary_plan_edit:
+            phase_guidance += "Add discovered work within scope before the final verification. "
         if _native_tool_phase == "plan_active" and "discover_tools" in current_names:
             phase_guidance += "Use discover_tools if a permitted tool is missing from the compact list. "
         can_propose_revision = _native_tool_phase == "plan_completed" and "propose_plan" in current_names
