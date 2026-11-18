@@ -588,14 +588,45 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                 self.calls += 1
                 validate_tool_history(messages, provider_id=provider_identity(self), model=model, native=True)
                 if self.calls == 1:
-                    call = ToolCall("create-start", "update_plan", {"expected_revision": 0, "operations": [
+                    from benchmarks.v3_deepseek import (
+                        decode_strict_chat_arguments,
+                        planning_preflight_fixture,
+                        strict_chat_schema,
+                    )
+                    from openkyrozen.tools.manifest import ToolRegistry
+                    plan_tool = next(tool for tool in tools if tool["name"] == "update_plan")
+                    creation = plan_tool["parameters"]
+                    case.assertEqual(set(creation["properties"]), {"expected_revision", "operations"})
+                    case.assertEqual(set(creation["required"]), set(creation["properties"]))
+                    operations = creation["properties"]["operations"]["items"]["anyOf"]
+                    case.assertEqual([op["properties"]["op"]["enum"] for op in operations], [["add"], ["start"]])
+                    case.assertNotIn("op:add", plan_tool["description"])
+                    case.assertNotIn("plan_id", plan_tool["description"])
+                    pinned = next(item["content"] for item in messages if isinstance(item, dict)
+                                  and item.get("role") == "system"
+                                  and item.get("content", "").startswith("## Pinned Working Plan state\n"))
+                    case.assertNotIn("complexity/tasks", pinned)
+                    case.assertNotIn("Start a returned task", pinned)
+                    preflight = planning_preflight_fixture("a" * 40)["prompt"]
+                    example = json.loads(preflight.split("using this object: ", 1)[1].splitlines()[0])
+                    case.assertIsNone(ToolRegistry._argument_error(creation, example))
+                    wire = strict_chat_schema(creation)
+                    case.assertEqual(set(wire["properties"]), {"expected_revision", "operations"})
+                    case.assertNotIn("anyOf", wire["properties"]["operations"])
+                    arguments = {"expected_revision": 0, "operations": [
                         {"op": "add", "ref": "inspect", "task": task},
-                        {"op": "start", "task": "inspect"}]})
+                        {"op": "start", "task": "inspect"}]}
+                    case.assertEqual(json.loads(decode_strict_chat_arguments(json.dumps(arguments), creation)),
+                                     arguments)
+                    call = ToolCall("create-start", "update_plan", arguments)
                 elif self.calls == 2:
                     state = self.plan_state(messages)
                     case.assertEqual(state["status"], "active")
                     plan_schema = next(tool["parameters"] for tool in tools if tool["name"] == "update_plan")
                     case.assertNotIn('"anchor"', json.dumps(plan_schema))
+                    case.assertIn("plan_id", plan_schema["properties"])
+                    operations = plan_schema["properties"]["operations"]["items"]["anyOf"]
+                    case.assertIn(["reorder"], [op["properties"]["op"]["enum"] for op in operations])
                     created = next(item for item in messages if isinstance(item, ToolReply)
                                    and item.call_id == "create-start")
                     case.assertEqual(created.output["data"]["plan_id"], state["plan_id"])

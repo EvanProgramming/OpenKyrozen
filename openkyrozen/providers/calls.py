@@ -122,15 +122,34 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
         current_names = {item["name"] for item in tools if item["name"] in requested_names
                          and registry.get_spec(item["name"]).capability in allowed}
         if "update_plan" in current_names and registry.get_spec("update_plan").source == "builtin":
+            plan_tool = next(item for item in tools if item["name"] == "update_plan")
+            schema = plan_tool["parameters"]
             plan = getattr(getattr(self, "tasks", None), "working_plan", None)
             accepted = (self._interaction_controller.state().get("executing_plan")
                         if plan and plan.status == "active" else None)
             if not accepted or accepted.get("working_plan_id") != plan.id:
-                schema = next(item["parameters"] for item in tools if item["name"] == "update_plan")
                 for shape in (schema, *schema.get("anyOf", ())):
                     operations = shape.get("properties", {}).get("operations", {})
                     for operation in operations.get("items", {}).get("anyOf", ()):
                         operation["properties"].pop("anchor", None)
+            if _native_tool_phase == "plan_required":
+                operations = schema["properties"]["operations"]
+                creation_ops = [item for item in operations["items"]["anyOf"]
+                                if item["properties"]["op"]["enum"][0] in {"add", "start"}]
+                plan_tool["parameters"] = {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["expected_revision", "operations"],
+                    "properties": {
+                        "expected_revision": {"type": "integer", "minimum": 0, "maximum": 0},
+                        "operations": {**operations, "minItems": 1, "items": {"anyOf": creation_ops}},
+                    },
+                }
+                plan_tool["description"] = (
+                    "Create the required Working Plan at revision zero. Use add operations with a unique ref "
+                    "and a task with a description and acceptance criteria. In the same call, use start "
+                    "with the first task's ref as its task value. Include typed verification when the "
+                    "exact tool arguments and expected result are known."
+                )
         history_only = {item["name"] for item in tools} - current_names
         marker = "## Current native tool availability\n"
         previous = list(messages)

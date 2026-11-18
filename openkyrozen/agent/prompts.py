@@ -326,9 +326,8 @@ def _refresh_working_plan_context(self, messages: list) -> None:
             or completed_tasks == [] or not callable(snapshot)):
         if plan is None and callable(snapshot) and "update_plan" in self._permitted_tool_names():
             messages.insert(1 if messages else 0, {"role": "system", "content": marker + (
-                "No Working Plan exists. Create one with update_plan: omit plan_id, use expected_revision=0 "
-                "and operations with add/ref/task; or use complexity/tasks and omit every new task.id. "
-                "Runtime returns durable IDs. Start a returned task explicitly before its work. "
+                "No Working Plan exists. Follow the current update_plan declaration. "
+                "Start the task explicitly before performing its work. "
                 "Define tool-backed acceptance before starting work. For example, for a known marker in a file: "
                 '{"criterion":"Read the expected marker","verification":{"action":"read_file",'
                 '"arguments":{"path":"notes.txt"},"expect":{"contains":"ready"}}}. '

@@ -611,7 +611,7 @@ def planning_preflight_task() -> dict:
 
 
 def planning_preflight_fixture(candidate: str) -> dict:
-    creation = {"complexity": "simple", "expected_revision": 0, "reason": "Verify the planning preflight",
+    creation = {"expected_revision": 0,
         "operations": [{"op": "add", "ref": "proof", "task": planning_preflight_task()},
                        {"op": "start", "task": "proof"}]}
     return {"fixture_id": candidate, "category": "planning_preflight",

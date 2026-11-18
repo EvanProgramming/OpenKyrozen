@@ -64,8 +64,8 @@ def _request_question(self, arguments: dict):
 @legacy_text_api
 def _update_plan(self, arguments: dict):
     """Edit a revision-checked Working Plan. To create one, omit plan_id, set
-    expected_revision=0 and use operations=[{op:add,ref:inspect,task:{description,
-    acceptance}}]. In the complexity/tasks form omit id for every new task;
+    expected_revision to zero and add each task with a unique ref, description
+    and acceptance criteria. In the complexity/tasks form omit id for every new task;
     task.id identifies an existing runtime task, never a new client-chosen ID.
     Do not mix tasks with operations, plan_id, expected_revision or reason.
     Use returned plan_id/revision for edits and add.ref for same-batch references.
