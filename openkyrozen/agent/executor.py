@@ -311,11 +311,11 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
     elif getattr(expected_spec, "side_effects", None) == "read_only":
         verification = {"status": "not_applicable", "method": "read_only_tool", "observed": None}
         if canonical == "read_file" and call_id_source == "native" and authorized and success:
-            from openkyrozen.tools import ToolAdapters
+            from openkyrozen.tools.manifest import typed_executor
+            adapters = getattr(getattr(current_session, "workspace", None), "adapters", None)
+            read = getattr(adapters, "read_file", None)
             data = tool_result.data if tool_result is not None else None
-            executor = getattr(expected_spec.executor, "__func__", None)
-            read_executor = getattr(ToolAdapters.read_file, "__tool_result_executor__", None)
-            if (expected_spec.source == "builtin" and executor is not None and executor is read_executor
+            if (expected_spec.source == "builtin" and read is not None and expected_spec.executor == typed_executor(read)
                     and isinstance(data, dict) and isinstance(data.get("content"), str)
                     and data.get("truncated") is False and data.get("start_line") == 1
                     and data.get("end_line") == data.get("total_lines")
