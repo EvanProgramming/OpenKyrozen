@@ -265,6 +265,8 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
     confirmation_result = (tool_result if tool_result is not None
                            and tool_result.metadata.get("working_plan_confirmation") is True else None)
     git_commit = tool_result.metadata.get("git_commit") if canonical == "git_show" and tool_result is not None else None
+    read_data = tool_result.data if canonical == "read_file" and tool_result is not None else None
+    archived_read_content = None
     # Keep large outputs out of provider messages and the conversation journal.
     if tool_result is not None and canonical != "read_tool_artifact":
         from openkyrozen.agent.conversation import tool_result_to_dict
@@ -288,6 +290,10 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                 tool_result.error.code, tool_result.error.message[:_TOOL_ARTIFACT_PREVIEW],
                 tool_result.error.retriable, {"artifact_id": artifact_id},
             ) if tool_result.error else None)
+            if (authorized and tool_result.success and getattr(expected_spec, "source", None) == "builtin"
+                    and isinstance(read_data, dict) and isinstance(read_data.get("content"), str)
+                    and read_data.get("truncated") is False):
+                archived_read_content = read_data["content"]
             summary = {"artifact_id": artifact_id, "total_chars": len(full_output),
                        "preview": f"{preview}{suffix}"}
             tool_result = ToolResult(
@@ -324,12 +330,11 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
             from openkyrozen.tools.manifest import typed_executor
             adapters = getattr(getattr(current_session, "workspace", None), "adapters", None)
             read = getattr(adapters, "read_file", None)
-            data = tool_result.data if tool_result is not None else None
             if (expected_spec.source == "builtin" and read is not None and expected_spec.executor == typed_executor(read)
-                    and isinstance(data, dict) and isinstance(data.get("content"), str)
-                    and data.get("truncated") is False and data.get("start_line") == 1
-                    and data.get("end_line") == data.get("total_lines")
-                    and hashlib.sha256(data["content"].encode("utf-8")).hexdigest() == data.get("sha256")):
+                    and isinstance(read_data, dict) and isinstance(read_data.get("content"), str)
+                    and read_data.get("truncated") is False and read_data.get("start_line") == 1
+                    and read_data.get("end_line") == read_data.get("total_lines")
+                    and hashlib.sha256(read_data["content"].encode("utf-8")).hexdigest() == read_data.get("sha256")):
                 verification["observed"] = {"complete_file": True}
     if canonical == "update_plan" and call_id_source == "native" and expected_spec is not None:
         from openkyrozen.agent.plan_tools import _update_plan
@@ -421,6 +426,7 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         tool_source=getattr(expected_spec, "source", None),
         side_effects=getattr(expected_spec, "side_effects", "unknown"),
         verification=verification,
+        archived_read_content=archived_read_content,
     )
     if getattr(self, "_conversation_turn_id", None) is not None and self._conversation_turn_id.get():
         from openkyrozen.agent.conversation import tool_result_to_dict
@@ -951,9 +957,11 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
     whole_read_args = None
     if receipt.action == "read_file":
         data = receipt.tool_result.data if receipt.tool_result is not None else None
-        if (isinstance(data, dict) and isinstance(data.get("content"), str)
+        read_content = receipt._archived_read_content
+        if (read_content is None and isinstance(data, dict) and isinstance(data.get("content"), str)
                 and data.get("truncated") is False):
             read_content = data["content"]
+        if read_content is not None:
             arguments = receipt.arguments or {}
             path = arguments.get("path")
             observed = verification.get("observed")

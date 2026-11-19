@@ -254,6 +254,36 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         self.assertEqual(completed["evidence"][-1]["args_sha256"], receipt.args_sha256)
         self.assertEqual(self.runtime.tasks.tasks[1]["status"], "pending")
 
+    def test_archived_read_still_verifies_the_bound_task(self):
+        marker = "verified near the end of the file"
+        content = "# " + "x" * 8000 + marker + "\n"
+        for name in ("catalog.py", "other.py"):
+            (self.root / name).write_text(content)
+        task = self.task()
+        task["acceptance"][0]["verification"]["expect"] = {"contains": marker}
+        created = self.invoke({"complexity": "simple", "tasks": [task]})
+        self.assertTrue(created.success, created.text)
+        self.start(created.data)
+        runtime = self.runtime
+        task_id = runtime.tasks.execution_task_id
+        for name, arguments in (
+            ("wrong-path", {"path": "other.py"}),
+            ("truncated", {"path": "catalog.py", "max_chars": 7900}),
+        ):
+            receipt = runtime.execute_call(
+                runtime.current_session, ToolCall(name, "read_file", arguments), task_id=task_id)
+            self.assertTrue(receipt.success)
+            self.assertIn("artifact_id", receipt.tool_result.data)
+            self.assertEqual(runtime.tasks.tasks[0]["status"], "running")
+
+        receipt = runtime.execute_call(
+            runtime.current_session, ToolCall("full", "read_file", {"path": "catalog.py", "max_chars": 12000}),
+            task_id=task_id)
+        self.assertTrue(receipt.success)
+        self.assertIn("artifact_id", receipt.tool_result.data)
+        self.assertNotIn(marker, json.dumps(receipt.as_dict()))
+        self.assertEqual(runtime.tasks.tasks[0]["status"], "succeeded")
+
     def test_prose_read_and_invalid_predicates_are_not_certified(self):
         for verification in ({"action": "read_file", "arguments": {"path": "catalog.py"}},
                              {"action": "read_file", "arguments": {"path": "catalog.py"}, "expect": {"contains": ""}},

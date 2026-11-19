@@ -19,7 +19,7 @@ from openkyrozen.tasks.worker import TaskWorker
 class RuntimeReliabilityTests(unittest.TestCase):
     def test_turn_cancellation_stops_its_background_process_and_reports_cancelled(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
-            'KYROZEN_DISABLE_VECTOR_INDEX': '1',
+            'KYROZEN_DISABLE_VECTOR_INDEX': '1', 'KYROZEN_WORKSPACE_ROOT': directory,
         }), ExitStack() as sqlite_owners:
             root = Path(directory)
             app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(root / 'state.sqlite3'))), tools=ToolAdapters(root))
@@ -176,6 +176,46 @@ class RuntimeReliabilityTests(unittest.TestCase):
                 page = manager.read(first_id)
             self.assertEqual(page['output'], 'retained-output\n')
             self.assertFalse(page['running'])
+
+    def test_background_history_evicts_the_oldest_finalized_output(self):
+        from openkyrozen.tools.processes import SessionProcessManager
+        with tempfile.TemporaryDirectory() as directory, closing(
+                SessionProcessManager('user', directory, 'history')) as manager:
+            ids = []
+            for _ in range(65):
+                handle = manager.start('echo retained-output', cwd=directory, env=None, timeout_seconds=5)
+                ids.append(handle.process_id)
+                handle.expiry_thread.join(timeout=3)
+                deadline = time.monotonic() + 3
+                while not (handle.process.stdout.closed and handle.process.stderr.closed):
+                    self.assertLess(time.monotonic(), deadline, "Output collectors did not finish")
+                    time.sleep(.01)
+
+            self.assertIsNone(manager.read(ids[0]))
+            self.assertEqual(manager.read(ids[1])['output'], 'retained-output\n')
+            self.assertEqual(manager.read(ids[-1])['output'], 'retained-output\n')
+
+    def test_full_background_history_keeps_handles_with_unfinished_audit(self):
+        from openkyrozen.tools.processes import SessionProcessManager
+        with tempfile.TemporaryDirectory() as directory, closing(
+                SessionProcessManager('user', directory, 'history')) as manager, patch(
+                'openkyrozen.tools.processes._MAX_SESSION_HANDLES', 1):
+            def launch():
+                return manager.start('echo retained-output', cwd=directory, env=None, timeout_seconds=5)
+
+            handle = launch()
+            handle.expiry_thread.join(timeout=3)
+            deadline = time.monotonic() + 3
+            while not (handle.process.stdout.closed and handle.process.stderr.closed):
+                self.assertLess(time.monotonic(), deadline, "Output collectors did not finish")
+                time.sleep(.01)
+
+            with patch.object(handle, 'audit_exit_recorded', False):
+                with self.assertRaisesRegex(RuntimeError, "handle limit reached"):
+                    launch()
+                self.assertEqual(manager.read(handle.process_id)['output'], 'retained-output\n')
+            launch()
+            self.assertIsNone(manager.read(handle.process_id))
 
     def test_native_cancel_terminalizes_accepted_strategy_children_only(self):
         self._assert_native_cancel_terminalizes_strategy_children(narrow_scope=False)

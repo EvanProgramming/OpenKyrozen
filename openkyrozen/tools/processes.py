@@ -14,6 +14,8 @@ from openkyrozen.tools.sandbox import sandbox_command
 
 _MAX_OUTPUT_CHARS = 1_000_000
 _MAX_PROCESS_SECONDS = 30 * 60
+_MAX_LIVE_PROCESSES = 32
+_MAX_SESSION_HANDLES = 64
 
 
 def new_process_manager(self, owner_id: str, workspace_id: str, session_id: str):
@@ -173,18 +175,31 @@ class SessionProcessManager:
             # The prior intent/started record stays unresolved on restart.
             handle.audit_error = True
 
+    def _handle_to_evict(self, cancelled) -> str | None:
+        """Under the start lock, pick the oldest handle safe to replace after launch."""
+        if self._closed:
+            raise RuntimeError("session process manager is closed")
+        if cancelled is not None and cancelled.is_set():
+            raise RuntimeError("turn was cancelled before process start")
+        if sum(handle.process.poll() is None for handle in self._handles.values()) >= _MAX_LIVE_PROCESSES:
+            raise RuntimeError("session process handle limit reached")
+        if len(self._handles) < _MAX_SESSION_HANDLES:
+            return None
+        for process_id, handle in self._handles.items():
+            if (handle.finished_at is not None and handle.audit_exit_recorded
+                    and handle.process.stdout.closed and handle.process.stderr.closed
+                    and handle.temporary_directory is None
+                    and (handle.expiry_thread is None or not handle.expiry_thread.is_alive())):
+                return process_id
+        raise RuntimeError("session process handle limit reached")
+
     def start(self, command: str, *, cwd: str, env: dict[str, str], timeout_seconds: float,
               cancelled=None) -> ProcessHandle:
         process_id = uuid.uuid4().hex
         self._audit_event("launch_intent", process_id, timeout_seconds=timeout_seconds)
         try:
             with self._lock:
-                if self._closed:
-                    raise RuntimeError("session process manager is closed")
-                if cancelled is not None and cancelled.is_set():
-                    raise RuntimeError("turn was cancelled before process start")
-                if sum(handle.process.poll() is None for handle in self._handles.values()) >= 32:
-                    raise RuntimeError("session process handle limit reached")
+                evict_id = self._handle_to_evict(cancelled)
                 invocation = sandbox_command(
                     command, workspace=self.workspace_id, cwd=cwd,
                     env=os.environ.copy() if env is None else env,
@@ -204,6 +219,8 @@ class SessionProcessManager:
                     self.session_id, timeout_seconds, invocation.backend,
                     invocation.temporary_directory, invocation.unavailable_reason,
                 )
+                if evict_id is not None:
+                    del self._handles[evict_id]
                 self._handles[handle.process_id] = handle
         except BaseException:
             try:

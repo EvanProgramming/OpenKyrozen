@@ -514,17 +514,15 @@ def install_worker_adapter(client=None):
                 audit('launch_intent', process_id, timeout_seconds=timeout_seconds)
             try:
                 with self._lock:
-                    live = sum(handle.process.poll() is None for handle in self._handles.values())
-                    if self._closed or live >= 32:
-                        raise RuntimeError('session process manager is closed or full')
-                    if cancelled is not None and cancelled.is_set():
-                        raise RuntimeError('turn was cancelled before process start')
+                    evict_id = self._handle_to_evict(cancelled)
                     process = client.start(command, cwd, env, timeout_seconds,
                                            background=not getattr(self, '_foreground', False))
                     handle = processes.ProcessHandle(process_id, process, self.owner_id,
                                                       self.workspace_id, self.session_id, timeout_seconds,
                                                       process.backend)
                     process._benchmark_handle = handle
+                    if evict_id is not None:
+                        del self._handles[evict_id]
                     self._handles[handle.process_id] = handle
             except BaseException:
                 if audit:
