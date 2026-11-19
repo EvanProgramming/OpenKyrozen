@@ -107,12 +107,19 @@ def _flat_optional_fields(schema, *, root=False):
     return optional
 
 
-def strict_chat_schema(schema, *, remaining=None):
+def strict_chat_schema(schema, *, remaining=None, compact_plan_arguments=False):
     """Project schemas to Strict Beta while leaving validation with the registry."""
     uses_maps = False
     remaining = [16_000] if remaining is None else remaining
     definitions = {}
     projected = {}
+    map_contract = _STRICT_MAP
+    if compact_plan_arguments:
+        map_contract = {"anyOf": [
+            _closed_object({"command": {"type": "string"}}),
+            _closed_object({"path": {"type": "string"}}),
+            _STRICT_MAP,
+        ]}
 
     def reference(item, depth):
         if depth > 32:
@@ -163,7 +170,7 @@ def strict_chat_schema(schema, *, remaining=None):
             for branch in branches:
                 converted = project(branch, depth + 1)
                 if converted.get("$ref") == _MAP_REF["$ref"]:
-                    converted = _STRICT_MAP
+                    converted = map_contract
                 candidates = converted.get("anyOf", [converted])
                 if any("type" not in candidate for candidate in candidates):
                     raise ValueError("strict Chat union has an untyped alternative")
@@ -175,7 +182,9 @@ def strict_chat_schema(schema, *, remaining=None):
             return item
         if item.get("additionalProperties") is True and not item.get("properties"):
             uses_maps = True
-            return {**_MAP_REF, "description": "Represent object fields as named key/value entries."}
+            description = ("Use a direct command or path field when sufficient. Use named key/value entries for other maps."
+                           if compact_plan_arguments else "Represent object fields as named key/value entries.")
+            return {**_MAP_REF, "description": description}
         if item.get("additionalProperties") is not False:
             raise ValueError("strict Chat Completions requires a declared object schema")
         optional = _flat_optional_fields(original, root=depth == 0)
@@ -216,7 +225,7 @@ def strict_chat_schema(schema, *, remaining=None):
     if "anyOf" in result:
         result = _closed_object({_WIRE_ARGUMENTS: result})
     if uses_maps:
-        definitions.update(_STRICT_MAP_DEFINITIONS)
+        definitions.update(_STRICT_MAP_DEFINITIONS, map=map_contract)
     if definitions:
         result["$def"] = definitions
     return result
@@ -300,7 +309,8 @@ def _projected_bytes(value, sizes):
 def strict_chat_tools(tools):
     remaining = [16_000]
     result = [{"type": "function", "function": {**tool, "strict": True,
-               "parameters": strict_chat_schema(tool["parameters"], remaining=remaining)}}
+               "parameters": strict_chat_schema(tool["parameters"], remaining=remaining,
+                                                compact_plan_arguments=tool["name"] == "update_plan")}}
               for tool in tools or ()]
     if _projected_bytes(result, {}) > 999_488:
         raise ValueError("strict Chat tool schemas exceed the request bound")

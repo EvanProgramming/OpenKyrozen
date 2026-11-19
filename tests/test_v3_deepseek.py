@@ -48,6 +48,46 @@ class DeepSeekStrictChatTests(unittest.TestCase):
                     self.assertEqual(decoded["operations"][0]["fields"], {"acceptance": acceptance})
                 self.assertEqual(ToolRegistry._argument_error(schema, decoded) is None, expected_valid)
 
+    def test_working_plan_wire_prefers_direct_command_and_path_arguments(self):
+        from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_tools
+        from openkyrozen.tools.catalog import _SCHEMAS
+        from openkyrozen.tools.manifest import ToolRegistry
+
+        schema = _SCHEMAS["update_plan"]
+        tools = strict_chat_tools([{"name": "update_plan", "description": "Edit a plan", "parameters": schema}])
+        parameters = tools[0]["function"]["parameters"]
+        wire = parameters["$def"]["map"]
+        self.assertEqual([set(variant["required"]) for variant in wire["anyOf"]],
+                         [{"command"}, {"path"}, {"key_value_entries"}])
+
+        command = {"command": "python3 -m unittest test_api.py"}
+        nested = {"key_value_entries": [
+            {"key": "command", "value": command["command"]},
+            {"key": "env", "value": {"key_value_entries": [{"key": "MODE", "value": "test"}]}},
+        ]}
+        cases = (
+            ("run_cmd", command, command),
+            ("read_file", {"path": "api.py"}, {"path": "api.py"}),
+            ("run_cmd", nested, {**command, "env": {"MODE": "test"}}),
+        )
+        omitted = {"omit": True}
+        for action, arguments, expected in cases:
+            with self.subTest(action=action, arguments=arguments):
+                verification = {"action": action, "arguments": arguments}
+                if action == "read_file":
+                    verification["expect"] = {"contains": "def app("}
+                fields = dict.fromkeys(("description", "dependencies", "priority", "execution"), omitted)
+                fields["acceptance"] = [{"criterion": "Verify the implementation", "verification": verification}]
+                plan = dict.fromkeys(parameters["required"], omitted)
+                plan.update(plan_id="plan-1", expected_revision=1, operations=[
+                    {"op": "update", "task": "test", "fields": fields},
+                    {"op": "start", "task": "test"},
+                ])
+                decoded = json.loads(decode_strict_chat_arguments(json.dumps(plan), schema))
+                self.assertIsNone(ToolRegistry._argument_error(schema, decoded))
+                acceptance = decoded["operations"][0]["fields"]["acceptance"][0]
+                self.assertEqual(acceptance["verification"]["arguments"], expected)
+
     def test_closed_plan_union_uses_flat_fields_and_explicit_omission(self):
         from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_schema
         from openkyrozen.tools.catalog import _SCHEMAS
