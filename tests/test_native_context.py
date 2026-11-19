@@ -300,10 +300,11 @@ class NativeContextTests(unittest.TestCase):
                     self.assertEqual(projection["history_only_declarations"], ["read_file"] if step > 2 else [])
                     self.assertIn(("Planning-required exposure is temporary" if step == 1 else
                                    "The Working Plan is active now. Use current_call_tools in this request" if step == 2 else
-                                   "Completed-plan exposure is confirmation-only"), block)
+                                   "The final tool reply may already have verified the last task"), block)
                     if step > 2:
                         self.assertEqual(messages[-1]["content"], block)
-                        self.assertIn("Answer the original request using the verified results", block)
+                        self.assertIn("If the original request is fulfilled, answer using the verified results", block)
+                        self.assertIn("at revision 0 with no plan_id", block)
                     validate_tool_history(messages, provider_id=provider_identity(provider), model=model, native=True)
                     if step == 1:
                         pinned = next(item["content"] for item in messages if isinstance(item, dict)
