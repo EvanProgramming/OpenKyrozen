@@ -74,7 +74,7 @@ class OpenAICompatProvider(LLMProvider):
                 canonical = []
                 for index, (call_id, name, arguments) in enumerate(calls):
                     decoding = (index, name)
-                    canonical.append((call_id, name, decoder(arguments, schemas[name])))
+                    canonical.append((call_id, name, decoder(arguments, schemas[name], tool_name=name)))
                 decoding = None
             else:
                 canonical = calls

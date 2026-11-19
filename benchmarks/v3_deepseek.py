@@ -81,6 +81,36 @@ _STRICT_MAP_DEFINITIONS = {
     ]},
 }
 
+_ADD_COMMAND_CHECK = _closed_object({
+    "op": {"type": "string", "enum": ["add_command_check"],
+           "description": "Add a verification task for a command that must exit zero. Start the ref before running it."},
+    "ref": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "command": {"type": "string", "minLength": 1},
+})
+
+
+def _plan_operations(schema):
+    return schema.get("properties", {}).get("operations", {}).get("items", {}).get("anyOf", ())
+
+
+def _plan_accepts_add(schema):
+    return any(operation["properties"]["op"]["enum"] == ["add"] and "anchor" not in operation["properties"]
+               for operation in _plan_operations(schema))
+
+
+def _plan_wire_schema(schema):
+    if not _plan_accepts_add(schema):
+        return schema
+    properties = schema["properties"]
+    operations = properties["operations"]
+    result = {**schema, "properties": {**properties, "operations": {
+        **operations, "items": {"anyOf": [*_plan_operations(schema), _ADD_COMMAND_CHECK]},
+    }}}
+    if "anyOf" in schema:
+        result["anyOf"] = [_plan_wire_schema(branch) for branch in schema["anyOf"]]
+    return result
+
 
 def _flat_optional_fields(schema, *, root=False):
     properties = schema.get("properties", {})
@@ -231,7 +261,7 @@ def strict_chat_schema(schema, *, remaining=None, compact_plan_arguments=False):
     return result
 
 
-def decode_strict_chat_arguments(raw, schema):
+def decode_strict_chat_arguments(raw, schema, *, tool_name=None):
     """Decode only declared map positions and carry the unmodified wire reply on replay."""
     from openkyrozen.providers.models import _unique_object
     from openkyrozen.tools.manifest import ToolRegistry
@@ -290,6 +320,19 @@ def decode_strict_chat_arguments(raw, schema):
     if (uses_envelope and isinstance(value, dict) and set(value) == {_WIRE_ARGUMENTS}
             and isinstance(value[_WIRE_ARGUMENTS], dict) and ToolRegistry._schema_error(schema, value) is not None):
         value = value[_WIRE_ARGUMENTS]
+    if (tool_name == "update_plan" and isinstance(value, dict) and _plan_accepts_add(schema)
+            and isinstance(value.get("operations"), list)):
+        operations = []
+        for operation in value["operations"]:
+            if ToolRegistry._schema_error(_ADD_COMMAND_CHECK, operation) is None:
+                description = operation["description"]
+                operation = {"op": "add", "ref": operation["ref"], "task": {
+                    "description": description, "acceptance": [{"criterion": description, "verification": {
+                        "action": "run_cmd", "arguments": {"command": operation["command"]},
+                    }}],
+                }}
+            operations.append(operation)
+        value = {**value, "operations": operations}
     return json.dumps(decode(value, schema, root=True), ensure_ascii=False, allow_nan=False)
 
 
@@ -308,10 +351,19 @@ def _projected_bytes(value, sizes):
 
 def strict_chat_tools(tools):
     remaining = [16_000]
-    result = [{"type": "function", "function": {**tool, "strict": True,
-               "parameters": strict_chat_schema(tool["parameters"], remaining=remaining,
-                                                compact_plan_arguments=tool["name"] == "update_plan")}}
-              for tool in tools or ()]
+    result = []
+    for tool in tools or ():
+        is_plan = tool["name"] == "update_plan"
+        schema = _plan_wire_schema(tool["parameters"]) if is_plan else tool["parameters"]
+        description = tool["description"]
+        if is_plan and _plan_accepts_add(tool["parameters"]):
+            description += (" For a new verification task with only a command and no dependencies, use "
+                            "add_command_check with ref, description and the exact command. Start the pending "
+                            "task once no other task is running, then run the command. Use add for other task definitions.")
+        result.append({"type": "function", "function": {
+            **tool, "description": description, "strict": True, "parameters":
+            strict_chat_schema(schema, remaining=remaining, compact_plan_arguments=is_plan),
+        }})
     if _projected_bytes(result, {}) > 999_488:
         raise ValueError("strict Chat tool schemas exceed the request bound")
     return result

@@ -15,6 +15,63 @@ from benchmarks import v3_matched
 
 
 class DeepSeekStrictChatTests(unittest.TestCase):
+    def test_plan_command_shorthand_preserves_atomic_order_and_typed_acceptance(self):
+        from copy import deepcopy
+
+        from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_tools
+        from openkyrozen.tools.catalog import _SCHEMAS
+        from openkyrozen.tools.manifest import ToolRegistry
+
+        strategic_schema = _SCHEMAS["update_plan"]
+        schema = deepcopy(strategic_schema)
+        for shape in (schema, *schema["anyOf"]):
+            for operation in shape["properties"].get("operations", {}).get("items", {}).get("anyOf", ()):
+                operation["properties"].pop("anchor", None)
+        tool = {"name": "update_plan", "description": "Edit a plan", "parameters": schema}
+        wire = strict_chat_tools([tool])[0]["function"]["parameters"]
+        items = wire["properties"]["operations"]["anyOf"][0]["items"]
+        variants = wire["$def"][items["$ref"].rsplit("/", 1)[-1]]["anyOf"]
+        shorthand = next(row for row in variants if row["properties"]["op"]["enum"] == ["add_command_check"])
+        self.assertEqual(set(shorthand["required"]), {"op", "ref", "description", "command"})
+        self.assertFalse(shorthand["additionalProperties"])
+
+        command = "python3 -m unittest test_api.ApiTests.test_duplicate_name"
+        arguments = {"plan_id": "plan-1", "expected_revision": 4, "operations": [
+            {"op": "add_command_check", "ref": "duplicate", "description": "Verify HTTP 409", "command": command},
+            {"op": "start", "task": "duplicate"},
+        ]}
+        raw = json.dumps(arguments)
+        decoded = json.loads(decode_strict_chat_arguments(raw, schema, tool_name="update_plan"))
+        self.assertIsNone(ToolRegistry._argument_error(schema, decoded))
+        self.assertEqual(decoded, {**arguments, "operations": [
+            {"op": "add", "ref": "duplicate", "task": {"description": "Verify HTTP 409", "acceptance": [
+                {"criterion": "Verify HTTP 409", "verification": {"action": "run_cmd", "arguments": {"command": command}}},
+            ]}},
+            {"op": "start", "task": "duplicate"},
+        ]})
+        self.assertEqual(json.loads(decode_strict_chat_arguments(raw, schema)), arguments)
+        self.assertEqual(json.loads(decode_strict_chat_arguments(raw, strategic_schema, tool_name="update_plan")),
+                         arguments)
+        strategic_tool = strict_chat_tools([{**tool, "parameters": strategic_schema}])[0]
+        self.assertNotIn("add_command_check", json.dumps(strategic_tool))
+
+        for invalid in ({"anchor": "approved-task"}, {"command": False}):
+            with self.subTest(invalid=invalid):
+                bad = {**arguments, "operations": [{**arguments["operations"][0], **invalid}]}
+                rejected = json.loads(decode_strict_chat_arguments(json.dumps(bad), schema, tool_name="update_plan"))
+                self.assertIsNotNone(ToolRegistry._argument_error(schema, rejected))
+
+        operations = schema["properties"]["operations"]
+        confirm = next(row for row in operations["items"]["anyOf"]
+                       if row["properties"]["op"]["enum"] == ["suggest_complete"])
+        completed = {"type": "object", "additionalProperties": False, "required": list(arguments),
+                     "properties": {**{name: schema["properties"][name] for name in arguments},
+                                    "operations": {**operations, "items": confirm}}}
+        completed_tool = strict_chat_tools([{**tool, "parameters": completed}])[0]
+        self.assertNotIn("add_command_check", json.dumps(completed_tool))
+        rejected = json.loads(decode_strict_chat_arguments(raw, completed, tool_name="update_plan"))
+        self.assertIsNotNone(ToolRegistry._argument_error(completed, rejected))
+
     def test_strict_plan_update_projects_optional_union_fields_without_expansion(self):
         from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_schema
         from openkyrozen.tools.catalog import _SCHEMAS

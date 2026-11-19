@@ -427,7 +427,7 @@ class StreamEventContractTests(unittest.TestCase):
         ]
         provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
         provider.config = SimpleNamespace(provider="deepseek", model_simple="m")
-        provider._tool_wire_decoder = lambda raw, _schema: json.dumps(json.loads(raw))
+        provider._tool_wire_decoder = lambda raw, _schema, *, tool_name: json.dumps(json.loads(raw))
         send = Mock()
         provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=send)))
         tools = [{"name": "read_file", "description": "read", "parameters": {"type": "object"}}]
@@ -471,7 +471,7 @@ class StreamEventContractTests(unittest.TestCase):
                   frame([part(0, '"a"}'), part(1, '"}')]), frame(finish="tool_calls", usage=usage)]
         provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
         provider.config = SimpleNamespace(provider="deepseek", model_simple="m")
-        provider._tool_wire_decoder = Mock(side_effect=lambda raw, _schema: raw)
+        provider._tool_wire_decoder = Mock(side_effect=lambda raw, _schema, *, tool_name: raw)
         create = Mock(return_value=iter(chunks))
         provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
         tools = [{"name": "read_file", "description": "read", "parameters": {"type": "object"}}]
