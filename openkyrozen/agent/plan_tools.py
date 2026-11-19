@@ -89,9 +89,10 @@ def _update_plan(self, arguments: dict):
     confirmation: use ONLY plan_id, expected_revision and operations containing
     suggest_complete; omit reason, complexity, tasks and all other metadata.
     The snapshot reason is saved state, not a confirmation argument.
-    Historical plans and other terminal edits remain rejected. Split of an
-    approved objective retains its immutable acceptance anchor and adds strategy
-    children. Set add.anchor only for an approved Strategic Plan objective.
+    If ordinary work remains after completion, create a separate plan at revision
+    zero with no plan_id. Historical plans and other terminal edits remain rejected.
+    Split of an approved objective retains its immutable acceptance anchor and adds
+    strategy children. Set add.anchor only for an approved Strategic Plan objective.
     """
     def validate_strategy(binding, execution):
         from openkyrozen.agent.executor import _strategic_plan_denial
@@ -113,7 +114,17 @@ def _update_plan(self, arguments: dict):
 
     commit_attempts = self.tasks._plan_commit_attempts
     try:
-        if "operations" in arguments:
+        operations = arguments.get("operations")
+        if arguments.get("plan_id") is None:
+            interaction = self._interaction_controller.state()
+            if interaction.get("executing_plan") or interaction.get("pending_plan"):
+                return tool_failure("permission_denied",
+                                    "A Strategic Plan is active or awaiting approval. Use its approval workflow.")
+            if self.execution_context.native_plan_completed:
+                actions = {op["op"] for op in operations or ()}
+                if actions != {"add", "start"}:
+                    raise ValueError("A follow-up plan requires add and start operations in the same call")
+        if operations is not None:
             result = self.tasks.update_plan(
                 complexity=arguments.get("complexity"), plan_id=arguments.get("plan_id"),
                 expected_revision=arguments["expected_revision"], operations=arguments["operations"],
@@ -144,7 +155,9 @@ def _update_plan(self, arguments: dict):
         ordinary = not self._interaction_controller.state().get("executing_plan") and not any(
             (task.get("checkpoint") or {}).get("strategic_plan") for task in self.tasks.tasks)
         snapshot = self.tasks.working_plan_snapshot()
-        if "operations" not in arguments:
+        if self.execution_context.native_plan_completed and arguments.get("plan_id") is None:
+            hint = " Omit plan_id, set expected_revision to 0, and include add and start in the same call."
+        elif "operations" not in arguments:
             hint = " Omit task.id for new tasks; use add.ref for local references."
         elif snapshot is None:
             hint = " To create a plan, omit plan_id and use expected_revision=0."

@@ -352,8 +352,13 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                 "plan_id": plan.id, "revision": plan.revision, "turn_id": turn_id}}
         elif (trusted and tool_error is not None and tool_error.code == "invalid_arguments"
               and (_precommit_plan_validation or tool_error.metadata.get("plan_validation_no_effect") is True)):
+            observed = {"committed": False, "turn_id": turn_id}
+            if canonical_arguments is not None and "plan_id" in canonical_arguments:
+                active_id = getattr(task_manager.working_plan, "id", None)
+                observed.update(plan_id=active_id,
+                                target_mismatch=not active_id or canonical_arguments["plan_id"] != active_id)
             verification = {"status": "not_applicable", "method": "plan_input_validation",
-                            "observed": {"committed": False, "turn_id": turn_id}}
+                            "observed": observed}
     if _duplicate_successful_operation:
         verification = {"status": "not_applicable", "method": "duplicate_success_refusal", "observed": None}
 

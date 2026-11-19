@@ -122,13 +122,16 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
         current_names = {item["name"] for item in tools if item["name"] in requested_names
                          and registry.get_spec(item["name"]).capability in allowed}
         ordinary_plan_edit = False
+        ordinary_followup = False
         if "update_plan" in current_names and registry.get_spec("update_plan").source == "builtin":
             plan_tool = next(item for item in tools if item["name"] == "update_plan")
             schema = plan_tool["parameters"]
             plan = getattr(getattr(self, "tasks", None), "working_plan", None)
-            accepted = (self._interaction_controller.state().get("executing_plan")
-                        if plan and plan.status == "active" else None)
+            interaction = self._interaction_controller.state() if plan and plan.status in {"active", "completed"} else {}
+            accepted = interaction.get("executing_plan")
             ordinary_plan_edit = not accepted or accepted.get("working_plan_id") != plan.id
+            ordinary_followup = (_native_tool_phase == "plan_completed" and not accepted
+                                 and not interaction.get("pending_plan"))
             if ordinary_plan_edit:
                 for shape in (schema, *schema.get("anyOf", ())):
                     operations = shape.get("properties", {}).get("operations", {})
@@ -149,8 +152,8 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                 plan_tool["description"] = (
                     "Create the required Working Plan at revision zero. Use add operations with a unique ref "
                     "and a task with a description and acceptance criteria. In the same call, use start "
-                    "with the first task's ref as its task value. Include typed verification when the "
-                    "exact tool arguments and expected result are known."
+                    "with the first task's ref as its task value. Include all requested work, including pending "
+                    "edits and tests. Include typed verification when the exact arguments and result are known."
                 )
             elif _native_tool_phase in {"plan_active", "plan_completed"}:
                 required = ["plan_id", "expected_revision", "operations"]
@@ -175,13 +178,25 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     )
                 else:
                     operations = properties["operations"]
-                    confirm = next(item for item in operations["items"]["anyOf"]
+                    variants = operations["items"]["anyOf"]
+                    confirm = next(item for item in variants
                                    if item["properties"]["op"]["enum"] == ["suggest_complete"])
                     properties["operations"] = {**operations, "items": confirm}
                     plan_tool["description"] = (
                         "Confirm previously verified tasks in the completed Working Plan. "
                         "Use the current pinned plan ID and revision and suggest_complete with the verified task IDs."
                     )
+                    if ordinary_followup:
+                        required.remove("plan_id")
+                        properties["operations"]["items"] = {"anyOf": [
+                            item for item in variants
+                            if item["properties"]["op"]["enum"][0] in {"add", "start", "suggest_complete"}
+                        ]}
+                        plan_tool["description"] += (
+                            " If work from the original request remains, create a separate Working Plan. "
+                            "Omit plan_id, set expected_revision to 0, add tasks for the remaining work, "
+                            "and start the first task by its ref."
+                        )
                 plan_tool["parameters"] = {
                     "type": "object", "additionalProperties": False, "required": required, "properties": properties,
                 }
@@ -199,10 +214,13 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                              "runtime-provided artifact_id. It does not open workspace files. ",
             "plan_active": "The Working Plan is active now. Use current_call_tools in this request "
                            "for the selected task's next action. The plan becomes read-only when the last task finishes. ",
-            "plan_completed": "Completed-plan exposure is confirmation-only. The final tool reply may already have "
-                              "verified the last task. Answer the original request using the verified results. "
+            "plan_completed": "The final tool reply may already have verified the last task. "
+                              "If the original request is fulfilled, answer using the verified results. "
                               "If explicitly asked to confirm the plan, use update_plan with the current IDs and revision. ",
         }.get(_native_tool_phase, "")
+        if ordinary_followup:
+            phase_guidance += ("If the completed tasks covered only part of the original request, use update_plan "
+                               "at revision 0 with no plan_id to create and start a fresh plan for the remaining work. ")
         if _native_tool_phase == "plan_active" and ordinary_plan_edit:
             phase_guidance += "Add discovered work within scope before the final verification. "
         if _native_tool_phase == "plan_active" and "discover_tools" in current_names:

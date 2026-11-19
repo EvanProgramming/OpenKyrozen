@@ -47,7 +47,8 @@ def _corrected_plan_validation(manager, record, later_records, turn_id):
             or observed.get("committed") is not False or observed.get("turn_id") != turn_id):
         return False
     plan = manager.working_plan
-    if plan is None or plan.status != "completed" or not plan.task_ids:
+    if (plan is None or plan.status != "completed" or not plan.task_ids
+            or observed.get("target_mismatch") or observed.get("plan_id") not in (None, plan.id)):
         return False
     tasks = [task for task in manager.tasks if task.get("id") in plan.task_ids]
     succeeded = [task for task in tasks if task.get("status") == "succeeded"]

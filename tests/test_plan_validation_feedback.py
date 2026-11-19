@@ -562,7 +562,7 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                     continuation=provider_continuation(self, model, "fixture", {"step": self.calls}))
         return Provider(ProviderConfig(provider="custom", model_simple="fixture"))
 
-    def _chat(self, provider, *, cancelled=None):
+    def _chat(self, provider, *, cancelled=None, user_input="Inspect catalog"):
         runtime = self.runtime
         runtime.llm_provider = runtime._default_turn.provider = provider
         def prepare(turn):
@@ -573,7 +573,7 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         with patch.object(runtime, "_prepare_turn", side_effect=prepare), \
                 patch.object(runtime, "_finish_learning_run", side_effect=lambda _run, _receipts, _task, answer, *_args: answer), \
                 patch.object(runtime, "_schedule_post_turn_learning"):
-            answer = runtime.chat(runtime.current_session, "Inspect catalog", on_runtime_event=events.append)
+            answer = runtime.chat(runtime.current_session, user_input, on_runtime_event=events.append)
         return answer, events
 
     def test_repeated_invalid_ids_consume_existing_step_budget_without_side_effects(self):
@@ -786,9 +786,10 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                     case.assertEqual(state["tasks"][0]["status"], "succeeded")
                     plan_schema = next(tool["parameters"] for tool in tools if tool["name"] == "update_plan")
                     case.assertEqual(set(plan_schema["properties"]), {"plan_id", "expected_revision", "operations"})
-                    case.assertEqual(set(plan_schema["required"]), set(plan_schema["properties"]))
-                    operation = plan_schema["properties"]["operations"]["items"]
-                    case.assertEqual(operation["properties"]["op"]["enum"], ["suggest_complete"])
+                    case.assertEqual(set(plan_schema["required"]), {"expected_revision", "operations"})
+                    operations = plan_schema["properties"]["operations"]["items"]["anyOf"]
+                    case.assertEqual([op["properties"]["op"]["enum"] for op in operations],
+                                     [["add"], ["start"], ["suggest_complete"]])
                     read = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "read")
                     case.assertEqual(read.output["working_plan_progress"], {
                         "plan_id": state["plan_id"], "revision": state["revision"],
@@ -831,6 +832,103 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         self.assertEqual(confirm["verification"]["method"], "working_plan_confirmation")
         self.assertEqual(confirm["verification"]["observed"]["revision"], before["visible_plan"]["revision"])
         self.assertFalse(any(event.kind in {"protocol_recovery", "protocol.recovery"} for event in events))
+
+    def test_completed_inspection_allows_a_fresh_plan_for_remaining_edits(self):
+        from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_tools
+        from openkyrozen.providers.models import ProviderCapabilities
+        from openkyrozen.tools.manifest import ToolRegistry
+
+        case, manager = self, self.runtime.tasks
+        scope = {"user_id": manager.user_id, "workspace_id": manager.workspace_id, "session_id": manager.session_id}
+        content = self.content.replace("sorted_products", "sort_products")
+        def plan(ref, task):
+            return {"expected_revision": 0, "operations": [
+                {"op": "add", "ref": ref, "task": task}, {"op": "start", "task": ref},
+            ]}
+
+        inspect = plan("inspect", self.task())
+        followup = plan("refactor", self.task(content))
+        old = {}
+
+        class Provider(LLMProvider):
+            calls = 0
+
+            def get_capabilities(self, model=None):
+                return ProviderCapabilities(native_tools=True)
+
+            def chat(self, *_args, **_kwargs):
+                raise AssertionError("legacy API used")
+
+            def chat_response(self, messages, model=None, *, tools=None):
+                self.calls += 1
+                names = {tool["name"] for tool in tools or ()}
+                if self.calls == 1:
+                    call = ToolCall("inspect-plan", "update_plan", inspect)
+                elif self.calls == 2:
+                    call = ToolCall("inspect", "read_file", {"path": "catalog.py"})
+                elif self.calls == 3:
+                    case.assertEqual(manager.working_plan.status, "completed")
+                    case.assertNotIn("write_file", names)
+                    case.assertEqual((case.root / "catalog.py").read_text(), case.content)
+                    old["plan"] = manager.store.get_working_plan_by_id(manager.working_plan.id, **scope)
+                    old["tasks"] = manager.store.list_working_plan_tasks(manager.working_plan.id, **scope)
+                    definition = next(tool for tool in tools if tool["name"] == "update_plan")
+                    schema = definition["parameters"]
+                    case.assertIsNone(ToolRegistry._argument_error(schema, followup))
+                    wire = strict_chat_tools([definition])[0]["function"]["parameters"]
+                    case.assertEqual(set(wire["required"]), {"plan_id", "expected_revision", "operations"})
+                    raw = json.dumps({"plan_id": {"omit": True}, **followup})
+                    decoded = json.loads(decode_strict_chat_arguments(raw, schema, tool_name="update_plan"))
+                    case.assertEqual(decoded, followup)
+                    call = ToolCall("add-only", "update_plan", {**decoded, "operations": decoded["operations"][:1]})
+                elif self.calls == 4:
+                    case.assertEqual(manager.working_plan.id, old["plan"]["id"])
+                    case.assertNotIn("write_file", names)
+                    rejected = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "add-only")
+                    case.assertTrue(rejected.is_error)
+                    case.assertIn("Omit plan_id, set expected_revision to 0", rejected.output["text"])
+                    call = ToolCall("refactor-plan", "update_plan", followup)
+                elif self.calls == 5:
+                    case.assertIn("write_file", names)
+                    case.assertNotEqual(manager.working_plan.id, old["plan"]["id"])
+                    case.assertEqual(manager.working_plan.revision, 1)
+                    call = ToolCall("refactor", "write_file", {"path": "catalog.py", "content": content})
+                elif self.calls == 6:
+                    call = ToolCall("verify", "read_file", {"path": "catalog.py"})
+                else:
+                    return ModelResponse(text="Verified the refactor.", finish_reason=FinishReason.FINAL)
+                return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                    continuation=provider_continuation(self, model, "fixture", {"step": self.calls}))
+
+        provider = Provider(ProviderConfig(provider="custom", model_simple="fixture"))
+        with patch.object(self.runtime, "_effective_execution_capabilities", return_value={"read", "write"}):
+            answer, events = self._chat(provider, user_input="Refactor catalog.py and verify the new function name.")
+        self.assertEqual(provider.calls, 7)
+        self.assertIn("Verified the refactor.", answer)
+        self.assertEqual(manager.working_plan.status, "completed")
+        self.assertEqual((self.root / "catalog.py").read_text(), content)
+        self.assertEqual(manager.store.get_working_plan_by_id(old["plan"]["id"], **scope), old["plan"])
+        self.assertEqual(manager.store.list_working_plan_tasks(old["plan"]["id"], **scope), old["tasks"])
+        self.assertFalse(any(event.kind == "protocol.recovery" for event in events))
+
+    def test_fresh_ordinary_creation_cannot_replace_a_strategic_plan(self):
+        completed = self.create_read_task()
+        self.start(completed)
+        self.assertTrue(self.read().success)
+        manager = self.runtime.tasks
+        before = manager.working_plan_snapshot()
+        fresh = {"expected_revision": 0, "operations": [
+            {"op": "add", "ref": "inspect", "task": self.task()}, {"op": "start", "task": "inspect"},
+        ]}
+        legacy = {"complexity": "simple", "tasks": [self.task()]}
+        for state in ({"executing_plan": {"working_plan_id": completed["plan_id"]}},
+                      {"pending_plan": {"plan_id": "awaiting-approval"}}):
+            with self.subTest(state=state), patch.object(self.runtime._interaction_controller, "state", return_value=state):
+                for arguments in (fresh, legacy):
+                    denied = self.invoke(arguments)
+                    self.assertFalse(denied.success)
+                    self.assertEqual(denied.error.code, "permission_denied")
+                self.assertEqual(manager.working_plan_snapshot(), before)
 
     def test_completed_plan_can_read_its_archived_result_without_broadening_tools(self):
         case, task = self, self.task()
@@ -1016,6 +1114,16 @@ class PlanValidationFeedbackTests(unittest.TestCase):
             self.assertFalse(_corrected_plan_validation(runtime.tasks, changed, [committed], turn_id))
         self.assertFalse(_corrected_plan_validation(runtime.tasks, invalid, [], turn_id))
         self.assertFalse(_corrected_plan_validation(runtime.tasks, invalid, [committed], "other-turn"))
+        term = self._confirmation_arguments()
+        token = runtime._conversation_turn_id.set(turn_id)
+        try:
+            stale = runtime.execute_call(runtime.current_session,
+                ToolCall("stale-plan", "update_plan", {**term, "plan_id": "earlier-plan"})).as_dict()
+        finally:
+            runtime._conversation_turn_id.reset(token)
+        self.assertFalse(stale["success"])
+        self.assertTrue(stale["verification"]["observed"]["target_mismatch"])
+        self.assertFalse(_corrected_plan_validation(runtime.tasks, stale, [committed], turn_id))
         with patch.object(runtime.tasks, "working_plan", replace(runtime.tasks.working_plan, task_ids=())):
             self.assertFalse(_corrected_plan_validation(runtime.tasks, invalid, [committed], turn_id))
         for altered in ([{**task, "status": "cancelled"} for task in runtime.tasks.tasks],

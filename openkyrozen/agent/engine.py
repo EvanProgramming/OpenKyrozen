@@ -570,10 +570,15 @@ class AgentEngine:
                 turn.tool_results_text += f"- `{call['action']}` returned:\n{runtime._safe_fstring(prompt_result)}\n"
                 runtime._update_tasks_panel()
 
-            runtime._execute_tool_batch(
-                calls, operation_scope=operation_scope, successful_operations=successful_operations,
-                call_id_source="native", on_receipt=record_native_call,
-            )
+            context = runtime.execution_context
+            context.native_plan_completed = completed_plan
+            try:
+                runtime._execute_tool_batch(
+                    calls, operation_scope=operation_scope, successful_operations=successful_operations,
+                    call_id_source="native", on_receipt=record_native_call,
+                )
+            finally:
+                context.native_plan_completed = False
             if turn.pending_interaction_reply:
                 final_text = turn.pending_interaction_reply
                 break
