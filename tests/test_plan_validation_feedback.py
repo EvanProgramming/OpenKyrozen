@@ -618,13 +618,16 @@ class PlanValidationFeedbackTests(unittest.TestCase):
 
         original = runtime.tasks.edit_plan(expected_revision=0, operations=[
             {"op": "add", "ref": "verify", "task": task(declared)},
+            {"op": "add", "ref": "inspect", "task": {**self.task(), "dependencies": ["verify"]}},
             {"op": "start", "task": "verify"},
         ])
-        task_id = original["task_ids"][0]
+        task_id, dependent_id = original["task_ids"]
         confirmation = self.invoke({"plan_id": original["plan_id"], "expected_revision": original["revision"],
             "operations": [{"op": "suggest_complete", "task": task_id}]})
         self.assertTrue(confirmation.success)
         self.assertIn("Typed acceptance supplies the verification contract", confirmation.text)
+        self.assertIn("use cancel, add, then start", confirmation.text)
+        self.assertIn("Redirect pending dependencies", confirmation.text)
 
         class Provider(LLMProvider):
             calls = 0
@@ -639,6 +642,8 @@ class PlanValidationFeedbackTests(unittest.TestCase):
             def chat_response(self, messages, model=None, *, tools=None):
                 self.calls += 1
                 if self.calls == 1:
+                    plan_tool = next(tool for tool in tools if tool["name"] == "update_plan")
+                    case.assertIn("exits zero only when the expected failure is observed", plan_tool["description"])
                     call = ToolCall("mismatch", "run_cmd", actual)
                 elif self.calls == 2:
                     reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "mismatch")
@@ -655,10 +660,17 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                         "expected_revision": state["revision"], "operations": [
                             {"op": "cancel", "task": task_id},
                             {"op": "add", "ref": "corrected", "task": task(corrected)},
+                            {"op": "update", "task": dependent_id, "fields": {"dependencies": ["corrected"]}},
                             {"op": "start", "task": "corrected"},
                         ]})
                 elif self.calls == 3:
                     call = ToolCall("verify", "run_cmd", corrected)
+                elif self.calls == 4:
+                    plan = runtime.tasks.working_plan
+                    call = ToolCall("select-inspect", "update_plan", {"plan_id": plan.id,
+                        "expected_revision": plan.revision, "operations": [{"op": "start", "task": dependent_id}]})
+                elif self.calls == 5:
+                    call = ToolCall("inspect", "read_file", {"path": "catalog.py"})
                 else:
                     return ModelResponse(text="Verified.", finish_reason=FinishReason.FINAL)
                 return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
@@ -668,9 +680,12 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         shell = self.registry.get_spec("run_cmd").capability
         with patch.object(runtime, "_effective_execution_capabilities", return_value={"read", "write", shell}):
             answer, _ = self._chat(provider)
-        self.assertEqual(provider.calls, 4)
+        self.assertEqual(provider.calls, 6)
         self.assertIn("Plan status: completed", answer)
-        self.assertEqual([item["status"] for item in runtime.tasks.tasks], ["cancelled", "succeeded"])
+        original_task, dependent, replacement = runtime.tasks.tasks
+        self.assertEqual([item["status"] for item in (original_task, dependent, replacement)],
+                         ["cancelled", "succeeded", "succeeded"])
+        self.assertEqual(dependent["dependencies"], [replacement["id"]])
         self.assertEqual(runtime.tasks.tasks[0]["evidence"], [])
 
     def test_native_verified_read_then_completion_confirmation_is_read_only(self):

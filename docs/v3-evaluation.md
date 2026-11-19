@@ -124,7 +124,7 @@ The in-tree `benchmarks.v3_deepseek` CLI uses the same frozen 180-row cohort and
 
 The relay rejects forced tool selections before reservation because the fixed configuration enables thinking. A documented provider interruption stops dispatch and settles usage when the terminal usage and model identity can be verified. Malformed tool arguments retain the response and call identity, argument byte count and digest, and the parser's byte offset where available. The rejected argument text stays out of the diagnostic.
 
-When a complete native response contains malformed tool argument JSON, OpenKyrozen rejects the entire response before dispatch. If the turn still permits tools and has shown no response text, it can ask for one fresh generation from the last valid history. The worker retains the failed attempt and counts the recovery for R259. Both requests remain in the usage ledger.
+When a complete native response contains malformed tool argument JSON, OpenKyrozen rejects the entire response before dispatch. If the turn still permits tools, it can ask for one fresh generation from the last valid history. When progress text has already streamed, the new request asks the model to continue without repeating it. The worker retains the failed attempt and counts the recovery for R259. Both requests remain in the usage ledger.
 
 The planning supplement validates routing observations against the protocol inherited from the original campaign. Before the 36-row stage binds its ledger, the runner revalidates the 54 individual observations and recomputes both planning contrasts from their retained results.
 

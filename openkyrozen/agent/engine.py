@@ -316,7 +316,7 @@ class AgentEngine:
                     try:
                         response = request_response()
                     except ProviderContractError as exc:
-                        if (not exc.malformed_tool_json or wire_recovery_used or emitted_native_text
+                        if (not exc.malformed_tool_json or wire_recovery_used
                                 or not tool_names or step >= max_steps
                                 or cancelled is not None and cancelled.is_set()):
                             raise
@@ -327,6 +327,8 @@ class AgentEngine:
                             "The previous generation contained malformed tool arguments. No tool from it ran. "
                             "Continue from the last valid result. If a tool is needed, issue a fresh native "
                             "call with a valid JSON object matching its current schema."
+                            + (" The progress text has already been shown. Continue without repeating it."
+                               if emitted_native_text else "")
                         )}
                         messages.append(notice)
                         runtime.execution_context.native_wire_regeneration = True

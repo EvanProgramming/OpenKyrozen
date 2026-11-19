@@ -119,9 +119,9 @@ class AgentEngineTests(unittest.TestCase):
 
                 def generate(messages, **kwargs):
                     requests.append(list(messages))
-                    if scenario == "visible_text":
+                    if scenario == "visible_text" and len(requests) == 1:
                         kwargs["on_event"](TextDelta("Already streamed"))
-                    if scenario != "recover" or len(requests) == 1:
+                    if scenario == "repeated" or len(requests) == 1:
                         runtime._turn_failed.set(True)
                         return model_response(provider="openai", model="model", text="", usage=None,
                             calls=(("valid", "read_file", '{"path":"note.txt"}'),
@@ -133,14 +133,12 @@ class AgentEngineTests(unittest.TestCase):
                 result = AgentEngine(runtime).run(TurnContext("Read a note"))
 
                 runtime._execute_tool_batch.assert_not_called()
-                if scenario == "visible_text":
-                    self.assertEqual(len(requests), 1)
-                    runtime._publish_runtime_event.assert_not_called()
-                    self.assertIn("no further tools", result)
-                    continue
                 self.assertEqual(len(requests), 2)
                 self.assertNotIn("note.txt", str(requests[1]))
                 self.assertIn("valid JSON", str(requests[1]))
+                self.assertNotIn("Already streamed", str(requests[1]))
+                if scenario == "visible_text":
+                    self.assertIn("progress text has already been shown", str(requests[1]))
                 runtime._publish_runtime_event.assert_called_once_with("protocol.recovery", {
                     "reason": "malformed_tool_json",
                 })

@@ -134,7 +134,8 @@ def _update_plan(self, arguments: dict):
                 text += (" Completion remains unverified. Typed acceptance supplies the verification contract. "
                          "Use its exact tool and arguments from the current Working Plan. For prose-only tasks, "
                          "declare typed acceptance or an execution contract before starting work. "
-                         "Cancel and replace an ordinary running task to correct its criterion. "
+                         "To correct an ordinary running task, use cancel, add, then start the new ref. "
+                         "Redirect pending dependencies to the new ref in the same edit. "
                          "Changes to approved criteria require renewed approval.")
             return tool_success(text, data=result,
                                 metadata={"working_plan_confirmation": True} if confirmation else None)
