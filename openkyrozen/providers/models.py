@@ -12,7 +12,9 @@ from typing import Any
 
 
 class ProviderContractError(ValueError):
-    """A received response cannot satisfy the contract; do not replay generation."""
+    """A received response cannot satisfy the contract or be retried by the transport."""
+
+    malformed_tool_json = False
 
 
 @contextmanager
@@ -400,7 +402,13 @@ def model_response(*, provider, model, text, usage, raw_finish_reason=None,
             try:
                 arguments = json.loads(arguments, object_pairs_hook=_unique_object)
             except (ValueError, RecursionError) as exc:
-                raise ProviderContractError("Invalid serialized tool arguments") from exc
+                error = ProviderContractError("Invalid serialized tool arguments")
+                error.malformed_tool_json = (
+                    isinstance(exc, json.JSONDecodeError) and not blocked
+                    and normalize_finish(raw_finish_reason, has_calls=True, detail=finish_detail)
+                    == FinishReason.TOOL_REQUEST
+                )
+                raise error from exc
         parsed.append(ToolCall(call_id, name, arguments))
     raw = getattr(raw_finish_reason, "value", raw_finish_reason)
     metadata = {"provider": provider, "model": actual_model if isinstance(actual_model, str) and actual_model else model, "response_id": scope,

@@ -437,12 +437,14 @@ class StreamEventContractTests(unittest.TestCase):
             terminal = list(get_model_events(provider, [], "m", tools=tools))[-1]
         self.assertIsInstance(terminal, ResponseError)
         self.assertEqual(terminal.error.wire_evidence["issue"], "response_identity_changed")
+        self.assertFalse(terminal.error.malformed_tool_json)
 
         chunks[1].id = "original"
         send.return_value = iter(chunks)
         with patch("openkyrozen.providers.usage._track_cost"):
             terminal = list(get_model_events(provider, [], "m", tools=tools))[-1]
         self.assertIsInstance(terminal, ResponseError)
+        self.assertTrue(terminal.error.malformed_tool_json)
         evidence = terminal.error.wire_evidence
         self.assertEqual(evidence["response_id"], "original")
         self.assertEqual(evidence["finish_reason"], "tool_calls")

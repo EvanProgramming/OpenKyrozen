@@ -10,7 +10,7 @@ from typing import Any
 from openkyrozen.providers.usage import usage_scope
 from openkyrozen.providers.base import get_model_response, get_model_events
 from openkyrozen.providers.models import (
-    ModelResponse, ToolReply, ResponseComplete, ResponseError, TextDelta, ToolCallDelta, UsageUpdate,
+    ModelResponse, ProviderContractError, ToolReply, ResponseComplete, ResponseError, TextDelta, ToolCallDelta, UsageUpdate,
 )
 from openkyrozen.providers.context import context_accounting_messages
 from openkyrozen.providers.retry import provider_request_scope, bounded_call, bounded_stream
@@ -299,7 +299,7 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                      workspace_id=self.memory_bank.workspace_id, session_id=self.memory_bank.session_id,
                      run_id=self._active_usage_run_id.get(), surface=self._EXECUTION_SURFACE,
                      delegation_budget=delegation_budget,
-                     delegation_budget_run_id=delegation_budget_run_id):
+                     delegation_budget_run_id=delegation_budget_run_id) as ledger:
         try:
             if provider is None:
                 raise ProviderUnavailableError(self.PROVIDER_UNAVAILABLE_MESSAGE)
@@ -323,9 +323,10 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     "response": model_response_to_dict(response),
                 }, request_id=request_id)
         except Exception as exc:
-            from openkyrozen.providers.usage import _track_cost
-            _track_cost(getattr(provider, "name", "unknown"), None, model=selected_model,
-                        completion_state="failed")
+            if not (isinstance(exc, ProviderContractError) and exc.malformed_tool_json and ledger.attempt_recorded):
+                from openkyrozen.providers.usage import _track_cost
+                _track_cost(getattr(provider, "name", "unknown"), None, model=selected_model,
+                            completion_state="failed")
             self._turn_failed.set(True)
             self._publish_runtime_event("model.failed", {
                 "error_type": type(exc).__name__,

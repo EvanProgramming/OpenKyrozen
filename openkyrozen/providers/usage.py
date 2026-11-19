@@ -11,7 +11,7 @@ from typing import Any, Iterator
 from openkyrozen.persistence.store import EventStore
 from openkyrozen.providers.registry import PROVIDER_COSTS, _DEEPSEEK_V4_ALIASES, _DEEPSEEK_V4_EFFECTIVE_AT, _DEEPSEEK_V4_MODELS, _PICOS_PER_DOLLAR, _TOKENS_PER_MILLION
 
-@dataclass(frozen=True)
+@dataclass
 class UsageScope:
     store: EventStore
     user_id: str = "local"
@@ -21,6 +21,7 @@ class UsageScope:
     surface: str = "cli"
     delegation_budget: Any = None
     delegation_budget_run_id: str | None = None
+    attempt_recorded: bool = False
 
 
 _usage_scope: ContextVar[UsageScope | None] = ContextVar("usage_scope", default=None)
@@ -30,15 +31,16 @@ _usage_scope: ContextVar[UsageScope | None] = ContextVar("usage_scope", default=
 def usage_scope(*, store: EventStore, user_id: str = "local", workspace_id: str = "default",
                 session_id: str | None = None, run_id: str | None = None,
                 surface: str | None = None, delegation_budget: Any = None,
-                delegation_budget_run_id: str | None = None) -> Iterator[None]:
+                delegation_budget_run_id: str | None = None) -> Iterator[UsageScope]:
     """Attribute all provider calls in this execution context to one durable scope."""
-    token = _usage_scope.set(UsageScope(
+    scope = UsageScope(
         store=store, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
         run_id=run_id, surface=surface or os.environ.get("KYROZEN_EXECUTION_SURFACE", "cli"),
         delegation_budget=delegation_budget, delegation_budget_run_id=delegation_budget_run_id,
-    ))
+    )
+    token = _usage_scope.set(scope)
     try:
-        yield
+        yield scope
     finally:
         _usage_scope.reset(token)
 
@@ -256,6 +258,7 @@ def _track_cost(provider: str, usage: dict | None, *, model: str = "unknown",
             usage_status=usage_status,
             cost_picos=cost_picos, pricing_snapshot=pricing_snapshot,
         )
+        scope.attempt_recorded = True
     finally:
         if owns_store:
             scope.store.close()

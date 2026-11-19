@@ -103,6 +103,53 @@ class AgentEngineTests(unittest.TestCase):
         runtime._complete_turn = lambda turn: turn.protocol_error_message or turn.final_answer
         return runtime
 
+    def test_native_regenerates_malformed_tool_json_once_without_running_the_batch(self):
+        from openkyrozen.providers.models import TextDelta, model_response
+        for scenario in ("recover", "repeated", "visible_text"):
+            with self.subTest(scenario=scenario):
+                runtime = self.complex_native_runtime()
+                prepare = runtime._prepare_turn
+                runtime._prepare_turn = lambda turn: (prepare(turn), setattr(turn, "complexity", "simple"))
+                runtime._turn_failed = contextvars.ContextVar("failed", default=False)
+                runtime._publish_runtime_event = Mock()
+                if scenario == "visible_text":
+                    runtime.execution_context.provider.get_capabilities = lambda _: ProviderCapabilities(
+                        native_tools=True, text_streaming=True)
+                requests = []
+
+                def generate(messages, **kwargs):
+                    requests.append(list(messages))
+                    if scenario == "visible_text":
+                        kwargs["on_event"](TextDelta("Already streamed"))
+                    if scenario != "recover" or len(requests) == 1:
+                        runtime._turn_failed.set(True)
+                        return model_response(provider="openai", model="model", text="", usage=None,
+                            calls=(("valid", "read_file", '{"path":"note.txt"}'),
+                                   ("bad", "read_file", '{"path": "invalid"')),
+                            raw_finish_reason="tool_calls")
+                    return ModelResponse(text="Regenerated answer", finish_reason=FinishReason.FINAL)
+
+                runtime._get_model_response.side_effect = generate
+                result = AgentEngine(runtime).run(TurnContext("Read a note"))
+
+                runtime._execute_tool_batch.assert_not_called()
+                if scenario == "visible_text":
+                    self.assertEqual(len(requests), 1)
+                    runtime._publish_runtime_event.assert_not_called()
+                    self.assertIn("no further tools", result)
+                    continue
+                self.assertEqual(len(requests), 2)
+                self.assertNotIn("note.txt", str(requests[1]))
+                self.assertIn("valid JSON", str(requests[1]))
+                runtime._publish_runtime_event.assert_called_once_with("protocol.recovery", {
+                    "reason": "malformed_tool_json",
+                })
+                self.assertEqual(runtime._turn_failed.get(), scenario == "repeated")
+                if scenario == "repeated":
+                    self.assertIn("no further tools", result)
+                else:
+                    self.assertEqual(result, "Regenerated answer")
+
     def test_complex_native_turn_cannot_run_tools_before_a_working_plan(self):
         runtime = self.complex_native_runtime()
 

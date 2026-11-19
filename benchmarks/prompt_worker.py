@@ -120,7 +120,8 @@ class _ProviderObservations:
         metrics = metrics_var.get() if not summary and metrics_var is not None else None
         metrics = metrics if isinstance(metrics, dict) else {}
         new_history, repeated_history = metrics.get("new_context_tokens"), metrics.get("retransmitted_history_tokens")
-        child = bool(getattr(getattr(runtime, 'execution_context', None), 'child_run_id', None))
+        execution = getattr(runtime, 'execution_context', None)
+        child = bool(getattr(execution, 'child_run_id', None))
         record = {"turn": self.turn, "prompt_sha256": self.prompt_sha256,
                   "child": child, "observation_index": len(self.records),
                   "kind": "summary" if summary else "generation", "model": model,
@@ -147,6 +148,8 @@ class _ProviderObservations:
         routing_observer = getattr(runtime, '_benchmark_routing_observer', None)
         if routing_observer is not None:
             routing_observer(record, tools)
+        if not summary and getattr(execution, "native_wire_regeneration", False):
+            record["native_wire_regeneration"] = True
         self.records.append(record)
         if not summary and not child:
             self.native_answer = None
@@ -570,7 +573,9 @@ def main():
                   "unnecessary_churn": unnecessary_churn,
                   "duplicate_calls": len(receipts) - len(unique_calls),
                   "protocol_recovery": sum(event["event"] in {"protocol_recovery", "protocol.recovery"}
-                                            for event in events),
+                                            for event in events)
+                     + sum(record.get("native_wire_regeneration") is True
+                           for record in getattr(runtime, '_benchmark_child_context_records', [])),
                   "processes_started": sum(item["action"] == "run_cmd" and item["background"] is True and item["success"]
                                            for item in receipts),
                   "processes_cancelled": cancellations,

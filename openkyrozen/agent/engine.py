@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 
 from openkyrozen.agent.turn import TurnContext
-from openkyrozen.providers.models import FinishReason, TextDelta, ToolCallDelta, ToolReply
+from openkyrozen.providers.models import FinishReason, ProviderContractError, TextDelta, ToolCallDelta, ToolReply
 
 _COMPACT_CORE_TOOLS = frozenset({
     "list_dir", "find_files", "search_files", "read_file", "write_file", "edit_file", "apply_patch",
@@ -238,6 +238,7 @@ class AgentEngine:
         pending_plan_validation = None
         plan_continuation_used = False
         final_answer_requested = False
+        wire_recovery_used = False
 
         max_steps = getattr(runtime.execution_context, "max_steps", None)
         if max_steps is None:
@@ -291,11 +292,14 @@ class AgentEngine:
             previous_replies = [messages[index] for index in previous_reply_indexes]
             _refresh_working_plan_context(runtime, messages)
             emitted_native_content = False
+            emitted_native_text = False
 
             def observe_native_content(event):
-                nonlocal emitted_native_content
+                nonlocal emitted_native_content, emitted_native_text
                 if isinstance(event, (TextDelta, ToolCallDelta)):
                     emitted_native_content = True
+                if isinstance(event, TextDelta) and event.text:
+                    emitted_native_text = True
 
             def request_response():
                 return runtime._get_model_response(
@@ -305,10 +309,33 @@ class AgentEngine:
                 )
 
             token = runtime._record_foreground_model.set(False)
+            failure_state = getattr(runtime, "_turn_failed", None)
+            failed_before_request = failure_state.get() if failure_state is not None else False
             try:
                 try:
                     try:
                         response = request_response()
+                    except ProviderContractError as exc:
+                        if (not exc.malformed_tool_json or wire_recovery_used or emitted_native_text
+                                or not tool_names or step >= max_steps
+                                or cancelled is not None and cancelled.is_set()):
+                            raise
+                        wire_recovery_used = True
+                        runtime._publish_runtime_event("protocol.recovery", {"reason": "malformed_tool_json"})
+                        # The rejected response never entered conversation history or the executor.
+                        notice = {"role": "system", "content": (
+                            "The previous generation contained malformed tool arguments. No tool from it ran. "
+                            "Continue from the last valid result. If a tool is needed, issue a fresh native "
+                            "call with a valid JSON object matching its current schema."
+                        )}
+                        messages.append(notice)
+                        runtime.execution_context.native_wire_regeneration = True
+                        try:
+                            response = request_response()
+                        finally:
+                            runtime.execution_context.native_wire_regeneration = False
+                            messages[:] = [message for message in messages if message is not notice]
+                        runtime._turn_failed.set(failed_before_request)
                     except ProviderError as exc:
                         if (exc.kind != ProviderErrorKind.CONTEXT_OVERFLOW or exc.terminal
                                 or emitted_native_content

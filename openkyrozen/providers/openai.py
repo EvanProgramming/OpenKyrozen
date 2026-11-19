@@ -94,6 +94,7 @@ class OpenAICompatProvider(LLMProvider):
                               range(len(calls)) if call_indexes is None else call_indexes, calls, strict=True)],
             }
             if decoding is not None and isinstance(exc, json.JSONDecodeError):
+                error.malformed_tool_json = True
                 index, name = decoding
                 error.wire_evidence["malformed_argument"] = {
                     "index": index if call_indexes is None else call_indexes[index],

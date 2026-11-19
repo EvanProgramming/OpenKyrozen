@@ -17,6 +17,43 @@ from openkyrozen.providers import OpenAICompatProvider, ProviderConfig, _track_c
 from openkyrozen.interfaces.web.service import WebService
 server = WebService(None)
 class UsageLedgerTests(unittest.TestCase):
+    def test_malformed_native_response_records_one_attempt_with_usage(self):
+        from unittest.mock import Mock, patch
+
+        from openkyrozen.app.bootstrap import build_application
+        from openkyrozen.providers.models import ProviderContractError
+        from openkyrozen.tools import ToolAdapters
+
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as owners:
+            root = Path(directory)
+            owners.enter_context(patch.dict(os.environ, {
+                "HOME": directory, "KYROZEN_DISABLE_VECTOR_INDEX": "1", "KYROZEN_WORKSPACE_ROOT": directory,
+            }))
+            memory = owners.enter_context(closing(MemoryBank(root / "usage.sqlite3")))
+            app = build_application(memory=memory, tools=ToolAdapters(root))
+            owners.callback(app.close)
+            provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+            provider.config = ProviderConfig(provider="openai", model_simple="m")
+            chunks = [
+                SimpleNamespace(id="r", model="m", choices=[SimpleNamespace(finish_reason=None,
+                    delta=SimpleNamespace(tool_calls=[SimpleNamespace(index=0, id="c",
+                        function=SimpleNamespace(name="read_file", arguments='{"path":'))]))], usage=None),
+                SimpleNamespace(id="r", model="m", choices=[SimpleNamespace(finish_reason="tool_calls",
+                    delta=SimpleNamespace())], usage=SimpleNamespace(prompt_tokens=4, completion_tokens=2)),
+            ]
+            provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+                create=Mock(return_value=iter(chunks)))))
+            app.runtime.execution_context.provider = provider
+
+            with self.assertRaises(ProviderContractError) as error:
+                app.runtime._get_model_response([{"role": "user", "content": "Read a file"}],
+                    model="m", stream=True, tool_names={"read_file"})
+
+            self.assertTrue(error.exception.malformed_tool_json)
+            attempts = memory.store.list_usage_attempts()
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual((attempts[0]["prompt_tokens"], attempts[0]["completion_tokens"]), (4, 2))
+
     def test_google_model_tariffs_meter_children_and_reconstruct_display(self):
         from openkyrozen.agent.delegation import DelegationBudget
 
