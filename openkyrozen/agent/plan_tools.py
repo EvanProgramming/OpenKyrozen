@@ -131,17 +131,20 @@ def _update_plan(self, arguments: dict):
                 reason=arguments.get("reason"),
                 strategy_validator=validate_strategy,
             )
-            pending = [operation["task"] for operation in arguments["operations"]
-                       if operation.get("op") == "suggest_complete"
-                       and any(task["id"] == operation["task"] and task["status"] not in {"succeeded", "cancelled"}
-                               for task in result["tasks"])]
+            suggested = {operation["task"] for operation in arguments["operations"]
+                         if operation.get("op") == "suggest_complete"}
+            unverified = {task["status"] for task in result["tasks"]
+                          if task["id"] in suggested and task["status"] not in {"succeeded", "cancelled"}}
             confirmation = result.get("confirmation") is True
             text = "Working Plan updated."
             if confirmation:
                 text = ("Working Plan already completed; verified tasks confirmed without changes."
                         if result["status"] == "completed"
                         else "Task already verified. Select the next eligible task from the current Working Plan.")
-            if pending:
+            if "pending" in unverified:
+                text += (" Start the pending task with update_plan before running its verification. "
+                         "Tool calls before start are unbound.")
+            if unverified:
                 text += (" Completion remains unverified. Typed acceptance supplies the verification contract. "
                          "Use its exact tool and arguments from the current Working Plan. For prose-only tasks, "
                          "declare typed acceptance or an execution contract before starting work. "

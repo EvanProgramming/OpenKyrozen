@@ -127,6 +127,8 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         self.assertEqual(len(messages), 1)
         self.assertIn('"plan_id": null', messages[0]["content"])
         self.assertIn('"revision": 0', messages[0]["content"])
+        self.assertIn("python -m unittest", messages[0]["content"])
+        self.assertIn("Leave the test command open until inspection identifies the runner", messages[0]["content"])
         self.runtime.set_interaction_mode("ask")
         messages = []
         token = self.runtime._active_interaction_mode.set("ask")
@@ -135,6 +137,23 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         finally:
             self.runtime._active_interaction_mode.reset(token)
         self.assertEqual(messages, [])
+
+    def test_pending_plan_explains_why_unbound_reads_do_not_verify_it(self):
+        plan = self.create_read_task()
+        self.assertTrue(self.read(call_id="unbound").success)
+        result = self.invoke({"plan_id": plan["plan_id"], "expected_revision": plan["revision"],
+            "operations": [{"op": "suggest_complete", "task": plan["task_ids"][0]}]})
+        self.assertTrue(result.success, result.text)
+        self.assertIn("Start the pending task with update_plan before running its verification", result.text)
+        self.assertIn("Tool calls before start are unbound", result.text)
+        self.assertEqual(self.runtime.tasks.tasks[0]["status"], "pending")
+        self.assertEqual(self.runtime.tasks.tasks[0]["evidence"], [])
+        messages = []
+        _refresh_working_plan_context(self.runtime, messages)
+        self.assertIn("Start the next eligible task before running its verification", messages[0]["content"])
+        self.start(plan)
+        self.assertTrue(self.read(call_id="selected").success)
+        self.assertEqual(self.runtime.tasks.tasks[0]["status"], "succeeded")
 
     def test_active_replan_confirms_verified_work_and_adds_a_dependent_task_atomically(self):
         existing = self.invoke({"expected_revision": 0, "operations": [
