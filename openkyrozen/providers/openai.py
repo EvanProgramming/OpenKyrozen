@@ -388,6 +388,51 @@ class OpenAIResponsesProvider(LLMProvider):
             return with_provider_continuation(result, self, model, "openai-responses",
                                               {"output": _snapshot_from_sdk(getattr(response, "output", None) or [])})
 
+    @staticmethod
+    def _completed_argument_copies(output, started_calls, done_events, finished_items):
+        from openkyrozen.providers.models import _unique_object, _validate_json
+
+        copies = {}
+        for index, event in done_events.items():
+            if event is None or index >= len(output) or index not in started_calls:
+                continue
+            item, started = output[index], started_calls[index]
+            item_id = getattr(item, "id", None)
+            candidate = getattr(event, "arguments", None)
+            original = getattr(item, "arguments", None)
+            if (not started["copy_eligible"] or getattr(item, "type", None) != "function_call"
+                    or getattr(item, "status", None) not in (None, "completed")
+                    or not isinstance(item_id, str) or not item_id
+                    or item_id != started["item_id"] or item_id != getattr(event, "item_id", None)
+                    or not started["id"] or started["id"] != getattr(item, "call_id", None)
+                    or not started["name"] or started["name"] != getattr(item, "name", None)
+                    or getattr(event, "name", None) not in (None, started["name"])
+                    or not isinstance(original, str) or not isinstance(candidate, str)
+                    or candidate == original or started["arguments"] not in ("", candidate)):
+                continue
+            if index in finished_items:
+                finished = finished_items[index]
+                if (getattr(finished, "type", None) != "function_call"
+                        or getattr(finished, "status", None) not in (None, "completed")
+                        or getattr(finished, "id", None) != item_id
+                        or getattr(finished, "call_id", None) != started["id"]
+                        or getattr(finished, "name", None) != started["name"]
+                        or getattr(finished, "arguments", None) != candidate):
+                    continue
+            try:
+                json.loads(original)
+            except json.JSONDecodeError:
+                try:
+                    parsed = json.loads(candidate, object_pairs_hook=_unique_object)
+                    _validate_json(parsed)
+                except (ValueError, RecursionError):
+                    continue
+                if isinstance(parsed, dict):
+                    copies[index] = candidate
+            except RecursionError:
+                continue
+        return copies
+
     @provider_event_stream
     def chat_response_stream(self, messages: list[dict] | list, model: str | None = None, *, tools=None):
         model = model or self.config.model_simple
@@ -415,6 +460,8 @@ class OpenAIResponsesProvider(LLMProvider):
         stream = self._client.responses.create(**kwargs)
         text_parts = []
         calls = {}
+        done_arguments = {}
+        finished_items = {}
         usage = None
         final = None
         terminal = False
@@ -436,8 +483,11 @@ class OpenAIResponsesProvider(LLMProvider):
                         index = getattr(event, "output_index", None)
                         if type(index) is not int or index < 0:
                             raise ProviderContractError("Responses stream function call has invalid index")
-                        calls[index] = {"id": getattr(item, "call_id", None),
-                            "name": getattr(item, "name", None), "arguments": ""}
+                        initial = getattr(item, "arguments", "")
+                        calls[index] = {"id": getattr(item, "call_id", None), "item_id": getattr(item, "id", None),
+                            "name": getattr(item, "name", None),
+                            "copy_eligible": index not in calls and isinstance(initial, str),
+                            "arguments": initial if isinstance(initial, str) else ""}
                         yield ToolCallDelta(index, str(calls[index]["id"] or ""), str(calls[index]["name"] or ""))
                 elif event_type == "response.function_call_arguments.delta":
                     index = getattr(event, "output_index", None)
@@ -445,8 +495,18 @@ class OpenAIResponsesProvider(LLMProvider):
                     if call is None:
                         raise ProviderContractError("Responses tool arguments arrived before function call item")
                     delta = str(getattr(event, "delta", "") or "")
+                    if getattr(event, "item_id", None) != call["item_id"]:
+                        call["copy_eligible"] = False
                     call["arguments"] += delta
                     yield ToolCallDelta(index, arguments_delta=delta)
+                elif event_type == "response.output_item.done":
+                    index = getattr(event, "output_index", None)
+                    if type(index) is int and index in calls:
+                        finished_items[index] = None if index in finished_items else getattr(event, "item", None)
+                elif event_type == "response.function_call_arguments.done":
+                    index = getattr(event, "output_index", None)
+                    if type(index) is int and index in calls:
+                        done_arguments[index] = None if index in done_arguments else event
                 elif event_type in {"response.completed", "response.incomplete"}:
                     terminal = True
                     final = response
@@ -468,14 +528,44 @@ class OpenAIResponsesProvider(LLMProvider):
                 yield UsageUpdate(usage)
             usage_ledger._track_cost(self.config.provider, usage, model=getattr(final, "model", None) or model,
                 latency_ms=round((time.monotonic() - started) * 1000))
-            result = model_response(provider=self.name, model=model, actual_model=getattr(final, "model", None),
+            response_args = dict(provider=self.name, model=model, actual_model=getattr(final, "model", None),
                 text=text, usage=usage, calls=responses_output(final), response_id=getattr(final, "id", None),
                 raw_finish_reason=getattr(final, "status", None),
                 finish_detail=getattr(getattr(final, "incomplete_details", None), "reason", None),
                 blocked=any(getattr(part, "type", None) == "refusal" for item in output
                     for part in getattr(item, "content", None) or ()))
-            result = with_provider_continuation(result, self, model, "openai-responses",
-                {"output": _snapshot_from_sdk(output)})
+            copies = {}
+            try:
+                result = model_response(**response_args)
+            except ProviderContractError as exc:
+                if (not exc.malformed_tool_json or event_type != "response.completed"
+                        or response_args["raw_finish_reason"] != "completed"):
+                    raise
+                copies = self._completed_argument_copies(output, calls, done_arguments, finished_items)
+                if copies:
+                    response_args["calls"] = responses_output(final, copies)
+                    try:
+                        result = model_response(**response_args)
+                    except ProviderContractError:
+                        copies = {}
+                if not copies:
+                    exc.wire_evidence = {
+                        "issue": "invalid_terminal_tool_response",
+                        "terminal": [argument_wire_evidence(index, getattr(item, "arguments", None))
+                                     for index, item in enumerate(output)
+                                     if getattr(item, "type", None) == "function_call"],
+                        "completed": [argument_wire_evidence(index, getattr(event, "arguments", None))
+                                      for index, event in sorted(done_arguments.items()) if event is not None],
+                    }
+                    cause = exc.__cause__
+                    if isinstance(cause, json.JSONDecodeError):
+                        exc.wire_evidence["byte_offset"] = len(
+                            cause.doc[:cause.pos].encode("utf-8", errors="surrogatepass"))
+                    raise
+            continuation = _snapshot_from_sdk(output)
+            for index, arguments in copies.items():
+                continuation[index]["arguments"] = arguments
+            result = with_provider_continuation(result, self, model, "openai-responses", {"output": continuation})
             yield ResponseComplete(result)
         finally:
             close_stream(stream)

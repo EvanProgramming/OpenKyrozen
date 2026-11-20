@@ -421,11 +421,13 @@ def model_response(*, provider, model, text, usage, raw_finish_reason=None,
                          FinishReason.BLOCKED if blocked else normalize_finish(raw, has_calls=bool(parsed), detail=finish_detail), metadata)
 
 
-def responses_output(response):
+def responses_output(response, completed_arguments=None):
     """Extract Responses API function calls without using its flattened text."""
     calls = []
-    for item in getattr(response, "output", None) or ():
+    for index, item in enumerate(getattr(response, "output", None) or ()):
         if getattr(item, "type", None) == "function_call":
-            calls.append((getattr(item, "call_id", None), getattr(item, "name", None),
-                          getattr(item, "arguments", None)))
+            arguments = getattr(item, "arguments", None)
+            if completed_arguments is not None:
+                arguments = completed_arguments.get(index, arguments)
+            calls.append((getattr(item, "call_id", None), getattr(item, "name", None), arguments))
     return calls

@@ -512,6 +512,75 @@ class StreamEventContractTests(unittest.TestCase):
         self.assertIsInstance(events[-1], ResponseError)
         tracker.assert_called_once()
 
+    def test_responses_stream_can_use_complete_arguments_from_the_same_call(self):
+        from openkyrozen.providers.config import ProviderConfig
+        from openkyrozen.providers.models import ToolReply
+        from openkyrozen.providers.openai import OpenAIResponsesProvider
+
+        arguments = '{"path":"x"}'
+        tool = {"name": "read_file", "description": "read", "parameters": {"type": "object"}}
+        messages = [{"role": "user", "content": "go"}]
+        for case in ("matched", "initial fragment", "wrong id", "wrong name", "duplicate", "invalid",
+                     "fragments disagree", "wrong delta id", "duplicate open", "conflicting item",
+                     "incomplete", "wrong terminal status", "second call invalid"):
+            with self.subTest(case=case), patch("openkyrozen.providers.usage._track_cost") as track:
+                item = SimpleNamespace(type="function_call", id="fc-1", call_id="call-1",
+                    name="read_file", arguments='{"path":')
+                status = "incomplete" if case == "incomplete" else "completed"
+                response = SimpleNamespace(id="resp", model="m",
+                    status="tool_calls" if case == "wrong terminal status" else status, output_text="",
+                    usage=SimpleNamespace(input_tokens=4, output_tokens=2, output_tokens_details=None),
+                    incomplete_details=None, output=[item])
+                if case == "second call invalid":
+                    response.output.append(SimpleNamespace(type="function_call", id="fc-2",
+                        call_id="call-2", name="read_file", arguments='{"path":"y","path":"z"}'))
+                done = SimpleNamespace(type="response.function_call_arguments.done", output_index=0,
+                    item_id="other" if case == "wrong id" else item.id,
+                    name="write_file" if case == "wrong name" else item.name,
+                    arguments='{"path":"x","path":"y"}' if case == "invalid" else arguments)
+                prefix = arguments[:3] if case == "initial fragment" else ""
+                opening_item = SimpleNamespace(**{**vars(item), "arguments": prefix})
+                opening = SimpleNamespace(type="response.output_item.added", output_index=0, item=opening_item)
+                completed_item = SimpleNamespace(**{**vars(item),
+                    "arguments": '{"path":"y"}' if case == "conflicting item" else arguments})
+                stream = [
+                    opening,
+                    *([opening] if case == "duplicate open" else []),
+                    SimpleNamespace(type="response.function_call_arguments.delta", output_index=0,
+                        item_id="other" if case == "wrong delta id" else item.id,
+                        delta='{"path":"y"}' if case == "fragments disagree" else done.arguments[len(prefix):]),
+                    done,
+                    *([done] if case == "duplicate" else []),
+                    SimpleNamespace(type="response.output_item.done", output_index=0, item=completed_item),
+                    SimpleNamespace(type="response." + status, response=response),
+                ]
+                provider = OpenAIResponsesProvider.__new__(OpenAIResponsesProvider)
+                provider.config = ProviderConfig(provider="openai", model_simple="m")
+                provider._continuation_id = "responses-copy"
+                create = Mock(return_value=iter(stream))
+                provider._client = SimpleNamespace(responses=SimpleNamespace(create=create))
+                events = list(get_model_events(provider, messages, "m", tools=[tool]))
+                track.assert_called_once()
+                if case not in {"matched", "initial fragment"}:
+                    self.assertIsInstance(events[-1], ResponseError)
+                    self.assertFalse(any(isinstance(event, ResponseComplete) for event in events))
+                    if case == "second call invalid":
+                        self.assertTrue(events[-1].error.malformed_tool_json)
+                        self.assertEqual(len(events[-1].error.wire_evidence["terminal"]), 2)
+                    continue
+                self.assertIsInstance(events[-1], ResponseComplete)
+                result = events[-1].response
+                self.assertEqual(result.tool_calls[0].arguments, {"path": "x"})
+                self.assertEqual(result.continuation.payload["output"][0]["arguments"], arguments)
+                self.assertEqual(item.arguments, '{"path":')
+                create.return_value = SimpleNamespace(id="end", model="m", status="completed",
+                    output_text="done", usage=None, output=[])
+                provider.chat_response([*messages, result, ToolReply("call-1", "read_file", {"value": "ok"})],
+                    "m", tools=[tool])
+                continued = create.call_args.kwargs["input"]
+                self.assertEqual(continued[-2]["arguments"], arguments)
+                self.assertEqual(continued[-1]["call_id"], "call-1")
+
     def test_responses_api_adapters_stream_fragmented_function_calls(self):
         from openkyrozen.providers.config import ProviderConfig
         from openkyrozen.providers.openai import OpenAIResponsesProvider
